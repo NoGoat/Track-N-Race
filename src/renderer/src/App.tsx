@@ -1133,6 +1133,7 @@ export default function App() {
               tyreWearMode={tyreWearMode}
               isDark={theme === 'dark'}
               visibleGraphs={tyresLayout.charts}
+              sessionType={session?.session_type ?? null}
             />
           </div>
         )}

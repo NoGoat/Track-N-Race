@@ -14,6 +14,7 @@ interface Props {
   tyreWearMode:  'wear' | 'life'
   isDark:        boolean
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
+  sessionType:   number | null
 }
 
 const WET_COMPOUNDS = new Set([7, 8])
@@ -51,10 +52,38 @@ function sortWet(a: TyreSetEntry, b: TyreSetEntry) {
   return ao !== bo ? ao - bo : a.idx - b.idx
 }
 
-function getStatus(s: TyreSetEntry): 'FITTED' | 'NEW' | 'USED' | 'RETURNED' {
+function getSessionOrder(sessType: number): number {
+  if (sessType >= 1 && sessType <= 3) return sessType; // FP1=1, FP2=2, FP3=3
+  if (sessType === 4) return 3; // Short Practice -> FP3 slot
+  if (sessType === 5) return 4; // Q1
+  if (sessType === 6) return 5; // Q2
+  if (sessType === 7) return 6; // Q3
+  if (sessType >= 8 && sessType <= 9) return 6; // Other Qualis -> Q3 slot
+  if (sessType === 10) return 4; // Sprint Shootout 1 -> Q1 slot
+  if (sessType === 11) return 5; // Sprint Shootout 2 -> Q2 slot
+  if (sessType === 12) return 6; // Sprint Shootout 3 -> Q3 slot
+  if (sessType >= 13 && sessType <= 14) return 6; // Other Sprint Shootouts -> Q3 slot
+  return 7; // Race, Sprint Race, Time Trial, etc. -> Race slot (7)
+}
+
+function getStatus(s: TyreSetEntry, sessionType: number | null): 'FITTED' | 'NEW' | 'USED' | 'RESERVED' | 'RETURNED' {
   if (s.fitted)                    return 'FITTED'
   if (s.available && s.wear === 0) return 'NEW'
   if (s.available && s.wear > 0)   return 'USED'
+  
+  // If unavailable:
+  if (sessionType !== null) {
+    const currentOrder = getSessionOrder(sessionType);
+    if (s.recommended_session > currentOrder) {
+      return 'RESERVED';
+    }
+  } else {
+    // Fallback: recommended session is Q1 (4) or later
+    if (s.recommended_session >= 4) {
+      return 'RESERVED';
+    }
+  }
+  
   return 'RETURNED'
 }
 
@@ -67,17 +96,19 @@ function AllocationWearBar({ pct, isDark = true }: { pct: number; isDark?: boole
   )
 }
 
-function SetRow({ set, isDark = true }: { set: TyreSetEntry; isDark?: boolean }) {
-  const status     = getStatus(set)
+function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
+  const status     = getStatus(set, sessionType)
   const compName   = COMPOUND_NAMES[set.actual_compound] ?? String(set.actual_compound)
   const compColor  = VISUAL_COLORS[set.visual_compound] ?? '#ffffff'
   const isReturned = status === 'RETURNED'
+  const isReserved = status === 'RESERVED'
   const isFitted   = status === 'FITTED'
 
   const statusColor =
     isFitted             ? (isDark ? '#5794F2' : '#0B57D0') :
     status === 'NEW'     ? (isDark ? '#37872D' : '#137333') :
     status === 'USED'    ? (isDark ? '#d4ad04' : '#B06000') :
+    isReserved           ? (isDark ? '#a78bfa' : '#6d28d9') :
     (isDark ? '#484c62' : '#565B70')
 
   const showDelta = !isFitted && set.available && set.lap_delta_ms !== 0
@@ -136,7 +167,7 @@ const COLUMN_HEADERS = (
   </div>
 )
 
-function SetSection({ title, sets, isDark = true }: { title: string; sets: TyreSetEntry[]; isDark?: boolean }) {
+function SetSection({ title, sets, isDark = true, sessionType }: { title: string; sets: TyreSetEntry[]; isDark?: boolean; sessionType: number | null }) {
   return (
     <div className="flex flex-col overflow-hidden">
       <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center justify-between">
@@ -144,7 +175,7 @@ function SetSection({ title, sets, isDark = true }: { title: string; sets: TyreS
         {COLUMN_HEADERS}
       </div>
       <div>
-        {sets.map(s => <SetRow key={s.idx} set={s} isDark={isDark} />)}
+        {sets.map(s => <SetRow key={s.idx} set={s} isDark={isDark} sessionType={sessionType} />)}
       </div>
     </div>
   )
@@ -173,7 +204,7 @@ function EmptySection({ title, count }: { title: string; count: number }) {
   )
 }
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, sessionType }: Props) {
   const [expanded, setExpanded] = useState(false)
   const { ref: cardsRef, height: cardsHeight } = useSize()
 
@@ -230,11 +261,11 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
       {/* Left: allocation table */}
       <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
         {drySets
-          ? <SetSection title="Dry Sets (Slicks)" sets={drySets} isDark={isDark} />
+          ? <SetSection title="Dry Sets (Slicks)" sets={drySets} isDark={isDark} sessionType={sessionType} />
           : <EmptySection title="Dry Sets (Slicks)" count={13} />
         }
         {wetSets
-          ? <SetSection title="Wet / Inter Sets" sets={wetSets} isDark={isDark} />
+          ? <SetSection title="Wet / Inter Sets" sets={wetSets} isDark={isDark} sessionType={sessionType} />
           : <EmptySection title="Wet / Inter Sets" count={7} />
         }
       </div>
