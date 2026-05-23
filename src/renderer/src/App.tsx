@@ -32,7 +32,7 @@ const WINDOWS: { label: string; value: number }[] = [
   { label: '10m', value: 600 },
 ]
 
-type Tab = 'core' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'settings'
+type Tab = 'core' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session'
 
 interface CoreLayout {
   showStats:      boolean
@@ -100,7 +100,7 @@ const DEFAULT_TYRES_LAYOUT: TyresLayout = {
 }
 
 const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', timing_tower: 'Timing Tower', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', settings: 'Settings', misc: 'Misc'
+  core: 'Overview', timing_tower: 'Timing Tower', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc'
 }
 
 const TAB_OPTIONS = (['core', 'timing_tower', 'input', 'power', 'tyres', 'session', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
@@ -255,12 +255,7 @@ export default function App() {
   const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
   const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
   const [tab, setTab] = useState<Tab>('core')
-  const [prevTab, setPrevTab] = useState<Tab>('core')
-  useEffect(() => {
-    if (tab !== 'settings') {
-      setPrevTab(tab)
-    }
-  }, [tab])
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
@@ -527,11 +522,11 @@ export default function App() {
 
         {/* Settings button */}
         <button
-          onClick={() => setTab(t => t === 'settings' ? prevTab : 'settings')}
+          onClick={() => setSettingsOpen(true)}
           title="Settings"
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${
-            tab === 'settings'
+            settingsOpen
               ? 'bg-[var(--border-focus)] text-white'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
           }`}
@@ -1009,6 +1004,30 @@ export default function App() {
         </div>
       )}
 
+      {/* Settings Modal */}
+      {settingsOpen && (
+        <Settings
+          isOpen={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          tyreView={tyreView}
+          onTyreViewChange={setTyreView}
+          tyreWearMode={tyreWearMode}
+          onTyreWearModeChange={setTyreWearMode}
+          bannerDuration={bannerDuration}
+          onBannerDurationChange={setBannerDuration}
+          theme={theme}
+          onThemeChange={setTheme}
+          sectorColors={sectorColors}
+          onSectorColorsChange={setSectorColors}
+          driversMode={driversMode}
+          onDriversModeChange={setDriversMode}
+          mapTimeout={mapTimeout}
+          onMapTimeoutChange={setMapTimeout}
+          protocolStatus={protocolStatus}
+          protocolWarning={protocolWarning}
+        />
+      )}
+
       {/* Content */}
       <main className="flex-1 min-h-0">
         {tab === 'core' && (() => {
@@ -1099,11 +1118,7 @@ export default function App() {
             </div>
           </div>
         )}
-        {tab === 'settings' && (
-          <div className="h-full overflow-hidden">
-            <Settings tyreView={tyreView} onTyreViewChange={setTyreView} tyreWearMode={tyreWearMode} onTyreWearModeChange={setTyreWearMode} bannerDuration={bannerDuration} onBannerDurationChange={setBannerDuration} theme={theme} onThemeChange={setTheme} sectorColors={sectorColors} onSectorColorsChange={setSectorColors} driversMode={driversMode} onDriversModeChange={setDriversMode} mapTimeout={mapTimeout} onMapTimeoutChange={setMapTimeout} protocolStatus={protocolStatus} protocolWarning={protocolWarning} />
-          </div>
-        )}
+
         {tab === 'misc' && (
           <div className="h-full flex flex-col overflow-hidden">
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
