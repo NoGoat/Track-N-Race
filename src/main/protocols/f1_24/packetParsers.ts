@@ -33,6 +33,33 @@ const MOTION_EX_REAR_AERO_OFFSET  = 221
 // Packet 1 — safetyCarStatus offset
 const SESSION_SC_OFFSET = 153
 
+const F1_24_TEAM_COLORS: Record<number, string> = {
+  0: '#27f4d2',   // Mercedes
+  1: '#e80020',   // Ferrari
+  2: '#3671c6',   // Red Bull Racing
+  3: '#64c4ff',   // Williams
+  4: '#229971',   // Aston Martin
+  5: '#0093cc',   // Alpine
+  6: '#6692ff',   // RB
+  7: '#e6002b',   // Haas
+  8: '#ff8000',   // McLaren
+  9: '#52e252',   // Sauber
+  41: '#8e8e8e',  // F1 Generic
+  104: '#8e8e8e', // F1 Custom Team
+  // F2 2023 Teams
+  143: '#ecebeb', // Art GP '23
+  144: '#ff4646', // Campos '23
+  145: '#005aff', // Carlin '23
+  146: '#1b2c56', // PHM '23
+  147: '#39ff14', // Dams '23
+  148: '#ff3c00', // Hitech '23
+  149: '#ff7c00', // MP Motorsport '23
+  150: '#ff2828', // Prema '23
+  151: '#0028ff', // Trident '23
+  152: '#ffb400', // Van Amersfoort Racing '23
+  153: '#ffff00', // Virtuosi '23
+}
+
 export const FRAME_SAMPLED = new Set([PID_MOTION, PID_CAR_TEL, PID_MOTION_EX])
 
 export const SLOW_RATE_MS: Record<number, number> = {
@@ -500,8 +527,9 @@ function participants(data: Buffer, _hdr: PacketHeader): Row[] {
     const nameStart = o
     const name = b.slice(nameStart, nameStart + 48).toString('utf8').split('\0')[0].trim()
     if (!name) continue
-    // No livery colour block in F1 24 — use grey fallback
-    drivers.push({ idx: i, name, team_id: teamId, race_number: raceNum, ai, livery_color: '#8e8e8e' })
+    // Resolve hardcoded color mapping from Team ID, falling back to grey
+    const livery_color = F1_24_TEAM_COLORS[teamId] ?? '#8e8e8e'
+    drivers.push({ idx: i, name, team_id: teamId, race_number: raceNum, ai, livery_color })
   }
   return [{ type: 'participants', ts: now(), drivers }]
 }
