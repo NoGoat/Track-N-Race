@@ -6,6 +6,9 @@ import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
 
+import iconTransparent from '../../build/icon_transparent.ico?asset'
+import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
+
 const store = new Store()
 
 export function broadcastToWindows(row: Record<string, unknown>): void {
@@ -63,7 +66,7 @@ function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
 
 function createWindow(): void {
   const taskbarTheme = getWindowsTaskbarThemeSync()
-  const iconName = taskbarTheme === 'light' ? 'icon_transparent_light.ico' : 'icon_transparent.ico'
+  const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
 
   const win = new BrowserWindow({
     width: 1600,
@@ -72,7 +75,7 @@ function createWindow(): void {
     minHeight: 700,
     backgroundColor: '#0f172a',
     frame: false,
-    icon: join(__dirname, `../../build/${iconName}`),
+    icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -131,19 +134,18 @@ app.whenReady().then(() => {
   })
   createWindow()
 
-  // Track the current icon name to prevent redundant win.setIcon calls
-  let lastIconName = ''
+  // Track the current icon path to prevent redundant win.setIcon calls
+  let lastIconPath = ''
 
   function updateTaskbarIconIfNeeded(): void {
     const taskbarTheme = getWindowsTaskbarThemeSync()
-    const iconName = taskbarTheme === 'light' ? 'icon_transparent_light.ico' : 'icon_transparent.ico'
+    const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
     
-    if (iconName !== lastIconName) {
-      lastIconName = iconName
-      const iconPath = join(__dirname, `../../build/${iconName}`)
+    if (currentIconPath !== lastIconPath) {
+      lastIconPath = currentIconPath
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {
-          win.setIcon(iconPath)
+          win.setIcon(currentIconPath)
         }
       }
     }
@@ -151,7 +153,7 @@ app.whenReady().then(() => {
 
   // Initialize with startup icon theme
   const initialTheme = getWindowsTaskbarThemeSync()
-  lastIconName = initialTheme === 'light' ? 'icon_transparent_light.ico' : 'icon_transparent.ico'
+  lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
 
   // Update on nativeTheme change
   nativeTheme.on('updated', () => {
