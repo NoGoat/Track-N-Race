@@ -159,7 +159,7 @@ export default function Settings({
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
     { id: 'notifications' as const, label: 'Notifications', icon: <Clock size={14} />, color: '#8b5cf6' },
-    { id: 'map' as const, label: 'Map Settings', icon: <Map size={14} />, color: '#10b981' },
+    { id: 'map' as const, label: 'Map', icon: <Map size={14} />, color: '#10b981' },
     { id: 'network' as const, label: 'Network', icon: <Network size={14} />, color: '#0ea5e9' },
     { id: 'protocol' as const, label: 'Protocol', icon: <Radio size={14} />, color: '#e879f9' },
   ]
@@ -380,13 +380,13 @@ export default function Settings({
                 <button
                   key={cat.id}
                   onClick={() => setActiveCategory(cat.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono tracking-wider uppercase transition-all text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
                     active
                       ? 'bg-[var(--border-focus)] text-white shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
                   }`}
                 >
-                  <span style={{ color: active ? '#fff' : cat.color }}>{cat.icon}</span>
+                  <span style={{ color: cat.color }}>{cat.icon}</span>
                   <span>{cat.label}</span>
                 </button>
               )
