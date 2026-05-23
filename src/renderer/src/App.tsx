@@ -100,7 +100,7 @@ const DEFAULT_TYRES_LAYOUT: TyresLayout = {
 }
 
 const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', timing_tower: 'Timing Tower', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc'
+  core: 'Overview', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc'
 }
 
 const TAB_OPTIONS = (['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
