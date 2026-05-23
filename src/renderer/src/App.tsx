@@ -371,8 +371,16 @@ export default function App() {
     setScBanner({ label: labels[sc] ?? 'SAFETY CAR', color: colors[sc] ?? '#ffd700' })
   }, [session])
 
-  // Transient takes priority; SC/VSC/FL shows when no transient
-  const activeBanner = transientBanner ?? scBanner
+  const protocolWarningBanner = protocolWarning
+    ? {
+        label: 'PROTOCOL MISMATCH DETECTED',
+        sub: `Receiving ${protocolWarning.detected_format} packets - override is set to ${protocolWarning.forced_format}`,
+        color: '#ff4646'
+      }
+    : null
+
+  // Protocol warning takes highest priority, followed by transient events, followed by SC/VSC/FL
+  const activeBanner = protocolWarningBanner ?? transientBanner ?? scBanner
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
   const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null

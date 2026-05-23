@@ -193,7 +193,13 @@ export function useTelemetry(seconds: number): TelemetryState {
           break
         case 'session': setSession(msg); break
         case 'protocol_status': setProtocolStatus(msg); break
-        case 'protocol_warning': setProtocolWarning(msg); break
+        case 'protocol_warning':
+          if (msg.detected_format === null || msg.detected_format === undefined) {
+            setProtocolWarning(null)
+          } else {
+            setProtocolWarning(msg)
+          }
+          break
       }
     })
 

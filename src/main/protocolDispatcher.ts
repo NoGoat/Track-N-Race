@@ -123,6 +123,14 @@ function emitProtocolMismatch(incomingFormat: GameFormat, forcedFormat: GameForm
   })
 }
 
+function emitClearProtocolWarning(): void {
+  broadcastToWindows({
+    type:            'protocol_warning',
+    detected_format: null as any,
+    forced_format:   null as any,
+  })
+}
+
 // -----------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------
@@ -181,6 +189,8 @@ export function dispatchPacket(msg: Buffer): void {
   // ------- Mismatch warning -------
   if (override !== 'auto' && isKnownFormat && incomingFormat !== effectiveFormat) {
     emitProtocolMismatch(incomingFormat, effectiveFormat)
+  } else {
+    emitClearProtocolWarning()
   }
 
   // ------- Select parsers and rate-limiter config -------
@@ -228,6 +238,12 @@ export function setOverride(newOverride: ProtocolOverride): void {
 
   rateLimiter = new RateLimiter(SAMPLE_EVERY)  // reset on override change
   emitProtocolStatus()
+
+  // Clear warning if override is auto, or if override matches detected format
+  const effectiveFormat = override === 'auto' ? (detectedFormat ?? activeFormat) : (override === 'f1_25' ? 2025 : 2024)
+  if (override === 'auto' || (detectedFormat && detectedFormat === effectiveFormat)) {
+    emitClearProtocolWarning()
+  }
 }
 
 /** Returns current protocol capabilities for the active format. */
