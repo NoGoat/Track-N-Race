@@ -292,6 +292,10 @@ export default function SessionPanel({ session, raceEvents, timing, participants
   const circuit = info?.circuit ?? ''
   const sType   = session ? SESSION_TYPES[session.session_type] ?? 'Unknown' : null
 
+  const isSpecialMode = session
+    ? ((session.session_type >= 1 && session.session_type <= 14) || session.session_type === 18)
+    : false
+
   const playerCar = timing?.cars.find(c => c.idx === timing.player_idx && c.result_status === 2)
   const remainingLaps = (session && session.total_laps > 0 && playerCar)
     ? Math.max(session.total_laps - playerCar.lap_num + 1, 0) : null
@@ -311,6 +315,20 @@ export default function SessionPanel({ session, raceEvents, timing, participants
     .reverse() as { event: RaceEventMsg; fmt: { label: string; color: string } }[]
 
   const conditionCards = [
+    ...(isSpecialMode ? [
+      {
+        label: 'Total Laps',
+        value: session && session.total_laps > 0 ? String(session.total_laps) : '—',
+        color: undefined as string | undefined,
+        sub: undefined as string | undefined,
+      },
+      {
+        label: 'Pit Speed',
+        value: session ? `${session.pit_speed_limit} km/h` : '—',
+        color: noData ? undefined : (isDark ? '#5794F2' : '#0B57D0'),
+        sub: 'Limit',
+      }
+    ] : []),
     {
       label: 'Track Temp',
       value: session ? `${session.track_temp}°C` : '—',
@@ -409,16 +427,18 @@ export default function SessionPanel({ session, raceEvents, timing, participants
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="shrink-0 flex border-b border-[var(--border)]">
-        <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} />
-        {remainingLaps !== null
-          ? <StatCard label="Remaining" value={String(remainingLaps)} />
-          : <StatCard label="Remaining" value="—" />
-        }
-        <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : (isDark ? '#5794F2' : '#0B57D0')} />
-        <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : (isDark ? '#FADE2A' : '#B06000')} />
-        <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : (isDark ? '#73BF69' : '#137333')} />
-      </div>
+      {!isSpecialMode && (
+        <div className="shrink-0 flex border-b border-[var(--border)]">
+          <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} />
+          {remainingLaps !== null
+            ? <StatCard label="Remaining" value={String(remainingLaps)} />
+            : <StatCard label="Remaining" value="—" />
+          }
+          <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : (isDark ? '#5794F2' : '#0B57D0')} />
+          <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : (isDark ? '#FADE2A' : '#B06000')} />
+          <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : (isDark ? '#73BF69' : '#137333')} />
+        </div>
+      )}
 
       {/* ── Main body — three columns that all fill the available height ── */}
       <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
