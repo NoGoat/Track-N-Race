@@ -18,8 +18,8 @@ const MOTION_SIZE = 60
 const LAP_SIZE    = 57
 // F1 24: participant record = 1+1+1+1+1+1+1 + 48 name + 1+1+2+1 = 60 bytes... let's count:
 // aiControlled(1) driverId(1) networkId(1) teamId(1) myTeam(1) raceNumber(1) nationality(1)
-// name[48] yourTelemetry(1) showOnlineNames(1) techLevel(2) platform(1) = 61 bytes
-const PART_SIZE   = 61
+// name[48] yourTelemetry(1) showOnlineNames(1) techLevel(2) platform(1) = 60 bytes
+const PART_SIZE   = 60
 const TEL_SIZE    = 60
 const STATUS_SIZE = 55
 // F1 24: damage record has no tyreBlisters[4], so 4 fewer bytes than F1 25's 46
