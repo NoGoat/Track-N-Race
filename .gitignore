@@ -1,0 +1,57 @@
+# Node modules
+node_modules/
+**/node_modules/
+
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+env/
+venv/
+ENV/
+.venv/
+pyvenv.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+.python-version
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+*.log
+*.iml
+*.ipr
+*.iws
+.idea/
+.gradle/
+build/
+out/
+
+# Generated/project assets
+dashboard/dist/
+telemetry-electron/dist/
+telemetry-electron/out/
+gateway-java/bin/
+
+grafana-provisioning/.cache/
+
+# IDE/editor
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

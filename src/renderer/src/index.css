@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --compound-soft:   #e8002d;
+  --compound-medium: #ffd700;
+  --compound-hard:   #c8c8c8;
+  --compound-inter:  #39b54a;
+  --compound-wet:    #4488ff;
+  --bg-base: #0c0e14;
+  --bg-panel: #11141f;
+  --bg-card: #0e1019;
+  --bg-input: #09090e;
+  --bg-menu: #171b2e;
+  --bg-hover: #181c2c;
+  --bg-accent: #161a28;
+  --bg-modal: rgba(0,0,0,0.72);
+  --bg-selected: #162440;
+  --bg-widget-active: #1a274c;
+  --border: #1e2136;
+  --border-subtle: #161828;
+  --border-muted: #1a1d2e;
+  --border-focus: #2e3e6c;
+  --border-focus-hover: #3c508e;
+  --text-primary: #dde0ec;
+  --text-secondary: #7c8098;
+  --text-muted: #484c62;
+  --text-dim: #5a5e78;
+  --text-inactive: #262a3a;
+  --chart-grid: rgba(255,255,255,0.04);
+  --chart-ref: rgba(255,255,255,0.08);
+  --chart-axis: #7c8098;
+  --chart-zero: rgba(255,255,255,0.2);
+  --u-cursor: rgba(255,255,255,0.18);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --compound-soft:   #c8001a;
+  --compound-medium: #9e7a00;
+  --compound-hard:   #555555;
+  --compound-inter:  #1e7a2e;
+  --compound-wet:    #1a55bb;
+  --bg-base: #eff1f5;
+  --bg-panel: #ffffff;
+  --bg-card: #f8f9fc;
+  --bg-input: #f1f4f8;
+  --bg-menu: #ffffff;
+  --bg-hover: #eaecf2;
+  --bg-accent: #e3e7f0;
+  --bg-modal: rgba(0,0,0,0.35);
+  --bg-selected: #d8e8f8;
+  --bg-widget-active: #d0dcf0;
+  --border: #d0d5e0;
+  --border-subtle: #e4e8f0;
+  --border-muted: #d8dce8;
+  --border-focus: #4a5f9e;
+  --border-focus-hover: #5a72be;
+  --text-primary: #1a1c26;
+  --text-secondary: #565b70;
+  --text-muted: #8890a8;
+  --text-dim: #9298b0;
+  --text-inactive: #b0b8cc;
+  --chart-grid: rgba(0,0,0,0.07);
+  --chart-ref: rgba(0,0,0,0.1);
+  --chart-axis: #6b7280;
+  --chart-zero: rgba(0,0,0,0.18);
+  --u-cursor: rgba(0,0,0,0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  background-color: var(--bg-base);
+}
+
+@keyframes eventFadeIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bannerSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-banner-in {
+  animation: bannerSlideDown 0.38s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-focus);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* uPlot: transparent backgrounds so panel containers control the look */
+.uplot, .u-wrap, .u-under, .u-over { background: transparent !important; }
+.u-legend { display: none !important; }
+.u-cursor-x, .u-cursor-y { border-color: var(--u-cursor) !important; }
