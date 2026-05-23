@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
+import iconTransparent from '../assets/icon_transparent.png'
+import iconTransparentLight from '../assets/icon_transparent_light.png'
 
 interface Props {
   isOpen: boolean
@@ -105,6 +107,8 @@ export default function Settings({
   protocolStatus, protocolWarning,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol'>('appearance')
+  const [showAbout, setShowAbout] = useState(false)
+  
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
   const [udpStatus, setUdpStatus] = useState<RestartStatus>('idle')
@@ -328,6 +332,44 @@ export default function Settings({
     </div>
   )
 
+  const renderAbout = () => (
+    <div className="flex flex-col items-center justify-center text-center py-12 animate-[eventFadeIn_0.2s_ease-out] w-full max-w-[640px] select-none mx-auto my-auto">
+      {/* Logo */}
+      <img
+        src={theme === 'dark' ? iconTransparent : iconTransparentLight}
+        alt="Track N Race Logo"
+        className="h-24 w-auto mb-6 select-none pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
+        draggable="false"
+      />
+      
+      {/* App Name */}
+      <h1 className="text-xl font-bold font-mono tracking-wider text-[var(--text-primary)] uppercase">
+        Track N Race
+      </h1>
+      
+      {/* Version Pill */}
+      <p className="text-[10px] font-mono text-[var(--text-secondary)] mt-2 font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-3 py-1 rounded-full">
+        {/* @ts-ignore */}
+        {import.meta.env.DEV ? 'Version Next' : (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')}
+      </p>
+
+      {/* Description Tagline */}
+      <p className="text-xs text-[var(--text-secondary)] mt-4 font-mono leading-relaxed max-w-[340px]">
+        A telemetry app for Formula One games.
+      </p>
+
+      {/* Creator Credits (Whitespace separated, no harsh lines) */}
+      <div className="mt-16 flex flex-col items-center">
+        <span className="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-[0.25em]">
+          CREATED BY
+        </span>
+        <span className="text-xs font-semibold font-mono text-[var(--text-primary)] mt-1.5 tracking-wide">
+          NoGoat
+        </span>
+      </div>
+    </div>
+  )
+
   function renderCategoryContent() {
     switch (activeCategory) {
       case 'appearance':
@@ -373,15 +415,18 @@ export default function Settings({
         {/* Body Container (Sidebar + Content) */}
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
-          <div className="w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none">
+          <div className="w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none h-full">
             {CATEGORIES.map(cat => {
               const active = activeCategory === cat.id
               return (
                 <button
                   key={cat.id}
-                  onClick={() => setActiveCategory(cat.id)}
+                  onClick={() => {
+                    setActiveCategory(cat.id)
+                    setShowAbout(false)
+                  }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
-                    active
+                    active && !showAbout
                       ? 'bg-[var(--border-focus)] text-white shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
                   }`}
@@ -391,12 +436,32 @@ export default function Settings({
                 </button>
               )
             })}
+
+            {/* Flex spacer to push About button to bottom */}
+            <div className="flex-1" />
+
+            {/* About Button */}
+            <button
+              onClick={() => setShowAbout(true)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
+                showAbout
+                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+              }`}
+            >
+              <Info size={14} style={{ color: '#a0a8b8' }} />
+              <span>About</span>
+            </button>
           </div>
 
-          {/* Content Area - Constrained to prevent long layout stretch */}
-          <div className="flex-1 overflow-y-auto p-8 bg-[var(--bg-panel)] flex flex-col items-start justify-start">
+          {/* Content Area */}
+          <div className={`flex-1 overflow-y-auto p-8 bg-[var(--bg-panel)] flex flex-col ${
+            showAbout
+              ? 'items-center justify-center'
+              : 'items-start justify-start'
+          }`}>
             <div className="w-full max-w-[640px]">
-              {renderCategoryContent()}
+              {showAbout ? renderAbout() : renderCategoryContent()}
             </div>
           </div>
         </div>
