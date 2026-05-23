@@ -1,7 +1,8 @@
 {
   "name": "track-n-race",
   "version": "1.0.0",
-  "description": "F1 Telemetry Dashboard — Electron",
+  "description": "Track N Race",
+  "author": "NoGoat",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
