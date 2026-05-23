@@ -295,6 +295,29 @@ export type GatewayMsg =
   | SessionMsg
   | TyreSetsMsg
   | PositionsMsg
+  | ProtocolStatusMsg
+  | ProtocolWarningMsg
+
+export interface ProtocolCapabilities {
+  gameYear:        24 | 25 | null  // null = no packets received yet
+  hasBlisters:     boolean
+  hasLiveryColors: boolean
+  hasLapPositions: boolean
+}
+
+export interface ProtocolStatusMsg {
+  type:            'protocol_status'
+  detected_format: 2024 | 2025 | null
+  active_format:   2024 | 2025 | null
+  override:        'auto' | 'f1_24' | 'f1_25'
+  capabilities:    ProtocolCapabilities
+}
+
+export interface ProtocolWarningMsg {
+  type:            'protocol_warning'
+  detected_format: 2024 | 2025
+  forced_format:   2024 | 2025
+}
 
 declare global {
   interface Window {
@@ -308,6 +331,10 @@ declare global {
     }
     udpBridge: {
       restart: () => Promise<{ ok: boolean; error?: string }>
+    }
+    protocolBridge: {
+      getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
+      setOverride: (value: 'auto' | 'f1_24' | 'f1_25') => void
     }
   }
 }

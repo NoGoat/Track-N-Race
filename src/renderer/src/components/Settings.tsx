@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio } from 'lucide-react'
+import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 
 interface Props {
   tyreView: 'cards' | 'graphs'
@@ -16,6 +17,8 @@ interface Props {
   onDriversModeChange: (v: 'dots' | 'both' | 'labels') => void
   mapTimeout: number
   onMapTimeoutChange: (v: number) => void
+  protocolStatus: ProtocolStatusMsg | null
+  protocolWarning: ProtocolWarningMsg | null
 }
 
 type Option<T> = { value: T; label: string }
@@ -105,11 +108,15 @@ export default function Settings({
   sectorColors, onSectorColorsChange,
   driversMode, onDriversModeChange,
   mapTimeout, onMapTimeoutChange,
+  protocolStatus, protocolWarning,
 }: Props) {
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
   const [udpStatus, setUdpStatus] = useState<RestartStatus>('idle')
   const [errorMsg, setErrorMsg]   = useState('')
+  const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25'>(
+    () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25')
+  )
 
   const portValid = Number.isInteger(port) && port >= 1 && port <= 65535
   const dirty     = port !== (window.electronStore.get('udp.port', 20777) as number)
@@ -128,6 +135,27 @@ export default function Settings({
       setUdpStatus('error')
     }
     setTimeout(() => setUdpStatus('idle'), 2500)
+  }
+
+  function handleProtocolOverrideChange(v: 'auto' | 'f1_24' | 'f1_25') {
+    setProtocolOverride(v)
+    window.protocolBridge.setOverride(v)
+  }
+
+  function formatDetectedGame(status: ProtocolStatusMsg | null): string {
+    if (!status) return 'No data yet'
+    const { detected_format, active_format, override } = status
+    if (detected_format) {
+      return `${detected_format}`
+    }
+    if (override !== 'auto' && active_format) {
+      return `${active_format} (manual)`
+    }
+    // auto + no live detection yet — check last persisted
+    if (active_format) {
+      return `${active_format} (last session)`
+    }
+    return 'No data yet'
   }
 
   const inputCls = 'bg-[var(--bg-input)] border border-[var(--border-muted)] rounded-lg text-xs text-[var(--text-primary)] px-3 h-8 outline-none focus:border-[var(--border-focus)] transition-colors w-full tabular-nums'
@@ -216,7 +244,7 @@ export default function Settings({
           <div>
             <SectionLabel icon={<Network size={12} color="#0ea5e9" />} label="Network" />
             <div className={card}>
-              <Row label="UDP Port" description="Port the game broadcasts telemetry to (F1 25 default: 20777)">
+              <Row label="UDP Port" description="Port the game broadcasts telemetry to (2025 default: 20777)">
                 <div className="w-28">
                   <input
                     type="number" min={1} max={65535} value={port}
@@ -259,6 +287,51 @@ export default function Settings({
                   {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}
                 </button>
               </div>
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel icon={<Radio size={12} color="#e879f9" />} label="Protocol" />
+            <div className={card}>
+              <Row
+                label="Detected Protocol"
+                description="The protocol version currently detected from incoming UDP packets"
+              >
+                <span className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">
+                  {formatDetectedGame(protocolStatus)}
+                </span>
+              </Row>
+              <Row
+                label="Protocol Version Override"
+                description="Force a specific protocol version. Auto uses the packet format field to detect the correct parser automatically."
+              >
+                <SegmentedControl
+                  options={[
+                    { value: 'auto'  as const, label: 'Auto'  },
+                    { value: 'f1_24' as const, label: '2024' },
+                    { value: 'f1_25' as const, label: '2025' },
+                  ]}
+                  value={protocolOverride}
+                  onChange={handleProtocolOverrideChange}
+                />
+              </Row>
+              {protocolWarning && (
+                <div className="flex items-center gap-3 px-5 py-4 border-t border-[var(--border-subtle)]">
+                  <div className="relative shrink-0">
+                    {/* Pulsing glow ring */}
+                    <span className="absolute inset-0 rounded-full bg-red-500/30 animate-ping" />
+                    <AlertTriangle size={16} className="relative text-red-500 animate-pulse" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-red-400">
+                      Protocol mismatch detected
+                    </p>
+                    <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                      Receiving {protocolWarning.detected_format} packets — override is set to {protocolWarning.forced_format}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

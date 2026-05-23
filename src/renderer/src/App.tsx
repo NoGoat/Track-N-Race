@@ -302,7 +302,7 @@ export default function App() {
   useEffect(() => window.windowControls.onMaximizeChange(setIsMaximized), [])
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
   useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error } = useTelemetry(seconds)
+  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
 
   // Transient event queue
   const tQueueRef    = useRef<BannerItem[]>([])
@@ -1093,7 +1093,7 @@ export default function App() {
         )}
         {tab === 'settings' && (
           <div className="h-full overflow-hidden">
-            <Settings tyreView={tyreView} onTyreViewChange={setTyreView} tyreWearMode={tyreWearMode} onTyreWearModeChange={setTyreWearMode} bannerDuration={bannerDuration} onBannerDurationChange={setBannerDuration} theme={theme} onThemeChange={setTheme} sectorColors={sectorColors} onSectorColorsChange={setSectorColors} driversMode={driversMode} onDriversModeChange={setDriversMode} mapTimeout={mapTimeout} onMapTimeoutChange={setMapTimeout} />
+            <Settings tyreView={tyreView} onTyreViewChange={setTyreView} tyreWearMode={tyreWearMode} onTyreWearModeChange={setTyreWearMode} bannerDuration={bannerDuration} onBannerDurationChange={setBannerDuration} theme={theme} onThemeChange={setTheme} sectorColors={sectorColors} onSectorColorsChange={setSectorColors} driversMode={driversMode} onDriversModeChange={setDriversMode} mapTimeout={mapTimeout} onMapTimeoutChange={setMapTimeout} protocolStatus={protocolStatus} protocolWarning={protocolWarning} />
           </div>
         )}
         {tab === 'misc' && (

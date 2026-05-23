@@ -3,6 +3,8 @@ import { join } from 'path'
 import { execSync } from 'child_process'
 import Store from 'electron-store'
 import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
+import { setOverride, getProtocolConfig } from './protocolDispatcher'
+import type { ProtocolOverride } from './protocolDispatcher'
 
 const store = new Store()
 
@@ -31,6 +33,14 @@ ipcMain.on('udp-restart', (event) => {
   } catch (err) {
     event.reply('udp-restart-result', { ok: false, error: String(err) })
   }
+})
+
+ipcMain.handle('protocol-get-config', () => {
+  return getProtocolConfig()
+})
+
+ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
+  setOverride(value)
 })
 
 function getWindowsTaskbarThemeSync(): 'light' | 'dark' {

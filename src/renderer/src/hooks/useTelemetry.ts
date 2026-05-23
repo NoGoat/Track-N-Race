@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
-import type { TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg, LapData, SessionHistoryFastestMsg } from '../types'
+import type { TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg, LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 
 const MAX_ROWS = 36000  // ~10 min at 60 fps
 
@@ -36,6 +36,8 @@ export interface TelemetryState {
   lapStatusHistory: StatusRow[]
   isConnected: boolean
   error: string | null
+  protocolStatus: ProtocolStatusMsg | null
+  protocolWarning: ProtocolWarningMsg | null
 }
 
 export function useTelemetry(seconds: number): TelemetryState {
@@ -57,6 +59,8 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [tyreSets, setTyreSets]   = useState<TyreSetsMsg | null>(null)
   const [lapHistoryBuf, setLapHistoryBuf] = useState<LapData[]>([])
   const [fastestLap, setFastestLap]       = useState<LapData | null>(null)
+  const [protocolStatus, setProtocolStatus] = useState<ProtocolStatusMsg | null>(null)
+  const [protocolWarning, setProtocolWarning] = useState<ProtocolWarningMsg | null>(null)
   const fastestLapTimeRef = useRef<number>(Infinity)
 
   const telBufRef      = useRef<TelemetryRow[]>([])
@@ -188,6 +192,8 @@ export function useTelemetry(seconds: number): TelemetryState {
           }
           break
         case 'session': setSession(msg); break
+        case 'protocol_status': setProtocolStatus(msg); break
+        case 'protocol_warning': setProtocolWarning(msg); break
       }
     })
 
@@ -257,5 +263,7 @@ export function useTelemetry(seconds: number): TelemetryState {
     lapStatusHistory: stsBuf.filter(d => d.session_time >= lapStartSessionTime),
     isConnected:     true,
     error:           null,
+    protocolStatus,
+    protocolWarning,
   }
 }

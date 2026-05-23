@@ -1,10 +1,6 @@
 import * as dgram from 'dgram'
-import { HEADER_SIZE, parseHeader } from './packetHeader'
-import { PARSERS } from './packetParsers'
-import { RateLimiter } from './rateLimiter'
-import { broadcastToWindows } from './index'
-
-const SAMPLE_EVERY = parseInt(process.env.SAMPLE_EVERY_N_FRAMES ?? '1', 10)
+import { HEADER_SIZE } from './packetHeader'
+import { dispatchPacket } from './protocolDispatcher'
 
 let activeSocket: dgram.Socket | null = null
 
@@ -17,22 +13,12 @@ export function stopUdpReceiver(): void {
 
 export function startUdpReceiver(config: { port: number; bindAddress: string }): void {
   const { port, bindAddress } = config
-  const rateLimiter = new RateLimiter(SAMPLE_EVERY)
   const socket = dgram.createSocket('udp4')
   activeSocket = socket
 
   socket.on('message', (msg: Buffer) => {
     if (msg.length < HEADER_SIZE) return
-    const hdr = parseHeader(msg)
-    const parsers = PARSERS[hdr.packetId]
-    if (!parsers) return
-    if (!rateLimiter.allow(hdr.packetId, hdr.overallFrameId)) return
-
-    for (const parser of parsers) {
-      for (const row of parser(msg, hdr)) {
-        broadcastToWindows(row)
-      }
-    }
+    dispatchPacket(msg)
   })
 
   socket.on('error', (err) => {
