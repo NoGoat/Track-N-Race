@@ -103,7 +103,7 @@ const TAB_LABELS: Record<Tab, string> = {
   core: 'Overview', timing_tower: 'Timing Tower', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc'
 }
 
-const TAB_OPTIONS = (['core', 'timing_tower', 'input', 'power', 'tyres', 'session', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
+const TAB_OPTIONS = (['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
 
 const selectStyles: StylesConfig<{ value: string | number; label: string }, false> = {
@@ -623,11 +623,11 @@ export default function App() {
           onClick={() => setEditOpen(false)}
         >
           <div
-            className="bg-[#0b0c10] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[920px] max-h-[90vh] flex flex-col overflow-hidden"
+            className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[920px] max-h-[90vh] flex flex-col overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 shrink-0">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest">
                   {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : 'Edit Overview Layout'}
@@ -648,7 +648,7 @@ export default function App() {
 
                 <div className="flex flex-col gap-2">
                   <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts (Graph View)</div>
-                  <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] divide-x divide-[var(--border)] bg-[var(--bg-input)]">
+                  <div className="w-full grid grid-cols-2 rounded-none overflow-hidden border border-[var(--border)] bg-[var(--border)] gap-[1px]">
                     {([
                       { key: 'surfaceTemp', label: 'Surface Temp' },
                       { key: 'innerTemp',   label: 'Inner Temp'   },
@@ -660,7 +660,7 @@ export default function App() {
                         <button
                           key={key}
                           onClick={() => setTyresLayout({ ...tyresLayout, charts: { ...tyresLayout.charts, [key]: !on } })}
-                          className={`flex-1 h-44 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
+                          className={`h-32 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                             on
                               ? 'bg-[#5794F2]/10 text-[#5794F2]'
                               : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
