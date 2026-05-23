@@ -221,7 +221,7 @@ npm run pack
 npm run dist
 ```
 
-The installer is output to the `dist/` directory. On Windows, an NSIS installer is produced. On Linux, an AppImage is produced. On macOS, a DMG is produced.
+The installer is output to the `dist/` directory. On Windows, an NSIS installer is produced. Linux and MacOS are not yet configured.
 
 ---
 
