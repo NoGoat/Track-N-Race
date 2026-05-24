@@ -61,6 +61,11 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [fastestLap, setFastestLap]       = useState<LapData | null>(null)
   const [protocolStatus, setProtocolStatus] = useState<ProtocolStatusMsg | null>(null)
   const [protocolWarning, setProtocolWarning] = useState<ProtocolWarningMsg | null>(null)
+  const [playbackSpeedRpm, setPlaybackSpeedRpm] = useState<{
+    currentLap: any
+    prevLap: any
+    fastestLap: any
+  } | null>(null)
   const fastestLapTimeRef = useRef<number>(Infinity)
 
   const telBufRef      = useRef<TelemetryRow[]>([])
@@ -189,6 +194,7 @@ export function useTelemetry(seconds: number): TelemetryState {
             fastestLapSetRef.current = false
             sessionHistoryBestRef.current.clear()
             setRaceEvents([])
+            setPlaybackSpeedRpm(null)
           }
           break
         case 'session': setSession(msg); break
@@ -219,6 +225,10 @@ export function useTelemetry(seconds: number): TelemetryState {
           dmgBufRef.current = flush.damage
           lapStartTimeRef.current = flush.currentLapStart
           lapNumRef.current = flush.lapNum
+          break
+        }
+        case 'playback_speed_rpm_data': {
+          setPlaybackSpeedRpm(msg as any)
           break
         }
       }
@@ -284,10 +294,10 @@ export function useTelemetry(seconds: number): TelemetryState {
     session,
     tyreSets,
     latest:          telBuf.length > 0 ? telBuf[telBuf.length - 1] : null,
-    lapHistory:      lapHistoryBuf,
-    fastestLap,
-    lapTelemetry:    telBuf.filter(d => d.session_time >= lapStartSessionTime),
-    lapStatusHistory: stsBuf.filter(d => d.session_time >= lapStartSessionTime),
+    lapHistory:      playbackSpeedRpm && playbackSpeedRpm.prevLap ? [playbackSpeedRpm.prevLap] : lapHistoryBuf,
+    fastestLap:      playbackSpeedRpm && playbackSpeedRpm.fastestLap ? playbackSpeedRpm.fastestLap : fastestLap,
+    lapTelemetry:    playbackSpeedRpm && playbackSpeedRpm.currentLap ? playbackSpeedRpm.currentLap.telemetry : telBuf.filter(d => d.session_time >= lapStartSessionTime),
+    lapStatusHistory: playbackSpeedRpm && playbackSpeedRpm.currentLap ? playbackSpeedRpm.currentLap.statusHistory : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
     isConnected:     true,
     error:           null,
     protocolStatus,

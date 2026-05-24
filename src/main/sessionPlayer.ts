@@ -32,9 +32,32 @@ export interface ScanLap {
   lapTimeMs: number
 }
 
+// Slim telemetry/status items for SpeedRPMERS comparative chart views
+export interface SlimTelemetry {
+  type: 'telemetry'
+  session_time: number
+  speed_kph: number
+  rpm: number
+}
+
+export interface SlimStatus {
+  type: 'status'
+  session_time: number
+  ers_pct: number
+}
+
+export interface SpeedRpmLapBlock {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: SlimTelemetry[]
+  statusHistory: SlimStatus[]
+}
+
 let scannedLaps: ScanLap[] = []
 let fastestLapInfo: ScanLap | null = null
 let isScanning = false
+let lapBlocks = new Map<number, SpeedRpmLapBlock>()
 
 let onStateChange: ((state: any) => void) | null = null
 
@@ -140,6 +163,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       scannedLaps = []
       fastestLapInfo = null
       headerData = null
+      lapBlocks.clear()
       
       const processLine = (lineStr: string, byteOffset: number) => {
         if (!lineStr.trim()) return
@@ -179,6 +203,10 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
               currentLapNum = obj.lap_num
               currentLapStart = obj.current_lap_ms > 0 ? currentST - obj.current_lap_ms / 1000 : currentST
             } else if (obj.lap_num > currentLapNum) {
+              // Finalize previous lap block
+              const prevBlock = lapBlocks.get(currentLapNum)
+              if (prevBlock) prevBlock.endSessionTime = currentST
+              
               const lapTimeMs = obj.last_lap_ms
               const newLap: ScanLap = {
                 lapNum: currentLapNum,
@@ -194,6 +222,36 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
               }
               currentLapNum = obj.lap_num
               currentLapStart = currentST
+            }
+          }
+          
+          // Build SpeedRPMERS comparative lap blocks
+          if (currentLapNum !== null) {
+            if (!lapBlocks.has(currentLapNum)) {
+              lapBlocks.set(currentLapNum, {
+                lapNum: currentLapNum,
+                startSessionTime: currentST,
+                endSessionTime: currentST,
+                telemetry: [],
+                statusHistory: []
+              })
+            }
+            const block = lapBlocks.get(currentLapNum)!
+            block.endSessionTime = currentST
+            
+            if (obj.type === 'telemetry') {
+              block.telemetry.push({
+                type: 'telemetry',
+                session_time: obj.session_time,
+                speed_kph: obj.speed_kph,
+                rpm: obj.rpm
+              })
+            } else if (obj.type === 'status') {
+              block.statusHistory.push({
+                type: 'status',
+                session_time: obj.session_time,
+                ers_pct: obj.ers_pct
+              })
             }
           }
         } catch (e) {
@@ -229,6 +287,14 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       
       if (leftover.length > 0) {
         processLine(leftover.toString('utf8'), currentFileOffset)
+      }
+      
+      // Cap final lap block
+      if (currentLapNum !== null) {
+        const finalBlock = lapBlocks.get(currentLapNum)
+        if (finalBlock) {
+          finalBlock.endSessionTime = currentST
+        }
       }
       
       fs.closeSync(fd)
@@ -343,6 +409,69 @@ function broadcastInitialState(upToIndex: number) {
   } catch (err) {
     console.error('[Player] Error broadcasting initial state:', err)
   }
+}
+
+function broadcastSpeedRpmData() {
+  if (lapBlocks.size === 0) return
+  
+  let currentLapNum = 1
+  const currentLap = scannedLaps.find(l => currentSessionTime >= l.startSessionTime && currentSessionTime <= l.endSessionTime)
+  if (currentLap) {
+    currentLapNum = currentLap.lapNum
+  } else if (scannedLaps.length > 0) {
+    const lastLap = scannedLaps[scannedLaps.length - 1]
+    if (currentSessionTime >= lastLap.endSessionTime) {
+      currentLapNum = lastLap.lapNum
+    }
+  }
+  
+  // 1. Current Lap block (filtered up to currentSessionTime)
+  let currentLapData: any = null
+  const curBlock = lapBlocks.get(currentLapNum)
+  if (curBlock) {
+    currentLapData = {
+      lapNum: curBlock.lapNum,
+      startSessionTime: curBlock.startSessionTime,
+      endSessionTime: curBlock.endSessionTime,
+      telemetry: curBlock.telemetry.filter(p => p.session_time <= currentSessionTime),
+      statusHistory: curBlock.statusHistory.filter(p => p.session_time <= currentSessionTime)
+    }
+  }
+  
+  // 2. Previous Lap block (complete finished block)
+  let prevLapData: any = null
+  const prevBlock = lapBlocks.get(currentLapNum - 1)
+  if (prevBlock) {
+    prevLapData = {
+      lapNum: prevBlock.lapNum,
+      startSessionTime: prevBlock.startSessionTime,
+      endSessionTime: prevBlock.endSessionTime,
+      telemetry: prevBlock.telemetry,
+      statusHistory: prevBlock.statusHistory
+    }
+  }
+  
+  // 3. Fastest Lap block (complete finished block)
+  let fastestLapData: any = null
+  if (fastestLapInfo) {
+    const fastBlock = lapBlocks.get(fastestLapInfo.lapNum)
+    if (fastBlock) {
+      fastestLapData = {
+        lapNum: fastBlock.lapNum,
+        startSessionTime: fastBlock.startSessionTime,
+        endSessionTime: fastBlock.endSessionTime,
+        telemetry: fastBlock.telemetry,
+        statusHistory: fastBlock.statusHistory
+      }
+    }
+  }
+  
+  broadcastToWindows({
+    type: 'playback_speed_rpm_data',
+    currentLap: currentLapData,
+    prevLap: prevLapData,
+    fastestLap: fastestLapData
+  })
 }
 
 function readTelemetryBlock(startTime: number, endTime: number): any[] {
@@ -463,6 +592,7 @@ export async function loadFile(filePath: string): Promise<boolean> {
   
   // Instantaneously reconstruction & broadcast the latest UI state
   broadcastInitialState(0)
+  broadcastSpeedRpmData()
   
   emitState()
   return true
@@ -513,6 +643,7 @@ function playbackLoop() {
         }
       }
       playbackIndex = endIndex
+      broadcastSpeedRpmData()
     }
   }
   
@@ -553,6 +684,7 @@ export function seek(percent: number) {
   
   // Instantaneously reconstruction & broadcast the latest UI state for this seek point
   broadcastInitialState(playbackIndex)
+  broadcastSpeedRpmData()
   
   emitState()
   
@@ -589,6 +721,7 @@ export function closePlayer() {
   offsetsArray = new Float64Array(0)
   timesArray = new Float32Array(0)
   typesArray = new Uint8Array(0)
+  lapBlocks.clear()
   emitState()
 }
 
