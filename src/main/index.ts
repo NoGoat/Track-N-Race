@@ -1,10 +1,11 @@
-import { app, BrowserWindow, shell, ipcMain, Menu, globalShortcut, nativeTheme } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Menu, globalShortcut, nativeTheme, dialog } from 'electron'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import Store from 'electron-store'
 import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
+import { initSessionRecorder } from './sessionRecorder'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -23,6 +24,17 @@ ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
 
 ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
+})
+
+ipcMain.handle('dialog:showOpenDialog', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openDirectory']
+  })
+  if (canceled) {
+    return null
+  } else {
+    return filePaths[0]
+  }
 })
 
 ipcMain.on('udp-restart', (event) => {
@@ -126,6 +138,8 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') {
     app.setAppUserModelId(app.isPackaged ? 'com.tracknrace' : process.execPath)
   }
+
+  initSessionRecorder()
 
   Menu.setApplicationMenu(null)
   startUdpReceiver({

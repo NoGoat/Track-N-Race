@@ -25,6 +25,7 @@ import {
   SLOW_RATE_MS as F1_24_SLOW_RATE,
   FRAME_SAMPLED as F1_24_FRAME_SAMPLED,
 } from './protocols/f1_24/packetParsers'
+import { recordRow } from './sessionRecorder'
 
 // -----------------------------------------------------------------------
 // Types
@@ -217,6 +218,7 @@ export function dispatchPacket(msg: Buffer): void {
   for (const parser of packetParsers) {
     for (const row of parser(msg, hdr)) {
       broadcastToWindows(row)
+      recordRow(row)
     }
   }
 }

@@ -47,9 +47,15 @@ const protocolBridge = {
     ipcRenderer.send('protocol-set-override', value),
 }
 
+const fsBridge = {
+  selectDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:showOpenDialog'),
+}
+
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
+contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 

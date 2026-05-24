@@ -336,6 +336,9 @@ declare global {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
       setOverride: (value: 'auto' | 'f1_24' | 'f1_25') => void
     }
+    fsBridge: {
+      selectDirectory: () => Promise<string | null>
+    }
   }
 }
 

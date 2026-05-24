@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
@@ -106,8 +106,11 @@ export default function Settings({
   mapTimeout, onMapTimeoutChange,
   protocolStatus, protocolWarning,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [showAbout, setShowAbout] = useState(false)
+  
+  const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
+  const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
@@ -143,6 +146,19 @@ export default function Settings({
     window.protocolBridge.setOverride(v)
   }
 
+  async function handleSelectDirectory() {
+    const dir = await window.fsBridge.selectDirectory()
+    if (dir) {
+      setLoggingDirectory(dir)
+      window.electronStore.set('logging.directory', dir)
+    }
+  }
+
+  function handleLoggingToggle(val: boolean) {
+    setLoggingEnabled(val)
+    window.electronStore.set('logging.enabled', val)
+  }
+
   function formatDetectedGame(status: ProtocolStatusMsg | null): string {
     if (!status) return 'No data yet'
     const { detected_format, active_format, override } = status
@@ -166,6 +182,7 @@ export default function Settings({
     { id: 'map' as const, label: 'Map', icon: <Map size={14} />, color: '#10b981' },
     { id: 'network' as const, label: 'Network', icon: <Network size={14} />, color: '#0ea5e9' },
     { id: 'protocol' as const, label: 'Protocol', icon: <Radio size={14} />, color: '#e879f9' },
+    { id: 'storage' as const, label: 'Data Storage', icon: <HardDrive size={14} />, color: '#10b981' },
   ]
 
   const renderAppearance = () => (
@@ -332,6 +349,37 @@ export default function Settings({
     </div>
   )
 
+  const renderStorage = () => (
+    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+      <Row
+        label="Record Session Data"
+        description="Write live telemetry to disk in .tnrd format for later playback or analysis. This may consume disk space."
+      >
+        <Toggle value={loggingEnabled} onChange={handleLoggingToggle} />
+      </Row>
+      <Row
+        label="Output Directory"
+        description="Folder where .tnrd session files will be saved"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            readOnly
+            value={loggingDirectory}
+            placeholder="Select a folder..."
+            className="bg-[var(--bg-input)] border border-[var(--border-muted)] rounded-lg text-xs text-[var(--text-secondary)] px-3 h-8 outline-none w-48 tabular-nums truncate select-none opacity-80"
+          />
+          <button
+            onClick={handleSelectDirectory}
+            className="text-xs px-3 h-8 rounded-lg font-medium transition-all active:scale-95 bg-[var(--border-muted)] text-[var(--text-primary)] hover:bg-[var(--border-focus)] hover:text-white"
+          >
+            Browse
+          </button>
+        </div>
+      </Row>
+    </div>
+  )
+
   const renderAbout = () => (
     <div className="flex flex-col items-center justify-center text-center py-12 animate-[eventFadeIn_0.2s_ease-out] w-full max-w-[640px] select-none mx-auto my-auto">
       {/* Logo */}
@@ -382,6 +430,8 @@ export default function Settings({
         return renderNetwork()
       case 'protocol':
         return renderProtocol()
+      case 'storage':
+        return renderStorage()
     }
   }
 
