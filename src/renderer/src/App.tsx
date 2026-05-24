@@ -295,6 +295,8 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [headerVisible, setHeaderVisible] = useState(false)
   const [playbackState, setPlaybackState] = useState<any>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragProgress, setDragProgress] = useState(0)
 
   useEffect(() => window.windowControls.onMaximizeChange(setIsMaximized), [])
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
@@ -1249,20 +1251,49 @@ export default function App() {
           </div>
           
           <div className="flex-1 flex items-center gap-4">
-            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.currentTime)}</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.001"
-              value={playbackState.progressPct}
-              readOnly
-              className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none pointer-events-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2]"
-              style={{
-                background: `linear-gradient(to right, #5794F2 ${playbackState.progressPct * 100}%, var(--border) ${playbackState.progressPct * 100}%)`
-              }}
-            />
-            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
+            {(() => {
+              const startSessionTime = playbackState.currentTime - (playbackState.progressPct * playbackState.totalTime)
+              const progressToUse = isDragging ? dragProgress : playbackState.progressPct
+              const displayTime = isDragging 
+                ? (startSessionTime + dragProgress * playbackState.totalTime) 
+                : playbackState.currentTime
+              return (
+                <>
+                  <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(displayTime)}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.001"
+                    value={progressToUse}
+                    onMouseDown={() => {
+                      setIsDragging(true)
+                      setDragProgress(playbackState.progressPct)
+                    }}
+                    onMouseUp={() => {
+                      setIsDragging(false)
+                    }}
+                    onTouchStart={() => {
+                      setIsDragging(true)
+                      setDragProgress(playbackState.progressPct)
+                    }}
+                    onTouchEnd={() => {
+                      setIsDragging(false)
+                    }}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value)
+                      setDragProgress(val)
+                      window.playerBridge.seek(val)
+                    }}
+                    className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2] [&::-webkit-slider-thumb]:cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, #5794F2 ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
+                    }}
+                  />
+                  <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
+                </>
+              )
+            })()}
           </div>
         </div>
       )}

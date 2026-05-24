@@ -1,4 +1,6 @@
 import { app, BrowserWindow, shell, ipcMain, Menu, globalShortcut, nativeTheme, dialog } from 'electron'
+import * as path from 'path'
+import * as fs from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import Store from 'electron-store'
@@ -12,6 +14,93 @@ import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
 
 const store = new Store()
+
+// Helper to extract .tnrd or .trnd file paths from command-line arguments
+function getFilePathFromArgs(argv: string[]): string | null {
+  for (const arg of argv) {
+    const lower = arg.toLowerCase()
+    if (lower.endsWith('.tnrd') || lower.endsWith('.trnd')) {
+      try {
+        if (fs.existsSync(arg)) {
+          return path.resolve(arg)
+        }
+      } catch (e) {}
+    }
+  }
+  return null
+}
+
+// Global tracking of file path to open on startup
+let startupFilePath = getFilePathFromArgs(process.argv)
+let macStartupFilePath: string | null = null
+
+async function openTelemetryFile(filePath: string): Promise<boolean> {
+  stopUdpReceiver() // Suspend live UDP
+  const success = await loadFile(filePath)
+  if (!success) {
+    startUdpReceiver({
+      port: store.get('udp.port', 20777) as number,
+      bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
+    })
+  }
+  return success
+}
+
+async function promptAndOpenTelemetryFile(win: BrowserWindow, filePath: string) {
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore()
+    win.focus()
+
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Yes', 'No'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Open Session File',
+      message: 'Are you sure you want to open this file?',
+      detail: 'Opening it will stop the event bridge and if you have an session right now with the game, it will be closed.',
+      noLink: true
+    })
+
+    if (response === 0) {
+      await openTelemetryFile(filePath)
+    }
+  }
+}
+
+// Single Instance Lock
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, commandLine) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      const filePath = getFilePathFromArgs(commandLine)
+      if (filePath) {
+        promptAndOpenTelemetryFile(win, filePath)
+      } else {
+        if (win.isMinimized()) win.restore()
+        win.focus()
+      }
+    }
+  })
+}
+
+// Support drag/drop or open-file events on macOS for completeness
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  if (app.isReady()) {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      promptAndOpenTelemetryFile(win, filePath)
+    } else {
+      openTelemetryFile(filePath)
+    }
+  } else {
+    macStartupFilePath = filePath
+  }
+})
 
 export function broadcastToWindows(row: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -40,7 +129,7 @@ ipcMain.handle('dialog:showOpenDialog', async () => {
 
 ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
-    filters: [{ name: 'Track N Race Data', extensions: ['tnrd'] }],
+    filters: [{ name: 'Track N Race Data', extensions: ['tnrd', 'trnd'] }],
     properties: ['openFile']
   })
   if (canceled) return null
@@ -49,15 +138,7 @@ ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
 
 // Player IPC
 ipcMain.handle('player:load', async (_event, filePath: string) => {
-  stopUdpReceiver() // Suspend live UDP
-  const success = await loadFile(filePath)
-  if (!success) {
-    startUdpReceiver({
-      port: store.get('udp.port', 20777) as number,
-      bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
-    })
-  }
-  return success
+  return openTelemetryFile(filePath)
 })
 
 ipcMain.on('player:play', () => play())
@@ -164,6 +245,15 @@ function createWindow(): void {
   setOnPlayerStateChange((state) => {
     if (!win.isDestroyed()) {
       win.webContents.send('playback_state', state)
+    }
+  })
+
+  win.webContents.on('did-finish-load', () => {
+    const fileToOpen = startupFilePath || macStartupFilePath
+    if (fileToOpen) {
+      openTelemetryFile(fileToOpen)
+      startupFilePath = null
+      macStartupFilePath = null
     }
   })
 

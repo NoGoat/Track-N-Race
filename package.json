@@ -14,6 +14,15 @@
   "build": {
     "appId": "com.tracknrace.app",
     "productName": "Track N Race",
+    "fileAssociations": [
+      {
+        "ext": "tnrd",
+        "name": "Track N Race Session Data",
+        "description": "Track N Race Recorded Telemetry Session Data",
+        "role": "Viewer",
+        "icon": "build/icon_transparent.ico"
+      }
+    ],
     "directories": {
       "output": "dist"
     },
