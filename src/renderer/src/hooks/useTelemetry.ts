@@ -77,6 +77,32 @@ export function useTelemetry(seconds: number): TelemetryState {
     const unsub = window.telemetryBridge.on((raw) => {
       const msg = raw as GatewayMsg
       switch (msg.type) {
+        case 'playback_close': {
+          setTelBuf([]); telBufRef.current = []
+          setMotBuf([]); motBufRef.current = []
+          setMotExBuf([])
+          setStsBuf([]); stsBufRef.current = []
+          setDmgBuf([])
+          setStatus(null)
+          setDamage(null)
+          setLap(null)
+          setTiming(null)
+          setAllStatus(null)
+          setParticipants(null)
+          setSession(null)
+          setFastestLapCarIdx(null)
+          setTyreSets(null)
+          setLapHistoryBuf([])
+          setFastestLap(null)
+          fastestLapTimeRef.current = Infinity
+          lapNumRef.current = null
+          lapStartTimeRef.current = 0
+          fastestLapSetRef.current = false
+          sessionHistoryBestRef.current.clear()
+          setSpeedRpmBlocks(null)
+          setFastestLapNum(0)
+          break
+        }
         case 'telemetry': {
           setTelBuf(prev => {
             const last = prev.at(-1)

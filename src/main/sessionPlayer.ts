@@ -694,6 +694,7 @@ export function closePlayer() {
   typesArray = new Uint8Array(0)
   lapBlocks.clear()
   lastPackets = {}
+  broadcastToWindows({ type: 'playback_close' })
   emitState()
 }
 

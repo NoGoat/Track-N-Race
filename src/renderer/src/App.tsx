@@ -853,6 +853,7 @@ export default function App() {
     return protocolWarningBanner ?? transientBanner ?? scBanner
   }, [protocolWarningBanner, transientBanner, scBanner])
   const handleClosePlayback = useCallback(() => {
+    setSelectedIdx(null)
     window.playerBridge.close()
   }, [])
 
