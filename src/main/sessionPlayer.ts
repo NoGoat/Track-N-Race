@@ -1,12 +1,12 @@
 import * as fs from 'fs'
 import * as zlib from 'zlib'
-import * as readline from 'readline'
+import * as os from 'os'
+import * as path from 'path'
 import { broadcastToWindows } from './index'
 
 let activeFilePath: string | null = null
-let rl: readline.Interface | null = null
-let stream: fs.ReadStream | null = null
-let gunzip: zlib.Gunzip | null = null
+let activeTempFilePath: string | null = null
+let tempFileSize = 0
 
 // Playback state
 let isPlaying = false
@@ -19,11 +19,22 @@ let lastUpdateRealTime = 0
 let playbackTimer: NodeJS.Timeout | null = null
 let headerData: any = null
 
-// Streaming buffer (the "chunk")
-const LINE_BUFFER_LIMIT = 50000 // roughly 25-50MB of uncompressed text
-let lineBuffer: string[] = []
-let bufferIndex = 0
-let isStreamEOF = false
+// Binary offset indices in TypedArrays (extremely memory efficient)
+let offsetsArray = new Float64Array(0)
+let timesArray = new Float32Array(0)
+let typesArray = new Uint8Array(0)
+let playbackIndex = 0
+
+export interface ScanLap {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  lapTimeMs: number
+}
+
+let scannedLaps: ScanLap[] = []
+let fastestLapInfo: ScanLap | null = null
+let isScanning = false
 
 let onStateChange: ((state: any) => void) | null = null
 
@@ -46,197 +57,373 @@ function emitState() {
 }
 
 // --------------------------------------------------------
-// SCANNING AND LAP BUFFERING
+// STARTUP AND LIFECYCLE RECOVERY
 // --------------------------------------------------------
 
-export interface ScanLap {
-  lapNum: number
-  startSessionTime: number
-  endSessionTime: number
-  lapTimeMs: number
+export function sweepTempDir() {
+  try {
+    const tempDir = os.tmpdir()
+    const files = fs.readdirSync(tempDir)
+    for (const file of files) {
+      if (file.startsWith('tracknrace_temp_') && file.endsWith('.tmp')) {
+        try {
+          fs.unlinkSync(path.join(tempDir, file))
+        } catch (e) {
+          // Ignore files locked by other active instances
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Player] Startup temp sweep failed:', err)
+  }
 }
 
-let scannedLaps: ScanLap[] = []
-let fastestLapInfo: ScanLap | null = null
-let isScanning = false
+// Run immediate sweep on startup
+sweepTempDir()
 
-async function scanFileForLaps(filePath: string): Promise<void> {
-  return new Promise((resolve) => {
-    const s = fs.createReadStream(filePath)
-    const gz = zlib.createGunzip()
-    const r = readline.createInterface({ input: s.pipe(gz) })
+function cleanupTempFile() {
+  if (activeTempFilePath) {
+    const pathToDelete = activeTempFilePath
+    activeTempFilePath = null
+    tempFileSize = 0
+    fs.unlink(pathToDelete, (err) => {
+      if (err && (err as any).code !== 'ENOENT') {
+        console.error('[Player] Failed to delete temp file:', err.message)
+      }
+    })
+  }
+}
+
+// --------------------------------------------------------
+// FILE SCANNING AND FLAT INDEXING
+// --------------------------------------------------------
+
+async function decompressToTempFile(gzipPath: string, tempPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const readStream = fs.createReadStream(gzipPath)
+    const gunzip = zlib.createGunzip()
+    const writeStream = fs.createWriteStream(tempPath)
     
-    let firstTime: number | null = null
-    let lastTime: number | null = null
+    readStream.on('error', reject)
+    gunzip.on('error', reject)
+    writeStream.on('error', reject)
     
-    let currentLapNum: number | null = null
-    let currentLapStart: number = 0
-    let currentST: number = 0
-    
-    scannedLaps = []
-    fastestLapInfo = null
-    
-    r.on('line', (line) => {
-      try {
-        const obj = JSON.parse(line)
-        if (obj.magic === 'TNRD_V1') {
-          headerData = obj
-          return
-        }
-        if (obj.session_time !== undefined) {
-          currentST = obj.session_time
-          if (firstTime === null) firstTime = currentST
-          lastTime = currentST
-        }
-        
-        if (obj.type === 'lap') {
-          if (currentLapNum === null) {
-            currentLapNum = obj.lap_num
-            currentLapStart = obj.current_lap_ms > 0 ? currentST - obj.current_lap_ms / 1000 : currentST
-          } else if (obj.lap_num > currentLapNum) {
-            // Lap finished!
-            const lapTimeMs = obj.last_lap_ms
-            const newLap: ScanLap = {
-              lapNum: currentLapNum,
-              startSessionTime: currentLapStart,
-              endSessionTime: currentST,
-              lapTimeMs
-            }
-            scannedLaps.push(newLap)
-            if (lapTimeMs > 0 && lapTimeMs < 300000) {
-              if (!fastestLapInfo || lapTimeMs < fastestLapInfo.lapTimeMs) {
-                fastestLapInfo = newLap
-              }
-            }
-            currentLapNum = obj.lap_num
-            currentLapStart = currentST
-          }
-        }
-      } catch (e) {}
+    writeStream.on('finish', () => {
+      resolve()
     })
     
-    const finalize = () => {
+    readStream.pipe(gunzip).pipe(writeStream)
+  })
+}
+
+async function scanAndIndexTempFile(tempPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const fd = fs.openSync(tempPath, 'r')
+      const stats = fs.fstatSync(fd)
+      tempFileSize = stats.size
+      
+      const readBuf = Buffer.alloc(256 * 1024) // 256KB chunks
+      let leftover = Buffer.alloc(0)
+      let currentFileOffset = 0
+      
+      const tempOffsets: number[] = []
+      const tempTimes: number[] = []
+      const tempTypes: number[] = []
+      
+      let firstTime: number | null = null
+      let lastTime: number | null = null
+      let currentLapNum: number | null = null
+      let currentLapStart: number = 0
+      let currentST: number = 0
+      
+      scannedLaps = []
+      fastestLapInfo = null
+      headerData = null
+      
+      const processLine = (lineStr: string, byteOffset: number) => {
+        if (!lineStr.trim()) return
+        try {
+          const obj = JSON.parse(lineStr)
+          if (obj.magic === 'TNRD_V1') {
+            headerData = obj
+            return
+          }
+          
+          if (obj.session_time !== undefined) {
+            currentST = obj.session_time
+            if (firstTime === null) firstTime = currentST
+            lastTime = currentST
+          }
+          
+          // Index every single packet (including roster/participants and map coordinates)
+          tempOffsets.push(byteOffset)
+          tempTimes.push(currentST)
+          
+          // Map types: 1=telemetry, 2=motion, 3=status, 4=damage, 5=lap, 6=positions, 7=participants, 8=session, 9=timing, 10=all_status, 0=other
+          let typeEnum = 0
+          if (obj.type === 'telemetry') typeEnum = 1
+          else if (obj.type === 'motion') typeEnum = 2
+          else if (obj.type === 'status') typeEnum = 3
+          else if (obj.type === 'damage') typeEnum = 4
+          else if (obj.type === 'lap') typeEnum = 5
+          else if (obj.type === 'positions') typeEnum = 6
+          else if (obj.type === 'participants') typeEnum = 7
+          else if (obj.type === 'session') typeEnum = 8
+          else if (obj.type === 'timing') typeEnum = 9
+          else if (obj.type === 'all_status') typeEnum = 10
+          tempTypes.push(typeEnum)
+          
+          if (obj.type === 'lap') {
+            if (currentLapNum === null) {
+              currentLapNum = obj.lap_num
+              currentLapStart = obj.current_lap_ms > 0 ? currentST - obj.current_lap_ms / 1000 : currentST
+            } else if (obj.lap_num > currentLapNum) {
+              const lapTimeMs = obj.last_lap_ms
+              const newLap: ScanLap = {
+                lapNum: currentLapNum,
+                startSessionTime: currentLapStart,
+                endSessionTime: currentST,
+                lapTimeMs
+              }
+              scannedLaps.push(newLap)
+              if (lapTimeMs > 0 && lapTimeMs < 300000) {
+                if (!fastestLapInfo || lapTimeMs < fastestLapInfo.lapTimeMs) {
+                  fastestLapInfo = newLap
+                }
+              }
+              currentLapNum = obj.lap_num
+              currentLapStart = currentST
+            }
+          }
+        } catch (e) {
+          // Ignore malformed rows gracefully
+        }
+      }
+      
+      while (true) {
+        const bytesRead = fs.readSync(fd, readBuf, 0, readBuf.length, null)
+        if (bytesRead === 0) break
+        
+        const chunk = Buffer.concat([leftover, readBuf.subarray(0, bytesRead)])
+        let lineStart = 0
+        
+        while (true) {
+          const newlineIdx = chunk.indexOf(10, lineStart) // 10 is '\n'
+          if (newlineIdx === -1) {
+            leftover = chunk.subarray(lineStart)
+            break
+          }
+          
+          const lineBuf = chunk.subarray(lineStart, newlineIdx)
+          const lineOffset = currentFileOffset + lineStart
+          
+          const lineStr = lineBuf.toString('utf8')
+          processLine(lineStr, lineOffset)
+          
+          lineStart = newlineIdx + 1
+        }
+        
+        currentFileOffset += chunk.length - leftover.length
+      }
+      
+      if (leftover.length > 0) {
+        processLine(leftover.toString('utf8'), currentFileOffset)
+      }
+      
+      fs.closeSync(fd)
+      
+      // Release raw arrays and move to binary indices
+      offsetsArray = new Float64Array(tempOffsets)
+      timesArray = new Float32Array(tempTimes)
+      typesArray = new Uint8Array(tempTypes)
+      
       startSessionTime = firstTime || 0
       currentSessionTime = startSessionTime
       totalDurationS = Math.max(0.1, (lastTime || 0) - startSessionTime)
+      
       resolve()
+    } catch (err) {
+      reject(err)
     }
-    
-    const handleError = (err: Error) => {
-      console.warn('[Player] Scan stream error (likely truncated file):', err.message)
-      finalize()
-    }
-    
-    r.on('close', finalize)
-    r.on('error', handleError)
-    s.on('error', handleError)
-    gz.on('error', handleError)
   })
 }
 
-async function extractLapTelemetry(filePath: string, lapInfo: ScanLap, eventName: string): Promise<void> {
-  return new Promise((resolve) => {
-    const s = fs.createReadStream(filePath)
-    const gz = zlib.createGunzip()
-    const r = readline.createInterface({ input: s.pipe(gz) })
+// --------------------------------------------------------
+// SEARCH & ATOMIC BLOCK READING HELPERS
+// --------------------------------------------------------
+
+function findFirstIndexTimeGte(targetTime: number): number {
+  let low = 0
+  let high = timesArray.length - 1
+  let result = -1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (timesArray[mid] >= targetTime) {
+      result = mid
+      high = mid - 1
+    } else {
+      low = mid + 1
+    }
+  }
+  return result
+}
+
+function findLastIndexTimeLte(targetTime: number): number {
+  let low = 0
+  let high = timesArray.length - 1
+  let result = -1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (timesArray[mid] <= targetTime) {
+      result = mid
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  return result
+}
+
+function tempOffsetsFindIndex(offset: number): number {
+  let low = 0
+  let high = offsetsArray.length - 1
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (offsetsArray[mid] === offset) return mid
+    else if (offsetsArray[mid] < offset) low = mid + 1
+    else high = mid - 1
+  }
+  return -1
+}
+
+function broadcastInitialState(upToIndex: number) {
+  if (offsetsArray.length === 0 || !activeTempFilePath) return
+  
+  const neededTypes = new Set([6, 7, 8, 9, 10]) // positions, participants, session, timing, all_status
+  const offsetsToRead: number[] = []
+  
+  const limit = Math.min(upToIndex, offsetsArray.length - 1)
+  for (let i = limit; i >= 0; i--) {
+    const t = typesArray[i]
+    if (neededTypes.has(t)) {
+      offsetsToRead.push(offsetsArray[i])
+      neededTypes.delete(t)
+    }
+  }
+  
+  offsetsToRead.sort((a, b) => a - b)
+  
+  if (offsetsToRead.length === 0) return
+  
+  try {
+    const fd = fs.openSync(activeTempFilePath, 'r')
+    for (const offset of offsetsToRead) {
+      const idx = tempOffsetsFindIndex(offset)
+      if (idx === -1) continue
+      
+      const nextOffset = (idx + 1 < offsetsArray.length) ? offsetsArray[idx + 1] : tempFileSize
+      const length = nextOffset - offset
+      
+      if (length <= 0) continue
+      
+      const buffer = Buffer.alloc(length)
+      fs.readSync(fd, buffer, 0, length, offset)
+      
+      const lineStr = buffer.toString('utf8').trim()
+      if (!lineStr) continue
+      try {
+        const row = JSON.parse(lineStr)
+        if (row.magic !== 'TNRD_V1') {
+          broadcastToWindows(row)
+        }
+      } catch (e) {}
+    }
+    fs.closeSync(fd)
+  } catch (err) {
+    console.error('[Player] Error broadcasting initial state:', err)
+  }
+}
+
+function readTelemetryBlock(startTime: number, endTime: number): any[] {
+  if (offsetsArray.length === 0 || !activeTempFilePath) return []
+  
+  const startIndex = findFirstIndexTimeGte(startTime)
+  const endIndex = findLastIndexTimeLte(endTime)
+  
+  if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) return []
+  
+  const startOffset = offsetsArray[startIndex]
+  const endOffset = (endIndex + 1 < offsetsArray.length) ? offsetsArray[endIndex + 1] : tempFileSize
+  const length = endOffset - startOffset
+  
+  if (length <= 0) return []
+  
+  try {
+    const fd = fs.openSync(activeTempFilePath, 'r')
+    const buffer = Buffer.alloc(length)
+    fs.readSync(fd, buffer, 0, length, startOffset)
+    fs.closeSync(fd)
     
-    const packets: any[] = []
-    
-    r.on('line', (line) => {
+    const lines = buffer.toString('utf8').split('\n')
+    const results: any[] = []
+    for (const line of lines) {
+      if (!line.trim()) return results // stop early if buffer trailing spaces
       try {
         const obj = JSON.parse(line)
         if (obj.session_time !== undefined) {
-          if (obj.session_time >= lapInfo.startSessionTime && obj.session_time <= lapInfo.endSessionTime) {
-            packets.push(obj)
-          } else if (obj.session_time > lapInfo.endSessionTime) {
-            r.close() // Early exit!
-          }
+          results.push(obj)
         }
-      } catch(e) {}
-    })
-    
-    const finalize = () => {
-      // Build LapData
-      const telemetry = packets.filter(p => p.type === 'telemetry')
-      const motion = packets.filter(p => p.type === 'motion')
-      const statusHistory = packets.filter(p => p.type === 'status')
-      
-      const lapData = {
-        lapNum: lapInfo.lapNum,
-        startSessionTime: lapInfo.startSessionTime,
-        endSessionTime: lapInfo.endSessionTime,
-        telemetry,
-        motion,
-        statusHistory
-      }
-      
-      broadcastToWindows({ type: eventName, data: lapData })
-      
-      // Cleanup early exit
-      gz.destroy()
-      s.destroy()
-      resolve()
+      } catch (e) {}
     }
-    
-    r.on('close', finalize)
-    r.on('error', finalize)
-    gz.on('error', finalize)
-    s.on('error', finalize)
+    return results
+  } catch (err) {
+    console.error('[Player] Error reading telemetry block:', err)
+    return []
+  }
+}
+
+function extractAndBroadcastLap(lapInfo: ScanLap, eventName: string) {
+  const packets = readTelemetryBlock(lapInfo.startSessionTime, lapInfo.endSessionTime)
+  
+  const telemetry = packets.filter(p => p.type === 'telemetry')
+  const motion = packets.filter(p => p.type === 'motion')
+  const statusHistory = packets.filter(p => p.type === 'status')
+  
+  const lapData = {
+    lapNum: lapInfo.lapNum,
+    startSessionTime: lapInfo.startSessionTime,
+    endSessionTime: lapInfo.endSessionTime,
+    telemetry,
+    motion,
+    statusHistory
+  }
+  
+  broadcastToWindows({ type: eventName, data: lapData })
+}
+
+function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
+  const startTime = Math.min(targetTime - 120, currentLapStart)
+  const packets = readTelemetryBlock(startTime, targetTime)
+  
+  const telemetry = packets.filter(p => p.type === 'telemetry')
+  const motion = packets.filter(p => p.type === 'motion')
+  const status = packets.filter(p => p.type === 'status')
+  const damage = packets.filter(p => p.type === 'damage')
+  
+  broadcastToWindows({
+    type: 'playback_seek_flush',
+    telemetry,
+    motion,
+    status,
+    damage,
+    currentLapStart,
+    lapNum: currentLapNum
   })
 }
 
-async function extractSeekBuffer(filePath: string, targetTime: number, currentLapStart: number, currentLapNum: number): Promise<void> {
-  return new Promise((resolve) => {
-    const s = fs.createReadStream(filePath)
-    const gz = zlib.createGunzip()
-    const r = readline.createInterface({ input: s.pipe(gz) })
-    
-    // "collect the entire lap's data or the last 120 seconds - whichever is higher"
-    const startTime = Math.min(targetTime - 120, currentLapStart)
-    
-    let telemetry: any[] = []
-    let motion: any[] = []
-    let status: any[] = []
-    let damage: any[] = []
-    
-    r.on('line', (line) => {
-      try {
-        const obj = JSON.parse(line)
-        if (obj.session_time !== undefined) {
-          if (obj.session_time >= startTime && obj.session_time <= targetTime) {
-            if (obj.type === 'telemetry') telemetry.push(obj)
-            else if (obj.type === 'motion') motion.push(obj)
-            else if (obj.type === 'status') status.push(obj)
-            else if (obj.type === 'damage') damage.push(obj)
-          } else if (obj.session_time > targetTime) {
-            r.close()
-          }
-        }
-      } catch(e) {}
-    })
-    
-    const finalize = () => {
-      broadcastToWindows({
-        type: 'playback_seek_flush',
-        telemetry: telemetry,
-        motion: motion,
-        status: status,
-        damage: damage,
-        currentLapStart: currentLapStart,
-        lapNum: currentLapNum
-      })
-      gz.destroy()
-      s.destroy()
-      resolve()
-    }
-    
-    r.on('close', finalize)
-    r.on('error', finalize)
-    gz.on('error', finalize)
-    s.on('error', finalize)
-  })
-}
-
+// --------------------------------------------------------
+// CORE PLAYER APIS
 // --------------------------------------------------------
 
 export async function loadFile(filePath: string): Promise<boolean> {
@@ -246,120 +433,93 @@ export async function loadFile(filePath: string): Promise<boolean> {
   isScanning = true
   emitState()
   
-  // Pass 1: Comprehensive scan for laps and duration
+  const tempDir = os.tmpdir()
+  const tempPath = path.join(tempDir, `tracknrace_temp_${Date.now()}.tmp`)
+  activeTempFilePath = tempPath
+  
   try {
-    await scanFileForLaps(filePath)
+    // Phase 1: Stream decompression to OS temp directory
+    await decompressToTempFile(filePath, tempPath)
     
-    // Pass 2: Extract fastest lap
+    // Phase 2: Index and scan laps in a single pass
+    await scanAndIndexTempFile(tempPath)
+    
+    // Phase 3: Fast-broadcast fastest lap
     if (fastestLapInfo) {
-      await extractLapTelemetry(filePath, fastestLapInfo, 'playback_fastest_lap')
+      extractAndBroadcastLap(fastestLapInfo, 'playback_fastest_lap')
     }
   } catch (err) {
-    console.error('[Player] Failed to scan file:', err)
+    console.error('[Player] Failed to load telemetry file:', err)
     isScanning = false
+    cleanupTempFile()
     emitState()
     return false
   }
-
+  
   isScanning = false
-  
-  // Pass 3: Open stream and start reading into buffer
-  startStreamingFrom(startSessionTime) 
-  
-  // Wait briefly for initial buffer to fill
-  await new Promise(r => setTimeout(r, 200))
-  
+  playbackIndex = 0
   virtualTime = startSessionTime
   currentSessionTime = startSessionTime
+  
+  // Instantaneously reconstruction & broadcast the latest UI state
+  broadcastInitialState(0)
+  
   emitState()
   return true
 }
 
-function startStreamingFrom(targetSessionTime: number) {
-  if (rl) {
-    rl.close()
-  }
-  if (gunzip) gunzip.destroy()
-  if (stream) stream.destroy()
-  
-  lineBuffer = []
-  bufferIndex = 0
-  isStreamEOF = false
-  
-  stream = fs.createReadStream(activeFilePath!)
-  gunzip = zlib.createGunzip()
-  rl = readline.createInterface({ input: stream.pipe(gunzip) })
-  
-  let fastForwarding = targetSessionTime > startSessionTime
-  
-  rl.on('line', (line) => {
-    if (fastForwarding) {
-      try {
-        const obj = JSON.parse(line)
-        if (obj.session_time !== undefined && obj.session_time >= targetSessionTime) {
-          fastForwarding = false
-          lineBuffer.push(line)
-        }
-      } catch (e) {}
-    } else {
-      lineBuffer.push(line)
-      if (lineBuffer.length > bufferIndex + LINE_BUFFER_LIMIT) {
-        rl?.pause()
-      }
-    }
-  })
-  
-  rl.on('close', () => {
-    isStreamEOF = true
-  })
-  
-  const handleStreamError = (err: Error) => {
-    console.warn('[Player] Streaming error (likely truncated file):', err.message)
-    isStreamEOF = true
-  }
-  
-  rl.on('error', handleStreamError)
-  gunzip.on('error', handleStreamError)
-  stream.on('error', handleStreamError)
-}
-
 function playbackLoop() {
   if (!isPlaying) return
-
+  
   const now = performance.now()
   const deltaRealSec = (now - lastUpdateRealTime) / 1000
   lastUpdateRealTime = now
   
   virtualTime += deltaRealSec * speedMultiplier
-
-  while (bufferIndex < lineBuffer.length) {
-    const line = lineBuffer[bufferIndex]
-    try {
-      const row = JSON.parse(line)
-      if (row.session_time !== undefined) {
-        if (row.session_time > virtualTime) {
-          break // Packet is in the future, wait
-        }
-        currentSessionTime = row.session_time
-      }
-      if (row.magic !== 'TNRD_V1') {
-        broadcastToWindows(row)
-      }
-    } catch (e) {}
+  
+  if (playbackIndex < timesArray.length && activeTempFilePath) {
+    let endIndex = playbackIndex
+    while (endIndex < timesArray.length && timesArray[endIndex] <= virtualTime) {
+      endIndex++
+    }
     
-    bufferIndex++
+    if (endIndex > playbackIndex) {
+      const startOffset = offsetsArray[playbackIndex]
+      const endOffset = (endIndex < offsetsArray.length) ? offsetsArray[endIndex] : tempFileSize
+      const length = endOffset - startOffset
+      
+      if (length > 0) {
+        try {
+          const fd = fs.openSync(activeTempFilePath, 'r')
+          const buffer = Buffer.alloc(length)
+          fs.readSync(fd, buffer, 0, length, startOffset)
+          fs.closeSync(fd)
+          
+          const lines = buffer.toString('utf8').split('\n')
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const row = JSON.parse(line)
+              if (row.session_time !== undefined) {
+                currentSessionTime = row.session_time
+              }
+              if (row.magic !== 'TNRD_V1') {
+                broadcastToWindows(row)
+              }
+            } catch (e) {}
+          }
+        } catch (err) {
+          console.error('[Player] Playback block read error:', err)
+        }
+      }
+      playbackIndex = endIndex
+    }
   }
-
-  if (bufferIndex > LINE_BUFFER_LIMIT / 2 && rl) {
-    lineBuffer = lineBuffer.slice(bufferIndex)
-    bufferIndex = 0
-    rl.resume()
-  }
-
-  if (bufferIndex >= lineBuffer.length && isStreamEOF) {
+  
+  if (playbackIndex >= timesArray.length) {
     isPlaying = false
   }
-
+  
   emitState()
   
   if (isPlaying) {
@@ -368,7 +528,7 @@ function playbackLoop() {
 }
 
 export function play() {
-  if (!activeFilePath || isPlaying) return
+  if (!activeTempFilePath || isPlaying) return
   isPlaying = true
   lastUpdateRealTime = performance.now()
   playbackLoop()
@@ -381,25 +541,36 @@ export function pause() {
 }
 
 export function seek(percent: number) {
-  if (!activeFilePath) return
+  if (!activeTempFilePath || offsetsArray.length === 0) return
+  
   const targetTime = startSessionTime + (totalDurationS * percent)
   virtualTime = targetTime
   currentSessionTime = targetTime
-  startStreamingFrom(targetTime)
+  
+  // O(log N) lookup in TypedArray
+  const newIndex = findFirstIndexTimeGte(targetTime)
+  playbackIndex = newIndex !== -1 ? newIndex : offsetsArray.length
+  
+  // Instantaneously reconstruction & broadcast the latest UI state for this seek point
+  broadcastInitialState(playbackIndex)
+  
   emitState()
   
-  // Async fetch previous lap
+  // Broadcast comparisons asynchronously to keep UI seek completely fluid
   const prevLap = scannedLaps.slice().reverse().find(l => l.endSessionTime <= targetTime)
   if (prevLap) {
-    extractLapTelemetry(activeFilePath, prevLap, 'playback_previous_lap')
+    setImmediate(() => {
+      if (activeTempFilePath) extractAndBroadcastLap(prevLap, 'playback_previous_lap')
+    })
   }
   
   const currentLap = scannedLaps.find(l => targetTime >= l.startSessionTime && targetTime <= l.endSessionTime)
   const currentLapStart = currentLap ? currentLap.startSessionTime : targetTime
   const currentLapNum = currentLap ? currentLap.lapNum : 0
   
-  // Async fetch preceding history to perfectly fill the charts!
-  extractSeekBuffer(activeFilePath, targetTime, currentLapStart, currentLapNum)
+  setImmediate(() => {
+    if (activeTempFilePath) extractAndBroadcastSeek(targetTime, currentLapStart, currentLapNum)
+  })
 }
 
 export function setSpeed(mult: number) {
@@ -409,17 +580,15 @@ export function setSpeed(mult: number) {
 
 export function closePlayer() {
   pause()
-  if (rl) rl.close()
-  if (gunzip) gunzip.destroy()
-  if (stream) stream.destroy()
-  rl = null
-  gunzip = null
-  stream = null
-  lineBuffer = []
-  bufferIndex = 0
+  cleanupTempFile()
   activeFilePath = null
   scannedLaps = []
   fastestLapInfo = null
   isScanning = false
+  playbackIndex = 0
+  offsetsArray = new Float64Array(0)
+  timesArray = new Float32Array(0)
+  typesArray = new Uint8Array(0)
   emitState()
 }
+

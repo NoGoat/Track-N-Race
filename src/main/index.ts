@@ -221,6 +221,7 @@ app.whenReady().then(() => {
   }, 1500)
 
   app.on('will-quit', () => {
+    closePlayer()
     clearInterval(pollInterval)
   })
 
