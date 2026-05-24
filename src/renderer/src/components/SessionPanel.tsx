@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, memo } from 'react'
 import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type LucideIcon } from 'lucide-react'
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
 import TrackMap from './TrackMap'
@@ -158,12 +158,12 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function WeatherIcon({ id, size }: { id: number; size: number }) {
+const WeatherIcon = memo(function WeatherIcon({ id, size }: { id: number; size: number }) {
   const { icon: Ic, color } = WEATHER_ICONS[id] ?? WEATHER_ICONS[2]
   return <Ic size={size} strokeWidth={1.5} color={color} />
-}
+})
 
-function StatCard({ label, value, unit, accent }: { label: string; value: string; unit?: string; accent?: string }) {
+const StatCard = memo(function StatCard({ label, value, unit, accent }: { label: string; value: string; unit?: string; accent?: string }) {
   return (
     <div className="flex-1 flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
       <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)]">{label}</span>
@@ -175,7 +175,7 @@ function StatCard({ label, value, unit, accent }: { label: string; value: string
       </div>
     </div>
   )
-}
+})
 
 function ProximityWidget({ timing, participants }: {
   timing: TimingMsg; participants: ParticipantsMsg | null
@@ -281,7 +281,7 @@ interface Props {
   mapTimeout: number
 }
 
-export default function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
@@ -568,4 +568,5 @@ export default function SessionPanel({ session, raceEvents, timing, participants
       </>}
     </div>
   )
-}
+})
+export default SessionPanel

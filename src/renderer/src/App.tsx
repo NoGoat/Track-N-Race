@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import Select, { StylesConfig } from 'react-select'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
@@ -263,25 +263,25 @@ export default function App() {
   const [transientBanner, setTransientBanner] = useState<BannerItem | null>(null)
   const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL'>('default')
   const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
-  const coreLayout: CoreLayout = {
+  const coreLayout = useMemo((): CoreLayout => ({
     ...DEFAULT_CORE_LAYOUT,
     ...rawCoreLayout,
     statsCards:    { ...DEFAULT_CORE_LAYOUT.statsCards,    ...(rawCoreLayout?.statsCards    ?? {}) },
     thermalGraphs: { ...DEFAULT_CORE_LAYOUT.thermalGraphs, ...(rawCoreLayout?.thermalGraphs ?? {}) },
     thermalCards:  { ...DEFAULT_CORE_LAYOUT.thermalCards,  ...(rawCoreLayout?.thermalCards  ?? {}) },
     damageItems:   { ...DEFAULT_CORE_LAYOUT.damageItems,   ...(rawCoreLayout?.damageItems   ?? {}) },
-  }
+  }), [rawCoreLayout])
   const [inputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
   const [miscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
-  const powerLayout: PowerLayout = {
+  const powerLayout = useMemo((): PowerLayout => ({
     statsCards: { ...DEFAULT_POWER_LAYOUT.statsCards, ...(rawPowerLayout?.statsCards ?? {}) },
     charts:     { ...DEFAULT_POWER_LAYOUT.charts,     ...(rawPowerLayout?.charts     ?? {}) },
-  }
+  }), [rawPowerLayout])
   const [rawTyresLayout, setTyresLayout] = useAppConfig<TyresLayout>('tyresLayout', DEFAULT_TYRES_LAYOUT)
-  const tyresLayout: TyresLayout = {
+  const tyresLayout = useMemo((): TyresLayout => ({
     charts: { ...DEFAULT_TYRES_LAYOUT.charts, ...(rawTyresLayout?.charts ?? {}) },
-  }
+  }), [rawTyresLayout])
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [driversMode, setDriversMode]   = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {

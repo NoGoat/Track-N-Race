@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { StatusRow } from '../types'
 
 function Card({
@@ -30,7 +31,7 @@ interface Props {
   isDark: boolean
 }
 
-export default function PowerStatsBar({ status, visibleCards, isDark }: Props) {
+const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark }: Props) {
   const cIce  = isDark ? '#5794F2' : '#0B57D0'
   const cMguk = isDark ? '#FADE2A' : '#B06000'
   const cFuel = isDark ? '#F0A500' : '#C26400'
@@ -63,4 +64,5 @@ export default function PowerStatsBar({ status, visibleCards, isDark }: Props) {
       {visibleCards.fuel       && <Card label="Fuel"        value={noData ? '—' : (status?.fuel_kg.toFixed(1) ?? '—')} unit={noData ? undefined : 'kg'} color={noData ? undefined : cFuel} />}
     </div>
   )
-}
+})
+export default PowerStatsBar

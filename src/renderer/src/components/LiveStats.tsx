@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { TelemetryRow, StatusRow, LapRow, DamageRow } from '../types'
 
 // Actual compound code → display name + color
@@ -77,7 +78,7 @@ function Card({
   )
 }
 
-export default function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark }: Props) {
+const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark }: Props) {
   const green  = isDark ? '#37872D' : '#137333'
   const red    = '#C4162A'
   const blue   = isDark ? '#5794F2' : '#0B57D0'
@@ -147,4 +148,5 @@ export default function LiveStats({ latest, status, lap, damage, isConnected, vi
       {visibleCards.tyre && <Card label="Tyre" value={tyreName ?? '—'} color={tyreColor} sub={status ? `${status.tyre_age_laps}L · ${FUEL_MIX[status.fuel_mix] ?? ''}` : undefined} />}
     </div>
   )
-}
+})
+export default LiveStats

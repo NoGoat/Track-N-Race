@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { TelemetryRow, DamageRow } from '../types'
 
 interface VisibleItems {
@@ -33,7 +34,7 @@ function DamageCard({ label, v, connected, isDark }: { label: string; v: number;
   )
 }
 
-export default function DamagePanel({ latest, damage, visibleItems, twoRow, isDark }: Props) {
+const DamagePanel = memo(function DamagePanel({ latest, damage, visibleItems, twoRow, isDark }: Props) {
   const allItems = [
     { key: 'tyreDmgFl'  as keyof VisibleItems, label: 'Tyre FL',   v: damage?.tyre_dmg_fl    ?? 0 },
     { key: 'brakeDmgFl' as keyof VisibleItems, label: 'Brake FL',  v: damage?.brake_dmg_fl   ?? 0 },
@@ -76,4 +77,5 @@ export default function DamagePanel({ latest, damage, visibleItems, twoRow, isDa
       {allItems.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} />)}
     </div>
   )
-}
+})
+export default DamagePanel

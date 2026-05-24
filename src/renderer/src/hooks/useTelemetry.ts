@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { flushSync } from 'react-dom'
 import type { TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg, LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 
@@ -280,31 +280,33 @@ export function useTelemetry(seconds: number): TelemetryState {
   const prevBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum - 1) : null
   const fastBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === fastestLapNum) : null
 
+  const telemetry        = useMemo(() => telBuf.filter(d => d.session_time > cutoff),           [telBuf, cutoff])
+  const motion           = useMemo(() => motBuf.filter(d => d.session_time > cutoff),           [motBuf, cutoff])
+  const motionEx         = useMemo(() => motExBuf.filter(d => d.session_time > cutoff),         [motExBuf, cutoff])
+  const statusHistory    = useMemo(() => stsBuf.filter(d => d.session_time > cutoff),           [stsBuf, cutoff])
+  const damageHistory    = useMemo(() => dmgBuf.filter(d => d.session_time > cutoff),           [dmgBuf, cutoff])
+  const latest           = useMemo(() => telBuf.length > 0 ? telBuf[telBuf.length - 1] : null, [telBuf])
+  const lapHistory       = useMemo(() => isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf, [isPlayback, prevBlock, lapHistoryBuf])
+  const resolvedFastLap  = useMemo(() => isPlayback && fastBlock ? fastBlock : fastestLap,      [isPlayback, fastBlock, fastestLap])
+  const lapTelemetry     = useMemo(
+    () => isPlayback && curBlock
+      ? curBlock.telemetry.filter((p: any) => p.session_time <= latestSessionTime)
+      : telBuf.filter(d => d.session_time >= lapStartSessionTime),
+    [isPlayback, curBlock, telBuf, lapStartSessionTime, latestSessionTime]
+  )
+  const lapStatusHistory = useMemo(
+    () => isPlayback && curBlock
+      ? curBlock.statusHistory.filter((p: any) => p.session_time <= latestSessionTime)
+      : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
+    [isPlayback, curBlock, stsBuf, lapStartSessionTime, latestSessionTime]
+  )
+
   return {
-    telemetry:       telBuf.filter(d => d.session_time > cutoff),
-    motion:          motBuf.filter(d => d.session_time > cutoff),
-    motionEx:        motExBuf.filter(d => d.session_time > cutoff),
-    status,
-    statusHistory:   stsBuf.filter(d => d.session_time > cutoff),
-    damage,
-    damageHistory:   dmgBuf.filter(d => d.session_time > cutoff),
-    lap,
-    timing,
-    participants,
-    allStatus,
-    fastestLapCarIdx,
-    raceEvent,
-    raceEvents,
-    session,
-    tyreSets,
-    latest:          telBuf.length > 0 ? telBuf[telBuf.length - 1] : null,
-    lapHistory:      isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf,
-    fastestLap:      isPlayback && fastBlock ? fastBlock : fastestLap,
-    lapTelemetry:    isPlayback && curBlock ? curBlock.telemetry.filter((p: any) => p.session_time <= latestSessionTime) : telBuf.filter(d => d.session_time >= lapStartSessionTime),
-    lapStatusHistory: isPlayback && curBlock ? curBlock.statusHistory.filter((p: any) => p.session_time <= latestSessionTime) : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
-    isConnected:     true,
-    error:           null,
-    protocolStatus,
-    protocolWarning,
+    telemetry, motion, motionEx,
+    status, statusHistory, damage, damageHistory,
+    lap, timing, participants, allStatus,
+    fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets,
+    latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
+    isConnected: true, error: null, protocolStatus, protocolWarning,
   }
 }

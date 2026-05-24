@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import { useSize } from '../hooks/useSize'
@@ -98,7 +99,7 @@ export function WheelCard({
 }
 
 
-export default function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark }: Props) {
+const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark }: Props) {
   const { ref: cardsRef, height: cardsHeight } = useSize()
   const compact = cardsHeight > 0 && cardsHeight < 200
 
@@ -126,4 +127,5 @@ export default function ThermalPanel({ latest, damage, telemetry, damageHistory,
       )}
     </div>
   )
-}
+})
+export default ThermalPanel

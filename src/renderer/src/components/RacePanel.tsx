@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, memo } from 'react'
 import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
 
 interface Props {
@@ -53,7 +53,7 @@ function Panel({ children, className = '' }: { children: React.ReactNode; classN
   )
 }
 
-export default function RacePanel({ lap, status, selectedCar, selectedDriver, selectedCarStatus, playerIdx, isDark }: Props) {
+const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDriver, selectedCarStatus, playerIdx, isDark }: Props) {
   // Hooks must come before any early return
   const prevLapTsRef    = useRef<string | null>(null)
   const prevLapRef      = useRef<LapRow | null>(null)
@@ -417,4 +417,5 @@ export default function RacePanel({ lap, status, selectedCar, selectedDriver, se
 
     </div>
   )
-}
+})
+export default RacePanel
