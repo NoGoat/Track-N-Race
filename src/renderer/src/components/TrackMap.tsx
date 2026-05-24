@@ -565,10 +565,9 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
               const followScale = baseLayout.scale * FOLLOW_ZOOM
               const LERP = 0.12
               if (!camRef.current) {
-                camRef.current = { scale: followScale, ox: 0, oy: 0 }
-              } else {
-                camRef.current.scale += (followScale - camRef.current.scale) * LERP
+                camRef.current = { scale: baseLayout.scale, ox: 0, oy: 0 }
               }
+              camRef.current.scale += (followScale - camRef.current.scale) * LERP
               // Snap pan so the driver is always exactly centered — no lag on the dot
               camRef.current.ox = width  / 2 - rx * camRef.current.scale
               camRef.current.oy = height / 2 - ry * camRef.current.scale
