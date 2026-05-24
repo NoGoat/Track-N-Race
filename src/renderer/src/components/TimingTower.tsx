@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useCallback, memo } from 'react'
 import type { TimingMsg, ParticipantsMsg, TimingCar, DriverInfo, AllStatusMsg } from '../types'
 
 interface Props {
@@ -62,7 +62,7 @@ function fmtGap(gap_ms: number, position: number): string {
   return `+${m}:${s}`
 }
 
-function PosCell({ pos, isDark }: { pos: number; isDark: boolean }) {
+const PosCell = memo(function PosCell({ pos, isDark }: { pos: number; isDark: boolean }) {
   const color = isDark
     ? (pos === 1 ? '#FFD700' :
        pos === 2 ? '#C0C0C0' :
@@ -77,15 +77,26 @@ function PosCell({ pos, isDark }: { pos: number; isDark: boolean }) {
       P{pos}
     </td>
   )
-}
+})
+PosCell.displayName = 'PosCell'
 
 interface RowProps {
-  car: TimingCar
+  carIdx: number
+  position: number
+  lapNum: number
+  lastLapMs: number
+  gapMs: number
+  pitStatus: number
+  resultStatus: number
+  lapInvalid: boolean
+  penaltiesS: number
+  numDtPens: number
+  numSgPens: number
   driver: DriverInfo | undefined
   isPlayer: boolean
   isSelected: boolean
   isFastest: boolean
-  onSelect: () => void
+  onSelect: (idx: number) => void
   s1: number
   s2: number
   s3: number
@@ -94,18 +105,45 @@ interface RowProps {
   isDark: boolean
 }
 
-function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, s2, s3, tyreLabel, tyreColor, isDark }: RowProps) {
+const TowerRow = memo(function TowerRow({
+  carIdx,
+  position,
+  lapNum,
+  lastLapMs,
+  gapMs,
+  pitStatus,
+  resultStatus,
+  lapInvalid,
+  penaltiesS,
+  numDtPens,
+  numSgPens,
+  driver,
+  isPlayer,
+  isSelected,
+  isFastest,
+  onSelect,
+  s1,
+  s2,
+  s3,
+  tyreLabel,
+  tyreColor,
+  isDark
+}: RowProps) {
   const teamColor = driver?.livery_color ?? '#8e8e8e'
-  const driverCode = driver ? abbrev(driver.name) : `C${car.idx}`
+  const driverCode = driver ? abbrev(driver.name) : `C${carIdx}`
   const raceNum = driver?.race_number ?? ''
-  const retired = RESULT_LABELS[car.result_status]
-  const isInactive = car.result_status <= 1 || car.position === 0
+  const retired = RESULT_LABELS[resultStatus]
+  const isInactive = resultStatus <= 1 || position === 0
+
+  const handleClick = useCallback(() => {
+    onSelect(carIdx)
+  }, [onSelect, carIdx])
 
   if (isInactive) return null
 
   return (
     <tr
-      onClick={onSelect}
+      onClick={handleClick}
       className={`border-b border-[var(--border)] transition-colors cursor-pointer ${
         isSelected
           ? 'bg-[var(--bg-selected)] ring-1 ring-inset ring-[var(--border-focus)]/50'
@@ -114,7 +152,7 @@ function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, 
           : 'hover:bg-[var(--bg-hover)]'
       }`}
     >
-      <PosCell pos={car.position} isDark={isDark} />
+      <PosCell pos={position} isDark={isDark} />
 
       {/* Driver */}
       <td className="px-3 py-1">
@@ -137,19 +175,19 @@ function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, 
 
       {/* Lap */}
       <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-secondary)] w-12">
-        {car.lap_num}
+        {lapNum}
       </td>
 
       {/* Last lap */}
       <td className="px-3 py-1 text-sm font-bold tabular-nums text-[var(--text-primary)] w-28">
-        {fmtMs(car.last_lap_ms)}
+        {fmtMs(lastLapMs)}
       </td>
 
       {/* Gap */}
       <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-secondary)] w-24">
         {retired
           ? <span className="text-[#C4162A] font-bold text-xs">{retired}</span>
-          : fmtGap(car.gap_ms, car.position)
+          : fmtGap(gapMs, position)
         }
       </td>
 
@@ -171,7 +209,7 @@ function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, 
       {/* Badges */}
       <td className="px-3 py-1">
         <div className="flex gap-1 flex-wrap">
-          {car.pit_status > 0 && (
+          {pitStatus > 0 && (
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded"
               style={{
@@ -180,15 +218,15 @@ function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, 
                 border: `1px solid ${isDark ? 'var(--compound-medium)' : 'rgba(183, 149, 11, 0.4)'}`
               }}
             >
-              {car.pit_status === 1 ? 'PIT' : 'PIT LANE'}
+              {pitStatus === 1 ? 'PIT' : 'PIT LANE'}
             </span>
           )}
-          {car.lap_invalid && (
+          {lapInvalid && (
             <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded">
               INV
             </span>
           )}
-          {car.penalties_s > 0 && (
+          {penaltiesS > 0 && (
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded border"
               style={{
@@ -197,26 +235,27 @@ function TowerRow({ car, driver, isPlayer, isSelected, isFastest, onSelect, s1, 
                 backgroundColor: isDark ? 'rgba(196, 125, 14, 0.1)' : 'rgba(176, 96, 0, 0.1)'
               }}
             >
-              +{car.penalties_s}s
+              +{penaltiesS}s
             </span>
           )}
-          {car.num_dt_pens > 0 && (
+          {numDtPens > 0 && (
             <span className="text-[9px] font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] px-1.5 py-0.5 rounded">
-              {car.num_dt_pens > 1 ? `${car.num_dt_pens}× ` : ''}DT
+              {numDtPens > 1 ? `${numDtPens}× ` : ''}DT
             </span>
           )}
-          {car.num_sg_pens > 0 && (
+          {numSgPens > 0 && (
             <span className="text-[9px] font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] px-1.5 py-0.5 rounded">
-              {car.num_sg_pens > 1 ? `${car.num_sg_pens}× ` : ''}SG
+              {numSgPens > 1 ? `${numSgPens}× ` : ''}SG
             </span>
           )}
         </div>
       </td>
     </tr>
   )
-}
+})
+TowerRow.displayName = 'TowerRow'
 
-export default function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark }: Props) {
+const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark }: Props) {
   // Per-car tracking refs for freeze + S3 computation
   const prevCarsRef     = useRef<Map<number, TimingCar>>(new Map())
   const frozenRef       = useRef<Map<number, { s1: number; s2: number; s3: number; exp: number }>>(new Map())
@@ -343,12 +382,22 @@ export default function TimingTower({ timing, participants, allStatus, fastestLa
             {rows.map(({ car, driver, isPlayer, isFastest, s1, s2, s3, tyreLabel, tyreColor }) => (
               <TowerRow
                 key={car.idx}
-                car={car}
+                carIdx={car.idx}
+                position={car.position}
+                lapNum={car.lap_num}
+                lastLapMs={car.last_lap_ms}
+                gapMs={car.gap_ms}
+                pitStatus={car.pit_status}
+                resultStatus={car.result_status}
+                lapInvalid={car.lap_invalid}
+                penaltiesS={car.penalties_s}
+                numDtPens={car.num_dt_pens}
+                numSgPens={car.num_sg_pens}
                 driver={driver}
                 isPlayer={isPlayer}
                 isSelected={car.idx === selectedIdx}
                 isFastest={isFastest}
-                onSelect={() => onSelectDriver(car.idx)}
+                onSelect={onSelectDriver}
                 s1={s1}
                 s2={s2}
                 s3={s3}
@@ -362,4 +411,6 @@ export default function TimingTower({ timing, participants, allStatus, fastestLa
       </div>
     </div>
   )
-}
+})
+
+export default TimingTower

@@ -526,6 +526,137 @@ const WindowControls = memo(({ isFullscreen, isMaximized }: WindowControlsProps)
 })
 WindowControls.displayName = 'WindowControls'
 
+interface PlaybackControlsBarProps {
+  isPlaying: boolean
+  speed: number
+  onSeekBackward: () => void
+  onTogglePlay: () => void
+  onSeekForward: () => void
+  selectStyles: any
+}
+
+const PlaybackControlsBar = memo(function PlaybackControlsBar({
+  isPlaying,
+  speed,
+  onSeekBackward,
+  onTogglePlay,
+  onSeekForward,
+  selectStyles
+}: PlaybackControlsBarProps) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={onSeekBackward}
+        className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+      >
+        <ChevronLeft size={18} />
+      </button>
+      <button
+        onClick={onTogglePlay}
+        className="w-10 h-10 flex items-center justify-center rounded-full bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] transition-colors shadow-lg shadow-[var(--border-focus)]/20"
+      >
+        {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+      </button>
+      <button
+        onClick={onSeekForward}
+        className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+      >
+        <ChevronRight size={18} />
+      </button>
+      <div className="w-[4.5rem]">
+        <Select
+          value={{ value: speed, label: `${speed}x` }}
+          onChange={(option) => {
+            if (option) window.playerBridge.setSpeed(option.value)
+          }}
+          options={[
+            { value: 0.25, label: '0.25x' },
+            { value: 0.5, label: '0.5x' },
+            { value: 1, label: '1x' },
+            { value: 2, label: '2x' },
+            { value: 4, label: '4x' },
+            { value: 8, label: '8x' },
+            { value: 16, label: '16x' }
+          ]}
+          styles={selectStyles}
+          menuPlacement="top"
+          isSearchable={false}
+        />
+      </div>
+    </div>
+  )
+})
+PlaybackControlsBar.displayName = 'PlaybackControlsBar'
+
+interface PlaybackProgressTrackerProps {
+  currentTime: number
+  progressPct: number
+  totalTime: number
+}
+
+const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
+  currentTime,
+  progressPct,
+  totalTime
+}: PlaybackProgressTrackerProps) {
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragProgress, setDragProgress] = useState(0)
+
+  const startSessionTime = currentTime - (progressPct * totalTime)
+  const progressToUse = isDragging ? dragProgress : progressPct
+  const displayTime = isDragging
+    ? (startSessionTime + dragProgress * totalTime)
+    : currentTime
+
+  const handleMouseDown = useCallback(() => {
+    setIsDragging(true)
+    setDragProgress(progressPct)
+  }, [progressPct])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  const handleTouchStart = useCallback(() => {
+    setIsDragging(true)
+    setDragProgress(progressPct)
+  }, [progressPct])
+
+  const handleTouchEnd = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value)
+    setDragProgress(val)
+    window.playerBridge.seek(val)
+  }, [])
+
+  return (
+    <div className="flex-1 flex items-center gap-4">
+      <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(displayTime)}</span>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.001"
+        value={progressToUse}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onChange={handleChange}
+        className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2] [&::-webkit-slider-thumb]:cursor-pointer"
+        style={{
+          background: `linear-gradient(to right, #5794F2 ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
+        }}
+      />
+      <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(totalTime)}</span>
+    </div>
+  )
+})
+PlaybackProgressTracker.displayName = 'PlaybackProgressTracker'
+
 export default function App() {
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
   useEffect(() => {
@@ -575,8 +706,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [headerVisible, setHeaderVisible] = useState(false)
   const [playbackState, setPlaybackState] = useState<any>(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragProgress, setDragProgress] = useState(0)
+  const playbackStateRef = useRef<any>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
 
   useEffect(() => {
@@ -589,7 +719,35 @@ export default function App() {
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
   useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
   useEffect(() => {
-    return window.playerBridge.onStateChange((st) => setPlaybackState(st))
+    return window.playerBridge.onStateChange((st) => {
+      playbackStateRef.current = st
+      setPlaybackState(st)
+    })
+  }, [])
+
+  const handleSeekBackward = useCallback(() => {
+    const st = playbackStateRef.current
+    if (st) {
+      window.playerBridge.seek(Math.max(0, st.currentTime - 5) / st.totalTime)
+    }
+  }, [])
+
+  const handleSeekForward = useCallback(() => {
+    const st = playbackStateRef.current
+    if (st) {
+      window.playerBridge.seek(Math.min(st.totalTime, st.currentTime + 5) / st.totalTime)
+    }
+  }, [])
+
+  const handleTogglePlay = useCallback(() => {
+    const st = playbackStateRef.current
+    if (st) {
+      if (st.isPlaying) {
+        window.playerBridge.pause()
+      } else {
+        window.playerBridge.play()
+      }
+    }
   }, [])
 
   const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
@@ -681,6 +839,10 @@ export default function App() {
   const handleSelectPlaybackFile = useCallback(async () => {
     const file = await window.fsBridge.selectTNRDFile()
     if (file) window.playerBridge.load(file)
+  }, [])
+
+  const handleSelectDriver = useCallback((idx: number) => {
+    setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
@@ -1237,7 +1399,7 @@ export default function App() {
               )}
               {visibleDamageCount > 0 && (
                 <div className="shrink-0">
-                  <DamagePanel latest={latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={theme === 'dark'} />
+                  <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={theme === 'dark'} />
                 </div>
               )}
             </div>
@@ -1254,7 +1416,7 @@ export default function App() {
                   allStatus={allStatus}
                   fastestLapCarIdx={fastestLapCarIdx}
                   selectedIdx={selectedIdx}
-                  onSelectDriver={(idx) => setSelectedIdx(prev => prev === idx ? null : idx)}
+                  onSelectDriver={handleSelectDriver}
                   isDark={theme === 'dark'}
                 />
               </div>
@@ -1349,83 +1511,19 @@ export default function App() {
       {/* Playback Controls Bar */}
       {playbackState && playbackState.filename && (
         <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center px-6 gap-6 z-40 select-none">
-          <div className="flex items-center gap-3">
-            <button onClick={() => window.playerBridge.seek(Math.max(0, playbackState.currentTime - 5) / playbackState.totalTime)} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-              <ChevronLeft size={18} />
-            </button>
-            <button onClick={() => playbackState.isPlaying ? window.playerBridge.pause() : window.playerBridge.play()} className="w-10 h-10 flex items-center justify-center rounded-full bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] transition-colors shadow-lg shadow-[var(--border-focus)]/20">
-              {playbackState.isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <button onClick={() => window.playerBridge.seek(Math.min(playbackState.totalTime, playbackState.currentTime + 5) / playbackState.totalTime)} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-              <ChevronRight size={18} />
-            </button>
-            <div className="w-[4.5rem]">
-              <Select
-                value={{ value: playbackState.speed, label: `${playbackState.speed}x` }}
-                onChange={(option) => {
-                  if (option) window.playerBridge.setSpeed(option.value)
-                }}
-                options={[
-                  { value: 0.25, label: '0.25x' },
-                  { value: 0.5, label: '0.5x' },
-                  { value: 1, label: '1x' },
-                  { value: 2, label: '2x' },
-                  { value: 4, label: '4x' },
-                  { value: 8, label: '8x' },
-                  { value: 16, label: '16x' }
-                ]}
-                styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
-                menuPlacement="top"
-                isSearchable={false}
-              />
-            </div>
-          </div>
-          
-          <div className="flex-1 flex items-center gap-4">
-            {(() => {
-              const startSessionTime = playbackState.currentTime - (playbackState.progressPct * playbackState.totalTime)
-              const progressToUse = isDragging ? dragProgress : playbackState.progressPct
-              const displayTime = isDragging 
-                ? (startSessionTime + dragProgress * playbackState.totalTime) 
-                : playbackState.currentTime
-              return (
-                <>
-                  <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(displayTime)}</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.001"
-                    value={progressToUse}
-                    onMouseDown={() => {
-                      setIsDragging(true)
-                      setDragProgress(playbackState.progressPct)
-                    }}
-                    onMouseUp={() => {
-                      setIsDragging(false)
-                    }}
-                    onTouchStart={() => {
-                      setIsDragging(true)
-                      setDragProgress(playbackState.progressPct)
-                    }}
-                    onTouchEnd={() => {
-                      setIsDragging(false)
-                    }}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value)
-                      setDragProgress(val)
-                      window.playerBridge.seek(val)
-                    }}
-                    className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2] [&::-webkit-slider-thumb]:cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #5794F2 ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
-                    }}
-                  />
-                  <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
-                </>
-              )
-            })()}
-          </div>
+          <PlaybackControlsBar
+            isPlaying={playbackState.isPlaying}
+            speed={playbackState.speed}
+            onSeekBackward={handleSeekBackward}
+            onTogglePlay={handleTogglePlay}
+            onSeekForward={handleSeekForward}
+            selectStyles={selectStyles}
+          />
+          <PlaybackProgressTracker
+            currentTime={playbackState.currentTime}
+            progressPct={playbackState.progressPct}
+            totalTime={playbackState.totalTime}
+          />
         </div>
       )}
 

@@ -9,7 +9,7 @@ interface VisibleItems {
 }
 
 interface Props {
-  latest: TelemetryRow | null
+  connected: boolean
   damage: DamageRow | null
   visibleItems: VisibleItems
   twoRow?: boolean
@@ -34,7 +34,7 @@ function DamageCard({ label, v, connected, isDark }: { label: string; v: number;
   )
 }
 
-const DamagePanel = memo(function DamagePanel({ latest, damage, visibleItems, twoRow, isDark }: Props) {
+const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems, twoRow, isDark }: Props) {
   const allItems = [
     { key: 'tyreDmgFl'  as keyof VisibleItems, label: 'Tyre FL',   v: damage?.tyre_dmg_fl    ?? 0 },
     { key: 'brakeDmgFl' as keyof VisibleItems, label: 'Brake FL',  v: damage?.brake_dmg_fl   ?? 0 },
@@ -53,8 +53,6 @@ const DamagePanel = memo(function DamagePanel({ latest, damage, visibleItems, tw
     { key: 'gearbox'    as keyof VisibleItems, label: 'Gearbox',   v: damage?.gearbox_damage  ?? 0 },
     { key: 'engine'     as keyof VisibleItems, label: 'Engine',    v: damage?.engine_damage   ?? 0 },
   ].filter(item => visibleItems[item.key])
-
-  const connected = !!latest
 
   if (twoRow) {
     const split = Math.ceil(allItems.length / 2)
