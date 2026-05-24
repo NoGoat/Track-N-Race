@@ -371,6 +371,7 @@ declare global {
       setSpeed: (mult: number) => void
       close: () => void
       onStateChange: (cb: (state: any) => void) => () => void
+      onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
     }
   }
 }

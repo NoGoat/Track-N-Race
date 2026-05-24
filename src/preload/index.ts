@@ -65,6 +65,11 @@ const playerBridge = {
     const handler = (_e: any, state: any) => cb(state)
     ipcRenderer.on('playback_state', handler)
     return () => { ipcRenderer.removeListener('playback_state', handler) }
+  },
+  onRequestOpenConfirm: (cb: (filePath: string) => void) => {
+    const handler = (_e: any, filePath: string) => cb(filePath)
+    ipcRenderer.on('player:request-open-confirm', handler)
+    return () => { ipcRenderer.removeListener('player:request-open-confirm', handler) }
   }
 }
 

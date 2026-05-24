@@ -22,5 +22,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zlib)
 
-add_executable(native_recorder WIN32 src/main.cpp)
+add_executable(native_recorder WIN32
+    src/main.cpp
+    src/protocol.cpp
+    src/f1_24.cpp
+    src/f1_25.cpp
+    resources.rc
+)
+set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic Ws2_32 Comdlg32)
+
+
+

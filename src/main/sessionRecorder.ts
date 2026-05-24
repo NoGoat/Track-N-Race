@@ -9,6 +9,8 @@ const store = new Store()
 
 let activeFileStream: fs.WriteStream | null = null
 let activeGzipStream: zlib.Gzip | null = null
+let activeFilePath: string | null = null
+let lastSessionTime: number = -1
 
 let currentTrackId: number | null = null
 let currentSessionType: number | null = null
@@ -24,6 +26,7 @@ function getDedupeString(row: any): string {
   delete clone.session_time
   return JSON.stringify(clone)
 }
+
 
 export function initSessionRecorder() {
   store.onDidChange('logging.enabled', (newVal) => {
@@ -50,10 +53,13 @@ function closeActiveStream() {
   if (activeFileStream) {
     activeFileStream = null
   }
+  activeFilePath = null
   currentTrackId = null
   currentSessionType = null
+  lastSessionTime = -1
   dedupeCache.clear()
 }
+
 
 function startNewStream(trackId: number, sessionType: number) {
   closeActiveStream()

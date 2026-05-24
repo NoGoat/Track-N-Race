@@ -46,42 +46,21 @@ async function openTelemetryFile(filePath: string): Promise<boolean> {
   return success
 }
 
-async function promptAndOpenTelemetryFile(win: BrowserWindow, filePath: string) {
-  if (win && !win.isDestroyed()) {
-    if (win.isMinimized()) win.restore()
-    win.focus()
-
-    const { response } = await dialog.showMessageBox(win, {
-      type: 'question',
-      buttons: ['Yes', 'No'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Open Session File',
-      message: 'Are you sure you want to open this file?',
-      detail: 'Opening it will stop the event bridge and if you have an session right now with the game, it will be closed.',
-      noLink: true
-    })
-
-    if (response === 0) {
-      await openTelemetryFile(filePath)
-    }
-  }
-}
-
 // Single Instance Lock
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
+  process.exit(0) // Instantly kill the secondary process to prevent the second window flash!
 } else {
   app.on('second-instance', (_event, commandLine) => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+      
       const filePath = getFilePathFromArgs(commandLine)
       if (filePath) {
-        promptAndOpenTelemetryFile(win, filePath)
-      } else {
-        if (win.isMinimized()) win.restore()
-        win.focus()
+        win.webContents.send('player:request-open-confirm', filePath)
       }
     }
   })
@@ -93,7 +72,9 @@ app.on('open-file', (event, filePath) => {
   if (app.isReady()) {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
-      promptAndOpenTelemetryFile(win, filePath)
+      if (win.isMinimized()) win.restore()
+      win.focus()
+      win.webContents.send('player:request-open-confirm', filePath)
     } else {
       openTelemetryFile(filePath)
     }
