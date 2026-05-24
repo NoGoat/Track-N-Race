@@ -1,8 +1,56 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
+import Select, { type StylesConfig, type SingleValue } from 'react-select'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import type { CarPosition, ParticipantsMsg } from '../types'
+
+const FOLLOW_ZOOM = 4
+
+type DriverOption = { value: number; label: string }
+
+function buildSelectStyles(isDark: boolean): StylesConfig<DriverOption> {
+  const bg          = isDark ? '#1a1f2e' : '#ffffff'
+  const text        = isDark ? '#e0e0e0' : '#111827'
+  const muted       = isDark ? '#6b7280' : '#9ca3af'
+  const border      = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)'
+  const hoverBg     = isDark ? 'rgba(255,255,255,0.08)' : '#f3f4f6'
+  const selectedBg  = '#0090D0'
+  return {
+    control: (base, state) => ({
+      ...base,
+      background: bg,
+      borderColor: state.isFocused ? selectedBg : border,
+      boxShadow: state.isFocused ? `0 0 0 1px ${selectedBg}` : 'none',
+      minHeight: 28,
+      fontSize: 11,
+      cursor: 'pointer',
+      '&:hover': { borderColor: selectedBg },
+    }),
+    menu: (base) => ({
+      ...base,
+      background: bg,
+      border: `1px solid ${border}`,
+      boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+      zIndex: 9999,
+    }),
+    option: (base, state) => ({
+      ...base,
+      background: state.isSelected ? selectedBg : state.isFocused ? hoverBg : 'transparent',
+      color: state.isSelected ? '#fff' : text,
+      fontSize: 11,
+      padding: '4px 8px',
+      cursor: 'pointer',
+    }),
+    singleValue:       (base) => ({ ...base, color: text,  fontSize: 11 }),
+    placeholder:       (base) => ({ ...base, color: muted, fontSize: 11 }),
+    input:             (base) => ({ ...base, color: text,  fontSize: 11 }),
+    indicatorSeparator: ()   => ({ display: 'none' }),
+    dropdownIndicator: (base) => ({ ...base, padding: '0 4px', color: muted }),
+    clearIndicator:    (base) => ({ ...base, padding: '0 4px', color: muted }),
+    valueContainer:    (base) => ({ ...base, padding: '0 6px' }),
+  }
+}
 
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
 const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']
@@ -347,9 +395,10 @@ function renderFrame(
   isDark: boolean,
   sectorColors: boolean,
   driversMode: 'dots' | 'both' | 'labels',
+  layout: { scale: number; ox: number; oy: number },
 ) {
   ctx.clearRect(0, 0, cw, ch)
-  const { scale, ox, oy } = buildLayout(prep, cw, ch)
+  const { scale, ox, oy } = layout
 
   const trackColor = isDark ? '#ffffff' : '#000000'
   const colors = isDark ? SECTOR_COLORS_DARK : SECTOR_COLORS_LIGHT
@@ -412,6 +461,11 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const isDarkRef         = useRef<boolean>(isDark)
   const sectorColorsRef   = useRef<boolean>(sectorColors)
   const driversModeRef     = useRef<'dots' | 'both' | 'labels'>(driversMode)
+
+  const [selectedDriverIdx, setSelectedDriverIdx] = useState<number | null>(null)
+  const selectedDriverIdxRef = useRef<number | null>(null)
+  const camRef = useRef<{ scale: number; ox: number; oy: number } | null>(null)
+  selectedDriverIdxRef.current = selectedDriverIdx
 
   const map = trackId != null ? TRACK_MAPS[trackId] ?? null : null
 
@@ -497,7 +551,44 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         const ctx = canvas.getContext('2d')
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current)
+
+          const baseLayout = buildLayout(prep, width, height)
+          let layout = baseLayout
+
+          const followIdx = selectedDriverIdxRef.current
+          const cars = carsRef.current
+          if (followIdx !== null && cars) {
+            const car = cars.find(c => c.idx === followIdx)
+            if (car && (car.x !== 0 || car.z !== 0)) {
+              const [vx, vy] = rawToViewBox(car.x, car.z, map.transform)
+              const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
+              const followScale = baseLayout.scale * FOLLOW_ZOOM
+              const LERP = 0.12
+              if (!camRef.current) {
+                camRef.current = { scale: followScale, ox: 0, oy: 0 }
+              } else {
+                camRef.current.scale += (followScale - camRef.current.scale) * LERP
+              }
+              // Snap pan so the driver is always exactly centered — no lag on the dot
+              camRef.current.ox = width  / 2 - rx * camRef.current.scale
+              camRef.current.oy = height / 2 - ry * camRef.current.scale
+              layout = camRef.current
+            }
+          } else if (camRef.current) {
+            const LERP = 0.12
+            camRef.current = {
+              scale: camRef.current.scale + (baseLayout.scale - camRef.current.scale) * LERP,
+              ox:    camRef.current.ox    + (baseLayout.ox    - camRef.current.ox)    * LERP,
+              oy:    camRef.current.oy    + (baseLayout.oy    - camRef.current.oy)    * LERP,
+            }
+            const diff = Math.abs(camRef.current.scale - baseLayout.scale)
+                       + Math.abs(camRef.current.ox    - baseLayout.ox)
+                       + Math.abs(camRef.current.oy    - baseLayout.oy)
+            if (diff < 0.5) camRef.current = null
+            layout = camRef.current ?? baseLayout
+          }
+
+          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout)
         }
       }
       rafRef.current = requestAnimationFrame(loop)
@@ -509,6 +600,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       cancelAnimationFrame(rafRef.current)
     }
   }, [map, width, height])
+
+  const driverOptions: DriverOption[] = (participants?.drivers ?? [])
+    .filter(d => d.name.trim() !== '' || d.race_number > 0)
+    .map(d => ({ value: d.idx, label: d.name.trim() || String(d.race_number) }))
 
   return (
     <div ref={wrapRef} className="relative w-full h-full">
@@ -522,6 +617,19 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           </div>
         )
       }
+      {map && driverOptions.length > 0 && (
+        <div className="absolute top-2 left-2 z-10 w-44">
+          <Select<DriverOption>
+            value={driverOptions.find(o => o.value === selectedDriverIdx) ?? null}
+            options={driverOptions}
+            onChange={(opt: SingleValue<DriverOption>) => setSelectedDriverIdx(opt?.value ?? null)}
+            isClearable
+            isSearchable
+            placeholder="Follow driver…"
+            styles={buildSelectStyles(isDark)}
+          />
+        </div>
+      )}
       {onToggleFullscreen && (
         <button
           onClick={onToggleFullscreen}

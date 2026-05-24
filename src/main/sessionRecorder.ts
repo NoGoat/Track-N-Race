@@ -9,8 +9,9 @@ const store = new Store()
 
 let activeFileStream: fs.WriteStream | null = null
 let activeGzipStream: zlib.Gzip | null = null
-let activeFilePath: string | null = null
-let lastSessionTime: number = -1
+let activeFilePath = ''
+let lastSessionTime = -1
+
 
 let currentTrackId: number | null = null
 let currentSessionType: number | null = null
@@ -26,7 +27,6 @@ function getDedupeString(row: any): string {
   delete clone.session_time
   return JSON.stringify(clone)
 }
-
 
 export function initSessionRecorder() {
   store.onDidChange('logging.enabled', (newVal) => {
@@ -53,13 +53,12 @@ function closeActiveStream() {
   if (activeFileStream) {
     activeFileStream = null
   }
-  activeFilePath = null
   currentTrackId = null
   currentSessionType = null
   lastSessionTime = -1
+  activeFilePath = ''
   dedupeCache.clear()
 }
-
 
 function startNewStream(trackId: number, sessionType: number) {
   closeActiveStream()
@@ -79,9 +78,10 @@ function startNewStream(trackId: number, sessionType: number) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const filename = `${protocol}_${trackId}_${trackName}_${sessionName}_${timestamp}.tnrd`
     
-    const filePath = path.join(logDir, filename)
+    activeFilePath = path.join(logDir, filename)
+    lastSessionTime = -1
     
-    activeFileStream = fs.createWriteStream(filePath, { flags: 'a' })
+    activeFileStream = fs.createWriteStream(activeFilePath, { flags: 'a' })
     activeGzipStream = zlib.createGzip()
     activeGzipStream.pipe(activeFileStream)
     
@@ -117,6 +117,13 @@ export function recordRow(row: any) {
     }
   }
 
+  if (activeGzipStream && lastSessionTime >= 0 && row.session_time !== undefined && row.session_time < lastSessionTime - 0.2) {
+    console.log(`[SessionRecorder] Rewind detected! Truncating timeline from ${lastSessionTime} to ${row.session_time}...`)
+    truncateTimeline(row.session_time)
+  } else if (row.session_time !== undefined && row.session_time > lastSessionTime) {
+    lastSessionTime = row.session_time
+  }
+
   if (activeGzipStream) {
     if (DEDUPE_TYPES.has(row.type)) {
       const hash = getDedupeString(row)
@@ -134,5 +141,48 @@ export function recordRow(row: any) {
       console.log(`[SessionRecorder] Received SEND (Session End) race event. Triggering stream close.`)
       closeActiveStream()
     }
+  }
+}
+
+function truncateTimeline(newSessionTime: number) {
+  if (!activeFilePath || !fs.existsSync(activeFilePath)) return
+
+  try {
+    if (activeGzipStream) {
+      activeGzipStream.end()
+      activeGzipStream = null
+    }
+    if (activeFileStream) {
+      activeFileStream = null
+    }
+
+    const compressed = fs.readFileSync(activeFilePath)
+    const decompressed = zlib.gunzipSync(compressed).toString('utf8')
+    const lines = decompressed.split('\n')
+    
+    const retainedLines = lines.filter(line => {
+      if (!line.trim()) return false
+      try {
+        const j = JSON.parse(line)
+        if (j.session_time !== undefined && j.session_time > newSessionTime) {
+          return false
+        }
+      } catch {
+        // Keep unparseable or metadata rows
+      }
+      return true
+    })
+
+    const recompressed = zlib.gzipSync(retainedLines.join('\n') + '\n')
+    fs.writeFileSync(activeFilePath, recompressed)
+
+    activeFileStream = fs.createWriteStream(activeFilePath, { flags: 'a' })
+    activeGzipStream = zlib.createGzip()
+    activeGzipStream.pipe(activeFileStream)
+
+    dedupeCache.clear()
+    lastSessionTime = newSessionTime
+  } catch (err) {
+    console.error('[SessionRecorder] Failed to truncate timeline on rewind:', err)
   }
 }
