@@ -61,11 +61,8 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [fastestLap, setFastestLap]       = useState<LapData | null>(null)
   const [protocolStatus, setProtocolStatus] = useState<ProtocolStatusMsg | null>(null)
   const [protocolWarning, setProtocolWarning] = useState<ProtocolWarningMsg | null>(null)
-  const [playbackSpeedRpm, setPlaybackSpeedRpm] = useState<{
-    currentLap: any
-    prevLap: any
-    fastestLap: any
-  } | null>(null)
+  const [speedRpmBlocks, setSpeedRpmBlocks] = useState<any[] | null>(null)
+  const [fastestLapNum, setFastestLapNum] = useState<number>(0)
   const fastestLapTimeRef = useRef<number>(Infinity)
 
   const telBufRef      = useRef<TelemetryRow[]>([])
@@ -193,8 +190,8 @@ export function useTelemetry(seconds: number): TelemetryState {
             lapStartTimeRef.current = 0
             fastestLapSetRef.current = false
             sessionHistoryBestRef.current.clear()
-            setRaceEvents([])
-            setPlaybackSpeedRpm(null)
+            setSpeedRpmBlocks(null)
+            setFastestLapNum(0)
           }
           break
         case 'session': setSession(msg); break
@@ -227,8 +224,10 @@ export function useTelemetry(seconds: number): TelemetryState {
           lapNumRef.current = flush.lapNum
           break
         }
-        case 'playback_speed_rpm_data': {
-          setPlaybackSpeedRpm(msg as any)
+        case 'playback_lap_blocks': {
+          const data = msg as any
+          setSpeedRpmBlocks(data.blocks)
+          setFastestLapNum(data.fastestLapNum)
           break
         }
       }
@@ -275,6 +274,11 @@ export function useTelemetry(seconds: number): TelemetryState {
   const latestSessionTime = telBuf.at(-1)?.session_time ?? 0
   const cutoff = latestSessionTime - seconds
   const lapStartSessionTime = lap && lap.current_lap_ms > 0 ? lapStartTimeRef.current : 0
+  const isPlayback = speedRpmBlocks !== null
+  const activeLapNum = lap ? lap.lap_num : 1
+  const curBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum) : null
+  const prevBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum - 1) : null
+  const fastBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === fastestLapNum) : null
 
   return {
     telemetry:       telBuf.filter(d => d.session_time > cutoff),
@@ -294,10 +298,10 @@ export function useTelemetry(seconds: number): TelemetryState {
     session,
     tyreSets,
     latest:          telBuf.length > 0 ? telBuf[telBuf.length - 1] : null,
-    lapHistory:      playbackSpeedRpm && playbackSpeedRpm.prevLap ? [playbackSpeedRpm.prevLap] : lapHistoryBuf,
-    fastestLap:      playbackSpeedRpm && playbackSpeedRpm.fastestLap ? playbackSpeedRpm.fastestLap : fastestLap,
-    lapTelemetry:    playbackSpeedRpm && playbackSpeedRpm.currentLap ? playbackSpeedRpm.currentLap.telemetry : telBuf.filter(d => d.session_time >= lapStartSessionTime),
-    lapStatusHistory: playbackSpeedRpm && playbackSpeedRpm.currentLap ? playbackSpeedRpm.currentLap.statusHistory : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
+    lapHistory:      isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf,
+    fastestLap:      isPlayback && fastBlock ? fastBlock : fastestLap,
+    lapTelemetry:    isPlayback && curBlock ? curBlock.telemetry.filter((p: any) => p.session_time <= latestSessionTime) : telBuf.filter(d => d.session_time >= lapStartSessionTime),
+    lapStatusHistory: isPlayback && curBlock ? curBlock.statusHistory.filter((p: any) => p.session_time <= latestSessionTime) : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
     isConnected:     true,
     error:           null,
     protocolStatus,

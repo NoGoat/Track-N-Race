@@ -411,68 +411,6 @@ function broadcastInitialState(upToIndex: number) {
   }
 }
 
-function broadcastSpeedRpmData() {
-  if (lapBlocks.size === 0) return
-  
-  let currentLapNum = 1
-  const currentLap = scannedLaps.find(l => currentSessionTime >= l.startSessionTime && currentSessionTime <= l.endSessionTime)
-  if (currentLap) {
-    currentLapNum = currentLap.lapNum
-  } else if (scannedLaps.length > 0) {
-    const lastLap = scannedLaps[scannedLaps.length - 1]
-    if (currentSessionTime >= lastLap.endSessionTime) {
-      currentLapNum = lastLap.lapNum
-    }
-  }
-  
-  // 1. Current Lap block (filtered up to currentSessionTime)
-  let currentLapData: any = null
-  const curBlock = lapBlocks.get(currentLapNum)
-  if (curBlock) {
-    currentLapData = {
-      lapNum: curBlock.lapNum,
-      startSessionTime: curBlock.startSessionTime,
-      endSessionTime: curBlock.endSessionTime,
-      telemetry: curBlock.telemetry.filter(p => p.session_time <= currentSessionTime),
-      statusHistory: curBlock.statusHistory.filter(p => p.session_time <= currentSessionTime)
-    }
-  }
-  
-  // 2. Previous Lap block (complete finished block)
-  let prevLapData: any = null
-  const prevBlock = lapBlocks.get(currentLapNum - 1)
-  if (prevBlock) {
-    prevLapData = {
-      lapNum: prevBlock.lapNum,
-      startSessionTime: prevBlock.startSessionTime,
-      endSessionTime: prevBlock.endSessionTime,
-      telemetry: prevBlock.telemetry,
-      statusHistory: prevBlock.statusHistory
-    }
-  }
-  
-  // 3. Fastest Lap block (complete finished block)
-  let fastestLapData: any = null
-  if (fastestLapInfo) {
-    const fastBlock = lapBlocks.get(fastestLapInfo.lapNum)
-    if (fastBlock) {
-      fastestLapData = {
-        lapNum: fastBlock.lapNum,
-        startSessionTime: fastBlock.startSessionTime,
-        endSessionTime: fastBlock.endSessionTime,
-        telemetry: fastBlock.telemetry,
-        statusHistory: fastBlock.statusHistory
-      }
-    }
-  }
-  
-  broadcastToWindows({
-    type: 'playback_speed_rpm_data',
-    currentLap: currentLapData,
-    prevLap: prevLapData,
-    fastestLap: fastestLapData
-  })
-}
 
 function readTelemetryBlock(startTime: number, endTime: number): any[] {
   if (offsetsArray.length === 0 || !activeTempFilePath) return []
@@ -592,7 +530,13 @@ export async function loadFile(filePath: string): Promise<boolean> {
   
   // Instantaneously reconstruction & broadcast the latest UI state
   broadcastInitialState(0)
-  broadcastSpeedRpmData()
+  
+  // Broadcast comparative SpeedRPMERS blocks exactly once on load to renderers
+  broadcastToWindows({
+    type: 'playback_lap_blocks',
+    blocks: Array.from(lapBlocks.values()),
+    fastestLapNum: fastestLapInfo ? fastestLapInfo.lapNum : 0
+  })
   
   emitState()
   return true
@@ -643,7 +587,6 @@ function playbackLoop() {
         }
       }
       playbackIndex = endIndex
-      broadcastSpeedRpmData()
     }
   }
   
@@ -684,7 +627,6 @@ export function seek(percent: number) {
   
   // Instantaneously reconstruction & broadcast the latest UI state for this seek point
   broadcastInitialState(playbackIndex)
-  broadcastSpeedRpmData()
   
   emitState()
   
