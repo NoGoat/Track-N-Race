@@ -25,6 +25,9 @@ let timesArray = new Float32Array(0)
 let typesArray = new Uint8Array(0)
 let playbackIndex = 0
 
+// Sparse packets cache to prevent stuttering
+let lastPackets: Record<string, any> = {}
+
 export interface ScanLap {
   lapNum: number
   startSessionTime: number
@@ -401,6 +404,9 @@ function broadcastInitialState(upToIndex: number) {
       try {
         const row = JSON.parse(lineStr)
         if (row.magic !== 'TNRD_V1') {
+          if (row.type) {
+            lastPackets[row.type] = row
+          }
           broadcastToWindows(row)
         }
       } catch (e) {}
@@ -472,6 +478,12 @@ function extractAndBroadcastLap(lapInfo: ScanLap, eventName: string) {
 function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
   const startTime = Math.min(targetTime - 120, currentLapStart)
   const packets = readTelemetryBlock(startTime, targetTime)
+  
+  for (const p of packets) {
+    if (p.type) {
+      lastPackets[p.type] = p
+    }
+  }
   
   const telemetry = packets.filter(p => p.type === 'telemetry')
   const motion = packets.filter(p => p.type === 'motion')
@@ -570,6 +582,7 @@ function playbackLoop() {
           fs.closeSync(fd)
           
           const lines = buffer.toString('utf8').split('\n')
+          const seenTypes = new Set<string>()
           for (const line of lines) {
             if (!line.trim()) continue
             try {
@@ -578,9 +591,25 @@ function playbackLoop() {
                 currentSessionTime = row.session_time
               }
               if (row.magic !== 'TNRD_V1') {
+                if (row.type) {
+                  lastPackets[row.type] = row
+                  seenTypes.add(row.type)
+                }
                 broadcastToWindows(row)
               }
             } catch (e) {}
+          }
+          
+          // Duplicate sparse packets not seen in this chunk
+          const typesToDuplicate = ['status', 'damage', 'lap', 'positions', 'all_status', 'timing', 'session']
+          for (const type of typesToDuplicate) {
+            if (!seenTypes.has(type) && lastPackets[type]) {
+              const duplicated = {
+                ...lastPackets[type],
+                session_time: currentSessionTime
+              }
+              broadcastToWindows(duplicated)
+            }
           }
         } catch (err) {
           console.error('[Player] Playback block read error:', err)
@@ -664,6 +693,7 @@ export function closePlayer() {
   timesArray = new Float32Array(0)
   typesArray = new Uint8Array(0)
   lapBlocks.clear()
+  lastPackets = {}
   emitState()
 }
 

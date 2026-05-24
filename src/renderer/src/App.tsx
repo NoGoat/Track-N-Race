@@ -575,8 +575,6 @@ const PlaybackControlsBar = memo(function PlaybackControlsBar({
             { value: 1, label: '1x' },
             { value: 2, label: '2x' },
             { value: 4, label: '4x' },
-            { value: 8, label: '8x' },
-            { value: 16, label: '16x' }
           ]}
           styles={selectStyles}
           menuPlacement="top"
