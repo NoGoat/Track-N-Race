@@ -69,6 +69,7 @@
     "electron-vite": "^5.0.0",
     "png-to-ico": "^3.0.1",
     "postcss": "^8.4.40",
+    "react-scan": "^0.5.6",
     "tailwindcss": "^3.4.10",
     "typescript": "^5.5.3"
   }
