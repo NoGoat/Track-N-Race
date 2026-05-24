@@ -338,6 +338,16 @@ declare global {
     }
     fsBridge: {
       selectDirectory: () => Promise<string | null>
+      selectTNRDFile: () => Promise<string | null>
+    }
+    playerBridge: {
+      load: (filePath: string) => Promise<boolean>
+      play: () => void
+      pause: () => void
+      seek: (pct: number) => void
+      setSpeed: (mult: number) => void
+      close: () => void
+      onStateChange: (cb: (state: any) => void) => () => void
     }
   }
 }

@@ -6,6 +6,7 @@ import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
 import { initSessionRecorder } from './sessionRecorder'
+import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange } from './sessionPlayer'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -35,6 +36,40 @@ ipcMain.handle('dialog:showOpenDialog', async () => {
   } else {
     return filePaths[0]
   }
+})
+
+ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    filters: [{ name: 'Track N Race Data', extensions: ['tnrd'] }],
+    properties: ['openFile']
+  })
+  if (canceled) return null
+  return filePaths[0]
+})
+
+// Player IPC
+ipcMain.handle('player:load', async (_event, filePath: string) => {
+  stopUdpReceiver() // Suspend live UDP
+  const success = await loadFile(filePath)
+  if (!success) {
+    startUdpReceiver({
+      port: store.get('udp.port', 20777) as number,
+      bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
+    })
+  }
+  return success
+})
+
+ipcMain.on('player:play', () => play())
+ipcMain.on('player:pause', () => pause())
+ipcMain.on('player:seek', (_event, pct: number) => seek(pct))
+ipcMain.on('player:setSpeed', (_event, mult: number) => setSpeed(mult))
+ipcMain.on('player:close', () => {
+  closePlayer()
+  startUdpReceiver({
+    port: store.get('udp.port', 20777) as number,
+    bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
+  })
 })
 
 ipcMain.on('udp-restart', (event) => {
@@ -124,6 +159,12 @@ function createWindow(): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  setOnPlayerStateChange((state) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('playback_state', state)
+    }
   })
 
   // In dev, electron-vite sets ELECTRON_RENDERER_URL

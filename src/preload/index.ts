@@ -50,6 +50,22 @@ const protocolBridge = {
 const fsBridge = {
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke('dialog:showOpenDialog'),
+  selectTNRDFile: (): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:showOpenDialogTNRD'),
+}
+
+const playerBridge = {
+  load: (filePath: string): Promise<boolean> => ipcRenderer.invoke('player:load', filePath),
+  play: () => ipcRenderer.send('player:play'),
+  pause: () => ipcRenderer.send('player:pause'),
+  seek: (pct: number) => ipcRenderer.send('player:seek', pct),
+  setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
+  close: () => ipcRenderer.send('player:close'),
+  onStateChange: (cb: (state: any) => void) => {
+    const handler = (_e: any, state: any) => cb(state)
+    ipcRenderer.on('playback_state', handler)
+    return () => { ipcRenderer.removeListener('playback_state', handler) }
+  }
 }
 
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
@@ -58,4 +74,5 @@ contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
+contextBridge.exposeInMainWorld('playerBridge', playerBridge)
 

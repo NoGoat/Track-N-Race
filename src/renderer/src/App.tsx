@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import Select, { StylesConfig } from 'react-select'
-import { Settings2, Pencil, X, Shrink } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, FastForward, Rewind } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
 import LiveStats from './components/LiveStats'
@@ -294,9 +294,15 @@ export default function App() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [headerVisible, setHeaderVisible] = useState(false)
+  const [playbackState, setPlaybackState] = useState<any>(null)
+
   useEffect(() => window.windowControls.onMaximizeChange(setIsMaximized), [])
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
   useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
+  useEffect(() => {
+    return window.playerBridge.onStateChange((st) => setPlaybackState(st))
+  }, [])
+
   const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
 
   // Transient event queue
@@ -455,6 +461,28 @@ export default function App() {
             menuPortalTarget={document.body}
           />
         </div>
+
+        {/* Playback Load Button / Filename Pill */}
+        {playbackState?.filename ? (
+          <div className="flex items-center gap-2 bg-[#5794F2]/10 border border-[#5794F2]/30 rounded-full pl-3 pr-1 py-0.5 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <span className="text-[11px] font-semibold text-[#5794F2] max-w-[150px] truncate">{playbackState.filename}</span>
+            <button onClick={() => window.playerBridge.close()} className="p-1 rounded-full text-[#5794F2] hover:bg-[#5794F2]/20 transition-colors">
+              <X size={12} strokeWidth={3} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={async () => {
+              const file = await window.fsBridge.selectTNRDFile()
+              if (file) window.playerBridge.load(file)
+            }}
+            title="Load Session Data File (.tnrd)"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors shrink-0"
+          >
+            <Upload size={14} />
+          </button>
+        )}
 
         {session ? (
           <span
@@ -615,6 +643,43 @@ export default function App() {
 
       </header>
       </div>
+
+      {/* Playback Controls Bar */}
+      {playbackState && playbackState.filename && (
+        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center px-6 gap-6 z-40 select-none">
+          <div className="flex items-center gap-3">
+            <button onClick={() => window.playerBridge.setSpeed(Math.max(0.25, playbackState.speed / 2))} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
+              <Rewind size={16} />
+            </button>
+            <button onClick={() => playbackState.isPlaying ? window.playerBridge.pause() : window.playerBridge.play()} className="w-10 h-10 flex items-center justify-center rounded-full bg-[#5794F2] text-white hover:bg-[#437bda] transition-colors shadow-lg shadow-[#5794F2]/20">
+              {playbackState.isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <button onClick={() => window.playerBridge.setSpeed(Math.min(16, playbackState.speed * 2))} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
+              <FastForward size={16} />
+            </button>
+            <div className="w-10 text-center text-xs font-bold font-mono text-[var(--text-primary)] bg-[var(--bg-input)] py-1 rounded">
+              {playbackState.speed}x
+            </div>
+          </div>
+          
+          <div className="flex-1 flex items-center gap-4">
+            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.currentTime)}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.001"
+              value={playbackState.progressPct}
+              onChange={(e) => window.playerBridge.seek(parseFloat(e.target.value))}
+              className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2]"
+              style={{
+                background: `linear-gradient(to right, #5794F2 ${playbackState.progressPct * 100}%, var(--border) ${playbackState.progressPct * 100}%)`
+              }}
+            />
+            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
+          </div>
+        </div>
+      )}
 
       {/* Edit modal — centered overlay */}
       {editOpen && (tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres') && (
