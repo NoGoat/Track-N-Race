@@ -647,10 +647,19 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     }
   }, [map, width, height])
 
-  const driverOptions = useMemo((): DriverOption[] => {
+  const driverOptions = useMemo((): (DriverOption & { raceNumber: number })[] => {
     return (participants?.drivers ?? [])
       .filter(d => d.name.trim() !== '' || d.race_number > 0)
-      .map(d => ({ value: d.idx, label: d.name.trim() || String(d.race_number) }))
+      .map(d => {
+        const name = d.name.trim()
+        const lastName = name ? (name.split(/\s+/).pop() ?? name).toUpperCase() : `C${d.idx}`
+        return {
+          value: d.idx,
+          label: `${d.race_number} ${lastName}`,
+          raceNumber: d.race_number
+        }
+      })
+      .sort((a, b) => a.raceNumber - b.raceNumber)
   }, [participants])
 
   const handleDriverChange = useCallback((opt: SingleValue<DriverOption>) => {
