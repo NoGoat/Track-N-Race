@@ -185,6 +185,58 @@ async function extractLapTelemetry(filePath: string, lapInfo: ScanLap, eventName
   })
 }
 
+async function extractSeekBuffer(filePath: string, targetTime: number, currentLapStart: number, currentLapNum: number): Promise<void> {
+  return new Promise((resolve) => {
+    const s = fs.createReadStream(filePath)
+    const gz = zlib.createGunzip()
+    const r = readline.createInterface({ input: s.pipe(gz) })
+    
+    // "collect the entire lap's data or the last 120 seconds - whichever is higher"
+    const startTime = Math.min(targetTime - 120, currentLapStart)
+    
+    let telemetry: any[] = []
+    let motion: any[] = []
+    let status: any[] = []
+    let damage: any[] = []
+    
+    r.on('line', (line) => {
+      try {
+        const obj = JSON.parse(line)
+        if (obj.session_time !== undefined) {
+          if (obj.session_time >= startTime && obj.session_time <= targetTime) {
+            if (obj.type === 'telemetry') telemetry.push(obj)
+            else if (obj.type === 'motion') motion.push(obj)
+            else if (obj.type === 'status') status.push(obj)
+            else if (obj.type === 'damage') damage.push(obj)
+          } else if (obj.session_time > targetTime) {
+            r.close()
+          }
+        }
+      } catch(e) {}
+    })
+    
+    const finalize = () => {
+      broadcastToWindows({
+        type: 'playback_seek_flush',
+        telemetry: telemetry,
+        motion: motion,
+        status: status,
+        damage: damage,
+        currentLapStart: currentLapStart,
+        lapNum: currentLapNum
+      })
+      gz.destroy()
+      s.destroy()
+      resolve()
+    }
+    
+    r.on('close', finalize)
+    r.on('error', finalize)
+    gz.on('error', finalize)
+    s.on('error', finalize)
+  })
+}
+
 // --------------------------------------------------------
 
 export async function loadFile(filePath: string): Promise<boolean> {
@@ -341,6 +393,13 @@ export function seek(percent: number) {
   if (prevLap) {
     extractLapTelemetry(activeFilePath, prevLap, 'playback_previous_lap')
   }
+  
+  const currentLap = scannedLaps.find(l => targetTime >= l.startSessionTime && targetTime <= l.endSessionTime)
+  const currentLapStart = currentLap ? currentLap.startSessionTime : targetTime
+  const currentLapNum = currentLap ? currentLap.lapNum : 0
+  
+  // Async fetch preceding history to perfectly fill the charts!
+  extractSeekBuffer(activeFilePath, targetTime, currentLapStart, currentLapNum)
 }
 
 export function setSpeed(mult: number) {

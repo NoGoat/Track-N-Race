@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import Select, { StylesConfig } from 'react-select'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, FastForward, Rewind } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
 import LiveStats from './components/LiveStats'
@@ -464,10 +464,10 @@ export default function App() {
 
         {/* Playback Load Button / Filename Pill */}
         {playbackState?.filename ? (
-          <div className="flex items-center gap-2 bg-[#5794F2]/10 border border-[#5794F2]/30 rounded-full pl-3 pr-1 py-0.5 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <span className="text-[11px] font-semibold text-[#5794F2] max-w-[150px] truncate">{playbackState.filename}</span>
-            <button onClick={() => window.playerBridge.close()} className="p-1 rounded-full text-[#5794F2] hover:bg-[#5794F2]/20 transition-colors">
-              <X size={12} strokeWidth={3} />
+          <div className="flex items-center gap-1.5 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">{playbackState.filename}</span>
+            <button onClick={() => window.playerBridge.close()} className="p-1 text-[var(--text-secondary)] hover:text-[#e10600] transition-colors">
+              <X size={14} />
             </button>
           </div>
         ) : (
@@ -643,43 +643,6 @@ export default function App() {
 
       </header>
       </div>
-
-      {/* Playback Controls Bar */}
-      {playbackState && playbackState.filename && (
-        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center px-6 gap-6 z-40 select-none">
-          <div className="flex items-center gap-3">
-            <button onClick={() => window.playerBridge.setSpeed(Math.max(0.25, playbackState.speed / 2))} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-              <Rewind size={16} />
-            </button>
-            <button onClick={() => playbackState.isPlaying ? window.playerBridge.pause() : window.playerBridge.play()} className="w-10 h-10 flex items-center justify-center rounded-full bg-[#5794F2] text-white hover:bg-[#437bda] transition-colors shadow-lg shadow-[#5794F2]/20">
-              {playbackState.isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <button onClick={() => window.playerBridge.setSpeed(Math.min(16, playbackState.speed * 2))} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-              <FastForward size={16} />
-            </button>
-            <div className="w-10 text-center text-xs font-bold font-mono text-[var(--text-primary)] bg-[var(--bg-input)] py-1 rounded">
-              {playbackState.speed}x
-            </div>
-          </div>
-          
-          <div className="flex-1 flex items-center gap-4">
-            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.currentTime)}</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.001"
-              value={playbackState.progressPct}
-              onChange={(e) => window.playerBridge.seek(parseFloat(e.target.value))}
-              className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2]"
-              style={{
-                background: `linear-gradient(to right, #5794F2 ${playbackState.progressPct * 100}%, var(--border) ${playbackState.progressPct * 100}%)`
-              }}
-            />
-            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
-          </div>
-        </div>
-      )}
 
       {/* Settings Modal */}
       {settingsOpen && (
@@ -1249,6 +1212,61 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Playback Controls Bar */}
+      {playbackState && playbackState.filename && (
+        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center px-6 gap-6 z-40 select-none">
+          <div className="flex items-center gap-3">
+            <button onClick={() => window.playerBridge.seek(Math.max(0, playbackState.currentTime - 5) / playbackState.totalTime)} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
+              <ChevronLeft size={18} />
+            </button>
+            <button onClick={() => playbackState.isPlaying ? window.playerBridge.pause() : window.playerBridge.play()} className="w-10 h-10 flex items-center justify-center rounded-full bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] transition-colors shadow-lg shadow-[var(--border-focus)]/20">
+              {playbackState.isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <button onClick={() => window.playerBridge.seek(Math.min(playbackState.totalTime, playbackState.currentTime + 5) / playbackState.totalTime)} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
+              <ChevronRight size={18} />
+            </button>
+            <div className="w-[4.5rem]">
+              <Select
+                value={{ value: playbackState.speed, label: `${playbackState.speed}x` }}
+                onChange={(option) => {
+                  if (option) window.playerBridge.setSpeed(option.value)
+                }}
+                options={[
+                  { value: 0.25, label: '0.25x' },
+                  { value: 0.5, label: '0.5x' },
+                  { value: 1, label: '1x' },
+                  { value: 2, label: '2x' },
+                  { value: 4, label: '4x' },
+                  { value: 8, label: '8x' },
+                  { value: 16, label: '16x' }
+                ]}
+                styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
+                menuPlacement="top"
+                isSearchable={false}
+              />
+            </div>
+          </div>
+          
+          <div className="flex-1 flex items-center gap-4">
+            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.currentTime)}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.001"
+              value={playbackState.progressPct}
+              readOnly
+              className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none pointer-events-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2]"
+              style={{
+                background: `linear-gradient(to right, #5794F2 ${playbackState.progressPct * 100}%, var(--border) ${playbackState.progressPct * 100}%)`
+              }}
+            />
+            <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(playbackState.totalTime)}</span>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

@@ -207,6 +207,20 @@ export function useTelemetry(seconds: number): TelemetryState {
         case 'playback_previous_lap':
           setLapHistoryBuf(prev => [...prev.filter(l => l.lapNum !== msg.data.lapNum), msg.data].sort((a, b) => a.lapNum - b.lapNum).slice(-3))
           break
+        case 'playback_seek_flush': {
+          const flush = msg as any
+          setTelBuf(flush.telemetry)
+          telBufRef.current = flush.telemetry
+          setMotBuf(flush.motion)
+          motBufRef.current = flush.motion
+          setStsBuf(flush.status)
+          stsBufRef.current = flush.status
+          setDmgBuf(flush.damage)
+          dmgBufRef.current = flush.damage
+          lapStartTimeRef.current = flush.currentLapStart
+          lapNumRef.current = flush.lapNum
+          break
+        }
       }
     })
 

@@ -289,6 +289,16 @@ export interface PlaybackPreviousLapMsg {
   data: LapData
 }
 
+export interface PlaybackSeekFlushMsg {
+  type: 'playback_seek_flush'
+  telemetry: TelemetryRow[]
+  motion: MotionRow[]
+  status: StatusRow[]
+  damage: DamageRow[]
+  currentLapStart: number
+  lapNum: number
+}
+
 export type GatewayMsg =
   | TelemetryRow
   | MotionRow
@@ -309,6 +319,7 @@ export type GatewayMsg =
   | ProtocolWarningMsg
   | PlaybackFastestLapMsg
   | PlaybackPreviousLapMsg
+  | PlaybackSeekFlushMsg
 
 export interface ProtocolCapabilities {
   gameYear:        24 | 25 | null  // null = no packets received yet
