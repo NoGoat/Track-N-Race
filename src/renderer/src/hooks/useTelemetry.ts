@@ -200,6 +200,13 @@ export function useTelemetry(seconds: number): TelemetryState {
             setProtocolWarning(msg)
           }
           break
+        case 'playback_fastest_lap':
+          setFastestLap(msg.data)
+          fastestLapTimeRef.current = msg.data.lapNum > 0 ? (msg.data.endSessionTime - msg.data.startSessionTime) * 1000 : Infinity
+          break
+        case 'playback_previous_lap':
+          setLapHistoryBuf(prev => [...prev.filter(l => l.lapNum !== msg.data.lapNum), msg.data].sort((a, b) => a.lapNum - b.lapNum).slice(-3))
+          break
       }
     })
 

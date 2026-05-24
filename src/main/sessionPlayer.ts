@@ -39,43 +39,42 @@ function emitState() {
       progressPct: totalDurationS > 0 ? (currentSessionTime - startSessionTime) / totalDurationS : 0,
       currentTime: currentSessionTime,
       totalTime: totalDurationS,
-      filename: activeFilePath ? activeFilePath.split(/[\\/]/).pop() : null
+      filename: activeFilePath ? activeFilePath.split(/[\\/]/).pop() : null,
+      isScanning
     })
   }
 }
 
-export async function loadFile(filePath: string): Promise<boolean> {
-  closePlayer()
-  activeFilePath = filePath
-  
-  // Pass 1: Fast scan to get total duration and start time
-  try {
-    await scanFileForDuration(filePath)
-  } catch (err) {
-    console.error('[Player] Failed to scan file:', err)
-    return false
-  }
+// --------------------------------------------------------
+// SCANNING AND LAP BUFFERING
+// --------------------------------------------------------
 
-  // Pass 2: Open stream and start reading into buffer
-  startStreamingFrom(0) // Start from beginning of session time offset 0
-  
-  // Wait briefly for initial buffer to fill
-  await new Promise(r => setTimeout(r, 200))
-  
-  virtualTime = startSessionTime
-  currentSessionTime = startSessionTime
-  emitState()
-  return true
+export interface ScanLap {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  lapTimeMs: number
 }
 
-async function scanFileForDuration(filePath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
+let scannedLaps: ScanLap[] = []
+let fastestLapInfo: ScanLap | null = null
+let isScanning = false
+
+async function scanFileForLaps(filePath: string): Promise<void> {
+  return new Promise((resolve) => {
     const s = fs.createReadStream(filePath)
     const gz = zlib.createGunzip()
     const r = readline.createInterface({ input: s.pipe(gz) })
     
     let firstTime: number | null = null
     let lastTime: number | null = null
+    
+    let currentLapNum: number | null = null
+    let currentLapStart: number = 0
+    let currentST: number = 0
+    
+    scannedLaps = []
+    fastestLapInfo = null
     
     r.on('line', (line) => {
       try {
@@ -85,31 +84,143 @@ async function scanFileForDuration(filePath: string): Promise<void> {
           return
         }
         if (obj.session_time !== undefined) {
-          if (firstTime === null) firstTime = obj.session_time
-          lastTime = obj.session_time
+          currentST = obj.session_time
+          if (firstTime === null) firstTime = currentST
+          lastTime = currentST
+        }
+        
+        if (obj.type === 'lap') {
+          if (currentLapNum === null) {
+            currentLapNum = obj.lap_num
+            currentLapStart = obj.current_lap_ms > 0 ? currentST - obj.current_lap_ms / 1000 : currentST
+          } else if (obj.lap_num > currentLapNum) {
+            // Lap finished!
+            const lapTimeMs = obj.last_lap_ms
+            const newLap: ScanLap = {
+              lapNum: currentLapNum,
+              startSessionTime: currentLapStart,
+              endSessionTime: currentST,
+              lapTimeMs
+            }
+            scannedLaps.push(newLap)
+            if (lapTimeMs > 0 && lapTimeMs < 300000) {
+              if (!fastestLapInfo || lapTimeMs < fastestLapInfo.lapTimeMs) {
+                fastestLapInfo = newLap
+              }
+            }
+            currentLapNum = obj.lap_num
+            currentLapStart = currentST
+          }
         }
       } catch (e) {}
     })
     
-    r.on('close', () => {
-      startSessionTime = firstTime || 0
-      currentSessionTime = startSessionTime
-      totalDurationS = Math.max(0.1, (lastTime || 0) - startSessionTime)
-      resolve()
-    })
-    
-    const handleError = (err: Error) => {
-      console.warn('[Player] Scan stream error (likely truncated file):', err.message)
+    const finalize = () => {
       startSessionTime = firstTime || 0
       currentSessionTime = startSessionTime
       totalDurationS = Math.max(0.1, (lastTime || 0) - startSessionTime)
       resolve()
     }
     
+    const handleError = (err: Error) => {
+      console.warn('[Player] Scan stream error (likely truncated file):', err.message)
+      finalize()
+    }
+    
+    r.on('close', finalize)
     r.on('error', handleError)
     s.on('error', handleError)
     gz.on('error', handleError)
   })
+}
+
+async function extractLapTelemetry(filePath: string, lapInfo: ScanLap, eventName: string): Promise<void> {
+  return new Promise((resolve) => {
+    const s = fs.createReadStream(filePath)
+    const gz = zlib.createGunzip()
+    const r = readline.createInterface({ input: s.pipe(gz) })
+    
+    const packets: any[] = []
+    
+    r.on('line', (line) => {
+      try {
+        const obj = JSON.parse(line)
+        if (obj.session_time !== undefined) {
+          if (obj.session_time >= lapInfo.startSessionTime && obj.session_time <= lapInfo.endSessionTime) {
+            packets.push(obj)
+          } else if (obj.session_time > lapInfo.endSessionTime) {
+            r.close() // Early exit!
+          }
+        }
+      } catch(e) {}
+    })
+    
+    const finalize = () => {
+      // Build LapData
+      const telemetry = packets.filter(p => p.type === 'telemetry')
+      const motion = packets.filter(p => p.type === 'motion')
+      const statusHistory = packets.filter(p => p.type === 'status')
+      
+      const lapData = {
+        lapNum: lapInfo.lapNum,
+        startSessionTime: lapInfo.startSessionTime,
+        endSessionTime: lapInfo.endSessionTime,
+        telemetry,
+        motion,
+        statusHistory
+      }
+      
+      broadcastToWindows({ type: eventName, data: lapData })
+      
+      // Cleanup early exit
+      gz.destroy()
+      s.destroy()
+      resolve()
+    }
+    
+    r.on('close', finalize)
+    r.on('error', finalize)
+    gz.on('error', finalize)
+    s.on('error', finalize)
+  })
+}
+
+// --------------------------------------------------------
+
+export async function loadFile(filePath: string): Promise<boolean> {
+  closePlayer()
+  activeFilePath = filePath
+  
+  isScanning = true
+  emitState()
+  
+  // Pass 1: Comprehensive scan for laps and duration
+  try {
+    await scanFileForLaps(filePath)
+    
+    // Pass 2: Extract fastest lap
+    if (fastestLapInfo) {
+      await extractLapTelemetry(filePath, fastestLapInfo, 'playback_fastest_lap')
+    }
+  } catch (err) {
+    console.error('[Player] Failed to scan file:', err)
+    isScanning = false
+    emitState()
+    return false
+  }
+
+  isScanning = false
+  
+  // Pass 3: Open stream and start reading into buffer
+  startStreamingFrom(startSessionTime) 
+  
+  // Wait briefly for initial buffer to fill
+  await new Promise(r => setTimeout(r, 200))
+  
+  virtualTime = startSessionTime
+  currentSessionTime = startSessionTime
+  emitState()
+  return true
 }
 
 function startStreamingFrom(targetSessionTime: number) {
@@ -130,7 +241,6 @@ function startStreamingFrom(targetSessionTime: number) {
   let fastForwarding = targetSessionTime > startSessionTime
   
   rl.on('line', (line) => {
-    // If we are fast forwarding, we discard lines until we reach target time
     if (fastForwarding) {
       try {
         const obj = JSON.parse(line)
@@ -142,7 +252,6 @@ function startStreamingFrom(targetSessionTime: number) {
     } else {
       lineBuffer.push(line)
       if (lineBuffer.length > bufferIndex + LINE_BUFFER_LIMIT) {
-        // We've buffered enough ahead, pause stream
         rl?.pause()
       }
     }
@@ -171,7 +280,6 @@ function playbackLoop() {
   
   virtualTime += deltaRealSec * speedMultiplier
 
-  // Dispatch all packets up to virtualTime
   while (bufferIndex < lineBuffer.length) {
     const line = lineBuffer[bufferIndex]
     try {
@@ -182,7 +290,6 @@ function playbackLoop() {
         }
         currentSessionTime = row.session_time
       }
-      // Broadcast to frontend
       if (row.magic !== 'TNRD_V1') {
         broadcastToWindows(row)
       }
@@ -191,7 +298,6 @@ function playbackLoop() {
     bufferIndex++
   }
 
-  // Clean up buffer and resume stream if getting empty
   if (bufferIndex > LINE_BUFFER_LIMIT / 2 && rl) {
     lineBuffer = lineBuffer.slice(bufferIndex)
     bufferIndex = 0
@@ -199,14 +305,13 @@ function playbackLoop() {
   }
 
   if (bufferIndex >= lineBuffer.length && isStreamEOF) {
-    // Reached end of file
     isPlaying = false
   }
 
   emitState()
   
   if (isPlaying) {
-    playbackTimer = setTimeout(playbackLoop, 1000 / 60) // 60Hz loop
+    playbackTimer = setTimeout(playbackLoop, 1000 / 60)
   }
 }
 
@@ -230,6 +335,12 @@ export function seek(percent: number) {
   currentSessionTime = targetTime
   startStreamingFrom(targetTime)
   emitState()
+  
+  // Async fetch previous lap
+  const prevLap = scannedLaps.slice().reverse().find(l => l.endSessionTime <= targetTime)
+  if (prevLap) {
+    extractLapTelemetry(activeFilePath, prevLap, 'playback_previous_lap')
+  }
 }
 
 export function setSpeed(mult: number) {
@@ -248,5 +359,8 @@ export function closePlayer() {
   lineBuffer = []
   bufferIndex = 0
   activeFilePath = null
+  scannedLaps = []
+  fastestLapInfo = null
+  isScanning = false
   emitState()
 }

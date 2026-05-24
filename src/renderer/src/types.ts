@@ -279,6 +279,16 @@ export interface LapData {
   statusHistory: StatusRow[]
 }
 
+export interface PlaybackFastestLapMsg {
+  type: 'playback_fastest_lap'
+  data: LapData
+}
+
+export interface PlaybackPreviousLapMsg {
+  type: 'playback_previous_lap'
+  data: LapData
+}
+
 export type GatewayMsg =
   | TelemetryRow
   | MotionRow
@@ -297,6 +307,8 @@ export type GatewayMsg =
   | PositionsMsg
   | ProtocolStatusMsg
   | ProtocolWarningMsg
+  | PlaybackFastestLapMsg
+  | PlaybackPreviousLapMsg
 
 export interface ProtocolCapabilities {
   gameYear:        24 | 25 | null  // null = no packets received yet
