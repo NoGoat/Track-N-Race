@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 
 declare global {
   interface Window {
@@ -18,10 +18,10 @@ export function useAppConfig<T>(key: string, defaultValue: T): [T, (v: T) => voi
     }
   })
 
-  function set(v: T) {
+  const set = useCallback((v: T) => {
     setValue(v)
     try { window.electronStore.set(key, v) } catch {}
-  }
+  }, [key])
 
   return [value, set]
 }

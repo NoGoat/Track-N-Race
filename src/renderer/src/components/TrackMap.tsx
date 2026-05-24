@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
 import Select, { type StylesConfig, type SingleValue } from 'react-select'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
@@ -10,45 +10,65 @@ const FOLLOW_ZOOM = 4
 type DriverOption = { value: number; label: string }
 
 function buildSelectStyles(isDark: boolean): StylesConfig<DriverOption> {
-  const bg          = isDark ? '#1a1f2e' : '#ffffff'
-  const text        = isDark ? '#e0e0e0' : '#111827'
-  const muted       = isDark ? '#6b7280' : '#9ca3af'
-  const border      = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)'
-  const hoverBg     = isDark ? 'rgba(255,255,255,0.08)' : '#f3f4f6'
-  const selectedBg  = '#0090D0'
   return {
-    control: (base, state) => ({
-      ...base,
-      background: bg,
-      borderColor: state.isFocused ? selectedBg : border,
-      boxShadow: state.isFocused ? `0 0 0 1px ${selectedBg}` : 'none',
-      minHeight: 28,
-      fontSize: 11,
-      cursor: 'pointer',
-      '&:hover': { borderColor: selectedBg },
-    }),
+    control: (base, state) => {
+      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
+      return {
+        ...base,
+        background: isHoveredOrActive ? 'var(--bg-hover)' : 'var(--bg-panel)',
+        borderColor: 'var(--border)',
+        boxShadow: 'none',
+        minHeight: 28,
+        height: 28,
+        borderRadius: 6,
+        fontSize: 11,
+        cursor: 'pointer',
+        transition: 'all 0.15s ease',
+        '&:hover': {
+          background: 'var(--bg-hover)',
+          borderColor: 'var(--border)',
+        },
+      }
+    },
+    valueContainer: (base) => ({ ...base, padding: '0 8px' }),
     menu: (base) => ({
       ...base,
-      background: bg,
-      border: `1px solid ${border}`,
-      boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+      background: 'var(--bg-menu)',
+      border: '1px solid var(--border)',
+      borderRadius: 6,
+      boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
       zIndex: 9999,
+      marginTop: 4,
+      overflow: 'hidden',
     }),
     option: (base, state) => ({
       ...base,
-      background: state.isSelected ? selectedBg : state.isFocused ? hoverBg : 'transparent',
-      color: state.isSelected ? '#fff' : text,
+      background: state.isSelected ? 'var(--bg-selected)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
+      color: state.isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
       fontSize: 11,
-      padding: '4px 8px',
+      padding: '5px 8px',
       cursor: 'pointer',
+      transition: 'background 0.1s',
+      '&:active': { background: 'var(--bg-selected)' },
     }),
-    singleValue:       (base) => ({ ...base, color: text,  fontSize: 11 }),
-    placeholder:       (base) => ({ ...base, color: muted, fontSize: 11 }),
-    input:             (base) => ({ ...base, color: text,  fontSize: 11 }),
+    singleValue:       (base) => ({ ...base, color: 'var(--text-primary)',  fontSize: 11 }),
+    placeholder:       (base) => ({ ...base, color: 'var(--text-secondary)', fontSize: 11 }),
+    input:             (base) => ({ ...base, color: 'var(--text-primary)',  fontSize: 11, margin: 0, padding: 0 }),
     indicatorSeparator: ()   => ({ display: 'none' }),
-    dropdownIndicator: (base) => ({ ...base, padding: '0 4px', color: muted }),
-    clearIndicator:    (base) => ({ ...base, padding: '0 4px', color: muted }),
-    valueContainer:    (base) => ({ ...base, padding: '0 6px' }),
+    dropdownIndicator: (base, state) => {
+      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
+      return {
+        ...base,
+        padding: '0 6px',
+        color: isHoveredOrActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+        transform: state.selectProps.menuIsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+        transition: 'transform 0.2s ease, color 0.15s ease',
+        '&:hover': {
+          color: 'var(--text-primary)',
+        }
+      }
+    },
+    clearIndicator:    (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)' }),
   }
 }
 
@@ -437,6 +457,33 @@ let _cachedCars:      CarPosition[] | null = null
 let _cachedPlayerIdx: number               = 0
 
 
+interface FollowDriverSelectorProps {
+  selectedDriverIdx: number | null
+  onChange: (opt: SingleValue<DriverOption>) => void
+  options: DriverOption[]
+  isDark: boolean
+}
+
+const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDark }: FollowDriverSelectorProps) => {
+  const styles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const val = useMemo(() => options.find(o => o.value === selectedDriverIdx) ?? null, [options, selectedDriverIdx])
+  
+  return (
+    <div className="w-40 shrink-0">
+      <Select<DriverOption>
+        value={val}
+        options={options}
+        onChange={onChange}
+        isClearable
+        isSearchable
+        placeholder="Follow driver…"
+        styles={styles}
+      />
+    </div>
+  )
+})
+FollowDriverSelector.displayName = 'FollowDriverSelector'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -600,9 +647,15 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     }
   }, [map, width, height])
 
-  const driverOptions: DriverOption[] = (participants?.drivers ?? [])
-    .filter(d => d.name.trim() !== '' || d.race_number > 0)
-    .map(d => ({ value: d.idx, label: d.name.trim() || String(d.race_number) }))
+  const driverOptions = useMemo((): DriverOption[] => {
+    return (participants?.drivers ?? [])
+      .filter(d => d.name.trim() !== '' || d.race_number > 0)
+      .map(d => ({ value: d.idx, label: d.name.trim() || String(d.race_number) }))
+  }, [participants])
+
+  const handleDriverChange = useCallback((opt: SingleValue<DriverOption>) => {
+    setSelectedDriverIdx(opt?.value ?? null)
+  }, [])
 
   return (
     <div ref={wrapRef} className="relative w-full h-full">
@@ -616,26 +669,26 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           </div>
         )
       }
-      {map && driverOptions.length > 0 && (
-        <div className="absolute top-2 left-2 z-10 w-44">
-          <Select<DriverOption>
-            value={driverOptions.find(o => o.value === selectedDriverIdx) ?? null}
-            options={driverOptions}
-            onChange={(opt: SingleValue<DriverOption>) => setSelectedDriverIdx(opt?.value ?? null)}
-            isClearable
-            isSearchable
-            placeholder="Follow driver…"
-            styles={buildSelectStyles(isDark)}
-          />
+      {map && (driverOptions.length > 0 || onToggleFullscreen) && (
+        <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {driverOptions.length > 0 && (
+            <FollowDriverSelector
+              selectedDriverIdx={selectedDriverIdx}
+              onChange={handleDriverChange}
+              options={driverOptions}
+              isDark={isDark}
+            />
+          )}
+          {onToggleFullscreen && (
+            <button
+              onClick={onToggleFullscreen}
+              className="h-7 w-7 rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center shrink-0"
+              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            >
+              {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          )}
         </div>
-      )}
-      {onToggleFullscreen && (
-        <button
-          onClick={onToggleFullscreen}
-          className="absolute top-2 right-2 p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-white/10 transition-colors"
-        >
-          {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
       )}
     </div>
   )

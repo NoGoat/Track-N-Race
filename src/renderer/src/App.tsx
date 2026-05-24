@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
 import Select, { StylesConfig } from 'react-select'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
@@ -245,6 +245,286 @@ function buildBanner(event: RaceEventMsg, participants: ParticipantsMsg | null):
   }
 }
 
+const LogoAndTitle = memo(({ theme }: { theme: 'dark' | 'light' }) => {
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      <img
+        src={theme === 'dark' ? iconTransparent : iconTransparentLight}
+        alt="F1 Logo"
+        className="h-5 w-auto select-none pointer-events-none"
+        draggable="false"
+      />
+      <span className="font-semibold text-sm">Track N Race</span>
+    </div>
+  )
+})
+LogoAndTitle.displayName = 'LogoAndTitle'
+
+const TabSelector = memo(({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) => {
+  return (
+    <div style={{ WebkitAppRegion: 'no-drag' }} className="w-32">
+      <Select
+        options={TAB_OPTIONS}
+        value={TAB_OPTIONS.find((o) => o.value === tab) ?? null}
+        onChange={(opt) => opt && setTab(opt.value as Tab)}
+        placeholder="Settings"
+        styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
+        isSearchable={false}
+        menuPortalTarget={document.body}
+      />
+    </div>
+  )
+})
+TabSelector.displayName = 'TabSelector'
+
+interface PlaybackControlProps {
+  filename: string | undefined
+  onClose: () => void
+  onSelectFile: () => void
+}
+
+const PlaybackControl = memo(({ filename, onClose, onSelectFile }: PlaybackControlProps) => {
+  if (filename) {
+    return (
+      <div
+        className="flex items-center gap-1.5 shrink-0"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">
+          {filename}
+        </span>
+        <button
+          onClick={onClose}
+          className="p-1 text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={onSelectFile}
+      title="Load Session Data File (.tnrd)"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors shrink-0"
+    >
+      <Upload size={14} />
+    </button>
+  )
+})
+PlaybackControl.displayName = 'PlaybackControl'
+
+const SessionBadge = memo(
+  ({
+    sessionType,
+    theme,
+  }: {
+    sessionType: number | undefined
+    theme: 'dark' | 'light'
+  }) => {
+    if (sessionType !== undefined) {
+      const accent = sessionAccent(sessionType, theme === 'dark')
+      return (
+        <span
+          className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
+          style={{
+            backgroundColor: accent + '33',
+            color: accent,
+            border: `1px solid ${accent}66`,
+          }}
+        >
+          {SESSION_TYPES[sessionType] ?? 'Unknown'}
+        </span>
+      )
+    }
+
+    const offlineColor = theme === 'dark' ? '#a0a8b8' : '#565B70'
+    return (
+      <span
+        className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
+        style={{
+          backgroundColor: offlineColor + '33',
+          color: offlineColor,
+          border: `1px solid ${offlineColor}66`,
+        }}
+      >
+        Offline
+      </span>
+    )
+  }
+)
+SessionBadge.displayName = 'SessionBadge'
+
+const SessionTimer = memo(({ sessionTime }: { sessionTime: number | undefined }) => {
+  if (sessionTime === undefined) return null
+  const s = sessionTime
+  const formatted = `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+  return (
+    <div className="text-sm font-black tabular-nums text-[var(--text-primary)] shrink-0">
+      {formatted}
+    </div>
+  )
+})
+SessionTimer.displayName = 'SessionTimer'
+
+const CentreBanner = memo(({ activeBanner }: { activeBanner: BannerItem | null }) => {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      {activeBanner && (
+        <div className="flex items-center gap-2">
+          <span
+            className="text-xs font-black uppercase tracking-[0.2em]"
+            style={{ color: activeBanner.color }}
+          >
+            {activeBanner.label}
+          </span>
+          {activeBanner.sub && (
+            <>
+              <span className="text-xs text-[var(--text-secondary)]">·</span>
+              <span className="text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
+CentreBanner.displayName = 'CentreBanner'
+
+const TimeWindowSelector = memo(
+  ({ seconds, setSeconds }: { seconds: number; setSeconds: (s: number) => void }) => {
+    return (
+      <div style={{ WebkitAppRegion: 'no-drag' }} className="w-20">
+        <Select
+          options={WINDOW_OPTIONS}
+          value={WINDOW_OPTIONS.find((o) => o.value === seconds) ?? null}
+          onChange={(opt) => opt && setSeconds(opt.value as number)}
+          styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
+          isSearchable={false}
+          menuPortalTarget={document.body}
+        />
+      </div>
+    )
+  }
+)
+TimeWindowSelector.displayName = 'TimeWindowSelector'
+
+interface HeaderButtonsProps {
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
+  editOpen: boolean
+  setEditOpen: React.Dispatch<React.SetStateAction<boolean>>
+  tab: Tab
+}
+
+const HeaderButtons = memo(
+  ({ settingsOpen, setSettingsOpen, editOpen, setEditOpen, tab }: HeaderButtonsProps) => {
+    const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+    return (
+      <>
+        {/* Settings button */}
+        <button
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className={`p-1.5 rounded transition-colors ${
+            settingsOpen
+              ? 'bg-[var(--border-focus)] text-white'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
+          }`}
+        >
+          <Settings2 size={13} />
+        </button>
+
+        {/* Edit button — always visible, disabled on non-editable tabs */}
+        <button
+          onClick={() => editable && setEditOpen((v) => !v)}
+          title="Edit layout"
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className={`p-1.5 rounded transition-colors ${
+            !editable
+              ? 'text-[var(--text-inactive)] cursor-not-allowed'
+              : editOpen
+                ? 'bg-[var(--border-focus)] text-white'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
+          }`}
+        >
+          <Pencil size={13} />
+        </button>
+      </>
+    )
+  }
+)
+HeaderButtons.displayName = 'HeaderButtons'
+
+interface WindowControlsProps {
+  isFullscreen: boolean
+  isMaximized: boolean
+}
+
+const WindowControls = memo(({ isFullscreen, isMaximized }: WindowControlsProps) => {
+  return (
+    <div
+      className="flex self-stretch ml-2 -mr-4 shrink-0"
+      style={{ WebkitAppRegion: 'no-drag' }}
+    >
+      <button
+        onClick={() => window.windowControls.fullscreen()}
+        title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+      >
+        {isFullscreen ? (
+          <Shrink size={13} />
+        ) : (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <polyline points="0,3 0,0 3,0"/>
+            <polyline points="7,0 10,0 10,3"/>
+            <polyline points="10,7 10,10 7,10"/>
+            <polyline points="3,10 0,10 0,7"/>
+          </svg>
+        )}
+      </button>
+
+      <button
+        onClick={() => window.windowControls.minimize()}
+        title="Minimize"
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
+      </button>
+
+      <button
+        onClick={() => window.windowControls.maximize()}
+        title={isMaximized ? 'Restore' : 'Maximize'}
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+      >
+        {isMaximized ? (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+            <polyline points="3,0.5 9.5,0.5 9.5,7"/>
+            <rect x="0.5" y="3" width="6.5" height="6.5"/>
+          </svg>
+        ) : (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+            <rect x="0.5" y="0.5" width="9" height="9"/>
+          </svg>
+        )}
+      </button>
+
+      <button
+        onClick={() => window.windowControls.close()}
+        title="Close"
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+          <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
+        </svg>
+      </button>
+    </div>
+  )
+})
+WindowControls.displayName = 'WindowControls'
 
 export default function App() {
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
@@ -381,16 +661,27 @@ export default function App() {
     setScBanner({ label: labels[sc] ?? 'SAFETY CAR', color: colors[sc] ?? '#ffd700' })
   }, [session])
 
-  const protocolWarningBanner = protocolWarning
-    ? {
-        label: 'PROTOCOL MISMATCH DETECTED',
-        sub: `Receiving ${protocolWarning.detected_format} packets - override is set to ${protocolWarning.forced_format}`,
-        color: '#ff4646'
-      }
-    : null
+  const protocolWarningBanner = useMemo(() => {
+    if (!protocolWarning) return null
+    return {
+      label: 'PROTOCOL MISMATCH DETECTED',
+      sub: `Receiving ${protocolWarning.detected_format} packets - override is set to ${protocolWarning.forced_format}`,
+      color: '#ff4646'
+    }
+  }, [protocolWarning])
 
   // Protocol warning takes highest priority, followed by transient events, followed by SC/VSC/FL
-  const activeBanner = protocolWarningBanner ?? transientBanner ?? scBanner
+  const activeBanner = useMemo(() => {
+    return protocolWarningBanner ?? transientBanner ?? scBanner
+  }, [protocolWarningBanner, transientBanner, scBanner])
+  const handleClosePlayback = useCallback(() => {
+    window.playerBridge.close()
+  }, [])
+
+  const handleSelectPlaybackFile = useCallback(async () => {
+    const file = await window.fsBridge.selectTNRDFile()
+    if (file) window.playerBridge.load(file)
+  }, [])
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
   const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
@@ -453,202 +744,35 @@ export default function App() {
           : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: 'drag' }
         }
       >
-        <div className="flex items-center gap-2 shrink-0">
-          <img src={theme === 'dark' ? iconTransparent : iconTransparentLight} alt="F1 Logo" className="h-5 w-auto select-none pointer-events-none" draggable="false" />
-          <span className="font-semibold text-sm">Track N Race</span>
-        </div>
+        <LogoAndTitle theme={theme} />
 
-        {/* Tabs */}
-        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-32">
-          <Select
-            options={TAB_OPTIONS}
-            value={TAB_OPTIONS.find(o => o.value === tab) ?? null}
-            onChange={(opt) => opt && setTab(opt.value as Tab)}
-            placeholder="Settings"
-            styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
-            isSearchable={false}
-            menuPortalTarget={document.body}
-          />
-        </div>
+        <TabSelector tab={tab} setTab={setTab} />
 
-        {/* Playback Load Button / Filename Pill */}
-        {playbackState?.filename ? (
-          <div className="flex items-center gap-1.5 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">{playbackState.filename}</span>
-            <button onClick={() => window.playerBridge.close()} className="p-1 text-[var(--text-secondary)] hover:text-[#e10600] transition-colors">
-              <X size={14} />
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={async () => {
-              const file = await window.fsBridge.selectTNRDFile()
-              if (file) window.playerBridge.load(file)
-            }}
-            title="Load Session Data File (.tnrd)"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors shrink-0"
-          >
-            <Upload size={14} />
-          </button>
-        )}
+        <PlaybackControl
+          filename={playbackState?.filename}
+          onClose={handleClosePlayback}
+          onSelectFile={handleSelectPlaybackFile}
+        />
 
-        {session ? (
-          <span
-            className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
-            style={{
-              backgroundColor: sessionAccent(session.session_type, theme === 'dark') + '33',
-              color: sessionAccent(session.session_type, theme === 'dark'),
-              border: `1px solid ${sessionAccent(session.session_type, theme === 'dark')}66`,
-            }}
-          >
-            {SESSION_TYPES[session.session_type] ?? 'Unknown'}
-          </span>
-        ) : (
-          <span
-            className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
-            style={{
-              backgroundColor: (theme === 'dark' ? '#a0a8b8' : '#565B70') + '33',
-              color: theme === 'dark' ? '#a0a8b8' : '#565B70',
-              border: `1px solid ${theme === 'dark' ? '#a0a8b8' : '#565B70'}66`,
-            }}
-          >
-            Offline
-          </span>
-        )}
+        <SessionBadge sessionType={session?.session_type} theme={theme} />
 
         <div className="flex-1" />
 
-        {latest && (
-          <div className="text-sm font-black tabular-nums text-[var(--text-primary)] shrink-0">
-            {(() => { const s = latest.session_time; return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` })()}
-          </div>
-        )}
+        <SessionTimer sessionTime={latest?.session_time} />
 
-        {/* Centre banner — persistent SC/VSC/FL or transient events */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          {activeBanner && (
-            <div className="flex items-center gap-2">
-              <span
-                className="text-xs font-black uppercase tracking-[0.2em]"
-                style={{ color: activeBanner.color }}
-              >
-                {activeBanner.label}
-              </span>
-              {activeBanner.sub && (
-                <>
-                  <span className="text-xs text-[var(--text-secondary)]">·</span>
-                  <span className="text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        <CentreBanner activeBanner={activeBanner} />
 
-        {/* Time window */}
-        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-20">
-          <Select
-            options={WINDOW_OPTIONS}
-            value={WINDOW_OPTIONS.find(o => o.value === seconds) ?? null}
-            onChange={(opt) => opt && setSeconds(opt.value as number)}
-            styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
-            isSearchable={false}
-            menuPortalTarget={document.body}
-          />
-        </div>
+        <TimeWindowSelector seconds={seconds} setSeconds={setSeconds} />
 
-        {/* Settings button */}
-        <button
-          onClick={() => setSettingsOpen(true)}
-          title="Settings"
-          style={{ WebkitAppRegion: 'no-drag' }}
-          className={`p-1.5 rounded transition-colors ${
-            settingsOpen
-              ? 'bg-[var(--border-focus)] text-white'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
-          }`}
-        >
-          <Settings2 size={13} />
-        </button>
+        <HeaderButtons
+          settingsOpen={settingsOpen}
+          setSettingsOpen={setSettingsOpen}
+          editOpen={editOpen}
+          setEditOpen={setEditOpen}
+          tab={tab}
+        />
 
-        {/* Edit button — always visible, disabled on non-editable tabs */}
-        {(() => {
-          const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
-          return (
-            <button
-              onClick={() => editable && setEditOpen(v => !v)}
-              title="Edit layout"
-              style={{ WebkitAppRegion: 'no-drag' }}
-              className={`p-1.5 rounded transition-colors ${
-                !editable
-                  ? 'text-[var(--text-inactive)] cursor-not-allowed'
-                  : editOpen
-                    ? 'bg-[var(--border-focus)] text-white'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
-              }`}
-            >
-              <Pencil size={13} />
-            </button>
-          )
-        })()}
-
-        {/* Window controls */}
-        <div
-          className="flex self-stretch ml-2 -mr-4 shrink-0"
-          style={{ WebkitAppRegion: 'no-drag' }}
-        >
-          <button
-            onClick={() => window.windowControls.fullscreen()}
-            title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-          >
-            {isFullscreen ? (
-              <Shrink size={13} />
-            ) : (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-                <polyline points="0,3 0,0 3,0"/>
-                <polyline points="7,0 10,0 10,3"/>
-                <polyline points="10,7 10,10 7,10"/>
-                <polyline points="3,10 0,10 0,7"/>
-              </svg>
-            )}
-          </button>
-
-          <button
-            onClick={() => window.windowControls.minimize()}
-            title="Minimize"
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
-          </button>
-
-          <button
-            onClick={() => window.windowControls.maximize()}
-            title={isMaximized ? 'Restore' : 'Maximize'}
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-          >
-            {isMaximized ? (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-                <polyline points="3,0.5 9.5,0.5 9.5,7"/>
-                <rect x="0.5" y="3" width="6.5" height="6.5"/>
-              </svg>
-            ) : (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-                <rect x="0.5" y="0.5" width="9" height="9"/>
-              </svg>
-            )}
-          </button>
-
-          <button
-            onClick={() => window.windowControls.close()}
-            title="Close"
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-              <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
-            </svg>
-          </button>
-        </div>
+        <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} />
 
       </header>
       </div>
