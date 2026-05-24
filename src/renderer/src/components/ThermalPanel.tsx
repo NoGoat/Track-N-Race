@@ -37,7 +37,7 @@ export function wearColor(pct: number, isDark = true) {
   return '#C4162A'
 }
 
-export function TempRow({ label, value, color, noData, compact }: {
+export const TempRow = memo(function TempRow({ label, value, color, noData, compact }: {
   label: string; value: number; color: string; noData?: boolean; compact?: boolean
 }) {
   return (
@@ -48,9 +48,9 @@ export function TempRow({ label, value, color, noData, compact }: {
       </span>
     </div>
   )
-}
+})
 
-export function WearBar({ pct, blisters, noData, compact, isDark = true }: {
+export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, isDark = true }: {
   pct: number | null; blisters: number | null; noData?: boolean; compact?: boolean; isDark?: boolean
 }) {
   const color = pct !== null ? wearColor(pct, isDark) : '#4a4a4a'
@@ -76,9 +76,9 @@ export function WearBar({ pct, blisters, noData, compact, isDark = true }: {
       )}
     </div>
   )
-}
+})
 
-export function WheelCard({
+export const WheelCard = memo(function WheelCard({
   pos, surface, inner, brake, wear, blisters, noData, compact, isDark = true,
 }: {
   pos: string; surface: number; inner: number; brake: number
@@ -96,7 +96,7 @@ export function WheelCard({
       <WearBar pct={wear} blisters={blisters} noData={noData} compact={compact} isDark={isDark} />
     </div>
   )
-}
+})
 
 
 const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark }: Props) {

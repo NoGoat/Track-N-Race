@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo, memo } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
@@ -87,16 +87,16 @@ function getStatus(s: TyreSetEntry, sessionType: number | null): 'FITTED' | 'NEW
   return 'RETURNED'
 }
 
-function AllocationWearBar({ pct, isDark = true }: { pct: number; isDark?: boolean }) {
+const AllocationWearBar = memo(function AllocationWearBar({ pct, isDark = true }: { pct: number; isDark?: boolean }) {
   const color = wearColor(pct, isDark)
   return (
     <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
       <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
     </div>
   )
-}
+})
 
-function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
+const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
   const status     = getStatus(set, sessionType)
   const compName   = COMPOUND_NAMES[set.actual_compound] ?? String(set.actual_compound)
   const compColor  = VISUAL_COLORS[set.visual_compound] ?? '#ffffff'
@@ -156,7 +156,7 @@ function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark
       </span>
     </div>
   )
-}
+})
 
 const COLUMN_HEADERS = (
   <div className="flex gap-3 text-[9px] text-[var(--text-secondary)]">
@@ -167,7 +167,7 @@ const COLUMN_HEADERS = (
   </div>
 )
 
-function SetSection({ title, sets, isDark = true, sessionType }: { title: string; sets: TyreSetEntry[]; isDark?: boolean; sessionType: number | null }) {
+const SetSection = memo(function SetSection({ title, sets, isDark = true, sessionType }: { title: string; sets: TyreSetEntry[]; isDark?: boolean; sessionType: number | null }) {
   return (
     <div className="flex flex-col overflow-hidden">
       <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center justify-between">
@@ -179,9 +179,9 @@ function SetSection({ title, sets, isDark = true, sessionType }: { title: string
       </div>
     </div>
   )
-}
+})
 
-function EmptySection({ title, count }: { title: string; count: number }) {
+const EmptySection = memo(function EmptySection({ title, count }: { title: string; count: number }) {
   return (
     <div className="flex flex-col overflow-hidden">
       <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center justify-between">
@@ -202,14 +202,19 @@ function EmptySection({ title, count }: { title: string; count: number }) {
       </div>
     </div>
   )
-}
+})
 
 export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, sessionType }: Props) {
   const [expanded, setExpanded] = useState(false)
   const { ref: cardsRef, height: cardsHeight } = useSize()
 
-  const drySets = tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
-  const wetSets = tyreSets?.sets.filter(s =>  WET_COMPOUNDS.has(s.actual_compound)).sort(sortWet) ?? null
+  const drySets = useMemo(() => {
+    return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
+  }, [tyreSets])
+
+  const wetSets = useMemo(() => {
+    return tyreSets?.sets.filter(s =>  WET_COMPOUNDS.has(s.actual_compound)).sort(sortWet) ?? null
+  }, [tyreSets])
 
   const noData = !latest
   const compact = cardsHeight > 0 && cardsHeight < 720
