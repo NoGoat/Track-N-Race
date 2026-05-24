@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import iconTransparent from '../assets/icon_transparent.png'
@@ -21,13 +21,14 @@ interface Props {
   onDriversModeChange: (v: 'dots' | 'both' | 'labels') => void
   mapTimeout: number
   onMapTimeoutChange: (v: number) => void
-  protocolStatus: ProtocolStatusMsg | null
-  protocolWarning: ProtocolWarningMsg | null
+  detectedGameLabel: string
+  detectedWarningFormat: string | null
+  forcedWarningFormat: string | null
 }
 
 type Option<T> = { value: T; label: string }
 
-function SegmentedControl<T extends string | number | boolean>({
+const SegmentedControl = memo(function SegmentedControl<T extends string | number | boolean>({
   options, value, onChange,
 }: {
   options: Option<T>[]
@@ -51,9 +52,9 @@ function SegmentedControl<T extends string | number | boolean>({
       ))}
     </div>
   )
-}
+})
 
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+const Toggle = memo(function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       role="switch"
@@ -68,9 +69,9 @@ function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) =>
       }`} />
     </button>
   )
-}
+})
 
-function Row({ label, description, warning, children }: {
+const Row = memo(function Row({ label, description, warning, children }: {
   label: string
   description: React.ReactNode
   warning?: string
@@ -91,11 +92,11 @@ function Row({ label, description, warning, children }: {
       <div className="shrink-0">{children}</div>
     </div>
   )
-}
+})
 
 type RestartStatus = 'idle' | 'applying' | 'ok' | 'error'
 
-export default function Settings({
+const Settings = memo(function Settings({
   isOpen, onClose,
   tyreView, onTyreViewChange,
   tyreWearMode, onTyreWearModeChange,
@@ -104,7 +105,9 @@ export default function Settings({
   sectorColors, onSectorColorsChange,
   driversMode, onDriversModeChange,
   mapTimeout, onMapTimeoutChange,
-  protocolStatus, protocolWarning,
+  detectedGameLabel,
+  detectedWarningFormat,
+  forcedWarningFormat,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [showAbout, setShowAbout] = useState(false)
@@ -159,20 +162,7 @@ export default function Settings({
     window.electronStore.set('logging.enabled', val)
   }
 
-  function formatDetectedGame(status: ProtocolStatusMsg | null): string {
-    if (!status) return 'No data yet'
-    const { detected_format, active_format, override } = status
-    if (detected_format) {
-      return `${detected_format}`
-    }
-    if (override !== 'auto' && active_format) {
-      return `${active_format} (manual)`
-    }
-    if (active_format) {
-      return `${active_format} (last session)`
-    }
-    return 'No data yet'
-  }
+
 
   const inputCls = 'bg-[var(--bg-input)] border border-[var(--border-muted)] rounded-lg text-xs text-[var(--text-primary)] px-3 h-8 outline-none focus:border-[var(--border-focus)] transition-colors w-full tabular-nums'
 
@@ -311,7 +301,7 @@ export default function Settings({
         description="The protocol version currently detected from incoming UDP packets"
       >
         <span className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">
-          {formatDetectedGame(protocolStatus)}
+          {detectedGameLabel}
         </span>
       </Row>
       <Row
@@ -330,7 +320,7 @@ export default function Settings({
       </Row>
       
       {/* Seamless Protocol Warning Banner */}
-      {protocolWarning && (
+      {detectedWarningFormat && forcedWarningFormat && (
         <div className="flex items-center gap-3 px-4 py-3.5 mt-4 rounded-xl bg-red-950/20 border border-red-500/20">
           <div className="relative shrink-0">
             <span className="absolute inset-0 rounded-full bg-red-500/30 animate-ping" />
@@ -341,7 +331,7 @@ export default function Settings({
               Protocol mismatch detected
             </p>
             <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
-              Receiving {protocolWarning.detected_format} packets — override is set to {protocolWarning.forced_format}
+              Receiving {detectedWarningFormat} packets — override is set to {forcedWarningFormat}
             </p>
           </div>
         </div>
@@ -518,4 +508,6 @@ export default function Settings({
       </div>
     </div>
   )
-}
+})
+
+export default Settings

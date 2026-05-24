@@ -750,7 +750,29 @@ export default function App() {
     }
   }, [])
 
+  const handleCloseSettings = useCallback(() => {
+    setSettingsOpen(false)
+  }, [])
+
   const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+
+  const detectedGameLabel = useMemo(() => {
+    if (!protocolStatus) return 'No data yet'
+    const { detected_format, active_format, override } = protocolStatus
+    if (detected_format) {
+      return `${detected_format}`
+    }
+    if (override !== 'auto' && active_format) {
+      return `${active_format} (manual)`
+    }
+    if (active_format) {
+      return `${active_format} (last session)`
+    }
+    return 'No data yet'
+  }, [protocolStatus])
+
+  const detectedWarningFormat = protocolWarning?.detected_format ?? null
+  const forcedWarningFormat = protocolWarning?.forced_format ?? null
 
   // Transient event queue
   const tQueueRef    = useRef<BannerItem[]>([])
@@ -1354,7 +1376,7 @@ export default function App() {
       {settingsOpen && (
         <Settings
           isOpen={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
+          onClose={handleCloseSettings}
           tyreView={tyreView}
           onTyreViewChange={setTyreView}
           tyreWearMode={tyreWearMode}
@@ -1369,8 +1391,9 @@ export default function App() {
           onDriversModeChange={setDriversMode}
           mapTimeout={mapTimeout}
           onMapTimeoutChange={setMapTimeout}
-          protocolStatus={protocolStatus}
-          protocolWarning={protocolWarning}
+          detectedGameLabel={detectedGameLabel}
+          detectedWarningFormat={detectedWarningFormat}
+          forcedWarningFormat={forcedWarningFormat}
         />
       )}
 
