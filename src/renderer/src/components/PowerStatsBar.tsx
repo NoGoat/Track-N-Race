@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import type { StatusRow } from '../types'
 
-function Card({
+const Card = memo(function Card({
   label, value, unit, color, sub,
 }: {
   label: string; value: string; unit?: string; color?: string; sub?: string
@@ -18,7 +18,7 @@ function Card({
       {sub && <div className="text-[9px] mt-0.5 truncate text-[var(--text-secondary)]">{sub}</div>}
     </div>
   )
-}
+})
 
 interface VisibleCards {
   totalPower: boolean; ice: boolean; mguk: boolean; split: boolean

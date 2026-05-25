@@ -35,7 +35,7 @@ interface Props {
   isDark: boolean
 }
 
-function Card({
+const Card = memo(function Card({
   label,
   value,
   unit,
@@ -76,7 +76,7 @@ function Card({
       )}
     </div>
   )
-}
+})
 
 const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark }: Props) {
   const green  = isDark ? '#37872D' : '#137333'

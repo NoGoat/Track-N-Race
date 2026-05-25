@@ -177,7 +177,27 @@ const StatCard = memo(function StatCard({ label, value, unit, accent }: { label:
   )
 })
 
-function ProximityWidget({ timing, participants }: {
+function areProximityPropsEqual(prev: any, next: any) {
+  if (prev.participants !== next.participants) return false
+  if (!prev.timing || !next.timing) return prev.timing === next.timing
+  if (prev.timing.player_idx !== next.timing.player_idx) return false
+  if (prev.timing.cars.length !== next.timing.cars.length) return false
+  for (let i = 0; i < prev.timing.cars.length; i++) {
+    const c1 = prev.timing.cars[i]
+    const c2 = next.timing.cars[i]
+    if (
+      c1.idx !== c2.idx ||
+      c1.position !== c2.position ||
+      c1.gap_ms !== c2.gap_ms ||
+      c1.result_status !== c2.result_status
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+const ProximityWidget = memo(function ProximityWidget({ timing, participants }: {
   timing: TimingMsg; participants: ParticipantsMsg | null
 }) {
   const active = timing.cars
@@ -242,9 +262,23 @@ function ProximityWidget({ timing, participants }: {
       })}
     </div>
   )
+}, areProximityPropsEqual)
+
+function areMarshalPropsEqual(prev: any, next: any) {
+  if (prev.isDark !== next.isDark) return false
+  if (!prev.zones || !next.zones) return prev.zones === next.zones
+  if (prev.zones.length !== next.zones.length) return false
+  for (let i = 0; i < prev.zones.length; i++) {
+    const z1 = prev.zones[i]
+    const z2 = next.zones[i]
+    if (z1.flag !== z2.flag || z1.zone_start !== z2.zone_start) {
+      return false
+    }
+  }
+  return true
 }
 
-function MarshalStrip({ zones, isDark }: { zones: SessionMsg['marshal_zones']; isDark: boolean }) {
+const MarshalStrip = memo(function MarshalStrip({ zones, isDark }: { zones: SessionMsg['marshal_zones']; isDark: boolean }) {
   const valid = zones.filter(z => z.flag !== -1)
   if (valid.length === 0) return <p className="text-xs text-[var(--text-secondary)]">No zone data</p>
 
@@ -266,7 +300,7 @@ function MarshalStrip({ zones, isDark }: { zones: SessionMsg['marshal_zones']; i
       ))}
     </div>
   )
-}
+}, areMarshalPropsEqual)
 
 // ─── Main component ───────────────────────────────────────────────────────────
 

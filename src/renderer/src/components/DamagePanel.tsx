@@ -16,7 +16,7 @@ interface Props {
   isDark: boolean
 }
 
-function DamageCard({ label, v, connected, isDark }: { label: string; v: number; connected: boolean; isDark: boolean }) {
+const DamageCard = memo(function DamageCard({ label, v, connected, isDark }: { label: string; v: number; connected: boolean; isDark: boolean }) {
   const textColor = !connected ? undefined : v > 0 ? '#C4162A' : (isDark ? '#37872D' : '#137333')
   return (
     <div className="flex-1 min-w-0 px-3 py-2">
@@ -32,7 +32,7 @@ function DamageCard({ label, v, connected, isDark }: { label: string; v: number;
       </div>
     </div>
   )
-}
+})
 
 const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems, twoRow, isDark }: Props) {
   const allItems = [

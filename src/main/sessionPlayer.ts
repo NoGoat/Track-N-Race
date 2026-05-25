@@ -104,8 +104,8 @@ export function sweepTempDir() {
   }
 }
 
-// Run immediate sweep on startup
-sweepTempDir()
+// Sweep is now called explicitly from the main process (index.ts) once the single instance lock is verified,
+// to prevent secondary startup instances from unlinking temporary files of an active session.
 
 function cleanupTempFile() {
   if (activeTempFilePath) {

@@ -8,7 +8,7 @@ import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
 import { initSessionRecorder } from './sessionRecorder'
-import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange } from './sessionPlayer'
+import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange, sweepTempDir } from './sessionPlayer'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -252,6 +252,7 @@ app.whenReady().then(() => {
   }
 
   initSessionRecorder()
+  sweepTempDir()
 
   Menu.setApplicationMenu(null)
   startUdpReceiver({
