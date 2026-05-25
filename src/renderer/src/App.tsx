@@ -403,9 +403,10 @@ HeaderButtons.displayName = 'HeaderButtons'
 interface WindowControlsProps {
   isFullscreen: boolean
   isMaximized: boolean
+  showOnlyFullscreen?: boolean
 }
 
-const WindowControls = memo(({ isFullscreen, isMaximized }: WindowControlsProps) => {
+const WindowControls = memo(({ isFullscreen, isMaximized, showOnlyFullscreen }: WindowControlsProps) => {
   return (
     <div
       className="flex self-stretch ml-2 -mr-4 shrink-0"
@@ -428,40 +429,44 @@ const WindowControls = memo(({ isFullscreen, isMaximized }: WindowControlsProps)
         )}
       </button>
 
-      <button
-        onClick={() => window.windowControls.minimize()}
-        title="Minimize"
-        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-      >
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
-      </button>
+      {!showOnlyFullscreen && (
+        <>
+          <button
+            onClick={() => window.windowControls.minimize()}
+            title="Minimize"
+            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
+          </button>
 
-      <button
-        onClick={() => window.windowControls.maximize()}
-        title={isMaximized ? 'Restore' : 'Maximize'}
-        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-      >
-        {isMaximized ? (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-            <polyline points="3,0.5 9.5,0.5 9.5,7"/>
-            <rect x="0.5" y="3" width="6.5" height="6.5"/>
-          </svg>
-        ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-            <rect x="0.5" y="0.5" width="9" height="9"/>
-          </svg>
-        )}
-      </button>
+          <button
+            onClick={() => window.windowControls.maximize()}
+            title={isMaximized ? 'Restore' : 'Maximize'}
+            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+          >
+            {isMaximized ? (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+                <polyline points="3,0.5 9.5,0.5 9.5,7"/>
+                <rect x="0.5" y="3" width="6.5" height="6.5"/>
+              </svg>
+            ) : (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+                <rect x="0.5" y="0.5" width="9" height="9"/>
+              </svg>
+            )}
+          </button>
 
-      <button
-        onClick={() => window.windowControls.close()}
-        title="Close"
-        className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
-      >
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-          <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
-        </svg>
-      </button>
+          <button
+            onClick={() => window.windowControls.close()}
+            title="Close"
+            className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+              <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
+            </svg>
+          </button>
+        </>
+      )}
     </div>
   )
 })
@@ -645,6 +650,7 @@ const PlaybackLapSelector = memo(function PlaybackLapSelector({
 PlaybackLapSelector.displayName = 'PlaybackLapSelector'
 
 export default function App() {
+  const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -683,6 +689,7 @@ export default function App() {
   }), [rawTyresLayout])
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
+  const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
   const [driversMode, setDriversMode]   = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {
     const legacy = window.electronStore.get('showLabels', null) as boolean | null
     if (legacy === true) return 'both'
@@ -937,8 +944,8 @@ export default function App() {
             : 'sticky top-0 z-10 transition-colors duration-500'
         }`}
         style={activeBanner
-          ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: 'drag' }
-          : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: 'drag' }
+          ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
+          : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
         }
       >
         <LogoAndTitle theme={theme} />
@@ -979,17 +986,10 @@ export default function App() {
           <Radio size={13} />
         </button>
 
-        <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} />
+        <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} showOnlyFullscreen={actualNativeTitlebar} />
 
       </header>
       </div>
-
-      {/* Settings Modal */}
-      {settingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
-          <Settings onClose={() => setSettingsOpen(false)} />
-        </div>
-      )}
 
       {/* Analyzing Session Modal */}
       {playbackState?.isScanning && (
@@ -1417,6 +1417,8 @@ export default function App() {
           detectedGameLabel={detectedGameLabel}
           detectedWarningFormat={detectedWarningFormat}
           forcedWarningFormat={forcedWarningFormat}
+          nativeTitlebar={nativeTitlebar}
+          onNativeTitlebarChange={setNativeTitlebar}
         />
       )}
 

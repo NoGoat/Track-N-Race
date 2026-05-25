@@ -24,6 +24,8 @@ interface Props {
   detectedGameLabel: string
   detectedWarningFormat: string | null
   forcedWarningFormat: string | null
+  nativeTitlebar: boolean
+  onNativeTitlebarChange: (v: boolean) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -108,6 +110,8 @@ const Settings = memo(function Settings({
   detectedGameLabel,
   detectedWarningFormat,
   forcedWarningFormat,
+  nativeTitlebar,
+  onNativeTitlebarChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [showAbout, setShowAbout] = useState(false)
@@ -194,6 +198,13 @@ const Settings = memo(function Settings({
           options={[{ value: 'life' as const, label: 'Tyre Life' }, { value: 'wear' as const, label: 'Tyre Wear' }]}
           value={tyreWearMode} onChange={onTyreWearModeChange}
         />
+      </Row>
+      <Row
+        label="Native Titlebar"
+        description="Enable the operating system's native titlebar and window frame borders instead of the custom frameless titlebar."
+        warning="Requires restarting the application to apply."
+      >
+        <Toggle value={nativeTitlebar} onChange={onNativeTitlebarChange} />
       </Row>
     </div>
   )

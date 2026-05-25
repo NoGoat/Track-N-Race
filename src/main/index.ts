@@ -205,6 +205,7 @@ function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
 function createWindow(): void {
   const taskbarTheme = getWindowsTaskbarThemeSync()
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
+  const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
 
   const win = new BrowserWindow({
     width: 1600,
@@ -212,7 +213,7 @@ function createWindow(): void {
     minWidth: 1200,
     minHeight: 700,
     backgroundColor: '#0f172a',
-    frame: false,
+    frame: useNativeTitlebar,
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
