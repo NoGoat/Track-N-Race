@@ -249,19 +249,20 @@ function drawDrsZone(
   ctx: CanvasRenderingContext2D,
   pts: [number, number][],
   scale: number, ox: number, oy: number,
+  zoomFactor: number = 1,
 ) {
   if (pts.length < 2) return
   ctx.beginPath()
   ctx.strokeStyle = DRS_COLOR
-  ctx.lineWidth   = DRS_PX
+  ctx.lineWidth   = DRS_PX * zoomFactor
   ctx.lineCap     = 'butt'
   ctx.lineJoin    = 'miter'
-  ctx.setLineDash([3, 3])
+  ctx.setLineDash([3 * zoomFactor, 3 * zoomFactor])
   for (let i = 0; i < pts.length; i++) {
     const [nx, ny] = perp(pts, i)
     const [cx2, cy2] = toCanvas(pts[i], scale, ox, oy)
-    const px = cx2 + nx * DRS_OFFSET
-    const py = cy2 + ny * DRS_OFFSET
+    const px = cx2 + nx * (DRS_OFFSET * zoomFactor)
+    const py = cy2 + ny * (DRS_OFFSET * zoomFactor)
     if (i === 0) ctx.moveTo(px, py)
     else         ctx.lineTo(px, py)
   }
@@ -273,11 +274,13 @@ function drawSpeedTrap(
   ctx: CanvasRenderingContext2D,
   pt: [number, number],
   scale: number, ox: number, oy: number,
+  zoomFactor: number = 1,
 ) {
   const [cx2, cy2] = toCanvas(pt, scale, ox, oy)
   ctx.strokeStyle = TRAP_COLOR
-  ctx.lineWidth   = 2
-  for (const r of [TRAP_R, TRAP_R + 5, TRAP_R + 10]) {
+  ctx.lineWidth   = 2 * zoomFactor
+  const trapR = TRAP_R * zoomFactor
+  for (const r of [trapR, trapR + 5 * zoomFactor, trapR + 10 * zoomFactor]) {
     ctx.beginPath()
     ctx.arc(cx2, cy2, r, 0, Math.PI * 2)
     ctx.stroke()
@@ -290,16 +293,18 @@ function drawStartFinish(
   normalPts: [number, number][],
   idx: number,
   scale: number, ox: number, oy: number,
+  zoomFactor: number = 1,
   colorOverride?: string,
 ) {
   const [nx, ny] = perp(normalPts, idx)
   const [cx2, cy2] = toCanvas(pt, scale, ox, oy)
   ctx.beginPath()
   ctx.strokeStyle = colorOverride ?? SF_COLOR
-  ctx.lineWidth   = 2.5
+  ctx.lineWidth   = 2.5 * zoomFactor
   ctx.lineCap     = 'round'
-  ctx.moveTo(cx2 - nx * SF_HALF, cy2 - ny * SF_HALF)
-  ctx.lineTo(cx2 + nx * SF_HALF, cy2 + ny * SF_HALF)
+  const sfHalf = SF_HALF * zoomFactor
+  ctx.moveTo(cx2 - nx * sfHalf, cy2 - ny * sfHalf)
+  ctx.lineTo(cx2 + nx * sfHalf, cy2 + ny * sfHalf)
   ctx.stroke()
 }
 
@@ -307,15 +312,17 @@ function drawSectorJunction(
   ctx: CanvasRenderingContext2D,
   j: SectorJunction,
   scale: number, ox: number, oy: number,
-  colorOverride?: string,
+  colorOverride: string | undefined,
+  zoomFactor: number = 1,
 ) {
   const [cx2, cy2] = toCanvas(j.pt, scale, ox, oy)
   ctx.beginPath()
   ctx.strokeStyle = colorOverride ?? j.color
-  ctx.lineWidth   = 3
+  ctx.lineWidth   = 3 * zoomFactor
   ctx.lineCap     = 'round'
-  ctx.moveTo(cx2 - j.nx * JUNC_HALF, cy2 - j.ny * JUNC_HALF)
-  ctx.lineTo(cx2 + j.nx * JUNC_HALF, cy2 + j.ny * JUNC_HALF)
+  const juncHalf = JUNC_HALF * zoomFactor
+  ctx.moveTo(cx2 - j.nx * juncHalf, cy2 - j.ny * juncHalf)
+  ctx.lineTo(cx2 + j.nx * juncHalf, cy2 + j.ny * juncHalf)
   ctx.stroke()
 }
 
@@ -422,34 +429,36 @@ function renderFrame(
   sectorColors: boolean,
   driversMode: 'dots' | 'both' | 'labels',
   layout: { scale: number; ox: number; oy: number },
+  effectiveZoom: number = 1,
 ) {
   ctx.clearRect(0, 0, cw, ch)
   const { scale, ox, oy } = layout
+  const zoomFactor = Math.sqrt(effectiveZoom)
 
   const trackColor = isDark ? '#ffffff' : '#000000'
   const colors = isDark ? SECTOR_COLORS_DARK : SECTOR_COLORS_LIGHT
 
   for (const sector of prep.sectors) {
     const color = sectorColors ? (colors[sector.index - 1] ?? trackColor) : trackColor
-    drawPolyline(ctx, sector.points, scale, ox, oy, color, TRACK_PX)
+    drawPolyline(ctx, sector.points, scale, ox, oy, color, TRACK_PX * zoomFactor)
   }
 
   for (let idx = 0; idx < prep.junctions.length; idx++) {
     const j = prep.junctions[idx]
     const color = sectorColors ? trackColor : (colors[idx + 1] ?? trackColor)
-    drawSectorJunction(ctx, j, scale, ox, oy, color)
+    drawSectorJunction(ctx, j, scale, ox, oy, color, zoomFactor)
   }
 
   for (const zone of prep.drsZones) {
-    drawDrsZone(ctx, zone.track_points, scale, ox, oy)
+    drawDrsZone(ctx, zone.track_points, scale, ox, oy, zoomFactor)
   }
 
   for (const trap of prep.speedTraps) {
-    drawSpeedTrap(ctx, trap, scale, ox, oy)
+    drawSpeedTrap(ctx, trap, scale, ox, oy, zoomFactor)
   }
 
   if (prep.startFinish) {
-    drawStartFinish(ctx, prep.startFinish, prep.s1pts, prep.sfIdx, scale, ox, oy, sectorColors ? trackColor : undefined)
+    drawStartFinish(ctx, prep.startFinish, prep.s1pts, prep.sfIdx, scale, ox, oy, zoomFactor, sectorColors ? trackColor : undefined)
   }
 
   if (cars) {
@@ -668,7 +677,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             layout = camRef.current ?? baseLayout
           }
 
-          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout)
+          const effectiveZoom = layout.scale / baseLayout.scale
+          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom)
         }
       }
       rafRef.current = requestAnimationFrame(loop)
