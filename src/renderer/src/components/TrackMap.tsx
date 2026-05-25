@@ -5,11 +5,17 @@ import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import type { CarPosition, ParticipantsMsg } from '../types'
 
-const FOLLOW_ZOOM = 4
-
 type DriverOption = { value: number; label: string }
+type ZoomOption = { value: number; label: string }
 
-function buildSelectStyles(isDark: boolean): StylesConfig<DriverOption> {
+const ZOOM_OPTIONS: ZoomOption[] = [
+  { value: 2, label: '2x' },
+  { value: 4, label: '4x' },
+  { value: 8, label: '8x' },
+  { value: 16, label: '16x' },
+]
+
+function buildSelectStyles(isDark: boolean): StylesConfig<any> {
   return {
     control: (base, state) => {
       const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
@@ -484,6 +490,30 @@ const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDar
 })
 FollowDriverSelector.displayName = 'FollowDriverSelector'
 
+interface ZoomSelectorProps {
+  zoomLevel: number
+  onChange: (opt: SingleValue<ZoomOption>) => void
+  isDark: boolean
+}
+
+const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) => {
+  const styles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const val = useMemo(() => ZOOM_OPTIONS.find(o => o.value === zoomLevel) ?? ZOOM_OPTIONS[1], [zoomLevel])
+  
+  return (
+    <div className="w-20 shrink-0">
+      <Select<ZoomOption>
+        value={val}
+        options={ZOOM_OPTIONS}
+        onChange={onChange}
+        isSearchable={false}
+        styles={styles}
+      />
+    </div>
+  )
+})
+ZoomSelector.displayName = 'ZoomSelector'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -513,6 +543,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const selectedDriverIdxRef = useRef<number | null>(null)
   const camRef = useRef<{ scale: number; ox: number; oy: number } | null>(null)
   selectedDriverIdxRef.current = selectedDriverIdx
+
+  const [zoomLevel, setZoomLevel] = useState<number>(4)
+  const zoomLevelRef = useRef<number>(4)
+  zoomLevelRef.current = zoomLevel
 
   const map = trackId != null ? TRACK_MAPS[trackId] ?? null : null
 
@@ -609,7 +643,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             if (car && (car.x !== 0 || car.z !== 0)) {
               const [vx, vy] = rawToViewBox(car.x, car.z, map.transform)
               const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
-              const followScale = baseLayout.scale * FOLLOW_ZOOM
+              const followScale = baseLayout.scale * zoomLevelRef.current
               const LERP = 0.12
               if (!camRef.current) {
                 camRef.current = { scale: baseLayout.scale, ox: 0, oy: 0 }
@@ -666,6 +700,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     setSelectedDriverIdx(opt?.value ?? null)
   }, [])
 
+  const handleZoomChange = useCallback((opt: SingleValue<ZoomOption>) => {
+    setZoomLevel(opt?.value ?? 4)
+  }, [])
+
   return (
     <div ref={wrapRef} className="relative w-full h-full">
       {map
@@ -680,6 +718,13 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       }
       {map && (driverOptions.length > 0 || onToggleFullscreen) && (
         <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {selectedDriverIdx !== null && (
+            <ZoomSelector
+              zoomLevel={zoomLevel}
+              onChange={handleZoomChange}
+              isDark={isDark}
+            />
+          )}
           {driverOptions.length > 0 && (
             <FollowDriverSelector
               selectedDriverIdx={selectedDriverIdx}
