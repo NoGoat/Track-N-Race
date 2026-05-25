@@ -148,19 +148,56 @@ bool IsSystemDarkMode() {
     return value == 0;
 }
 
+bool isMicaSupported = false;
+
+typedef void (WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
+bool CheckMicaSupport() {
+    HMODULE hMod = GetModuleHandleW(L"ntdll.dll");
+    if (hMod) {
+        RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
+        if (pRtlGetVersion) {
+            RTL_OSVERSIONINFOW osvi = { 0 };
+            osvi.dwOSVersionInfoSize = sizeof(osvi);
+            pRtlGetVersion(&osvi);
+            return osvi.dwBuildNumber >= 22000;
+        }
+    }
+    return false;
+}
+
+void SetLabelText(HWND hLabel, const wchar_t* text) {
+    if (!hLabel) return;
+    if (isMicaSupported && hMainWindow) {
+        RECT rc;
+        GetWindowRect(hLabel, &rc);
+        MapWindowPoints(HWND_DESKTOP, hMainWindow, (LPPOINT)&rc, 2);
+        InvalidateRect(hMainWindow, &rc, TRUE);
+    }
+    SetWindowTextW(hLabel, text);
+}
+
 void UpdateThemeColors() {
     bool isDark = IsSystemDarkMode();
     if (hBgBrush) {
         DeleteObject(hBgBrush);
     }
-    if (isDark) {
-        bgColor = RGB(32, 32, 32);
-        textColor = RGB(255, 255, 255);
+    
+    if (isMicaSupported) {
+        // When Mica is active, the window background must be black for DWM transparency to work
+        bgColor = RGB(0, 0, 0);
+        textColor = isDark ? RGB(255, 255, 255) : RGB(0, 0, 0);
         hBgBrush = CreateSolidBrush(bgColor);
     } else {
-        bgColor = GetSysColor(COLOR_WINDOW);
-        textColor = GetSysColor(COLOR_WINDOWTEXT);
-        hBgBrush = CreateSolidBrush(bgColor);
+        if (isDark) {
+            bgColor = RGB(32, 32, 32);
+            textColor = RGB(255, 255, 255);
+            hBgBrush = CreateSolidBrush(bgColor);
+        } else {
+            bgColor = GetSysColor(COLOR_WINDOW);
+            textColor = GetSysColor(COLOR_WINDOWTEXT);
+            hBgBrush = CreateSolidBrush(bgColor);
+        }
     }
     
     if (hMainWindow) {
@@ -170,6 +207,41 @@ void UpdateThemeColors() {
         // Apply dark title bar (DWM)
         BOOL useDark = isDark ? TRUE : FALSE;
         DwmSetWindowAttribute(hMainWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDark, sizeof(useDark));
+        
+        if (isMicaSupported) {
+            // Extend the frame into the client area
+            MARGINS margins = { -1 };
+            DwmExtendFrameIntoClientArea(hMainWindow, &margins);
+
+            // Set Mica backdrop
+            DWORD buildNumber = 0;
+            HMODULE hMod = GetModuleHandleW(L"ntdll.dll");
+            if (hMod) {
+                RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
+                if (pRtlGetVersion) {
+                    RTL_OSVERSIONINFOW osvi = { 0 };
+                    osvi.dwOSVersionInfoSize = sizeof(osvi);
+                    pRtlGetVersion(&osvi);
+                    buildNumber = osvi.dwBuildNumber;
+                }
+            }
+
+            if (buildNumber >= 22621) {
+                // Windows 11 22H2+
+                #ifndef DWMWA_SYSTEMBACKDROP_TYPE
+                #define DWMWA_SYSTEMBACKDROP_TYPE 38
+                #endif
+                int backdrop = 2; // DWMSBT_MAINWINDOW (Standard Mica)
+                DwmSetWindowAttribute(hMainWindow, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+            } else if (buildNumber >= 22000) {
+                // Windows 11 21H2 (original release)
+                #ifndef DWMWA_MICA_EFFECT
+                #define DWMWA_MICA_EFFECT 1029
+                #endif
+                BOOL enableMica = TRUE;
+                DwmSetWindowAttribute(hMainWindow, DWMWA_MICA_EFFECT, &enableMica, sizeof(enableMica));
+            }
+        }
         
         // Native explorer light/dark control themes
         const wchar_t* themeName = isDark ? L"DarkMode_Explorer" : L"Explorer";
@@ -196,7 +268,7 @@ void SelectDirectory() {
                 PWSTR pszFilePath;
                 if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath))) {
                     outputDirectory = pszFilePath;
-                    SetWindowTextW(hLblDirectory, pszFilePath);
+                    SetLabelText(hLblDirectory, pszFilePath);
                     CoTaskMemFree(pszFilePath);
                 }
                 psi->Release();
@@ -211,7 +283,7 @@ void CloseActiveStream() {
     if (activeGzip) {
         gzclose(activeGzip);
         activeGzip = NULL;
-        SetWindowTextW(hLblStatus, L"Status: Idle");
+        SetLabelText(hLblStatus, L"Status: Idle");
     }
     currentTrackId = -1;
     currentSessionType = -1;
@@ -270,7 +342,7 @@ void StartNewStream(int trackId, int sessionType, int format) {
 
         // UI Label update
         std::wstring statusStr = L"Recording: " + filenameW.substr(0, 30) + L"...";
-        SetWindowTextW(hLblStatus, statusStr.c_str());
+        SetLabelText(hLblStatus, statusStr.c_str());
     }
 }
 
@@ -340,7 +412,7 @@ void TruncateTimeline(float newSessionTime) {
 
     // 7. Update status bar to indicate rewind event
     std::wstring statusMsg = L"Flashback: Resuming from " + std::to_wstring((int)newSessionTime) + L"s...";
-    SetWindowTextW(hLblStatus, statusMsg.c_str());
+    SetLabelText(hLblStatus, statusMsg.c_str());
 }
 
 // Writes a telemetry row to the gzip file
@@ -519,12 +591,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     isRecording = !isRecording;
                     if (isRecording) {
                         SetWindowTextW(hBtnToggle, L"Stop Recording");
-                        SetWindowTextW(hLblStatus, L"Status: Waiting for game data...");
+                        SetLabelText(hLblStatus, L"Status: Waiting for game data...");
                     } else {
                         std::lock_guard<std::mutex> lock(streamMutex);
                         CloseActiveStream();
                         SetWindowTextW(hBtnToggle, L"Start Recording");
-                        SetWindowTextW(hLblStatus, L"Status: Idle");
+                        SetLabelText(hLblStatus, L"Status: Idle");
                     }
                 }
             }
@@ -534,8 +606,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case WM_CTLCOLORSTATIC: {
             HDC hdc = (HDC)wParam;
             SetTextColor(hdc, textColor);
-            SetBkColor(hdc, bgColor);
-            return (INT_PTR)hBgBrush;
+            if (isMicaSupported) {
+                SetBkMode(hdc, TRANSPARENT);
+                return (INT_PTR)GetStockObject(NULL_BRUSH);
+            } else {
+                SetBkColor(hdc, bgColor);
+                return (INT_PTR)hBgBrush;
+            }
         }
 
         case WM_SETTINGCHANGE: {
@@ -562,6 +639,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    isMicaSupported = CheckMicaSupport();
 
     const wchar_t CLASS_NAME[]  = L"RecorderWindowClass";
     
