@@ -484,20 +484,16 @@ WindowControls.displayName = 'WindowControls'
 
 interface PlaybackControlsBarProps {
   isPlaying: boolean
-  speed: number
   onSeekBackward: () => void
   onTogglePlay: () => void
   onSeekForward: () => void
-  selectStyles: any
 }
 
 const PlaybackControlsBar = memo(function PlaybackControlsBar({
   isPlaying,
-  speed,
   onSeekBackward,
   onTogglePlay,
   onSeekForward,
-  selectStyles
 }: PlaybackControlsBarProps) {
   return (
     <div className="flex items-center gap-3">
@@ -519,25 +515,6 @@ const PlaybackControlsBar = memo(function PlaybackControlsBar({
       >
         <ChevronRight size={18} />
       </button>
-      <div className="w-[4.5rem]">
-        <Select
-          value={{ value: speed, label: `${speed}x` }}
-          onChange={(option) => {
-            if (option) window.playerBridge.setSpeed(option.value)
-          }}
-          options={[
-            { value: 0.25, label: '0.25x' },
-            { value: 0.5, label: '0.5x' },
-            { value: 1, label: '1x' },
-            { value: 2, label: '2x' },
-            { value: 4, label: '4x' },
-          ]}
-          styles={selectStyles}
-          components={selectComponents}
-          menuPlacement="top"
-          isSearchable={false}
-        />
-      </div>
     </div>
   )
 })
@@ -1558,15 +1535,37 @@ export default function App() {
 
       {/* Playback Controls Bar */}
       {playbackState && playbackState.filename && (
-        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center px-6 gap-6 z-40 select-none">
+        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 gap-6 z-40 select-none">
           <PlaybackControlsBar
             isPlaying={playbackState.isPlaying}
-            speed={playbackState.speed}
             onSeekBackward={handleSeekBackward}
             onTogglePlay={handleTogglePlay}
             onSeekForward={handleSeekForward}
-            selectStyles={selectStyles}
           />
+          <PlaybackProgressTracker
+            currentTime={playbackState.currentTime}
+            progressPct={playbackState.progressPct}
+            totalTime={playbackState.totalTime}
+          />
+          <div className="w-[4.5rem] shrink-0">
+            <Select
+              value={{ value: playbackState.speed, label: `${playbackState.speed}x` }}
+              onChange={(option) => {
+                if (option) window.playerBridge.setSpeed(option.value)
+              }}
+              options={[
+                { value: 0.25, label: '0.25x' },
+                { value: 0.5, label: '0.5x' },
+                { value: 1, label: '1x' },
+                { value: 2, label: '2x' },
+                { value: 4, label: '4x' },
+              ]}
+              styles={selectStyles}
+              components={selectComponents}
+              menuPlacement="top"
+              isSearchable={false}
+            />
+          </div>
           {speedRpmBlocks && speedRpmBlocks.length > 0 && (
             <PlaybackLapSelector
               speedRpmBlocks={speedRpmBlocks}
@@ -1576,11 +1575,6 @@ export default function App() {
               selectStyles={selectStyles}
             />
           )}
-          <PlaybackProgressTracker
-            currentTime={playbackState.currentTime}
-            progressPct={playbackState.progressPct}
-            totalTime={playbackState.totalTime}
-          />
         </div>
       )}
 
