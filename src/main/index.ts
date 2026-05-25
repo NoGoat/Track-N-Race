@@ -151,6 +151,10 @@ ipcMain.handle('protocol-get-config', () => {
   return getProtocolConfig()
 })
 
+ipcMain.handle('system:get-accent-color', () => {
+  return getWindowsAccentColor()
+})
+
 ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
   setOverride(value)
 })
@@ -183,6 +187,25 @@ ipcMain.on('switch-to-recorder', () => {
     )
   }
 })
+
+function getWindowsAccentColor(): string {
+  if (process.platform !== 'win32') return '#5794F2'
+  try {
+    const stdout = execSync(
+      'reg query HKCU\\Software\\Microsoft\\Windows\\DWM /v AccentColor',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+    const match = /AccentColor\s+REG_DWORD\s+(0x[\da-fA-F]+)/i.exec(stdout)
+    if (match) {
+      const val = parseInt(match[1], 16)
+      const r = val & 0xFF
+      const g = (val >> 8) & 0xFF
+      const b = (val >> 16) & 0xFF
+      return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+    }
+  } catch (e) {}
+  return '#5794F2'
+}
 
 function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
   if (process.platform !== 'win32') return 'dark'
@@ -293,11 +316,12 @@ app.whenReady().then(() => {
 
   // Track the current icon path to prevent redundant win.setIcon calls
   let lastIconPath = ''
+  let lastAccentColor = ''
 
   function updateTaskbarIconIfNeeded(): void {
     const taskbarTheme = getWindowsTaskbarThemeSync()
     const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
-    
+
     if (currentIconPath !== lastIconPath) {
       lastIconPath = currentIconPath
       for (const win of BrowserWindow.getAllWindows()) {
@@ -308,18 +332,31 @@ app.whenReady().then(() => {
     }
   }
 
-  // Initialize with startup icon theme
+  function updateAccentColorIfNeeded(): void {
+    const color = getWindowsAccentColor()
+    if (color !== lastAccentColor) {
+      lastAccentColor = color
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('system-accent-color', color)
+      }
+    }
+  }
+
+  // Initialize with startup values
   const initialTheme = getWindowsTaskbarThemeSync()
   lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
+  lastAccentColor = getWindowsAccentColor()
 
   // Update on nativeTheme change
   nativeTheme.on('updated', () => {
     updateTaskbarIconIfNeeded()
+    updateAccentColorIfNeeded()
   })
 
   // Poll fallback (1.5s interval) to guarantee detection of custom taskbar theme changes
   const pollInterval = setInterval(() => {
     updateTaskbarIconIfNeeded()
+    updateAccentColorIfNeeded()
   }, 1500)
 
   app.on('will-quit', () => {

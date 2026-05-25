@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from '
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio, Activity, Globe, Users, Sliders, Zap, Disc, BarChart2 } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
 import LiveStats from './components/LiveStats'
@@ -106,6 +106,16 @@ const TAB_LABELS: Record<Tab, string> = {
 }
 
 const TAB_OPTIONS = (['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
+const TAB_ORDER: Tab[] = ['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc']
+const TAB_ICONS: Record<Tab, React.ElementType> = {
+  core:         Activity,
+  session:      Globe,
+  timing_tower: Users,
+  input:        Sliders,
+  power:        Zap,
+  tyres:        Disc,
+  misc:         BarChart2,
+}
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
 const selectStyles = buildSelectStyles(true)
 
@@ -188,8 +198,8 @@ function buildBanner(event: RaceEventMsg, participants: ParticipantsMsg | null):
     case 'RCWN': return { label: 'Race Winner',    sub: lastName(participants, event.car_idx ?? 0), color: '#FFD700' }
     case 'CHQF': return { label: 'Chequered Flag', color: '#7a7a7a' }
     case 'LGOT': return { label: 'Lights Out',     color: '#37872D' }
-    case 'SSTA': return { label: 'Session Start',  color: '#5794F2' }
-    case 'SEND': return { label: 'Session End',    color: '#5794F2' }
+    case 'SSTA': return { label: 'Session Start',  color: 'var(--accent)' }
+    case 'SEND': return { label: 'Session End',    color: 'var(--accent)' }
     case 'OVTK': return null
     case 'SPTP': return null
     default:     return null
@@ -211,23 +221,114 @@ const LogoAndTitle = memo(({ theme }: { theme: 'dark' | 'light' }) => {
 })
 LogoAndTitle.displayName = 'LogoAndTitle'
 
-const TabSelector = memo(({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) => {
-  return (
-    <div style={{ WebkitAppRegion: 'no-drag' }} className="w-32">
-      <Select
-        options={TAB_OPTIONS}
-        value={TAB_OPTIONS.find((o) => o.value === tab) ?? null}
-        onChange={(opt) => opt && setTab(opt.value as Tab)}
-        placeholder="Settings"
-        styles={selectStyles}
-        components={selectComponents}
-        isSearchable={false}
-        menuPortalTarget={document.body}
-      />
+const SidebarNavItem = memo(({ icon: Icon, label, active, onClick }: {
+  icon: React.ElementType
+  label: string
+  active: boolean
+  onClick: () => void
+}) => (
+  <div className="relative group w-full">
+    <button
+      onClick={onClick}
+      className={`w-full h-9 flex items-center justify-center rounded-md transition-all relative ${
+        active
+          ? 'text-[var(--text-secondary)]'
+          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
+      }`}
+    >
+      {active && (
+        <span
+          className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r-full"
+          style={{ background: 'var(--accent)' }}
+        />
+      )}
+      <Icon size={15} />
+    </button>
+    <div className="absolute left-full ml-2.5 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-md text-[11px] font-mono whitespace-nowrap bg-[var(--bg-menu)] border border-[var(--border)] text-[var(--text-primary)] opacity-0 group-hover:opacity-100 pointer-events-none z-[60] transition-opacity duration-150 select-none shadow-xl">
+      {label}
     </div>
+  </div>
+))
+SidebarNavItem.displayName = 'SidebarNavItem'
+
+const SidebarActionItem = memo(({ icon: Icon, label, active, disabled, onClick }: {
+  icon: React.ElementType
+  label: string
+  active?: boolean
+  disabled?: boolean
+  onClick: () => void
+}) => (
+  <div className="relative group w-full">
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`w-full h-9 flex items-center justify-center rounded-md transition-all ${
+        disabled
+          ? 'text-[var(--text-inactive)] cursor-not-allowed'
+          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
+      }`}
+      style={!disabled && active ? { background: 'color-mix(in srgb, var(--accent) 12%, transparent)', color: 'var(--accent)' } : undefined}
+    >
+      <Icon size={14} />
+    </button>
+    <div className="absolute left-full ml-2.5 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-md text-[11px] font-mono whitespace-nowrap bg-[var(--bg-menu)] border border-[var(--border)] text-[var(--text-primary)] opacity-0 group-hover:opacity-100 pointer-events-none z-[60] transition-opacity duration-150 select-none shadow-xl">
+      {label}
+    </div>
+  </div>
+))
+SidebarActionItem.displayName = 'SidebarActionItem'
+
+interface SidebarProps {
+  tab: Tab
+  setTab: (t: Tab) => void
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
+  editOpen: boolean
+  setEditOpen: React.Dispatch<React.SetStateAction<boolean>>
+}
+
+const Sidebar = memo(({ tab, setTab, settingsOpen, setSettingsOpen, editOpen, setEditOpen }: SidebarProps) => {
+  const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+  return (
+    <aside
+      className="w-12 shrink-0 flex flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
+      <nav className="flex-1 flex flex-col items-center gap-0.5 py-2 w-full px-1.5">
+        {TAB_ORDER.map(tabKey => (
+          <SidebarNavItem
+            key={tabKey}
+            icon={TAB_ICONS[tabKey]}
+            label={TAB_LABELS[tabKey]}
+            active={tab === tabKey}
+            onClick={() => setTab(tabKey)}
+          />
+        ))}
+      </nav>
+      <div className="flex flex-col items-center gap-0.5 pb-2 pt-2 border-t border-[var(--border)] w-full px-1.5">
+        <SidebarActionItem
+          icon={Settings2}
+          label="Settings"
+          active={settingsOpen}
+          onClick={() => setSettingsOpen(!settingsOpen)}
+        />
+        <SidebarActionItem
+          icon={Pencil}
+          label="Edit Layout"
+          active={editOpen}
+          disabled={!editable}
+          onClick={() => editable && setEditOpen(v => !v)}
+        />
+        <SidebarActionItem
+          icon={Radio}
+          label="Switch to Recorder"
+          onClick={() => window.windowControls.switchToRecorder()}
+        />
+      </div>
+    </aside>
   )
 })
-TabSelector.displayName = 'TabSelector'
+Sidebar.displayName = 'Sidebar'
 
 interface PlaybackControlProps {
   filename: string | undefined
@@ -601,9 +702,9 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         onChange={handleChange}
-        className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2] [&::-webkit-slider-thumb]:cursor-pointer"
+        className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:cursor-pointer"
         style={{
-          background: `linear-gradient(to right, #5794F2 ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
+          background: `linear-gradient(to right, var(--accent) ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
         }}
       />
       <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(totalTime)}</span>
@@ -665,6 +766,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
+
 
 
   const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
@@ -841,7 +943,7 @@ export default function App() {
       const item: BannerItem = {
         label: 'New Race Leader',
         sub: lastName(participantsRef.current, leader.idx),
-        color: '#5794F2',
+        color: 'var(--accent)',
       }
       tQueueRef.current.push(item)
       if (!tShowingRef.current) dequeueRef.current()
@@ -904,99 +1006,105 @@ export default function App() {
 
   return (
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
-      {/* Dynamic Floating Event Banner for Fullscreen Mode */}
-      {isFullscreen && !headerVisible && activeBanner && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
-          <div
-            className="flex items-center gap-3 px-4 py-1.5 rounded-full border shadow-lg backdrop-blur-md animate-banner-in text-xs"
-            style={{
-              background: `rgba(10, 15, 30, 0.85)`,
-              backgroundImage: `linear-gradient(rgba(255,255,255,0.02), rgba(255,255,255,0))`,
-              borderColor: `${activeBanner.color}50`,
-              boxShadow: `0 4px 20px -2px ${activeBanner.color}15, 0 2px 8px -1px rgba(0,0,0,0.5)`,
-            }}
-          >
-            {/* Accent dot indicator */}
-            <div
-              className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
-              style={{ backgroundColor: activeBanner.color }}
-            />
-            
-            {/* Event label */}
-            <span
-              className="font-black uppercase tracking-[0.2em]"
-              style={{ color: activeBanner.color }}
-            >
-              {activeBanner.label}
-            </span>
-            
-            {/* Optional event subtitle */}
-            {activeBanner.sub && (
-              <>
-                <span className="text-[var(--text-secondary)]">·</span>
-                <span className="text-[var(--text-secondary)] font-semibold">{activeBanner.sub}</span>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
-      {/* Header — floats above content in fullscreen, normal flow otherwise */}
+      {/* Full-width header — floats above everything in fullscreen */}
       <div
         className={isFullscreen ? 'absolute top-0 left-0 right-0 z-50 h-10' : ''}
         onMouseEnter={() => { if (isFullscreen) setHeaderVisible(true) }}
         onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
       >
-      <header
-        className={`relative flex items-center gap-3 px-4 h-10 border-b ${
-          isFullscreen
-            ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
-            : 'sticky top-0 z-10 transition-colors duration-500'
-        }`}
-        style={activeBanner
-          ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
-          : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
-        }
-      >
-        <LogoAndTitle theme={theme} />
+        <header
+          className={`relative flex items-center gap-3 px-4 h-10 ${
+            isFullscreen
+              ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
+              : 'sticky top-0 z-10 transition-colors duration-500'
+          }`}
+          style={activeBanner
+            ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
+            : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
+          }
+        >
+          <img
+            src={theme === 'dark' ? iconTransparent : iconTransparentLight}
+            alt=""
+            className="h-5 w-auto select-none pointer-events-none shrink-0"
+            draggable="false"
+          />
 
-        <TabSelector tab={tab} setTab={setTab} />
+          <PlaybackControl
+            filename={playbackState?.filename}
+            onClose={handleClosePlayback}
+            onSelectFile={handleSelectPlaybackFile}
+          />
 
-        <PlaybackControl
-          filename={playbackState?.filename}
-          onClose={handleClosePlayback}
-          onSelectFile={handleSelectPlaybackFile}
-        />
+          <SessionBadge sessionType={session?.session_type} theme={theme} />
 
-        <SessionBadge sessionType={session?.session_type} theme={theme} />
+          <div className="flex-1" />
 
-        <div className="flex-1" />
+          <SessionTimer sessionTime={latest?.session_time} />
 
-        <SessionTimer sessionTime={latest?.session_time} />
+          <CentreBanner activeBanner={activeBanner} />
 
-        <CentreBanner activeBanner={activeBanner} />
+          <TimeWindowSelector seconds={seconds} setSeconds={setSeconds} />
 
-        <TimeWindowSelector seconds={seconds} setSeconds={setSeconds} />
+          <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} showOnlyFullscreen={actualNativeTitlebar} />
+        </header>
+      </div>
 
-        <HeaderButtons
+      {/* Body: sidebar + content */}
+      <div className="flex-1 flex min-h-0 relative">
+
+        {/* Dynamic Floating Event Banner for Fullscreen Mode */}
+        {isFullscreen && !headerVisible && activeBanner && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+            <div
+              className="flex items-center gap-3 px-4 py-1.5 rounded-full border shadow-lg backdrop-blur-md animate-banner-in text-xs"
+              style={{
+                background: `rgba(7, 8, 16, 0.88)`,
+                backgroundImage: `linear-gradient(rgba(255,255,255,0.02), rgba(255,255,255,0))`,
+                borderColor: `${activeBanner.color}50`,
+                boxShadow: `0 4px 20px -2px ${activeBanner.color}15, 0 2px 8px -1px rgba(0,0,0,0.5)`,
+              }}
+            >
+              <div
+                className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
+                style={{ backgroundColor: activeBanner.color }}
+              />
+              <span
+                className="font-black uppercase tracking-[0.2em]"
+                style={{ color: activeBanner.color }}
+              >
+                {activeBanner.label}
+              </span>
+              {activeBanner.sub && (
+                <>
+                  <span className="text-[var(--text-secondary)]">·</span>
+                  <span className="text-[var(--text-secondary)] font-semibold">{activeBanner.sub}</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Slim icon-only sidebar */}
+        <Sidebar
+          tab={tab}
+          setTab={setTab}
           settingsOpen={settingsOpen}
           setSettingsOpen={setSettingsOpen}
           editOpen={editOpen}
           setEditOpen={setEditOpen}
-          tab={tab}
         />
 
-        <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} showOnlyFullscreen={actualNativeTitlebar} />
-
-      </header>
-      </div>
+        {/* Content column */}
+        <div className="flex-1 flex flex-col min-w-0">
 
       {/* Analyzing Session Modal */}
       {playbackState?.isScanning && (
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[var(--bg-modal)] backdrop-blur-sm">
           <div className="text-xl font-bold text-[var(--text-primary)] mb-4 tracking-widest uppercase text-sm">Analyzing Session Data</div>
           <div className="w-64 h-1.5 bg-[var(--border)] rounded-full overflow-hidden relative">
-            <div className="absolute inset-y-0 left-0 bg-[#5794F2] w-1/2 rounded-full animate-bounce" style={{ animation: 'scan 1.5s infinite linear' }} />
+            <div className="absolute inset-y-0 left-0 w-1/2 rounded-full animate-bounce" style={{ animation: 'scan 1.5s infinite linear', background: 'var(--accent)' }} />
           </div>
           <style>{`
             @keyframes scan {
@@ -1053,12 +1161,12 @@ export default function App() {
                           onClick={() => setTyresLayout({ ...tyresLayout, charts: { ...tyresLayout.charts, [key]: !on } })}
                           className={`h-32 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                             on
-                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                               : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                           }`}
                         >
                           <span className="font-bold">{label}</span>
-                          <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                          <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${on ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                             {on ? 'ACTIVE' : 'HIDDEN'}
                           </span>
                         </button>
@@ -1090,12 +1198,12 @@ export default function App() {
                             onClick={() => setPowerLayout({ ...powerLayout, statsCards: { ...powerLayout.statsCards, [key]: !on } })}
                             className={`flex-1 py-6 flex flex-col items-center justify-center rounded-none font-mono text-[11px] font-semibold transition-all relative ${
                               on
-                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                             }`}
                           >
                             <span className="font-bold">{label}</span>
-                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${on ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                               {on ? 'ON' : 'OFF'}
                             </span>
                           </button>
@@ -1121,12 +1229,12 @@ export default function App() {
                             onClick={() => setPowerLayout({ ...powerLayout, charts: { ...powerLayout.charts, [key]: !on } })}
                             className={`flex-1 h-44 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                               on
-                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                             }`}
                           >
                             <span className="font-bold">{label}</span>
-                            <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${on ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                               {on ? 'ACTIVE' : 'HIDDEN'}
                             </span>
                           </button>
@@ -1145,12 +1253,12 @@ export default function App() {
                       onClick={() => setMiscLayout({ ...miscLayout, showGForce: !miscLayout.showGForce })}
                       className={`h-44 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                         miscLayout.showGForce
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                          ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                           : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                       }`}
                     >
                       <span className="text-sm font-bold">G-Force Chart</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showGForce ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showGForce ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                         {miscLayout.showGForce ? 'ACTIVE' : 'HIDDEN'}
                       </span>
                     </button>
@@ -1158,12 +1266,12 @@ export default function App() {
                       onClick={() => setMiscLayout({ ...miscLayout, showRideHeight: !miscLayout.showRideHeight })}
                       className={`h-44 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                         miscLayout.showRideHeight
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                          ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                           : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                       }`}
                     >
                       <span className="text-sm font-bold">Ride Height Chart</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showRideHeight ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showRideHeight ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                         {miscLayout.showRideHeight ? 'ACTIVE' : 'HIDDEN'}
                       </span>
                     </button>
@@ -1181,12 +1289,12 @@ export default function App() {
                         onClick={() => setInputLayout({ ...inputLayout, showGear: !inputLayout.showGear })}
                         className={`flex-1 h-48 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                           inputLayout.showGear
-                            ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                            ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                             : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                         }`}
                       >
                         <span className="text-sm font-bold">Gear Indicator</span>
-                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showGear ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showGear ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                           {inputLayout.showGear ? 'ACTIVE' : 'HIDDEN'}
                         </span>
                       </button>
@@ -1194,12 +1302,12 @@ export default function App() {
                         onClick={() => setInputLayout({ ...inputLayout, showInputs: !inputLayout.showInputs })}
                         className={`flex-1 h-48 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                           inputLayout.showInputs
-                            ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                            ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                             : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                         }`}
                       >
                         <span className="text-sm font-bold">Throttle / Brake Chart</span>
-                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showInputs ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showInputs ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                           {inputLayout.showInputs ? 'ACTIVE' : 'HIDDEN'}
                         </span>
                       </button>
@@ -1209,12 +1317,12 @@ export default function App() {
                       onClick={() => setInputLayout({ ...inputLayout, showSteering: !inputLayout.showSteering })}
                       className={`h-28 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                         inputLayout.showSteering
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                          ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                           : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                       }`}
                     >
                       <span className="text-sm font-bold">Steering Telemetry</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showSteering ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showSteering ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                         {inputLayout.showSteering ? 'ACTIVE' : 'HIDDEN'}
                       </span>
                     </button>
@@ -1251,7 +1359,7 @@ export default function App() {
                               onClick={() => setCoreLayout({ ...coreLayout, statsCards: { ...coreLayout.statsCards, [key]: !on } })}
                               className={`flex-1 py-5 flex flex-col items-center justify-center rounded-none font-mono text-[10px] font-bold transition-all relative ${
                                 on
-                                  ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                  ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                   : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                               }`}
                             >
@@ -1266,12 +1374,12 @@ export default function App() {
                         onClick={() => setCoreLayout({ ...coreLayout, showSpeedChart: !coreLayout.showSpeedChart })}
                         className={`h-44 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
                           coreLayout.showSpeedChart
-                            ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                            ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                             : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                         }`}
                       >
                         <span className="text-sm font-bold uppercase tracking-wider">Speed + RPM + ERS Chart</span>
-                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${coreLayout.showSpeedChart ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${coreLayout.showSpeedChart ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
                           {coreLayout.showSpeedChart ? 'VISIBLE' : 'HIDDEN'}
                         </span>
                       </button>
@@ -1292,7 +1400,7 @@ export default function App() {
                                 onClick={() => setCoreLayout({ ...coreLayout, thermalGraphs: { ...coreLayout.thermalGraphs, [key]: !on } })}
                                 className={`flex-1 py-7 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                                   on
-                                    ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                    ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                     : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                                 }`}
                               >
@@ -1316,7 +1424,7 @@ export default function App() {
                                 onClick={() => setCoreLayout({ ...coreLayout, thermalCards: { ...coreLayout.thermalCards, [key]: !on } })}
                                 className={`flex-1 py-7 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                                   on
-                                    ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                    ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                     : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                                 }`}
                               >
@@ -1346,7 +1454,7 @@ export default function App() {
                               onClick={() => setCoreLayout({ ...coreLayout, damageItems: { ...coreLayout.damageItems, [key]: !on } })}
                               className={`flex-1 py-4 flex flex-col items-center justify-center rounded-none font-mono text-[10px] font-semibold transition-all relative ${
                                 on
-                                  ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                  ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                   : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                               }`}
                             >
@@ -1375,7 +1483,7 @@ export default function App() {
                               onClick={() => setCoreLayout({ ...coreLayout, damageItems: { ...coreLayout.damageItems, [key]: !on } })}
                               className={`flex-1 py-4 flex flex-col items-center justify-center rounded-none font-mono text-[10px] font-semibold transition-all relative ${
                                 on
-                                  ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                  ? 'bg-[var(--bg-widget-active)] text-[var(--accent)]'
                                   : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                               }`}
                             >
@@ -1648,6 +1756,8 @@ export default function App() {
         </div>
       )}
 
+        </div> {/* content column */}
+      </div> {/* body row */}
     </div>
   )
 }

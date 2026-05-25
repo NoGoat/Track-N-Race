@@ -374,6 +374,10 @@ declare global {
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
     }
+    systemBridge: {
+      getAccentColor: () => Promise<string>
+      onAccentColorChange: (cb: (color: string) => void) => () => void
+    }
   }
 }
 

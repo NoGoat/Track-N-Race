@@ -74,6 +74,16 @@ const playerBridge = {
   }
 }
 
+const systemBridge = {
+  getAccentColor: (): Promise<string> =>
+    ipcRenderer.invoke('system:get-accent-color'),
+  onAccentColorChange: (callback: (color: string) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, color: string) => callback(color)
+    ipcRenderer.on('system-accent-color', listener)
+    return () => ipcRenderer.removeListener('system-accent-color', listener)
+  },
+}
+
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
@@ -81,4 +91,5 @@ contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
+contextBridge.exposeInMainWorld('systemBridge', systemBridge)
 
