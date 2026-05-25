@@ -1,22 +1,22 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(isDark: boolean, { solidBg = false } = {}): StylesConfig<any, false> {
+export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28 } = {}): StylesConfig<any, false> {
   return {
     control: (base, _state) => ({
       ...base,
       background: solidBg ? 'var(--bg-panel)' : 'transparent',
       borderColor: 'transparent',
       boxShadow: 'none',
-      minHeight: 28,
-      height: 28,
+      minHeight: controlHeight,
+      height: controlHeight,
       borderRadius: 6,
       fontSize: 11,
       cursor: 'pointer',
       transition: 'background 0.15s ease, border-color 0.15s ease',
       '&:hover': { background: 'var(--bg-hover)', borderColor: 'transparent' },
     }),
-    valueContainer:      (base) => ({ ...base, height: 28, padding: '0 8px', flexWrap: 'nowrap', display: 'flex', alignItems: 'center' }),
-    indicatorsContainer: (base) => ({ ...base, height: 28 }),
+    valueContainer:      (base) => ({ ...base, height: controlHeight, padding: '0 8px', flexWrap: 'nowrap', display: 'flex', alignItems: 'center' }),
+    indicatorsContainer: (base) => ({ ...base, height: controlHeight }),
     singleValue:         (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0, lineHeight: 1 }),
     placeholder:         (base) => ({ ...base, color: 'var(--text-secondary)', fontSize: 11, margin: 0, lineHeight: 1 }),
     input:               (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0, padding: 0, lineHeight: 1 }),

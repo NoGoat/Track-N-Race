@@ -140,7 +140,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     }
   }, [mode, speedRpmBlocks, compareLapNum])
 
-  const compareSelectStyles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const compareSelectStyles = useMemo(() => buildSelectStyles(isDark, { controlHeight: 20 }), [isDark])
   const lapOptions = useMemo(
     () => speedRpmBlocks?.map(b => ({ value: b.lapNum, label: String(b.lapNum) })) ?? [],
     [speedRpmBlocks]
