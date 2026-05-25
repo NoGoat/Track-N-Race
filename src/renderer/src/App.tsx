@@ -394,6 +394,16 @@ const HeaderButtons = memo(
         >
           <Pencil size={13} />
         </button>
+
+        {/* Switch to Recorder button */}
+        <button
+          onClick={() => window.windowControls.switchToRecorder()}
+          title="Switch to Background Recorder"
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"
+        >
+          <Radio size={13} />
+        </button>
       </>
     )
   }
@@ -975,16 +985,6 @@ export default function App() {
           setEditOpen={setEditOpen}
           tab={tab}
         />
-
-        {/* Switch to Recorder button */}
-        <button
-          onClick={() => window.windowControls.switchToRecorder()}
-          title="Switch to Background Recorder"
-          style={{ WebkitAppRegion: 'no-drag' }}
-          className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"
-        >
-          <Radio size={13} />
-        </button>
 
         <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} showOnlyFullscreen={actualNativeTitlebar} />
 
