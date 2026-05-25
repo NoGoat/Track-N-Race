@@ -148,9 +148,9 @@ const TowerRow = memo(function TowerRow({
       onClick={handleClick}
       className={`border-b border-[var(--border)] transition-colors cursor-pointer ${
         isSelected
-          ? 'bg-[var(--bg-selected)] ring-1 ring-inset ring-[var(--border-focus)]/50'
+          ? 'bg-[var(--bg-selected)]'
           : isFastest
-          ? 'bg-[#BF5FFF]/10 ring-1 ring-inset ring-[#BF5FFF]/30 hover:bg-[#BF5FFF]/15'
+          ? 'bg-[#BF5FFF]/10 hover:bg-[#BF5FFF]/15'
           : 'hover:bg-[var(--bg-hover)]'
       }`}
     >
