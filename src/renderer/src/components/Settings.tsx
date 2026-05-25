@@ -36,15 +36,15 @@ const SegmentedControl = memo(function SegmentedControl<T extends string | numbe
   onChange: (v: T) => void
 }) {
   return (
-    <div className="flex rounded-lg bg-[var(--bg-input)] border border-[var(--border-muted)] p-0.5 gap-0.5">
+    <div className="flex gap-1">
       {options.map((opt) => (
         <button
           key={String(opt.value)}
           onClick={() => onChange(opt.value)}
-          className={`px-3 h-7 rounded-md text-xs font-medium whitespace-nowrap transition-all duration-150 ${
+          className={`px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors border-b-2 ${
             opt.value === value
-              ? 'bg-[var(--border-focus)] text-white shadow-sm'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-white/5 active:scale-95'
+              ? 'border-[var(--border-focus)] text-[var(--text-primary)]'
+              : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
           }`}
         >
           {opt.label}
@@ -52,7 +52,7 @@ const SegmentedControl = memo(function SegmentedControl<T extends string | numbe
       ))}
     </div>
   )
-})
+}) as <T extends string | number | boolean>(props: { options: Option<T>[]; value: T; onChange: (v: T) => void }) => React.ReactElement
 
 const Toggle = memo(function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   return (
