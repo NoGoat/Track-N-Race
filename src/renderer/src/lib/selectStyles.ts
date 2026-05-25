@@ -1,6 +1,6 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(_isDark: boolean, { solidBg = false } = {}): StylesConfig<any, false> {
+export function buildSelectStyles(isDark: boolean, { solidBg = false } = {}): StylesConfig<any, false> {
   return {
     control: (base, _state) => ({
       ...base,
@@ -43,7 +43,7 @@ export function buildSelectStyles(_isDark: boolean, { solidBg = false } = {}): S
     menuList:   (base) => ({ ...base, padding: 4 }),
     option: (base, state) => ({
       ...base,
-      background: state.isSelected ? 'var(--border-focus)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
+      background: state.isSelected ? 'var(--border-focus)' : state.isFocused ? (isDark ? 'rgba(255,255,255,0.12)' : 'var(--bg-hover)') : 'transparent',
       color: state.isSelected ? '#fff' : 'var(--text-primary)',
       fontSize: 11,
       borderRadius: 4,
