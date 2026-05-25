@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
 import Select, { StylesConfig } from 'react-select'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
 import LiveStats from './components/LiveStats'
@@ -954,6 +954,16 @@ export default function App() {
           setEditOpen={setEditOpen}
           tab={tab}
         />
+
+        {/* Switch to Recorder button */}
+        <button
+          onClick={() => window.windowControls.switchToRecorder()}
+          title="Switch to Background Recorder"
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"
+        >
+          <Radio size={13} />
+        </button>
 
         <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} />
 

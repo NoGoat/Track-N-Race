@@ -28,7 +28,13 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon_transparent.ico"
+      "icon": "build/icon_transparent.ico",
+      "extraFiles": [
+        {
+          "from": "native_recorder/build/Release/Track N Race Background Recorder.exe",
+          "to": "Track N Race Background Recorder.exe"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -39,7 +45,8 @@
       "installerIcon": "build/icon_transparent_light.ico",
       "uninstallerIcon": "build/icon_transparent_light.ico",
       "installerHeaderIcon": "build/icon_transparent_light.ico",
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "build/installer.nsh"
     },
     "linux": {
       "target": "AppImage"

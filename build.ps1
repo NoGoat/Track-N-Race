@@ -39,6 +39,16 @@ $Content = Get-Content $PackageJsonPath -Raw
 $Content = $Content -replace "`"version`"\s*:\s*`"$CurrentVersion`"", "`"version`": `"$NewVersion`""
 Set-Content -Path $PackageJsonPath -Value $Content -NoNewline
 
+Write-Host "Building Native Telemetry Recorder..." -ForegroundColor Cyan
+Push-Location native_recorder
+& .\build.ps1 -NoLaunch
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Native recorder build failed!" -ForegroundColor Red
+    Pop-Location
+    exit $LASTEXITCODE
+}
+Pop-Location
+
 Write-Host "Building application..." -ForegroundColor Cyan
 Write-Host "> npm run build"
 npm run build

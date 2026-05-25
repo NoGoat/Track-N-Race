@@ -2,7 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, Menu, globalShortcut, nativeTheme, 
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
+import { execSync, spawn } from 'child_process'
 import Store from 'electron-store'
 import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
@@ -153,6 +153,35 @@ ipcMain.handle('protocol-get-config', () => {
 
 ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
   setOverride(value)
+})
+
+ipcMain.on('switch-to-recorder', () => {
+  let recorderPath = ''
+  if (app.isPackaged) {
+    // In production, the executable is placed in the main installation folder next to Track N Race.exe
+    recorderPath = path.join(path.dirname(process.execPath), 'Track N Race Background Recorder.exe')
+  } else {
+    // In development, the executable is in native_recorder/build/Release
+    recorderPath = path.join(app.getAppPath(), 'native_recorder/build/Release/Track N Race Background Recorder.exe')
+  }
+
+  if (fs.existsSync(recorderPath)) {
+    // Spawn the background recorder detached so it stays open when electron exits
+    const child = spawn(recorderPath, [], {
+      detached: true,
+      stdio: 'ignore'
+    })
+    child.unref()
+    
+    // Close the Electron app
+    app.quit()
+  } else {
+    console.error(`Recorder executable not found at: ${recorderPath}`)
+    dialog.showErrorBox(
+      'Recorder Not Found',
+      `Could not find the Background Recorder at:\n${recorderPath}\n\nPlease ensure you have built it first.`
+    )
+  }
 })
 
 function getWindowsTaskbarThemeSync(): 'light' | 'dark' {

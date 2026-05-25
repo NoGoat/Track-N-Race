@@ -1,3 +1,7 @@
+param(
+    [switch]$NoLaunch
+)
+
 # build.ps1 - Compile the Native Telemetry Recorder
 $ErrorActionPreference = "Stop"
 
@@ -48,10 +52,14 @@ if (Test-Path $exePath) {
     Write-Host "=============================================" -ForegroundColor Green
     Write-Host "Executable location: $exePath" -ForegroundColor White
     
-    $choice = Read-Host "`nWould you like to launch the application now? (Y/N)"
-    if ($choice -eq "Y" -or $choice -eq "y") {
-        Write-Host "Launching $exePath..." -ForegroundColor Cyan
-        Start-Process $exePath
+    if (-not $NoLaunch) {
+        $choice = Read-Host "`nWould you like to launch the application now? (Y/N)"
+        if ($choice -eq "Y" -or $choice -eq "y") {
+            Write-Host "Launching $exePath..." -ForegroundColor Cyan
+            Start-Process $exePath
+        }
+    } else {
+        Write-Host "NoLaunch specified. Skipping launch confirmation." -ForegroundColor Gray
     }
 } else {
     Write-Error "Build finished but output executable could not be found."

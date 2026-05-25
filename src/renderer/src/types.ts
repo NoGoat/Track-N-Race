@@ -349,6 +349,7 @@ declare global {
       maximize:   () => void
       close:      () => void
       fullscreen: () => void
+      switchToRecorder: () => void
       onMaximizeChange:   (cb: (isMaximized: boolean) => void) => () => void
       onFullscreenChange: (cb: (isFullscreen: boolean) => void) => () => void
     }

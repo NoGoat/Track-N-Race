@@ -15,6 +15,7 @@
 #include <shobjidl.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <shellapi.h>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "shell32.lib")
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -45,6 +47,7 @@
 HWND hMainWindow = NULL;
 HWND hBtnDirectory = NULL;
 HWND hBtnToggle = NULL;
+HWND hBtnSwitch = NULL;
 HWND hLblStatus = NULL;
 HWND hLblDirectory = NULL;
 
@@ -247,6 +250,7 @@ void UpdateThemeColors() {
         const wchar_t* themeName = isDark ? L"DarkMode_Explorer" : L"Explorer";
         if (hBtnDirectory) SetWindowTheme(hBtnDirectory, themeName, NULL);
         if (hBtnToggle) SetWindowTheme(hBtnToggle, themeName, NULL);
+        if (hBtnSwitch) SetWindowTheme(hBtnSwitch, themeName, NULL);
 
         // Redraw whole client area
         RedrawWindow(hMainWindow, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
@@ -554,6 +558,48 @@ void ReceiverThreadFunc() {
     WSACleanup();
 }
 
+// Spawns the Electron Analyzer and exits the Background Recorder
+void SwitchToElectron() {
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring dirPath = exePath;
+    size_t lastSlash = dirPath.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos) {
+        dirPath = dirPath.substr(0, lastSlash);
+    }
+
+    std::wstring electronExePath = dirPath + L"\\Track N Race.exe";
+    
+    // Check if production executable exists
+    DWORD attrib = GetFileAttributesW(electronExePath.c_str());
+    if (attrib != INVALID_FILE_ATTRIBUTES && !(attrib & FILE_ATTRIBUTE_DIRECTORY)) {
+        // Production mode: run Track N Race.exe
+        ShellExecuteW(NULL, L"open", electronExePath.c_str(), NULL, dirPath.c_str(), SW_SHOW);
+    } else {
+        // Dev mode: check for package.json 3 directories up
+        std::wstring parentDir = dirPath;
+        for (int i = 0; i < 3; i++) {
+            size_t pos = parentDir.find_last_of(L"\\/");
+            if (pos != std::wstring::npos) {
+                parentDir = parentDir.substr(0, pos);
+            }
+        }
+        std::wstring packageJsonPath = parentDir + L"\\package.json";
+        DWORD pkgAttrib = GetFileAttributesW(packageJsonPath.c_str());
+        if (pkgAttrib != INVALID_FILE_ATTRIBUTES && !(pkgAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
+            // Run npm run dev in workspace root
+            ShellExecuteW(NULL, L"open", L"cmd.exe", L"/c npm run dev", parentDir.c_str(), SW_SHOW);
+        } else {
+            MessageBoxW(hMainWindow, L"Track N Race executable not found.", L"Error", MB_OK | MB_ICONERROR);
+            return;
+        }
+    }
+
+    // Stop recording if active and terminate current process
+    shouldExit = true;
+    PostQuitMessage(0);
+}
+
 // Main Window Procedure
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -567,6 +613,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             // Buttons
             hBtnDirectory = CreateWindowW(L"BUTTON", L"Select Directory", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 20, 110, 210, 35, hwnd, (HMENU)1, NULL, NULL);
             hBtnToggle = CreateWindowW(L"BUTTON", L"Start Recording", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 250, 110, 210, 35, hwnd, (HMENU)2, NULL, NULL);
+            hBtnSwitch = CreateWindowW(L"BUTTON", L"Switch to Track N Race App", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 20, 160, 440, 35, hwnd, (HMENU)3, NULL, NULL);
 
             // Modern font
             HFONT hFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
@@ -575,6 +622,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SendMessage(hLblDirectory, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessage(hBtnDirectory, WM_SETFONT, (WPARAM)hFont, TRUE);
             SendMessage(hBtnToggle, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessage(hBtnSwitch, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Apply initial theme layout & styling
             UpdateThemeColors();
@@ -599,6 +647,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                         SetLabelText(hLblStatus, L"Status: Idle");
                     }
                 }
+            } else if (LOWORD(wParam) == 3) {
+                SwitchToElectron();
             }
             return 0;
         }
@@ -657,7 +707,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     hMainWindow = CreateWindowExW(
         0, CLASS_NAME, L"Track N Race Background Recorder",
         WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX, // Non-resizable
-        CW_USEDEFAULT, CW_USEDEFAULT, 500, 210,
+        CW_USEDEFAULT, CW_USEDEFAULT, 500, 260,
         NULL, NULL, hInstance, NULL
     );
 
