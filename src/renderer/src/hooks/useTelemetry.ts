@@ -72,12 +72,14 @@ export function useTelemetry(seconds: number): TelemetryState {
   const lapStartTimeRef = useRef<number>(0)
   const fastestLapSetRef      = useRef<boolean>(false)
   const sessionHistoryBestRef = useRef<Map<number, number>>(new Map())
+  const isPlaybackRef = useRef<boolean>(false)
 
   useEffect(() => {
     const unsub = window.telemetryBridge.on((raw) => {
       const msg = raw as GatewayMsg
       switch (msg.type) {
         case 'playback_close': {
+          isPlaybackRef.current = false
           setTelBuf([]); telBufRef.current = []
           setMotBuf([]); motBufRef.current = []
           setMotExBuf([])
@@ -197,27 +199,29 @@ export function useTelemetry(seconds: number): TelemetryState {
           flushSync(() => setRaceEvent(msg))
           setRaceEvents(prev => [...prev, msg])
           if (msg.code === 'SEND') {
-            setTelBuf([]); telBufRef.current = []
-            setMotBuf([]); motBufRef.current = []
-            setMotExBuf([])
-            setStsBuf([]); stsBufRef.current = []
-            setDmgBuf([])
-            setStatus(null)
-            setDamage(null)
-            setLap(null)
-            setTiming(null)
-            setAllStatus(null)
-            setFastestLapCarIdx(null)
-            setTyreSets(null)
-            setLapHistoryBuf([])
-            setFastestLap(null)
-            fastestLapTimeRef.current = Infinity
-            lapNumRef.current = null
-            lapStartTimeRef.current = 0
-            fastestLapSetRef.current = false
-            sessionHistoryBestRef.current.clear()
-            setSpeedRpmBlocks(null)
-            setFastestLapNum(0)
+            if (!isPlaybackRef.current) {
+              setTelBuf([]); telBufRef.current = []
+              setMotBuf([]); motBufRef.current = []
+              setMotExBuf([])
+              setStsBuf([]); stsBufRef.current = []
+              setDmgBuf([])
+              setStatus(null)
+              setDamage(null)
+              setLap(null)
+              setTiming(null)
+              setAllStatus(null)
+              setFastestLapCarIdx(null)
+              setTyreSets(null)
+              setLapHistoryBuf([])
+              setFastestLap(null)
+              fastestLapTimeRef.current = Infinity
+              lapNumRef.current = null
+              lapStartTimeRef.current = 0
+              fastestLapSetRef.current = false
+              sessionHistoryBestRef.current.clear()
+              setSpeedRpmBlocks(null)
+              setFastestLapNum(0)
+            }
           }
           break
         case 'session': setSession(msg); break
@@ -251,6 +255,7 @@ export function useTelemetry(seconds: number): TelemetryState {
           break
         }
         case 'playback_lap_blocks': {
+          isPlaybackRef.current = true
           const data = msg as any
           setSpeedRpmBlocks(data.blocks)
           setFastestLapNum(data.fastestLapNum)
