@@ -28,7 +28,7 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false } = {}): St
       transition: 'transform 0.2s ease, color 0.15s ease',
       '&:hover': { color: 'var(--text-primary)' },
     }),
-    clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)' }),
+    clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)', '&:hover': { color: '#e10600' } }),
     menu: (base) => ({
       ...base,
       background: 'var(--bg-menu)',

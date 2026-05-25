@@ -695,7 +695,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           {onToggleFullscreen && (
             <button
               onClick={onToggleFullscreen}
-              className="h-7 w-7 rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center shrink-0"
+              className="h-7 w-7 rounded-[6px] bg-[var(--bg-panel)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center shrink-0"
               title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
             >
               {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
