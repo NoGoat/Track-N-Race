@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
-import Select, { type StylesConfig, type SingleValue } from 'react-select'
+import Select, { type SingleValue } from 'react-select'
+import { buildSelectStyles } from '../lib/selectStyles'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
@@ -15,68 +16,6 @@ const ZOOM_OPTIONS: ZoomOption[] = [
   { value: 16, label: '16x' },
 ]
 
-function buildSelectStyles(isDark: boolean): StylesConfig<any> {
-  return {
-    control: (base, state) => {
-      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
-      return {
-        ...base,
-        background: isHoveredOrActive ? 'var(--bg-hover)' : 'var(--bg-panel)',
-        borderColor: 'var(--border)',
-        boxShadow: 'none',
-        minHeight: 28,
-        height: 28,
-        borderRadius: 6,
-        fontSize: 11,
-        cursor: 'pointer',
-        transition: 'all 0.15s ease',
-        '&:hover': {
-          background: 'var(--bg-hover)',
-          borderColor: 'var(--border)',
-        },
-      }
-    },
-    valueContainer: (base) => ({ ...base, padding: '0 8px' }),
-    menu: (base) => ({
-      ...base,
-      background: 'var(--bg-menu)',
-      border: '1px solid var(--border)',
-      borderRadius: 6,
-      boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-      zIndex: 9999,
-      marginTop: 4,
-      overflow: 'hidden',
-    }),
-    option: (base, state) => ({
-      ...base,
-      background: state.isSelected ? 'var(--bg-selected)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
-      color: state.isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
-      fontSize: 11,
-      padding: '5px 8px',
-      cursor: 'pointer',
-      transition: 'background 0.1s',
-      '&:active': { background: 'var(--bg-selected)' },
-    }),
-    singleValue:       (base) => ({ ...base, color: 'var(--text-primary)',  fontSize: 11 }),
-    placeholder:       (base) => ({ ...base, color: 'var(--text-secondary)', fontSize: 11 }),
-    input:             (base) => ({ ...base, color: 'var(--text-primary)',  fontSize: 11, margin: 0, padding: 0 }),
-    indicatorSeparator: ()   => ({ display: 'none' }),
-    dropdownIndicator: (base, state) => {
-      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
-      return {
-        ...base,
-        padding: '0 6px',
-        color: isHoveredOrActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-        transform: state.selectProps.menuIsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-        transition: 'transform 0.2s ease, color 0.15s ease',
-        '&:hover': {
-          color: 'var(--text-primary)',
-        }
-      }
-    },
-    clearIndicator:    (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)' }),
-  }
-}
 
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
 const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']

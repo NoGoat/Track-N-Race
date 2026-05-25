@@ -1,0 +1,56 @@
+import type { StylesConfig } from 'react-select'
+
+export function buildSelectStyles(_isDark: boolean): StylesConfig<any, false> {
+  return {
+    control: (base, state) => ({
+      ...base,
+      background: state.isFocused || state.selectProps.menuIsOpen ? 'var(--bg-hover)' : 'var(--bg-panel)',
+      borderColor: 'var(--border)',
+      boxShadow: 'none',
+      minHeight: 28,
+      height: 28,
+      borderRadius: 6,
+      fontSize: 11,
+      cursor: 'pointer',
+      transition: 'background 0.15s ease, border-color 0.15s ease',
+      '&:hover': { background: 'var(--bg-hover)', borderColor: 'var(--border)' },
+    }),
+    valueContainer: (base) => ({ ...base, padding: '0 8px', flexWrap: 'nowrap' }),
+    singleValue:        (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0 }),
+    placeholder:        (base) => ({ ...base, color: 'var(--text-secondary)', fontSize: 11, margin: 0 }),
+    input:              (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0, padding: 0 }),
+    indicatorSeparator: ()    => ({ display: 'none' }),
+    dropdownIndicator: (base, state) => ({
+      ...base,
+      padding: '0 6px',
+      color: state.isFocused || state.selectProps.menuIsOpen ? 'var(--text-primary)' : 'var(--text-secondary)',
+      transform: state.selectProps.menuIsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+      transition: 'transform 0.2s ease, color 0.15s ease',
+      '&:hover': { color: 'var(--text-primary)' },
+    }),
+    clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)' }),
+    menu: (base) => ({
+      ...base,
+      background: 'var(--bg-menu)',
+      border: '1px solid var(--border)',
+      borderRadius: 6,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+      zIndex: 9999,
+      marginTop: 4,
+      overflow: 'hidden',
+    }),
+    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+    menuList:   (base) => ({ ...base, padding: 4 }),
+    option: (base, state) => ({
+      ...base,
+      background: state.isSelected ? 'var(--border-focus)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
+      color: state.isSelected ? '#fff' : 'var(--text-primary)',
+      fontSize: 11,
+      borderRadius: 4,
+      padding: '5px 8px',
+      cursor: 'pointer',
+      transition: 'background 0.1s',
+      '&:active': { background: 'var(--border-focus)' },
+    }),
+  }
+}

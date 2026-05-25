@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
-import Select, { StylesConfig, type SingleValue } from 'react-select'
+import Select, { type SingleValue } from 'react-select'
+import { buildSelectStyles } from './lib/selectStyles'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
@@ -105,59 +106,8 @@ const TAB_LABELS: Record<Tab, string> = {
 
 const TAB_OPTIONS = (['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
+const selectStyles = buildSelectStyles(true)
 
-const selectStyles: StylesConfig<{ value: string | number; label: string }, false> = {
-  control: (_base, state) => ({
-    display: 'flex',
-    alignItems: 'center',
-    height: 28,
-    minHeight: 28,
-    background: state.menuIsOpen ? 'var(--bg-hover)' : 'transparent',
-    borderRadius: 6,
-    boxShadow: 'none',
-    border: 'none',
-    outline: 'none',
-    cursor: 'pointer',
-    transition: 'background 0.15s',
-    '&:hover': { background: 'var(--bg-hover)' },
-  }),
-  valueContainer: (base) => ({ ...base, padding: '0 2px 0 8px', flexWrap: 'nowrap' }),
-  singleValue: (base) => ({ ...base, color: 'var(--text-primary)', fontSize: 12, margin: 0 }),
-  placeholder: (base) => ({ ...base, color: 'var(--text-primary)', fontSize: 12, margin: 0 }),
-  indicatorSeparator: () => ({ display: 'none' }),
-  dropdownIndicator: (_base, state) => ({
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '0 6px',
-    color: 'var(--text-dim)',
-    transform: state.selectProps.menuIsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-    transformOrigin: 'center',
-    transition: 'transform 0.2s ease',
-  }),
-  menu: (base) => ({
-    ...base,
-    background: 'var(--bg-menu)',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
-    boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-    marginTop: 4,
-    overflow: 'hidden',
-  }),
-  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-  menuList: (base) => ({ ...base, padding: 4 }),
-  option: (base, state) => ({
-    ...base,
-    background: state.isSelected ? 'var(--border-focus)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
-    color: state.isSelected ? '#fff' : 'var(--text-primary)',
-    fontSize: 12,
-    borderRadius: 5,
-    padding: '5px 10px',
-    cursor: 'pointer',
-    transition: 'background 0.1s',
-    ':active': { background: 'var(--border-focus)' },
-  }),
-}
 
 interface BannerItem {
   label: string
@@ -268,7 +218,7 @@ const TabSelector = memo(({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void 
         value={TAB_OPTIONS.find((o) => o.value === tab) ?? null}
         onChange={(opt) => opt && setTab(opt.value as Tab)}
         placeholder="Settings"
-        styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
+        styles={selectStyles}
         isSearchable={false}
         menuPortalTarget={document.body}
       />
@@ -401,7 +351,7 @@ const TimeWindowSelector = memo(
           options={WINDOW_OPTIONS}
           value={WINDOW_OPTIONS.find((o) => o.value === seconds) ?? null}
           onChange={(opt) => opt && setSeconds(opt.value as number)}
-          styles={selectStyles as StylesConfig<{ value: string | number; label: string }, false>}
+          styles={selectStyles}
           isSearchable={false}
           menuPortalTarget={document.body}
         />
@@ -706,6 +656,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
+
 
   const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
   const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
