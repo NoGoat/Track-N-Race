@@ -346,8 +346,10 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
               <button
                 key={m}
                 onClick={() => onModeChange(m)}
-                className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                  mode === m ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
+                className={`px-2 py-0.5 text-xs transition-colors border-b-2 ${
+                  mode === m
+                    ? 'border-[var(--border-focus)] text-[var(--text-primary)]'
+                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}
               >
                 {m === 'default' ? 'Default' : m === 'CL' ? 'Current Lap' : m === 'PL' ? 'Previous Lap' : 'Fastest Lap'}
@@ -356,8 +358,10 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
             {speedRpmBlocks && speedRpmBlocks.length > 0 && (
               <button
                 onClick={() => onModeChange('compare')}
-                className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                  mode === 'compare' ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
+                className={`px-2 py-0.5 text-xs transition-colors border-b-2 ${
+                  mode === 'compare'
+                    ? 'border-[var(--border-focus)] text-[var(--text-primary)]'
+                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}
               >
                 Compare Laps
