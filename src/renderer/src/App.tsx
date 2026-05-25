@@ -677,6 +677,7 @@ export default function App() {
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
+  const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
   const [driversMode, setDriversMode]   = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {
     const legacy = window.electronStore.get('showLabels', null) as boolean | null
     if (legacy === true) return 'both'
@@ -1396,6 +1397,8 @@ export default function App() {
           forcedWarningFormat={forcedWarningFormat}
           nativeTitlebar={nativeTitlebar}
           onNativeTitlebarChange={setNativeTitlebar}
+          reduceAnimations={reduceAnimations}
+          onReduceAnimationsChange={setReduceAnimations}
         />
       )}
 
@@ -1443,6 +1446,7 @@ export default function App() {
                   selectedIdx={selectedIdx}
                   onSelectDriver={handleSelectDriver}
                   isDark={theme === 'dark'}
+                  animationsEnabled={!reduceAnimations}
                 />
               </div>
               <div className="w-80 shrink-0 overflow-y-auto">
@@ -1461,7 +1465,7 @@ export default function App() {
         )}
         {tab === 'session' && (
           <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} />
+            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} />
           </div>
         )}
         {tab === 'input' && (

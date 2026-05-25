@@ -483,9 +483,10 @@ interface Props {
   mapTimeout?:         number
   isFullscreen?:       boolean
   onToggleFullscreen?: () => void
+  reduceAnimations?:   boolean
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const canvasRef       = useRef<HTMLCanvasElement>(null)
   const prepRef         = useRef<PreparedMap | null>(null)
@@ -560,10 +561,12 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     })
   }, [])
 
-  isDarkRef.current       = isDark
-  sectorColorsRef.current = sectorColors
-  driversModeRef.current   = driversMode
-  mapTimeoutRef.current    = mapTimeout
+  isDarkRef.current            = isDark
+  sectorColorsRef.current      = sectorColors
+  driversModeRef.current       = driversMode
+  mapTimeoutRef.current        = mapTimeout
+  const reduceAnimationsRef    = useRef(reduceAnimations)
+  reduceAnimationsRef.current  = reduceAnimations
 
   // Resize canvas physical pixels when the container changes
   useEffect(() => {
@@ -602,27 +605,33 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
               const [vx, vy] = rawToViewBox(car.x, car.z, map.transform)
               const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
               const followScale = baseLayout.scale * zoomLevelRef.current
-              const LERP = 0.12
               if (!camRef.current) {
                 camRef.current = { scale: baseLayout.scale, ox: 0, oy: 0 }
               }
-              camRef.current.scale += (followScale - camRef.current.scale) * LERP
+              if (reduceAnimationsRef.current) {
+                camRef.current.scale = followScale
+              } else {
+                camRef.current.scale += (followScale - camRef.current.scale) * 0.12
+              }
               // Snap pan so the driver is always exactly centered — no lag on the dot
               camRef.current.ox = width  / 2 - rx * camRef.current.scale
               camRef.current.oy = height / 2 - ry * camRef.current.scale
               layout = camRef.current
             }
           } else if (camRef.current) {
-            const LERP = 0.12
-            camRef.current = {
-              scale: camRef.current.scale + (baseLayout.scale - camRef.current.scale) * LERP,
-              ox:    camRef.current.ox    + (baseLayout.ox    - camRef.current.ox)    * LERP,
-              oy:    camRef.current.oy    + (baseLayout.oy    - camRef.current.oy)    * LERP,
+            if (reduceAnimationsRef.current) {
+              camRef.current = null
+            } else {
+              camRef.current = {
+                scale: camRef.current.scale + (baseLayout.scale - camRef.current.scale) * 0.12,
+                ox:    camRef.current.ox    + (baseLayout.ox    - camRef.current.ox)    * 0.12,
+                oy:    camRef.current.oy    + (baseLayout.oy    - camRef.current.oy)    * 0.12,
+              }
+              const diff = Math.abs(camRef.current.scale - baseLayout.scale)
+                         + Math.abs(camRef.current.ox    - baseLayout.ox)
+                         + Math.abs(camRef.current.oy    - baseLayout.oy)
+              if (diff < 0.5) camRef.current = null
             }
-            const diff = Math.abs(camRef.current.scale - baseLayout.scale)
-                       + Math.abs(camRef.current.ox    - baseLayout.ox)
-                       + Math.abs(camRef.current.oy    - baseLayout.oy)
-            if (diff < 0.5) camRef.current = null
             layout = camRef.current ?? baseLayout
           }
 

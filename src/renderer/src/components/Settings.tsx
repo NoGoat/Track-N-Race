@@ -26,6 +26,8 @@ interface Props {
   forcedWarningFormat: string | null
   nativeTitlebar: boolean
   onNativeTitlebarChange: (v: boolean) => void
+  reduceAnimations: boolean
+  onReduceAnimationsChange: (v: boolean) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -112,6 +114,8 @@ const Settings = memo(function Settings({
   forcedWarningFormat,
   nativeTitlebar,
   onNativeTitlebarChange,
+  reduceAnimations,
+  onReduceAnimationsChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [showAbout, setShowAbout] = useState(false)
@@ -205,6 +209,12 @@ const Settings = memo(function Settings({
         warning="Requires restarting the application to apply."
       >
         <Toggle value={nativeTitlebar} onChange={onNativeTitlebarChange} />
+      </Row>
+      <Row
+        label="Reduce Animations"
+        description="Disable motion effects across the app, including position-swap transitions and flashes in the Standings table."
+      >
+        <Toggle value={reduceAnimations} onChange={onReduceAnimationsChange} />
       </Row>
     </div>
   )

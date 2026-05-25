@@ -1,4 +1,4 @@
-import { useMemo, useRef, useCallback, memo } from 'react'
+import { useMemo, useRef, useCallback, memo, useLayoutEffect } from 'react'
 import type { TimingMsg, ParticipantsMsg, TimingCar, DriverInfo, AllStatusMsg } from '../types'
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
   selectedIdx: number | null
   onSelectDriver: (idx: number) => void
   isDark: boolean
+  animationsEnabled: boolean
 }
 
 const COMPOUND_NAMES: Record<number, string> = {
@@ -143,6 +144,7 @@ const TowerRow = memo(function TowerRow({
 
   return (
     <tr
+      data-car-idx={carIdx}
       onClick={handleClick}
       className={`border-b border-[var(--border)] transition-colors cursor-pointer ${
         isSelected
@@ -255,7 +257,7 @@ const TowerRow = memo(function TowerRow({
 })
 TowerRow.displayName = 'TowerRow'
 
-const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark }: Props) {
+const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled }: Props) {
   // Per-car tracking refs for freeze + S3 computation
   const prevCarsRef     = useRef<Map<number, TimingCar>>(new Map())
   const frozenRef       = useRef<Map<number, { s1: number; s2: number; s3: number; exp: number }>>(new Map())
@@ -263,6 +265,11 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
   const s3SnapshotRef   = useRef<Map<number, { s1: number; s2: number; lap: number }>>(new Map())
   // Guard: process each timing message only once (safe under StrictMode double-invoke)
   const lastTsRef       = useRef<string | null>(null)
+
+  // FLIP animation refs
+  const tbodyRef          = useRef<HTMLTableSectionElement>(null)
+  const prevOrderRef      = useRef<number[]>([])
+  const savedPositionsRef = useRef<Map<number, number>>(new Map())
 
   const rows = useMemo(() => {
     if (!timing) return []
@@ -323,6 +330,67 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
       })
   }, [timing, participants, fastestLapCarIdx])
 
+  useLayoutEffect(() => {
+    const tbody = tbodyRef.current
+    if (!tbody) return
+
+    const trElements = tbody.querySelectorAll<HTMLTableRowElement>('tr[data-car-idx]')
+    const currentOrder = rows.map(r => r.car.idx)
+    const prevOrder = prevOrderRef.current
+
+    const orderChanged =
+      prevOrder.length > 0 &&
+      (currentOrder.length !== prevOrder.length ||
+        currentOrder.some((idx, i) => prevOrder[i] !== idx))
+
+    if (orderChanged && animationsEnabled) {
+      const prevRankOf = new Map(prevOrder.map((idx, rank) => [idx, rank]))
+      const currRankOf = new Map(currentOrder.map((idx, rank) => [idx, rank]))
+
+      trElements.forEach(row => {
+        const carIdx = Number(row.dataset.carIdx)
+        const savedY  = savedPositionsRef.current.get(carIdx)
+        const delta   = savedY !== undefined ? savedY - row.offsetTop : 0
+
+        const prevRank   = prevRankOf.get(carIdx)
+        const currRank   = currRankOf.get(carIdx)
+        const flashDir   =
+          prevRank !== undefined && currRank !== undefined && prevRank !== currRank
+            ? (currRank < prevRank ? 'gain' : 'lose')
+            : null
+
+        const hasMove = Math.abs(delta) > 1
+        if (!hasMove && !flashDir) return
+
+        // Set starting state
+        if (hasMove) {
+          row.style.transition = 'none'
+          row.style.transform  = `translateY(${delta}px)`
+        }
+        if (flashDir) row.style.animation = 'none'
+
+        // Commit starting state before triggering animations
+        void row.offsetHeight
+
+        if (hasMove) {
+          row.style.transition = 'transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+          row.style.transform  = ''
+        }
+        if (flashDir) {
+          row.style.animation = flashDir === 'gain'
+            ? 'posGainFlash 1s ease-out'
+            : 'posLoseFlash 1s ease-out'
+        }
+      })
+    }
+
+    // Save layout positions for next render (offsetTop is unaffected by CSS transforms)
+    trElements.forEach(row => {
+      savedPositionsRef.current.set(Number(row.dataset.carIdx), row.offsetTop)
+    })
+    prevOrderRef.current = currentOrder
+  }, [rows, animationsEnabled])
+
   const HEADERS = ['Pos', 'Driver', 'Lap', 'Last Lap', 'Gap', 'S1', 'S2', 'S3', 'Tyre', '']
 
   if (!timing) {
@@ -378,7 +446,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody ref={tbodyRef}>
             {rows.map(({ car, driver, isPlayer, isFastest, s1, s2, s3, tyreLabel, tyreColor }) => (
               <TowerRow
                 key={car.idx}
