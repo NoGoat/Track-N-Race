@@ -670,7 +670,7 @@ export default function App() {
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
   const [scBanner, setScBanner] = useState<BannerItem | null>(null)
   const [transientBanner, setTransientBanner] = useState<BannerItem | null>(null)
-  const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL'>('default')
+  const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL' | 'compare'>('default')
   const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
   const coreLayout = useMemo((): CoreLayout => ({
     ...DEFAULT_CORE_LAYOUT,
@@ -752,7 +752,7 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
 
   const detectedGameLabel = useMemo(() => {
     if (!protocolStatus) return 'No data yet'
@@ -1421,7 +1421,7 @@ export default function App() {
               )}
               {coreLayout.showSpeedChart && (
                 <div className={`${damageTwoRow ? 'flex-[8]' : 'flex-[13]'} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
+                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
                 </div>
               )}
               {coreLayout.showThermal && (

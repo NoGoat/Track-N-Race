@@ -338,6 +338,7 @@ export function useTelemetry(seconds: number): TelemetryState {
     lap, timing, participants, allStatus,
     fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets,
     latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
+    speedRpmBlocks,
     isConnected: true, error: null, protocolStatus, protocolWarning,
   }
 }

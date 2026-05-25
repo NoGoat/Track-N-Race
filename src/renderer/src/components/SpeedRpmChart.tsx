@@ -1,9 +1,73 @@
-import { useMemo, useRef, useCallback } from 'react'
+import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
 import UPlotReact from 'uplot-react'
 import uPlot from 'uplot'
+import Select, { type StylesConfig, type SingleValue } from 'react-select'
 import type { TelemetryRow, StatusRow, LapData } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+
+type LapOption = { value: number; label: string }
+
+function buildSelectStyles(isDark: boolean): StylesConfig<LapOption> {
+  return {
+    control: (base, state) => {
+      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
+      return {
+        ...base,
+        background: isHoveredOrActive ? 'var(--bg-hover)' : 'var(--bg-panel)',
+        borderColor: 'var(--border)',
+        boxShadow: 'none',
+        minHeight: 28,
+        height: 28,
+        borderRadius: 6,
+        fontSize: 11,
+        cursor: 'pointer',
+        transition: 'all 0.15s ease',
+        '&:hover': {
+          background: 'var(--bg-hover)',
+          borderColor: 'var(--border)',
+        },
+      }
+    },
+    valueContainer: (base) => ({ ...base, padding: '0 8px' }),
+    menu: (base) => ({
+      ...base,
+      background: 'var(--bg-menu)',
+      border: '1px solid var(--border)',
+      borderRadius: 6,
+      boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+      zIndex: 9999,
+      marginTop: 4,
+      overflow: 'hidden',
+    }),
+    option: (base, state) => ({
+      ...base,
+      background: state.isSelected ? 'var(--bg-selected)' : state.isFocused ? 'var(--bg-hover)' : 'transparent',
+      color: state.isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+      fontSize: 11,
+      padding: '5px 8px',
+      cursor: 'pointer',
+      transition: 'background 0.1s',
+      '&:active': { background: 'var(--bg-selected)' },
+    }),
+    singleValue:        (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11 }),
+    placeholder:        (base) => ({ ...base, color: 'var(--text-secondary)', fontSize: 11 }),
+    input:              (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0, padding: 0 }),
+    indicatorSeparator: ()    => ({ display: 'none' }),
+    dropdownIndicator: (base, state) => {
+      const isHoveredOrActive = state.isFocused || state.selectProps.menuIsOpen
+      return {
+        ...base,
+        padding: '0 6px',
+        color: isHoveredOrActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+        transform: state.selectProps.menuIsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+        transition: 'transform 0.2s ease, color 0.15s ease',
+        '&:hover': { color: 'var(--text-primary)' },
+      }
+    },
+    clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)' }),
+  }
+}
 
 interface Props {
   data: TelemetryRow[]
@@ -12,8 +76,9 @@ interface Props {
   lapStatusHistory: StatusRow[]
   lapHistory: LapData[]
   fastestLap: LapData | null
-  mode: 'default' | 'CL' | 'PL' | 'FL'
-  onModeChange: (mode: 'default' | 'CL' | 'PL' | 'FL') => void
+  speedRpmBlocks: any[] | null
+  mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
+  onModeChange: (mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
   isDark: boolean
 }
 
@@ -46,7 +111,77 @@ function advance<T extends { session_time: number }>(arr: T[], idx: number, targ
   return idx
 }
 
-export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, mode, onModeChange, isDark }: Props) {
+function buildOverlayData(
+  prevLap: { telemetry: any[]; statusHistory: any[]; startSessionTime: number },
+  lapData: TelemetryRow[],
+  lapStatusHistory: StatusRow[]
+): uPlot.AlignedData {
+  if (!prevLap || prevLap.telemetry.length === 0) {
+    return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
+            new Float64Array(), new Float64Array(), new Float64Array()]
+  }
+  const prevTel  = prevLap.telemetry
+  const prevSts  = prevLap.statusHistory
+  const curStart = lapData[0]?.session_time ?? 0
+  const curEnd   = lapData.length > 0 ? lapData[lapData.length - 1].session_time : -Infinity
+  const stsEnd   = lapStatusHistory.length > 0 ? lapStatusHistory[lapStatusHistory.length - 1].session_time : -Infinity
+
+  const prevDuration = prevTel[prevTel.length - 1].session_time - prevLap.startSessionTime
+  const curDuration  = lapData.length > 0 ? curEnd - curStart : 0
+
+  let curExtendStart = lapData.length
+  if (curDuration > prevDuration) {
+    curExtendStart = 0
+    while (curExtendStart < lapData.length &&
+           lapData[curExtendStart].session_time - curStart <= prevDuration) {
+      curExtendStart++
+    }
+  }
+  const extraPoints = lapData.length - curExtendStart
+  const n = prevTel.length + extraPoints
+
+  const x       = new Float64Array(n)
+  const prevSpd = new Float64Array(n)
+  const prevRpm = new Float64Array(n)
+  const prevErs = new Float64Array(n)
+  const curSpd  = new Float64Array(n)
+  const curRpm  = new Float64Array(n)
+  const curErs  = new Float64Array(n)
+
+  let ci = 0, siP = 0, siC = 0
+
+  prevTel.forEach((d: any, i: number) => {
+    const t = d.session_time - prevLap.startSessionTime
+    x[i] = t
+    prevSpd[i] = d.speed_kph
+    prevRpm[i] = d.rpm
+    siP = advance(prevSts, siP, d.session_time)
+    prevErs[i] = prevSts[siP]?.ers_pct ?? 0
+    const target = curStart + t
+    ci = advance(lapData, ci, target)
+    curSpd[i] = target <= curEnd ? lapData[ci].speed_kph : NaN
+    curRpm[i] = target <= curEnd ? lapData[ci].rpm        : NaN
+    siC = advance(lapStatusHistory, siC, target)
+    curErs[i] = target <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
+  })
+
+  for (let j = 0; j < extraPoints; j++) {
+    const i = prevTel.length + j
+    const d = lapData[curExtendStart + j]
+    x[i]       = d.session_time - curStart
+    prevSpd[i] = NaN
+    prevRpm[i] = NaN
+    prevErs[i] = NaN
+    curSpd[i]  = d.speed_kph
+    curRpm[i]  = d.rpm
+    siC = advance(lapStatusHistory, siC, d.session_time)
+    curErs[i]  = d.session_time <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
+  }
+
+  return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
+}
+
+export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark }: Props) {
   const activeData = mode === 'CL' ? lapData   : data
   const activeSts  = mode === 'CL' ? lapStatusHistory : statusHistory
 
@@ -56,75 +191,33 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
 
+  const [compareLapNum, setCompareLapNum] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (mode === 'compare' && compareLapNum === null && speedRpmBlocks && speedRpmBlocks.length > 0) {
+      setCompareLapNum(speedRpmBlocks[0].lapNum)
+    }
+  }, [mode, speedRpmBlocks, compareLapNum])
+
+  const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare'
+
   const uData = useMemo((): uPlot.AlignedData => {
-    if (mode === 'PL' || mode === 'FL') {
-      const prevLap = mode === 'FL' ? fastestLap : lapHistory[lapHistory.length - 1]
-      if (!prevLap || prevLap.telemetry.length === 0) {
+    if (mode === 'compare') {
+      const compareBlock = speedRpmBlocks?.find(b => b.lapNum === compareLapNum) ?? null
+      if (!compareBlock) {
         return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
                 new Float64Array(), new Float64Array(), new Float64Array()]
       }
-      const prevTel  = prevLap.telemetry
-      const prevSts  = prevLap.statusHistory
-      const curStart = lapData[0]?.session_time ?? 0
-      const curEnd   = lapData.length > 0 ? lapData[lapData.length - 1].session_time : -Infinity
-      const stsEnd   = lapStatusHistory.length > 0 ? lapStatusHistory[lapStatusHistory.length - 1].session_time : -Infinity
+      return buildOverlayData(compareBlock, lapData, lapStatusHistory)
+    }
 
-      const prevDuration = prevTel[prevTel.length - 1].session_time - prevLap.startSessionTime
-      const curDuration  = lapData.length > 0 ? curEnd - curStart : 0
-
-      // Find first lapData index that falls beyond the previous lap's endpoint
-      let curExtendStart = lapData.length
-      if (curDuration > prevDuration) {
-        curExtendStart = 0
-        while (curExtendStart < lapData.length &&
-               lapData[curExtendStart].session_time - curStart <= prevDuration) {
-          curExtendStart++
-        }
+    if (mode === 'PL' || mode === 'FL') {
+      const prevLap = mode === 'FL' ? fastestLap : lapHistory[lapHistory.length - 1]
+      if (!prevLap) {
+        return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
+                new Float64Array(), new Float64Array(), new Float64Array()]
       }
-      const extraPoints = lapData.length - curExtendStart
-      const n = prevTel.length + extraPoints
-
-      const x       = new Float64Array(n)
-      const prevSpd = new Float64Array(n)
-      const prevRpm = new Float64Array(n)
-      const prevErs = new Float64Array(n)
-      const curSpd  = new Float64Array(n)
-      const curRpm  = new Float64Array(n)
-      const curErs  = new Float64Array(n)
-
-      let ci = 0, siP = 0, siC = 0
-
-      // Phase 1: shared time range — indexed over the previous lap's data points
-      prevTel.forEach((d: TelemetryRow, i: number) => {
-        const t = d.session_time - prevLap.startSessionTime
-        x[i] = t
-        prevSpd[i] = d.speed_kph
-        prevRpm[i] = d.rpm
-        siP = advance(prevSts, siP, d.session_time)
-        prevErs[i] = prevSts[siP]?.ers_pct ?? 0
-        const target = curStart + t
-        ci = advance(lapData, ci, target)
-        curSpd[i] = target <= curEnd ? lapData[ci].speed_kph : NaN
-        curRpm[i] = target <= curEnd ? lapData[ci].rpm        : NaN
-        siC = advance(lapStatusHistory, siC, target)
-        curErs[i] = target <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
-      })
-
-      // Phase 2: current lap extends past the previous lap — prev series get NaN
-      for (let j = 0; j < extraPoints; j++) {
-        const i = prevTel.length + j
-        const d = lapData[curExtendStart + j]
-        x[i]       = d.session_time - curStart
-        prevSpd[i] = NaN
-        prevRpm[i] = NaN
-        prevErs[i] = NaN
-        curSpd[i]  = d.speed_kph
-        curRpm[i]  = d.rpm
-        siC = advance(lapStatusHistory, siC, d.session_time)
-        curErs[i]  = d.session_time <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
-      }
-
-      return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
+      return buildOverlayData(prevLap as any, lapData, lapStatusHistory)
     }
 
     if (activeData.length === 0) return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array()]
@@ -147,11 +240,11 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       }
     })
     return [ts, spd, rpm, ers]
-  }, [mode === 'PL' || mode === 'FL' ? lapHistory : activeData, mode === 'PL' || mode === 'FL' ? lapStatusHistory : activeSts, mode, lapData, fastestLap])
+  }, [is2L ? lapHistory : activeData, is2L ? lapStatusHistory : activeSts, mode, lapData, fastestLap, compareLapNum, speedRpmBlocks])
+
+  const compLabel = compareLapNum !== null ? `L${compareLapNum}` : 'CMP'
 
   const opts = useMemo((): uPlot.Options => {
-    const is2L = mode === 'PL' || mode === 'FL'
-
     const ttPlugin: uPlot.Plugin = {
       hooks: {
         setCursor: (u) => {
@@ -166,9 +259,10 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
             const cSpd = (u.data[4] as Float64Array)[idx]
             const cRpm = (u.data[5] as Float64Array)[idx]
             const cErs = (u.data[6] as Float64Array)[idx]
+            const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
             html = [
               `<div style="color:var(--text-secondary);margin-bottom:4px">${fmtLapTime(ts)}</div>`,
-              `<div style="color:var(--text-secondary);font-size:10px;margin-bottom:2px">${mode === 'FL' ? 'FL' : 'PL'}</div>`,
+              `<div style="color:var(--text-secondary);font-size:10px;margin-bottom:2px">${refLabel}</div>`,
               `<div><span style="color:${COLOR_SPEED_MUTED}">Speed</span>: ${pSpd} &nbsp;<span style="color:${COLOR_RPM_MUTED}">RPM</span>: ${pRpm?.toLocaleString()} &nbsp;<span style="color:${COLOR_ERS_MUTED}">ERS</span>: ${pErs}%</div>`,
               `<div style="color:var(--text-secondary);font-size:10px;margin-top:4px;margin-bottom:2px">CURR</div>`,
               `<div><span style="color:${COLOR_SPEED}">Speed</span>: ${isNaN(cSpd) ? '—' : cSpd} &nbsp;<span style="color:${COLOR_RPM}">RPM</span>: ${isNaN(cRpm) ? '—' : cRpm?.toLocaleString()} &nbsp;<span style="color:${COLOR_ERS}">ERS</span>: ${isNaN(cErs) ? '—' : cErs + '%'}</div>`,
@@ -189,14 +283,15 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       },
     }
 
+    const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
     const series: uPlot.Series[] = is2L ? [
       {},
-      { label: mode === 'FL' ? 'FL Speed' : 'PL Speed', stroke: COLOR_SPEED_MUTED, scale: 'spd', width: 1.5, points: { show: false } },
-      { label: mode === 'FL' ? 'FL RPM'   : 'PL RPM',   stroke: COLOR_RPM_MUTED,   scale: 'rpm', width: 1.5, points: { show: false } },
-      { label: mode === 'FL' ? 'FL ERS'   : 'PL ERS',   stroke: COLOR_ERS_MUTED,   scale: 'ers', width: 1.5, points: { show: false } },
-      { label: 'Speed',      stroke: COLOR_SPEED,        scale: 'spd', width: 1.5, points: { show: false } },
-      { label: 'RPM',        stroke: COLOR_RPM,          scale: 'rpm', width: 1.5, points: { show: false } },
-      { label: 'ERS',        stroke: COLOR_ERS,          scale: 'ers', width: 1.5, points: { show: false } },
+      { label: `${refLabel} Speed`, stroke: COLOR_SPEED_MUTED, scale: 'spd', width: 1.5, points: { show: false } },
+      { label: `${refLabel} RPM`,   stroke: COLOR_RPM_MUTED,   scale: 'rpm', width: 1.5, points: { show: false } },
+      { label: `${refLabel} ERS`,   stroke: COLOR_ERS_MUTED,   scale: 'ers', width: 1.5, points: { show: false } },
+      { label: 'Speed',             stroke: COLOR_SPEED,        scale: 'spd', width: 1.5, points: { show: false } },
+      { label: 'RPM',               stroke: COLOR_RPM,          scale: 'rpm', width: 1.5, points: { show: false } },
+      { label: 'ERS',               stroke: COLOR_ERS,          scale: 'ers', width: 1.5, points: { show: false } },
     ] : [
       {},
       { label: 'Speed', stroke: COLOR_SPEED, scale: 'spd', width: 1.5, points: { show: false } },
@@ -263,23 +358,29 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       series,
       plugins: [ttPlugin],
     }
-  }, [width, height, mode, isDark])
+  }, [width, height, mode, isDark, compLabel, is2L])
 
   const onCreate = useCallback((u: uPlot) => {
     u.over.addEventListener('mouseleave', hide)
   }, [])
 
-  const noData = mode === 'PL'
+  const noData = mode === 'compare'
+    ? !speedRpmBlocks || speedRpmBlocks.length === 0 || compareLapNum === null
+    : mode === 'PL'
     ? lapHistory.length === 0
     : mode === 'FL'
     ? fastestLap === null
     : activeData.length === 0
 
-  const emptyMsg = mode === 'FL'
+  const emptyMsg = mode === 'compare'
+    ? 'Load a file to compare laps'
+    : mode === 'FL'
     ? 'Complete a lap to record fastest'
     : mode === 'PL'
     ? 'Complete a lap to see comparison'
     : 'No data — start driving to see telemetry'
+
+  const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 flex flex-col h-full">
@@ -295,18 +396,43 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
                   mode === m ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
                 }`}
               >
-                {m === 'default' ? 'Default' : m}
+                {m === 'default' ? 'Default' : m === 'CL' ? 'Current Lap' : m === 'PL' ? 'Previous Lap' : 'Fastest Lap'}
               </button>
             ))}
+            {speedRpmBlocks && speedRpmBlocks.length > 0 && (
+              <button
+                onClick={() => onModeChange('compare')}
+                className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                  mode === 'compare' ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'
+                }`}
+              >
+                Compare Laps
+              </button>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {mode === 'compare' && speedRpmBlocks && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-xs text-[var(--text-secondary)]">Lap:</span>
+              <div className="w-16">
+                <Select<LapOption>
+                  value={compareLapNum !== null ? { value: compareLapNum, label: String(compareLapNum) } : null}
+                  options={speedRpmBlocks.map(b => ({ value: b.lapNum, label: String(b.lapNum) }))}
+                  onChange={(opt: SingleValue<LapOption>) => { if (opt) setCompareLapNum(opt.value) }}
+                  isSearchable={false}
+                  maxMenuHeight={150}
+                  styles={buildSelectStyles(isDark)}
+                />
+              </div>
+            </div>
+          )}
           <div className="flex gap-4 text-xs">
-            {(mode === 'PL' || mode === 'FL') ? (
+            {is2L ? (
               <>
-                <span style={{ color: COLOR_SPEED_MUTED }}>— {mode === 'FL' ? 'FL' : 'PL'} Speed</span>
-                <span style={{ color: COLOR_RPM_MUTED }}>— {mode === 'FL' ? 'FL' : 'PL'} RPM</span>
-                <span style={{ color: COLOR_ERS_MUTED }}>— {mode === 'FL' ? 'FL' : 'PL'} ERS</span>
+                <span style={{ color: COLOR_SPEED_MUTED }}>— {refLabel} Speed</span>
+                <span style={{ color: COLOR_RPM_MUTED }}>— {refLabel} RPM</span>
+                <span style={{ color: COLOR_ERS_MUTED }}>— {refLabel} ERS</span>
                 <span style={{ color: COLOR_SPEED }}>— Speed</span>
                 <span style={{ color: COLOR_RPM }}>— RPM</span>
                 <span style={{ color: COLOR_ERS }}>— ERS</span>
