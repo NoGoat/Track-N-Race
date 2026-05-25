@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
-import Select, { StylesConfig } from 'react-select'
+import Select, { StylesConfig, type SingleValue } from 'react-select'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
@@ -655,6 +655,52 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
 })
 PlaybackProgressTracker.displayName = 'PlaybackProgressTracker'
 
+interface PlaybackLapSelectorProps {
+  speedRpmBlocks: any[]
+  totalTime: number
+  sessionFileStart: number
+  currentLapNum: number | null
+  selectStyles: any
+}
+
+const PlaybackLapSelector = memo(function PlaybackLapSelector({
+  speedRpmBlocks, totalTime, sessionFileStart, currentLapNum, selectStyles
+}: PlaybackLapSelectorProps) {
+  const options = useMemo(
+    () => speedRpmBlocks.map(b => ({ value: b.lapNum, label: String(b.lapNum) })),
+    [speedRpmBlocks]
+  )
+
+  const value = useMemo(
+    () => currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null,
+    [currentLapNum]
+  )
+
+  const handleChange = useCallback((opt: SingleValue<{ value: number; label: string }>) => {
+    if (!opt || totalTime <= 0) return
+    const block = speedRpmBlocks.find(b => b.lapNum === opt.value)
+    if (!block) return
+    const ratio = (block.startSessionTime - sessionFileStart) / totalTime
+    window.playerBridge.seek(Math.max(0, Math.min(1, ratio)))
+  }, [speedRpmBlocks, sessionFileStart, totalTime])
+
+  return (
+    <div className="w-[4.5rem] shrink-0">
+      <Select
+        value={value}
+        options={options}
+        onChange={handleChange}
+        isSearchable={false}
+        maxMenuHeight={150}
+        menuPlacement="top"
+        styles={selectStyles}
+        placeholder="—"
+      />
+    </div>
+  )
+})
+PlaybackLapSelector.displayName = 'PlaybackLapSelector'
+
 export default function App() {
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
   useEffect(() => {
@@ -705,6 +751,11 @@ export default function App() {
   const [headerVisible, setHeaderVisible] = useState(false)
   const [playbackState, setPlaybackState] = useState<any>(null)
   const playbackStateRef = useRef<any>(null)
+  const sessionFileStartRef = useRef(0)
+  const capturedForBlocksRef = useRef<any[] | null>(null)
+  const [currentPlaybackLapNum, setCurrentPlaybackLapNum] = useState<number | null>(null)
+  const currentPlaybackLapNumRef = useRef<number | null>(null)
+  const speedRpmBlocksRef = useRef<any[] | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
 
   useEffect(() => {
@@ -720,6 +771,14 @@ export default function App() {
     return window.playerBridge.onStateChange((st) => {
       playbackStateRef.current = st
       setPlaybackState(st)
+      const blocks = speedRpmBlocksRef.current
+      if (blocks) {
+        const lapNum = blocks.find(b => st.currentTime >= b.startSessionTime && st.currentTime <= b.endSessionTime)?.lapNum ?? null
+        if (lapNum !== currentPlaybackLapNumRef.current) {
+          currentPlaybackLapNumRef.current = lapNum
+          setCurrentPlaybackLapNum(lapNum)
+        }
+      }
     })
   }, [])
 
@@ -753,6 +812,17 @@ export default function App() {
   }, [])
 
   const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+
+  speedRpmBlocksRef.current = speedRpmBlocks
+
+  // Capture session file start once when blocks first arrive — stable for the session
+  if (speedRpmBlocks !== capturedForBlocksRef.current) {
+    capturedForBlocksRef.current = speedRpmBlocks
+    if (speedRpmBlocks && playbackStateRef.current) {
+      const st = playbackStateRef.current
+      sessionFileStartRef.current = st.currentTime - st.progressPct * st.totalTime
+    }
+  }
 
   const detectedGameLabel = useMemo(() => {
     if (!protocolStatus) return 'No data yet'
@@ -1551,6 +1621,15 @@ export default function App() {
             onSeekForward={handleSeekForward}
             selectStyles={selectStyles}
           />
+          {speedRpmBlocks && speedRpmBlocks.length > 0 && (
+            <PlaybackLapSelector
+              speedRpmBlocks={speedRpmBlocks}
+              totalTime={playbackState.totalTime}
+              sessionFileStart={sessionFileStartRef.current}
+              currentLapNum={currentPlaybackLapNum}
+              selectStyles={selectStyles}
+            />
+          )}
           <PlaybackProgressTracker
             currentTime={playbackState.currentTime}
             progressPct={playbackState.progressPct}

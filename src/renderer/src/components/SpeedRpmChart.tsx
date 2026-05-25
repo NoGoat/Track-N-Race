@@ -199,6 +199,19 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     }
   }, [mode, speedRpmBlocks, compareLapNum])
 
+  const compareSelectStyles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const lapOptions = useMemo(
+    () => speedRpmBlocks?.map(b => ({ value: b.lapNum, label: String(b.lapNum) })) ?? [],
+    [speedRpmBlocks]
+  )
+  const compareValue = useMemo(
+    () => compareLapNum !== null ? { value: compareLapNum, label: String(compareLapNum) } : null,
+    [compareLapNum]
+  )
+  const handleCompareLapChange = useCallback((opt: SingleValue<LapOption>) => {
+    if (opt) setCompareLapNum(opt.value)
+  }, [])
+
   const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare'
 
   const uData = useMemo((): uPlot.AlignedData => {
@@ -413,18 +426,16 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
         </div>
         <div className="flex items-center gap-3">
           {mode === 'compare' && speedRpmBlocks && (
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-xs text-[var(--text-secondary)]">Lap:</span>
-              <div className="w-16">
-                <Select<LapOption>
-                  value={compareLapNum !== null ? { value: compareLapNum, label: String(compareLapNum) } : null}
-                  options={speedRpmBlocks.map(b => ({ value: b.lapNum, label: String(b.lapNum) }))}
-                  onChange={(opt: SingleValue<LapOption>) => { if (opt) setCompareLapNum(opt.value) }}
-                  isSearchable={false}
-                  maxMenuHeight={150}
-                  styles={buildSelectStyles(isDark)}
-                />
-              </div>
+            <div className="w-16 shrink-0">
+              <Select<LapOption>
+                value={compareValue}
+                options={lapOptions}
+                onChange={handleCompareLapChange}
+                isSearchable={false}
+                maxMenuHeight={150}
+                styles={compareSelectStyles}
+                placeholder="Lap…"
+              />
             </div>
           )}
           <div className="flex gap-4 text-xs">
