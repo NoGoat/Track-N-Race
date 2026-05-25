@@ -6,6 +6,7 @@ import type { TelemetryRow, StatusRow, LapData } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { buildSelectStyles } from '../lib/selectStyles'
+import { selectComponents } from '../lib/selectComponents'
 
 type LapOption = { value: number; label: string }
 
@@ -374,6 +375,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
                 isSearchable={false}
                 maxMenuHeight={150}
                 styles={compareSelectStyles}
+                components={selectComponents}
                 placeholder="Lap…"
               />
             </div>

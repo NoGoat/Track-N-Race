@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
+import { selectComponents } from './lib/selectComponents'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { useAppConfig } from './hooks/useAppConfig'
@@ -219,6 +220,7 @@ const TabSelector = memo(({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void 
         onChange={(opt) => opt && setTab(opt.value as Tab)}
         placeholder="Settings"
         styles={selectStyles}
+        components={selectComponents}
         isSearchable={false}
         menuPortalTarget={document.body}
       />
@@ -352,6 +354,7 @@ const TimeWindowSelector = memo(
           value={WINDOW_OPTIONS.find((o) => o.value === seconds) ?? null}
           onChange={(opt) => opt && setSeconds(opt.value as number)}
           styles={selectStyles}
+          components={selectComponents}
           isSearchable={false}
           menuPortalTarget={document.body}
         />
@@ -527,6 +530,7 @@ const PlaybackControlsBar = memo(function PlaybackControlsBar({
             { value: 4, label: '4x' },
           ]}
           styles={selectStyles}
+          components={selectComponents}
           menuPlacement="top"
           isSearchable={false}
         />
@@ -644,6 +648,7 @@ const PlaybackLapSelector = memo(function PlaybackLapSelector({
         maxMenuHeight={150}
         menuPlacement="top"
         styles={selectStyles}
+        components={selectComponents}
         placeholder="—"
       />
     </div>

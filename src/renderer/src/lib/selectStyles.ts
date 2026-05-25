@@ -1,11 +1,11 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(_isDark: boolean): StylesConfig<any, false> {
+export function buildSelectStyles(_isDark: boolean, { solidBg = false } = {}): StylesConfig<any, false> {
   return {
-    control: (base, state) => ({
+    control: (base, _state) => ({
       ...base,
-      background: state.isFocused || state.selectProps.menuIsOpen ? 'var(--bg-hover)' : 'var(--bg-panel)',
-      borderColor: 'var(--border)',
+      background: solidBg ? 'var(--bg-panel)' : 'transparent',
+      borderColor: 'transparent',
       boxShadow: 'none',
       minHeight: 28,
       height: 28,
@@ -13,7 +13,7 @@ export function buildSelectStyles(_isDark: boolean): StylesConfig<any, false> {
       fontSize: 11,
       cursor: 'pointer',
       transition: 'background 0.15s ease, border-color 0.15s ease',
-      '&:hover': { background: 'var(--bg-hover)', borderColor: 'var(--border)' },
+      '&:hover': { background: 'var(--bg-hover)', borderColor: 'transparent' },
     }),
     valueContainer: (base) => ({ ...base, padding: '0 8px', flexWrap: 'nowrap' }),
     singleValue:        (base) => ({ ...base, color: 'var(--text-primary)',   fontSize: 11, margin: 0 }),

@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from '../lib/selectStyles'
+import { selectComponents } from '../lib/selectComponents'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
@@ -426,7 +427,7 @@ interface FollowDriverSelectorProps {
 }
 
 const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDark }: FollowDriverSelectorProps) => {
-  const styles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
   const val = useMemo(() => options.find(o => o.value === selectedDriverIdx) ?? null, [options, selectedDriverIdx])
   
   return (
@@ -439,6 +440,7 @@ const FollowDriverSelector = memo(({ selectedDriverIdx, onChange, options, isDar
         isSearchable
         placeholder="Follow driver…"
         styles={styles}
+        components={selectComponents}
       />
     </div>
   )
@@ -452,7 +454,7 @@ interface ZoomSelectorProps {
 }
 
 const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) => {
-  const styles = useMemo(() => buildSelectStyles(isDark), [isDark])
+  const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
   const val = useMemo(() => ZOOM_OPTIONS.find(o => o.value === zoomLevel) ?? ZOOM_OPTIONS[1], [zoomLevel])
   
   return (
@@ -463,6 +465,7 @@ const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) =
         onChange={onChange}
         isSearchable={false}
         styles={styles}
+        components={selectComponents}
       />
     </div>
   )
