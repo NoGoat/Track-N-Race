@@ -280,28 +280,16 @@ const SessionBadge = memo(
       const accent = sessionAccent(sessionType, theme === 'dark')
       return (
         <span
-          className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
-          style={{
-            backgroundColor: accent + '33',
-            color: accent,
-            border: `1px solid ${accent}66`,
-          }}
+          className="text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0"
+          style={{ backgroundColor: accent + '22', color: accent }}
         >
           {SESSION_TYPES[sessionType] ?? 'Unknown'}
         </span>
       )
     }
 
-    const offlineColor = theme === 'dark' ? '#a0a8b8' : '#565B70'
     return (
-      <span
-        className="text-[10px] font-bold uppercase tracking-widest rounded-full px-2.5 py-0.5 select-none shrink-0"
-        style={{
-          backgroundColor: offlineColor + '33',
-          color: offlineColor,
-          border: `1px solid ${offlineColor}66`,
-        }}
-      >
+      <span className="text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0 bg-[var(--bg-panel)] text-[var(--text-secondary)]">
         Offline
       </span>
     )
