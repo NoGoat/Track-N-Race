@@ -2,6 +2,11 @@ import type { StylesConfig } from 'react-select'
 
 export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28 } = {}): StylesConfig<any, false> {
   return {
+    container: (base) => ({
+      ...base,
+      userSelect: 'none',
+      WebkitUserSelect: 'none',
+    }),
     control: (base, _state) => ({
       ...base,
       display: 'flex',
@@ -41,6 +46,8 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       zIndex: 9999,
       marginTop: 4,
       overflow: 'hidden',
+      userSelect: 'none',
+      WebkitUserSelect: 'none',
     }),
     menuPortal: (base) => ({ ...base, zIndex: 9999 }),
     menuList:   (base) => ({ ...base, padding: 4 }),

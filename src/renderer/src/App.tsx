@@ -439,7 +439,7 @@ const WindowControls = memo(({ isFullscreen, isMaximized, showOnlyFullscreen }: 
         )}
       </button>
 
-      {!showOnlyFullscreen && (
+      {!showOnlyFullscreen && !isFullscreen && (
         <>
           <button
             onClick={() => window.windowControls.minimize()}
@@ -926,7 +926,7 @@ export default function App() {
         onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
       >
       <header
-        className={`relative flex items-center gap-3 px-4 h-10 border-b ${
+        className={`relative flex items-center gap-3 px-4 h-10 border-b select-none ${
           isFullscreen
             ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
             : 'sticky top-0 z-10 transition-colors duration-500'
@@ -1407,21 +1407,37 @@ export default function App() {
         {tab === 'core' && (() => {
           const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
           const damageTwoRow = visibleDamageCount > 8
+          const showStatsPanel = coreLayout.showStats && Object.values(coreLayout.statsCards).some(Boolean)
+          const showThermalPanel = coreLayout.showThermal && (
+            tyreView === 'graphs'
+              ? Object.values(coreLayout.thermalGraphs).some(Boolean)
+              : Object.values(coreLayout.thermalCards).some(Boolean)
+          )
+          const showSpeedChartPanel = coreLayout.showSpeedChart
+
+          let speedChartFlex = 'flex-1'
+          let thermalFlex = 'flex-1'
+
+          if (showSpeedChartPanel && showThermalPanel) {
+            speedChartFlex = damageTwoRow ? 'flex-[8]' : 'flex-[13]'
+            thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
+          }
+
           return (
           <div className="h-full flex flex-col overflow-hidden">
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-              {coreLayout.showStats && (
+              {showStatsPanel && (
                 <div className="shrink-0">
                   <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={theme === 'dark'} />
                 </div>
               )}
-              {coreLayout.showSpeedChart && (
-                <div className={`${damageTwoRow ? 'flex-[8]' : 'flex-[13]'} min-h-0`}>
+              {showSpeedChartPanel && (
+                <div className={`${speedChartFlex} min-h-0`}>
                   <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
                 </div>
               )}
-              {coreLayout.showThermal && (
-                <div className={`${damageTwoRow ? 'flex-[4]' : 'flex-[7]'} min-h-0`}>
+              {showThermalPanel && (
+                <div className={`${thermalFlex} min-h-0`}>
                   <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} />
                 </div>
               )}
@@ -1539,7 +1555,7 @@ export default function App() {
 
       {/* Playback Controls Bar */}
       {playbackState && playbackState.filename && (
-        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 gap-6 z-40 select-none">
+        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 gap-2 z-40 select-none">
           <PlaybackControlsBar
             isPlaying={playbackState.isPlaying}
             onSeekBackward={handleSeekBackward}

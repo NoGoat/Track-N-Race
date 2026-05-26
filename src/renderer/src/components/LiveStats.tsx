@@ -55,7 +55,7 @@ const Card = memo(function Card({
   subTextColor?: string
 }) {
   return (
-    <div className="flex-1 min-w-0 px-3 py-2">
+    <div className="flex-1 min-w-0 px-3 py-2 min-h-[75px]">
       <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest mb-0.5">{label}</div>
       <div className="flex items-baseline gap-0.5 overflow-hidden">
         <span
