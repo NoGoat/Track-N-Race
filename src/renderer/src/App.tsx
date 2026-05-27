@@ -21,6 +21,7 @@ import PowerBreakdownChart from './components/PowerBreakdownChart'
 import PowerStatsBar from './components/PowerStatsBar'
 import TyresPanel from './components/TyresPanel'
 import SessionPanel, { SESSION_TYPES, sessionAccent } from './components/SessionPanel'
+import StrategyPanel from './components/StrategyPanel'
 import type { RaceEventMsg, ParticipantsMsg } from './types'
 import iconTransparent from './assets/icon_transparent.png'
 import iconTransparentLight from './assets/icon_transparent_light.png'
@@ -34,7 +35,7 @@ const WINDOWS: { label: string; value: number }[] = [
   { label: '10m', value: 600 },
 ]
 
-type Tab = 'core' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session'
+type Tab = 'core' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
 
 interface CoreLayout {
   showStats:      boolean
@@ -102,10 +103,10 @@ const DEFAULT_TYRES_LAYOUT: TyresLayout = {
 }
 
 const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc'
+  core: 'Overview', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
 }
 
-const TAB_OPTIONS = (['core', 'session', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
+const TAB_OPTIONS = (['core', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
 const selectStyles = buildSelectStyles(true)
 
@@ -1548,6 +1549,20 @@ export default function App() {
               isDark={theme === 'dark'}
               visibleGraphs={tyresLayout.charts}
               sessionType={session?.session_type ?? null}
+            />
+          </div>
+        )}
+        {tab === 'strategy' && (
+          <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
+            <StrategyPanel
+              lap={lap}
+              session={session}
+              status={status}
+              damage={damage}
+              timing={timing}
+              participants={participants}
+              tyreSets={tyreSets}
+              isDark={theme === 'dark'}
             />
           </div>
         )}
