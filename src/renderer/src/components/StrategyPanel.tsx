@@ -64,9 +64,11 @@ function driverName(p: ParticipantsMsg | null, idx: number): string {
 }
 
 function wearColor(pct: number): string {
-  if (pct < 50) return '#73BF69'
-  if (pct < 70) return '#FADE2A'
-  return '#C4162A'
+  if (pct < 20) return '#73BF69'   // green
+  if (pct < 40) return '#A8D436'   // yellow-green
+  if (pct < 60) return '#FADE2A'   // yellow
+  if (pct < 80) return '#FF9830'   // orange
+  return '#C4162A'                  // red
 }
 
 function fmtLapTime(ms: number): string {
@@ -362,7 +364,22 @@ const StrategyPanel = memo(function StrategyPanel({
 
     const consLapsLeft = Math.max(0, Math.floor((cliffPct - avgWear) / wearPerLap))
     const consCliffLap = lap.lap_num + consLapsLeft
-    let conservative = buildStints(lap.lap_num, session.total_laps, consCliffLap, currentCompound, avgWear, conservativePool)
+
+    // Estimate per-lap pace gain from the best available fresh set vs current (worn) set.
+    // lap_delta_ms is negative when a set is faster; netting fittedSet - bestConsSet gives
+    // the ms/lap benefit of switching now.  Conservative values track position, so we use
+    // 30 s as the effective pit-stop cost — only box early when degradation is truly severe.
+    const fittedSet   = tyreSets?.sets.find(s => s.fitted)
+    const bestConsSet = conservativePool[0]
+    const freshGainMs = bestConsSet
+      ? Math.max(0, (fittedSet?.lap_delta_ms ?? 0) - bestConsSet.lap_delta_ms)
+      : 0
+    const CONS_PIT_COST_MS = 30_000
+    const consFirstPit = freshGainMs > 500 && freshGainMs * consLapsLeft > CONS_PIT_COST_MS
+      ? Math.max(lap.lap_num + 1, lap.lap_num + Math.ceil(CONS_PIT_COST_MS / freshGainMs))
+      : consCliffLap
+
+    let conservative = buildStints(lap.lap_num, session.total_laps, consFirstPit, currentCompound, avgWear, conservativePool)
     if (isMonaco) {
       const usedCompounds = new Set(conservative.stints.map(s => s.actualCompound))
       conservative = applyMonacoRule(conservative, conservativePool, usedCompounds)
@@ -394,23 +411,129 @@ const StrategyPanel = memo(function StrategyPanel({
     const rightWear = (frW + rrW) / 2
     const frontWear = (flW + frW) / 2
     const rearWear  = (rlW + rrW) / 2
-    const sideImb   = rightWear - leftWear
-    const axleImb   = frontWear - rearWear
+    const avg       = (flW + frW + rlW + rrW) / 4
+    const maxWear   = Math.max(flW, frW, rlW, rrW)
+    const sideImb   = rightWear - leftWear   // + = right wearing faster
+    const axleImb   = frontWear - rearWear   // + = front wearing faster
+    const diagImb   = (flW + rrW) / 2 - (frW + rlW) / 2  // + = oversteer pattern
+    const rearImb   = rlW - rrW             // + = rear-left working harder
 
     interface WearWarning { text: string; detail: string; color: string }
-    const wearWarnings: WearWarning[] = []
-    if (Math.abs(sideImb) > 5) {
-      wearWarnings.push(sideImb > 0
-        ? { text: 'Right tyres degrading faster', detail: 'Ease through left-hand corners — let the car flow more smoothly', color: '#FF9830' }
-        : { text: 'Left tyres degrading faster',  detail: 'Ease through right-hand corners — let the car flow more smoothly', color: '#FF9830' }
+    type WarnPriority = 0 | 1 | 2 | 3
+    const candidates: (WearWarning & { priority: WarnPriority })[] = []
+
+    // Structural risk — single corner >22% above average (cliff + fatigue risk)
+    if (maxWear > avg + 22) {
+      const corner = maxWear === flW ? 'FL' : maxWear === frW ? 'FR' : maxWear === rlW ? 'RL' : 'RR'
+      const detail = corner === 'FL'
+        ? 'Outside front taking 70–80% of axle load in right-handers — structural fatigue imminent; prioritise your box lap'
+        : corner === 'FR'
+        ? 'Outside front taking 70–80% of axle load in left-handers — structural fatigue imminent; prioritise your box lap'
+        : corner === 'RL'
+        ? 'Rear-left near structural limit — wheelspin overheating on exit; close differential or ease early throttle'
+        : 'Rear-right near structural limit — peak lateral and drive load; smooth corner entry and mid-corner throttle'
+      candidates.push({ text: `${corner} at structural risk`, detail, color: '#C4162A', priority: 0 })
+    }
+
+    // Single corner dominance — one tyre >10% ahead of second-worst
+    const sorted4 = [flW, frW, rlW, rrW].sort((a, b) => b - a)
+    if (maxWear - sorted4[1] > 10) {
+      if (maxWear === flW) candidates.push({
+        text: 'Front-left is the limit tyre',
+        detail: 'Sustained right-handers push 70–80% of axle load onto the outside front — classic Silverstone/Lusail/Suzuka pattern; monitor cliff lap closely',
+        color: '#FF9830', priority: 1,
+      })
+      else if (maxWear === frW) candidates.push({
+        text: 'Front-right is the limit tyre',
+        detail: 'Sustained left-handers are loading the outside front corner — ease entry speed and let steering unwind earlier',
+        color: '#FF9830', priority: 1,
+      })
+      else if (maxWear === rlW) candidates.push({
+        text: 'Rear-left overheating under throttle',
+        detail: 'Inside rear spinning on corner exit — differential too open; ease the initial throttle application and smooth the trace',
+        color: '#FF9830', priority: 1,
+      })
+      else candidates.push({
+        text: 'Rear-right taking excess mid-corner load',
+        detail: 'Outside rear under simultaneous lateral and drive load — ease through fast right-handers; smooth the corner entry',
+        color: '#FF9830', priority: 1,
+      })
+    }
+
+    // Diagonal cross-wear — handling balance signature
+    if (Math.abs(diagImb) > 8) {
+      candidates.push(diagImb > 0
+        ? {
+            text: 'Cross-diagonal wear — FL + RR',
+            detail: 'Car rotating too aggressively; oversteer tendency loading opposite corners — try stiffening rear ARB or easing initial throttle on exit',
+            color: '#FF9830', priority: 2,
+          }
+        : {
+            text: 'Cross-diagonal wear — FR + RL',
+            detail: 'Car pushing at apex; understeer tendency loading opposite corners — ease brake bias or add front wing to reduce entry push',
+            color: '#FF9830', priority: 2,
+          }
       )
     }
+
+    // Rear asymmetry when rears are the dominant axle
+    if (rearWear > frontWear && Math.abs(rearImb) > 8) {
+      candidates.push(rlW > rrW
+        ? {
+            text: 'Rear-left overheating under traction',
+            detail: 'Inside rear losing grip first on exit — differential too open; reduce wheelspin by easing the initial throttle application',
+            color: '#FF9830', priority: 2,
+          }
+        : {
+            text: 'Rear-right absorbing peak lateral load',
+            detail: 'Outside rear carrying combined slip through right-handers — ease mid-corner throttle and smooth the steering transition',
+            color: '#FF9830', priority: 2,
+          }
+      )
+    }
+
+    // Axle imbalance — front vs rear
     if (Math.abs(axleImb) > 8) {
-      wearWarnings.push(axleImb > 0
-        ? { text: 'Front tyres overloaded', detail: 'Ease brake pressure on corner entry',     color: '#FF9830' }
-        : { text: 'Rear tyres overloaded',  detail: 'Ease throttle application on exit', color: '#FF9830' }
+      candidates.push(axleImb > 0
+        ? {
+            text: 'Front axle under peak stress',
+            detail: 'Braking zones and lateral load wearing fronts faster than rears — shift brake bias rearward or trim front wing to reduce load',
+            color: '#FF9830', priority: 3,
+          }
+        : {
+            text: 'Rear tyres absorbing excess torque load',
+            detail: 'Combined slip from drive torque and lateral force — reduce wheelspin on corner exit; smooth the throttle trace',
+            color: '#FF9830', priority: 3,
+          }
       )
     }
+
+    // Side imbalance — lowest priority as it is implied by more specific warnings above
+    if (Math.abs(sideImb) > 5) {
+      candidates.push(sideImb > 0
+        ? {
+            text: 'Right tyres degrading faster',
+            detail: 'Left-hand corners loading the right-side contact patches harder — ease entry speed and let the car flow more smoothly',
+            color: '#FF9830', priority: 3,
+          }
+        : {
+            text: 'Left tyres degrading faster',
+            detail: 'Right-hand corners loading the left-side contact patches harder — ease entry speed and let the car flow more smoothly',
+            color: '#FF9830', priority: 3,
+          }
+      )
+    }
+
+    const PRIORITY_COLOR: Record<WarnPriority, string> = {
+      0: '#C4162A',
+      1: '#C4162A',
+      2: '#FF9830',
+      3: '#FADE2A',
+    }
+    const wearWarnings: WearWarning[] = candidates
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, 2)
+      .map(({ text, detail, priority }) => ({ text, detail, color: PRIORITY_COLOR[priority] }))
 
     return {
       avgWear, wearPerLap,
@@ -443,23 +566,20 @@ const StrategyPanel = memo(function StrategyPanel({
 
     const fittedSet = tyreSets?.sets.find(s => s.fitted)
 
-    const calcForResult = (result: StrategyResult): (StintTargetInfo | null)[] =>
-      result.stints.map((stint, i) => {
-        const stintEndLap       = stint.pitLap ?? session.total_laps
-        const remainingStintLaps = stintEndLap - lap.lap_num
+    const PIT_COST_MS      = 20_000
+    const totalRemainingLaps = Math.max(1, session.total_laps - lap.lap_num)
 
+    const calcForResult = (result: StrategyResult, isAggressive: boolean): (StintTargetInfo | null)[] => {
+      // Spread the extra pit-stop cost evenly across every remaining lap
+      const perLapOffset = isAggressive ? PIT_COST_MS / totalRemainingLaps : 0
+
+      return result.stints.map((stint, i) => {
         if (i === 0) {
-          // Current stint: hold-position target vs car behind
-          if (
-            behindLapMs > 0 && behindLapMs < 600_000 &&
-            gapBehindMs !== null && gapBehindMs > 0 &&
-            remainingStintLaps > 0
-          ) {
-            const targetMs       = behindLapMs + gapBehindMs / remainingStintLaps
-            const lastLapDeltaMs = playerLapMs - targetMs
+          if (behindLapMs > 0 && behindLapMs < 600_000) {
+            const targetMs       = behindLapMs - perLapOffset
+            const lastLapDeltaMs = playerLapMs > 0 ? playerLapMs - targetMs : null
             return { targetMs, isEstimate: false, lastLapDeltaMs }
           }
-          // No car behind threat: show own pace with no delta
           return { targetMs: playerLapMs, isEstimate: false, lastLapDeltaMs: 0 }
         }
 
@@ -469,15 +589,16 @@ const StrategyPanel = memo(function StrategyPanel({
         )
         if (matchingSet) {
           const deltaVsCurrent = matchingSet.lap_delta_ms - (fittedSet?.lap_delta_ms ?? 0)
-          const estimatedMs    = Math.max(60_000, playerLapMs + deltaVsCurrent)
+          const estimatedMs    = Math.max(60_000, playerLapMs + deltaVsCurrent - perLapOffset)
           return { targetMs: estimatedMs, isEstimate: true, lastLapDeltaMs: null }
         }
         return null
       })
+    }
 
     return {
-      conservative: calcForResult(strategyData.conservative),
-      aggressive:   calcForResult(strategyData.aggressive),
+      conservative: calcForResult(strategyData.conservative, false),
+      aggressive:   calcForResult(strategyData.aggressive,   true),
     }
   }, [strategyData, timing, lap, tyreSets, session])
 
@@ -486,31 +607,55 @@ const StrategyPanel = memo(function StrategyPanel({
     const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
     const player = active.find(c => c.idx === timing.player_idx)
     if (!player) return null
-    const ahead  = active.find(c => c.position === player.position - 1)
-    const behind = active.find(c => c.position === player.position + 1)
-    return { player, ahead, behind }
+
+    const carsAhead  = active.filter(c => c.position < player.position).length
+    const carsBehind = active.filter(c => c.position > player.position).length
+    const baseAhead  = Math.min(3, carsAhead)
+    const baseBehind = Math.min(3, carsBehind)
+    // Unused slots on one side fill the other side so the total stays at 6
+    const aheadCount  = Math.min(baseAhead  + Math.max(0, 3 - baseBehind), carsAhead)
+    const behindCount = Math.min(baseBehind + Math.max(0, 3 - baseAhead),  carsBehind)
+
+    const aheadCars  = Array.from({ length: aheadCount },  (_, i) => active.find(x => x.position === player.position - (i + 1))).filter((c): c is typeof player => !!c)
+    const behindCars = Array.from({ length: behindCount }, (_, i) => active.find(x => x.position === player.position + (i + 1))).filter((c): c is typeof player => !!c)
+
+    return { player, aheadCars, behindCars }
   }, [timing])
 
   // ─── Gap trend for car behind ───────────────────────────────────────────────
-  // Compare successive gap_ms deltas — no lap time involved, pure gap delta.
-  // null = no car behind or not enough data yet.
+  // Track gap trends — pure gap_ms deltas, no lap time comparison.
   const prevBehindGapRef = useRef<number | null>(null)
-  const [behindIsGaining, setBehindIsGaining] = useState<boolean | null>(null)
+  const prevAheadGapRef  = useRef<number | null>(null)
+  const [behindIsGaining,    setBehindIsGaining]    = useState<boolean | null>(null)
+  const [playerGainingAhead, setPlayerGainingAhead] = useState<boolean | null>(null)
 
   useEffect(() => {
-    if (!positionData?.behind || !positionData?.player) {
+    const immediateBehind = positionData?.behindCars[0] ?? null
+    const immediateAhead  = positionData?.aheadCars[0]  ?? null
+
+    if (!immediateBehind || !positionData?.player) {
       prevBehindGapRef.current = null
       setBehindIsGaining(null)
-      return
-    }
-    const currentGap = positionData.behind.gap_ms - positionData.player.gap_ms
-    if (prevBehindGapRef.current !== null) {
-      const delta = currentGap - prevBehindGapRef.current // negative = gap shrinking = they gaining
-      if (Math.abs(delta) > 30) {
-        setBehindIsGaining(delta < 0)
+    } else {
+      const g = immediateBehind.gap_ms - positionData.player.gap_ms
+      if (prevBehindGapRef.current !== null) {
+        const d = g - prevBehindGapRef.current
+        if (Math.abs(d) > 30) setBehindIsGaining(d < 0)
       }
+      prevBehindGapRef.current = g
     }
-    prevBehindGapRef.current = currentGap
+
+    if (!immediateAhead || !positionData?.player) {
+      prevAheadGapRef.current = null
+      setPlayerGainingAhead(null)
+    } else {
+      const g = positionData.player.gap_ms - immediateAhead.gap_ms
+      if (prevAheadGapRef.current !== null) {
+        const d = g - prevAheadGapRef.current
+        if (Math.abs(d) > 30) setPlayerGainingAhead(d < 0)
+      }
+      prevAheadGapRef.current = g
+    }
   }, [positionData])
 
   const tyreColor = strategyData ? strategyData.currentCompound.color : 'var(--text-secondary)'
@@ -527,13 +672,12 @@ const StrategyPanel = memo(function StrategyPanel({
       {/* ── Header ── */}
       <div
         className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
-        style={{ borderLeft: `4px solid ${accent}` }}
       >
         {/* Lap counter */}
         <div className="shrink-0 flex flex-col justify-center px-6 py-3">
           <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Lap</span>
           <div className="flex items-baseline gap-1.5">
-            <span className="text-3xl font-black tabular-nums leading-none" style={{ color: accent }}>
+            <span className="text-3xl font-black tabular-nums leading-none text-[var(--text-primary)]">
               {lap?.lap_num ?? '—'}
             </span>
             <span className="text-base font-medium text-[var(--text-secondary)]">
@@ -582,7 +726,7 @@ const StrategyPanel = memo(function StrategyPanel({
         </div>
       </div>
 
-      {/* ── Guard: non-race session ── */}
+      {/* ── Non-race session: full-area placeholder ── */}
       {!isRaceSession && (
         <Placeholder>
           <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Strategy</div>
@@ -591,106 +735,94 @@ const StrategyPanel = memo(function StrategyPanel({
         </Placeholder>
       )}
 
-      {/* ── Guard: fewer than 5 laps ── */}
-      {isRaceSession && !hasEnoughLaps && (
-        <Placeholder>
-          <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Strategy Locked</div>
-          <div className="text-sm font-semibold text-[var(--text-primary)]">
-            {5 - (lap?.lap_num ?? 0)} more lap{5 - (lap?.lap_num ?? 0) !== 1 ? 's' : ''} to unlock
-          </div>
-          <div className="w-48">
-            <div className="h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{ width: `${((lap?.lap_num ?? 0) / 5) * 100}%`, backgroundColor: accent }}
-              />
-            </div>
-            <div className="mt-1">
-              <span className="text-[10px] text-[var(--text-secondary)]">{lap?.lap_num ?? 0} / 5 laps</span>
-            </div>
-          </div>
-        </Placeholder>
-      )}
-
-      {/* ── Guard: waiting for tyre data ── */}
-      {isRaceSession && hasEnoughLaps && (!hasTyreData || !strategyData) && (
-        <Placeholder>
-          <div className="text-sm font-semibold text-[var(--text-secondary)]">Waiting for tyre data…</div>
-        </Placeholder>
-      )}
-
-      {/* ── Main content ── */}
-      {isRaceSession && hasEnoughLaps && strategyData && (
+      {/* ── Race session: 3-column layout always rendered ── */}
+      {isRaceSession && (
         <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
 
           {/* Conservative */}
           <div className="flex-1 min-w-0 overflow-y-auto">
-            <StintTimeline
-              result={strategyData.conservative}
-              totalLaps={session!.total_laps}
-              avgWear={strategyData.avgWear}
-              isMonaco={strategyData.isMonaco}
-              label="Conservative"
-              accentColor={blueAccent}
-              targets={stintTargets?.conservative}
-            />
+            {strategyData ? (
+              <StintTimeline
+                result={strategyData.conservative}
+                totalLaps={session!.total_laps}
+                avgWear={strategyData.avgWear}
+                isMonaco={strategyData.isMonaco}
+                label="Conservative"
+                accentColor={blueAccent}
+                targets={stintTargets?.conservative}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <span className="text-sm font-semibold text-[var(--text-secondary)]">Waiting for tyre data…</span>
+              </div>
+            )}
           </div>
 
           {/* Aggressive */}
           <div className="flex-1 min-w-0 overflow-y-auto">
-            <StintTimeline
-              result={strategyData.aggressive}
-              totalLaps={session!.total_laps}
-              avgWear={strategyData.avgWear}
-              isMonaco={strategyData.isMonaco}
-              label="Aggressive"
-              accentColor={amberAccent}
-              targets={stintTargets?.aggressive}
-            />
+            {strategyData && (
+              <StintTimeline
+                result={strategyData.aggressive}
+                totalLaps={session!.total_laps}
+                avgWear={strategyData.avgWear}
+                isMonaco={strategyData.isMonaco}
+                label="Aggressive"
+                accentColor={amberAccent}
+                targets={stintTargets?.aggressive}
+              />
+            )}
           </div>
 
-          {/* Right panel: Position + Tyre wear */}
+          {/* Right panel: Position + Tyre wear — always visible in race session */}
           <div className="w-72 shrink-0 overflow-y-auto flex flex-col divide-y divide-[var(--border)]">
 
             {/* Position */}
             <div>
-              <div className="px-5 pt-5 pb-2">
+              <div className="px-4 pt-3 pb-2 border-b border-[var(--border)]">
                 <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Position</span>
               </div>
               {positionData ? (
                 <div className="flex flex-col divide-y divide-[var(--border)]">
-                  {(([
-                    positionData.ahead  ? { car: positionData.ahead,  role: 'ahead'  as const } : null,
-                    { car: positionData.player, role: 'player' as const },
-                    positionData.behind ? { car: positionData.behind, role: 'behind' as const } : null,
-                  ].filter(Boolean)) as Array<{ car: typeof positionData.player; role: 'ahead' | 'player' | 'behind' }>).map(({ car, role }) => {
-                    const isPlayer  = role === 'player'
-                    const livery    = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
-                    const aheadGap  = positionData.ahead  ? positionData.player.gap_ms - positionData.ahead.gap_ms  : null
-                    const behindGap = positionData.behind ? positionData.behind.gap_ms - positionData.player.gap_ms : null
+                  {[
+                    ...positionData.aheadCars.slice().reverse().map((car, revI) => ({
+                      car, role: 'ahead' as const,
+                      isImmediate: revI === positionData.aheadCars.length - 1,
+                    })),
+                    { car: positionData.player, role: 'player' as const, isImmediate: false },
+                    ...positionData.behindCars.map((car, i) => ({
+                      car, role: 'behind' as const,
+                      isImmediate: i === 0,
+                    })),
+                  ].map(({ car, role, isImmediate }) => {
+                    const isPlayer = role === 'player'
+                    const livery   = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
 
                     let gapMs: number | null = null
                     let gapColor = 'var(--text-secondary)'
-                    let statusChip: { label: string; color: string } | null = null
 
-                    if (role === 'ahead' && aheadGap != null && aheadGap > 0) {
-                      gapMs = aheadGap
-                      gapColor = aheadGap > 2000 ? '#73BF69' : '#FADE2A'
-                      statusChip = aheadGap > 2000
-                        ? { label: 'SAFE',  color: '#73BF69' }
-                        : { label: 'CLOSE', color: '#FADE2A' }
-                    } else if (role === 'behind' && behindGap != null && behindGap > 0) {
-                      gapMs = behindGap
-                      if (behindGap < 1000) {
-                        // Within 1s — imminent threat regardless of trend
-                        gapColor = '#C4162A'
-                        statusChip = { label: 'THREAT', color: '#C4162A' }
-                      } else if (behindIsGaining === true) {
-                        // Gap is shrinking — they're closing
-                        gapColor = '#FADE2A'
-                      } else {
-                        // Gap is stable or growing — player pulling away
-                        gapColor = '#73BF69'
+                    if (role === 'ahead') {
+                      const gap = positionData.player.gap_ms - car.gap_ms
+                      if (gap > 0) {
+                        gapMs = gap
+                        if (gap > 10_000) {
+                          gapColor = '#C4162A'
+                        } else if (isImmediate) {
+                          gapColor = playerGainingAhead === true ? '#73BF69' : '#FADE2A'
+                        } else {
+                          gapColor = 'var(--text-secondary)'
+                        }
+                      }
+                    } else if (role === 'behind') {
+                      const gap = car.gap_ms - positionData.player.gap_ms
+                      if (gap > 0) {
+                        gapMs = gap
+                        if (gap < 1_000) {
+                          gapColor = '#C4162A'
+                        } else if (isImmediate) {
+                          gapColor = behindIsGaining === true ? '#FADE2A' : '#73BF69'
+                        } else {
+                          gapColor = 'var(--text-secondary)'
+                        }
                       }
                     }
 
@@ -706,19 +838,8 @@ const StrategyPanel = memo(function StrategyPanel({
                           {driverName(participants, car.idx)}
                         </span>
                         {gapMs != null && (
-                          <span
-                            className="text-xs font-semibold tabular-nums shrink-0"
-                            style={{ color: gapColor }}
-                          >
+                          <span className="text-xs font-semibold tabular-nums shrink-0" style={{ color: gapColor }}>
                             {role === 'ahead' ? `+${(gapMs / 1000).toFixed(1)}s` : `-${(gapMs / 1000).toFixed(1)}s`}
-                          </span>
-                        )}
-                        {statusChip && (
-                          <span
-                            className="text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0"
-                            style={{ color: statusChip.color, borderColor: statusChip.color, backgroundColor: statusChip.color + '18' }}
-                          >
-                            {statusChip.label}
                           </span>
                         )}
                       </div>
@@ -730,44 +851,45 @@ const StrategyPanel = memo(function StrategyPanel({
               )}
             </div>
 
-            {/* Tyre wear */}
-            <div className="p-5 flex flex-col gap-3">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Wear</span>
-
-              <div className="grid grid-cols-2 gap-2">
-                {([
-                  { key: 'fl' as const, label: 'FL' },
-                  { key: 'fr' as const, label: 'FR' },
-                  { key: 'rl' as const, label: 'RL' },
-                  { key: 'rr' as const, label: 'RR' },
-                ]).map(({ key, label }) => {
-                  const w = strategyData.tyreWears[key]
-                  const c = wearColor(w)
-                  return (
-                    <div key={key} className="flex flex-col gap-1.5 p-2.5 rounded-md border border-[var(--border)]">
-                      <div className="flex items-baseline justify-between">
-                        <span className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{label}</span>
-                        <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{w.toFixed(0)}%</span>
-                      </div>
-                      <div className="h-1 bg-[var(--border)] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, w)}%`, backgroundColor: c }} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {strategyData.wearWarnings.length > 0 && (
-                <div className="flex flex-col gap-2 pt-2 border-t border-[var(--border)]">
-                  {strategyData.wearWarnings.map((w, i) => (
-                    <div key={i} className="flex flex-col gap-0.5">
-                      <span className="text-[10px] font-bold" style={{ color: w.color }}>⚠ {w.text}</span>
-                      <span className="text-[10px] text-[var(--text-secondary)] leading-relaxed">{w.detail}</span>
-                    </div>
-                  ))}
+            {/* Tyre wear — uses raw damage data so it shows even before strategy is ready */}
+            {damage && (
+              <>
+                <div className="px-4 pt-3 pb-2 border-t border-[var(--border)]">
+                  <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Wear</span>
                 </div>
-              )}
-            </div>
+                <div className="grid grid-cols-2 border-t border-[var(--border)]">
+                  {([
+                    { key: 'fl', label: 'FL', value: damage.tyre_wear_fl, borderCls: 'border-r border-b' },
+                    { key: 'fr', label: 'FR', value: damage.tyre_wear_fr, borderCls: 'border-b' },
+                    { key: 'rl', label: 'RL', value: damage.tyre_wear_rl, borderCls: 'border-r' },
+                    { key: 'rr', label: 'RR', value: damage.tyre_wear_rr, borderCls: '' },
+                  ]).map(({ key, label, value, borderCls }) => {
+                    const c = wearColor(value)
+                    return (
+                      <div key={key} className={`flex flex-col justify-between px-4 py-3 gap-2 border-[var(--border)] ${borderCls}`}>
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{label}</span>
+                          <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{value.toFixed(0)}%</span>
+                        </div>
+                        <div className="h-1 bg-[var(--border)] rounded-full overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${Math.min(100, value)}%`, backgroundColor: c }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {strategyData?.wearWarnings && strategyData.wearWarnings.length > 0 && (
+                  <div className="flex flex-col gap-2 px-4 py-3 border-t border-[var(--border)]">
+                    {strategyData.wearWarnings.map((w, i) => (
+                      <div key={i} className="flex flex-col gap-0.5">
+                        <span className="text-[10px] font-bold" style={{ color: w.color }}>⚠ {w.text}</span>
+                        <span className="text-[10px] text-[var(--text-secondary)] leading-relaxed">{w.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
 
           </div>
         </div>
