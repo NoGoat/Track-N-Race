@@ -30,10 +30,11 @@ export function brakeColor(t: number, isDark = true) {
   return '#C4162A'
 }
 
-export function wearColor(pct: number, isDark = true) {
-  if (pct < 25) return isDark ? '#37872D' : '#137333'
-  if (pct < 50) return isDark ? '#d4ad04' : '#B06000'
-  if (pct < 75) return isDark ? '#c47d0e' : '#C26400'
+export function wearColor(pct: number, _isDark = true) {
+  if (pct < 20) return '#73BF69'
+  if (pct < 40) return '#A8D436'
+  if (pct < 60) return '#FADE2A'
+  if (pct < 80) return '#FF9830'
   return '#C4162A'
 }
 

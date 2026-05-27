@@ -193,7 +193,7 @@ function applyMonacoRule(
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function CompoundChip({ name, color }: { name: string; color: string }) {
+const CompoundChip = memo(function CompoundChip({ name, color }: { name: string; color: string }) {
   return (
     <span
       className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0"
@@ -202,9 +202,9 @@ function CompoundChip({ name, color }: { name: string; color: string }) {
       {name}
     </span>
   )
-}
+})
 
-function StintTimeline({
+const StintTimeline = memo(function StintTimeline({
   result, totalLaps, avgWear, isMonaco, label, accentColor, targets,
 }: {
   result: StrategyResult
@@ -315,7 +315,7 @@ function StintTimeline({
       </div>
     </div>
   )
-}
+})
 
 function Placeholder({ children }: { children: React.ReactNode }) {
   return (
@@ -326,6 +326,185 @@ function Placeholder({ children }: { children: React.ReactNode }) {
     </div>
   )
 }
+
+// ─── PositionPanel ────────────────────────────────────────────────────────────
+// Isolated so its 20Hz gap-trend state updates don't re-render strategy columns.
+
+interface WearWarning { text: string; detail: string; color: string }
+
+const PositionPanel = memo(function PositionPanel({
+  timing, participants,
+}: { timing: TimingMsg; participants: ParticipantsMsg | null }) {
+  const positionData = useMemo(() => {
+    const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
+    const player = active.find(c => c.idx === timing.player_idx)
+    if (!player) return null
+
+    const carsAhead  = active.filter(c => c.position < player.position).length
+    const carsBehind = active.filter(c => c.position > player.position).length
+    const baseAhead  = Math.min(3, carsAhead)
+    const baseBehind = Math.min(3, carsBehind)
+    const aheadCount  = Math.min(baseAhead  + Math.max(0, 3 - baseBehind), carsAhead)
+    const behindCount = Math.min(baseBehind + Math.max(0, 3 - baseAhead),  carsBehind)
+
+    const aheadCars  = Array.from({ length: aheadCount },  (_, i) => active.find(x => x.position === player.position - (i + 1))).filter((c): c is typeof player => !!c)
+    const behindCars = Array.from({ length: behindCount }, (_, i) => active.find(x => x.position === player.position + (i + 1))).filter((c): c is typeof player => !!c)
+
+    return { player, aheadCars, behindCars }
+  }, [timing])
+
+  const prevBehindGapRef = useRef<number | null>(null)
+  const prevAheadGapRef  = useRef<number | null>(null)
+  const [behindIsGaining,    setBehindIsGaining]    = useState<boolean | null>(null)
+  const [playerGainingAhead, setPlayerGainingAhead] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    const immediateBehind = positionData?.behindCars[0] ?? null
+    const immediateAhead  = positionData?.aheadCars[0]  ?? null
+
+    if (!immediateBehind || !positionData?.player) {
+      prevBehindGapRef.current = null
+      setBehindIsGaining(null)
+    } else {
+      const g = immediateBehind.gap_ms - positionData.player.gap_ms
+      if (prevBehindGapRef.current !== null) {
+        const d = g - prevBehindGapRef.current
+        if (Math.abs(d) > 30) setBehindIsGaining(d < 0)
+      }
+      prevBehindGapRef.current = g
+    }
+
+    if (!immediateAhead || !positionData?.player) {
+      prevAheadGapRef.current = null
+      setPlayerGainingAhead(null)
+    } else {
+      const g = positionData.player.gap_ms - immediateAhead.gap_ms
+      if (prevAheadGapRef.current !== null) {
+        const d = g - prevAheadGapRef.current
+        if (Math.abs(d) > 30) setPlayerGainingAhead(d < 0)
+      }
+      prevAheadGapRef.current = g
+    }
+  }, [positionData])
+
+  return (
+    <div>
+      <div className="px-4 pt-3 pb-2 border-b border-[var(--border)]">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Position</span>
+      </div>
+      {positionData ? (
+        <div className="flex flex-col divide-y divide-[var(--border)]">
+          {[
+            ...positionData.aheadCars.slice().reverse().map((car, revI) => ({
+              car, role: 'ahead' as const,
+              isImmediate: revI === positionData.aheadCars.length - 1,
+            })),
+            { car: positionData.player, role: 'player' as const, isImmediate: false },
+            ...positionData.behindCars.map((car, i) => ({
+              car, role: 'behind' as const,
+              isImmediate: i === 0,
+            })),
+          ].map(({ car, role, isImmediate }) => {
+            const isPlayer = role === 'player'
+            const livery   = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
+
+            let gapMs: number | null = null
+            let gapColor = 'var(--text-secondary)'
+
+            if (role === 'ahead') {
+              const gap = positionData.player.gap_ms - car.gap_ms
+              if (gap > 0) {
+                gapMs = gap
+                if (gap > 10_000) {
+                  gapColor = '#C4162A'
+                } else if (isImmediate) {
+                  gapColor = playerGainingAhead === true ? '#73BF69' : '#FADE2A'
+                }
+              }
+            } else if (role === 'behind') {
+              const gap = car.gap_ms - positionData.player.gap_ms
+              if (gap > 0) {
+                gapMs = gap
+                if (gap < 1_000) {
+                  gapColor = '#C4162A'
+                } else if (isImmediate) {
+                  gapColor = behindIsGaining === true ? '#FADE2A' : '#73BF69'
+                }
+              }
+            }
+
+            return (
+              <div key={car.idx} className="flex items-center gap-3 px-5 py-3">
+                <span
+                  className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
+                  style={{ backgroundColor: livery + '28', color: livery }}
+                >
+                  P{car.position}
+                </span>
+                <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                  {driverName(participants, car.idx)}
+                </span>
+                {gapMs != null && (
+                  <span className="text-xs font-semibold tabular-nums shrink-0" style={{ color: gapColor }}>
+                    {role === 'ahead' ? `+${(gapMs / 1000).toFixed(1)}s` : `-${(gapMs / 1000).toFixed(1)}s`}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="text-xs text-[var(--text-secondary)] px-5 py-3">No position data</p>
+      )}
+    </div>
+  )
+})
+
+// ─── TyreWearPanel ────────────────────────────────────────────────────────────
+// Isolated so wear data updates don't re-render strategy columns.
+
+const TyreWearPanel = memo(function TyreWearPanel({
+  damage, wearWarnings,
+}: { damage: DamageRow; wearWarnings: WearWarning[] }) {
+  return (
+    <>
+      <div className="px-4 pt-3 pb-2 border-t border-[var(--border)]">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Wear</span>
+      </div>
+      <div className="grid grid-cols-2 border-t border-[var(--border)]">
+        {([
+          { key: 'fl', label: 'FL', value: damage.tyre_wear_fl, borderCls: 'border-r border-b' },
+          { key: 'fr', label: 'FR', value: damage.tyre_wear_fr, borderCls: 'border-b' },
+          { key: 'rl', label: 'RL', value: damage.tyre_wear_rl, borderCls: 'border-r' },
+          { key: 'rr', label: 'RR', value: damage.tyre_wear_rr, borderCls: '' },
+        ] as const).map(({ key, label, value, borderCls }) => {
+          const c = wearColor(value)
+          return (
+            <div key={key} className={`flex flex-col justify-between px-4 py-3 gap-2 border-[var(--border)] ${borderCls}`}>
+              <div className="flex items-baseline justify-between">
+                <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{label}</span>
+                <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{value.toFixed(0)}%</span>
+              </div>
+              <div className="h-1 bg-[var(--border)] rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${Math.min(100, value)}%`, backgroundColor: c }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {wearWarnings.length > 0 && (
+        <div className="flex flex-col gap-2 px-4 py-3 border-t border-[var(--border)]">
+          {wearWarnings.map((w, i) => (
+            <div key={i} className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-bold" style={{ color: w.color }}>⚠ {w.text}</span>
+              <span className="text-[10px] text-[var(--text-secondary)] leading-relaxed">{w.detail}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+})
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -418,7 +597,6 @@ const StrategyPanel = memo(function StrategyPanel({
     const diagImb   = (flW + rrW) / 2 - (frW + rlW) / 2  // + = oversteer pattern
     const rearImb   = rlW - rrW             // + = rear-left working harder
 
-    interface WearWarning { text: string; detail: string; color: string }
     type WarnPriority = 0 | 1 | 2 | 3
     const candidates: (WearWarning & { priority: WarnPriority })[] = []
 
@@ -545,45 +723,44 @@ const StrategyPanel = memo(function StrategyPanel({
   }, [lap, session, status, damage, tyreSets, isRaceSession, hasTyreData])
 
   // ─── Pace targets ─────────────────────────────────────────────────────────
-  // For the current stint: target = car-behind's pace + gap spread over remaining stint laps.
-  // This naturally recalculates every lap — if the player banks 2s, the gap widens and the
-  // target automatically relaxes without any explicit "bank" state needed.
-  // For future stints: estimate from the set's lap_delta_ms vs the currently fitted set.
-  const stintTargets = useMemo(() => {
-    if (!strategyData || !timing || !lap || !session) return null
-
+  // stableLapPace returns the SAME object reference when last_lap_ms values
+  // haven't changed, so stintTargets won't recompute on every 20Hz timing frame.
+  const lapPaceRef = useRef<{ playerLapMs: number; behindLapMs: number } | null>(null)
+  const stableLapPace = useMemo(() => {
+    if (!timing || !lap) { lapPaceRef.current = null; return null }
     const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
-    const player  = active.find(c => c.idx === timing.player_idx)
-    if (!player) return null
-
-    const playerCar  = timing.cars.find(c => c.idx === timing.player_idx)
-    const playerLapMs = playerCar?.last_lap_ms ?? lap.last_lap_ms
-    if (!playerLapMs || playerLapMs <= 0 || playerLapMs > 600_000) return null
-
+    const player = active.find(c => c.idx === timing.player_idx)
+    if (!player) { lapPaceRef.current = null; return null }
+    const playerLapMs = timing.cars.find(c => c.idx === timing.player_idx)?.last_lap_ms ?? lap.last_lap_ms
     const behindCar   = active.find(c => c.position === player.position + 1)
     const behindLapMs = behindCar?.last_lap_ms ?? 0
-    const gapBehindMs = behindCar ? behindCar.gap_ms - player.gap_ms : null
+    const prev = lapPaceRef.current
+    if (prev && prev.playerLapMs === playerLapMs && prev.behindLapMs === behindLapMs) return prev
+    const next = { playerLapMs, behindLapMs }
+    lapPaceRef.current = next
+    return next
+  }, [timing, lap])
+
+  const stintTargets = useMemo(() => {
+    if (!strategyData || !stableLapPace || !session) return null
+    const { playerLapMs, behindLapMs } = stableLapPace
+    if (playerLapMs <= 0 || playerLapMs > 600_000) return null
 
     const fittedSet = tyreSets?.sets.find(s => s.fitted)
-
-    const PIT_COST_MS      = 20_000
-    const totalRemainingLaps = Math.max(1, session.total_laps - lap.lap_num)
+    const PIT_COST_MS        = 20_000
+    const totalRemainingLaps = Math.max(1, session.total_laps - (lap?.lap_num ?? 0))
 
     const calcForResult = (result: StrategyResult, isAggressive: boolean): (StintTargetInfo | null)[] => {
-      // Spread the extra pit-stop cost evenly across every remaining lap
       const perLapOffset = isAggressive ? PIT_COST_MS / totalRemainingLaps : 0
-
       return result.stints.map((stint, i) => {
         if (i === 0) {
           if (behindLapMs > 0 && behindLapMs < 600_000) {
             const targetMs       = behindLapMs - perLapOffset
-            const lastLapDeltaMs = playerLapMs > 0 ? playerLapMs - targetMs : null
+            const lastLapDeltaMs = playerLapMs - targetMs
             return { targetMs, isEstimate: false, lastLapDeltaMs }
           }
           return { targetMs: playerLapMs, isEstimate: false, lastLapDeltaMs: 0 }
         }
-
-        // Future stint: estimate via lap_delta_ms offset from current set
         const matchingSet = tyreSets?.sets.find(s =>
           !s.fitted && s.available && s.actual_compound === stint.actualCompound
         )
@@ -600,63 +777,7 @@ const StrategyPanel = memo(function StrategyPanel({
       conservative: calcForResult(strategyData.conservative, false),
       aggressive:   calcForResult(strategyData.aggressive,   true),
     }
-  }, [strategyData, timing, lap, tyreSets, session])
-
-  const positionData = useMemo(() => {
-    if (!timing) return null
-    const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
-    const player = active.find(c => c.idx === timing.player_idx)
-    if (!player) return null
-
-    const carsAhead  = active.filter(c => c.position < player.position).length
-    const carsBehind = active.filter(c => c.position > player.position).length
-    const baseAhead  = Math.min(3, carsAhead)
-    const baseBehind = Math.min(3, carsBehind)
-    // Unused slots on one side fill the other side so the total stays at 6
-    const aheadCount  = Math.min(baseAhead  + Math.max(0, 3 - baseBehind), carsAhead)
-    const behindCount = Math.min(baseBehind + Math.max(0, 3 - baseAhead),  carsBehind)
-
-    const aheadCars  = Array.from({ length: aheadCount },  (_, i) => active.find(x => x.position === player.position - (i + 1))).filter((c): c is typeof player => !!c)
-    const behindCars = Array.from({ length: behindCount }, (_, i) => active.find(x => x.position === player.position + (i + 1))).filter((c): c is typeof player => !!c)
-
-    return { player, aheadCars, behindCars }
-  }, [timing])
-
-  // ─── Gap trend for car behind ───────────────────────────────────────────────
-  // Track gap trends — pure gap_ms deltas, no lap time comparison.
-  const prevBehindGapRef = useRef<number | null>(null)
-  const prevAheadGapRef  = useRef<number | null>(null)
-  const [behindIsGaining,    setBehindIsGaining]    = useState<boolean | null>(null)
-  const [playerGainingAhead, setPlayerGainingAhead] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    const immediateBehind = positionData?.behindCars[0] ?? null
-    const immediateAhead  = positionData?.aheadCars[0]  ?? null
-
-    if (!immediateBehind || !positionData?.player) {
-      prevBehindGapRef.current = null
-      setBehindIsGaining(null)
-    } else {
-      const g = immediateBehind.gap_ms - positionData.player.gap_ms
-      if (prevBehindGapRef.current !== null) {
-        const d = g - prevBehindGapRef.current
-        if (Math.abs(d) > 30) setBehindIsGaining(d < 0)
-      }
-      prevBehindGapRef.current = g
-    }
-
-    if (!immediateAhead || !positionData?.player) {
-      prevAheadGapRef.current = null
-      setPlayerGainingAhead(null)
-    } else {
-      const g = positionData.player.gap_ms - immediateAhead.gap_ms
-      if (prevAheadGapRef.current !== null) {
-        const d = g - prevAheadGapRef.current
-        if (Math.abs(d) > 30) setPlayerGainingAhead(d < 0)
-      }
-      prevAheadGapRef.current = g
-    }
-  }, [positionData])
+  }, [strategyData, stableLapPace, tyreSets, session, lap])
 
   const tyreColor = strategyData ? strategyData.currentCompound.color : 'var(--text-secondary)'
   const tyreName  = strategyData ? strategyData.currentCompound.name  : '—'
@@ -776,120 +897,15 @@ const StrategyPanel = memo(function StrategyPanel({
           {/* Right panel: Position + Tyre wear — always visible in race session */}
           <div className="w-72 shrink-0 overflow-y-auto flex flex-col divide-y divide-[var(--border)]">
 
-            {/* Position */}
-            <div>
-              <div className="px-4 pt-3 pb-2 border-b border-[var(--border)]">
-                <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Position</span>
-              </div>
-              {positionData ? (
-                <div className="flex flex-col divide-y divide-[var(--border)]">
-                  {[
-                    ...positionData.aheadCars.slice().reverse().map((car, revI) => ({
-                      car, role: 'ahead' as const,
-                      isImmediate: revI === positionData.aheadCars.length - 1,
-                    })),
-                    { car: positionData.player, role: 'player' as const, isImmediate: false },
-                    ...positionData.behindCars.map((car, i) => ({
-                      car, role: 'behind' as const,
-                      isImmediate: i === 0,
-                    })),
-                  ].map(({ car, role, isImmediate }) => {
-                    const isPlayer = role === 'player'
-                    const livery   = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
+            {timing && <PositionPanel timing={timing} participants={participants} />}
 
-                    let gapMs: number | null = null
-                    let gapColor = 'var(--text-secondary)'
-
-                    if (role === 'ahead') {
-                      const gap = positionData.player.gap_ms - car.gap_ms
-                      if (gap > 0) {
-                        gapMs = gap
-                        if (gap > 10_000) {
-                          gapColor = '#C4162A'
-                        } else if (isImmediate) {
-                          gapColor = playerGainingAhead === true ? '#73BF69' : '#FADE2A'
-                        } else {
-                          gapColor = 'var(--text-secondary)'
-                        }
-                      }
-                    } else if (role === 'behind') {
-                      const gap = car.gap_ms - positionData.player.gap_ms
-                      if (gap > 0) {
-                        gapMs = gap
-                        if (gap < 1_000) {
-                          gapColor = '#C4162A'
-                        } else if (isImmediate) {
-                          gapColor = behindIsGaining === true ? '#FADE2A' : '#73BF69'
-                        } else {
-                          gapColor = 'var(--text-secondary)'
-                        }
-                      }
-                    }
-
-                    return (
-                      <div key={car.idx} className="flex items-center gap-3 px-5 py-3">
-                        <span
-                          className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
-                          style={{ backgroundColor: livery + '28', color: livery }}
-                        >
-                          P{car.position}
-                        </span>
-                        <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                          {driverName(participants, car.idx)}
-                        </span>
-                        {gapMs != null && (
-                          <span className="text-xs font-semibold tabular-nums shrink-0" style={{ color: gapColor }}>
-                            {role === 'ahead' ? `+${(gapMs / 1000).toFixed(1)}s` : `-${(gapMs / 1000).toFixed(1)}s`}
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs text-[var(--text-secondary)] px-5 py-3">No position data</p>
-              )}
-            </div>
-
-            {/* Tyre wear — uses raw damage data so it shows even before strategy is ready */}
             {damage && (
-              <>
-                <div className="px-4 pt-3 pb-2 border-t border-[var(--border)]">
-                  <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Wear</span>
-                </div>
-                <div className="grid grid-cols-2 border-t border-[var(--border)]">
-                  {([
-                    { key: 'fl', label: 'FL', value: damage.tyre_wear_fl, borderCls: 'border-r border-b' },
-                    { key: 'fr', label: 'FR', value: damage.tyre_wear_fr, borderCls: 'border-b' },
-                    { key: 'rl', label: 'RL', value: damage.tyre_wear_rl, borderCls: 'border-r' },
-                    { key: 'rr', label: 'RR', value: damage.tyre_wear_rr, borderCls: '' },
-                  ]).map(({ key, label, value, borderCls }) => {
-                    const c = wearColor(value)
-                    return (
-                      <div key={key} className={`flex flex-col justify-between px-4 py-3 gap-2 border-[var(--border)] ${borderCls}`}>
-                        <div className="flex items-baseline justify-between">
-                          <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{label}</span>
-                          <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{value.toFixed(0)}%</span>
-                        </div>
-                        <div className="h-1 bg-[var(--border)] rounded-full overflow-hidden">
-                          <div className="h-full rounded-full" style={{ width: `${Math.min(100, value)}%`, backgroundColor: c }} />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-                {strategyData?.wearWarnings && strategyData.wearWarnings.length > 0 && (
-                  <div className="flex flex-col gap-2 px-4 py-3 border-t border-[var(--border)]">
-                    {strategyData.wearWarnings.map((w, i) => (
-                      <div key={i} className="flex flex-col gap-0.5">
-                        <span className="text-[10px] font-bold" style={{ color: w.color }}>⚠ {w.text}</span>
-                        <span className="text-[10px] text-[var(--text-secondary)] leading-relaxed">{w.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
+              <TyreWearPanel
+                damage={damage}
+                wearWarnings={strategyData?.wearWarnings ?? []}
+              />
             )}
+
 
           </div>
         </div>
