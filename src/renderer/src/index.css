@@ -120,11 +120,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-focus);
-  border-radius: 3px;
+  background: var(--border);
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-focus-hover);
+  background: var(--border-focus);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;

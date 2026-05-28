@@ -929,7 +929,7 @@ export default function App() {
         onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
       >
       <header
-        className={`relative flex items-center gap-3 px-4 h-10 border-b select-none ${
+        className={`relative flex items-center gap-3 ${actualNativeTitlebar ? 'pl-2 pr-4' : 'px-4'} h-10 border-b select-none ${
           isFullscreen
             ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
             : 'sticky top-0 z-10 transition-colors duration-500'
@@ -939,7 +939,7 @@ export default function App() {
           : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
         }
       >
-        <LogoAndTitle theme={theme} />
+        {!actualNativeTitlebar && <LogoAndTitle theme={theme} />}
 
         <TabSelector tab={tab} setTab={setTab} />
 
