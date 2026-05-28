@@ -236,7 +236,7 @@ const Settings = memo(function Settings({
 
   const renderMap = () => (
     <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-      <Row label="Map Opacity" description="Dims the track outline to 20% opacity so driver dots and labels stand out.">
+      <Row label="Map Opacity" description="Dims the track outline to 40% opacity so driver dots and labels stand out.">
         <Toggle value={mapDimmed} onChange={onMapDimmedChange} />
       </Row>
       <Row
