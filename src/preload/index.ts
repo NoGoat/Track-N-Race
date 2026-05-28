@@ -57,6 +57,7 @@ const fsBridge = {
 
 
 const playerBridge = {
+  setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
   load: (filePath: string): Promise<boolean> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
   pause: () => ipcRenderer.send('player:pause'),

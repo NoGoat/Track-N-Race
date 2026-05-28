@@ -12,6 +12,7 @@ let tempFileSize = 0
 
 // Playback state
 let isPlaying = false
+let windowFocused = true
 let speedMultiplier = 1
 let totalDurationS = 1 // Prevent division by zero
 let startSessionTime = 0
@@ -618,7 +619,7 @@ function playbackLoop() {
                   lastPackets[row.type] = row
                   seenTypes.add(row.type)
                 }
-                broadcastToWindows(row)
+                if (windowFocused) broadcastToWindows(row)
               }
             } catch (e) {}
           }
@@ -631,7 +632,7 @@ function playbackLoop() {
                 ...lastPackets[type],
                 session_time: currentSessionTime
               }
-              broadcastToWindows(duplicated)
+              if (windowFocused) broadcastToWindows(duplicated)
             }
           }
         } catch (err) {
@@ -702,6 +703,17 @@ export function seek(percent: number) {
 export function setSpeed(mult: number) {
   speedMultiplier = mult
   emitState()
+}
+
+export function setWindowFocused(focused: boolean): void {
+  const wasFocused = windowFocused
+  windowFocused = focused
+  if (focused && !wasFocused && isPlaying) {
+    // Reset the time baseline so the loop doesn't try to replay the entire gap
+    lastUpdateRealTime = performance.now()
+    // Immediately push current state to the renderer
+    broadcastInitialState(playbackIndex)
+  }
 }
 
 export function closePlayer() {

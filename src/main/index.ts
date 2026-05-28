@@ -8,7 +8,7 @@ import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
 import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
 import { initSessionRecorder } from './sessionRecorder'
-import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange, sweepTempDir } from './sessionPlayer'
+import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange, sweepTempDir, setWindowFocused } from './sessionPlayer'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -123,6 +123,7 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
   return openTelemetryFile(filePath)
 })
 
+ipcMain.on('page-visibility', (_event, visible: boolean) => setWindowFocused(visible))
 ipcMain.on('player:play', () => play())
 ipcMain.on('player:pause', () => pause())
 ipcMain.on('player:seek', (_event, pct: number) => seek(pct))
