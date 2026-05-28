@@ -677,6 +677,7 @@ export default function App() {
   }), [rawTyresLayout])
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
+  const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
   const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
   const [driversMode, setDriversMode]   = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {
@@ -1402,6 +1403,8 @@ export default function App() {
           onNativeTitlebarChange={setNativeTitlebar}
           reduceAnimations={reduceAnimations}
           onReduceAnimationsChange={setReduceAnimations}
+          mapDimmed={mapDimmed}
+          onMapDimmedChange={setMapDimmed}
         />
       )}
 
@@ -1484,7 +1487,7 @@ export default function App() {
         )}
         {tab === 'session' && (
           <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} />
+            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} />
           </div>
         )}
         {tab === 'input' && (

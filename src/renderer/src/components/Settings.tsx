@@ -28,6 +28,8 @@ interface Props {
   onNativeTitlebarChange: (v: boolean) => void
   reduceAnimations: boolean
   onReduceAnimationsChange: (v: boolean) => void
+  mapDimmed: boolean
+  onMapDimmedChange: (v: boolean) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -116,6 +118,8 @@ const Settings = memo(function Settings({
   onNativeTitlebarChange,
   reduceAnimations,
   onReduceAnimationsChange,
+  mapDimmed,
+  onMapDimmedChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [showAbout, setShowAbout] = useState(false)
@@ -232,6 +236,9 @@ const Settings = memo(function Settings({
 
   const renderMap = () => (
     <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+      <Row label="Map Opacity" description="Dims the track outline to 20% opacity so driver dots and labels stand out.">
+        <Toggle value={mapDimmed} onChange={onMapDimmedChange} />
+      </Row>
       <Row
         label="Sector Colors"
         description="Color each sector of the track individually on the map. Lines are drawn in white (dark mode) or black (light mode) when disabled."

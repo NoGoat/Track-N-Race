@@ -375,6 +375,7 @@ function renderFrame(
   driversMode: 'dots' | 'both' | 'labels',
   layout: { scale: number; ox: number; oy: number },
   effectiveZoom: number = 1,
+  mapDimmed: boolean = false,
 ) {
   ctx.clearRect(0, 0, cw, ch)
   const { scale, ox, oy } = layout
@@ -385,10 +386,14 @@ function renderFrame(
   const trackColor = isDark ? '#ffffff' : '#000000'
   const colors = isDark ? SECTOR_COLORS_DARK : SECTOR_COLORS_LIGHT
 
+  if (mapDimmed) ctx.globalAlpha = 0.4
+
   for (const sector of prep.sectors) {
     const color = sectorColors ? (colors[sector.index - 1] ?? trackColor) : trackColor
     drawPolyline(ctx, sector.points, scale, ox, oy, color, TRACK_PX * trackZoomFactor)
   }
+
+  if (mapDimmed) ctx.globalAlpha = 1.0
 
   for (let idx = 0; idx < prep.junctions.length; idx++) {
     const j = prep.junctions[idx]
@@ -484,9 +489,10 @@ interface Props {
   isFullscreen?:       boolean
   onToggleFullscreen?: () => void
   reduceAnimations?:   boolean
+  mapDimmed?:          boolean
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const canvasRef       = useRef<HTMLCanvasElement>(null)
   const prepRef         = useRef<PreparedMap | null>(null)
@@ -496,7 +502,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const rafRef          = useRef<number>(0)
   const isDarkRef         = useRef<boolean>(isDark)
   const sectorColorsRef   = useRef<boolean>(sectorColors)
-  const driversModeRef     = useRef<'dots' | 'both' | 'labels'>(driversMode)
+  const driversModeRef    = useRef<'dots' | 'both' | 'labels'>(driversMode)
+  const mapDimmedRef      = useRef<boolean>(mapDimmed)
 
   const [selectedDriverIdx, setSelectedDriverIdx] = useState<number | null>(null)
   const selectedDriverIdxRef = useRef<number | null>(null)
@@ -564,6 +571,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   isDarkRef.current            = isDark
   sectorColorsRef.current      = sectorColors
   driversModeRef.current       = driversMode
+  mapDimmedRef.current         = mapDimmed
   mapTimeoutRef.current        = mapTimeout
   const reduceAnimationsRef    = useRef(reduceAnimations)
   reduceAnimationsRef.current  = reduceAnimations
@@ -636,7 +644,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           }
 
           const effectiveZoom = layout.scale / baseLayout.scale
-          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom)
+          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom, mapDimmedRef.current)
         }
       }
       rafRef.current = requestAnimationFrame(loop)
