@@ -89,12 +89,6 @@ export function broadcastToWindows(row: Record<string, unknown>): void {
   }
 }
 
-ipcMain.on('debug:write', (_event, msg: string) => {
-  try {
-    const debugPath = path.join(app.getAppPath(), 'tnr_debug.txt')
-    fs.appendFileSync(debugPath, `[${new Date().toISOString()}] ${msg}\n`)
-  } catch (e) { /* ignore */ }
-})
 
 ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
   event.returnValue = store.get(key, defaultValue)
