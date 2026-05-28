@@ -61,9 +61,9 @@ const FLAG_BG: Record<number, string> = {
 }
 
 export function sessionAccent(t: number, isDark: boolean): string {
-  if (t >= 1  && t <= 4)  return isDark ? '#5794F2' : '#0B57D0'
+  if (t >= 1  && t <= 4)  return isDark ? '#2DD4BF' : '#0A8A7A'
   if (t >= 5  && t <= 14) return isDark ? '#ffd700' : '#B7950B'
-  if (t >= 15 && t <= 17) return '#e10600'
+  if (t >= 15 && t <= 17) return isDark ? '#5794F2' : '#0B57D0'
   return isDark ? '#a0a8b8' : '#565B70'
 }
 
