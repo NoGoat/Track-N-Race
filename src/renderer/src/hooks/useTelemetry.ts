@@ -63,6 +63,7 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [protocolWarning, setProtocolWarning] = useState<ProtocolWarningMsg | null>(null)
   const [speedRpmBlocks, setSpeedRpmBlocks] = useState<any[] | null>(null)
   const [fastestLapNum, setFastestLapNum] = useState<number>(0)
+  const [playbackEvents, setPlaybackEvents] = useState<RaceEventMsg[]>([])
   const fastestLapTimeRef = useRef<number>(Infinity)
 
   const telBufRef      = useRef<TelemetryRow[]>([])
@@ -103,6 +104,7 @@ export function useTelemetry(seconds: number): TelemetryState {
           sessionHistoryBestRef.current.clear()
           setSpeedRpmBlocks(null)
           setFastestLapNum(0)
+          setPlaybackEvents([])
           break
         }
         case 'telemetry': {
@@ -259,6 +261,7 @@ export function useTelemetry(seconds: number): TelemetryState {
           const data = msg as any
           setSpeedRpmBlocks(data.blocks)
           setFastestLapNum(data.fastestLapNum)
+          setPlaybackEvents(data.events ?? [])
           break
         }
       }
@@ -332,11 +335,18 @@ export function useTelemetry(seconds: number): TelemetryState {
     [isPlayback, curBlock, stsBuf, lapStartSessionTime, latestSessionTime]
   )
 
+  const resolvedRaceEvents = useMemo(
+    () => isPlayback
+      ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
+      : raceEvents,
+    [isPlayback, playbackEvents, raceEvents, latestSessionTime]
+  )
+
   return {
     telemetry, motion, motionEx,
     status, statusHistory, damage, damageHistory,
     lap, timing, participants, allStatus,
-    fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets,
+    fastestLapCarIdx, raceEvent, raceEvents: resolvedRaceEvents, session, tyreSets,
     latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
     speedRpmBlocks,
     isConnected: true, error: null, protocolStatus, protocolWarning,

@@ -416,7 +416,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
       {/* ── Header ── */}
       <div
         className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
-        style={{ borderLeft: `4px solid ${accent}` }}
       >
         {/* GP name */}
         <div className="flex flex-col justify-center shrink-0 px-6 py-4">
@@ -455,7 +454,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
           <div
             className="text-3xl font-black tabular-nums leading-tight"
-            style={{ color: noData ? 'var(--text-secondary)' : accent }}
+            style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
           >
             {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
           </div>
@@ -580,17 +579,25 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                   No events yet
                 </div>
               ) : (
-                <div className="flex flex-col">
+                <div className="flex flex-col gap-px bg-[var(--border)]">
                   {visibleEvents.map(({ event, fmt }, i) => (
                     <div
                       key={i}
-                      className="flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)] last:border-b-0"
-                      style={{ borderLeft: `2px solid ${fmt.color}` }}
+                      className="flex flex-col gap-0.5 px-3 py-1.5"
+                      style={{ background: `${fmt.color}22` }}
                     >
-                      <span className="text-[9px] tabular-nums text-[var(--text-secondary)] font-mono">
+                      <span
+                        className="text-[9px] tabular-nums font-mono font-semibold"
+                        style={{ color: `${fmt.color}aa` }}
+                      >
                         {fmtSessionTime(event.session_time)}
                       </span>
-                      <span className="text-[11px] text-[var(--text-primary)] leading-snug">{fmt.label}</span>
+                      <span
+                        className="text-[11px] font-bold leading-snug"
+                        style={{ color: fmt.color }}
+                      >
+                        {fmt.label}
+                      </span>
                     </div>
                   ))}
                 </div>

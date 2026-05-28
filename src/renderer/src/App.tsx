@@ -790,6 +790,8 @@ export default function App() {
   participantsRef.current = participants
   const bannerDurationRef = useRef(bannerDuration)
   bannerDurationRef.current = bannerDuration
+  const isPlaybackModeRef = useRef(false)
+  useEffect(() => { isPlaybackModeRef.current = !!(playbackState?.filename) }, [playbackState])
 
   // Stable dequeue function via ref (avoids stale closures)
   const dequeueRef = useRef<() => void>(() => {})
@@ -808,7 +810,7 @@ export default function App() {
   // Race leader tracking
   const p1IdxRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!timing) return
+    if (!timing || isPlaybackModeRef.current) return
     const leader = timing.cars.find(c => c.position === 1 && c.result_status === 2)
     if (!leader) return
     if (p1IdxRef.current === null) {
@@ -828,7 +830,7 @@ export default function App() {
   }, [timing])
 
   useEffect(() => {
-    if (!raceEvent) return
+    if (!raceEvent || isPlaybackModeRef.current) return
     const item = buildBanner(raceEvent, participantsRef.current)
     if (!item) return
     tQueueRef.current.push(item)
@@ -1562,6 +1564,7 @@ export default function App() {
               timing={timing}
               participants={participants}
               tyreSets={tyreSets}
+              allStatus={allStatus}
               isDark={theme === 'dark'}
             />
           </div>

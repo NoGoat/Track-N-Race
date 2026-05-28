@@ -58,6 +58,7 @@ export interface SpeedRpmLapBlock {
 }
 
 let scannedLaps: ScanLap[] = []
+let scannedEvents: any[] = []
 let fastestLapInfo: ScanLap | null = null
 let isScanning = false
 let lapBlocks = new Map<number, SpeedRpmLapBlock>()
@@ -164,6 +165,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       let currentST: number = 0
       
       scannedLaps = []
+      scannedEvents = []
       fastestLapInfo = null
       headerData = null
       lapBlocks.clear()
@@ -256,6 +258,10 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
                 ers_pct: obj.ers_pct
               })
             }
+          }
+
+          if (obj.type === 'race_event') {
+            scannedEvents.push({ ...obj, session_time: obj.session_time ?? currentST })
           }
         } catch (e) {
           // Ignore malformed rows gracefully
@@ -547,7 +553,8 @@ export async function loadFile(filePath: string): Promise<boolean> {
   broadcastToWindows({
     type: 'playback_lap_blocks',
     blocks: Array.from(lapBlocks.values()),
-    fastestLapNum: fastestLapInfo ? fastestLapInfo.lapNum : 0
+    fastestLapNum: fastestLapInfo ? fastestLapInfo.lapNum : 0,
+    events: scannedEvents
   })
   
   emitState()
@@ -686,6 +693,7 @@ export function closePlayer() {
   cleanupTempFile()
   activeFilePath = null
   scannedLaps = []
+  scannedEvents = []
   fastestLapInfo = null
   isScanning = false
   playbackIndex = 0

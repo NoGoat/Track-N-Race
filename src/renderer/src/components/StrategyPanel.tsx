@@ -1,5 +1,5 @@
 import { useMemo, memo, useEffect, useRef, useState } from 'react'
-import type { LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, SessionMsg, TyreSetsMsg, TyreSetEntry } from '../types'
+import type { LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, SessionMsg, TyreSetsMsg, TyreSetEntry, AllStatusMsg } from '../types'
 import { sessionAccent } from './SessionPanel'
 
 // ─── Lookup tables ────────────────────────────────────────────────────────────
@@ -28,7 +28,16 @@ interface Props {
   timing: TimingMsg | null
   participants: ParticipantsMsg | null
   tyreSets: TyreSetsMsg | null
+  allStatus: AllStatusMsg | null
   isDark: boolean
+}
+
+interface StrategyCall {
+  type: 'undercut' | 'overcut'
+  targetIdx: number
+  targetName: string
+  gapMs: number
+  crossoverLaps?: number
 }
 
 interface StintInfo {
@@ -217,12 +226,10 @@ const StintTimeline = memo(function StintTimeline({
 }) {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      {/* Column headline */}
-      <div className="px-5 pt-5 pb-4 shrink-0 border-b border-[var(--border)]">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">
-            {label}
-          </span>
+      {/* Headline — compact single row */}
+      <div className="flex items-center justify-between px-4 py-2.5 shrink-0 border-b border-[var(--border)]">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">{label}</span>
           {isMonaco && (
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded border"
@@ -232,81 +239,70 @@ const StintTimeline = memo(function StintTimeline({
             </span>
           )}
         </div>
-        <div className="flex items-baseline gap-2">
-          <span className="text-5xl font-black tabular-nums leading-none" style={{ color: accentColor }}>
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-2xl font-black tabular-nums leading-none" style={{ color: accentColor }}>
             {result.stops}
           </span>
-          <span className="text-sm font-medium text-[var(--text-secondary)]">
+          <span className="text-xs font-medium text-[var(--text-secondary)]">
             stop{result.stops !== 1 ? 's' : ''}
           </span>
         </div>
       </div>
 
-      {/* Stint timeline */}
-      <div className="flex flex-col p-5 gap-0">
+      {/* Stint rows — flat, divided */}
+      <div className="flex flex-col divide-y divide-[var(--border)]">
         {result.stints.map((stint, i) => {
           const target = targets?.[i] ?? null
           return (
             <div key={i}>
-              <div className="rounded-md border border-[var(--border)] p-3.5 bg-[var(--bg-input)]/20">
-                {/* Compound + wear state */}
-                <div className="flex items-center justify-between mb-2">
-                  <CompoundChip name={stint.compoundName} color={stint.tyreColor} />
-                  <span className="text-[10px] text-[var(--text-secondary)] tabular-nums">
-                    {i === 0 ? `${avgWear.toFixed(0)}% worn` : 'Fresh'}
-                  </span>
-                </div>
+              {/* Row 1: compound + laps (left), worn (right) */}
+              <div className="flex items-center gap-2.5 px-4 py-2.5">
+                <CompoundChip name={stint.compoundName} color={stint.tyreColor} />
+                <span className="text-sm font-black tabular-nums leading-none text-[var(--text-primary)]">
+                  ~{stint.lapCount}L
+                </span>
+                <span className="text-[10px] text-[var(--text-secondary)] tabular-nums flex-1">
+                  {stint.startLap}–{stint.isLast ? totalLaps : stint.pitLap}
+                </span>
+                <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">
+                  {i === 0 ? `${avgWear.toFixed(0)}% worn` : 'Fresh'}
+                </span>
+              </div>
 
-                {/* Lap count + range */}
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-black tabular-nums leading-none text-[var(--text-primary)]">
-                    ~{stint.lapCount}L
+              {/* Connector + target/delta on the same line */}
+              <div className={`flex items-center gap-3 px-4 py-1.5 bg-[var(--bg-input)]/30 ${stint.isLast ? 'border-b border-[var(--border)]' : ''}`}>
+                {stint.isLast ? (
+                  <span className="text-[9px] font-bold uppercase tracking-wider shrink-0" style={{ color: '#73BF69' }}>
+                    Finish · Lap {totalLaps}
                   </span>
-                  <span className="text-[10px] text-[var(--text-secondary)] tabular-nums">
-                    Lap {stint.startLap}–{stint.isLast ? totalLaps : stint.pitLap}
+                ) : (
+                  <span className="text-[9px] font-bold uppercase tracking-wider shrink-0" style={{ color: '#FADE2A' }}>
+                    Pit · Lap {stint.pitLap}
                   </span>
-                </div>
-
-                {/* Pace target row */}
+                )}
+                <div className="flex-1" />
                 {target !== null && (
-                  <div className="mt-2.5 pt-2.5 border-t border-[var(--border)]/50 flex items-center justify-between gap-2">
-                    <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)] shrink-0">
+                  <>
+                    <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">
                       {target.isEstimate ? 'Est. pace' : 'Target'}
                     </span>
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className="text-sm font-black tabular-nums leading-none"
-                        style={{ color: target.isEstimate ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-                      >
-                        {fmtLapTime(target.targetMs)}
-                      </span>
-                      {target.lastLapDeltaMs !== null && Math.abs(target.lastLapDeltaMs) > 50 && (
-                        <span
-                          className="text-[10px] font-bold tabular-nums shrink-0"
+                    <span className="text-xs font-black tabular-nums"
+                      style={{ color: target.isEstimate ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+                    >
+                      {fmtLapTime(target.targetMs)}
+                    </span>
+                    {target.lastLapDeltaMs !== null && (
+                      Math.abs(target.lastLapDeltaMs) > 50 ? (
+                        <span className="text-[10px] font-bold tabular-nums"
                           style={{ color: target.lastLapDeltaMs > 0 ? '#C4162A' : '#73BF69' }}
                         >
                           {target.lastLapDeltaMs > 0 ? '+' : '−'}{Math.abs(target.lastLapDeltaMs / 1000).toFixed(1)}s
                         </span>
-                      )}
-                      {target.lastLapDeltaMs !== null && Math.abs(target.lastLapDeltaMs) <= 50 && (
-                        <span className="text-[10px] text-[var(--text-secondary)] shrink-0">on target</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Connector */}
-              <div className="flex items-center gap-3 py-2 pl-5">
-                <div className="w-px bg-[var(--border)] self-stretch" style={{ minHeight: 10 }} />
-                {stint.isLast ? (
-                  <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#73BF69' }}>
-                    Finish · Lap {totalLaps}
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#FADE2A' }}>
-                    Pit · Lap {stint.pitLap}
-                  </span>
+                      ) : (
+                        <span className="text-[9px] text-[var(--text-secondary)]">on target</span>
+                      )
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -327,14 +323,129 @@ function Placeholder({ children }: { children: React.ReactNode }) {
   )
 }
 
+// ─── StrategyCallPanel ───────────────────────────────────────────────────────
+
+const StrategyCallPanel = memo(function StrategyCallPanel({
+  call, participants,
+}: { call: StrategyCall; participants: ParticipantsMsg | null }) {
+  const isUndercut = call.type === 'undercut'
+  const color      = isUndercut ? '#FADE2A' : '#73BF69'
+  const label      = isUndercut ? 'UNDERCUT' : 'OVERCUT'
+  const gapStr     = isUndercut
+    ? `+${(call.gapMs / 1000).toFixed(1)}s ahead`
+    : `−${(call.gapMs / 1000).toFixed(1)}s behind`
+  const actionLine = isUndercut
+    ? `Pit now — recover time in ${call.crossoverLaps} lap${call.crossoverLaps !== 1 ? 's' : ''}`
+    : 'Stay out — build gap while they stop'
+
+  return (
+    <div className="border-b border-[var(--border)]">
+      <div className="px-4 pt-3 pb-2">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Strategy Call</span>
+      </div>
+      <div className="flex items-center gap-3 px-4 pb-2">
+        <span
+          className="text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0"
+          style={{ color, borderColor: color, backgroundColor: color + '1a' }}
+        >
+          {label}
+        </span>
+        <span className="text-sm font-bold text-[var(--text-primary)] truncate flex-1">
+          {driverName(participants, call.targetIdx)}
+        </span>
+        <span className="text-xs font-semibold tabular-nums shrink-0" style={{ color }}>
+          {gapStr}
+        </span>
+      </div>
+      <div className="px-4 pb-3">
+        <span className="text-[10px] text-[var(--text-secondary)]">{actionLine}</span>
+      </div>
+    </div>
+  )
+})
+
+// ─── RivalsPanel ─────────────────────────────────────────────────────────────
+
+const RivalsPanel = memo(function RivalsPanel({
+  rivals, timing, participants,
+}: {
+  rivals: { aheadIdx: number | null; behindIdx: number | null }
+  timing: TimingMsg
+  participants: ParticipantsMsg | null
+}) {
+  const player = timing.cars.find(c => c.idx === timing.player_idx)
+  if (!player) return null
+
+  const rows: { idx: number; dir: 'ahead' | 'behind' }[] = []
+  if (rivals.aheadIdx  !== null) rows.push({ idx: rivals.aheadIdx,  dir: 'ahead'  })
+  if (rivals.behindIdx !== null) rows.push({ idx: rivals.behindIdx, dir: 'behind' })
+  if (rows.length === 0) return null
+
+  return (
+    <div className="border-b border-[var(--border)]">
+      <div className="px-4 pt-3 pb-2">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Rivals</span>
+      </div>
+      <div className="flex flex-col divide-y divide-[var(--border)]">
+        {rows.map(({ idx, dir }) => {
+          const car       = timing.cars.find(c => c.idx === idx)
+          const livery    = participants?.drivers.find(d => d.idx === idx)?.livery_color ?? '#8e8e8e'
+          const isRetired = !car || car.result_status !== 2
+          const dirColor  = dir === 'ahead' ? '#5794F2' : '#FADE2A'
+
+          let gapStr: string | null = null
+          if (car && !isRetired) {
+            if (dir === 'ahead') {
+              const g = player.gap_ms - car.gap_ms
+              if (g > 0) gapStr = `+${(g / 1000).toFixed(1)}s`
+            } else {
+              const g = car.gap_ms - player.gap_ms
+              if (g > 0) gapStr = `−${(g / 1000).toFixed(1)}s`
+            }
+          }
+
+          return (
+            <div key={idx} className="flex items-center gap-2.5 px-4 py-2.5">
+              <span
+                className="text-[9px] font-bold w-4 text-center shrink-0"
+                style={{ color: dirColor }}
+              >
+                {dir === 'ahead' ? '▲' : '▼'}
+              </span>
+              {car && !isRetired ? (
+                <span
+                  className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
+                  style={{ backgroundColor: livery + '28', color: livery }}
+                >
+                  P{car.position}
+                </span>
+              ) : (
+                <span className="text-[10px] w-7 text-center text-[var(--text-secondary)] shrink-0">—</span>
+              )}
+              <span className={`text-sm font-bold flex-1 truncate ${isRetired ? 'opacity-40 text-[var(--text-secondary)]' : 'text-[var(--text-secondary)]'}`}>
+                {driverName(participants, idx)}
+              </span>
+              {isRetired ? (
+                <span className="text-[9px] font-bold opacity-40 text-[var(--text-secondary)] shrink-0">DNF</span>
+              ) : gapStr != null ? (
+                <span className="text-xs font-semibold tabular-nums shrink-0 text-[var(--text-secondary)]">{gapStr}</span>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+})
+
 // ─── PositionPanel ────────────────────────────────────────────────────────────
 // Isolated so its 20Hz gap-trend state updates don't re-render strategy columns.
 
 interface WearWarning { text: string; detail: string; color: string }
 
 const PositionPanel = memo(function PositionPanel({
-  timing, participants,
-}: { timing: TimingMsg; participants: ParticipantsMsg | null }) {
+  timing, participants, pitCounts,
+}: { timing: TimingMsg; participants: ParticipantsMsg | null; pitCounts: Map<number, number> }) {
   const positionData = useMemo(() => {
     const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
     const player = active.find(c => c.idx === timing.player_idx)
@@ -433,6 +544,9 @@ const PositionPanel = memo(function PositionPanel({
               }
             }
 
+            const stops = pitCounts.get(car.idx) ?? 0
+            const inPit = car.pit_status !== 0
+
             return (
               <div key={car.idx} className="flex items-center gap-3 px-5 py-3">
                 <span
@@ -444,6 +558,18 @@ const PositionPanel = memo(function PositionPanel({
                 <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
                   {driverName(participants, car.idx)}
                 </span>
+                {inPit ? (
+                  <span
+                    className="text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0"
+                    style={{ color: '#FADE2A', borderColor: '#FADE2A', backgroundColor: 'rgba(250,222,42,0.08)' }}
+                  >
+                    PIT
+                  </span>
+                ) : stops > 0 ? (
+                  <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">
+                    {stops} pit{stops !== 1 ? 's' : ''}
+                  </span>
+                ) : null}
                 {gapMs != null && (
                   <span className="text-xs font-semibold tabular-nums shrink-0" style={{ color: gapColor }}>
                     {role === 'ahead' ? `+${(gapMs / 1000).toFixed(1)}s` : `-${(gapMs / 1000).toFixed(1)}s`}
@@ -509,7 +635,7 @@ const TyreWearPanel = memo(function TyreWearPanel({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const StrategyPanel = memo(function StrategyPanel({
-  lap, session, status, damage, timing, participants, tyreSets, isDark,
+  lap, session, status, damage, timing, participants, tyreSets, allStatus, isDark,
 }: Props) {
   const accent = sessionAccent(session?.session_type ?? -1, isDark)
 
@@ -779,6 +905,131 @@ const StrategyPanel = memo(function StrategyPanel({
     }
   }, [strategyData, stableLapPace, tyreSets, session, lap])
 
+  // ─── Pit count tracking ───────────────────────────────────────────────────
+  const pitCountsRef     = useRef<Map<number, number>>(new Map())
+  const prevDrvStatusRef = useRef<Map<number, number>>(new Map())
+  const sessionTsRef     = useRef<string | null>(null)
+  const [pitCounts, setPitCounts] = useState<Map<number, number>>(new Map())
+
+  useEffect(() => {
+    if (!timing || !lap) return
+    if (session?.ts !== sessionTsRef.current) {
+      pitCountsRef.current     = new Map()
+      prevDrvStatusRef.current = new Map()
+      sessionTsRef.current     = session?.ts ?? null
+      setPitCounts(new Map())
+      return
+    }
+    let changed = false
+    for (const car of timing.cars) {
+      const prev = prevDrvStatusRef.current.get(car.idx) ?? -1
+      if (prev === 2 && car.driver_status === 3 && lap.lap_num > 1) {
+        const cur = pitCountsRef.current.get(car.idx) ?? 0
+        pitCountsRef.current.set(car.idx, cur + 1)
+        changed = true
+      }
+      prevDrvStatusRef.current.set(car.idx, car.driver_status)
+    }
+    if (changed) setPitCounts(new Map(pitCountsRef.current))
+  }, [timing, lap, session])
+
+  // ─── Rivals tracking ──────────────────────────────────────────────────────
+  const rivalsRef           = useRef<{ aheadIdx: number | null; behindIdx: number | null } | null>(null)
+  const prevLapRef          = useRef<number | null>(null)
+  const rivalSessionTsRef   = useRef<string | null>(null)
+  const [rivals, setRivals] = useState<{ aheadIdx: number | null; behindIdx: number | null } | null>(null)
+
+  useEffect(() => {
+    if (!lap || !timing) return
+    if (session?.ts !== rivalSessionTsRef.current) {
+      rivalsRef.current         = null
+      prevLapRef.current        = null
+      rivalSessionTsRef.current = session?.ts ?? null
+      setRivals(null)
+      return
+    }
+    if (prevLapRef.current === 1 && lap.lap_num === 2 && rivalsRef.current === null) {
+      const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
+      const player = active.find(c => c.idx === timing.player_idx)
+      if (player) {
+        const aheadCar  = active.find(c => c.position === player.position - 1)
+        const behindCar = active.find(c => c.position === player.position + 1)
+        const r = { aheadIdx: aheadCar?.idx ?? null, behindIdx: behindCar?.idx ?? null }
+        rivalsRef.current = r
+        setRivals(r)
+      }
+    }
+    prevLapRef.current = lap.lap_num
+  }, [lap, timing, session])
+
+  // ─── Undercut / Overcut analysis ──────────────────────────────────────────
+  const strategyCall = useMemo((): StrategyCall | null => {
+    if (!strategyData || !timing || !lap || !isRaceSession) return null
+    const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
+    const player = active.find(c => c.idx === timing.player_idx)
+    if (!player) return null
+
+    const playerTyreAge = status?.tyre_age_laps ?? 0
+    const freshGainMs   = strategyData.conservative.stints.length > 1
+      ? Math.max(0, (() => {
+          const fittedSet  = tyreSets?.sets.find(s => s.fitted)
+          const WET        = new Set([7, 8])
+          const isWet      = (session?.weather ?? 0) >= 3
+          const pool       = (tyreSets?.sets ?? [])
+            .filter(s => s.available && !s.fitted && s.usable_life > 0)
+            .filter(s => isWet ? WET.has(s.actual_compound) : !WET.has(s.actual_compound))
+          const best = pool.sort((a, b) => a.lap_delta_ms - b.lap_delta_ms)[0]
+          return best ? (fittedSet?.lap_delta_ms ?? 0) - best.lap_delta_ms : 0
+        })())
+      : 0
+    const PIT_COST_MS = 22_000
+
+    // Undercut: car immediately ahead
+    const carAhead = active.find(c => c.position === player.position - 1)
+    if (carAhead) {
+      const aheadGapMs    = player.gap_ms - carAhead.gap_ms
+      const rivalTyreAge  = allStatus?.cars.find(c => c.idx === carAhead.idx)?.tyre_age_laps ?? 0
+      const crossoverLaps = freshGainMs > 0 ? Math.ceil(PIT_COST_MS / freshGainMs) : 999
+      if (
+        aheadGapMs > 0 &&
+        aheadGapMs < 3_000 &&
+        freshGainMs > 200 &&
+        rivalTyreAge >= playerTyreAge + 3 &&
+        crossoverLaps <= 10
+      ) {
+        return {
+          type: 'undercut',
+          targetIdx: carAhead.idx,
+          targetName: driverName(participants, carAhead.idx),
+          gapMs: aheadGapMs,
+          crossoverLaps,
+        }
+      }
+    }
+
+    // Overcut: car immediately behind
+    const carBehind = active.find(c => c.position === player.position + 1)
+    if (carBehind && strategyData.lapsUntilCliff >= 3) {
+      const behindGapMs   = carBehind.gap_ms - player.gap_ms
+      const rivalTyreAge  = allStatus?.cars.find(c => c.idx === carBehind.idx)?.tyre_age_laps ?? 0
+      const isOnInlap     = carBehind.driver_status === 2
+      if (
+        behindGapMs >= 0 &&
+        behindGapMs < 3_000 &&
+        (isOnInlap || rivalTyreAge >= playerTyreAge + 5)
+      ) {
+        return {
+          type: 'overcut',
+          targetIdx: carBehind.idx,
+          targetName: driverName(participants, carBehind.idx),
+          gapMs: behindGapMs,
+        }
+      }
+    }
+
+    return null
+  }, [strategyData, timing, allStatus, pitCounts, lap, isRaceSession, status, tyreSets, session, participants])
+
   const tyreColor = strategyData ? strategyData.currentCompound.color : 'var(--text-secondary)'
   const tyreName  = strategyData ? strategyData.currentCompound.name  : '—'
   const avgWear   = strategyData?.avgWear ?? 0
@@ -894,10 +1145,20 @@ const StrategyPanel = memo(function StrategyPanel({
             )}
           </div>
 
-          {/* Right panel: Position + Tyre wear — always visible in race session */}
+          {/* Right panel: Strategy call + Rivals + Position + Tyre wear */}
           <div className="w-72 shrink-0 overflow-y-auto flex flex-col divide-y divide-[var(--border)]">
 
-            {timing && <PositionPanel timing={timing} participants={participants} />}
+            {strategyCall && (
+              <StrategyCallPanel call={strategyCall} participants={participants} />
+            )}
+
+            {rivals && timing && (
+              <RivalsPanel rivals={rivals} timing={timing} participants={participants} />
+            )}
+
+            {timing && (
+              <PositionPanel timing={timing} participants={participants} pitCounts={pitCounts} />
+            )}
 
             {damage && (
               <TyreWearPanel
