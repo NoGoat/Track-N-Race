@@ -74,6 +74,8 @@ export function useTelemetry(seconds: number): TelemetryState {
   const fastestLapSetRef      = useRef<boolean>(false)
   const sessionHistoryBestRef = useRef<Map<number, number>>(new Map())
   const isPlaybackRef = useRef<boolean>(false)
+  const lastLoggedLapNumRef = useRef<number | null>(null)
+  const lastSnapshotTimeRef = useRef<number>(0)
 
   useEffect(() => {
     const unsub = window.telemetryBridge.on((raw) => {
@@ -81,6 +83,8 @@ export function useTelemetry(seconds: number): TelemetryState {
       switch (msg.type) {
         case 'playback_close': {
           isPlaybackRef.current = false
+          lastLoggedLapNumRef.current = null
+          lastSnapshotTimeRef.current = 0
           setTelBuf([]); telBufRef.current = []
           setMotBuf([]); motBufRef.current = []
           setMotExBuf([])
@@ -176,7 +180,15 @@ export function useTelemetry(seconds: number): TelemetryState {
             return [...base, msg]
           })
           break
-        case 'lap':          setLap(msg);                          break
+        case 'lap': {
+          const lapMsg = msg as any
+          if (lapMsg.lap_num !== lastLoggedLapNumRef.current) {
+            lastLoggedLapNumRef.current = lapMsg.lap_num
+            window.debugBridge?.write(`[TELEMETRY] LAP_NUM_SEEN lap_num=${lapMsg.lap_num} current_lap_ms=${lapMsg.current_lap_ms} last_lap_ms=${lapMsg.last_lap_ms} session_time=${lapMsg.session_time?.toFixed(3)}`)
+          }
+          setLap(msg)
+          break
+        }
         case 'timing':       setTiming(msg);                       break
         case 'participants': setParticipants(msg);                 break
         case 'all_status':   setAllStatus(msg);                    break
@@ -262,6 +274,26 @@ export function useTelemetry(seconds: number): TelemetryState {
           setSpeedRpmBlocks(data.blocks)
           setFastestLapNum(data.fastestLapNum)
           setPlaybackEvents(data.events ?? [])
+          window.debugBridge?.write(`[TELEMETRY] BLOCKS_RECEIVED count=${data.blocks?.length ?? 0} fastestLapNum=${data.fastestLapNum}`)
+          for (const b of (data.blocks ?? [])) {
+            const ft = b.telemetry?.[0]
+            const lt = b.telemetry?.[b.telemetry.length - 1]
+            window.debugBridge?.write(`[TELEMETRY] BLOCK lapNum=${b.lapNum} startST=${b.startSessionTime?.toFixed(3)} endST=${b.endSessionTime?.toFixed(3)} tel.count=${b.telemetry?.length ?? 0} sts.count=${b.statusHistory?.length ?? 0} tel.first=${ft ? ft.session_time.toFixed(3) : 'N/A'} tel.last=${lt ? lt.session_time.toFixed(3) : 'N/A'}`)
+            // Dump session_times around the ~39.7s freeze point for lap 3 (index ~2350)
+            if (b.lapNum === 3 && b.telemetry?.length > 2400) {
+              const around = b.telemetry.slice(2330, 2400).map((p: any, i: number) => `[${2330+i}]=${p.session_time.toFixed(3)}`).join(' ')
+              window.debugBridge?.write(`[TELEMETRY] LAP3_TEL_AROUND_2350 ${around}`)
+              // Also check for non-monotonic entries in the whole block
+              let firstBad = -1
+              for (let i = 1; i < b.telemetry.length; i++) {
+                if (b.telemetry[i].session_time <= b.telemetry[i-1].session_time) {
+                  firstBad = i
+                  break
+                }
+              }
+              window.debugBridge?.write(`[TELEMETRY] LAP3_MONOTONIC_CHECK firstNonMonotonicIdx=${firstBad} ${firstBad >= 0 ? `st[${firstBad-1}]=${b.telemetry[firstBad-1].session_time.toFixed(3)} st[${firstBad}]=${b.telemetry[firstBad].session_time.toFixed(3)}` : 'all_ok'}`)
+            }
+          }
           break
         }
       }
@@ -281,6 +313,7 @@ export function useTelemetry(seconds: number): TelemetryState {
       lapStartTimeRef.current = lap.current_lap_ms > 0
         ? latestST - lap.current_lap_ms / 1000
         : latestST
+      window.debugBridge?.write(`[TELEMETRY] LAP_INIT lap_num=${lap.lap_num} latestST=${latestST.toFixed(3)} lapStartTimeRef=${lapStartTimeRef.current.toFixed(3)} current_lap_ms=${lap.current_lap_ms}`)
       return
     }
     if (lap.lap_num === prevLapNum) return
@@ -296,6 +329,7 @@ export function useTelemetry(seconds: number): TelemetryState {
       motion:           motBufRef.current.filter(d => d.session_time >= prevLapStart),
       statusHistory:    stsBufRef.current.filter(d => d.session_time >= prevLapStart),
     }
+    window.debugBridge?.write(`[TELEMETRY] LAP_NUM_CHANGE from=${prevLapNum} to=${lap.lap_num} prevLapStart=${prevLapStart.toFixed(3)} endTime=${endTime.toFixed(3)} newLapData.tel.count=${newLapData.telemetry.length} last_lap_ms=${lap.last_lap_ms}`)
     setLapHistoryBuf(prev => [...prev, newLapData].slice(-3))
     const lapTimeMs = lap.last_lap_ms
     if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTimeRef.current) {
@@ -341,6 +375,20 @@ export function useTelemetry(seconds: number): TelemetryState {
       : raceEvents,
     [isPlayback, playbackEvents, raceEvents, latestSessionTime]
   )
+
+  const lapTelLength = lapTelemetry.length
+  useEffect(() => {
+    if (!isPlayback) return
+    window.debugBridge?.write(`[TELEMETRY] LAPTEL_LENGTH_CHANGE newLength=${lapTelLength} latestSessionTime=${latestSessionTime.toFixed(3)} activeLapNum=${activeLapNum} curBlock.lapNum=${curBlock?.lapNum ?? 'null'} curBlock.tel.count=${curBlock?.telemetry?.length ?? 'null'}`)
+  }, [lapTelLength])
+
+  useEffect(() => {
+    if (!isPlayback) return
+    const now = Date.now()
+    if (now - lastSnapshotTimeRef.current < 1000) return
+    lastSnapshotTimeRef.current = now
+    window.debugBridge?.write(`[TELEMETRY] CURBLOCK_SNAPSHOT activeLapNum=${activeLapNum} curBlock.lapNum=${curBlock?.lapNum ?? 'null'} curBlock.tel.count=${curBlock?.telemetry?.length ?? 'null'} lapTelemetry.length=${lapTelemetry.length} latestSessionTime=${latestSessionTime.toFixed(3)} lapStatusHistory.length=${lapStatusHistory.length}`)
+  }, [latestSessionTime])
 
   return {
     telemetry, motion, motionEx,

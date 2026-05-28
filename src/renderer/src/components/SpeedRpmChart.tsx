@@ -53,10 +53,13 @@ function advance<T extends { session_time: number }>(arr: T[], idx: number, targ
 }
 
 function buildOverlayData(
-  prevLap: { telemetry: any[]; statusHistory: any[]; startSessionTime: number },
+  prevLap: { telemetry: any[]; statusHistory: any[]; startSessionTime: number; lapNum?: number },
   lapData: TelemetryRow[],
   lapStatusHistory: StatusRow[]
 ): uPlot.AlignedData {
+  const curStart0 = lapData[0]?.session_time ?? 0
+  const curEnd0   = lapData.length > 0 ? lapData[lapData.length - 1].session_time : -Infinity
+  window.debugBridge?.write(`[CHART] BUILD_OVERLAY prevLap.lapNum=${(prevLap as any)?.lapNum ?? 'N/A'} prevLap.startST=${prevLap?.startSessionTime?.toFixed(3)} prevTel.count=${prevLap?.telemetry?.length ?? 0} lapData.count=${lapData.length} lapData[0].st=${curStart0.toFixed(3)} lapData[last].st=${curEnd0 === -Infinity ? '-Inf' : curEnd0.toFixed(3)}`)
   if (!prevLap || prevLap.telemetry.length === 0) {
     return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
             new Float64Array(), new Float64Array(), new Float64Array()]
@@ -69,6 +72,7 @@ function buildOverlayData(
 
   const prevDuration = prevTel[prevTel.length - 1].session_time - prevLap.startSessionTime
   const curDuration  = lapData.length > 0 ? curEnd - curStart : 0
+  window.debugBridge?.write(`[CHART] OVERLAY_DURATIONS prevDuration=${prevDuration.toFixed(3)} curDuration=${curDuration.toFixed(3)} curStart=${curStart.toFixed(3)} curEnd=${curEnd === -Infinity ? '-Inf' : curEnd.toFixed(3)} n_points=${prevTel.length}`)
 
   let curExtendStart = lapData.length
   if (curDuration > prevDuration) {
@@ -119,6 +123,11 @@ function buildOverlayData(
     curErs[i]  = d.session_time <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
   }
 
+  // Sample values at 10 evenly spaced points across the output
+  const sampleIndices = Array.from({length: 10}, (_, k) => Math.floor(k * (n - 1) / 9))
+  const samples = sampleIndices.map(i => `[${i}] t=${x[i]?.toFixed(2)} pSpd=${prevSpd[i]?.toFixed(0)} cSpd=${isNaN(curSpd[i]) ? 'NaN' : curSpd[i]?.toFixed(0)} cRpm=${isNaN(curRpm[i]) ? 'NaN' : curRpm[i]?.toFixed(0)}`).join(' | ')
+  window.debugBridge?.write(`[CHART] OVERLAY_VALUES n=${n} extraPoints=${extraPoints} ${samples}`)
+
   return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
 }
 
@@ -138,6 +147,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     if (mode === 'compare' && compareLapNum === null && speedRpmBlocks && speedRpmBlocks.length > 0) {
       setCompareLapNum(speedRpmBlocks[0].lapNum)
     }
+    window.debugBridge?.write(`[CHART] MODE_OR_COMPARE_CHANGE mode=${mode} compareLapNum=${compareLapNum} speedRpmBlocks.count=${speedRpmBlocks?.length ?? 0}`)
   }, [mode, speedRpmBlocks, compareLapNum])
 
   const compareSelectStyles = useMemo(() => buildSelectStyles(isDark, { controlHeight: 20 }), [isDark])
@@ -156,9 +166,14 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare'
 
   const uData = useMemo((): uPlot.AlignedData => {
+    const ld0 = lapData[0]?.session_time
+    const ldLast = lapData.length > 0 ? lapData[lapData.length - 1].session_time : undefined
+    window.debugBridge?.write(`[CHART] UDATA_COMPUTE mode=${mode} lapData.length=${lapData.length} lapData[0].st=${ld0?.toFixed(3) ?? 'N/A'} lapData[last].st=${ldLast?.toFixed(3) ?? 'N/A'} compareLapNum=${compareLapNum} speedRpmBlocks.count=${speedRpmBlocks?.length ?? 0}`)
+
     if (mode === 'compare') {
       const compareBlock = speedRpmBlocks?.find(b => b.lapNum === compareLapNum) ?? null
       if (!compareBlock) {
+        window.debugBridge?.write(`[CHART] COMPARE_NO_BLOCK compareLapNum=${compareLapNum}`)
         return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
                 new Float64Array(), new Float64Array(), new Float64Array()]
       }
@@ -168,6 +183,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     if (mode === 'PL' || mode === 'FL') {
       const prevLap = mode === 'FL' ? fastestLap : lapHistory[lapHistory.length - 1]
       if (!prevLap) {
+        window.debugBridge?.write(`[CHART] NO_PREV_LAP mode=${mode}`)
         return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
                 new Float64Array(), new Float64Array(), new Float64Array()]
       }

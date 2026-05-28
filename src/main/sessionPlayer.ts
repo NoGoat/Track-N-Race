@@ -2,7 +2,19 @@ import * as fs from 'fs'
 import * as zlib from 'zlib'
 import * as os from 'os'
 import * as path from 'path'
+import { app } from 'electron'
 import { broadcastToWindows } from './index'
+
+let debugFilePath = ''
+
+function debugWrite(msg: string): void {
+  try {
+    if (!debugFilePath) debugFilePath = path.join(app.getAppPath(), 'tnr_debug.txt')
+    fs.appendFileSync(debugFilePath, `[${new Date().toISOString()}] ${msg}\n`)
+  } catch (e) {
+    // ignore
+  }
+}
 
 let activeFilePath: string | null = null
 let activeTempFilePath: string | null = null
@@ -207,11 +219,12 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
             if (currentLapNum === null) {
               currentLapNum = obj.lap_num
               currentLapStart = obj.current_lap_ms > 0 ? currentST - obj.current_lap_ms / 1000 : currentST
+              debugWrite(`[SCAN] FIRST_LAP lapNum=${currentLapNum} session_time=${currentST} current_lap_ms=${obj.current_lap_ms} currentLapStart=${currentLapStart}`)
             } else if (obj.lap_num > currentLapNum) {
               // Finalize previous lap block
               const prevBlock = lapBlocks.get(currentLapNum)
               if (prevBlock) prevBlock.endSessionTime = currentST
-              
+
               const lapTimeMs = obj.last_lap_ms
               const newLap: ScanLap = {
                 lapNum: currentLapNum,
@@ -225,11 +238,12 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
                   fastestLapInfo = newLap
                 }
               }
+              debugWrite(`[SCAN] LAP_TRANSITION from=${currentLapNum} to=${obj.lap_num} session_time=${currentST} last_lap_ms=${lapTimeMs}`)
               currentLapNum = obj.lap_num
               currentLapStart = currentST
             }
           }
-          
+
           // Build SpeedRPMERS comparative lap blocks
           if (currentLapNum !== null) {
             if (!lapBlocks.has(currentLapNum)) {
@@ -240,6 +254,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
                 telemetry: [],
                 statusHistory: []
               })
+              debugWrite(`[SCAN] BLOCK_CREATED lapNum=${currentLapNum} startSessionTime=${currentST}`)
             }
             const block = lapBlocks.get(currentLapNum)!
             block.endSessionTime = currentST
@@ -305,7 +320,21 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           finalBlock.endSessionTime = currentST
         }
       }
-      
+
+      // Sort each block's telemetry and statusHistory by session_time to handle
+      // out-of-order UDP packets in the recording, which would cause advance() to get stuck
+      for (const block of lapBlocks.values()) {
+        block.telemetry.sort((a, b) => a.session_time - b.session_time)
+        block.statusHistory.sort((a, b) => a.session_time - b.session_time)
+      }
+
+      debugWrite(`[SCAN] COMPLETE totalPackets=${tempOffsets.length} lapBlockCount=${lapBlocks.size}`)
+      for (const [lapNum, block] of lapBlocks) {
+        const firstTel = block.telemetry[0]
+        const lastTel = block.telemetry[block.telemetry.length - 1]
+        debugWrite(`[SCAN] BLOCK lapNum=${lapNum} startST=${block.startSessionTime.toFixed(3)} endST=${block.endSessionTime.toFixed(3)} tel.count=${block.telemetry.length} sts.count=${block.statusHistory.length} tel.first=${firstTel ? firstTel.session_time.toFixed(3) : 'N/A'} tel.last=${lastTel ? lastTel.session_time.toFixed(3) : 'N/A'}`)
+      }
+
       fs.closeSync(fd)
       
       // Release raw arrays and move to binary indices
@@ -514,7 +543,11 @@ function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, cu
 export async function loadFile(filePath: string): Promise<boolean> {
   closePlayer()
   activeFilePath = filePath
-  
+
+  debugFilePath = path.join(app.getAppPath(), 'tnr_debug.txt')
+  try { fs.writeFileSync(debugFilePath, '') } catch (e) { /* ignore */ }
+  debugWrite(`[PLAYER] LOAD_FILE ${filePath}`)
+
   isScanning = true
   emitState()
   
@@ -550,9 +583,11 @@ export async function loadFile(filePath: string): Promise<boolean> {
   broadcastInitialState(0)
   
   // Broadcast comparative SpeedRPMERS blocks exactly once on load to renderers
+  const blocksArr = Array.from(lapBlocks.values())
+  debugWrite(`[PLAYER] LAP_BLOCKS_BROADCAST count=${blocksArr.length} fastestLapNum=${fastestLapInfo ? fastestLapInfo.lapNum : 0} lapNums=[${blocksArr.map(b => b.lapNum).join(',')}]`)
   broadcastToWindows({
     type: 'playback_lap_blocks',
-    blocks: Array.from(lapBlocks.values()),
+    blocks: blocksArr,
     fastestLapNum: fastestLapInfo ? fastestLapInfo.lapNum : 0,
     events: scannedEvents
   })

@@ -55,6 +55,10 @@ const fsBridge = {
     ipcRenderer.invoke('dialog:showOpenDialogTNRD'),
 }
 
+const debugBridge = {
+  write: (msg: string): void => ipcRenderer.send('debug:write', msg)
+}
+
 const playerBridge = {
   load: (filePath: string): Promise<boolean> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
@@ -81,4 +85,5 @@ contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
+contextBridge.exposeInMainWorld('debugBridge', debugBridge)
 

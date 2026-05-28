@@ -374,6 +374,9 @@ declare global {
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
     }
+    debugBridge?: {
+      write: (msg: string) => void
+    }
   }
 }
 

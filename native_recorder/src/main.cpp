@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <zlib.h>
 
@@ -68,7 +69,15 @@ int currentSessionType = -1;
 std::wstring activeGzipPath = L"";
 std::mutex streamMutex;
 
-float lastSessionTime = -1.0f; // Track last recorded session time for rewind detection
+float lastSessionTime = -1.0f;
+
+const float BUFFER_WINDOW_S = 30.0f;
+
+struct BufferEntry {
+    std::string line;
+    float sessionTime;
+};
+std::vector<BufferEntry> rollingBuffer;
 
 // Telemetry parsing constants
 const int HEADER_SIZE = 29;
@@ -282,13 +291,17 @@ void SelectDirectory() {
     }
 }
 
+void FlushBufferToDisk(const std::vector<BufferEntry>& entries);
+
 // Gzip stream close
 void CloseActiveStream() {
     if (activeGzip) {
+        FlushBufferToDisk(rollingBuffer);
         gzclose(activeGzip);
         activeGzip = NULL;
         SetLabelText(hLblStatus, L"Status: Idle");
     }
+    rollingBuffer.clear();
     currentTrackId = -1;
     currentSessionType = -1;
     activeGzipPath = L"";
@@ -350,6 +363,26 @@ void StartNewStream(int trackId, int sessionType, int format) {
     }
 }
 
+void FlushBufferToDisk(const std::vector<BufferEntry>& entries) {
+    if (!activeGzip || entries.empty()) return;
+    for (const auto& entry : entries) {
+        gzwrite(activeGzip, entry.line.c_str(), (unsigned int)entry.line.size());
+    }
+}
+
+void FlushOldBufferEntries() {
+    if (lastSessionTime < 0.0f || rollingBuffer.empty()) return;
+    float cutoff = lastSessionTime - BUFFER_WINDOW_S;
+    size_t flushIdx = 0;
+    while (flushIdx < rollingBuffer.size() && rollingBuffer[flushIdx].sessionTime < cutoff) {
+        flushIdx++;
+    }
+    if (flushIdx > 0) {
+        FlushBufferToDisk(std::vector<BufferEntry>(rollingBuffer.begin(), rollingBuffer.begin() + flushIdx));
+        rollingBuffer.erase(rollingBuffer.begin(), rollingBuffer.begin() + flushIdx);
+    }
+}
+
 // Deduplication filter
 bool IsDuplicate(const std::string& type, const nlohmann::json& row) {
     if (DEDUPE_TYPES.find(type) == DEDUPE_TYPES.end()) return false;
@@ -365,73 +398,76 @@ bool IsDuplicate(const std::string& type, const nlohmann::json& row) {
 
 // Gzip Session Rewind Truncation Engine
 void TruncateTimeline(float newSessionTime) {
-    if (activeGzipPath.empty() || !activeGzip) return;
+    float bufferStart = rollingBuffer.empty() ? INFINITY : rollingBuffer[0].sessionTime;
 
-    // 1. Close current stream
-    gzclose(activeGzip);
-    activeGzip = NULL;
+    if (newSessionTime >= bufferStart) {
+        // Rewind is within the buffer window — trim in memory, no file I/O needed
+        rollingBuffer.erase(
+            std::remove_if(rollingBuffer.begin(), rollingBuffer.end(),
+                [newSessionTime](const BufferEntry& e) { return e.sessionTime > newSessionTime; }),
+            rollingBuffer.end()
+        );
+    } else {
+        // Rewind goes past the buffer — drop the entire buffer and truncate the on-disk portion
+        rollingBuffer.clear();
 
-    // 2. Read and filter lines from Gzip stream
-    std::vector<std::string> retainedLines;
-    gzFile infile = gzopen_w(activeGzipPath.c_str(), "rb");
-    if (infile) {
-        char buffer[16384];
-        while (gzgets(infile, buffer, sizeof(buffer)) != NULL) {
-            std::string line(buffer);
-            try {
-                nlohmann::json j = nlohmann::json::parse(line);
-                if (j.contains("session_time")) {
-                    float rowTime = j["session_time"].get<float>();
-                    if (rowTime <= newSessionTime) {
-                        retainedLines.push_back(line);
-                    }
-                } else {
-                    // Retain header and metadata lines without session_time
-                    retainedLines.push_back(line);
+        if (!activeGzipPath.empty() && activeGzip) {
+            gzclose(activeGzip);
+            activeGzip = NULL;
+
+            std::vector<std::string> retainedLines;
+            gzFile infile = gzopen_w(activeGzipPath.c_str(), "rb");
+            if (infile) {
+                char buf[16384];
+                while (gzgets(infile, buf, sizeof(buf)) != NULL) {
+                    std::string line(buf);
+                    try {
+                        nlohmann::json j = nlohmann::json::parse(line);
+                        if (j.contains("session_time")) {
+                            if (j["session_time"].get<float>() <= newSessionTime)
+                                retainedLines.push_back(line);
+                        } else {
+                            retainedLines.push_back(line);
+                        }
+                    } catch (...) {}
                 }
-            } catch (...) {
-                // Skip unparseable lines
+                gzclose(infile);
             }
+
+            gzFile outfile = gzopen_w(activeGzipPath.c_str(), "wb");
+            if (outfile) {
+                for (const auto& line : retainedLines)
+                    gzwrite(outfile, line.c_str(), (unsigned int)line.size());
+                gzclose(outfile);
+            }
+
+            activeGzip = gzopen_w(activeGzipPath.c_str(), "ab");
         }
-        gzclose(infile);
     }
 
-    // 3. Re-write retained lines back to file
-    gzFile outfile = gzopen_w(activeGzipPath.c_str(), "wb");
-    if (outfile) {
-        for (const auto& line : retainedLines) {
-            gzwrite(outfile, line.c_str(), (unsigned int)line.size());
-        }
-        gzclose(outfile);
-    }
-
-    // 4. Re-open active Gzip stream in append mode
-    activeGzip = gzopen_w(activeGzipPath.c_str(), "ab");
-
-    // 5. Clear deduplication cache to allow fresh state telemetry logging
     dedupeCache.clear();
-
-    // 6. Reset tracking session time
     lastSessionTime = newSessionTime;
 
-    // 7. Update status bar to indicate rewind event
     std::wstring statusMsg = L"Flashback: Resuming from " + std::to_wstring((int)newSessionTime) + L"s...";
     SetLabelText(hLblStatus, statusMsg.c_str());
 }
 
-// Writes a telemetry row to the gzip file
-void RecordRow(const nlohmann::json& row) {
+// Writes a telemetry row to the rolling buffer
+void RecordRow(const nlohmann::json& row, float sessionTime) {
     if (!activeGzip) return;
     std::string type = row["type"];
     if (IsDuplicate(type, row)) return;
 
     std::string line = row.dump() + "\n";
-    gzwrite(activeGzip, line.c_str(), (unsigned int)line.size());
+    float entryTime = (sessionTime >= 0.0f) ? sessionTime : lastSessionTime;
+    rollingBuffer.push_back({line, entryTime});
 
-    // Flush and close on SEND race event
     if (type == "race_event" && row["code"] == "SEND") {
         CloseActiveStream();
+        return;
     }
+
+    FlushOldBufferEntries();
 }
 
 // Central Packet Router & Parser
@@ -499,7 +535,7 @@ void ProcessPacket(const uint8_t* data, int length) {
     }
 
     for (const auto& row : rows) {
-        RecordRow(row);
+        RecordRow(row, hdr.sessionTime);
     }
 }
 
