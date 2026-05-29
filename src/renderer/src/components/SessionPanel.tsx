@@ -585,7 +585,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                   {visibleEvents.map(({ event, fmt }, i) => (
                     <div
                       key={i}
-                      className="flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)] last:border-b-0"
+                      className="flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
                     >
                       <span
                         className="text-[9px] tabular-nums font-mono font-semibold"
