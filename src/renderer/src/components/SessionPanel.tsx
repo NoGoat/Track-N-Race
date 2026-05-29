@@ -45,13 +45,13 @@ export const SESSION_TYPES: Record<number, string> = {
 }
 
 const WEATHER_LABELS = ['Clear', 'Light Cloud', 'Overcast', 'Light Rain', 'Heavy Rain', 'Storm']
-const WEATHER_ICONS: { icon: LucideIcon; color: string }[] = [
-  { icon: Sun,            color: '#fde047' },  // yellow   — Clear
-  { icon: CloudSun,       color: '#fb923c' },  // orange   — Light Cloud
-  { icon: Cloud,          color: '#94a3b8' },  // slate    — Overcast
-  { icon: CloudDrizzle,   color: '#7dd3fc' },  // sky blue — Light Rain
-  { icon: CloudRain,      color: '#2563eb' },  // blue     — Heavy Rain
-  { icon: CloudLightning, color: '#c084fc' },  // purple   — Storm
+const WEATHER_ICONS: { icon: LucideIcon; dark: string; light: string }[] = [
+  { icon: Sun,            dark: '#fde047', light: '#ca8a04' },  // Clear
+  { icon: CloudSun,       dark: '#fb923c', light: '#c2410c' },  // Light Cloud
+  { icon: Cloud,          dark: '#94a3b8', light: '#475569' },  // Overcast
+  { icon: CloudDrizzle,   dark: '#7dd3fc', light: '#0284c7' },  // Light Rain
+  { icon: CloudRain,      dark: '#2563eb', light: '#1d4ed8' },  // Heavy Rain
+  { icon: CloudLightning, dark: '#c084fc', light: '#7c3aed' },  // Storm
 ]
 
 const FLAG_BG: Record<number, string> = {
@@ -158,9 +158,9 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-const WeatherIcon = memo(function WeatherIcon({ id, size }: { id: number; size: number }) {
-  const { icon: Ic, color } = WEATHER_ICONS[id] ?? WEATHER_ICONS[2]
-  return <Ic size={size} strokeWidth={1.5} color={color} />
+const WeatherIcon = memo(function WeatherIcon({ id, size, isDark }: { id: number; size: number; isDark: boolean }) {
+  const entry = WEATHER_ICONS[id] ?? WEATHER_ICONS[2]
+  return <entry.icon size={size} strokeWidth={1.5} color={isDark ? entry.dark : entry.light} />
 })
 
 const StatCard = memo(function StatCard({ label, value, unit, accent }: { label: string; value: string; unit?: string; accent?: string }) {
@@ -496,7 +496,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             <div className="flex flex-col items-center justify-evenly w-44 shrink-0 px-4">
               <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
               <div style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
-                <WeatherIcon id={session?.weather ?? 2} size={28} />
+                <WeatherIcon id={session?.weather ?? 2} size={28} isDark={isDark} />
               </div>
               <span className={`text-sm font-semibold text-center leading-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
                 {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
@@ -511,7 +511,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               ? [1, 2, 3, 4, 5].map(i => (
                 <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">—</span>
-                  <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} /></div>
+                  <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} isDark={isDark} /></div>
                   <span className="text-[10px] text-[var(--text-secondary)] text-center">—</span>
                   <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">—</span>
                 </div>
@@ -522,7 +522,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                 return (
                   <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
-                    <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} /></div>
+                    <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} isDark={isDark} /></div>
                     <span className="text-[10px] text-[var(--text-primary)] text-center leading-tight">
                       {WEATHER_LABELS[s.weather] ?? '—'}
                     </span>
