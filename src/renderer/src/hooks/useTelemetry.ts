@@ -68,6 +68,7 @@ export function useTelemetry(seconds: number): TelemetryState {
 
   const telBufRef      = useRef<TelemetryRow[]>([])
   const motBufRef      = useRef<MotionRow[]>([])
+  const dmgBufRef      = useRef<DamageRow[]>([])
   const stsBufRef      = useRef<StatusRow[]>([])
   const lapNumRef      = useRef<number | null>(null)
   const lapStartTimeRef = useRef<number>(0)

@@ -116,7 +116,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
   const tyreColor = activeStatus ? (VISUAL_COLORS[activeStatus.visual_compound] ?? '#ffffff') : '#ffffff'
 
   return (
-    <div className="flex flex-col divide-y divide-[var(--border)]">
+    <div className="flex flex-col divide-y divide-[var(--border)] border-b border-[var(--border)]">
 
       {/* ── Lap timing ── */}
       <Panel>
@@ -168,7 +168,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
               </div>
             </div>
 
-            <div className="mt-3 pt-3 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+            <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
               {[
                 { label: 'S1', ms: selectedCar.s1_ms, done: selectedCar.sector >= 1 && selectedCar.s1_ms > 0 },
                 { label: 'S2', ms: selectedCar.s2_ms, done: selectedCar.sector >= 2 && selectedCar.s2_ms > 0 },
@@ -224,7 +224,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
             </div>
 
             {/* Sectors */}
-            <div className="mt-3 pt-3 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+            <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
               {[
                 { label: 'S1', ms: displayS1, done: s1Done },
                 { label: 'S2', ms: displayS2, done: s2Done },
@@ -261,7 +261,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                 <div className="text-lg font-bold tabular-nums text-[var(--text-muted)]">--:--.---</div>
               </div>
             </div>
-            <div className="mt-3 pt-3 border-t border-[var(--border)] grid grid-cols-3 gap-2">
+            <div className="mt-3 pt-3 -mx-4 px-4 border-t border-[var(--border)] grid grid-cols-3 gap-2">
               {['S1', 'S2', 'S3'].map(s => (
                 <div key={s}>
                   <div className="text-[9px] text-[var(--text-secondary)]">{s}</div>
@@ -377,7 +377,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
             </div>
 
             {/* Tyre */}
-            <div className="pt-3 border-t border-[var(--border)]">
+            <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
               <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
               <div className="flex items-center gap-2">
                 {tyreName && (
@@ -403,7 +403,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
               <div className="text-sm text-[var(--text-muted)]">— laps vs finish</div>
               <div className="text-xs text-[var(--text-muted)] mt-1">Mix: —</div>
             </div>
-            <div className="pt-3 border-t border-[var(--border)]">
+            <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
               <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
               <div className="flex items-center gap-2">
                 <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
