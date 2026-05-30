@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import pngToIco from 'png-to-ico'
@@ -26,6 +26,8 @@ function padToSquare(pngPath) {
   }
   return PNG.sync.write(dst)
 }
+
+mkdirSync(join(root, 'build'), { recursive: true })
 
 const variants = [
   { src: 'icon_solid.png',             dst: 'icon.ico',               preview: 'icon.png' },
