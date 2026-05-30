@@ -1,4 +1,3 @@
-import { Resvg } from '@resvg/resvg-js'
 import { readFileSync, writeFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -8,29 +7,11 @@ import { PNG } from 'pngjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..')
 
-const svg = readFileSync(join(root, 'build', 'icon.svg'), 'utf-8')
-
-function renderAtSize(size) {
-  const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: size } })
-  return resvg.render().asPng()
-}
-
-const sizes = [256, 48, 32, 16]
-const pngs = sizes.map(renderAtSize)
-
-writeFileSync(join(root, 'build', 'icon.png'), pngs[0])
-console.log('Wrote build/icon.png (256px preview)')
-
-const ico = await pngToIco(pngs)
-writeFileSync(join(root, 'build', 'icon.ico'), ico)
-console.log('Wrote build/icon.ico')
-
-// Pad a PNG to square with transparent background so png-to-ico can handle it
 function padToSquare(pngPath) {
   const src = PNG.sync.read(readFileSync(pngPath))
   const dim = Math.max(src.width, src.height)
   const dst = new PNG({ width: dim, height: dim, filterType: -1 })
-  dst.data.fill(0) // transparent
+  dst.data.fill(0)
   const ox = Math.floor((dim - src.width) / 2)
   const oy = Math.floor((dim - src.height) / 2)
   for (let y = 0; y < src.height; y++) {
@@ -46,9 +27,19 @@ function padToSquare(pngPath) {
   return PNG.sync.write(dst)
 }
 
-for (const variant of ['icon_transparent', 'icon_transparent_light']) {
-  const squarePng = padToSquare(join(root, `${variant}.png`))
-  const variantIco = await pngToIco(squarePng)
-  writeFileSync(join(root, 'build', `${variant}.ico`), variantIco)
-  console.log(`Wrote build/${variant}.ico`)
+const variants = [
+  { src: 'icon_solid.png',             dst: 'icon.ico',               preview: 'icon.png' },
+  { src: 'icon_transparent.png',       dst: 'icon_transparent.ico',   preview: null },
+  { src: 'icon_transparent_light.png', dst: 'icon_transparent_light.ico', preview: null },
+]
+
+for (const { src, dst, preview } of variants) {
+  const squarePng = padToSquare(join(root, src))
+  if (preview) {
+    writeFileSync(join(root, 'build', preview), squarePng)
+    console.log(`Wrote build/${preview}`)
+  }
+  const ico = await pngToIco(squarePng)
+  writeFileSync(join(root, 'build', dst), ico)
+  console.log(`Wrote build/${dst}`)
 }
