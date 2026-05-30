@@ -5,6 +5,8 @@
   "author": "NoGoat",
   "main": "out/main/index.js",
   "scripts": {
+    "predev": "node scripts/gen-icon.mjs",
+    "prebuild": "node scripts/gen-icon.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
