@@ -335,7 +335,8 @@ std::vector<nlohmann::json> F1_24::ParsePacket(const uint8_t* data, int length, 
             float wRR = ReadFloat(data, o); o += 4;
             float wFL = ReadFloat(data, o); o += 4;
             float wFR = ReadFloat(data, o); o += 4;
-            o += 8; // skip
+            uint8_t tdRL = data[o++]; uint8_t tdRR = data[o++]; uint8_t tdFL = data[o++]; uint8_t tdFR = data[o++];
+            uint8_t brRL = data[o++]; uint8_t brRR = data[o++]; uint8_t brFL = data[o++]; uint8_t brFR = data[o++];
             uint8_t wingFL = data[o++]; uint8_t wingFR = data[o++]; uint8_t wingRear = data[o++];
             uint8_t floorDmg = data[o++]; uint8_t carpetDmg = data[o++]; uint8_t diffuserDmg = data[o++];
             uint8_t gearboxDmg = data[o++]; uint8_t engineDmg = data[o++];
@@ -344,9 +345,11 @@ std::vector<nlohmann::json> F1_24::ParsePacket(const uint8_t* data, int length, 
                 {"type", "damage"}, {"ts", timestamp}, {"session_time", hdr.sessionTime},
                 {"tyre_wear_rl", Round1(wRL)}, {"tyre_wear_rr", Round1(wRR)},
                 {"tyre_wear_fl", Round1(wFL)}, {"tyre_wear_fr", Round1(wFR)},
+                {"tyre_dmg_rl", tdRL}, {"tyre_dmg_rr", tdRR}, {"tyre_dmg_fl", tdFL}, {"tyre_dmg_fr", tdFR},
+                {"brake_dmg_rl", brRL}, {"brake_dmg_rr", brRR}, {"brake_dmg_fl", brFL}, {"brake_dmg_fr", brFR},
                 {"blisters_rl", 0}, {"blisters_rr", 0}, {"blisters_fl", 0}, {"blisters_fr", 0},
                 {"wing_fl", wingFL}, {"wing_fr", wingFR}, {"wing_rear", wingRear},
-                {"floor_damage", floorDmg}, {"carpet_damage", carpetDmg},
+                {"floor_damage", floorDmg}, {"sidepod_damage", carpetDmg},
                 {"diffuser_damage", diffuserDmg}, {"gearbox_damage", gearboxDmg}, {"engine_damage", engineDmg}
             };
             rows.push_back(row);

@@ -39,6 +39,8 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/TelemetryChart.cpp
+    src/TelemetryChart.h
     src/protocol.cpp
     src/f1_24.cpp
     src/f1_25.cpp
