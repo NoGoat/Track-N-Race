@@ -51,7 +51,13 @@
       "include": "build/installer.nsh"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "extraFiles": [
+        {
+          "from": "native_recorder/build/Track N Race Background Recorder",
+          "to": "Track N Race Background Recorder"
+        }
+      ]
     },
     "mac": {
       "target": "dmg"
@@ -65,6 +71,9 @@
     "react-select": "^5.10.2",
     "uplot": "^1.6.32",
     "uplot-react": "^1.2.4"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

@@ -364,9 +364,9 @@ std::vector<nlohmann::json> F1_25::ParsePacket(const uint8_t* data, int length, 
                 uint8_t b = data[nameStart + 40];
                 char hexColor[16];
                 if (numColors > 0) {
-                    sprintf_s(hexColor, "#%02x%02x%02x", r, g, b);
+                    snprintf(hexColor, sizeof(hexColor), "#%02x%02x%02x", r, g, b);
                 } else {
-                    strcpy_s(hexColor, "#8e8e8e");
+                    snprintf(hexColor, sizeof(hexColor), "#8e8e8e");
                 }
                 drivers.push_back({
                     {"idx", i}, {"name", name}, {"team_id", teamId},

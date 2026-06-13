@@ -38,6 +38,9 @@ hs_err_pid*
 build/
 out/
 
+# Native recorder build artifacts
+native_recorder/build*/
+
 # Generated/project assets
 dashboard/dist/
 telemetry-electron/dist/

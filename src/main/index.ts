@@ -158,13 +158,18 @@ ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
 })
 
 ipcMain.on('switch-to-recorder', () => {
+  const recorderBinary =
+    process.platform === 'win32'
+      ? 'Track N Race Background Recorder.exe'
+      : 'Track N Race Background Recorder'
   let recorderPath = ''
   if (app.isPackaged) {
-    // In production, the executable is placed in the main installation folder next to Track N Race.exe
-    recorderPath = path.join(path.dirname(process.execPath), 'Track N Race Background Recorder.exe')
+    // In production, the executable is placed in the main installation folder next to the Electron app
+    recorderPath = path.join(path.dirname(process.execPath), recorderBinary)
   } else {
-    // In development, the executable is in native_recorder/build/Release
-    recorderPath = path.join(app.getAppPath(), 'native_recorder/build/Release/Track N Race Background Recorder.exe')
+    // In development, the executable is in native_recorder/build/Release (Windows) or native_recorder/build (Linux)
+    const devBuildDir = process.platform === 'win32' ? 'Release' : '.'
+    recorderPath = path.join(app.getAppPath(), 'native_recorder/build', devBuildDir, recorderBinary)
   }
 
   if (fs.existsSync(recorderPath)) {

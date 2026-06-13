@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.16)
 project(NativeRecorder CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 include(FetchContent)
 
@@ -22,15 +24,34 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zlib)
 
-add_executable(native_recorder WIN32
+# Find Qt6 (fallback to Qt5)
+find_package(Qt6 QUIET COMPONENTS Core Widgets Network)
+if(Qt6_FOUND)
+    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network)
+    message(STATUS "Using Qt6")
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network)
+    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network)
+    message(STATUS "Using Qt5 (Qt6 not found)")
+endif()
+
+set(SOURCES
     src/main.cpp
+    src/MainWindow.cpp
+    src/MainWindow.h
     src/protocol.cpp
     src/f1_24.cpp
     src/f1_25.cpp
-    resources.rc
+    resources.qrc
 )
+
+if(WIN32)
+    list(APPEND SOURCES resources.rc)
+    add_executable(native_recorder WIN32 ${SOURCES})
+    target_compile_options(native_recorder PRIVATE /utf-8)
+else()
+    add_executable(native_recorder ${SOURCES})
+endif()
+
 set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
-target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic Ws2_32 Comdlg32)
-
-
-
+target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
