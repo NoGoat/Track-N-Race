@@ -768,7 +768,7 @@ void MainWindow::updateTyreSetsTable() {
         // Col 6: Lap delta
         QString deltaText;
         if (deltaMs != 0) {
-            deltaText = (deltaMs > 0 ? "+" : "") + QString::number(deltaMs) + "ms";
+            deltaText = QString("%1%2").arg(deltaMs > 0 ? "+" : "").arg(deltaMs / 1000.0, 0, 'f', 3);
         }
         auto* deltaItem = makeItem(deltaText);
         if (deltaMs > 0) deltaItem->setForeground(QColor("#C4162A"));
