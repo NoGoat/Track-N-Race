@@ -1,0 +1,32 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+<qresource prefix="/">
+    <file alias="maps/track_0.json">assets/maps/track_0.json</file>
+    <file alias="maps/track_2.json">assets/maps/track_2.json</file>
+    <file alias="maps/track_3.json">assets/maps/track_3.json</file>
+    <file alias="maps/track_4.json">assets/maps/track_4.json</file>
+    <file alias="maps/track_5.json">assets/maps/track_5.json</file>
+    <file alias="maps/track_6.json">assets/maps/track_6.json</file>
+    <file alias="maps/track_7.json">assets/maps/track_7.json</file>
+    <file alias="maps/track_9.json">assets/maps/track_9.json</file>
+    <file alias="maps/track_10.json">assets/maps/track_10.json</file>
+    <file alias="maps/track_11.json">assets/maps/track_11.json</file>
+    <file alias="maps/track_12.json">assets/maps/track_12.json</file>
+    <file alias="maps/track_13.json">assets/maps/track_13.json</file>
+    <file alias="maps/track_14.json">assets/maps/track_14.json</file>
+    <file alias="maps/track_15.json">assets/maps/track_15.json</file>
+    <file alias="maps/track_16.json">assets/maps/track_16.json</file>
+    <file alias="maps/track_17.json">assets/maps/track_17.json</file>
+    <file alias="maps/track_19.json">assets/maps/track_19.json</file>
+    <file alias="maps/track_20.json">assets/maps/track_20.json</file>
+    <file alias="maps/track_26.json">assets/maps/track_26.json</file>
+    <file alias="maps/track_27.json">assets/maps/track_27.json</file>
+    <file alias="maps/track_29.json">assets/maps/track_29.json</file>
+    <file alias="maps/track_30.json">assets/maps/track_30.json</file>
+    <file alias="maps/track_31.json">assets/maps/track_31.json</file>
+    <file alias="maps/track_32.json">assets/maps/track_32.json</file>
+    <file alias="maps/track_39.json">assets/maps/track_39.json</file>
+    <file alias="maps/track_40.json">assets/maps/track_40.json</file>
+    <file alias="maps/track_41.json">assets/maps/track_41.json</file>
+</qresource>
+</RCC>

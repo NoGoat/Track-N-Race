@@ -9,6 +9,7 @@
 #include <QSizePolicy>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QFontMetrics>
 #include <QPainter>
 
 #include <algorithm>
@@ -473,12 +474,15 @@ QWidget* MainWindow::buildSessionPage() {
     sp_eventsList->setFocusPolicy(Qt::NoFocus);
     sp_eventsList->setAlternatingRowColors(false);
     sp_eventsList->setFrameShape(QFrame::NoFrame);
-    QFont evf; evf.setPointSize(8);
-    sp_eventsList->setFont(evf);
-    sp_eventsList->setMaximumHeight(120);
-    rv->addWidget(sp_eventsList);
-
-    rv->addStretch();
+    sp_eventsList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sp_eventsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    sp_eventsList->setSpacing(0);
+    sp_eventsList->setUniformItemSizes(false);
+    sp_eventsList->setStyleSheet(
+        "QListWidget{background:transparent;}"
+        "QListWidget::item{border-bottom:1px solid rgba(255,255,255,0.06);}");
+    sp_eventsList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    rv->addWidget(sp_eventsList, 1);
     ch->addWidget(rightPanel);
     root->addWidget(content, 1);
     return w;
@@ -585,7 +589,7 @@ void MainWindow::updateSessionEvents() {
         std::string code = ev.value("code", "");
 
         int totalSecs = (int)ev.value("session_time", 0.0f);
-        QString timeStr = QString("[%1:%2]")
+        QString timeStr = QString("%1:%2")
             .arg(totalSecs / 60, 2, 10, QChar('0'))
             .arg(totalSecs % 60, 2, 10, QChar('0'));
 
@@ -639,13 +643,50 @@ void MainWindow::updateSessionEvents() {
             colorOverride = penaltyTypeColor(pt);
         }
 
-        QString text = timeStr + "  " + label;
+        QString text = label;
         if (!detail.isEmpty()) text += "  —  " + detail;
 
-        auto* item = new QListWidgetItem(text);
         QColor c = colorOverride.isValid() ? colorOverride : eventCodeColor(code);
-        if (c.isValid()) item->setForeground(c);
+        if (!c.isValid()) c = QColor("#c8ccd4");
+
+        const int hMargin = 10, vMargin = 5, spacing = 2;
+        int avail = sp_eventsList->viewport()->width();
+        if (avail <= 0) avail = sp_eventsList->width() - 4;
+        if (avail <= 0) avail = 212;            // panel width fallback before first show
+        int textW = avail - 2 * hMargin;
+
+        // Two-line row: muted time on top, bold colored event text below.
+        QWidget* rowW = new QWidget;
+        QVBoxLayout* rl = new QVBoxLayout(rowW);
+        rl->setContentsMargins(hMargin, vMargin, hMargin, vMargin);
+        rl->setSpacing(spacing);
+
+        QFont tf; tf.setPointSize(7); tf.setBold(true);
+        tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
+        QLabel* timeLbl = new QLabel(timeStr);
+        timeLbl->setFont(tf);
+        timeLbl->setStyleSheet(QString("color:rgba(%1,%2,%3,170);")
+            .arg(c.red()).arg(c.green()).arg(c.blue()));
+
+        QFont lf; lf.setPointSize(9); lf.setBold(true);
+        QLabel* textLbl = new QLabel(text);
+        textLbl->setFont(lf);
+        textLbl->setWordWrap(true);
+        textLbl->setStyleSheet("color:" + c.name() + ";");
+
+        rl->addWidget(timeLbl);
+        rl->addWidget(textLbl);
+
+        // Word-wrap height must be computed explicitly for list-item widgets.
+        int timeH = QFontMetrics(tf).height();
+        int textH = QFontMetrics(lf).boundingRect(
+            QRect(0, 0, textW, 10000), Qt::TextWordWrap, text).height();
+        int rowH = 2 * vMargin + timeH + spacing + textH;
+
+        auto* item = new QListWidgetItem;
+        item->setSizeHint(QSize(avail, rowH));
         sp_eventsList->addItem(item);
+        sp_eventsList->setItemWidget(item, rowW);
     }
 }
 
