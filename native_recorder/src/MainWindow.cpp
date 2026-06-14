@@ -7,6 +7,8 @@
 #include <QComboBox>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QProgressBar>
+#include <QScrollArea>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -438,6 +440,7 @@ static QString formatGap(int ms, bool isLeader) {
 
 static QString tyreLabel(int compound) {
     switch (compound) {
+        case 22: return "C6";
         case 16: return "C5";
         case 17: return "C4";
         case 18: return "C3";
@@ -450,14 +453,17 @@ static QString tyreLabel(int compound) {
     }
 }
 
-static QColor tyreColor(int compound) {
-    switch (compound) {
-        case 16: return QColor("#e8002d"); // Soft
-        case 17: return QColor("#ffd700"); // Medium
-        case 18: case 19: case 20: case 21: return QColor("#c8c8c8"); // Hard
-        case  7: return QColor("#39b54a"); // Intermediate
-        case  8: return QColor("#4488ff"); // Wet
-        default: return QColor("#8e8e8e");
+// Text color keyed on visual_compound (16=soft, 17=medium, 18=hard, 7=int, 8=wet)
+// NOT tyre_compound — visual_compound is fixed; tyre_compound varies by weekend
+// Returns invalid QColor for hard → caller leaves text at the OS default color
+static QColor tyreTextColor(int visualCompound) {
+    switch (visualCompound) {
+        case 16: return QColor("#e8002d"); // Soft   — red
+        case 17: return QColor("#ffd700"); // Medium — yellow
+        case 18: return {};                // Hard   — OS default (white in dark, black in light)
+        case  7: return QColor("#39b54a"); // INT    — green
+        case  8: return QColor("#4488ff"); // WET    — blue
+        default: return {};
     }
 }
 
@@ -465,9 +471,9 @@ static QColor tyreColor(int compound) {
 
 QWidget* MainWindow::buildStandingsPage() {
     QWidget* w = new QWidget;
-    QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setContentsMargins(0, 0, 0, 0);
-    vbox->setSpacing(0);
+    QHBoxLayout* hbox = new QHBoxLayout(w);
+    hbox->setContentsMargins(0, 0, 0, 0);
+    hbox->setSpacing(0);
 
     timingTable = new QTableWidget;
     timingTable->setColumnCount(10);
@@ -479,15 +485,200 @@ QWidget* MainWindow::buildStandingsPage() {
     timingTable->setShowGrid(false);
     timingTable->setAlternatingRowColors(false);
     timingTable->verticalHeader()->setVisible(false);
-    timingTable->horizontalHeader()->setStretchLastSection(true);
     timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     timingTable->horizontalHeader()->setSectionResizeMode(9, QHeaderView::Stretch);
 
     QFont hf; hf.setPointSize(7);
     timingTable->horizontalHeader()->setFont(hf);
 
-    vbox->addWidget(timingTable);
+    hbox->addWidget(timingTable, 1);
+
+    // Vertical divider
+    QFrame* vdiv = new QFrame;
+    vdiv->setFrameShape(QFrame::VLine);
+    vdiv->setFrameShadow(QFrame::Sunken);
+    hbox->addWidget(vdiv);
+
+    hbox->addWidget(buildRacePanel());
     return w;
+}
+
+// ── Race panel ────────────────────────────────────────────────────────────
+
+QWidget* MainWindow::buildRacePanel() {
+    QScrollArea* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFixedWidth(220);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    QWidget* w = new QWidget;
+    QVBoxLayout* vbox = new QVBoxLayout(w);
+    vbox->setContentsMargins(8, 8, 8, 8);
+    vbox->setSpacing(8);
+
+    // Helper: key / value row inside a group
+    auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
+        QWidget* row = new QWidget;
+        QHBoxLayout* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 2, 0, 2);
+        QLabel* lbl = new QLabel(label);
+        QFont lf; lf.setPointSize(8); lbl->setFont(lf);
+        lbl->setForegroundRole(QPalette::PlaceholderText);
+        valueOut = new QLabel("—");
+        QFont vf; vf.setPointSize(8); vf.setBold(true); valueOut->setFont(vf);
+        h->addWidget(lbl);
+        h->addStretch();
+        h->addWidget(valueOut);
+        return row;
+    };
+
+    // ── TIMING ───────────────────────────────────────────────────
+    QGroupBox* timGrp = new QGroupBox("TIMING");
+    QVBoxLayout* tv = new QVBoxLayout(timGrp);
+    tv->setSpacing(0);
+    tv->addWidget(makeRow("Lap",      rp_lapNum));
+    tv->addWidget(makeRow("Position", rp_position));
+    tv->addWidget(makeRow("Pit",      rp_pitStatus));
+    tv->addWidget(makeRow("Current",  rp_currentLap));
+    tv->addWidget(makeRow("Last Lap", rp_lastLap));
+
+    // Sector row: S1 | S2
+    QWidget* sectRow = new QWidget;
+    QHBoxLayout* sh = new QHBoxLayout(sectRow);
+    sh->setContentsMargins(0, 4, 0, 0);
+    sh->setSpacing(8);
+    auto makeSect = [&](const QString& lbl, QLabel*& out) {
+        QWidget* sc = new QWidget;
+        QVBoxLayout* sv = new QVBoxLayout(sc);
+        sv->setContentsMargins(0,0,0,0); sv->setSpacing(1);
+        QLabel* l = new QLabel(lbl); QFont lf; lf.setPointSize(7); l->setFont(lf);
+        l->setForegroundRole(QPalette::PlaceholderText); l->setAlignment(Qt::AlignCenter);
+        out = new QLabel("—"); QFont vf; vf.setPointSize(8); vf.setBold(true);
+        out->setFont(vf); out->setAlignment(Qt::AlignCenter);
+        sv->addWidget(l); sv->addWidget(out);
+        return sc;
+    };
+    sh->addWidget(makeSect("S1", rp_s1));
+    sh->addWidget(makeSect("S2", rp_s2));
+    tv->addWidget(sectRow);
+    vbox->addWidget(timGrp);
+
+    // ── ENERGY ───────────────────────────────────────────────────
+    QGroupBox* ersGrp = new QGroupBox("ENERGY");
+    QVBoxLayout* ev = new QVBoxLayout(ersGrp);
+    ev->setSpacing(4);
+
+    rp_ersPct = new QLabel("—");
+    QFont bigF; bigF.setPointSize(18); bigF.setBold(true);
+    rp_ersPct->setFont(bigF);
+    rp_ersPct->setAlignment(Qt::AlignCenter);
+    ev->addWidget(rp_ersPct);
+
+    rp_ersBar = new QProgressBar;
+    rp_ersBar->setRange(0, 100);
+    rp_ersBar->setValue(0);
+    rp_ersBar->setTextVisible(false);
+    rp_ersBar->setFixedHeight(6);
+    ev->addWidget(rp_ersBar);
+
+    ev->addWidget(makeRow("Mode", rp_ersMode));
+    ev->addWidget(makeRow("DRS",  rp_drs));
+    vbox->addWidget(ersGrp);
+
+    // ── STRATEGY ─────────────────────────────────────────────────
+    QGroupBox* stratGrp = new QGroupBox("STRATEGY");
+    QVBoxLayout* stv = new QVBoxLayout(stratGrp);
+    stv->setSpacing(0);
+    stv->addWidget(makeRow("Fuel",       rp_fuelKg));
+    stv->addWidget(makeRow("Fuel Laps",  rp_fuelLaps));
+    stv->addWidget(makeRow("Mix",        rp_fuelMix));
+    stv->addWidget(makeRow("Tyre",       rp_tyre));
+    stv->addWidget(makeRow("Tyre Age",   rp_tyreAge));
+    stv->addWidget(makeRow("Brake Bias", rp_brakeBias));
+    vbox->addWidget(stratGrp);
+
+    vbox->addStretch();
+    scroll->setWidget(w);
+    return scroll;
+}
+
+// ── Race panel updater ────────────────────────────────────────────────────
+
+void MainWindow::updateRacePanel() {
+    if (!rp_lapNum) return;
+
+    // TIMING — from "lap" row (player only)
+    if (!lastPlayerLapData.empty()) {
+        const auto& lap = lastPlayerLapData;
+        int lapNum    = lap.value("lap_num",       0);
+        int pos       = lap.value("position",      0);
+        int pitSt     = lap.value("pit_status",    0);
+        int currentMs = lap.value("current_lap_ms",0);
+        int lastMs    = lap.value("last_lap_ms",   0);
+        int s1Ms      = lap.value("s1_ms",         0);
+        int s2Ms      = lap.value("s2_ms",         0);
+        bool invalid  = lap.value("lap_invalid",   false);
+        int  penS     = lap.value("penalties_s",   0);
+
+        rp_lapNum->setText(lapNum > 0 ? QString::number(lapNum) : "—");
+        rp_position->setText(pos > 0 ? "P" + QString::number(pos) : "—");
+
+        QStringList flags;
+        if (pitSt == 1)  flags << "In pit lane";
+        else if (pitSt == 2) flags << "In pit";
+        if (invalid)     flags << "INVALID";
+        if (penS > 0)    flags << ("+" + QString::number(penS) + "s");
+        rp_pitStatus->setText(flags.isEmpty() ? "—" : flags.join(" · "));
+        rp_pitStatus->setStyleSheet(flags.isEmpty() ? "" : "color: #C4162A; font-weight: bold;");
+
+        rp_currentLap->setText(formatLapTime(currentMs));
+        rp_lastLap->setText(formatLapTime(lastMs));
+        rp_s1->setText(formatSector(s1Ms));
+        rp_s2->setText(formatSector(s2Ms));
+    }
+
+    // ENERGY + STRATEGY — from "status" row (player only)
+    if (!lastPlayerStatusData.empty()) {
+        const auto& st = lastPlayerStatusData;
+        float ersPct    = st.value("ers_pct",          0.0f);
+        int   ersMode   = st.value("ers_mode",         0);
+        float fuelKg    = st.value("fuel_kg",          0.0f);
+        float fuelLaps  = st.value("fuel_laps",        0.0f);
+        int   fuelMix   = st.value("fuel_mix",         0);
+        int   compound  = st.value("tyre_compound",    -1);
+        int   visual    = st.value("visual_compound",  -1);
+        int   tyreAge   = st.value("tyre_age_laps",    0);
+        float brakeBias = st.value("front_brake_bias", 0.0f);
+        bool  drsOk     = st.value("drs_allowed",      false);
+
+        rp_ersPct->setText(QString::number((int)ersPct) + "%");
+        rp_ersBar->setValue((int)ersPct);
+        const char* ersColor = ersPct > 60 ? "#4488ff" : ersPct > 30 ? "#ffd700" : "#C4162A";
+        rp_ersBar->setStyleSheet(
+            QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor));
+
+        static const char* ersModes[] = {"None", "Auto", "Hotlap", "Overtake"};
+        rp_ersMode->setText(ersMode >= 0 && ersMode < 4 ? ersModes[ersMode] : "—");
+
+        rp_drs->setText(drsOk ? "AVAILABLE" : "LOCKED");
+        rp_drs->setStyleSheet(drsOk ? "color: #37872D; font-weight: bold;" : "");
+
+        rp_fuelKg->setText(QString::number(fuelKg, 'f', 1) + " kg");
+        rp_fuelLaps->setText(QString::number(fuelLaps, 'f', 1) + "L");
+        const char* fuelColor = fuelLaps > 1.0f ? "#37872D" : fuelLaps >= 0.0f ? "#ffd700" : "#C4162A";
+        rp_fuelKg->setStyleSheet(QString("color: %1; font-weight: bold;").arg(fuelColor));
+
+        static const char* mixes[] = {"Lean", "Standard", "Rich", "Max Power"};
+        rp_fuelMix->setText(fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
+
+        rp_tyre->setText(tyreLabel(compound));
+        QColor tyreFg = tyreTextColor(visual);
+        rp_tyre->setStyleSheet(tyreFg.isValid()
+            ? QString("color: %1; font-weight: bold;").arg(tyreFg.name())
+            : "font-weight: bold;");
+        rp_tyreAge->setText(tyreAge > 0 ? QString::number(tyreAge) + "L" : "—");
+        rp_brakeBias->setText(brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
+    }
 }
 
 // ── Standings updater ──────────────────────────────────────────────────────
@@ -509,12 +700,14 @@ void MainWindow::updateTimingTable() {
         }
     }
 
-    // Build tyre lookup: idx → compound
-    std::unordered_map<int, int> tyreMap;
+    // Build tyre lookup: idx → {tyre_compound (for label), visual_compound (for color)}
+    struct TyreInfo { int compound; int visual; };
+    std::unordered_map<int, TyreInfo> tyreMap;
     if (!lastAllStatusData.empty() && lastAllStatusData.contains("cars")) {
         for (const auto& c : lastAllStatusData["cars"]) {
             int idx = c.value("idx", -1);
-            if (idx >= 0) tyreMap[idx] = c.value("tyre_compound", -1);
+            if (idx >= 0)
+                tyreMap[idx] = { c.value("tyre_compound", -1), c.value("visual_compound", -1) };
         }
     }
 
@@ -565,7 +758,8 @@ void MainWindow::updateTimingTable() {
             ? di->second.color : QColor("#8e8e8e");
 
         // Tyre
-        int compound = tyreMap.count(idx) ? tyreMap.at(idx) : -1;
+        int compound = tyreMap.count(idx) ? tyreMap.at(idx).compound : -1;
+        int visual   = tyreMap.count(idx) ? tyreMap.at(idx).visual   : -1;
 
         // Status text
         QString statusText;
@@ -623,9 +817,10 @@ void MainWindow::updateTimingTable() {
         // Col 7: S3
         timingTable->setItem(row, 7, makeItem(formatSector(s3Ms)));
 
-        // Col 8: TYRE
+        // Col 8: TYRE — label from tyre_compound, color from visual_compound
         auto* tyreItem = makeItem(tyreLabel(compound));
-        tyreItem->setForeground(tyreColor(compound));
+        QColor tyreFg = tyreTextColor(visual);
+        if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
         timingTable->setItem(row, 8, tyreItem);
 
         // Col 9: STATUS
@@ -895,6 +1090,8 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["tyre_compound"].get<int>(),
             row["tyre_age_laps"].get<int>()
         );
+        lastPlayerStatusData = row;
+        updateRacePanel();
     } else if (type == "damage") {
         emit damageUpdated(
             row.value("tyre_dmg_fl",  0),
@@ -916,6 +1113,8 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         );
     } else if (type == "lap") {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
+        lastPlayerLapData = row;
+        updateRacePanel();
     } else if (type == "timing") {
         lastTimingData = row;
         updateTimingTable();

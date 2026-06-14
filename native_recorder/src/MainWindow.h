@@ -6,6 +6,8 @@
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QTableWidget>
+#include <QProgressBar>
+#include <QScrollArea>
 #include <QUdpSocket>
 #include <QSettings>
 
@@ -69,6 +71,27 @@ private:
     nlohmann::json   lastTimingData;
     nlohmann::json   lastParticipantsData;
     nlohmann::json   lastAllStatusData;
+    nlohmann::json   lastPlayerLapData;
+    nlohmann::json   lastPlayerStatusData;
+
+    // ── Race panel (right side of Standings) ──────────────────────
+    QLabel*       rp_lapNum     = nullptr;
+    QLabel*       rp_position   = nullptr;
+    QLabel*       rp_pitStatus  = nullptr;
+    QLabel*       rp_currentLap = nullptr;
+    QLabel*       rp_lastLap    = nullptr;
+    QLabel*       rp_s1         = nullptr;
+    QLabel*       rp_s2         = nullptr;
+    QProgressBar* rp_ersBar     = nullptr;
+    QLabel*       rp_ersPct     = nullptr;
+    QLabel*       rp_ersMode    = nullptr;
+    QLabel*       rp_drs        = nullptr;
+    QLabel*       rp_fuelKg     = nullptr;
+    QLabel*       rp_fuelLaps   = nullptr;
+    QLabel*       rp_fuelMix    = nullptr;
+    QLabel*       rp_tyre       = nullptr;
+    QLabel*       rp_tyreAge    = nullptr;
+    QLabel*       rp_brakeBias  = nullptr;
 
     // ── Settings page ─────────────────────────────────────────────
     QLabel*       dirLabel    = nullptr;
@@ -103,8 +126,10 @@ private:
     // ── Builders ──────────────────────────────────────────────────
     QWidget* buildOverviewTab();
     QWidget* buildStandingsPage();
+    QWidget* buildRacePanel();
     QWidget* buildSettingsTab();
     void     updateTimingTable();
+    void     updateRacePanel();
 
     // ── Recording helpers ─────────────────────────────────────────
     void startNewStream(int trackId, int sessionType, int format);
