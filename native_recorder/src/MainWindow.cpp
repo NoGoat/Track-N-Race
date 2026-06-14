@@ -21,6 +21,8 @@
 #include <QPainter>
 #include <QImage>
 #include <QPixmap>
+#include <QResizeEvent>
+#include <QProgressBar>
 
 #include <chrono>
 #include <ctime>
@@ -183,14 +185,35 @@ MainWindow::MainWindow(QWidget* parent)
     pb_sep_->hide();
 
     // Stack + separator + playback bar stacked vertically as the central widget
-    auto* container = new QWidget(this);
-    auto* vbox = new QVBoxLayout(container);
+    container_ = new QWidget(this);
+    auto* vbox = new QVBoxLayout(container_);
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
     vbox->addWidget(stack);
     vbox->addWidget(pb_sep_);
     vbox->addWidget(pb_bar_);
-    setCentralWidget(container);
+    setCentralWidget(container_);
+
+    // Loading overlay (shown over the entire central area while decompressing/indexing)
+    loadingOverlay_ = new QWidget(container_);
+    loadingOverlay_->setAutoFillBackground(true);
+    {
+        QPalette pal = loadingOverlay_->palette();
+        pal.setColor(QPalette::Window, palette().color(QPalette::Window));
+        loadingOverlay_->setPalette(pal);
+    }
+    auto* ol = new QVBoxLayout(loadingOverlay_);
+    ol->setAlignment(Qt::AlignCenter);
+    ol->setSpacing(12);
+    auto* loadingLabel = new QLabel("Loading recording…", loadingOverlay_);
+    loadingLabel->setAlignment(Qt::AlignCenter);
+    ol->addWidget(loadingLabel);
+    auto* spinner = new QProgressBar(loadingOverlay_);
+    spinner->setRange(0, 0);
+    spinner->setFixedWidth(300);
+    spinner->setTextVisible(false);
+    ol->addWidget(spinner);
+    loadingOverlay_->hide();
 
     connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
     connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
@@ -217,8 +240,22 @@ MainWindow::MainWindow(QWidget* parent)
         if (!path.isEmpty()) player_->load(path);
     });
 
+    connect(player_, &TnrdPlayer::loadingStarted, this, [this] {
+        loadingOverlay_->setGeometry(container_->rect());
+        loadingOverlay_->raise();
+        loadingOverlay_->show();
+    });
+
+    connect(player_, &TnrdPlayer::loadFailed, this, [this] {
+        loadingOverlay_->hide();
+        QMessageBox::warning(this, "Load Failed", "Could not open the recording file.");
+    });
+
     connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
+        loadingOverlay_->hide();
         inPlayback_ = true;
+        if (chart) chart->reset();
+        lastErs_ = 0.0f;
         closeActiveStream();
         pb_sep_->show();
         pb_bar_->show();
@@ -244,12 +281,39 @@ MainWindow::MainWindow(QWidget* parent)
                             lastErs_);
     });
 
+    connect(player_, &TnrdPlayer::seeked, this, [this] {
+        // Drop the live chart's history so it refills from the seek point's window.
+        if (chart) chart->reset();
+        lastErs_ = 0.0f;
+    });
+
+    connect(player_, &TnrdPlayer::chartHistory, this,
+            [this](const QVector<ChartSample>& samples) {
+        if (!chart) return;
+        // Bulk refill: hand each series its full point list in one replace().
+        QList<QPointF> speed, rpm, ers;
+        speed.reserve(samples.size());
+        rpm.reserve(samples.size());
+        ers.reserve(samples.size());
+        float latest = 0.0f;
+        for (const ChartSample& s : samples) {
+            speed.append({ s.t, s.speed });
+            rpm.append({ s.t, s.rpm });
+            ers.append({ s.t, s.ers });
+            latest = s.t;
+        }
+        chart->replaceAll(speed, rpm, ers, latest);
+    });
+
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
         pb_playBtn_->setIcon(paletteIcon(
             playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
-        if (total > 0.0f && !seekerDragging_)
+        if (total > 0.0f) {
+            seekerUpdating_ = true;
             pb_slider_->setValue((int)(cur / total * 1000.0f));
+            seekerUpdating_ = false;
+        }
         pb_timeLabel_->setText(fmtTime(cur) + " / " + fmtTime(total));
     });
 
@@ -262,10 +326,9 @@ MainWindow::MainWindow(QWidget* parent)
         else player_->play();
     });
 
-    connect(pb_slider_, &QSlider::sliderPressed,  this, [this] { seekerDragging_ = true; });
-    connect(pb_slider_, &QSlider::sliderReleased, this, [this] {
-        seekerDragging_ = false;
-        player_->seek(pb_slider_->value() / 1000.0f);
+    connect(pb_slider_, &QSlider::valueChanged, this, [this](int val) {
+        if (!seekerUpdating_)
+            player_->seek(val / 1000.0f);
     });
 
     connect(pb_speedCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
@@ -336,6 +399,12 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow() {
     closeActiveStream();
+}
+
+void MainWindow::resizeEvent(QResizeEvent* e) {
+    QMainWindow::resizeEvent(e);
+    if (loadingOverlay_ && loadingOverlay_->isVisible() && container_)
+        loadingOverlay_->setGeometry(container_->rect());
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────

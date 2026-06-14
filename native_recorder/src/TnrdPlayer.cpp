@@ -3,94 +3,165 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QDateTime>
+#include <QMetaObject>
 
 #include <algorithm>
+#include <thread>
 #include <cstring>
+#include <cstdlib>
+#include <unordered_set>
 
-// Sparse types are those whose last-known value should be re-broadcast on seek
-// so the UI can reconstruct state from any point in the file.
-// IDs: 5=session, 7=timing, 8=participants, 9=all_status, 10=tyre_sets
-static constexpr uint8_t SPARSE_TYPE_IDS[] = { 5, 7, 8, 9, 10 };
+// State-defining packet types reconstructed on seek (everything the UI tracks
+// except telemetry, which is refilled via the dense window, and race_event,
+// which is an append-only log that must not be replayed). See emitLiveData().
+static constexpr uint8_t RECON_TYPE_IDS[] = { 1, 2, 3, 4, 5, 7, 8, 9, 10 };
 
-uint8_t TnrdPlayer::typeId(const std::string& s) {
-    if (s == "telemetry")   return 1;
-    if (s == "status")      return 2;
-    if (s == "damage")      return 3;
-    if (s == "lap")         return 4;
-    if (s == "session")     return 5;
-    if (s == "race_event")  return 6;
-    if (s == "timing")      return 7;
-    if (s == "participants") return 8;
-    if (s == "all_status")  return 9;
-    if (s == "tyre_sets")   return 10;
+// Seconds of dense history replayed before the seek target so charts/cards are
+// populated at the seek point. Mirrors the Electron player's seek-flush window —
+// large enough to fill the chart, small enough to keep slider drags responsive.
+static constexpr float SEEK_WINDOW_S = 120.0f;
+
+// Fast field extraction from a raw JSON line — avoids full JSON parsing during indexing.
+
+// Returns -1.0f when the line has no session_time field, so the caller can carry
+// the previous timestamp forward (some packets, e.g. participants, omit it).
+static float scanSessionTime(const char* d, int len) {
+    static const char KEY[] = "\"session_time\":";
+    static constexpr int KLEN = sizeof(KEY) - 1;
+    for (int i = 0; i <= len - KLEN; ++i) {
+        if (d[i] == '"' && memcmp(d + i, KEY, KLEN) == 0)
+            return strtof(d + i + KLEN, nullptr);
+    }
+    return -1.0f;
+}
+
+static uint8_t scanType(const char* d, int len) {
+    static const char KEY[] = "\"type\":\"";
+    static constexpr int KLEN = sizeof(KEY) - 1;
+    for (int i = 0; i <= len - KLEN; ++i) {
+        if (d[i] == '"' && memcmp(d + i, KEY, KLEN) == 0) {
+            const char* v = d + i + KLEN;
+            int r = len - (i + KLEN);
+            // Ordered by expected frequency
+            if (r >= 9  && memcmp(v, "telemetry",   9)  == 0) return 1;
+            if (r >= 6  && memcmp(v, "timing",       6)  == 0) return 7;
+            if (r >= 3  && memcmp(v, "lap\"",        4)  == 0) return 4;
+            if (r >= 6  && memcmp(v, "status",       6)  == 0) return 2;
+            if (r >= 10 && memcmp(v, "all_status",  10)  == 0) return 9;
+            if (r >= 12 && memcmp(v, "participants", 12) == 0) return 8;
+            if (r >= 6  && memcmp(v, "damage",       6)  == 0) return 3;
+            if (r >= 8  && memcmp(v, "session\"",     8)  == 0) return 5;
+            if (r >= 10 && memcmp(v, "race_event",  10)  == 0) return 6;
+            if (r >= 9  && memcmp(v, "tyre_sets",    9)  == 0) return 10;
+            return 0;
+        }
+    }
     return 0;
 }
 
-bool TnrdPlayer::isSparse(uint8_t id) {
-    for (uint8_t sp : SPARSE_TYPE_IDS)
-        if (id == sp) return true;
-    return false;
+uint8_t TnrdPlayer::typeId(const std::string& s) {
+    if (s == "telemetry")    return 1;
+    if (s == "status")       return 2;
+    if (s == "damage")       return 3;
+    if (s == "lap")          return 4;
+    if (s == "session")      return 5;
+    if (s == "race_event")   return 6;
+    if (s == "timing")       return 7;
+    if (s == "participants") return 8;
+    if (s == "all_status")   return 9;
+    if (s == "tyre_sets")    return 10;
+    return 0;
 }
 
-TnrdPlayer::TnrdPlayer(QObject* parent)
-    : QObject(parent)
-{
+TnrdPlayer::TnrdPlayer(QObject* parent) : QObject(parent) {
     timer_ = new QTimer(this);
-    timer_->setInterval(16); // ~60fps
+    timer_->setInterval(16);
     connect(timer_, &QTimer::timeout, this, &TnrdPlayer::tick);
+
+    // Deferred, restartable: only the final seek of a drag actually loads the
+    // dense chart window, mirroring the Electron player's setImmediate flush.
+    flushTimer_ = new QTimer(this);
+    flushTimer_->setSingleShot(true);
+    flushTimer_->setInterval(30);
+    connect(flushTimer_, &QTimer::timeout, this, &TnrdPlayer::flushChartWindow);
 }
 
 TnrdPlayer::~TnrdPlayer() {
+    cancelled_ = true;
     cleanup();
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-bool TnrdPlayer::load(const QString& path) {
+void TnrdPlayer::load(const QString& path) {
+    if (loading_) return;
     cleanup();
+    cancelled_ = false;
+    loading_   = true;
 
-    // Build temp file path
     QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     tempPath_ = QDir(tmpDir).filePath(
         "tracknrace_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".tmp");
 
-    if (!decompress(path)) {
-        tempPath_.clear();
-        return false;
-    }
+    emit loadingStarted();
 
-    tempFile_.setFileName(tempPath_);
-    if (!tempFile_.open(QIODevice::ReadOnly)) {
-        QFile::remove(tempPath_);
-        tempPath_.clear();
-        return false;
-    }
+    // Capture by value so the background thread owns its own copies
+    QString srcPath  = path;
+    QString destPath = tempPath_;
 
-    // Read and emit header (first line)
-    qint64 firstLineStart = tempFile_.pos();
-    QByteArray headerLine = tempFile_.readLine();
-    nlohmann::json header;
-    try {
-        header = nlohmann::json::parse(headerLine.constData(),
-                                        headerLine.constData() + headerLine.size());
-        if (!header.contains("magic") || header["magic"] != "TNRD_V1") {
-            tempFile_.close();
-            QFile::remove(tempPath_);
-            tempPath_.clear();
-            return false;
+    std::thread([this, srcPath, destPath] {
+        auto fail = [this, destPath] {
+            QFile::remove(destPath);
+            QMetaObject::invokeMethod(this, [this] {
+                loading_ = false;
+                emit loadFailed();
+            }, Qt::QueuedConnection);
+        };
+
+        if (cancelled_) { fail(); return; }
+
+        if (!decompress(srcPath, destPath)) { fail(); return; }
+        if (cancelled_) { fail(); return; }
+
+        // Read header line into a local handle (safe from background thread)
+        nlohmann::json header;
+        {
+            QFile f(destPath);
+            if (!f.open(QIODevice::ReadOnly)) { fail(); return; }
+            QByteArray line = f.readLine();
+            try {
+                header = nlohmann::json::parse(line.constData(),
+                                                line.constData() + line.size());
+                if (!header.contains("magic") || header["magic"] != "TNRD_V1") {
+                    fail(); return;
+                }
+            } catch (...) { fail(); return; }
         }
-    } catch (...) {
-        tempFile_.close();
-        QFile::remove(tempPath_);
-        tempPath_.clear();
-        return false;
-    }
 
-    Q_UNUSED(firstLineStart)
-    buildIndex();
-    emitState();
-    emit loaded(header);
-    return true;
+        if (cancelled_) { fail(); return; }
+
+        buildIndex(destPath);
+
+        if (cancelled_) { fail(); return; }
+
+        QMetaObject::invokeMethod(this, [this, header, destPath] {
+            if (cancelled_) {
+                QFile::remove(destPath);
+                loading_ = false;
+                return;
+            }
+            // Open the member file handle on the main thread for playback use
+            tempFile_.setFileName(destPath);
+            if (!tempFile_.open(QIODevice::ReadOnly)) {
+                loading_ = false;
+                emit loadFailed();
+                return;
+            }
+            loading_ = false;
+            emitState();
+            emit loaded(header);
+        }, Qt::QueuedConnection);
+    }).detach();
 }
 
 void TnrdPlayer::play() {
@@ -109,55 +180,129 @@ void TnrdPlayer::pause() {
 }
 
 void TnrdPlayer::close() {
-    playing_ = false;
+    cancelled_ = true;
+    playing_   = false;
     timer_->stop();
     cleanup();
     emitState();
 }
 
-void TnrdPlayer::seek(float pct) {
-    if (index_.empty()) return;
-
-    float targetTime = std::max(0.0f, std::min(pct * totalTime_, totalTime_));
-
-    bool wasPlaying = playing_;
-    if (playing_) {
-        playing_ = false;
-        timer_->stop();
-    }
-
-    currentTime_ = targetTime;
-
-    // Find playPos_: first index entry with sessionTime > targetTime
+// First index whose sessionTime is strictly greater than t (assumes index_ sorted by time).
+size_t TnrdPlayer::upperBoundTime(float t) const {
     size_t lo = 0, hi = index_.size();
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        if (index_[mid].sessionTime <= targetTime) lo = mid + 1;
+        if (index_[mid].sessionTime <= t) lo = mid + 1;
         else hi = mid;
     }
-    playPos_ = lo;
+    return lo;
+}
 
-    // Re-broadcast last known value of each sparse type up to targetTime
-    for (auto& [tid, positions] : sparseIdx_) {
-        // Binary search: find last position where index_[pos].sessionTime <= targetTime
-        auto it = std::upper_bound(positions.begin(), positions.end(), targetTime,
-            [this](float t, size_t idxPos) {
-                return t < index_[idxPos].sessionTime;
-            });
-        if (it != positions.begin()) {
-            --it;
-            nlohmann::json j = readLineAt(index_[*it].offset);
-            if (!j.is_null()) emit packetReady(j);
-        }
+// First index whose sessionTime is >= t.
+size_t TnrdPlayer::lowerBoundTime(float t) const {
+    size_t lo = 0, hi = index_.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (index_[mid].sessionTime < t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+void TnrdPlayer::seek(float pct) {
+    if (index_.empty()) return;
+
+    bool wasPlaying = playing_;
+    if (playing_) { playing_ = false; timer_->stop(); }
+
+    const float duration   = std::max(0.0f, totalTime_ - startTime_);
+    const float targetTime = startTime_ + std::clamp(pct, 0.0f, 1.0f) * duration;
+    currentTime_ = targetTime;
+
+    // Everything at or before targetTime is considered already played.
+    playPos_ = upperBoundTime(targetTime);
+
+    // The UI drops transient history (the live chart) before we push the
+    // reconstructed state for this point.
+    emit seeked();
+
+    // ── Phase 1: panel-state snapshot (cheap, synchronous) ────────────────
+    // Walk the index backward once, collecting the most recent occurrence of
+    // each state type at or before the target — a handful of line reads. The
+    // dense history is NOT replayed here; that would rebuild every panel
+    // thousands of times. Analogous to Electron's broadcastInitialState().
+    std::unordered_set<uint8_t> wanted(std::begin(RECON_TYPE_IDS), std::end(RECON_TYPE_IDS));
+    std::vector<size_t> snapshot;
+    for (size_t i = playPos_; i-- > 0 && !wanted.empty(); ) {
+        if (wanted.erase(index_[i].type))
+            snapshot.push_back(i);
+    }
+    std::sort(snapshot.begin(), snapshot.end());  // chronological order
+    for (size_t idx : snapshot) {
+        nlohmann::json j = readLineAt(index_[idx].offset);
+        if (!j.is_null()) emit packetReady(j);
     }
 
-    if (wasPlaying) {
-        playing_ = true;
-        elapsed_.start();
-        timer_->start();
-    }
+    // ── Phase 2: dense chart history (deferred + coalesced) ───────────────
+    // Loading the telemetry window is the only expensive part, so it runs off
+    // a restartable timer: a slider drag fires many seeks but only the last
+    // one's window is read. Mirrors Electron's setImmediate seek flush.
+    pendingTarget_ = targetTime;
+    flushTimer_->start();
 
+    if (wasPlaying) { playing_ = true; elapsed_.start(); timer_->start(); }
     emitState();
+}
+
+// Reads the [target - SEEK_WINDOW_S, target] byte range as a single contiguous
+// block, extracts the telemetry curve (with interleaved ERS), and ships it in
+// one signal — the chart refills in a single batch instead of packet-by-packet.
+void TnrdPlayer::flushChartWindow() {
+    if (index_.empty() || !tempFile_.isOpen()) return;
+
+    const float target = pendingTarget_;
+    const size_t ws = lowerBoundTime(target - SEEK_WINDOW_S);
+    const size_t we = upperBoundTime(target);   // first entry after the target
+    if (we <= ws) { emit chartHistory({}); return; }
+
+    const qint64 startOffset = index_[ws].offset;
+    const qint64 endOffset   = (we < index_.size()) ? index_[we].offset : tempFile_.size();
+    const qint64 length      = endOffset - startOffset;
+    if (length <= 0) { emit chartHistory({}); return; }
+
+    tempFile_.seek(startOffset);
+    const QByteArray block = tempFile_.read(length);
+
+    QVector<ChartSample> samples;
+    float ers = 0.0f;   // carried across status packets between telemetry rows
+
+    const char* p   = block.constData();
+    const char* end = p + block.size();
+    while (p < end) {
+        const char* nl  = static_cast<const char*>(memchr(p, '\n', end - p));
+        const char* le  = nl ? nl : end;
+        const int   len = static_cast<int>(le - p);
+        if (len > 1) {
+            uint8_t tid = scanType(p, len);
+            if (tid == 2 || tid == 1) {  // status or telemetry — the only rows the chart needs
+                try {
+                    nlohmann::json j = nlohmann::json::parse(p, p + len);
+                    if (tid == 2) {
+                        ers = j.value("ers_pct", ers);
+                    } else {
+                        samples.push_back({ j.value("session_time", 0.0f),
+                                            j.value("speed_kph", 0.0f),
+                                            (float)j.value("rpm", 0),
+                                            ers });
+                    }
+                } catch (...) {}
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+
+    emit chartHistory(samples);
 }
 
 void TnrdPlayer::setSpeed(float mult) {
@@ -196,7 +341,7 @@ void TnrdPlayer::tick() {
 
 // ── Private helpers ────────────────────────────────────────────────────────
 
-bool TnrdPlayer::decompress(const QString& srcPath) {
+bool TnrdPlayer::decompress(const QString& srcPath, const QString& destPath) {
     gzFile gz = nullptr;
 #ifdef _WIN32
     gz = gzopen_w(srcPath.toStdWString().c_str(), "rb");
@@ -205,11 +350,8 @@ bool TnrdPlayer::decompress(const QString& srcPath) {
 #endif
     if (!gz) return false;
 
-    QFile out(tempPath_);
-    if (!out.open(QIODevice::WriteOnly)) {
-        gzclose(gz);
-        return false;
-    }
+    QFile out(destPath);
+    if (!out.open(QIODevice::WriteOnly)) { gzclose(gz); return false; }
 
     char buf[131072];
     int n;
@@ -222,36 +364,78 @@ bool TnrdPlayer::decompress(const QString& srcPath) {
     return ok;
 }
 
-void TnrdPlayer::buildIndex() {
+void TnrdPlayer::buildIndex(const QString& filePath) {
     index_.clear();
-    sparseIdx_.clear();
-    totalTime_ = 0.0f;
+    startTime_   = 0.0f;
+    totalTime_   = 0.0f;
     currentTime_ = 0.0f;
-    playPos_ = 0;
+    playPos_     = 0;
 
-    tempFile_.seek(0);
-    // Skip header line
-    tempFile_.readLine();
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return;
+    f.readLine(); // skip header
 
-    while (!tempFile_.atEnd()) {
-        qint64 lineStart = tempFile_.pos();
-        QByteArray line = tempFile_.readLine();
-        if (line.isEmpty() || line == "\n") continue;
+    constexpr qint64 CHUNK = 2 * 1024 * 1024; // 2 MB per read
+    QByteArray buf(CHUNK, Qt::Uninitialized);
 
-        try {
-            auto j = nlohmann::json::parse(line.constData(),
-                                            line.constData() + line.size());
-            float t = j.value("session_time", 0.0f);
-            uint8_t tid = typeId(j.value("type", std::string{}));
+    QByteArray partial;              // incomplete line carried over from the previous chunk
+    qint64 partialOffset = f.pos(); // file offset where `partial` begins
 
-            index_.push_back({ lineStart, t, tid });
-            totalTime_ = std::max(totalTime_, t);
+    float lastT = 0.0f;   // carried forward to packets that omit session_time
+    bool  haveStart = false;
 
-            if (isSparse(tid))
-                sparseIdx_[tid].push_back(index_.size() - 1);
+    auto commitLine = [&](const char* ld, int ll, qint64 lineOffset) {
+        if (ll <= 1) return;
+        float t = scanSessionTime(ld, ll);
+        if (t < 0.0f) t = lastT;   // inherit previous timestamp when field is absent
+        else          lastT = t;
+        if (!haveStart) { startTime_ = t; haveStart = true; }
+        uint8_t tid = scanType(ld, ll);
+        index_.push_back({ lineOffset, t, tid });
+        totalTime_ = std::max(totalTime_, t);
+    };
 
-        } catch (...) {}
+    while (!cancelled_) {
+        qint64 chunkStart = f.pos();
+        qint64 n = f.read(buf.data(), CHUNK);
+        if (n <= 0) break;
+
+        const char* base = buf.constData();
+        const char* p    = base;
+        const char* end  = base + n;
+
+        while (p < end) {
+            const char* nl = static_cast<const char*>(memchr(p, '\n', end - p));
+
+            if (!nl) {
+                // Tail of chunk is an incomplete line — carry it to the next iteration
+                partial       = partial + QByteArray(p, (int)(end - p));
+                // partialOffset already set correctly for the first piece;
+                // if partial was empty, record where this segment starts in the file
+                if (partial.size() == (int)(end - p))
+                    partialOffset = chunkStart + (p - base);
+                break;
+            }
+
+            if (!partial.isEmpty()) {
+                // Complete the carried-over line
+                QByteArray full = partial + QByteArray(p, (int)(nl - p));
+                commitLine(full.constData(), full.size(), partialOffset);
+                partial.clear();
+            } else {
+                qint64 lineOffset = chunkStart + (p - base);
+                commitLine(p, (int)(nl - p), lineOffset);
+            }
+
+            p = nl + 1;
+        }
     }
+
+    // Flush any line that ends exactly at EOF (no trailing newline)
+    if (!partial.isEmpty() && !cancelled_)
+        commitLine(partial.constData(), partial.size(), partialOffset);
+
+    currentTime_ = startTime_;   // playback begins at the first packet's clock
 }
 
 nlohmann::json TnrdPlayer::readLineAt(qint64 offset) {
@@ -267,17 +451,20 @@ nlohmann::json TnrdPlayer::readLineAt(qint64 offset) {
 }
 
 void TnrdPlayer::emitState() {
-    emit stateChanged(playing_, currentTime_, totalTime_, speed_);
+    // Report times relative to the session start so the slider and label run
+    // from 0:00 to the recording's duration regardless of the absolute clock.
+    emit stateChanged(playing_, currentTime_ - startTime_, totalTime_ - startTime_, speed_);
 }
 
 void TnrdPlayer::cleanup() {
+    if (flushTimer_) flushTimer_->stop();
     if (tempFile_.isOpen()) tempFile_.close();
     if (!tempPath_.isEmpty()) {
         QFile::remove(tempPath_);
         tempPath_.clear();
     }
     index_.clear();
-    sparseIdx_.clear();
+    startTime_   = 0.0f;
     totalTime_   = 0.0f;
     currentTime_ = 0.0f;
     playPos_     = 0;

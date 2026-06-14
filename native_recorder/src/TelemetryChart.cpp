@@ -1,172 +1,123 @@
 #include "TelemetryChart.h"
 
+#include <QChart>
+#include <QLineSeries>
+#include <QValueAxis>
+#include <QPen>
+#include <QColor>
 #include <QPainter>
-#include <QPainterPath>
-#include <QPalette>
-#include <QFontMetrics>
-#include <cmath>
 
 TelemetryChart::TelemetryChart(QWidget* parent)
-    : QWidget(parent)
+    : QChartView(parent)
 {
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMinimumHeight(120);
+    setRenderHint(QPainter::Antialiasing);
+
+    chart_ = new QChart;
+    chart_->setAnimationOptions(QChart::NoAnimation);   // realtime: never animate
+    chart_->setBackgroundVisible(false);
+    chart_->setMargins(QMargins(0, 0, 0, 0));
+    chart_->legend()->setVisible(true);
+    chart_->legend()->setAlignment(Qt::AlignTop);
+
+    speedS_ = new QLineSeries(chart_);  speedS_->setName("Speed");
+    rpmS_   = new QLineSeries(chart_);  rpmS_->setName("RPM");
+    ersS_   = new QLineSeries(chart_);  ersS_->setName("ERS");
+
+    speedS_->setColor(QColor("#37872D"));
+    rpmS_->setColor(QColor("#C4162A"));
+    ersS_->setColor(QColor("#FADE2A"));
+
+    // OpenGL render path — paint cost is independent of point count.
+    speedS_->setUseOpenGL(true);
+    rpmS_->setUseOpenGL(true);
+    ersS_->setUseOpenGL(true);
+
+    // Add ERS first so it sits behind RPM/Speed (later series draw on top).
+    chart_->addSeries(ersS_);
+    chart_->addSeries(rpmS_);
+    chart_->addSeries(speedS_);
+
+    axX_     = new QValueAxis(chart_);
+    axRpm_   = new QValueAxis(chart_);
+    axSpeed_ = new QValueAxis(chart_);
+    axErs_   = new QValueAxis(chart_);
+
+    axX_->setLabelFormat("%.0f");
+    axX_->setTickCount(7);
+    axX_->setTitleVisible(false);
+
+    axRpm_->setRange(0, MAX_RPM);
+    axRpm_->setLabelFormat("%.0f");
+    axRpm_->setLabelsColor(QColor("#C4162A"));
+    axRpm_->setTickCount(5);
+
+    axSpeed_->setRange(0, MAX_SPEED);
+    axSpeed_->setLabelFormat("%.0f");
+    axSpeed_->setLabelsColor(QColor("#37872D"));
+    axSpeed_->setTickCount(5);
+
+    axErs_->setRange(0, 100);
+    axErs_->setVisible(false);   // ERS shares the plot area but needs no labels
+
+    chart_->addAxis(axX_,     Qt::AlignBottom);
+    chart_->addAxis(axRpm_,   Qt::AlignLeft);
+    chart_->addAxis(axSpeed_, Qt::AlignRight);
+    chart_->addAxis(axErs_,   Qt::AlignRight);
+
+    ersS_->attachAxis(axX_);   ersS_->attachAxis(axErs_);
+    rpmS_->attachAxis(axX_);   rpmS_->attachAxis(axRpm_);
+    speedS_->attachAxis(axX_); speedS_->attachAxis(axSpeed_);
+
+    rescaleX();
+    setChart(chart_);
+}
+
+void TelemetryChart::trim(QLineSeries* s, float cutoff) {
+    int drop = 0;
+    while (drop < s->count() && s->at(drop).x() < cutoff) ++drop;
+    if (drop > 0) s->removePoints(0, drop);
 }
 
 void TelemetryChart::addPoint(float sessionTime, float speed, int rpm, float ers) {
-    while (!pts.isEmpty() && (sessionTime - pts.first().t) > MAX_WINDOW_S)
-        pts.removeFirst();
+    speedS_->append(sessionTime, speed);
+    rpmS_->append(sessionTime, rpm);
+    ersS_->append(sessionTime, ers);
 
-    pts.append({ sessionTime, speed, (float)rpm, ers });
-    update();
+    const float cutoff = sessionTime - MAX_WINDOW_S;
+    trim(speedS_, cutoff);
+    trim(rpmS_,   cutoff);
+    trim(ersS_,   cutoff);
+
+    latestT_ = sessionTime;
+    rescaleX();
+}
+
+void TelemetryChart::replaceAll(const QList<QPointF>& speed,
+                                const QList<QPointF>& rpm,
+                                const QList<QPointF>& ers,
+                                float latestTime) {
+    speedS_->replace(speed);
+    rpmS_->replace(rpm);
+    ersS_->replace(ers);
+    latestT_ = latestTime;
+    rescaleX();
 }
 
 void TelemetryChart::setWindowSeconds(float seconds) {
-    windowS = seconds;
-    update();
+    windowS_ = seconds;
+    rescaleX();
 }
 
 void TelemetryChart::reset() {
-    pts.clear();
-    update();
+    speedS_->clear();
+    rpmS_->clear();
+    ersS_->clear();
+    latestT_ = 0.0f;
+    rescaleX();
 }
 
-void TelemetryChart::paintEvent(QPaintEvent*) {
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-
-    const QPalette pal = palette();
-    const QColor bgColor   = pal.color(QPalette::Window);
-    const QColor gridColor = pal.color(QPalette::Mid);
-    const QColor textColor = pal.color(QPalette::Text);
-
-    // Margins for axes
-    const float lm = 46.0f; // left  (RPM axis)
-    const float rm = 46.0f; // right (Speed axis)
-    const float tm = 8.0f;
-    const float bm = 20.0f; // bottom (time labels)
-
-    const float pw = width()  - lm - rm;
-    const float ph = height() - tm - bm;
-    const QRectF plot(lm, tm, pw, ph);
-
-    // Background
-    p.fillRect(rect(), bgColor);
-
-    if (pw <= 0 || ph <= 0) return;
-
-    // ── Grid (5 horizontal lines) ─────────────────────────────────
-    p.setPen(QPen(gridColor, 1, Qt::DotLine));
-    for (int i = 0; i <= 4; ++i) {
-        float y = plot.top() + i * ph / 4.0f;
-        p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-    }
-
-    // ── Y-axis labels ────────────────────────────────────────────
-    QFont af; af.setPointSize(7); p.setFont(af);
-
-    // Left axis: RPM (red), displayed as "Xk"
-    const QColor rpmColor("#C4162A");
-    p.setPen(rpmColor);
-    for (int i = 0; i <= 4; ++i) {
-        float norm = 1.0f - i / 4.0f;
-        float val  = norm * MAX_RPM / 1000.0f;
-        float y    = plot.top() + i * ph / 4.0f;
-        QString lbl = QString::number(val, 'f', val < 1.0f ? 1 : 0) + "k";
-        p.drawText(QRectF(0, y - 8, lm - 4, 16), Qt::AlignRight | Qt::AlignVCenter, lbl);
-    }
-
-    // Right axis: Speed (green) kph
-    const QColor speedColor("#37872D");
-    p.setPen(speedColor);
-    for (int i = 0; i <= 4; ++i) {
-        float norm = 1.0f - i / 4.0f;
-        int   val  = (int)(norm * MAX_SPEED);
-        float y    = plot.top() + i * ph / 4.0f;
-        p.drawText(QRectF(plot.right() + 4, y - 8, rm - 4, 16),
-                   Qt::AlignLeft | Qt::AlignVCenter, QString::number(val));
-    }
-
-    // ── X-axis time labels ───────────────────────────────────────
-    if (!pts.isEmpty()) {
-        float tMax = pts.last().t;
-        float tMin = tMax - windowS;
-        p.setPen(textColor);
-        int steps = 6;
-        for (int i = 0; i <= steps; ++i) {
-            float t  = tMin + i * windowS / steps;
-            float x  = plot.left() + (t - tMin) / windowS * pw;
-            int secs = (int)std::fabs(t);
-            QString lbl = QString("%1:%2")
-                .arg(secs / 60, 2, 10, QChar('0'))
-                .arg(secs % 60, 2, 10, QChar('0'));
-            p.drawText(QRectF(x - 20, plot.bottom() + 2, 40, bm - 2),
-                       Qt::AlignHCenter | Qt::AlignTop, lbl);
-        }
-    }
-
-    if (pts.size() < 2) return;
-
-    float tMax = pts.last().t;
-    float tMin = tMax - windowS;
-
-    auto xPx = [&](float t) { return plot.left() + ((t - tMin) / windowS) * pw; };
-
-    // ── Series ───────────────────────────────────────────────────
-    // ERS (yellow) — drawn first so it's behind speed/rpm
-    const QColor ersColor("#FADE2A");
-    {
-        QPainterPath path;
-        bool first = true;
-        for (const auto& pt : pts) {
-            float x = xPx(pt.t);
-            float y = ny(pt.ers / 100.0f, plot.top(), ph);
-            if (first) { path.moveTo(x, y); first = false; }
-            else path.lineTo(x, y);
-        }
-        p.setPen(QPen(ersColor, 1.5f));
-        p.drawPath(path);
-    }
-
-    // RPM (red)
-    {
-        QPainterPath path;
-        bool first = true;
-        for (const auto& pt : pts) {
-            float x = xPx(pt.t);
-            float y = ny(pt.rpm / MAX_RPM, plot.top(), ph);
-            if (first) { path.moveTo(x, y); first = false; }
-            else path.lineTo(x, y);
-        }
-        p.setPen(QPen(rpmColor, 1.5f));
-        p.drawPath(path);
-    }
-
-    // Speed (green)
-    {
-        QPainterPath path;
-        bool first = true;
-        for (const auto& pt : pts) {
-            float x = xPx(pt.t);
-            float y = ny(pt.speed / MAX_SPEED, plot.top(), ph);
-            if (first) { path.moveTo(x, y); first = false; }
-            else path.lineTo(x, y);
-        }
-        p.setPen(QPen(speedColor, 1.5f));
-        p.drawPath(path);
-    }
-
-    // ── Legend (top-right corner) ────────────────────────────────
-    QFont lf; lf.setPointSize(7); p.setFont(lf);
-    const float lx = plot.right() - 140;
-    const float ly = plot.top() + 4;
-
-    auto drawLegendItem = [&](float x, float y, const QColor& c, const QString& text) {
-        p.fillRect(QRectF(x, y + 2, 10, 8), c);
-        p.setPen(textColor);
-        p.drawText(QRectF(x + 13, y, 60, 14), Qt::AlignLeft | Qt::AlignVCenter, text);
-    };
-    drawLegendItem(lx,       ly, speedColor, "Speed");
-    drawLegendItem(lx + 55,  ly, rpmColor,   "RPM");
-    drawLegendItem(lx + 100, ly, ersColor,   "ERS");
+void TelemetryChart::rescaleX() {
+    axX_->setRange(latestT_ - windowS_, latestT_);
 }

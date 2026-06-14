@@ -25,13 +25,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(zlib)
 
 # Find Qt6 (fallback to Qt5)
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg)
+find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg Charts)
 if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
+    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Charts)
     message(STATUS "Using Qt6")
 else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg)
-    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg)
+    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg Charts)
+    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::Charts)
     message(STATUS "Using Qt5 (Qt6 not found)")
 endif()
 

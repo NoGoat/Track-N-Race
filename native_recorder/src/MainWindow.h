@@ -150,7 +150,7 @@ private:
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
     bool         inPlayback_     = false;
-    bool         seekerDragging_ = false;
+    bool         seekerUpdating_ = false;
     float        lastErs_        = 0.0f;
     QWidget*     pb_bar_         = nullptr;
     QFrame*      pb_sep_         = nullptr;
@@ -158,6 +158,8 @@ private:
     QSlider*     pb_slider_      = nullptr;
     QLabel*      pb_timeLabel_   = nullptr;
     QComboBox*   pb_speedCombo_  = nullptr;
+    QWidget*     container_      = nullptr;
+    QWidget*     loadingOverlay_ = nullptr;
 
     // ── UDP / network ─────────────────────────────────────────────
     QUdpSocket* udpSocket = nullptr;
@@ -181,6 +183,8 @@ private:
     std::unordered_map<int, uint32_t>            lastFrameId;
     std::unordered_map<int, uint64_t>            lastSlowMs;
     std::unordered_map<std::string, std::string> dedupeCache;
+
+    void resizeEvent(QResizeEvent* e) override;
 
     // ── Builders ──────────────────────────────────────────────────
     QWidget* buildOverviewTab();
