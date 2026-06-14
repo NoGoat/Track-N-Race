@@ -21,6 +21,11 @@ namespace {
 constexpr double TRACK_PX  = 5.0;
 constexpr double DOT_R     = 7.0;
 constexpr double MAP_PAD   = 24.0;
+constexpr double DRS_PX    = 6.0;
+constexpr double DRS_OFFSET= 18.0;
+constexpr double SF_HALF   = 14.0;
+constexpr double JUNC_HALF = 10.0;
+const char* DRS_COLOR = "#39B54A";
 constexpr int    LABEL_W   = 38;
 constexpr int    LABEL_H   = 16;
 constexpr int    LABEL_GAP = 5;
@@ -29,6 +34,17 @@ constexpr int    ACCENT_W  = 3;
 
 const char* SECTOR_DARK[3]  = { "#E8002D", "#0090D0", "#FFD700" };
 const char* SECTOR_LIGHT[3] = { "#D32F2F", "#0D47A1", "#B7950B" };
+
+// Unit perpendicular to the polyline at index i (from neighbouring points).
+QPointF perpAt(const QPointF* pts, int n, int i) {
+    const int lo = std::max(0, i - 1);
+    const int hi = std::min(n - 1, i + 1);
+    const double dx = pts[hi].x() - pts[lo].x();
+    const double dy = pts[hi].y() - pts[lo].y();
+    double len = std::hypot(dx, dy);
+    if (len == 0.0) len = 1.0;
+    return QPointF(-dy / len, dx / len);
+}
 
 // 3-letter abbreviation: last name token, upper-cased, first 3 chars.
 QString abbrev(const QString& name) {
@@ -92,6 +108,26 @@ bool TrackMapWidget::setTrack(int trackId) {
         else                      rawSectors_.push_back(std::move(pts));
     }
 
+    rawDrs_.clear();
+    if (j.contains("drs_zones")) {
+        for (const auto& z : j["drs_zones"]) {
+            if (!z.contains("track_points")) continue;
+            std::vector<QPointF> pts;
+            pts.reserve(z["track_points"].size());
+            for (const auto& p : z["track_points"])
+                if (p.is_array() && p.size() >= 2)
+                    pts.emplace_back(p[0].get<double>(), p[1].get<double>());
+            if (pts.size() >= 2) rawDrs_.push_back(std::move(pts));
+        }
+    }
+
+    rawHasSF_ = false;
+    if (j.contains("start_finish") && j["start_finish"].is_array() &&
+        j["start_finish"].size() >= 2) {
+        rawHasSF_ = true;
+        rawSF_ = QPointF(j["start_finish"][0].get<double>(), j["start_finish"][1].get<double>());
+    }
+
     trackId_ = trackId;
     loaded_  = true;
     rebuildPrepared();
@@ -124,6 +160,43 @@ void TrackMapWidget::rebuildPrepared() {
     }
     prep_.minX = minX; prep_.minY = minY;
     prep_.w = maxX - minX; prep_.h = maxY - minY;
+
+    const auto rot = [&](const QPointF& p) {
+        const double dx = p.x() - cx, dy = p.y() - cy;
+        return QPointF(cos * dx - sin * dy + cx, sin * dx + cos * dy + cy);
+    };
+
+    // DRS zones (rotated; bounds intentionally exclude these, as in the reference).
+    prep_.drsZones.clear();
+    for (const auto& raw : rawDrs_) {
+        std::vector<QPointF> z; z.reserve(raw.size());
+        for (const QPointF& p : raw) z.push_back(rot(p));
+        prep_.drsZones.push_back(std::move(z));
+    }
+
+    // Junctions: perpendicular tick at the end of each sector except the last
+    // (= start of sectors 2 and 3).
+    prep_.junctions.clear();
+    for (size_t si = 0; si + 1 < prep_.sectors.size(); ++si) {
+        const QPolygonF& s = prep_.sectors[si];
+        if (s.size() < 2) continue;
+        const int last = s.size() - 1;
+        const QPointF n = perpAt(s.constData(), s.size(), last);
+        prep_.junctions.push_back({ s[last], n.x(), n.y() });
+    }
+
+    // Start/finish: the start of sector 1, oriented by the sector-1 polyline.
+    prep_.hasSF = false;
+    if (rawHasSF_ && !prep_.sectors.empty() && prep_.sectors[0].size() > 0) {
+        const QPointF sf = rot(rawSF_);
+        const QPolygonF& s1 = prep_.sectors[0];
+        int best = 0; double bestD = 1e18;
+        for (int i = 0; i < s1.size(); ++i) {
+            const double d = std::hypot(s1[i].x() - sf.x(), s1[i].y() - sf.y());
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        prep_.hasSF = true; prep_.sfPt = sf; prep_.sfIdx = best;
+    }
 }
 
 TrackMapWidget::Layout TrackMapWidget::buildLayout(double cw, double ch) const {
@@ -179,6 +252,57 @@ void TrackMapWidget::rebuildStaticLayer() {
         pen.setJoinStyle(Qt::RoundJoin);
         p.setPen(pen);
         p.drawPolyline(canvasPts);
+    }
+
+    const auto tc = [&](const QPointF& vb) {
+        return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
+    };
+    // Sectors are already colour-coded, so the boundary ticks use the contrasting
+    // track colour (white on dark / black on light), matching the Electron map.
+    const QColor lineCol(dark_ ? "#ffffff" : "#000000");
+
+    // Sector-start ticks: junctions (S2, S3) …
+    for (const Junction& jc : prep_.junctions) {
+        const QPointF c = tc(jc.pt);
+        const double half = std::max(JUNC_HALF, TRACK_PX / 2 + 4);
+        QPen pen(lineCol); pen.setWidthF(3.0); pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
+                   QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
+    }
+
+    // DRS zones: dashed green line offset perpendicular-outward from the track.
+    for (const std::vector<QPointF>& zone : prep_.drsZones) {
+        if (zone.size() < 2) continue;
+        QPolygonF poly;
+        poly.reserve((int)zone.size());
+        const double offset = std::max(DRS_OFFSET, TRACK_PX / 2 + 8);
+        for (int i = 0; i < (int)zone.size(); ++i) {
+            const QPointF n = perpAt(zone.data(), (int)zone.size(), i);
+            const QPointF c = tc(zone[i]);
+            poly << QPointF(c.x() + n.x() * offset, c.y() + n.y() * offset);
+        }
+        QColor drsCol(DRS_COLOR);
+        QPen pen(drsCol);
+        pen.setWidthF(DRS_PX);
+        pen.setCapStyle(Qt::FlatCap);
+        pen.setJoinStyle(Qt::MiterJoin);
+        pen.setDashPattern({ 3.0 / DRS_PX, 3.0 / DRS_PX });  // 3px dash / 3px gap
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(poly);
+    }
+
+    // … and the start/finish line (start of sector 1).
+    if (prep_.hasSF && !prep_.sectors.empty()) {
+        const QPolygonF& s1 = prep_.sectors[0];
+        const QPointF n = perpAt(s1.constData(), s1.size(), prep_.sfIdx);
+        const QPointF c = tc(prep_.sfPt);
+        const double half = std::max(SF_HALF, TRACK_PX / 2 + 4);
+        QPen pen(lineCol); pen.setWidthF(2.5); pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.drawLine(QPointF(c.x() - n.x() * half, c.y() - n.y() * half),
+                   QPointF(c.x() + n.x() * half, c.y() + n.y() * half));
     }
 }
 

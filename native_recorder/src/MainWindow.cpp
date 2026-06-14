@@ -110,9 +110,8 @@ MainWindow::MainWindow(QWidget* parent)
     pageCombo->addItem("Overview");   // index 0
     pageCombo->addItem("Standings");  // index 1
     pageCombo->addItem("Session");    // index 2
-    pageCombo->addItem("Map");        // index 3
-    pageCombo->addItem("Tyres");      // index 4
-    pageCombo->addItem("Settings");   // index 5
+    pageCombo->addItem("Tyres");      // index 3
+    pageCombo->addItem("Settings");   // index 4
     toolbar->addWidget(pageCombo);
 
     QWidget* spacer = new QWidget;
@@ -133,9 +132,8 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildOverviewTab());   // index 0
     stack->addWidget(buildStandingsPage()); // index 1
     stack->addWidget(buildSessionPage());   // index 2
-    stack->addWidget(buildTrackMapPage());  // index 3
-    stack->addWidget(buildTyresPage());     // index 4
-    stack->addWidget(buildSettingsTab());   // index 5
+    stack->addWidget(buildTyresPage());     // index 3
+    stack->addWidget(buildSettingsTab());   // index 4
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);

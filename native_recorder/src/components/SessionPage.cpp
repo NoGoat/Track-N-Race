@@ -1,4 +1,5 @@
 #include "../MainWindow.h"
+#include "TrackMapWidget.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -344,8 +345,9 @@ QWidget* MainWindow::buildSessionPage() {
     lv->setContentsMargins(0, 0, 0, 0);
     lv->setSpacing(0);
 
-    // Map will go here
-    lv->addStretch(1);
+    // Live track map fills the central area.
+    trackMap_ = new TrackMapWidget;
+    lv->addWidget(trackMap_, 1);
 
     // Weather strip pinned to bottom
     QFrame* wSep = new QFrame;

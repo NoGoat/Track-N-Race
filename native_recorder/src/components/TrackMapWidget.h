@@ -37,9 +37,15 @@ private:
     struct Transform { double minX, minZ, scale, offX, offZ; };
 
     // ── Prepared (rotated) geometry, computed once per track load ──────────
+    struct Junction { QPointF pt; double nx, ny; };  // boundary point + unit perpendicular
     struct Prepared {
-        std::vector<QPolygonF> sectors;     // rotated sector polylines (index 0..2)
-        double minX, minY, w, h;            // tight bounds of rotated geometry
+        std::vector<QPolygonF> sectors;          // rotated sector polylines (index 0..2)
+        std::vector<std::vector<QPointF>> drsZones;  // rotated DRS track points
+        std::vector<Junction> junctions;         // starts of sectors 2 & 3
+        bool    hasSF = false;                   // start/finish (start of sector 1)
+        QPointF sfPt;
+        int     sfIdx = 0;                       // nearest index on sector-1 polyline
+        double minX, minY, w, h;                 // tight bounds of rotated geometry
         double rotCos, rotSin, rotCx, rotCy;
     };
 
@@ -62,6 +68,9 @@ private:
     double      viewBoxH_     = 1000.0;
     double      rotationDeg_  = 0.0;
     std::vector<std::vector<QPointF>> rawSectors_;  // viewBox-space (pre-rotation)
+    std::vector<std::vector<QPointF>> rawDrs_;       // viewBox-space DRS track points
+    bool        rawHasSF_ = false;
+    QPointF     rawSF_;
     Prepared    prep_{};
 
     QPixmap     staticLayer_;        // cached circuit, device-pixel sized

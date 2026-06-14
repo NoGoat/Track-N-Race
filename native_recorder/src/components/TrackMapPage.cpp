@@ -1,22 +1,12 @@
 #include "../MainWindow.h"
 #include "TrackMapWidget.h"
 
-#include <QVBoxLayout>
 #include <QApplication>
 #include <QPalette>
 
-// ── Track map page ──────────────────────────────────────────────────────────
-
-QWidget* MainWindow::buildTrackMapPage() {
-    QWidget* page = new QWidget;
-    QVBoxLayout* root = new QVBoxLayout(page);
-    root->setContentsMargins(10, 8, 10, 8);
-    root->setSpacing(6);
-
-    trackMap_ = new TrackMapWidget;
-    root->addWidget(trackMap_, 1);
-    return page;
-}
+// ── Track map updater ───────────────────────────────────────────────────────
+// The map widget itself lives in the central area of the Session page
+// (created in buildSessionPage); this only pushes live data into it.
 
 void MainWindow::updateTrackMapPage() {
     if (!trackMap_) return;

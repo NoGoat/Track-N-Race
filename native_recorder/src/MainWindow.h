@@ -199,7 +199,6 @@ private:
     QWidget* buildRacePanel();
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
-    QWidget* buildTrackMapPage();
     QWidget* buildSettingsTab();
     void     updateTimingTable();
     void     updateRacePanel();
