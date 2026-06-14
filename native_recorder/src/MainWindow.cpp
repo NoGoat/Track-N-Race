@@ -500,6 +500,7 @@ QWidget* MainWindow::buildTyresPage() {
     tp_setsTable->setAlternatingRowColors(false);
     tp_setsTable->verticalHeader()->setVisible(false);
     tp_setsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tp_setsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     tp_setsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
     QFont hf; hf.setPointSize(7);
     tp_setsTable->horizontalHeader()->setFont(hf);
@@ -725,10 +726,36 @@ void MainWindow::updateTyreSetsTable() {
         stItem->setForeground(statusCol);
         tp_setsTable->setItem(row, 2, stItem);
 
-        // Col 3: Wear
-        auto* wearItem = makeItem(wear > 0 ? QString::number(wear) + "%" : "New");
-        wearItem->setForeground(wearPctColor(wear));
-        tp_setsTable->setItem(row, 3, wearItem);
+        // Col 3: Wear — bar + percentage label
+        {
+            const QString wc = wearPctColor(wear).name();
+            QWidget* cell = new QWidget;
+            cell->setStyleSheet("background: transparent;");
+            QHBoxLayout* wh = new QHBoxLayout(cell);
+            wh->setContentsMargins(4, 0, 4, 0);
+            wh->setSpacing(4);
+
+            auto* bar = new QProgressBar;
+            bar->setRange(0, 100);
+            bar->setValue(wear);
+            bar->setTextVisible(false);
+            bar->setFixedHeight(6);
+            bar->setStyleSheet(QString(
+                "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                "QProgressBar::chunk { background: %1; border-radius: 3px; }"
+            ).arg(wc));
+
+            auto* wearLbl = new QLabel(QString::number(wear) + "%");
+            wearLbl->setStyleSheet("color: " + wc + "; font-weight: bold; background: transparent;");
+            QFont wf; wf.setPointSize(8);
+            wearLbl->setFont(wf);
+            wearLbl->setFixedWidth(36);
+            wearLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+            wh->addWidget(bar, 1);
+            wh->addWidget(wearLbl);
+            tp_setsTable->setCellWidget(row, 3, cell);
+        }
 
         // Col 4: Life
         QString lifeText = (lifeSpan > 0 || usable > 0)
