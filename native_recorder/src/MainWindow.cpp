@@ -678,10 +678,7 @@ void MainWindow::updateTyreSetsTable() {
             sets.push_back(s);
     }
 
-    // Sort: fitted first, then by idx
-    std::stable_sort(sets.begin(), sets.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
-        bool af = a.value("fitted", false), bf = b.value("fitted", false);
-        if (af != bf) return af > bf;
+    std::sort(sets.begin(), sets.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
         return a.value("idx", 99) < b.value("idx", 99);
     });
 
