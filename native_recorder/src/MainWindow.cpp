@@ -2,7 +2,8 @@
 #include "TelemetryChart.h"
 
 #include <QApplication>
-#include <QTabWidget>
+#include <QToolBar>
+#include <QStackedWidget>
 #include <QComboBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -147,30 +148,42 @@ MainWindow::MainWindow(QWidget* parent)
     // "system" → no call needed (Unknown is default)
 #endif
 
-    // Build tabbed UI
-    QTabWidget* tabs = new QTabWidget(this);
-    tabs->addTab(buildOverviewTab(), "Overview");
-    tabs->addTab(buildSettingsTab(), "Settings");
+    // Toolbar with page selector (left) and time-window selector (right)
+    QToolBar* toolbar = new QToolBar(this);
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+    addToolBar(Qt::TopToolBarArea, toolbar);
 
-    // Time-window dropdown in the top-left corner of the tab bar
-    QComboBox* windowCombo = new QComboBox(tabs);
+    QComboBox* pageCombo = new QComboBox;
+    pageCombo->addItem("Overview");
+    pageCombo->addItem("Settings");
+    toolbar->addWidget(pageCombo);
+
+    QWidget* spacer = new QWidget;
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(spacer);
+
+    QComboBox* windowCombo = new QComboBox;
     const struct { const char* label; float secs; } windows[] = {
         {"15s", 15}, {"30s", 30}, {"1m", 60},
         {"2m", 120}, {"5m", 300}, {"10m", 600}
     };
-    int defaultIdx = 1; // 30s
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 6; ++i)
         windowCombo->addItem(windows[i].label, windows[i].secs);
-        if (windows[i].secs == 30.0f) defaultIdx = i;
-    }
-    windowCombo->setCurrentIndex(defaultIdx);
+    windowCombo->setCurrentIndex(1); // 30s default
+    toolbar->addWidget(windowCombo);
+
+    // Stacked content area
+    QStackedWidget* stack = new QStackedWidget(this);
+    stack->addWidget(buildOverviewTab()); // index 0
+    stack->addWidget(buildSettingsTab()); // index 1
+    setCentralWidget(stack);
+
+    connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
     connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
         float secs = windowCombo->itemData(idx).toFloat();
         if (chart) chart->setWindowSeconds(secs);
     });
-    tabs->setCornerWidget(windowCombo, Qt::TopRightCorner);
-
-    setCentralWidget(tabs);
 
     // Bind UDP socket
     udpSocket = new QUdpSocket(this);

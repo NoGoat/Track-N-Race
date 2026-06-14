@@ -14,8 +14,7 @@ TelemetryChart::TelemetryChart(QWidget* parent)
 }
 
 void TelemetryChart::addPoint(float sessionTime, float speed, int rpm, float ers) {
-    // Trim entries older than the scroll window
-    while (!pts.isEmpty() && (sessionTime - pts.first().t) > windowS)
+    while (!pts.isEmpty() && (sessionTime - pts.first().t) > MAX_WINDOW_S)
         pts.removeFirst();
 
     pts.append({ sessionTime, speed, (float)rpm, ers });
@@ -24,12 +23,6 @@ void TelemetryChart::addPoint(float sessionTime, float speed, int rpm, float ers
 
 void TelemetryChart::setWindowSeconds(float seconds) {
     windowS = seconds;
-    // Trim any points now outside the new window
-    if (!pts.isEmpty()) {
-        float tMax = pts.last().t;
-        while (!pts.isEmpty() && (tMax - pts.first().t) > windowS)
-            pts.removeFirst();
-    }
     update();
 }
 
@@ -43,7 +36,7 @@ void TelemetryChart::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing);
 
     const QPalette pal = palette();
-    const QColor bgColor   = pal.color(QPalette::Mid);
+    const QColor bgColor   = pal.color(QPalette::Base);
     const QColor gridColor = pal.color(QPalette::Mid);
     const QColor textColor = pal.color(QPalette::Text);
 

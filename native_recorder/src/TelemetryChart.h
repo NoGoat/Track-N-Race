@@ -21,8 +21,9 @@ private:
     struct Pt { float t; float speed; float rpm; float ers; };
 
     float windowS = 30.0f;
-    static constexpr float MAX_SPEED = 380.0f;
-    static constexpr float MAX_RPM   = 16000.0f;
+    static constexpr float MAX_WINDOW_S = 600.0f; // 10 minutes — largest selectable window
+    static constexpr float MAX_SPEED    = 380.0f;
+    static constexpr float MAX_RPM      = 16000.0f;
 
     QVector<Pt> pts;
 
