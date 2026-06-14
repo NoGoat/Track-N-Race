@@ -97,7 +97,7 @@ QWidget* MainWindow::buildStandingsPage() {
 QWidget* MainWindow::buildRacePanel() {
     QScrollArea* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
-    scroll->setFixedWidth(220);
+    scroll->setFixedWidth(240);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     QWidget* w = new QWidget;
