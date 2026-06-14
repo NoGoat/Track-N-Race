@@ -343,12 +343,58 @@ QWidget* MainWindow::buildSessionPage() {
     lv->addWidget(weatherStrip);
     ch->addWidget(leftArea, 1);
 
-    // VLine
-    QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine); vdiv->setFrameShadow(QFrame::Sunken);
-    ch->addWidget(vdiv);
+    // VLine between map and track detail column
+    QFrame* vdiv1 = new QFrame;
+    vdiv1->setFrameShape(QFrame::VLine); vdiv1->setFrameShadow(QFrame::Sunken);
+    ch->addWidget(vdiv1);
 
-    // ── Right panel (240px): Proximity + Events + Track & Weather ─
+    // ── Middle column: track detail cards ────────────────────────
+    auto makeTrackCard = [&](QVBoxLayout* col, const QString& cap, QLabel*& valOut, const QString& sub = "") {
+        QWidget* card = new QWidget;
+        QVBoxLayout* cv = new QVBoxLayout(card);
+        cv->setContentsMargins(14, 10, 14, 6);
+        cv->setSpacing(1);
+
+        QLabel* capLbl = new QLabel(cap);
+        QFont capf; capf.setPointSize(7); capLbl->setFont(capf);
+        capLbl->setForegroundRole(QPalette::PlaceholderText);
+
+        valOut = new QLabel("—");
+        QFont valf; valf.setPointSize(16); valf.setBold(true); valOut->setFont(valf);
+
+        cv->addWidget(capLbl);
+        cv->addWidget(valOut);
+
+        if (!sub.isEmpty()) {
+            QLabel* subLbl = new QLabel(sub);
+            QFont subf; subf.setPointSize(7); subLbl->setFont(subf);
+            subLbl->setForegroundRole(QPalette::PlaceholderText);
+            cv->addWidget(subLbl);
+        }
+
+        col->addWidget(card);
+    };
+
+    QWidget* midPanel = new QWidget;
+    midPanel->setFixedWidth(160);
+    QVBoxLayout* mv = new QVBoxLayout(midPanel);
+    mv->setContentsMargins(0, 0, 0, 0);
+    mv->setSpacing(0);
+
+    makeTrackCard(mv, "TRACK TEMP",   sp_trackTemp, "Road surface");
+    makeTrackCard(mv, "AIR TEMP",     sp_airTemp,   "Ambient");
+    makeTrackCard(mv, "TRACK LENGTH", sp_trackLen);
+    makeTrackCard(mv, "TIME OF DAY",  sp_timeOfDay);
+    mv->addStretch();
+
+    ch->addWidget(midPanel);
+
+    // VLine between track detail column and right panel
+    QFrame* vdiv2 = new QFrame;
+    vdiv2->setFrameShape(QFrame::VLine); vdiv2->setFrameShadow(QFrame::Sunken);
+    ch->addWidget(vdiv2);
+
+    // ── Right panel: Proximity + Events ──────────────────────────
     QWidget* rightPanel = new QWidget;
     rightPanel->setFixedWidth(240);
     QVBoxLayout* rv = new QVBoxLayout(rightPanel);
@@ -367,20 +413,6 @@ QWidget* MainWindow::buildSessionPage() {
         QFrame* div = new QFrame;
         div->setFrameShape(QFrame::HLine); div->setFrameShadow(QFrame::Sunken);
         rv->addWidget(div);
-    };
-
-    auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
-        QWidget* row = new QWidget;
-        QHBoxLayout* h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 4, 0, 4);
-        QLabel* lbl = new QLabel(label);
-        QFont lf; lf.setPointSize(9); lbl->setFont(lf);
-        lbl->setForegroundRole(QPalette::PlaceholderText);
-        valueOut = new QLabel("—");
-        QFont vf; vf.setPointSize(9); vf.setBold(true); valueOut->setFont(vf);
-        valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        h->addWidget(lbl); h->addStretch(); h->addWidget(valueOut);
-        return row;
     };
 
     // PROXIMITY
@@ -424,15 +456,6 @@ QWidget* MainWindow::buildSessionPage() {
     sp_eventsList->setFont(evf);
     sp_eventsList->setMaximumHeight(120);
     rv->addWidget(sp_eventsList);
-
-    rpDivider();
-
-    // TRACK & WEATHER
-    makeSection("TRACK & WEATHER");
-    rv->addWidget(makeRow("Track Temp",   sp_trackTemp));
-    rv->addWidget(makeRow("Air Temp",     sp_airTemp));
-    rv->addWidget(makeRow("Track Length", sp_trackLen));
-    rv->addWidget(makeRow("Time of Day",  sp_timeOfDay));
 
     rv->addStretch();
     ch->addWidget(rightPanel);
