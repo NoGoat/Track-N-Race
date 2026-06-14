@@ -36,7 +36,7 @@ void TelemetryChart::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing);
 
     const QPalette pal = palette();
-    const QColor bgColor   = pal.color(QPalette::Base);
+    const QColor bgColor   = pal.color(QPalette::Window);
     const QColor gridColor = pal.color(QPalette::Mid);
     const QColor textColor = pal.color(QPalette::Text);
 

@@ -102,19 +102,19 @@ QWidget* MainWindow::buildRacePanel() {
 
     QWidget* w = new QWidget;
     QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setContentsMargins(10, 8, 10, 8);
-    vbox->setSpacing(2);
+    vbox->setContentsMargins(14, 14, 14, 14);
+    vbox->setSpacing(6);
 
     // Helper: key / value row
     auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
         QWidget* row = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 2, 0, 2);
+        h->setContentsMargins(0, 4, 0, 4);
         QLabel* lbl = new QLabel(label);
-        QFont lf; lf.setPointSize(8); lbl->setFont(lf);
+        QFont lf; lf.setPointSize(9); lbl->setFont(lf);
         lbl->setForegroundRole(QPalette::PlaceholderText);
         valueOut = new QLabel("—");
-        QFont vf; vf.setPointSize(8); vf.setBold(true); valueOut->setFont(vf);
+        QFont vf; vf.setPointSize(9); vf.setBold(true); valueOut->setFont(vf);
         h->addWidget(lbl);
         h->addStretch();
         h->addWidget(valueOut);
@@ -124,7 +124,7 @@ QWidget* MainWindow::buildRacePanel() {
     // Helper: flat section title (matches WheelCard corner label style)
     auto makeSection = [&](const QString& title) {
         QLabel* lbl = new QLabel(title);
-        QFont f; f.setPointSize(7); f.setBold(true);
+        QFont f; f.setPointSize(8); f.setBold(true);
         lbl->setFont(f);
         lbl->setForegroundRole(QPalette::PlaceholderText);
         vbox->addWidget(lbl);
@@ -139,7 +139,7 @@ QWidget* MainWindow::buildRacePanel() {
 
     // ── Driver header ────────────────────────────────────────────
     rp_driverName = new QLabel("—");
-    QFont dnF; dnF.setPointSize(10); dnF.setBold(true);
+    QFont dnF; dnF.setPointSize(12); dnF.setBold(true);
     rp_driverName->setFont(dnF);
     rp_driverName->setAlignment(Qt::AlignCenter);
     vbox->addWidget(rp_driverName);
