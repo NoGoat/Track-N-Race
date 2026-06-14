@@ -26,6 +26,7 @@
 
 class TelemetryChart;
 class TnrdPlayer;
+class TrackMapWidget;
 class QTimer;
 
 class MainWindow : public QMainWindow {
@@ -141,6 +142,11 @@ private:
     nlohmann::json              lastSessionData;
     std::vector<nlohmann::json> sessionEventLog;
 
+    // ── Track map page ────────────────────────────────────────────
+    TrackMapWidget* trackMap_      = nullptr;
+    nlohmann::json  lastPositionsData;
+    int             mapTrackId_    = -1;   // last track loaded into the map widget
+
     // ── Settings page ─────────────────────────────────────────────
     QLabel*       dirLabel    = nullptr;
     QCheckBox*    recordCheck = nullptr;
@@ -193,6 +199,7 @@ private:
     QWidget* buildRacePanel();
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
+    QWidget* buildTrackMapPage();
     QWidget* buildSettingsTab();
     void     updateTimingTable();
     void     updateRacePanel();
@@ -201,6 +208,7 @@ private:
     void     updateProximityWidget();
     void     updateTyresPage();
     void     updateTyreSetsTable();
+    void     updateTrackMapPage();
 
     // ── Coalesced panel refresh ───────────────────────────────────
     // Packets can arrive in bursts (especially fast playback); rebuilding a
@@ -214,6 +222,7 @@ private:
     bool dirtySession_   = false;
     bool dirtyEvents_    = false;
     bool dirtyProximity_ = false;
+    bool dirtyTrackMap_  = false;
     void scheduleUiRefresh();
     void flushUiRefresh();
 

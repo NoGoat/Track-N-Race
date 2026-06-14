@@ -110,8 +110,9 @@ MainWindow::MainWindow(QWidget* parent)
     pageCombo->addItem("Overview");   // index 0
     pageCombo->addItem("Standings");  // index 1
     pageCombo->addItem("Session");    // index 2
-    pageCombo->addItem("Tyres");      // index 3
-    pageCombo->addItem("Settings");   // index 4
+    pageCombo->addItem("Map");        // index 3
+    pageCombo->addItem("Tyres");      // index 4
+    pageCombo->addItem("Settings");   // index 5
     toolbar->addWidget(pageCombo);
 
     QWidget* spacer = new QWidget;
@@ -132,8 +133,9 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildOverviewTab());   // index 0
     stack->addWidget(buildStandingsPage()); // index 1
     stack->addWidget(buildSessionPage());   // index 2
-    stack->addWidget(buildTyresPage());     // index 3
-    stack->addWidget(buildSettingsTab());   // index 4
+    stack->addWidget(buildTrackMapPage());  // index 3
+    stack->addWidget(buildTyresPage());     // index 4
+    stack->addWidget(buildSettingsTab());   // index 5
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -700,9 +702,12 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
         lastPlayerLapData = row;
         dirtyRacePanel_ = true; scheduleUiRefresh();
+    } else if (type == "positions") {
+        lastPositionsData = row;
+        dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "session") {
         lastSessionData = row;
-        dirtySession_ = true; scheduleUiRefresh();
+        dirtySession_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
         if (row.value("code", "") == "SSTA") sessionEventLog.clear();
         sessionEventLog.push_back(row);
@@ -712,7 +717,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (type == "participants") {
         lastParticipantsData = row;
-        dirtyTiming_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "all_status") {
         lastAllStatusData = row;
         dirtyTiming_ = true; scheduleUiRefresh();
@@ -731,6 +736,7 @@ void MainWindow::flushUiRefresh() {
     if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
     if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
     if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
+    if (dirtyTrackMap_)  { updateTrackMapPage();     dirtyTrackMap_  = false; }
 }
 
 // ── Central packet router ──────────────────────────────────────────────────

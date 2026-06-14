@@ -48,10 +48,14 @@ set(SOURCES
     src/components/TyresPage.cpp
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
+    src/components/TrackMapPage.cpp
+    src/components/TrackMapWidget.cpp
+    src/components/TrackMapWidget.h
     src/protocols/protocol.cpp
     src/protocols/f1_24.cpp
     src/protocols/f1_25.cpp
     resources.qrc
+    maps.qrc
 )
 
 if(WIN32)
