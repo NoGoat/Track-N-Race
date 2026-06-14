@@ -6,6 +6,7 @@
 #include <QPen>
 #include <QColor>
 #include <QPainter>
+#include <QEvent>
 
 TelemetryChart::TelemetryChart(QWidget* parent)
     : QChartView(parent)
@@ -20,19 +21,15 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     chart_->setMargins(QMargins(0, 0, 0, 0));
     chart_->legend()->setVisible(true);
     chart_->legend()->setAlignment(Qt::AlignTop);
+    chart_->legend()->setLabelColor(palette().color(QPalette::Text));
 
     speedS_ = new QLineSeries(chart_);  speedS_->setName("Speed");
     rpmS_   = new QLineSeries(chart_);  rpmS_->setName("RPM");
     ersS_   = new QLineSeries(chart_);  ersS_->setName("ERS");
 
-    speedS_->setColor(QColor("#37872D"));
-    rpmS_->setColor(QColor("#C4162A"));
-    ersS_->setColor(QColor("#FADE2A"));
-
-    // OpenGL render path — paint cost is independent of point count.
-    speedS_->setUseOpenGL(true);
-    rpmS_->setUseOpenGL(true);
-    ersS_->setUseOpenGL(true);
+    speedS_->setPen(QPen(QColor("#37872D"), 2.5));
+    rpmS_->setPen(QPen(QColor("#C4162A"),   2.5));
+    ersS_->setPen(QPen(QColor("#FADE2A"),   2.5));
 
     // Add ERS first so it sits behind RPM/Speed (later series draw on top).
     chart_->addSeries(ersS_);
@@ -47,19 +44,23 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     axX_->setLabelFormat("%.0f");
     axX_->setTickCount(7);
     axX_->setTitleVisible(false);
+    axX_->setGridLineVisible(false);
 
     axRpm_->setRange(0, MAX_RPM);
     axRpm_->setLabelFormat("%.0f");
     axRpm_->setLabelsColor(QColor("#C4162A"));
     axRpm_->setTickCount(5);
+    axRpm_->setGridLineVisible(false);
 
     axSpeed_->setRange(0, MAX_SPEED);
     axSpeed_->setLabelFormat("%.0f");
     axSpeed_->setLabelsColor(QColor("#37872D"));
     axSpeed_->setTickCount(5);
+    axSpeed_->setGridLineVisible(false);
 
     axErs_->setRange(0, 100);
     axErs_->setVisible(false);   // ERS shares the plot area but needs no labels
+    axErs_->setGridLineVisible(false);
 
     chart_->addAxis(axX_,     Qt::AlignBottom);
     chart_->addAxis(axRpm_,   Qt::AlignLeft);
@@ -85,7 +86,10 @@ void TelemetryChart::addPoint(float sessionTime, float speed, int rpm, float ers
     rpmS_->append(sessionTime, rpm);
     ersS_->append(sessionTime, ers);
 
-    const float cutoff = sessionTime - MAX_WINDOW_S;
+    // Retain only the visible window (plus a small margin so the line reaches the
+    // left edge). On the CPU render path, paint cost scales with retained points,
+    // so keeping more than is shown would re-introduce the old lag.
+    const float cutoff = sessionTime - windowS_ - 2.0f;
     trim(speedS_, cutoff);
     trim(rpmS_,   cutoff);
     trim(ersS_,   cutoff);
@@ -102,6 +106,12 @@ void TelemetryChart::replaceAll(const QList<QPointF>& speed,
     rpmS_->replace(rpm);
     ersS_->replace(ers);
     latestT_ = latestTime;
+
+    const float cutoff = latestTime - windowS_ - 2.0f;
+    trim(speedS_, cutoff);
+    trim(rpmS_,   cutoff);
+    trim(ersS_,   cutoff);
+
     rescaleX();
 }
 
@@ -120,4 +130,12 @@ void TelemetryChart::reset() {
 
 void TelemetryChart::rescaleX() {
     axX_->setRange(latestT_ - windowS_, latestT_);
+}
+
+void TelemetryChart::changeEvent(QEvent* e) {
+    QChartView::changeEvent(e);
+    if (chart_ && (e->type() == QEvent::PaletteChange ||
+                   e->type() == QEvent::ApplicationPaletteChange)) {
+        chart_->legend()->setLabelColor(palette().color(QPalette::Text));
+    }
 }

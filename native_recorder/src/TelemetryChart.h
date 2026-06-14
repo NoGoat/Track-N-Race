@@ -30,10 +30,12 @@ public slots:
     void setWindowSeconds(float seconds);
     void reset();
 
+protected:
+    void changeEvent(QEvent* e) override;   // keep legend color in sync with the theme
+
 private:
-    static constexpr float MAX_WINDOW_S = 600.0f; // largest selectable window — retention cap
-    static constexpr float MAX_SPEED    = 380.0f;
-    static constexpr float MAX_RPM      = 16000.0f;
+    static constexpr float MAX_SPEED = 380.0f;
+    static constexpr float MAX_RPM   = 16000.0f;
 
     void rescaleX();
     void trim(QLineSeries* s, float cutoff);
