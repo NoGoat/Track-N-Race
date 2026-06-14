@@ -5,6 +5,8 @@
 #include <QToolBar>
 #include <QStackedWidget>
 #include <QComboBox>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -155,8 +157,9 @@ MainWindow::MainWindow(QWidget* parent)
     addToolBar(Qt::TopToolBarArea, toolbar);
 
     QComboBox* pageCombo = new QComboBox;
-    pageCombo->addItem("Overview");
-    pageCombo->addItem("Settings");
+    pageCombo->addItem("Overview");   // index 0
+    pageCombo->addItem("Standings");  // index 1
+    pageCombo->addItem("Settings");   // index 2
     toolbar->addWidget(pageCombo);
 
     QWidget* spacer = new QWidget;
@@ -175,8 +178,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Stacked content area
     QStackedWidget* stack = new QStackedWidget(this);
-    stack->addWidget(buildOverviewTab()); // index 0
-    stack->addWidget(buildSettingsTab()); // index 1
+    stack->addWidget(buildOverviewTab());   // index 0
+    stack->addWidget(buildStandingsPage()); // index 1
+    stack->addWidget(buildSettingsTab());   // index 2
     setCentralWidget(stack);
 
     connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
@@ -400,6 +404,236 @@ QWidget* MainWindow::buildSettingsTab() {
     connect(themeDark,    &QRadioButton::toggled,       this, [this](bool) { onThemeChanged(); });
 
     return w;
+}
+
+// ── Standings helpers ──────────────────────────────────────────────────────
+
+static QString formatLapTime(int ms) {
+    if (ms <= 0) return "—";
+    int min  = ms / 60000;
+    int sec  = (ms % 60000) / 1000;
+    int msec = ms % 1000;
+    return QString("%1:%2.%3")
+        .arg(min).arg(sec, 2, 10, QChar('0')).arg(msec, 3, 10, QChar('0'));
+}
+
+static QString formatSector(int ms) {
+    if (ms <= 0) return "—";
+    int sec  = ms / 1000;
+    int msec = ms % 1000;
+    return QString("%1.%2").arg(sec).arg(msec, 3, 10, QChar('0'));
+}
+
+static QString formatGap(int ms, bool isLeader) {
+    if (isLeader) return "LEADER";
+    if (ms <= 0)  return "—";
+    if (ms < 60000)
+        return QString("+%1.%2").arg(ms / 1000).arg(ms % 1000, 3, 10, QChar('0'));
+    int min  = ms / 60000;
+    int sec  = (ms % 60000) / 1000;
+    int msec = ms % 1000;
+    return QString("+%1:%2.%3")
+        .arg(min).arg(sec, 2, 10, QChar('0')).arg(msec, 3, 10, QChar('0'));
+}
+
+static QString tyreLabel(int compound) {
+    switch (compound) {
+        case 16: return "C5";
+        case 17: return "C4";
+        case 18: return "C3";
+        case 19: return "C2";
+        case 20: return "C1";
+        case 21: return "C0";
+        case  7: return "INT";
+        case  8: return "WET";
+        default: return "—";
+    }
+}
+
+static QColor tyreColor(int compound) {
+    switch (compound) {
+        case 16: return QColor("#e8002d"); // Soft
+        case 17: return QColor("#ffd700"); // Medium
+        case 18: case 19: case 20: case 21: return QColor("#c8c8c8"); // Hard
+        case  7: return QColor("#39b54a"); // Intermediate
+        case  8: return QColor("#4488ff"); // Wet
+        default: return QColor("#8e8e8e");
+    }
+}
+
+// ── Standings page builder ─────────────────────────────────────────────────
+
+QWidget* MainWindow::buildStandingsPage() {
+    QWidget* w = new QWidget;
+    QVBoxLayout* vbox = new QVBoxLayout(w);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+
+    timingTable = new QTableWidget;
+    timingTable->setColumnCount(10);
+    timingTable->setHorizontalHeaderLabels(
+        {"POS", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "STATUS"});
+    timingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    timingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    timingTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    timingTable->setShowGrid(false);
+    timingTable->setAlternatingRowColors(false);
+    timingTable->verticalHeader()->setVisible(false);
+    timingTable->horizontalHeader()->setStretchLastSection(true);
+    timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    timingTable->horizontalHeader()->setSectionResizeMode(9, QHeaderView::Stretch);
+
+    QFont hf; hf.setPointSize(7);
+    timingTable->horizontalHeader()->setFont(hf);
+
+    vbox->addWidget(timingTable);
+    return w;
+}
+
+// ── Standings updater ──────────────────────────────────────────────────────
+
+void MainWindow::updateTimingTable() {
+    if (!timingTable || lastTimingData.empty()) return;
+
+    // Build participant lookup: idx → {name, race_number, livery_color}
+    struct DriverInfo { QString name; int raceNum; QColor color; };
+    std::unordered_map<int, DriverInfo> driverMap;
+    if (!lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
+        for (const auto& d : lastParticipantsData["drivers"]) {
+            int idx = d.value("idx", -1);
+            if (idx < 0) continue;
+            QString name = QString::fromStdString(d.value("name", ""));
+            int raceNum  = d.value("race_number", 0);
+            QColor color = QColor(QString::fromStdString(d.value("livery_color", "#8e8e8e")));
+            driverMap[idx] = { name, raceNum, color };
+        }
+    }
+
+    // Build tyre lookup: idx → compound
+    std::unordered_map<int, int> tyreMap;
+    if (!lastAllStatusData.empty() && lastAllStatusData.contains("cars")) {
+        for (const auto& c : lastAllStatusData["cars"]) {
+            int idx = c.value("idx", -1);
+            if (idx >= 0) tyreMap[idx] = c.value("tyre_compound", -1);
+        }
+    }
+
+    // Collect active cars and sort by position
+    int playerIdx = lastTimingData.value("player_idx", -1);
+    const auto& cars = lastTimingData["cars"];
+
+    std::vector<nlohmann::json> active;
+    for (const auto& car : cars) {
+        int rs  = car.value("result_status", 0);
+        int pos = car.value("position", 0);
+        if (rs >= 2 && pos > 0) active.push_back(car);
+    }
+    std::sort(active.begin(), active.end(),
+        [](const nlohmann::json& a, const nlohmann::json& b) {
+            return a.value("position", 99) < b.value("position", 99);
+        });
+
+    timingTable->setRowCount((int)active.size());
+
+    for (int row = 0; row < (int)active.size(); ++row) {
+        const auto& car = active[row];
+        int  idx        = car.value("idx", -1);
+        int  pos        = car.value("position", 0);
+        int  lapNum     = car.value("lap_num", 0);
+        int  lastLapMs  = car.value("last_lap_ms", 0);
+        int  s1Ms       = car.value("s1_ms", 0);
+        int  s2Ms       = car.value("s2_ms", 0);
+        int  gapMs      = car.value("gap_ms", 0);
+        int  pitStatus  = car.value("pit_status", 0);
+        bool lapInvalid = car.value("lap_invalid", false);
+        int  penaltiesS = car.value("penalties_s", 0);
+        int  numDt      = car.value("num_dt_pens", 0);
+        int  numSg      = car.value("num_sg_pens", 0);
+        int  resultSt   = car.value("result_status", 0);
+        bool isPlayer   = (idx == playerIdx);
+
+        // S3 = last_lap - s1 - s2 (best effort)
+        int s3Ms = (lastLapMs > 0 && s1Ms > 0 && s2Ms > 0)
+                    ? lastLapMs - s1Ms - s2Ms : 0;
+
+        // Driver info
+        auto di = driverMap.find(idx);
+        QString driverText = (di != driverMap.end())
+            ? QString("#%1 %2").arg(di->second.raceNum).arg(di->second.name)
+            : QString("Car %1").arg(idx);
+        QColor driverColor = (di != driverMap.end())
+            ? di->second.color : QColor("#8e8e8e");
+
+        // Tyre
+        int compound = tyreMap.count(idx) ? tyreMap.at(idx) : -1;
+
+        // Status text
+        QString statusText;
+        if (resultSt == 4) statusText = "DNF";
+        else if (resultSt == 5) statusText = "DSQ";
+        else if (resultSt == 7) statusText = "RET";
+        else if (pitStatus == 1) statusText = "PITLANE";
+        else if (pitStatus == 2) statusText = "IN PIT";
+        else if (numDt > 0) statusText = "DT";
+        else if (numSg > 0) statusText = "SG";
+        else if (penaltiesS > 0) statusText = QString("+%1s").arg(penaltiesS);
+        else if (lapInvalid) statusText = "INV";
+
+        // Position color
+        QColor posColor;
+        if      (pos == 1) posColor = QColor("#FFD700");
+        else if (pos == 2) posColor = QColor("#C0C0C0");
+        else if (pos == 3) posColor = QColor("#CD7F32");
+
+        // Bold font for player row
+        QFont cellFont;
+        if (isPlayer) cellFont.setBold(true);
+
+        auto makeItem = [&](const QString& text) {
+            auto* item = new QTableWidgetItem(text);
+            item->setFont(cellFont);
+            return item;
+        };
+
+        // Col 0: POS
+        auto* posItem = makeItem(QString::number(pos));
+        if (posColor.isValid()) posItem->setForeground(posColor);
+        timingTable->setItem(row, 0, posItem);
+
+        // Col 1: DRIVER
+        auto* drvItem = makeItem(driverText);
+        drvItem->setForeground(driverColor);
+        timingTable->setItem(row, 1, drvItem);
+
+        // Col 2: LAP
+        timingTable->setItem(row, 2, makeItem(lapNum > 0 ? QString::number(lapNum) : "—"));
+
+        // Col 3: LAST LAP
+        timingTable->setItem(row, 3, makeItem(formatLapTime(lastLapMs)));
+
+        // Col 4: GAP
+        timingTable->setItem(row, 4, makeItem(formatGap(gapMs, pos == 1)));
+
+        // Col 5: S1
+        timingTable->setItem(row, 5, makeItem(formatSector(s1Ms)));
+
+        // Col 6: S2
+        timingTable->setItem(row, 6, makeItem(formatSector(s2Ms)));
+
+        // Col 7: S3
+        timingTable->setItem(row, 7, makeItem(formatSector(s3Ms)));
+
+        // Col 8: TYRE
+        auto* tyreItem = makeItem(tyreLabel(compound));
+        tyreItem->setForeground(tyreColor(compound));
+        timingTable->setItem(row, 8, tyreItem);
+
+        // Col 9: STATUS
+        timingTable->setItem(row, 9, makeItem(statusText));
+
+        // Row height
+        timingTable->setRowHeight(row, 22);
+    }
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────
@@ -682,6 +916,15 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         );
     } else if (type == "lap") {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
+    } else if (type == "timing") {
+        lastTimingData = row;
+        updateTimingTable();
+    } else if (type == "participants") {
+        lastParticipantsData = row;
+        updateTimingTable();
+    } else if (type == "all_status") {
+        lastAllStatusData = row;
+        updateTimingTable();
     }
 }
 

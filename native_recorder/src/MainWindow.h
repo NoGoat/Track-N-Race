@@ -5,6 +5,7 @@
 #include <QPushButton>
 #include <QCheckBox>
 #include <QRadioButton>
+#include <QTableWidget>
 #include <QUdpSocket>
 #include <QSettings>
 
@@ -63,7 +64,13 @@ private:
     QLabel*         dmgSidepod  = nullptr; QLabel* dmgDiffuser = nullptr;
     QLabel*         dmgGearbox  = nullptr; QLabel* dmgEngine   = nullptr;
 
-    // ── Settings tab ──────────────────────────────────────────────
+    // ── Standings page ────────────────────────────────────────────
+    QTableWidget*    timingTable         = nullptr;
+    nlohmann::json   lastTimingData;
+    nlohmann::json   lastParticipantsData;
+    nlohmann::json   lastAllStatusData;
+
+    // ── Settings page ─────────────────────────────────────────────
     QLabel*       dirLabel    = nullptr;
     QCheckBox*    recordCheck = nullptr;
     QRadioButton* themeSystem = nullptr;
@@ -95,7 +102,9 @@ private:
 
     // ── Builders ──────────────────────────────────────────────────
     QWidget* buildOverviewTab();
+    QWidget* buildStandingsPage();
     QWidget* buildSettingsTab();
+    void     updateTimingTable();
 
     // ── Recording helpers ─────────────────────────────────────────
     void startNewStream(int trackId, int sessionType, int format);
