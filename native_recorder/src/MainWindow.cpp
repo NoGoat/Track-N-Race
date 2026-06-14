@@ -501,7 +501,6 @@ QWidget* MainWindow::buildTyresPage() {
     tp_setsTable->verticalHeader()->setVisible(false);
     tp_setsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     tp_setsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    tp_setsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
     QFont hf; hf.setPointSize(7);
     tp_setsTable->horizontalHeader()->setFont(hf);
     hbox->addWidget(tp_setsTable, 1);
