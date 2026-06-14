@@ -7,7 +7,6 @@
 #include <QFont>
 #include <QPalette>
 #include <QSizePolicy>
-#include <QScrollArea>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPainter>
@@ -155,7 +154,6 @@ QWidget* MainWindow::buildSessionPage() {
     hh->setContentsMargins(0, 0, 0, 0);
     hh->setSpacing(16);
 
-    // Left: GP name + circuit
     QWidget* gpBlock = new QWidget;
     QVBoxLayout* gpv = new QVBoxLayout(gpBlock);
     gpv->setContentsMargins(0, 0, 0, 0);
@@ -172,22 +170,18 @@ QWidget* MainWindow::buildSessionPage() {
     gpv->addWidget(sp_circuitName);
     hh->addWidget(gpBlock);
 
-    // Center: ZONES label + strip + legend
     QWidget* zoneWrap = new QWidget;
     QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
     zv->setContentsMargins(0, 6, 0, 6);
     zv->setSpacing(5);
-
     QLabel* zonesLbl = new QLabel("ZONES");
     QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
     zonesLbl->setFont(zlf);
     zonesLbl->setForegroundRole(QPalette::PlaceholderText);
     zv->addWidget(zonesLbl);
-
     auto* strip = new MarshalStripWidget;
     sp_marshalStrip = strip;
     zv->addWidget(strip);
-
     QWidget* legend = new QWidget;
     QHBoxLayout* lh = new QHBoxLayout(legend);
     lh->setContentsMargins(0, 0, 0, 0);
@@ -195,21 +189,17 @@ QWidget* MainWindow::buildSessionPage() {
     struct LegItem { const char* col; const char* name; };
     LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"#484c62","Clear"}};
     for (auto& li : legItems) {
-        QLabel* dot = new QLabel;
-        dot->setFixedSize(8, 8);
+        QLabel* dot = new QLabel; dot->setFixedSize(8, 8);
         dot->setStyleSheet(QString("background:%1; border-radius:4px;").arg(li.col));
         QLabel* txt = new QLabel(li.name);
-        QFont ltf; ltf.setPointSize(7);
-        txt->setFont(ltf);
+        QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
         txt->setForegroundRole(QPalette::PlaceholderText);
-        lh->addWidget(dot);
-        lh->addWidget(txt);
+        lh->addWidget(dot); lh->addWidget(txt);
     }
     lh->addStretch();
     zv->addWidget(legend);
     hh->addWidget(zoneWrap, 1);
 
-    // Right: time left + session type
     QWidget* tmBlock = new QWidget;
     QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
     tmv->setContentsMargins(0, 0, 0, 0);
@@ -243,41 +233,35 @@ QWidget* MainWindow::buildSessionPage() {
         v->setContentsMargins(12, 6, 12, 6);
         v->setSpacing(2);
         QLabel* capLbl = new QLabel(cap);
-        QFont capf; capf.setPointSize(7);
-        capLbl->setFont(capf);
+        QFont capf; capf.setPointSize(7); capLbl->setFont(capf);
         capLbl->setForegroundRole(QPalette::PlaceholderText);
         out = new QLabel("—");
-        QFont valf; valf.setPointSize(16); valf.setBold(true);
-        out->setFont(valf);
-        if (!accent.isEmpty())
-            out->setStyleSheet(QString("color:%1;").arg(accent));
-        v->addWidget(capLbl);
-        v->addWidget(out);
+        QFont valf; valf.setPointSize(16); valf.setBold(true); out->setFont(valf);
+        if (!accent.isEmpty()) out->setStyleSheet(QString("color:%1;").arg(accent));
+        v->addWidget(capLbl); v->addWidget(out);
         return card;
     };
 
     auto addVSep = [&]() {
         QFrame* vf = new QFrame;
-        vf->setFrameShape(QFrame::VLine);
-        vf->setFrameShadow(QFrame::Sunken);
+        vf->setFrameShape(QFrame::VLine); vf->setFrameShadow(QFrame::Sunken);
         sh->addWidget(vf);
     };
 
-    sh->addWidget(makeStatCard("TOTAL LAPS",  sp_statTotalLaps, ""),        1);
+    sh->addWidget(makeStatCard("TOTAL LAPS", sp_statTotalLaps, ""),        1);
     addVSep();
-    sh->addWidget(makeStatCard("REMAINING",   sp_statRemain,    ""),        1);
+    sh->addWidget(makeStatCard("REMAINING",  sp_statRemain,    ""),        1);
     addVSep();
-    sh->addWidget(makeStatCard("PIT SPEED",   sp_statPitSpeed,  "#5794F2"), 1);
+    sh->addWidget(makeStatCard("PIT SPEED",  sp_statPitSpeed,  "#5794F2"), 1);
     addVSep();
-    sh->addWidget(makeStatCard("PIT WINDOW",  sp_statPitWin,    "#FADE2A"), 1);
+    sh->addWidget(makeStatCard("PIT WINDOW", sp_statPitWin,    "#FADE2A"), 1);
     addVSep();
-    sh->addWidget(makeStatCard("SAFETY CAR",  sp_statSafetyCar, ""),        1);
+    sh->addWidget(makeStatCard("REJOIN",     sp_statRejoin,    "#37872D"), 1);
 
     root->addWidget(statsRow);
 
     QFrame* sep1 = new QFrame;
-    sep1->setFrameShape(QFrame::HLine);
-    sep1->setFrameShadow(QFrame::Sunken);
+    sep1->setFrameShape(QFrame::HLine); sep1->setFrameShadow(QFrame::Sunken);
     root->addWidget(sep1);
 
     // ── Content ──────────────────────────────────────────────────
@@ -286,49 +270,90 @@ QWidget* MainWindow::buildSessionPage() {
     ch->setContentsMargins(0, 0, 0, 0);
     ch->setSpacing(0);
 
-    // Left: map placeholder — events log sits here for now, map goes here later
-    sp_eventsList = new QListWidget;
-    sp_eventsList->setSelectionMode(QAbstractItemView::NoSelection);
-    sp_eventsList->setFocusPolicy(Qt::NoFocus);
-    sp_eventsList->setAlternatingRowColors(false);
-    sp_eventsList->setFrameShape(QFrame::NoFrame);
-    QFont evf; evf.setPointSize(8);
-    sp_eventsList->setFont(evf);
-    ch->addWidget(sp_eventsList, 1);
+    // ── Left area: map placeholder + weather strip at bottom ──────
+    QWidget* leftArea = new QWidget;
+    QVBoxLayout* lv = new QVBoxLayout(leftArea);
+    lv->setContentsMargins(0, 0, 0, 0);
+    lv->setSpacing(0);
+
+    // Map will go here
+    lv->addStretch(1);
+
+    // Weather strip pinned to bottom
+    QFrame* wSep = new QFrame;
+    wSep->setFrameShape(QFrame::HLine); wSep->setFrameShadow(QFrame::Sunken);
+    lv->addWidget(wSep);
+
+    QWidget* weatherStrip = new QWidget;
+    weatherStrip->setFixedHeight(72);
+    QHBoxLayout* wh = new QHBoxLayout(weatherStrip);
+    wh->setContentsMargins(10, 8, 10, 8);
+    wh->setSpacing(0);
+
+    // NOW card
+    QWidget* nowCard = new QWidget;
+    nowCard->setMinimumWidth(80);
+    QVBoxLayout* nv = new QVBoxLayout(nowCard);
+    nv->setContentsMargins(0, 0, 14, 0);
+    nv->setSpacing(3);
+    QLabel* nowCap = new QLabel("NOW");
+    QFont nowCapF; nowCapF.setPointSize(7); nowCapF.setBold(true);
+    nowCap->setFont(nowCapF);
+    nowCap->setForegroundRole(QPalette::PlaceholderText);
+    sp_weatherNow = new QLabel("—");
+    QFont wnf; wnf.setPointSize(11); wnf.setBold(true);
+    sp_weatherNow->setFont(wnf);
+    nv->addWidget(nowCap);
+    nv->addWidget(sp_weatherNow);
+    nv->addStretch();
+    wh->addWidget(nowCard);
+
+    QFrame* wvl = new QFrame;
+    wvl->setFrameShape(QFrame::VLine); wvl->setFrameShadow(QFrame::Sunken);
+    wh->addWidget(wvl);
+
+    for (int i = 0; i < 5; ++i) {
+        QWidget* fcCard = new QWidget;
+        QVBoxLayout* fv = new QVBoxLayout(fcCard);
+        fv->setContentsMargins(10, 0, 10, 0);
+        fv->setSpacing(2);
+
+        sp_fcTime[i] = new QLabel("");
+        QFont ftf; ftf.setPointSize(7);
+        sp_fcTime[i]->setFont(ftf);
+        sp_fcTime[i]->setForegroundRole(QPalette::PlaceholderText);
+
+        sp_fcWeather[i] = new QLabel("");
+        QFont fwf; fwf.setPointSize(9); fwf.setBold(true);
+        sp_fcWeather[i]->setFont(fwf);
+
+        sp_fcRain[i] = new QLabel("");
+        QFont frf; frf.setPointSize(8);
+        sp_fcRain[i]->setFont(frf);
+        sp_fcRain[i]->setStyleSheet("color:#5794F2;");
+
+        fv->addStretch();
+        fv->addWidget(sp_fcTime[i]);
+        fv->addWidget(sp_fcWeather[i]);
+        fv->addWidget(sp_fcRain[i]);
+        fv->addStretch();
+        wh->addWidget(fcCard, 1);
+    }
+
+    lv->addWidget(weatherStrip);
+    ch->addWidget(leftArea, 1);
 
     // VLine
     QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine);
-    vdiv->setFrameShadow(QFrame::Sunken);
+    vdiv->setFrameShape(QFrame::VLine); vdiv->setFrameShadow(QFrame::Sunken);
     ch->addWidget(vdiv);
 
-    // ── Right panel ──────────────────────────────────────────────
-    QScrollArea* scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFixedWidth(240);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
-    QWidget* rp = new QWidget;
-    QVBoxLayout* rv = new QVBoxLayout(rp);
-    rv->setContentsMargins(14, 14, 14, 14);
+    // ── Right panel (240px): Proximity + Events + Track & Weather ─
+    QWidget* rightPanel = new QWidget;
+    rightPanel->setFixedWidth(240);
+    QVBoxLayout* rv = new QVBoxLayout(rightPanel);
+    rv->setContentsMargins(14, 10, 14, 10);
     rv->setSpacing(6);
-
-    auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
-        QWidget* row = new QWidget;
-        QHBoxLayout* h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 4, 0, 4);
-        QLabel* lbl = new QLabel(label);
-        QFont lf; lf.setPointSize(9); lbl->setFont(lf);
-        lbl->setForegroundRole(QPalette::PlaceholderText);
-        valueOut = new QLabel("—");
-        QFont vf; vf.setPointSize(9); vf.setBold(true);
-        valueOut->setFont(vf);
-        valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        h->addWidget(lbl);
-        h->addStretch();
-        h->addWidget(valueOut);
-        return row;
-    };
 
     auto makeSection = [&](const QString& title) {
         QLabel* lbl = new QLabel(title);
@@ -338,67 +363,25 @@ QWidget* MainWindow::buildSessionPage() {
         rv->addWidget(lbl);
     };
 
-    auto addDivider = [&]() {
+    auto rpDivider = [&]() {
         QFrame* div = new QFrame;
-        div->setFrameShape(QFrame::HLine);
-        div->setFrameShadow(QFrame::Sunken);
+        div->setFrameShape(QFrame::HLine); div->setFrameShadow(QFrame::Sunken);
         rv->addWidget(div);
     };
 
-    // TRACK & WEATHER
-    makeSection("TRACK & WEATHER");
-    rv->addWidget(makeRow("Track Temp",   sp_trackTemp));
-    rv->addWidget(makeRow("Air Temp",     sp_airTemp));
-    rv->addWidget(makeRow("Track Length", sp_trackLen));
-    rv->addWidget(makeRow("Time of Day",  sp_timeOfDay));
-
-    addDivider();
-
-    // Weather now
-    QWidget* nowRow = new QWidget;
-    QHBoxLayout* nh = new QHBoxLayout(nowRow);
-    nh->setContentsMargins(0, 4, 0, 4);
-    QLabel* nowCaption = new QLabel("Now");
-    QFont nf; nf.setPointSize(9);
-    nowCaption->setFont(nf);
-    nowCaption->setForegroundRole(QPalette::PlaceholderText);
-    sp_weatherNow = new QLabel("—");
-    QFont wnf; wnf.setPointSize(9); wnf.setBold(true);
-    sp_weatherNow->setFont(wnf);
-    sp_weatherNow->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    nh->addWidget(nowCaption);
-    nh->addStretch();
-    nh->addWidget(sp_weatherNow);
-    rv->addWidget(nowRow);
-
-    // Forecast rows
-    for (int i = 0; i < 5; ++i) {
-        QWidget* fcRow = new QWidget;
-        QHBoxLayout* fh = new QHBoxLayout(fcRow);
-        fh->setContentsMargins(0, 2, 0, 2);
-        fh->setSpacing(4);
-
-        sp_fcTime[i] = new QLabel("");
-        QFont ftf; ftf.setPointSize(8);
-        sp_fcTime[i]->setFont(ftf);
-        sp_fcTime[i]->setForegroundRole(QPalette::PlaceholderText);
-        sp_fcTime[i]->setFixedWidth(32);
-
-        sp_fcWeather[i] = new QLabel("");
-        sp_fcWeather[i]->setFont(ftf);
-
-        sp_fcRain[i] = new QLabel("");
-        sp_fcRain[i]->setFont(ftf);
-        sp_fcRain[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        sp_fcRain[i]->setStyleSheet("color:#5794F2;");
-
-        fh->addWidget(sp_fcTime[i]);
-        fh->addWidget(sp_fcWeather[i], 1);
-        fh->addWidget(sp_fcRain[i]);
-        rv->addWidget(fcRow);
-    }
-
-    addDivider();
+    auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
+        QWidget* row = new QWidget;
+        QHBoxLayout* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 4, 0, 4);
+        QLabel* lbl = new QLabel(label);
+        QFont lf; lf.setPointSize(9); lbl->setFont(lf);
+        lbl->setForegroundRole(QPalette::PlaceholderText);
+        valueOut = new QLabel("—");
+        QFont vf; vf.setPointSize(9); vf.setBold(true); valueOut->setFont(vf);
+        valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        h->addWidget(lbl); h->addStretch(); h->addWidget(valueOut);
+        return row;
+    };
 
     // PROXIMITY
     makeSection("PROXIMITY");
@@ -410,18 +393,15 @@ QWidget* MainWindow::buildSessionPage() {
         ph->setSpacing(6);
 
         sp_proxPos[i] = new QLabel("—");
-        QFont pf; pf.setPointSize(8); pf.setBold(true);
-        sp_proxPos[i]->setFont(pf);
+        QFont pf; pf.setPointSize(8); pf.setBold(true); sp_proxPos[i]->setFont(pf);
         sp_proxPos[i]->setFixedWidth(28);
         sp_proxPos[i]->setForegroundRole(QPalette::PlaceholderText);
 
         sp_proxName[i] = new QLabel("—");
-        QFont nmf; nmf.setPointSize(10); nmf.setBold(true);
-        sp_proxName[i]->setFont(nmf);
+        QFont nmf; nmf.setPointSize(10); nmf.setBold(true); sp_proxName[i]->setFont(nmf);
 
         sp_proxGap[i] = new QLabel("—");
-        QFont gf; gf.setPointSize(8);
-        sp_proxGap[i]->setFont(gf);
+        QFont gf; gf.setPointSize(8); sp_proxGap[i]->setFont(gf);
         sp_proxGap[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sp_proxGap[i]->setForegroundRole(QPalette::PlaceholderText);
 
@@ -431,10 +411,31 @@ QWidget* MainWindow::buildSessionPage() {
         rv->addWidget(row);
     }
 
-    rv->addStretch();
-    scroll->setWidget(rp);
-    ch->addWidget(scroll);
+    rpDivider();
 
+    // EVENTS
+    makeSection("EVENTS");
+    sp_eventsList = new QListWidget;
+    sp_eventsList->setSelectionMode(QAbstractItemView::NoSelection);
+    sp_eventsList->setFocusPolicy(Qt::NoFocus);
+    sp_eventsList->setAlternatingRowColors(false);
+    sp_eventsList->setFrameShape(QFrame::NoFrame);
+    QFont evf; evf.setPointSize(8);
+    sp_eventsList->setFont(evf);
+    sp_eventsList->setMaximumHeight(120);
+    rv->addWidget(sp_eventsList);
+
+    rpDivider();
+
+    // TRACK & WEATHER
+    makeSection("TRACK & WEATHER");
+    rv->addWidget(makeRow("Track Temp",   sp_trackTemp));
+    rv->addWidget(makeRow("Air Temp",     sp_airTemp));
+    rv->addWidget(makeRow("Track Length", sp_trackLen));
+    rv->addWidget(makeRow("Time of Day",  sp_timeOfDay));
+
+    rv->addStretch();
+    ch->addWidget(rightPanel);
     root->addWidget(content, 1);
     return w;
 }
@@ -451,7 +452,7 @@ void MainWindow::updateSessionPage() {
     int pitSpeed  = lastSessionData.value("pit_speed_limit",  0);
     int idealLap  = lastSessionData.value("pit_stop_window_ideal_lap",  0);
     int latestLap = lastSessionData.value("pit_stop_window_latest_lap", 0);
-    int scStatus  = lastSessionData.value("safety_car_status", 0);
+    int rejoin    = lastSessionData.value("pit_stop_rejoin_position",   0);
     int weather   = lastSessionData.value("weather",           0);
     int trackTemp = lastSessionData.value("track_temp",        0);
     int airTemp   = lastSessionData.value("air_temp",          0);
@@ -474,15 +475,7 @@ void MainWindow::updateSessionPage() {
     else
         sp_statPitWin->setText("—");
 
-    static const char* scLabels[] = { "—", "SC", "VSC", "Formation" };
-    int sc = (scStatus >= 0 && scStatus < 4) ? scStatus : 0;
-    sp_statSafetyCar->setText(scLabels[sc]);
-    if (sc == 1 || sc == 2)
-        sp_statSafetyCar->setStyleSheet("color:#FADE2A;");
-    else if (sc == 3)
-        sp_statSafetyCar->setStyleSheet("color:#5794F2;");
-    else
-        sp_statSafetyCar->setStyleSheet("");
+    sp_statRejoin->setText(rejoin > 0 ? QString("P%1").arg(rejoin) : "—");
 
     sp_trackTemp->setText(QString::number(trackTemp) + "°C");
     sp_trackTemp->setStyleSheet("color:" + trackTempColor(trackTemp).name() + ";");
@@ -563,10 +556,9 @@ void MainWindow::updateSessionEvents() {
                 .arg((lapMs % 60000) / 1000, 2, 10, QChar('0'))
                 .arg(lapMs % 1000, 3, 10, QChar('0'));
             int carIdx = ev.value("car_idx", -1);
-            if (carIdx >= 0 && lastParticipantsData.contains("drivers")) {
+            if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
                 for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx", -1) == carIdx) { detail = QString::fromStdString(d.value("name","")) + "  " + detail; break; }
-            }
+                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")) + "  " + detail; break; }
         } else if (code == "SCAR") {
             int t = ev.value("safety_car_type", 0);
             detail = (t == 1) ? "Full SC" : (t == 2) ? "VSC" : (t == 3) ? "Formation Lap" : "";
@@ -574,13 +566,13 @@ void MainWindow::updateSessionEvents() {
             int carIdx = ev.value("car_idx", -1);
             if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
                 for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx", -1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
+                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
         } else if (code == "PENA") {
             int carIdx = ev.value("car_idx", -1);
             int timeS  = ev.value("penalty_time_s", 0);
             if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
                 for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx", -1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
+                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
             if (timeS > 0) detail += (detail.isEmpty() ? "" : "  ") + QString("+%1s").arg(timeS);
         }
 
@@ -605,12 +597,12 @@ void MainWindow::updateProximityWidget() {
         return;
     }
 
-    struct CarEntry { int idx; int pos; int gapMs; int rs; };
+    struct CarEntry { int idx; int pos; int gapMs; };
     std::vector<CarEntry> cars;
     for (const auto& car : lastTimingData["cars"]) {
         int rs = car.value("result_status", 0);
         if (rs == 0 || rs == 3) continue;
-        cars.push_back({car.value("idx",-1), car.value("position",0), car.value("gap_ms",0), rs});
+        cars.push_back({car.value("idx",-1), car.value("position",0), car.value("gap_ms",0)});
     }
     std::sort(cars.begin(), cars.end(), [](const CarEntry& a, const CarEntry& b){ return a.pos < b.pos; });
 
@@ -623,7 +615,18 @@ void MainWindow::updateProximityWidget() {
         return;
     }
 
-    int rowSlot[3] = { playerSortIdx - 1, playerSortIdx, playerSortIdx + 1 };
+    // Always show 3 rows: P1→[0,1,2], last→[n-2,n-1,n], mid→[n-1,n,n+1]
+    int n = (int)cars.size();
+    int rowSlot[3];
+    if (playerSortIdx == 0) {
+        rowSlot[0] = 0; rowSlot[1] = 1; rowSlot[2] = 2;
+    } else if (playerSortIdx == n - 1) {
+        rowSlot[0] = n - 3; rowSlot[1] = n - 2; rowSlot[2] = n - 1;
+    } else {
+        rowSlot[0] = playerSortIdx - 1;
+        rowSlot[1] = playerSortIdx;
+        rowSlot[2] = playerSortIdx + 1;
+    }
 
     auto driverName = [&](int carIdx) -> QString {
         if (carIdx < 0 || !lastParticipantsData.contains("drivers")) return "—";
@@ -639,7 +642,7 @@ void MainWindow::updateProximityWidget() {
 
     for (int i = 0; i < 3; ++i) {
         int si = rowSlot[i];
-        if (si < 0 || si >= (int)cars.size()) { sp_proxRow[i]->setVisible(false); continue; }
+        if (si < 0 || si >= n) { sp_proxRow[i]->setVisible(false); continue; }
         sp_proxRow[i]->setVisible(true);
         const CarEntry& ce = cars[si];
         bool isPlayer = (ce.idx == playerIdx);

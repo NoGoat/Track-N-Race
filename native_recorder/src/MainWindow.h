@@ -119,7 +119,7 @@ private:
     QLabel*      sp_statRemain    = nullptr;
     QLabel*      sp_statPitSpeed  = nullptr;
     QLabel*      sp_statPitWin    = nullptr;
-    QLabel*      sp_statSafetyCar = nullptr;
+    QLabel*      sp_statRejoin    = nullptr;
     QLabel*      sp_trackTemp     = nullptr;
     QLabel*      sp_airTemp       = nullptr;
     QLabel*      sp_trackLen      = nullptr;
