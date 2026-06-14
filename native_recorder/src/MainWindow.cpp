@@ -511,27 +511,20 @@ QWidget* MainWindow::buildTyresPage() {
     vdiv->setFrameShadow(QFrame::Sunken);
     hbox->addWidget(vdiv);
 
-    // ── Right panel: WheelCards ──────────────────────────────────
+    // ── Right panel: WheelCards (1×4 vertical, fills height) ────────
     QWidget* right = new QWidget;
-    right->setFixedWidth(260);
+    right->setFixedWidth(240);
     QVBoxLayout* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(8, 8, 8, 8);
-    rv->setSpacing(8);
-
-    // 2×2 WheelCard grid
-    QGridLayout* grid = new QGridLayout;
-    grid->setSpacing(6);
+    rv->setContentsMargins(0, 0, 0, 0);
+    rv->setSpacing(0);
 
     static const char* cornerNames[] = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
-    // Grid positions: FL=0,0  FR=0,1  RL=1,0  RR=1,1
-    static const int gridRow[] = { 0, 0, 1, 1 };
-    static const int gridCol[] = { 0, 1, 0, 1 };
 
     for (int i = 0; i < 4; ++i) {
-        QFrame* card = new QFrame;
-        card->setFrameShape(QFrame::StyledPanel);
+        QWidget* card = new QWidget;
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         QVBoxLayout* cv = new QVBoxLayout(card);
-        cv->setContentsMargins(6, 6, 6, 6);
+        cv->setContentsMargins(10, 8, 10, 8);
         cv->setSpacing(2);
 
         QLabel* title = new QLabel(cornerNames[i]);
@@ -581,11 +574,16 @@ QWidget* MainWindow::buildTyresPage() {
         tp_blisters[i]->setForegroundRole(QPalette::PlaceholderText);
         cv->addWidget(tp_blisters[i]);
 
-        grid->addWidget(card, gridRow[i], gridCol[i]);
+        rv->addWidget(card, 1);  // stretch=1 so all four share height equally
+
+        if (i < 3) {
+            QFrame* hdiv = new QFrame;
+            hdiv->setFrameShape(QFrame::HLine);
+            hdiv->setFrameShadow(QFrame::Sunken);
+            rv->addWidget(hdiv);
+        }
     }
 
-    rv->addLayout(grid);
-    rv->addStretch();
     hbox->addWidget(right);
     return w;
 }
