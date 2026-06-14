@@ -67,8 +67,15 @@ QWidget* MainWindow::buildStandingsPage() {
     timingTable->setShowGrid(false);
     timingTable->setAlternatingRowColors(false);
     timingTable->verticalHeader()->setVisible(false);
-    timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
+    // cell on every setItem and tanks the UI when the table rebuilds rapidly.
+    timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     timingTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    {
+        const int colW[12] = { 44, 36, 0, 46, 84, 80, 60, 60, 60, 52, 74, 72 };
+        for (int c = 0; c < 12; ++c)
+            if (c != 2) timingTable->setColumnWidth(c, colW[c]);
+    }
 
     QFont hf; hf.setPointSize(7);
     timingTable->horizontalHeader()->setFont(hf);

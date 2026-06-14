@@ -33,8 +33,15 @@ QWidget* MainWindow::buildTyresPage() {
     tp_setsTable->setShowGrid(false);
     tp_setsTable->setAlternatingRowColors(false);
     tp_setsTable->verticalHeader()->setVisible(false);
-    tp_setsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
+    // cell on each rebuild (see the timing table for the same fix).
+    tp_setsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     tp_setsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    {
+        const int colW[7] = { 36, 92, 72, 0, 52, 84, 72 };
+        for (int c = 0; c < 7; ++c)
+            if (c != 3) tp_setsTable->setColumnWidth(c, colW[c]);
+    }
     QFont hf; hf.setPointSize(7);
     tp_setsTable->horizontalHeader()->setFont(hf);
     hbox->addWidget(tp_setsTable, 1);

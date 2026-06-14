@@ -26,6 +26,7 @@
 
 class TelemetryChart;
 class TnrdPlayer;
+class QTimer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -200,6 +201,21 @@ private:
     void     updateProximityWidget();
     void     updateTyresPage();
     void     updateTyreSetsTable();
+
+    // ── Coalesced panel refresh ───────────────────────────────────
+    // Packets can arrive in bursts (especially fast playback); rebuilding a
+    // panel per packet locks the UI. Each packet only marks its panel dirty and
+    // the heavy rebuild runs once per refresh tick.
+    QTimer* uiRefreshTimer_ = nullptr;
+    bool dirtyTiming_    = false;
+    bool dirtyRacePanel_ = false;
+    bool dirtyTyres_     = false;
+    bool dirtyTyreSets_  = false;
+    bool dirtySession_   = false;
+    bool dirtyEvents_    = false;
+    bool dirtyProximity_ = false;
+    void scheduleUiRefresh();
+    void flushUiRefresh();
 
     // ── Recording helpers ─────────────────────────────────────────
     void startNewStream(int trackId, int sessionType, int format);

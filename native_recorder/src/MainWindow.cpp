@@ -17,6 +17,7 @@
 #include <QStyleHints>
 #include <QCoreApplication>
 #include <QUdpSocket>
+#include <QTimer>
 #include <QSvgRenderer>
 #include <QPainter>
 #include <QImage>
@@ -133,6 +134,12 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildSessionPage());   // index 2
     stack->addWidget(buildTyresPage());     // index 3
     stack->addWidget(buildSettingsTab());   // index 4
+
+    // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
+    uiRefreshTimer_ = new QTimer(this);
+    uiRefreshTimer_->setSingleShot(true);
+    uiRefreshTimer_->setInterval(33);
+    connect(uiRefreshTimer_, &QTimer::timeout, this, &MainWindow::flushUiRefresh);
 
     // ── Bottom playback bar ────────────────────────────────────────────────────
     player_ = new TnrdPlayer(this);
@@ -661,7 +668,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row.value("engine_temp", 0)
         );
         lastPlayerTelemetryData = row;
-        updateTyresPage();
+        dirtyTyres_ = true; scheduleUiRefresh();
     } else if (type == "status") {
         emit statusUpdated(
             row["ers_pct"].get<float>(),
@@ -672,7 +679,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["tyre_age_laps"].get<int>()
         );
         lastPlayerStatusData = row;
-        updateRacePanel();
+        dirtyRacePanel_ = true; scheduleUiRefresh();
     } else if (type == "damage") {
         emit damageUpdated(
             row.value("tyre_dmg_fl",   0), row.value("tyre_dmg_fr",   0),
@@ -685,32 +692,45 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row.value("gearbox_damage",    0), row.value("engine_damage",     0)
         );
         lastPlayerDamageData = row;
-        updateTyresPage();
+        dirtyTyres_ = true; scheduleUiRefresh();
     } else if (type == "tyre_sets") {
         lastTyreSetsData = row;
-        updateTyreSetsTable();
+        dirtyTyreSets_ = true; scheduleUiRefresh();
     } else if (type == "lap") {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
         lastPlayerLapData = row;
-        updateRacePanel();
+        dirtyRacePanel_ = true; scheduleUiRefresh();
     } else if (type == "session") {
         lastSessionData = row;
-        updateSessionPage();
+        dirtySession_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
         if (row.value("code", "") == "SSTA") sessionEventLog.clear();
         sessionEventLog.push_back(row);
-        updateSessionEvents();
+        dirtyEvents_ = true; scheduleUiRefresh();
     } else if (type == "timing") {
         lastTimingData = row;
-        updateTimingTable();
-        updateProximityWidget();
+        dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (type == "participants") {
         lastParticipantsData = row;
-        updateTimingTable();
+        dirtyTiming_ = true; scheduleUiRefresh();
     } else if (type == "all_status") {
         lastAllStatusData = row;
-        updateTimingTable();
+        dirtyTiming_ = true; scheduleUiRefresh();
     }
+}
+
+void MainWindow::scheduleUiRefresh() {
+    if (!uiRefreshTimer_->isActive()) uiRefreshTimer_->start();
+}
+
+void MainWindow::flushUiRefresh() {
+    if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
+    if (dirtyProximity_) { updateProximityWidget(); dirtyProximity_ = false; }
+    if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
+    if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
+    if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
+    if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
+    if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
 }
 
 // ── Central packet router ──────────────────────────────────────────────────
