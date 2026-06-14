@@ -59,16 +59,16 @@ QWidget* MainWindow::buildStandingsPage() {
     hbox->setSpacing(0);
 
     timingTable = new QTableWidget;
-    timingTable->setColumnCount(11);
+    timingTable->setColumnCount(12);
     timingTable->setHorizontalHeaderLabels(
-        {"POS", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "PENALTIES", "STATUS"});
+        {"POS", "#", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "PENALTIES", "STATUS"});
     timingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     timingTable->setSelectionMode(QAbstractItemView::NoSelection);
     timingTable->setShowGrid(false);
     timingTable->setAlternatingRowColors(false);
     timingTable->verticalHeader()->setVisible(false);
     timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    timingTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    timingTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
 
     QFont hf; hf.setPointSize(7);
     timingTable->horizontalHeader()->setFont(hf);
@@ -388,9 +388,10 @@ void MainWindow::updateTimingTable() {
         int s3Ms = (lastLapMs > 0 && s1Ms > 0 && s2Ms > 0) ? lastLapMs - s1Ms - s2Ms : 0;
 
         auto di = driverMap.find(idx);
-        QString driverText = (di != driverMap.end())
-            ? QString("#%1 %2").arg(di->second.raceNum).arg(di->second.name)
-            : QString("Car %1").arg(idx);
+        int     raceNum    = (di != driverMap.end()) ? di->second.raceNum : 0;
+        QString driverName = (di != driverMap.end())
+            ? di->second.name : QString("Car %1").arg(idx);
+        if (isPlayer) driverName += " (You)";
         QColor driverColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
 
         int compound = tyreMap.count(idx) ? tyreMap.at(idx).compound : -1;
@@ -414,8 +415,12 @@ void MainWindow::updateTimingTable() {
         else if (pos == 2) posColor = QColor("#C0C0C0");
         else if (pos == 3) posColor = QColor("#CD7F32");
 
+        // Bold when this driver's data is shown in the race panel:
+        // — explicit selection, or player when nothing is selected
+        bool showingThisDriver = (idx == selectedCarIdx) ||
+                                 (isPlayer && selectedCarIdx == -1);
         QFont cellFont;
-        if (isPlayer || idx == selectedCarIdx) cellFont.setBold(true);
+        if (showingThisDriver) cellFont.setBold(true);
 
         auto makeItem = [&](const QString& text) {
             auto* item = new QTableWidgetItem(text);
@@ -423,33 +428,41 @@ void MainWindow::updateTimingTable() {
             return item;
         };
 
+        // Col 0: POS
         auto* posItem = makeItem(QString::number(pos));
         if (posColor.isValid()) posItem->setForeground(posColor);
         timingTable->setItem(row, 0, posItem);
 
-        auto* drvItem = makeItem(driverText);
+        // Col 1: #
+        auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—");
+        numItem->setForeground(driverColor);
+        timingTable->setItem(row, 1, numItem);
+
+        // Col 2: DRIVER
+        auto* drvItem = makeItem(driverName);
         drvItem->setForeground(driverColor);
-        timingTable->setItem(row, 1, drvItem);
+        timingTable->setItem(row, 2, drvItem);
 
-        timingTable->setItem(row, 2, makeItem(lapNum > 0 ? QString::number(lapNum) : "—"));
-        timingTable->setItem(row, 3, makeItem(formatLapTime(lastLapMs)));
-        timingTable->setItem(row, 4, makeItem(formatGap(gapMs, pos == 1)));
-        timingTable->setItem(row, 5, makeItem(formatSector(s1Ms)));
-        timingTable->setItem(row, 6, makeItem(formatSector(s2Ms)));
-        timingTable->setItem(row, 7, makeItem(formatSector(s3Ms)));
+        timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—"));
+        timingTable->setItem(row, 4, makeItem(formatLapTime(lastLapMs)));
+        timingTable->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1)));
+        timingTable->setItem(row, 6, makeItem(formatSector(s1Ms)));
+        timingTable->setItem(row, 7, makeItem(formatSector(s2Ms)));
+        timingTable->setItem(row, 8, makeItem(formatSector(s3Ms)));
 
+        // Col 9: TYRE
         auto* tyreItem = makeItem(tyreLabel(compound));
         QColor tyreFg = tyreTextColor(visual);
         if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
-        timingTable->setItem(row, 8, tyreItem);
+        timingTable->setItem(row, 9, tyreItem);
 
-        // Col 9: PENALTIES
+        // Col 10: PENALTIES
         auto* penItem = makeItem(penText);
         if (!penText.isEmpty()) penItem->setForeground(QColor("#C4162A"));
-        timingTable->setItem(row, 9, penItem);
+        timingTable->setItem(row, 10, penItem);
 
-        // Col 10: STATUS
-        timingTable->setItem(row, 10, makeItem(statusText));
+        // Col 11: STATUS
+        timingTable->setItem(row, 11, makeItem(statusText));
 
         timingTable->setRowHeight(row, 22);
     }
