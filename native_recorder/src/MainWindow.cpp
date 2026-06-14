@@ -86,8 +86,9 @@ MainWindow::MainWindow(QWidget* parent)
     QComboBox* pageCombo = new QComboBox;
     pageCombo->addItem("Overview");   // index 0
     pageCombo->addItem("Standings");  // index 1
-    pageCombo->addItem("Tyres");      // index 2
-    pageCombo->addItem("Settings");   // index 3
+    pageCombo->addItem("Session");    // index 2
+    pageCombo->addItem("Tyres");      // index 3
+    pageCombo->addItem("Settings");   // index 4
     toolbar->addWidget(pageCombo);
 
     QWidget* spacer = new QWidget;
@@ -107,8 +108,9 @@ MainWindow::MainWindow(QWidget* parent)
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(buildOverviewTab());   // index 0
     stack->addWidget(buildStandingsPage()); // index 1
-    stack->addWidget(buildTyresPage());     // index 2
-    stack->addWidget(buildSettingsTab());   // index 3
+    stack->addWidget(buildSessionPage());   // index 2
+    stack->addWidget(buildTyresPage());     // index 3
+    stack->addWidget(buildSettingsTab());   // index 4
     setCentralWidget(stack);
 
     connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
@@ -456,9 +458,17 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
         lastPlayerLapData = row;
         updateRacePanel();
+    } else if (type == "session") {
+        lastSessionData = row;
+        updateSessionPage();
+    } else if (type == "race_event") {
+        if (row.value("code", "") == "SSTA") sessionEventLog.clear();
+        sessionEventLog.push_back(row);
+        updateSessionEvents();
     } else if (type == "timing") {
         lastTimingData = row;
         updateTimingTable();
+        updateProximityWidget();
     } else if (type == "participants") {
         lastParticipantsData = row;
         updateTimingTable();

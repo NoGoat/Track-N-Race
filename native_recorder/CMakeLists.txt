@@ -45,6 +45,7 @@ set(SOURCES
     src/components/SettingsPage.cpp
     src/components/TyresPage.cpp
     src/components/StandingsPage.cpp
+    src/components/SessionPage.cpp
     src/protocols/protocol.cpp
     src/protocols/f1_24.cpp
     src/protocols/f1_25.cpp

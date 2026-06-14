@@ -8,6 +8,7 @@
 #include <QTableWidget>
 #include <QProgressBar>
 #include <QScrollArea>
+#include <QListWidget>
 #include <QUdpSocket>
 #include <QSettings>
 
@@ -108,6 +109,33 @@ private:
     nlohmann::json lastPlayerDamageData;
     nlohmann::json lastTyreSetsData;
 
+    // ── Session page ──────────────────────────────────────────────
+    QWidget*     sp_marshalStrip  = nullptr;
+    QLabel*      sp_gpName        = nullptr;
+    QLabel*      sp_circuitName   = nullptr;
+    QLabel*      sp_sessionType   = nullptr;
+    QLabel*      sp_timeLeft      = nullptr;
+    QLabel*      sp_statTotalLaps = nullptr;
+    QLabel*      sp_statRemain    = nullptr;
+    QLabel*      sp_statPitSpeed  = nullptr;
+    QLabel*      sp_statPitWin    = nullptr;
+    QLabel*      sp_statSafetyCar = nullptr;
+    QLabel*      sp_trackTemp     = nullptr;
+    QLabel*      sp_airTemp       = nullptr;
+    QLabel*      sp_trackLen      = nullptr;
+    QLabel*      sp_timeOfDay     = nullptr;
+    QLabel*      sp_weatherNow    = nullptr;
+    QLabel*      sp_fcTime[5]     = {};
+    QLabel*      sp_fcWeather[5]  = {};
+    QLabel*      sp_fcRain[5]     = {};
+    QLabel*      sp_proxPos[3]    = {};
+    QLabel*      sp_proxName[3]   = {};
+    QLabel*      sp_proxGap[3]    = {};
+    QWidget*     sp_proxRow[3]    = {};
+    QListWidget* sp_eventsList    = nullptr;
+    nlohmann::json              lastSessionData;
+    std::vector<nlohmann::json> sessionEventLog;
+
     // ── Settings page ─────────────────────────────────────────────
     QLabel*       dirLabel    = nullptr;
     QCheckBox*    recordCheck = nullptr;
@@ -142,10 +170,14 @@ private:
     QWidget* buildOverviewTab();
     QWidget* buildStandingsPage();
     QWidget* buildRacePanel();
+    QWidget* buildSessionPage();
     QWidget* buildTyresPage();
     QWidget* buildSettingsTab();
     void     updateTimingTable();
     void     updateRacePanel();
+    void     updateSessionPage();
+    void     updateSessionEvents();
+    void     updateProximityWidget();
     void     updateTyresPage();
     void     updateTyreSetsTable();
 
