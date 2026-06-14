@@ -41,9 +41,13 @@ set(SOURCES
     src/MainWindow.h
     src/TelemetryChart.cpp
     src/TelemetryChart.h
-    src/protocol.cpp
-    src/f1_24.cpp
-    src/f1_25.cpp
+    src/components/OverviewPage.cpp
+    src/components/SettingsPage.cpp
+    src/components/TyresPage.cpp
+    src/components/StandingsPage.cpp
+    src/protocols/protocol.cpp
+    src/protocols/f1_24.cpp
+    src/protocols/f1_25.cpp
     resources.qrc
 )
 
