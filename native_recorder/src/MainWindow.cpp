@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QTabWidget>
+#include <QComboBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -150,6 +151,25 @@ MainWindow::MainWindow(QWidget* parent)
     QTabWidget* tabs = new QTabWidget(this);
     tabs->addTab(buildOverviewTab(), "Overview");
     tabs->addTab(buildSettingsTab(), "Settings");
+
+    // Time-window dropdown in the top-left corner of the tab bar
+    QComboBox* windowCombo = new QComboBox(tabs);
+    const struct { const char* label; float secs; } windows[] = {
+        {"15s", 15}, {"30s", 30}, {"1m", 60},
+        {"2m", 120}, {"5m", 300}, {"10m", 600}
+    };
+    int defaultIdx = 1; // 30s
+    for (int i = 0; i < 6; ++i) {
+        windowCombo->addItem(windows[i].label, windows[i].secs);
+        if (windows[i].secs == 30.0f) defaultIdx = i;
+    }
+    windowCombo->setCurrentIndex(defaultIdx);
+    connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
+        float secs = windowCombo->itemData(idx).toFloat();
+        if (chart) chart->setWindowSeconds(secs);
+    });
+    tabs->setCornerWidget(windowCombo, Qt::TopRightCorner);
+
     setCentralWidget(tabs);
 
     // Bind UDP socket

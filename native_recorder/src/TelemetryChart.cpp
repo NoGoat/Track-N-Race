@@ -15,10 +15,21 @@ TelemetryChart::TelemetryChart(QWidget* parent)
 
 void TelemetryChart::addPoint(float sessionTime, float speed, int rpm, float ers) {
     // Trim entries older than the scroll window
-    while (!pts.isEmpty() && (sessionTime - pts.first().t) > WINDOW_S)
+    while (!pts.isEmpty() && (sessionTime - pts.first().t) > windowS)
         pts.removeFirst();
 
     pts.append({ sessionTime, speed, (float)rpm, ers });
+    update();
+}
+
+void TelemetryChart::setWindowSeconds(float seconds) {
+    windowS = seconds;
+    // Trim any points now outside the new window
+    if (!pts.isEmpty()) {
+        float tMax = pts.last().t;
+        while (!pts.isEmpty() && (tMax - pts.first().t) > windowS)
+            pts.removeFirst();
+    }
     update();
 }
 
@@ -86,12 +97,12 @@ void TelemetryChart::paintEvent(QPaintEvent*) {
     // ── X-axis time labels ───────────────────────────────────────
     if (!pts.isEmpty()) {
         float tMax = pts.last().t;
-        float tMin = tMax - WINDOW_S;
+        float tMin = tMax - windowS;
         p.setPen(textColor);
         int steps = 6;
         for (int i = 0; i <= steps; ++i) {
-            float t  = tMin + i * WINDOW_S / steps;
-            float x  = plot.left() + (t - tMin) / WINDOW_S * pw;
+            float t  = tMin + i * windowS / steps;
+            float x  = plot.left() + (t - tMin) / windowS * pw;
             int secs = (int)std::fabs(t);
             QString lbl = QString("%1:%2")
                 .arg(secs / 60, 2, 10, QChar('0'))
@@ -104,9 +115,9 @@ void TelemetryChart::paintEvent(QPaintEvent*) {
     if (pts.size() < 2) return;
 
     float tMax = pts.last().t;
-    float tMin = tMax - WINDOW_S;
+    float tMin = tMax - windowS;
 
-    auto xPx = [&](float t) { return plot.left() + ((t - tMin) / WINDOW_S) * pw; };
+    auto xPx = [&](float t) { return plot.left() + ((t - tMin) / windowS) * pw; };
 
     // ── Series ───────────────────────────────────────────────────
     // ERS (yellow) — drawn first so it's behind speed/rpm

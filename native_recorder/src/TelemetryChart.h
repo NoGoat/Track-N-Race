@@ -11,6 +11,7 @@ public:
 
 public slots:
     void addPoint(float sessionTime, float speed, int rpm, float ers);
+    void setWindowSeconds(float seconds);
     void reset();
 
 protected:
@@ -19,7 +20,7 @@ protected:
 private:
     struct Pt { float t; float speed; float rpm; float ers; };
 
-    static constexpr float WINDOW_S  = 30.0f;
+    float windowS = 30.0f;
     static constexpr float MAX_SPEED = 380.0f;
     static constexpr float MAX_RPM   = 16000.0f;
 
