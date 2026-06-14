@@ -560,7 +560,19 @@ QWidget* MainWindow::buildTyresPage() {
         cv->addWidget(makeRow("Surface",  tp_surfaceTemp[i]));
         cv->addWidget(makeRow("Inner",    tp_innerTemp[i]));
         cv->addWidget(makeRow("Brake",    tp_brakeTemp[i]));
-        cv->addWidget(makeRow("Wear",     tp_wear[i]));
+        cv->addWidget(makeRow("Wear",     tp_wearLabel[i]));
+
+        auto* wearBar = new QProgressBar;
+        wearBar->setRange(0, 100);
+        wearBar->setValue(0);
+        wearBar->setTextVisible(false);
+        wearBar->setFixedHeight(6);
+        wearBar->setStyleSheet(
+            "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+            "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
+        );
+        tp_wear[i] = wearBar;
+        cv->addWidget(wearBar);
 
         tp_blisters[i] = new QLabel;
         tp_blisters[i]->setVisible(false);
@@ -633,9 +645,14 @@ void MainWindow::updateTyresPage() {
         if (!lastPlayerDamageData.empty()) {
             int wear = lastPlayerDamageData.value(wearKeys[i], -1);
             if (wear >= 0) {
-                tp_wear[i]->setText(QString::number(wear) + "%");
-                tp_wear[i]->setStyleSheet(
-                    "color: " + wearPctColor(wear).name() + "; font-weight: bold;");
+                const QString wearCol = wearPctColor(wear).name();
+                tp_wearLabel[i]->setText(QString::number(wear) + "%");
+                tp_wearLabel[i]->setStyleSheet("color: " + wearCol + "; font-weight: bold;");
+                tp_wear[i]->setValue(wear);
+                tp_wear[i]->setStyleSheet(QString(
+                    "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                    "QProgressBar::chunk { background: %1; border-radius: 3px; }"
+                ).arg(wearCol));
             }
 
             int blisters = lastPlayerDamageData.value(blisterKeys[i], 0);

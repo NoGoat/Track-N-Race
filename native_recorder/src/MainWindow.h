@@ -100,7 +100,8 @@ private:
     QLabel*       tp_surfaceTemp[4] = {};  // FL, FR, RL, RR
     QLabel*       tp_innerTemp[4]   = {};
     QLabel*       tp_brakeTemp[4]   = {};
-    QLabel*       tp_wear[4]        = {};
+    QLabel*       tp_wearLabel[4]   = {};  // "34%" text next to "Wear" label
+    QProgressBar* tp_wear[4]        = {};  // colored fill bar
     QLabel*       tp_blisters[4]    = {};
     QTableWidget* tp_setsTable      = nullptr;
     nlohmann::json lastPlayerTelemetryData;
