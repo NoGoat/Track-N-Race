@@ -59,9 +59,9 @@ QWidget* MainWindow::buildStandingsPage() {
     hbox->setSpacing(0);
 
     timingTable = new QTableWidget;
-    timingTable->setColumnCount(10);
+    timingTable->setColumnCount(11);
     timingTable->setHorizontalHeaderLabels(
-        {"POS", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "STATUS"});
+        {"POS", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "PENALTIES", "STATUS"});
     timingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     timingTable->setSelectionMode(QAbstractItemView::NoSelection);
     timingTable->setShowGrid(false);
@@ -402,10 +402,12 @@ void MainWindow::updateTimingTable() {
         else if (resultSt == 7)  statusText = "RET";
         else if (pitStatus == 1) statusText = "PITLANE";
         else if (pitStatus == 2) statusText = "IN PIT";
-        else if (numDt > 0)      statusText = "DT";
-        else if (numSg > 0)      statusText = "SG";
-        else if (penaltiesS > 0) statusText = QString("+%1s").arg(penaltiesS);
         else if (lapInvalid)     statusText = "INV";
+
+        QString penText;
+        if      (numDt > 0)      penText = QString("DT ×%1").arg(numDt);
+        else if (numSg > 0)      penText = QString("SG ×%1").arg(numSg);
+        else if (penaltiesS > 0) penText = QString("+%1s").arg(penaltiesS);
 
         QColor posColor;
         if      (pos == 1) posColor = QColor("#FFD700");
@@ -441,7 +443,14 @@ void MainWindow::updateTimingTable() {
         if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
         timingTable->setItem(row, 8, tyreItem);
 
-        timingTable->setItem(row, 9, makeItem(statusText));
+        // Col 9: PENALTIES
+        auto* penItem = makeItem(penText);
+        if (!penText.isEmpty()) penItem->setForeground(QColor("#C4162A"));
+        timingTable->setItem(row, 9, penItem);
+
+        // Col 10: STATUS
+        timingTable->setItem(row, 10, makeItem(statusText));
+
         timingTable->setRowHeight(row, 22);
     }
 }
