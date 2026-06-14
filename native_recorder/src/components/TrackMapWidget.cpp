@@ -4,13 +4,16 @@
 #include <QPainterPath>
 #include <QTimer>
 #include <QFile>
+#include <QComboBox>
 #include <QFontMetrics>
 #include <QShowEvent>
 #include <QHideEvent>
 #include <QResizeEvent>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <cmath>
 #include <algorithm>
+#include <tuple>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -61,6 +64,28 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
     animTimer_->setInterval(16);   // ~60fps
     connect(animTimer_, &QTimer::timeout, this, [this]{ update(); });
     snapTimer_.start();
+
+    // Overlay controls (top-right): follow-driver + zoom selectors.
+    zoomCombo_ = new QComboBox(this);
+    zoomCombo_->addItem("2x", 2.0);
+    zoomCombo_->addItem("4x", 4.0);
+    zoomCombo_->addItem("8x", 8.0);
+    zoomCombo_->addItem("16x", 16.0);
+    zoomCombo_->setCurrentIndex(1);   // 4x
+    zoomCombo_->hide();
+    connect(zoomCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        zoomLevel_ = zoomCombo_->currentData().toDouble();
+    });
+
+    driverCombo_ = new QComboBox(this);
+    driverCombo_->addItem("Follow driver…", -1);
+    connect(driverCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        selectedDriverIdx_ = driverCombo_->currentData().toInt();
+        zoomCombo_->setVisible(selectedDriverIdx_ >= 0);
+        positionControls();
+    });
+
+    positionControls();
 }
 
 // ── Track loading ──────────────────────────────────────────────────────────
@@ -208,33 +233,30 @@ TrackMapWidget::Layout TrackMapWidget::buildLayout(double cw, double ch) const {
     return l;
 }
 
-QPointF TrackMapWidget::project(double worldX, double worldZ, const Layout& l) const {
-    // world → viewBox
-    double vx = (worldX - transform_.minX) * transform_.scale + transform_.offX;
-    double vy = (worldZ - transform_.minZ) * transform_.scale + transform_.offZ;
-    // rotate around viewBox centre
+QPointF TrackMapWidget::projectViewBox(double worldX, double worldZ) const {
+    const double vx = (worldX - transform_.minX) * transform_.scale + transform_.offX;
+    const double vy = (worldZ - transform_.minZ) * transform_.scale + transform_.offZ;
     const double dx = vx - prep_.rotCx, dy = vy - prep_.rotCy;
-    const double rx = prep_.rotCos * dx - prep_.rotSin * dy + prep_.rotCx;
-    const double ry = prep_.rotSin * dx + prep_.rotCos * dy + prep_.rotCy;
-    // viewBox → canvas (logical px)
-    return QPointF(rx * l.scale + l.ox, ry * l.scale + l.oy);
+    return QPointF(prep_.rotCos * dx - prep_.rotSin * dy + prep_.rotCx,
+                   prep_.rotSin * dx + prep_.rotCos * dy + prep_.rotCy);
 }
 
-// ── Static circuit layer (cached pixmap) ───────────────────────────────────
+QPointF TrackMapWidget::project(double worldX, double worldZ, const Layout& l) const {
+    const QPointF r = projectViewBox(worldX, worldZ);
+    return QPointF(r.x() * l.scale + l.ox, r.y() * l.scale + l.oy);
+}
 
-void TrackMapWidget::rebuildStaticLayer() {
-    if (!loaded_ || width() <= 0 || height() <= 0) return;
-
-    const double dpr = devicePixelRatioF();
-    staticLayer_ = QPixmap(QSize(int(width() * dpr), int(height() * dpr)));
-    staticLayer_.setDevicePixelRatio(dpr);
-    staticLayer_.fill(Qt::transparent);
-    staticLayerSize_ = size();
-
-    QPainter p(&staticLayer_);
-    p.setRenderHint(QPainter::Antialiasing, true);
-
-    const Layout l = buildLayout(width(), height());
+// ── Track vector render (used both for the cached layer and live zoom) ──────
+//
+// effZoom is layout.scale / baseLayout.scale. Track line widths grow with zoom
+// (so cars don't float off a hairline) while staying readable, exactly as in
+// the Electron map: trackZoomFactor = effZoom^0.8, other elements ~ sqrt(effZoom).
+void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) const {
+    const double zf  = std::sqrt(effZoom);
+    const double tzf = std::pow(effZoom, 0.8);
+    const auto tc = [&](const QPointF& vb) {
+        return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
+    };
     const char** pal = dark_ ? SECTOR_DARK : SECTOR_LIGHT;
 
     for (size_t si = 0; si < prep_.sectors.size(); ++si) {
@@ -242,30 +264,26 @@ void TrackMapWidget::rebuildStaticLayer() {
         if (poly.size() < 2) continue;
         QPolygonF canvasPts;
         canvasPts.reserve(poly.size());
-        for (const QPointF& vb : poly)
-            canvasPts << QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
+        for (const QPointF& vb : poly) canvasPts << tc(vb);
 
         QColor col(pal[std::min(si, size_t(2))]);
         QPen pen(col);
-        pen.setWidthF(TRACK_PX);
+        pen.setWidthF(TRACK_PX * tzf);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
         p.setPen(pen);
         p.drawPolyline(canvasPts);
     }
 
-    const auto tc = [&](const QPointF& vb) {
-        return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
-    };
-    // Sectors are already colour-coded, so the boundary ticks use the contrasting
+    // Sectors are already colour-coded, so boundary ticks use the contrasting
     // track colour (white on dark / black on light), matching the Electron map.
     const QColor lineCol(dark_ ? "#ffffff" : "#000000");
 
     // Sector-start ticks: junctions (S2, S3) …
     for (const Junction& jc : prep_.junctions) {
         const QPointF c = tc(jc.pt);
-        const double half = std::max(JUNC_HALF, TRACK_PX / 2 + 4);
-        QPen pen(lineCol); pen.setWidthF(3.0); pen.setCapStyle(Qt::RoundCap);
+        const double half = std::max(JUNC_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
+        QPen pen(lineCol); pen.setWidthF(3.0 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
                    QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
@@ -276,7 +294,7 @@ void TrackMapWidget::rebuildStaticLayer() {
         if (zone.size() < 2) continue;
         QPolygonF poly;
         poly.reserve((int)zone.size());
-        const double offset = std::max(DRS_OFFSET, TRACK_PX / 2 + 8);
+        const double offset = std::max(DRS_OFFSET * zf, (TRACK_PX * tzf) / 2 + 8 * zf);
         for (int i = 0; i < (int)zone.size(); ++i) {
             const QPointF n = perpAt(zone.data(), (int)zone.size(), i);
             const QPointF c = tc(zone[i]);
@@ -284,7 +302,7 @@ void TrackMapWidget::rebuildStaticLayer() {
         }
         QColor drsCol(DRS_COLOR);
         QPen pen(drsCol);
-        pen.setWidthF(DRS_PX);
+        pen.setWidthF(DRS_PX * zf);
         pen.setCapStyle(Qt::FlatCap);
         pen.setJoinStyle(Qt::MiterJoin);
         pen.setDashPattern({ 3.0 / DRS_PX, 3.0 / DRS_PX });  // 3px dash / 3px gap
@@ -298,12 +316,28 @@ void TrackMapWidget::rebuildStaticLayer() {
         const QPolygonF& s1 = prep_.sectors[0];
         const QPointF n = perpAt(s1.constData(), s1.size(), prep_.sfIdx);
         const QPointF c = tc(prep_.sfPt);
-        const double half = std::max(SF_HALF, TRACK_PX / 2 + 4);
-        QPen pen(lineCol); pen.setWidthF(2.5); pen.setCapStyle(Qt::RoundCap);
+        const double half = std::max(SF_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
+        QPen pen(lineCol); pen.setWidthF(2.5 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - n.x() * half, c.y() - n.y() * half),
                    QPointF(c.x() + n.x() * half, c.y() + n.y() * half));
     }
+}
+
+// ── Static circuit layer (cached pixmap, base layout) ──────────────────────
+
+void TrackMapWidget::rebuildStaticLayer() {
+    if (!loaded_ || width() <= 0 || height() <= 0) return;
+
+    const double dpr = devicePixelRatioF();
+    staticLayer_ = QPixmap(QSize(int(width() * dpr), int(height() * dpr)));
+    staticLayer_.setDevicePixelRatio(dpr);
+    staticLayer_.fill(Qt::transparent);
+    staticLayerSize_ = size();
+
+    QPainter p(&staticLayer_);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    drawTrack(p, buildLayout(width(), height()), 1.0);
 }
 
 // ── Live data setters ───────────────────────────────────────────────────────
@@ -331,6 +365,7 @@ void TrackMapWidget::setPositions(const nlohmann::json& positions) {
 
 void TrackMapWidget::setParticipants(const nlohmann::json& participants) {
     participants_ = participants;
+    rebuildDriverCombo();
     update();
 }
 
@@ -339,6 +374,22 @@ void TrackMapWidget::setDark(bool dark) {
     dark_ = dark;
     rebuildStaticLayer();
     update();
+}
+
+bool TrackMapWidget::interpCar(int idx, double t, double& outX, double& outZ) const {
+    const Car* cur = nullptr;
+    for (const Car& c : curSnap_.cars) if (c.idx == idx) { cur = &c; break; }
+    if (!cur || (cur->x == 0.0 && cur->z == 0.0)) return false;
+    outX = cur->x; outZ = cur->z;
+    for (const Car& pv : prevSnap_.cars)
+        if (pv.idx == idx) {
+            if (!(pv.x == 0.0 && pv.z == 0.0)) {
+                outX = pv.x + (cur->x - pv.x) * t;
+                outZ = pv.z + (cur->z - pv.z) * t;
+            }
+            break;
+        }
+    return true;
 }
 
 // ── Painting ────────────────────────────────────────────────────────────────
@@ -354,17 +405,44 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
         return;
     }
 
-    // Static circuit layer (rebuild lazily if the size drifted).
-    if (staticLayer_.isNull() || staticLayerSize_ != size())
-        rebuildStaticLayer();
-    p.drawPixmap(0, 0, staticLayer_);
-
-    const Layout l = buildLayout(width(), height());
-
     // Interpolation factor between prev and cur snapshot.
     double t = 1.0;
     if (!prevSnap_.cars.empty())
         t = std::clamp(snapTimer_.elapsed() / snapIntervalMs_, 0.0, 1.0);
+
+    // ── Camera: follow selected driver with smooth zoom, else full map ────
+    const Layout base = buildLayout(width(), height());
+    Layout layout = base;
+    double fx, fz;
+    if (selectedDriverIdx_ >= 0 && interpCar(selectedDriverIdx_, t, fx, fz)) {
+        const QPointF r = projectViewBox(fx, fz);
+        const double followScale = base.scale * zoomLevel_;
+        if (!hasCam_) { cam_ = { base.scale, 0.0, 0.0 }; hasCam_ = true; }
+        cam_.scale += (followScale - cam_.scale) * 0.12;        // ease zoom
+        cam_.ox = width()  / 2.0 - r.x() * cam_.scale;          // snap-pan to centre driver
+        cam_.oy = height() / 2.0 - r.y() * cam_.scale;
+        layout = cam_;
+    } else if (selectedDriverIdx_ < 0 && hasCam_) {
+        cam_.scale += (base.scale - cam_.scale) * 0.12;          // ease back to full map
+        cam_.ox    += (base.ox    - cam_.ox)    * 0.12;
+        cam_.oy    += (base.oy    - cam_.oy)    * 0.12;
+        const double diff = std::abs(cam_.scale - base.scale)
+                          + std::abs(cam_.ox - base.ox) + std::abs(cam_.oy - base.oy);
+        if (diff < 0.5) hasCam_ = false;
+        else            layout = cam_;
+    }
+    const double effZoom = base.scale > 0 ? layout.scale / base.scale : 1.0;
+
+    // ── Track: cached pixmap when idle, live vector render when zoomed ───
+    if (!hasCam_) {
+        if (staticLayer_.isNull() || staticLayerSize_ != size())
+            rebuildStaticLayer();
+        p.drawPixmap(0, 0, staticLayer_);
+    } else {
+        drawTrack(p, layout, effZoom);
+    }
+
+    const Layout& l = layout;
 
     QFont labelFont("monospace", 9, QFont::Bold);
     labelFont.setStyleHint(QFont::Monospace);
@@ -372,10 +450,6 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     struct LabelJob { QPointF c; QString text; QColor color; };
     std::vector<LabelJob> labels;
 
-    const auto findPrev = [&](int idx) -> const Car* {
-        for (const Car& c : prevSnap_.cars) if (c.idx == idx) return &c;
-        return nullptr;
-    };
     const auto findDriver = [&](int idx) -> const nlohmann::json* {
         if (!participants_.contains("drivers")) return nullptr;
         for (const auto& d : participants_["drivers"])
@@ -384,14 +458,8 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     };
 
     for (const Car& car : curSnap_.cars) {
-        double cx = car.x, cz = car.z;
-        if (cx == 0.0 && cz == 0.0) continue;              // idle / not on track
-        if (const Car* pv = findPrev(car.idx)) {           // lerp from previous
-            if (!(pv->x == 0.0 && pv->z == 0.0)) {
-                cx = pv->x + (car.x - pv->x) * t;
-                cz = pv->z + (car.z - pv->z) * t;
-            }
-        }
+        double cx, cz;
+        if (!interpCar(car.idx, t, cx, cz)) continue;      // skips idle / (0,0)
         const nlohmann::json* d = findDriver(car.idx);
         if (!d) continue;
 
@@ -445,12 +513,74 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
 void TrackMapWidget::resizeEvent(QResizeEvent*) {
     if (loaded_) rebuildStaticLayer();
+    positionControls();
 }
 
 void TrackMapWidget::showEvent(QShowEvent*) {
     if (animTimer_) animTimer_->start();
+    positionControls();
 }
 
 void TrackMapWidget::hideEvent(QHideEvent*) {
     if (animTimer_) animTimer_->stop();
+}
+
+// ── Follow-driver controls ──────────────────────────────────────────────────
+
+void TrackMapWidget::positionControls() {
+    if (!driverCombo_) return;
+    const int margin = 8, gap = 6;
+    const int dw = std::max(120, driverCombo_->sizeHint().width());
+    driverCombo_->setFixedWidth(dw);
+    const int x = width() - margin - dw;
+    driverCombo_->move(x, margin);
+    driverCombo_->raise();
+    if (zoomCombo_->isVisible()) {
+        const int zw = std::max(58, zoomCombo_->sizeHint().width());
+        zoomCombo_->setFixedWidth(zw);
+        zoomCombo_->move(x - gap - zw, margin);
+        zoomCombo_->raise();
+    }
+}
+
+void TrackMapWidget::rebuildDriverCombo() {
+    if (!driverCombo_ || !participants_.contains("drivers")) return;
+
+    QString sig;
+    std::vector<std::tuple<int, int, QString>> drivers;  // raceNum, idx, label
+    for (const auto& d : participants_["drivers"]) {
+        const int idx = d.value("idx", -1);
+        if (idx < 0) continue;
+        const QString name = QString::fromStdString(d.value("name", "")).trimmed();
+        const int raceNum = d.value("race_number", 0);
+        if (name.isEmpty() && raceNum <= 0) continue;
+        const QString last = name.isEmpty()
+            ? QString("C%1").arg(idx)
+            : name.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts).last().toUpper();
+        const QString label = QString("%1 %2").arg(raceNum).arg(last);
+        drivers.emplace_back(raceNum, idx, label);
+        sig += QString::number(idx) + label + ";";
+    }
+    if (sig == driverSig_) return;   // unchanged — keep current selection
+    driverSig_ = sig;
+
+    std::sort(drivers.begin(), drivers.end(),
+              [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+
+    const int prevSel = selectedDriverIdx_;
+    QSignalBlocker block(driverCombo_);
+    driverCombo_->clear();
+    driverCombo_->addItem("Follow driver…", -1);
+    for (const auto& dr : drivers)
+        driverCombo_->addItem(std::get<2>(dr), std::get<1>(dr));
+
+    int restore = 0;
+    if (prevSel >= 0) {
+        const int found = driverCombo_->findData(prevSel);
+        if (found >= 0) restore = found;
+        else            selectedDriverIdx_ = -1;
+    }
+    driverCombo_->setCurrentIndex(restore);
+    zoomCombo_->setVisible(selectedDriverIdx_ >= 0);
+    positionControls();
 }

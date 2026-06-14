@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 class QTimer;
+class QComboBox;
 
 // Live track map: renders a circuit outline (sector-colored) with live car dots
 // + driver labels. Mirrors the Electron TrackMap. The static circuit geometry is
@@ -57,8 +58,13 @@ private:
 
     void rebuildPrepared();
     void rebuildStaticLayer();
+    void drawTrack(QPainter& p, const Layout& l, double effZoom) const;   // vector track render
     Layout buildLayout(double cw, double ch) const;
-    QPointF project(double worldX, double worldZ, const Layout& l) const;  // world → device px
+    QPointF projectViewBox(double worldX, double worldZ) const;           // world → rotated viewBox
+    QPointF project(double worldX, double worldZ, const Layout& l) const; // world → device px
+    bool interpCar(int idx, double t, double& outX, double& outZ) const;  // interpolated world pos
+    void rebuildDriverCombo();
+    void positionControls();
 
     // Track data
     bool        loaded_       = false;
@@ -84,4 +90,13 @@ private:
     QElapsedTimer snapTimer_;        // time since curSnap_ arrived
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
     QTimer*       animTimer_ = nullptr;     // ~60fps redraw while visible
+
+    // ── Follow-driver camera + zoom ───────────────────────────────────────
+    QComboBox* driverCombo_ = nullptr;   // "Follow driver…"
+    QComboBox* zoomCombo_   = nullptr;   // 2x / 4x / 8x / 16x
+    int        selectedDriverIdx_ = -1;  // -1 = no follow
+    double     zoomLevel_ = 4.0;
+    Layout     cam_{};                   // active follow camera (scale, ox, oy)
+    bool       hasCam_ = false;          // camera animating or active
+    QString    driverSig_;               // signature to detect participant changes
 };
