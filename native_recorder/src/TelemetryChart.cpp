@@ -129,7 +129,17 @@ void TelemetryChart::reset() {
 }
 
 void TelemetryChart::rescaleX() {
-    axX_->setRange(latestT_ - windowS_, latestT_);
+    if (speedS_->count() == 0) {
+        axX_->setRange(0, windowS_);
+        return;
+    }
+    // Show at most windowS_ of data, but never pad past the earliest sample we
+    // hold — so a 10m window over 6m of data shows 6m, not 4m of blank.
+    const float earliest = speedS_->at(0).x();
+    float left = latestT_ - windowS_;
+    if (earliest > left) left = earliest;
+    if (left >= latestT_) left = latestT_ - 1.0f;   // keep a positive span
+    axX_->setRange(left, latestT_);
 }
 
 void TelemetryChart::changeEvent(QEvent* e) {
