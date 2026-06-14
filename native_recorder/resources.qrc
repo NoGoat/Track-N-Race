@@ -2,5 +2,7 @@
 <RCC version="1.0">
 <qresource prefix="/">
     <file alias="icon.ico">assets/icon_transparent.ico</file>
+    <file alias="play.svg">assets/play.svg</file>
+    <file alias="pause.svg">assets/pause.svg</file>
 </qresource>
 </RCC>

@@ -25,13 +25,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(zlib)
 
 # Find Qt6 (fallback to Qt5)
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network)
+find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg)
 if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network)
+    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
     message(STATUS "Using Qt6")
 else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network)
-    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network)
+    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg)
+    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg)
     message(STATUS "Using Qt5 (Qt6 not found)")
 endif()
 
@@ -39,6 +39,8 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/TnrdPlayer.cpp
+    src/TnrdPlayer.h
     src/TelemetryChart.cpp
     src/TelemetryChart.h
     src/components/OverviewPage.cpp

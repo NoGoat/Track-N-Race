@@ -9,6 +9,9 @@
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QListWidget>
+#include <QSlider>
+#include <QComboBox>
+#include <QFrame>
 #include <QUdpSocket>
 #include <QSettings>
 
@@ -22,6 +25,7 @@
 #include <zlib.h>
 
 class TelemetryChart;
+class TnrdPlayer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -142,6 +146,18 @@ private:
     QRadioButton* themeSystem = nullptr;
     QRadioButton* themeLight  = nullptr;
     QRadioButton* themeDark   = nullptr;
+
+    // ── Playback ──────────────────────────────────────────────────
+    TnrdPlayer*  player_         = nullptr;
+    bool         inPlayback_     = false;
+    bool         seekerDragging_ = false;
+    float        lastErs_        = 0.0f;
+    QWidget*     pb_bar_         = nullptr;
+    QFrame*      pb_sep_         = nullptr;
+    QPushButton* pb_playBtn_     = nullptr;
+    QSlider*     pb_slider_      = nullptr;
+    QLabel*      pb_timeLabel_   = nullptr;
+    QComboBox*   pb_speedCombo_  = nullptr;
 
     // ── UDP / network ─────────────────────────────────────────────
     QUdpSocket* udpSocket = nullptr;

@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "TelemetryChart.h"
+#include "TnrdPlayer.h"
 
 #include <QApplication>
 #include <QToolBar>
@@ -8,12 +9,18 @@
 #include <QLabel>
 #include <QFrame>
 #include <QWidget>
+#include <QHBoxLayout>
+#include <QSlider>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSizePolicy>
 #include <QStyleHints>
 #include <QCoreApplication>
 #include <QUdpSocket>
+#include <QSvgRenderer>
+#include <QPainter>
+#include <QImage>
+#include <QPixmap>
 
 #include <chrono>
 #include <ctime>
@@ -51,6 +58,19 @@ static const std::unordered_set<std::string> DEDUPE_TYPES = {
 };
 
 // ── Damage value helper (used in constructor lambda) ───────────────────────
+
+// Renders an SVG resource and tints it with the given colour.
+static QIcon paletteIcon(const QString& resource, const QColor& tint) {
+    QSvgRenderer renderer(resource);
+    QImage img(24, 24, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    renderer.render(&p);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(img.rect(), tint);
+    p.end();
+    return QIcon(QPixmap::fromImage(img));
+}
 
 static void setDmgValue(QLabel* lbl, int val) {
     if (val < 0) { lbl->setText("—"); lbl->setStyleSheet(""); return; }
@@ -93,7 +113,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     QWidget* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    toolbar->addWidget(spacer);
+    QAction* spacerAct = toolbar->addWidget(spacer);
 
     QComboBox* windowCombo = new QComboBox;
     const struct { const char* label; float secs; } windows[] = {
@@ -111,12 +131,153 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildSessionPage());   // index 2
     stack->addWidget(buildTyresPage());     // index 3
     stack->addWidget(buildSettingsTab());   // index 4
-    setCentralWidget(stack);
+
+    // ── Bottom playback bar ────────────────────────────────────────────────────
+    player_ = new TnrdPlayer(this);
+
+    pb_bar_ = new QWidget(this);
+    pb_bar_->setAutoFillBackground(true);
+    {
+        QPalette pal = pb_bar_->palette();
+        pal.setColor(QPalette::Window, palette().color(QPalette::Window));
+        pb_bar_->setPalette(pal);
+    }
+    pb_bar_->setFixedHeight(48);
+    auto* pbLayout = new QHBoxLayout(pb_bar_);
+    pbLayout->setContentsMargins(12, 0, 12, 0);
+    pbLayout->setSpacing(10);
+
+    const QColor iconTint = palette().color(QPalette::Text);
+    pb_playBtn_ = new QPushButton(pb_bar_);
+    pb_playBtn_->setIcon(paletteIcon(":/play.svg", iconTint));
+    pb_playBtn_->setIconSize(QSize(20, 20));
+    pb_playBtn_->setFixedSize(34, 34);
+    pb_playBtn_->setFlat(true);
+    pbLayout->addWidget(pb_playBtn_);
+
+    pb_slider_ = new QSlider(Qt::Horizontal, pb_bar_);
+    pb_slider_->setRange(0, 1000);
+    pb_slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pbLayout->addWidget(pb_slider_);
+
+    pb_timeLabel_ = new QLabel("0:00 / 0:00", pb_bar_);
+    pbLayout->addWidget(pb_timeLabel_);
+
+    pb_speedCombo_ = new QComboBox(pb_bar_);
+    pb_speedCombo_->addItem("0.25×", 0.25f);
+    pb_speedCombo_->addItem("0.5×",  0.5f);
+    pb_speedCombo_->addItem("1×",    1.0f);
+    pb_speedCombo_->addItem("2×",    2.0f);
+    pb_speedCombo_->addItem("4×",    4.0f);
+    pb_speedCombo_->setCurrentIndex(2);
+    pbLayout->addWidget(pb_speedCombo_);
+
+    auto* closeRecBtn = new QPushButton("✕ Close", pb_bar_);
+    pbLayout->addWidget(closeRecBtn);
+
+    pb_bar_->hide();
+
+    pb_sep_ = new QFrame(this);
+    pb_sep_->setFrameShape(QFrame::HLine);
+    pb_sep_->setFrameShadow(QFrame::Sunken);
+    pb_sep_->hide();
+
+    // Stack + separator + playback bar stacked vertically as the central widget
+    auto* container = new QWidget(this);
+    auto* vbox = new QVBoxLayout(container);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+    vbox->addWidget(stack);
+    vbox->addWidget(pb_sep_);
+    vbox->addWidget(pb_bar_);
+    setCentralWidget(container);
 
     connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
     connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
         float secs = windowCombo->itemData(idx).toFloat();
         if (chart) chart->setWindowSeconds(secs);
+    });
+
+    // Open Recording stays in the toolbar
+    auto* openBtn = new QPushButton("Open Recording", this);
+    toolbar->insertSeparator(spacerAct);
+    toolbar->insertWidget(spacerAct, openBtn);
+
+    // Helper for formatting session time as M:SS
+    auto fmtTime = [](float s) -> QString {
+        int m   = (int)s / 60;
+        int sec = (int)s % 60;
+        return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
+    };
+
+    connect(openBtn, &QPushButton::clicked, this, [this] {
+        QString path = QFileDialog::getOpenFileName(
+            this, "Open Recording", outputDirectory,
+            "TNRD Recordings (*.tnrd *.trnd)");
+        if (!path.isEmpty()) player_->load(path);
+    });
+
+    connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
+        inPlayback_ = true;
+        closeActiveStream();
+        pb_sep_->show();
+        pb_bar_->show();
+        pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+        pb_slider_->setValue(0);
+        pb_speedCombo_->setCurrentIndex(2); // reset to 1×
+        player_->setSpeed(1.0f);
+        QString trackName = QString::fromStdString(hdr.value("track_name", "Unknown"));
+        QString sessName  = QString::fromStdString(hdr.value("session_name", "Unknown"));
+        setWindowTitle(QString("Track N Race — %1 %2 [Playback]").arg(trackName, sessName));
+    });
+
+    connect(player_, &TnrdPlayer::packetReady, this, [this](const nlohmann::json& j) {
+        emitLiveData(j);
+        // Chart update: telemetry uses lastErs_ tracked across status packets
+        const std::string type = j.value("type", std::string{});
+        if (type == "status")
+            lastErs_ = j.value("ers_pct", 0.0f);
+        else if (type == "telemetry" && chart)
+            chart->addPoint(j.value("session_time", 0.0f),
+                            j.value("speed_kph", 0.0f),
+                            j.value("rpm", 0),
+                            lastErs_);
+    });
+
+    connect(player_, &TnrdPlayer::stateChanged, this,
+            [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
+        pb_playBtn_->setIcon(paletteIcon(
+            playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
+        if (total > 0.0f && !seekerDragging_)
+            pb_slider_->setValue((int)(cur / total * 1000.0f));
+        pb_timeLabel_->setText(fmtTime(cur) + " / " + fmtTime(total));
+    });
+
+    connect(player_, &TnrdPlayer::finished, this, [this] {
+        pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+    });
+
+    connect(pb_playBtn_, &QPushButton::clicked, this, [this] {
+        if (player_->isPlaying()) player_->pause();
+        else player_->play();
+    });
+
+    connect(pb_slider_, &QSlider::sliderPressed,  this, [this] { seekerDragging_ = true; });
+    connect(pb_slider_, &QSlider::sliderReleased, this, [this] {
+        seekerDragging_ = false;
+        player_->seek(pb_slider_->value() / 1000.0f);
+    });
+
+    connect(pb_speedCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        player_->setSpeed(pb_speedCombo_->itemData(idx).toFloat());
+    });
+
+    connect(closeRecBtn, &QPushButton::clicked, this, [this] {
+        player_->close();
+        inPlayback_ = false;
+        pb_sep_->hide();
+        pb_bar_->hide();
+        setWindowTitle("Track N Race Background Recorder");
     });
 
     udpSocket = new QUdpSocket(this);
@@ -211,6 +372,11 @@ void MainWindow::onThemeChanged() {
 }
 
 void MainWindow::onDatagramReady() {
+    if (inPlayback_) {
+        while (udpSocket->hasPendingDatagrams())
+            udpSocket->readDatagram(nullptr, 0);
+        return;
+    }
     while (udpSocket->hasPendingDatagrams()) {
         QByteArray dg;
         dg.resize((int)udpSocket->pendingDatagramSize());
@@ -528,19 +694,17 @@ void MainWindow::processPacket(const uint8_t* data, int length) {
     if (format == 2024) rows = F1_24::ParsePacket(data, length, hdr, ts);
     else                rows = F1_25::ParsePacket(data, length, hdr, ts);
 
-    static float lastErs = 0.0f;
-
     for (const auto& row : rows) {
         recordRow(row, hdr.sessionTime);
         emitLiveData(row);
 
         const std::string rtype = row["type"].get<std::string>();
         if (rtype == "status")
-            lastErs = row["ers_pct"].get<float>();
+            lastErs_ = row["ers_pct"].get<float>();
         else if (rtype == "telemetry" && chart)
             chart->addPoint(hdr.sessionTime,
                             row["speed_kph"].get<float>(),
                             row["rpm"].get<int>(),
-                            lastErs);
+                            lastErs_);
     }
 }

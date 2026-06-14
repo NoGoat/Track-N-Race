@@ -76,7 +76,6 @@ QWidget* MainWindow::buildOverviewTab() {
 
     // ── Stats row ────────────────────────────────────────────────
     QFrame* statsFrame = new QFrame;
-    statsFrame->setFrameShape(QFrame::StyledPanel);
     statsFrame->setFixedHeight(80);
     QHBoxLayout* sh = new QHBoxLayout(statsFrame);
     sh->setContentsMargins(0, 0, 0, 0);
@@ -100,13 +99,22 @@ QWidget* MainWindow::buildOverviewTab() {
 
     vbox->addWidget(statsFrame);
 
+    auto* sep1 = new QFrame;
+    sep1->setFrameShape(QFrame::HLine);
+    sep1->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(sep1);
+
     // ── Chart ────────────────────────────────────────────────────
     chart = new TelemetryChart;
     vbox->addWidget(chart, 1);
 
+    auto* sep2 = new QFrame;
+    sep2->setFrameShape(QFrame::HLine);
+    sep2->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(sep2);
+
     // ── Damage rows ──────────────────────────────────────────────
     QFrame* dmgFrame = new QFrame;
-    dmgFrame->setFrameShape(QFrame::StyledPanel);
     QVBoxLayout* dv = new QVBoxLayout(dmgFrame);
     dv->setContentsMargins(0, 0, 0, 0);
     dv->setSpacing(0);
