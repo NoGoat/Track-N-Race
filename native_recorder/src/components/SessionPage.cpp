@@ -12,6 +12,7 @@
 #include <QPainter>
 
 #include <algorithm>
+#include <unordered_map>
 
 // ── Marshal zones strip widget ────────────────────────────────────────────
 
@@ -102,8 +103,8 @@ static QString eventCodeLabel(const std::string& code) {
     if (code == "RTMT") return "Retirement";
     if (code == "RCWN") return "Race Winner";
     if (code == "PENA") return "Penalty";
-    if (code == "DTSV") return "Drive-Through Served";
-    if (code == "SGSV") return "Stop-Go Served";
+    if (code == "DTSV") return "DT Served";
+    if (code == "SGSV") return "SG Served";
     if (code == "SSTA") return "Session Start";
     if (code == "SEND") return "Session End";
     if (code == "RDFL") return "Red Flag";
@@ -113,13 +114,71 @@ static QString eventCodeLabel(const std::string& code) {
 }
 
 static QColor eventCodeColor(const std::string& code) {
-    if (code == "FTLP" || code == "CHQF" || code == "RCWN") return QColor("#FADE2A");
-    if (code == "SCAR")                                       return QColor("#FF9830");
-    if (code == "RDFL")                                       return QColor("#e53935");
-    if (code == "RTMT" || code == "PENA")                    return QColor("#C4162A");
-    if (code == "DRSE" || code == "DRSD")                    return QColor("#5794F2");
-    if (code == "LGOT" || code == "SSTA" || code == "SEND")  return QColor("#37872D");
+    if (code == "FTLP")                                      return QColor("#BF5FFF");
+    if (code == "RCWN")                                      return QColor("#FFD700");
+    if (code == "SCAR")                                      return QColor("#ffd700");
+    if (code == "RDFL")                                      return QColor("#e10600");
+    if (code == "DRSE" || code == "LGOT")                   return QColor("#37872D");
+    if (code == "DRSD")                                     return QColor("#6e7177");
+    if (code == "SSTA" || code == "SEND")                   return QColor("#5794F2");
+    if (code == "RTMT" || code == "CHQF" ||
+        code == "DTSV" || code == "SGSV")                   return QColor("#a0a8b8");
     return QColor();
+}
+
+// Maps F1 penalty_type → display label. Returns nullptr for unknown types
+// (which are hidden, matching the Electron reference's null return).
+static const char* penaltyTypeLabel(int pt) {
+    switch (pt) {
+        case 0: return "Drive Through";
+        case 1: return "Stop-Go";
+        case 2: return "Grid Penalty";
+        case 4: return "Time Penalty";
+        case 5: return "Warning";
+        case 6: return "DSQ";
+        default: return nullptr;
+    }
+}
+
+static QColor penaltyTypeColor(int pt) {
+    switch (pt) {
+        case 2: case 4: return QColor("#c47d0e"); // Grid / Time — orange
+        case 5:         return QColor("#ffd700"); // Warning — gold
+        default:        return QColor("#e10600"); // Drive Through / Stop-Go / DSQ — red
+    }
+}
+
+// F1 infringement_type → human-readable reason (ported from the Electron App.tsx table).
+static QString infringementLabel(int id) {
+    static const std::unordered_map<int, const char*> labels = {
+        {0,  "Blocking by slowing"},        {1,  "Blocking wrong way"},
+        {2,  "Reversing off start line"},   {3,  "Big collision"},
+        {4,  "Small collision"},            {5,  "Collision — failed to hand back"},
+        {6,  "Collision — attack from rear"},
+        {7,  "SC delta exceeded"},          {8,  "SC illegal overtake"},
+        {9,  "SC exceeding allowed pace"},  {10, "Cornering under SC"},
+        {11, "SC must pit this lap"},       {12, "SC pit lane curfew"},
+        {13, "Pit lane too fast"},          {14, "Unsafe release"},
+        {15, "Pit re-entry too slow"},      {16, "In pit too fast"},
+        {17, "Unsafe release"},             {18, "Escape from pit"},
+        {19, "Ignoring blue flags"},        {20, "Ignoring yellow flags"},
+        {21, "Ignoring drive through"},     {22, "Too many drive throughs"},
+        {23, "DT — serve this lap"},        {24, "DT — serve next lap"},
+        {25, "Pit stop failed to serve"},   {26, "Hanging around"},
+        {27, "Hang around for SC"},         {28, "Return to pits"},
+        {29, "Tyre regulations"},           {30, "Lap invalidated"},
+        {31, "This + next lap invalid"},    {32, "Lap invalid (no reason)"},
+        {33, "This + next invalid (no reason)"}, {34, "This + prev lap invalid"},
+        {35, "This + prev invalid (no reason)"}, {36, "Retired"},
+        {37, "Black flag timer"},           {38, "Unserved stop-go"},
+        {39, "Unserved drive through"},     {40, "Engine change"},
+        {41, "Gearbox change"},             {42, "Parc fermé change"},
+        {43, "League grid penalty"},        {44, "Retry penalty"},
+        {45, "Illegal time gain"},          {46, "Mandatory pit stop"},
+        {47, "Attribute assigned"},         {48, "Corner cutting"},
+    };
+    auto it = labels.find(id);
+    return it != labels.end() ? QString::fromUtf8(it->second) : QString();
 }
 
 // ── Color helpers ─────────────────────────────────────────────────────────
@@ -257,6 +316,14 @@ QWidget* MainWindow::buildSessionPage() {
     sh->addWidget(makeStatCard("PIT WINDOW", sp_statPitWin,    "#FADE2A"), 1);
     addVSep();
     sh->addWidget(makeStatCard("REJOIN",     sp_statRejoin,    "#37872D"), 1);
+    addVSep();
+    sh->addWidget(makeStatCard("TRACK TEMP",   sp_trackTemp,  ""), 1);
+    addVSep();
+    sh->addWidget(makeStatCard("AIR TEMP",     sp_airTemp,    ""), 1);
+    addVSep();
+    sh->addWidget(makeStatCard("TRACK LENGTH", sp_trackLen,   ""), 1);
+    addVSep();
+    sh->addWidget(makeStatCard("TIME OF DAY",  sp_timeOfDay,  ""), 1);
 
     root->addWidget(statsRow);
 
@@ -343,56 +410,10 @@ QWidget* MainWindow::buildSessionPage() {
     lv->addWidget(weatherStrip);
     ch->addWidget(leftArea, 1);
 
-    // VLine between map and track detail column
-    QFrame* vdiv1 = new QFrame;
-    vdiv1->setFrameShape(QFrame::VLine); vdiv1->setFrameShadow(QFrame::Sunken);
-    ch->addWidget(vdiv1);
-
-    // ── Middle column: track detail cards ────────────────────────
-    auto makeTrackCard = [&](QVBoxLayout* col, const QString& cap, QLabel*& valOut, const QString& sub = "") {
-        QWidget* card = new QWidget;
-        QVBoxLayout* cv = new QVBoxLayout(card);
-        cv->setContentsMargins(14, 10, 14, 6);
-        cv->setSpacing(1);
-
-        QLabel* capLbl = new QLabel(cap);
-        QFont capf; capf.setPointSize(7); capLbl->setFont(capf);
-        capLbl->setForegroundRole(QPalette::PlaceholderText);
-
-        valOut = new QLabel("—");
-        QFont valf; valf.setPointSize(16); valf.setBold(true); valOut->setFont(valf);
-
-        cv->addWidget(capLbl);
-        cv->addWidget(valOut);
-
-        if (!sub.isEmpty()) {
-            QLabel* subLbl = new QLabel(sub);
-            QFont subf; subf.setPointSize(7); subLbl->setFont(subf);
-            subLbl->setForegroundRole(QPalette::PlaceholderText);
-            cv->addWidget(subLbl);
-        }
-
-        col->addWidget(card);
-    };
-
-    QWidget* midPanel = new QWidget;
-    midPanel->setFixedWidth(160);
-    QVBoxLayout* mv = new QVBoxLayout(midPanel);
-    mv->setContentsMargins(0, 0, 0, 0);
-    mv->setSpacing(0);
-
-    makeTrackCard(mv, "TRACK TEMP",   sp_trackTemp, "Road surface");
-    makeTrackCard(mv, "AIR TEMP",     sp_airTemp,   "Ambient");
-    makeTrackCard(mv, "TRACK LENGTH", sp_trackLen);
-    makeTrackCard(mv, "TIME OF DAY",  sp_timeOfDay);
-    mv->addStretch();
-
-    ch->addWidget(midPanel);
-
-    // VLine between track detail column and right panel
-    QFrame* vdiv2 = new QFrame;
-    vdiv2->setFrameShape(QFrame::VLine); vdiv2->setFrameShadow(QFrame::Sunken);
-    ch->addWidget(vdiv2);
+    // VLine between map and right panel
+    QFrame* vdiv = new QFrame;
+    vdiv->setFrameShape(QFrame::VLine); vdiv->setFrameShadow(QFrame::Sunken);
+    ch->addWidget(vdiv);
 
     // ── Right panel: Proximity + Events ──────────────────────────
     QWidget* rightPanel = new QWidget;
@@ -570,6 +591,7 @@ void MainWindow::updateSessionEvents() {
 
         QString label  = eventCodeLabel(code);
         QString detail;
+        QColor  colorOverride;
 
         if (code == "FTLP") {
             float lapS = ev.value("lap_time_s", 0.0f);
@@ -584,26 +606,44 @@ void MainWindow::updateSessionEvents() {
                     if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")) + "  " + detail; break; }
         } else if (code == "SCAR") {
             int t = ev.value("safety_car_type", 0);
-            detail = (t == 1) ? "Full SC" : (t == 2) ? "VSC" : (t == 3) ? "Formation Lap" : "";
+            QString type = (t == 1) ? "Safety Car" : (t == 2) ? "Virtual SC"
+                         : (t == 3) ? "Formation Lap" : "SC";
+            int a = ev.value("event_type", 0);
+            const char* action = (a == 0) ? "Deployed" : (a == 1) ? "Returning"
+                               : (a == 2) ? "Returned" : (a == 3) ? "Resume Race" : "";
+            label  = type;
+            detail = action;
         } else if (code == "RTMT" || code == "RCWN" || code == "DTSV" || code == "SGSV") {
             int carIdx = ev.value("car_idx", -1);
             if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
                 for (const auto& d : lastParticipantsData["drivers"])
                     if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
         } else if (code == "PENA") {
+            int pt = ev.value("penalty_type", -1);
+            const char* ptLabel = penaltyTypeLabel(pt);
+            if (!ptLabel) continue;  // unknown penalty type — hidden (matches Electron)
+
+            label = ptLabel;
+            // Time suffix only for Stop-Go (1) and Time Penalty (4).
+            int timeS = ev.value("penalty_time_s", 0);
+            if ((pt == 1 || pt == 4) && timeS > 0) label += QString(" %1s").arg(timeS);
+
             int carIdx = ev.value("car_idx", -1);
-            int timeS  = ev.value("penalty_time_s", 0);
             if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
                 for (const auto& d : lastParticipantsData["drivers"])
                     if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
-            if (timeS > 0) detail += (detail.isEmpty() ? "" : "  ") + QString("+%1s").arg(timeS);
+
+            QString inf = infringementLabel(ev.value("infringement_type", -1));
+            if (!inf.isEmpty()) detail += (detail.isEmpty() ? "" : "  —  ") + inf;
+
+            colorOverride = penaltyTypeColor(pt);
         }
 
         QString text = timeStr + "  " + label;
         if (!detail.isEmpty()) text += "  —  " + detail;
 
         auto* item = new QListWidgetItem(text);
-        QColor c = eventCodeColor(code);
+        QColor c = colorOverride.isValid() ? colorOverride : eventCodeColor(code);
         if (c.isValid()) item->setForeground(c);
         sp_eventsList->addItem(item);
     }
