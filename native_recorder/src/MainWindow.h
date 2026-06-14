@@ -68,6 +68,8 @@ private:
 
     // ── Standings page ────────────────────────────────────────────
     QTableWidget*    timingTable         = nullptr;
+    int              selectedCarIdx      = -1;   // -1 = no selection (show player)
+    std::vector<int> tableRowCarIdx;             // row index → car idx
     nlohmann::json   lastTimingData;
     nlohmann::json   lastParticipantsData;
     nlohmann::json   lastAllStatusData;
@@ -75,6 +77,7 @@ private:
     nlohmann::json   lastPlayerStatusData;
 
     // ── Race panel (right side of Standings) ──────────────────────
+    QLabel*       rp_driverName = nullptr;
     QLabel*       rp_lapNum     = nullptr;
     QLabel*       rp_position   = nullptr;
     QLabel*       rp_pitStatus  = nullptr;
@@ -92,6 +95,17 @@ private:
     QLabel*       rp_tyre       = nullptr;
     QLabel*       rp_tyreAge    = nullptr;
     QLabel*       rp_brakeBias  = nullptr;
+
+    // ── Tyres page ───────────────────────────────────────────────
+    QLabel*       tp_surfaceTemp[4] = {};  // FL, FR, RL, RR
+    QLabel*       tp_innerTemp[4]   = {};
+    QLabel*       tp_brakeTemp[4]   = {};
+    QLabel*       tp_wear[4]        = {};
+    QLabel*       tp_blisters[4]    = {};
+    QTableWidget* tp_setsTable      = nullptr;
+    nlohmann::json lastPlayerTelemetryData;
+    nlohmann::json lastPlayerDamageData;
+    nlohmann::json lastTyreSetsData;
 
     // ── Settings page ─────────────────────────────────────────────
     QLabel*       dirLabel    = nullptr;
@@ -127,9 +141,12 @@ private:
     QWidget* buildOverviewTab();
     QWidget* buildStandingsPage();
     QWidget* buildRacePanel();
+    QWidget* buildTyresPage();
     QWidget* buildSettingsTab();
     void     updateTimingTable();
     void     updateRacePanel();
+    void     updateTyresPage();
+    void     updateTyreSetsTable();
 
     // ── Recording helpers ─────────────────────────────────────────
     void startNewStream(int trackId, int sessionType, int format);
