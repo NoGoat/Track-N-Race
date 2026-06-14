@@ -68,7 +68,7 @@ QWidget* MainWindow::buildStandingsPage() {
     timingTable->setAlternatingRowColors(false);
     timingTable->verticalHeader()->setVisible(false);
     timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    timingTable->horizontalHeader()->setSectionResizeMode(9, QHeaderView::Stretch);
+    timingTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
 
     QFont hf; hf.setPointSize(7);
     timingTable->horizontalHeader()->setFont(hf);
@@ -102,9 +102,10 @@ QWidget* MainWindow::buildRacePanel() {
 
     QWidget* w = new QWidget;
     QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setContentsMargins(8, 8, 8, 8);
-    vbox->setSpacing(8);
+    vbox->setContentsMargins(10, 8, 10, 8);
+    vbox->setSpacing(2);
 
+    // Helper: key / value row
     auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
         QWidget* row = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(row);
@@ -120,6 +121,22 @@ QWidget* MainWindow::buildRacePanel() {
         return row;
     };
 
+    // Helper: flat section title (matches WheelCard corner label style)
+    auto makeSection = [&](const QString& title) {
+        QLabel* lbl = new QLabel(title);
+        QFont f; f.setPointSize(7); f.setBold(true);
+        lbl->setFont(f);
+        lbl->setForegroundRole(QPalette::PlaceholderText);
+        vbox->addWidget(lbl);
+    };
+
+    auto addDivider = [&]() {
+        QFrame* div = new QFrame;
+        div->setFrameShape(QFrame::HLine);
+        div->setFrameShadow(QFrame::Sunken);
+        vbox->addWidget(div);
+    };
+
     // ── Driver header ────────────────────────────────────────────
     rp_driverName = new QLabel("—");
     QFont dnF; dnF.setPointSize(10); dnF.setBold(true);
@@ -127,16 +144,17 @@ QWidget* MainWindow::buildRacePanel() {
     rp_driverName->setAlignment(Qt::AlignCenter);
     vbox->addWidget(rp_driverName);
 
-    // ── TIMING ───────────────────────────────────────────────────
-    QGroupBox* timGrp = new QGroupBox("TIMING");
-    QVBoxLayout* tv = new QVBoxLayout(timGrp);
-    tv->setSpacing(0);
-    tv->addWidget(makeRow("Lap",      rp_lapNum));
-    tv->addWidget(makeRow("Position", rp_position));
-    tv->addWidget(makeRow("Pit",      rp_pitStatus));
-    tv->addWidget(makeRow("Current",  rp_currentLap));
-    tv->addWidget(makeRow("Last Lap", rp_lastLap));
+    addDivider();
 
+    // ── TIMING ───────────────────────────────────────────────────
+    makeSection("TIMING");
+    vbox->addWidget(makeRow("Lap",      rp_lapNum));
+    vbox->addWidget(makeRow("Position", rp_position));
+    vbox->addWidget(makeRow("Pit",      rp_pitStatus));
+    vbox->addWidget(makeRow("Current",  rp_currentLap));
+    vbox->addWidget(makeRow("Last Lap", rp_lastLap));
+
+    // S1 / S2 side by side
     QWidget* sectRow = new QWidget;
     QHBoxLayout* sh = new QHBoxLayout(sectRow);
     sh->setContentsMargins(0, 4, 0, 0);
@@ -154,42 +172,39 @@ QWidget* MainWindow::buildRacePanel() {
     };
     sh->addWidget(makeSect("S1", rp_s1));
     sh->addWidget(makeSect("S2", rp_s2));
-    tv->addWidget(sectRow);
-    vbox->addWidget(timGrp);
+    vbox->addWidget(sectRow);
+
+    addDivider();
 
     // ── ENERGY ───────────────────────────────────────────────────
-    QGroupBox* ersGrp = new QGroupBox("ENERGY");
-    QVBoxLayout* ev = new QVBoxLayout(ersGrp);
-    ev->setSpacing(4);
+    makeSection("ENERGY");
 
     rp_ersPct = new QLabel("—");
     QFont bigF; bigF.setPointSize(18); bigF.setBold(true);
     rp_ersPct->setFont(bigF);
     rp_ersPct->setAlignment(Qt::AlignCenter);
-    ev->addWidget(rp_ersPct);
+    vbox->addWidget(rp_ersPct);
 
     rp_ersBar = new QProgressBar;
     rp_ersBar->setRange(0, 100);
     rp_ersBar->setValue(0);
     rp_ersBar->setTextVisible(false);
     rp_ersBar->setFixedHeight(6);
-    ev->addWidget(rp_ersBar);
+    vbox->addWidget(rp_ersBar);
 
-    ev->addWidget(makeRow("Mode", rp_ersMode));
-    ev->addWidget(makeRow("DRS",  rp_drs));
-    vbox->addWidget(ersGrp);
+    vbox->addWidget(makeRow("Mode", rp_ersMode));
+    vbox->addWidget(makeRow("DRS",  rp_drs));
+
+    addDivider();
 
     // ── STRATEGY ─────────────────────────────────────────────────
-    QGroupBox* stratGrp = new QGroupBox("STRATEGY");
-    QVBoxLayout* stv = new QVBoxLayout(stratGrp);
-    stv->setSpacing(0);
-    stv->addWidget(makeRow("Fuel",       rp_fuelKg));
-    stv->addWidget(makeRow("Fuel Laps",  rp_fuelLaps));
-    stv->addWidget(makeRow("Mix",        rp_fuelMix));
-    stv->addWidget(makeRow("Tyre",       rp_tyre));
-    stv->addWidget(makeRow("Tyre Age",   rp_tyreAge));
-    stv->addWidget(makeRow("Brake Bias", rp_brakeBias));
-    vbox->addWidget(stratGrp);
+    makeSection("STRATEGY");
+    vbox->addWidget(makeRow("Fuel",       rp_fuelKg));
+    vbox->addWidget(makeRow("Fuel Laps",  rp_fuelLaps));
+    vbox->addWidget(makeRow("Mix",        rp_fuelMix));
+    vbox->addWidget(makeRow("Tyre",       rp_tyre));
+    vbox->addWidget(makeRow("Tyre Age",   rp_tyreAge));
+    vbox->addWidget(makeRow("Brake Bias", rp_brakeBias));
 
     vbox->addStretch();
     scroll->setWidget(w);
