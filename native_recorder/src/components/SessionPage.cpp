@@ -205,7 +205,7 @@ static QColor airTempColor(int c) {
 QWidget* MainWindow::buildSessionPage() {
     QWidget* w = new QWidget;
     QVBoxLayout* root = new QVBoxLayout(w);
-    root->setContentsMargins(10, 8, 10, 8);
+    root->setContentsMargins(10, 8, 0, 0);
     root->setSpacing(6);
 
     // ── Header ───────────────────────────────────────────────────
@@ -422,7 +422,7 @@ QWidget* MainWindow::buildSessionPage() {
     QWidget* rightPanel = new QWidget;
     rightPanel->setFixedWidth(240);
     QVBoxLayout* rv = new QVBoxLayout(rightPanel);
-    rv->setContentsMargins(0, 10, 0, 10);
+    rv->setContentsMargins(0, 0, 0, 0);
     rv->setSpacing(6);
 
     auto makeSection = [&](const QString& title) {
