@@ -67,17 +67,17 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM,   C_RPM,   true,  'f', 0 });
     int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   true,  'f', 0 });
 
-    setAxisTimeTicker(axXId_, "%m:%s");        // mm:ss labels, like Electron's fmtTime
-    setAxisNumberSuffix(axRpm, 1000.0, "k");   // 16000 -> "16k"
-    setAxisNumberSuffix(axErs, 1.0, "%");      // 80    -> "80%"
+    setAxisTimeTicker(axXId_, "%m:%s");             // m:ss.t labels, like Electron's fmtTime
+    setAxisNumberSuffix(axRpm, 1000.0, "k", 2000);  // 16000 -> "16k", ticks every 2k
+    setAxisNumberSuffix(axErs, 1.0, "%");           // 80    -> "80%"
 
     // Reference series first (drawn behind), then the current-lap series on top.
     rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs   });
     rRpId_ = addSeries({ "",      muted(C_RPM),   2.0, axXId_, axRpm   });
     rSpId_ = addSeries({ "",      muted(C_SPEED), 2.0, axXId_, axSpeed });
-    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs   });
-    rpId_  = addSeries({ "RPM",   C_RPM,   2.5, axXId_, axRpm   });
-    spId_  = addSeries({ "Speed", C_SPEED, 2.5, axXId_, axSpeed });
+    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs,   "%",   1, false });
+    rpId_  = addSeries({ "RPM",   C_RPM,   2.5, axXId_, axRpm,   "",    0, true  });
+    spId_  = addSeries({ "Speed", C_SPEED, 2.5, axXId_, axSpeed, "kph", 0, false });
 
     showReference(false);
     setHoverReadout(true);

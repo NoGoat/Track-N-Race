@@ -37,6 +37,9 @@ public:
         double  width = 2.0;
         int     xAxisId = -1;            // axis id returned by addAxis()
         int     yAxisId = -1;
+        QString unit;                    // appended after the value in the hover tooltip
+        int     tipPrecision = 0;        // tooltip value decimals (e.g. 1 for "90.3%")
+        bool    tipGroupThousands = false; // tooltip thousands separator (e.g. "11,580")
     };
 
     explicit ChartView(QWidget* parent = nullptr);
@@ -62,8 +65,9 @@ public:
     void setAxisTimeTicker(int axisId, const QString& format);
 
     // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
-    // 16000 into "16k", or (1,"%") turns 80 into "80%".
-    void setAxisNumberSuffix(int axisId, double scale, const QString& suffix);
+    // 16000 into "16k", or (1,"%") turns 80 into "80%". A positive fixedStep forces
+    // evenly spaced ticks at that interval (in raw value units, e.g. 2000 for RPM).
+    void setAxisNumberSuffix(int axisId, double scale, const QString& suffix, double fixedStep = 0.0);
 
     // Show/hide the built-in overlay legend (off when an external legend is used).
     void setLegendVisible(bool on);
