@@ -68,6 +68,8 @@ private:
     TelemetryChart* chart        = nullptr;
     SessionModel*   model_       = nullptr;
     QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)
+    QPushButton*    ov_compareBtn_ = nullptr; // enabled only while a file is loaded
+    QPushButton*    ov_defaultBtn_ = nullptr; // re-selected when a recording closes
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
     QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;
     QLabel*         dmgBrakeFl  = nullptr; QLabel* dmgBrakeFr = nullptr;

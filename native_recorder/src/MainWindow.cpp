@@ -273,6 +273,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
         if (model_) model_->load(player_->takeScannedData());
         if (chart) { chart->setPlaybackMode(true); chart->setCurrentTime(player_->currentTime()); }
+        if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
         closeActiveStream();
         pb_sep_->show();
         pb_bar_->show();
@@ -332,6 +333,9 @@ MainWindow::MainWindow(QWidget* parent)
         inPlayback_ = false;
         if (model_) model_->clear();
         if (chart) { chart->setPlaybackMode(false); chart->setMode(ChartMode::Default); }
+        if (ov_compareBtn_) ov_compareBtn_->setEnabled(false);
+        if (ov_defaultBtn_) ov_defaultBtn_->setChecked(true);
+        if (ov_lapCombo_) ov_lapCombo_->setVisible(false);
         pb_sep_->hide();
         pb_bar_->hide();
         setWindowTitle("Track N Race Background Recorder");

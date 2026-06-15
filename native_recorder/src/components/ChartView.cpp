@@ -6,6 +6,26 @@
 #include <QMouseEvent>
 #include <QVBoxLayout>
 
+namespace {
+// Subtle grey shared by every axis line, tick and grid, so the dark chart reads
+// like the Electron version rather than drawing axes in (invisible) black.
+const QColor AXIS_LINE(150, 150, 150, 130);
+const QColor GRID_LINE(150, 150, 150, 40);
+
+// Ticker that scales the value and appends a suffix: "16000" -> "16k", "80" -> "80%".
+class SuffixTicker : public QCPAxisTicker {
+public:
+    SuffixTicker(double scale, QString suffix) : scale_(scale), suffix_(std::move(suffix)) {}
+protected:
+    QString getTickLabel(double tick, const QLocale& locale, QChar formatChar, int precision) override {
+        return QCPAxisTicker::getTickLabel(tick / scale_, locale, formatChar, precision) + suffix_;
+    }
+private:
+    double  scale_;
+    QString suffix_;
+};
+}
+
 // All QCustomPlot specifics live here, behind ChartView's backend-agnostic API.
 struct ChartView::Impl {
     QCustomPlot*         plot = nullptr;
@@ -50,8 +70,9 @@ ChartView::ChartView(QWidget* parent)
 #endif
     p->setBackground(Qt::NoBrush);
     p->setBackground(QBrush(Qt::transparent));
-    p->axisRect()->setMargins(QMargins(0, 0, 0, 0));
-    p->axisRect()->setAutoMargins(QCP::msNone);
+    // Auto margins so the value/time tick labels have room to draw (with zero
+    // margins QCustomPlot renders them off-widget and they vanish).
+    p->axisRect()->setAutoMargins(QCP::msAll);
 
     // We declare every axis explicitly via addAxis(); hide the four defaults so
     // they don't draw duplicate frames/grids.
@@ -74,9 +95,16 @@ int ChartView::addAxis(const AxisSpec& spec)
     QCPAxis* ax = d_->plot->axisRect()->addAxis(Impl::toQcp(spec.side));
     ax->setRange(spec.min, spec.max);
     ax->setVisible(spec.visible);
-    ax->grid()->setVisible(false);
     ax->setNumberFormat(QString(QChar(spec.numberFormat)));
     ax->setNumberPrecision(spec.precision);
+
+    // Grey axis line + ticks (the default is black, invisible on the dark chart).
+    ax->setBasePen(QPen(AXIS_LINE));
+    ax->setTickPen(QPen(AXIS_LINE));
+    ax->setSubTickPen(QPen(AXIS_LINE));
+    ax->grid()->setVisible(spec.grid);
+    ax->grid()->setPen(QPen(GRID_LINE));
+    ax->grid()->setSubGridVisible(false);
 
     const bool inherit = !spec.labelColor.isValid();
     if (!inherit) {
@@ -159,6 +187,12 @@ void ChartView::setAxisTimeTicker(int axisId, const QString& format)
     auto ticker = QSharedPointer<QCPAxisTickerTime>::create();
     ticker->setTimeFormat(format);
     d_->axes[axisId]->setTicker(ticker);
+}
+
+void ChartView::setAxisNumberSuffix(int axisId, double scale, const QString& suffix)
+{
+    if (axisId < 0 || axisId >= d_->axes.size()) return;
+    d_->axes[axisId]->setTicker(QSharedPointer<SuffixTicker>::create(scale, suffix));
 }
 
 void ChartView::setHoverReadout(bool on)

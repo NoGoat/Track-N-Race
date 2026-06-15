@@ -28,6 +28,7 @@ public:
         bool    visible      = true;
         char    numberFormat = 'f';        // QCPAxis number format: 'f', 'g', 'e'
         int     precision    = 0;          // tick label decimal precision
+        bool    grid         = false;      // draw this axis's (faint) grid lines
     };
 
     struct SeriesSpec {
@@ -59,6 +60,10 @@ public:
 
     // Format an axis's tick labels as time (QCPAxisTickerTime, e.g. "%m:%s").
     void setAxisTimeTicker(int axisId, const QString& format);
+
+    // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
+    // 16000 into "16k", or (1,"%") turns 80 into "80%".
+    void setAxisNumberSuffix(int axisId, double scale, const QString& suffix);
 
     // Show/hide the built-in overlay legend (off when an external legend is used).
     void setLegendVisible(bool on);

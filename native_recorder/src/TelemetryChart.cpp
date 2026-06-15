@@ -62,12 +62,14 @@ QVector<TelemetryChart::LegendEntry> TelemetryChart::legendEntries()
 TelemetryChart::TelemetryChart(QWidget* parent)
     : ChartView(parent)
 {
-    axXId_      = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0 });
+    axXId_      = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
     int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED, C_SPEED, true,  'f', 0 });
     int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM,   C_RPM,   true,  'f', 0 });
-    int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   false, 'f', 0 });
+    int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   true,  'f', 0 });
 
-    setAxisTimeTicker(axXId_, "%m:%s");   // mm:ss labels, like Electron's fmtTime
+    setAxisTimeTicker(axXId_, "%m:%s");        // mm:ss labels, like Electron's fmtTime
+    setAxisNumberSuffix(axRpm, 1000.0, "k");   // 16000 -> "16k"
+    setAxisNumberSuffix(axErs, 1.0, "%");      // 80    -> "80%"
 
     // Reference series first (drawn behind), then the current-lap series on top.
     rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs   });

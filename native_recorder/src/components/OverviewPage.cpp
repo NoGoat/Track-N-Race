@@ -130,6 +130,9 @@ QWidget* MainWindow::buildOverviewTab() {
         b->setChecked(m.mode == ChartMode::Default);
         modeGroup->addButton(b);
         mb->addWidget(b);
+        // Compare needs a loaded recording's laps; disabled until one is opened.
+        if (m.mode == ChartMode::Compare) { ov_compareBtn_ = b; b->setEnabled(false); }
+        if (m.mode == ChartMode::Default) ov_defaultBtn_ = b;
         ChartMode mode = m.mode;
         connect(b, &QPushButton::clicked, this, [this, mode] {
             if (chart) chart->setMode(mode);
