@@ -61,7 +61,11 @@ set(SOURCES
 if(WIN32)
     list(APPEND SOURCES resources.rc)
     add_executable(native_recorder WIN32 ${SOURCES})
-    target_compile_options(native_recorder PRIVATE /utf-8)
+    target_compile_options(native_recorder PRIVATE /utf-8 /FI"windows.h")
+    # NOMINMAX prevents windows.h min/max macros from shadowing std::min/std::max.
+    # The /FI force-include ensures tagMSG is fully defined before Qt forward-declares
+    # it, so nlohmann::json's type-trait templates compile cleanly under MSVC.
+    target_compile_definitions(native_recorder PRIVATE NOMINMAX)
 else()
     add_executable(native_recorder ${SOURCES})
 endif()
