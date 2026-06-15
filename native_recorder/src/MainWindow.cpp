@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "TelemetryChart.h"
 #include "TnrdPlayer.h"
+#include "SessionModel.h"
 
 #include <QApplication>
 #include <QToolBar>
@@ -127,6 +128,10 @@ MainWindow::MainWindow(QWidget* parent)
         windowCombo->addItem(windows[i].label, windows[i].secs);
     windowCombo->setCurrentIndex(1);
     toolbar->addWidget(windowCombo);
+
+    // Lap-aware session model — the chart's single source of truth, fed by both
+    // live UDP and playback. Created before the Overview tab so the chart can bind it.
+    model_ = new SessionModel(this);
 
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(buildOverviewTab());   // index 0
@@ -265,8 +270,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
         loadingOverlay_->hide();
         inPlayback_ = true;
-        if (chart) chart->reset();
-        lastErs_ = 0.0f;
+        // Hand the chart the whole pre-scanned session; it now drives off currentTime.
+        if (model_) model_->load(player_->takeScannedData());
+        if (chart) { chart->setPlaybackMode(true); chart->setCurrentTime(player_->currentTime()); }
         closeActiveStream();
         pb_sep_->show();
         pb_bar_->show();
@@ -281,44 +287,14 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(player_, &TnrdPlayer::packetReady, this, [this](const nlohmann::json& j) {
-        emitLiveData(j);
-        // Chart update: telemetry uses lastErs_ tracked across status packets
-        const std::string type = j.value("type", std::string{});
-        if (type == "status")
-            lastErs_ = j.value("ers_pct", 0.0f);
-        else if (type == "telemetry" && chart && currentPage_ == 0)
-            chart->addPoint(j.value("session_time", 0.0f),
-                            j.value("speed_kph", 0.0f),
-                            j.value("rpm", 0),
-                            lastErs_);
-    });
-
-    connect(player_, &TnrdPlayer::seeked, this, [this] {
-        // Drop the live chart's history so it refills from the seek point's window.
-        if (chart) chart->reset();
-        lastErs_ = 0.0f;
-    });
-
-    connect(player_, &TnrdPlayer::chartHistory, this,
-            [this](const QVector<ChartSample>& samples) {
-        if (!chart) return;
-        // Bulk refill: hand each series its full point list in one replace().
-        QList<QPointF> speed, rpm, ers;
-        speed.reserve(samples.size());
-        rpm.reserve(samples.size());
-        ers.reserve(samples.size());
-        float latest = 0.0f;
-        for (const ChartSample& s : samples) {
-            speed.append({ s.t, s.speed });
-            rpm.append({ s.t, s.rpm });
-            ers.append({ s.t, s.ers });
-            latest = s.t;
-        }
-        chart->replaceAll(speed, rpm, ers, latest);
+        emitLiveData(j);   // panels only — the chart reads the pre-scanned model
     });
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
+        // `cur` is session-relative (for the slider); the model is keyed on absolute
+        // session_time, so hand the chart the absolute playhead.
+        if (chart) chart->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
             pb_playBtn_->setIcon(paletteIcon(
                 playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
@@ -354,6 +330,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(closeRecBtn, &QPushButton::clicked, this, [this] {
         player_->close();
         inPlayback_ = false;
+        if (model_) model_->clear();
+        if (chart) { chart->setPlaybackMode(false); chart->setMode(ChartMode::Default); }
         pb_sep_->hide();
         pb_bar_->hide();
         setWindowTitle("Track N Race Background Recorder");
@@ -813,14 +791,28 @@ void MainWindow::processPacket(const uint8_t* data, int length) {
     for (const auto& row : rows) {
         recordRow(row, hdr.sessionTime);
         emitLiveData(row);
-
-        const std::string rtype = row["type"].get<std::string>();
-        if (rtype == "status")
-            lastErs_ = row["ers_pct"].get<float>();
-        else if (rtype == "telemetry" && chart && currentPage_ == 0)
-            chart->addPoint(hdr.sessionTime,
-                            row["speed_kph"].get<float>(),
-                            row["rpm"].get<int>(),
-                            lastErs_);
+        ingestForModel(row, hdr.sessionTime);
     }
+}
+
+// Routes a parsed row into the lap-aware SessionModel. Shared by the live UDP
+// path and (for completeness) any streamed source. The model — not the chart —
+// owns chart state; the chart re-queries the model on its change signals.
+void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
+    if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
+    const std::string rtype = row.value("type", std::string{});
+    // A large backward jump in session time means a new session/restart.
+    if (rtype == "telemetry" && sessionTime < model_->data().latestTime - 2.0f)
+        model_->onSessionReset(sessionTime);
+    if (rtype == "telemetry")
+        model_->onTelemetry(sessionTime,
+                            row.value("speed_kph", 0.0f),
+                            row.value("rpm", 0));
+    else if (rtype == "status")
+        model_->onStatus(sessionTime, row.value("ers_pct", 0.0f));
+    else if (rtype == "lap")
+        model_->onLap(row.value("lap_num", 0),
+                     row.value("current_lap_ms", 0),
+                     row.value("last_lap_ms", 0),
+                     row.value("lap_invalid", false));
 }

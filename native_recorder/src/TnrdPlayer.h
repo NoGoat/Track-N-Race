@@ -11,13 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <zlib.h>
 
-// One pre-extracted point for the live chart's seek-history refill.
-struct ChartSample {
-    float t;
-    float speed;
-    float rpm;
-    float ers;
-};
+#include "SessionModel.h"
 
 class TnrdPlayer : public QObject {
     Q_OBJECT
@@ -37,6 +31,10 @@ public:
     float currentTime() const { return currentTime_; }
     bool  isPlaying()   const { return playing_; }
 
+    // The full session built during the load scan, moved into SessionModel by the
+    // UI once `loaded` fires. Valid only on the main thread after that signal.
+    SessionData takeScannedData() { return std::move(scanned_); }
+
 signals:
     void loadingStarted();
     void loaded(nlohmann::json header);
@@ -44,12 +42,10 @@ signals:
     void packetReady(nlohmann::json packet);
     void stateChanged(bool playing, float currentTime, float totalTime, float speed);
     void seeked();
-    void chartHistory(const QVector<ChartSample>& samples);
     void finished();
 
 private slots:
     void tick();
-    void flushChartWindow();
 
 private:
     struct IndexEntry {
@@ -59,6 +55,7 @@ private:
     };
 
     std::vector<IndexEntry> index_;
+    SessionData             scanned_;   // built on the load thread by buildIndex()
 
     float        startTime_   = 0.0f;
     float        totalTime_   = 0.0f;
@@ -73,8 +70,6 @@ private:
     QString       tempPath_;
     QFile         tempFile_;
     QTimer*       timer_       = nullptr;
-    QTimer*       flushTimer_  = nullptr;   // coalesces chart-history loads during slider drags
-    float         pendingTarget_ = 0.0f;
     QElapsedTimer elapsed_;
 
     static uint8_t typeId(const std::string& s);

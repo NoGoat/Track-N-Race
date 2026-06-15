@@ -16,11 +16,6 @@
 // which is an append-only log that must not be replayed). See emitLiveData().
 static constexpr uint8_t RECON_TYPE_IDS[] = { 1, 2, 3, 4, 5, 7, 8, 9, 10 };
 
-// Seconds of dense history replayed before the seek target so charts/cards are
-// populated at the seek point. Mirrors the Electron player's seek-flush window —
-// large enough to fill the chart, small enough to keep slider drags responsive.
-static constexpr float SEEK_WINDOW_S = 120.0f;
-
 // Fast field extraction from a raw JSON line — avoids full JSON parsing during indexing.
 
 // Returns -1.0f when the line has no session_time field, so the caller can carry
@@ -77,13 +72,6 @@ TnrdPlayer::TnrdPlayer(QObject* parent) : QObject(parent) {
     timer_ = new QTimer(this);
     timer_->setInterval(16);
     connect(timer_, &QTimer::timeout, this, &TnrdPlayer::tick);
-
-    // Deferred, restartable: only the final seek of a drag actually loads the
-    // dense chart window, mirroring the Electron player's setImmediate flush.
-    flushTimer_ = new QTimer(this);
-    flushTimer_->setSingleShot(true);
-    flushTimer_->setInterval(30);
-    connect(flushTimer_, &QTimer::timeout, this, &TnrdPlayer::flushChartWindow);
 }
 
 TnrdPlayer::~TnrdPlayer() {
@@ -243,66 +231,10 @@ void TnrdPlayer::seek(float pct) {
         if (!j.is_null()) emit packetReady(j);
     }
 
-    // ── Phase 2: dense chart history (deferred + coalesced) ───────────────
-    // Loading the telemetry window is the only expensive part, so it runs off
-    // a restartable timer: a slider drag fires many seeks but only the last
-    // one's window is read. Mirrors Electron's setImmediate seek flush.
-    pendingTarget_ = targetTime;
-    flushTimer_->start();
-
+    // The chart no longer reloads a window on seek: the whole session lives in
+    // SessionModel, so moving currentTime_ is enough — the chart re-queries it.
     if (wasPlaying) { playing_ = true; elapsed_.start(); timer_->start(); }
     emitState();
-}
-
-// Reads the [target - SEEK_WINDOW_S, target] byte range as a single contiguous
-// block, extracts the telemetry curve (with interleaved ERS), and ships it in
-// one signal — the chart refills in a single batch instead of packet-by-packet.
-void TnrdPlayer::flushChartWindow() {
-    if (index_.empty() || !tempFile_.isOpen()) return;
-
-    const float target = pendingTarget_;
-    const size_t ws = lowerBoundTime(target - SEEK_WINDOW_S);
-    const size_t we = upperBoundTime(target);   // first entry after the target
-    if (we <= ws) { emit chartHistory({}); return; }
-
-    const qint64 startOffset = index_[ws].offset;
-    const qint64 endOffset   = (we < index_.size()) ? index_[we].offset : tempFile_.size();
-    const qint64 length      = endOffset - startOffset;
-    if (length <= 0) { emit chartHistory({}); return; }
-
-    tempFile_.seek(startOffset);
-    const QByteArray block = tempFile_.read(length);
-
-    QVector<ChartSample> samples;
-    float ers = 0.0f;   // carried across status packets between telemetry rows
-
-    const char* p   = block.constData();
-    const char* end = p + block.size();
-    while (p < end) {
-        const char* nl  = static_cast<const char*>(memchr(p, '\n', end - p));
-        const char* le  = nl ? nl : end;
-        const int   len = static_cast<int>(le - p);
-        if (len > 1) {
-            uint8_t tid = scanType(p, len);
-            if (tid == 2 || tid == 1) {  // status or telemetry — the only rows the chart needs
-                try {
-                    nlohmann::json j = nlohmann::json::parse(p, p + len);
-                    if (tid == 2) {
-                        ers = j.value("ers_pct", ers);
-                    } else {
-                        samples.push_back({ j.value("session_time", 0.0f),
-                                            j.value("speed_kph", 0.0f),
-                                            (float)j.value("rpm", 0),
-                                            ers });
-                    }
-                } catch (...) {}
-            }
-        }
-        if (!nl) break;
-        p = nl + 1;
-    }
-
-    emit chartHistory(samples);
 }
 
 void TnrdPlayer::setSpeed(float mult) {
@@ -371,6 +303,8 @@ bool TnrdPlayer::decompress(const QString& srcPath, const QString& destPath) {
 
 void TnrdPlayer::buildIndex(const QString& filePath) {
     index_.clear();
+    scanned_.clear();
+    scanned_.trimBuffers = false;   // playback keeps the whole session in memory
     startTime_   = 0.0f;
     totalTime_   = 0.0f;
     currentTime_ = 0.0f;
@@ -398,6 +332,23 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
         uint8_t tid = scanType(ld, ll);
         index_.push_back({ lineOffset, t, tid });
         totalTime_ = std::max(totalTime_, t);
+
+        // Build the chart's session model in the same pass. Only the three row
+        // types the chart needs are parsed; timing/participants/etc are skipped.
+        if (tid == 1 || tid == 2 || tid == 4) {
+            try {
+                nlohmann::json j = nlohmann::json::parse(ld, ld + ll);
+                if (tid == 1)
+                    scanned_.onTelemetry(t, j.value("speed_kph", 0.0f), j.value("rpm", 0));
+                else if (tid == 2)
+                    scanned_.onStatus(t, j.value("ers_pct", 0.0f));
+                else
+                    scanned_.onLap(j.value("lap_num", 0),
+                                   j.value("current_lap_ms", 0),
+                                   j.value("last_lap_ms", 0),
+                                   j.value("lap_invalid", false));
+            } catch (...) {}
+        }
     };
 
     while (!cancelled_) {
@@ -440,6 +391,17 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
     if (!partial.isEmpty() && !cancelled_)
         commitLine(partial.constData(), partial.size(), partialOffset);
 
+    // Close out the trailing (still-open) lap and sort everything by time, since
+    // UDP packets can be written slightly out of order. Mirrors sessionPlayer.ts.
+    scanned_.finalizeOpenLap();
+    auto byT = [](auto a, auto b) { return a.t < b.t; };
+    std::sort(scanned_.telBuf.begin(), scanned_.telBuf.end(), byT);
+    std::sort(scanned_.stsBuf.begin(), scanned_.stsBuf.end(), byT);
+    for (LapBlock& l : scanned_.laps) {
+        std::sort(l.tel.begin(), l.tel.end(), byT);
+        std::sort(l.sts.begin(), l.sts.end(), byT);
+    }
+
     currentTime_ = startTime_;   // playback begins at the first packet's clock
 }
 
@@ -462,7 +424,6 @@ void TnrdPlayer::emitState() {
 }
 
 void TnrdPlayer::cleanup() {
-    if (flushTimer_) flushTimer_->stop();
     if (tempFile_.isOpen()) tempFile_.close();
     if (!tempPath_.isEmpty()) {
         QFile::remove(tempPath_);

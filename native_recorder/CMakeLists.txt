@@ -24,14 +24,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zlib)
 
-# Find Qt6 (fallback to Qt5)
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg Charts)
+# Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
+find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg PrintSupport)
 if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Charts)
+    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport)
     message(STATUS "Using Qt6")
 else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg Charts)
-    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::Charts)
+    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg PrintSupport)
+    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::PrintSupport)
     message(STATUS "Using Qt5 (Qt6 not found)")
 endif()
 
@@ -41,8 +41,14 @@ set(SOURCES
     src/MainWindow.h
     src/TnrdPlayer.cpp
     src/TnrdPlayer.h
+    src/SessionModel.cpp
+    src/SessionModel.h
     src/TelemetryChart.cpp
     src/TelemetryChart.h
+    src/components/ChartView.cpp
+    src/components/ChartView.h
+    src/third_party/qcustomplot/qcustomplot.cpp
+    src/third_party/qcustomplot/qcustomplot.h
     src/components/OverviewPage.cpp
     src/components/SettingsPage.cpp
     src/components/TyresPage.cpp

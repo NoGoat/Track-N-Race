@@ -1,5 +1,6 @@
 #include "../MainWindow.h"
 #include "../TelemetryChart.h"
+#include "../SessionModel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -8,6 +9,10 @@
 #include <QFont>
 #include <QPalette>
 #include <QSizePolicy>
+#include <QPushButton>
+#include <QButtonGroup>
+#include <QComboBox>
+#include <QSignalBlocker>
 
 // ── UI helpers ────────────────────────────────────────────────────────────
 
@@ -104,9 +109,64 @@ QWidget* MainWindow::buildOverviewTab() {
     sep1->setFrameShadow(QFrame::Sunken);
     vbox->addWidget(sep1);
 
+    // ── Chart mode controls ──────────────────────────────────────
+    QWidget* modeBar = new QWidget;
+    QHBoxLayout* mb = new QHBoxLayout(modeBar);
+    mb->setContentsMargins(0, 2, 0, 2);
+    mb->setSpacing(4);
+
+    auto* modeGroup = new QButtonGroup(modeBar);
+    modeGroup->setExclusive(true);
+    struct { const char* label; ChartMode mode; } modes[] = {
+        { "Default",      ChartMode::Default     },
+        { "Current Lap",  ChartMode::CurrentLap  },
+        { "Previous Lap", ChartMode::PreviousLap },
+        { "Fastest Lap",  ChartMode::FastestLap  },
+        { "Compare",      ChartMode::Compare     },
+    };
+    for (const auto& m : modes) {
+        QPushButton* b = new QPushButton(m.label);
+        b->setCheckable(true);
+        b->setChecked(m.mode == ChartMode::Default);
+        modeGroup->addButton(b);
+        mb->addWidget(b);
+        ChartMode mode = m.mode;
+        connect(b, &QPushButton::clicked, this, [this, mode] {
+            if (chart) chart->setMode(mode);
+            if (ov_lapCombo_) ov_lapCombo_->setVisible(mode == ChartMode::Compare);
+        });
+    }
+
+    ov_lapCombo_ = new QComboBox;
+    ov_lapCombo_->setVisible(false);
+    ov_lapCombo_->setMinimumWidth(70);
+    mb->addWidget(ov_lapCombo_);
+    mb->addStretch(1);
+    vbox->addWidget(modeBar);
+
+    connect(ov_lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        if (chart && idx >= 0)
+            chart->setCompareLap(ov_lapCombo_->itemData(idx).toInt());
+    });
+
     // ── Chart ────────────────────────────────────────────────────
     chart = new TelemetryChart;
+    chart->setModel(model_);
     vbox->addWidget(chart, 1);
+
+    // Repopulate the compare-lap selector whenever the set of laps changes.
+    connect(model_, &SessionModel::lapsChanged, this, [this] {
+        if (!ov_lapCombo_) return;
+        const int prev = ov_lapCombo_->count() > 0 && ov_lapCombo_->currentIndex() >= 0
+            ? ov_lapCombo_->currentData().toInt() : -1;
+        QSignalBlocker block(ov_lapCombo_);
+        ov_lapCombo_->clear();
+        for (const LapBlock& l : model_->data().laps)
+            ov_lapCombo_->addItem(QString("Lap %1").arg(l.lapNum), l.lapNum);
+        int sel = ov_lapCombo_->findData(prev);
+        if (sel >= 0) ov_lapCombo_->setCurrentIndex(sel);
+        else if (ov_lapCombo_->count() > 0) ov_lapCombo_->setCurrentIndex(ov_lapCombo_->count() - 1);
+    });
 
     auto* sep2 = new QFrame;
     sep2->setFrameShape(QFrame::HLine);

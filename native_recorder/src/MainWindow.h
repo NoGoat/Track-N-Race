@@ -27,6 +27,8 @@
 class TelemetryChart;
 class TnrdPlayer;
 class TrackMapWidget;
+class SessionModel;
+class QComboBox;
 class QTimer;
 
 class MainWindow : public QMainWindow {
@@ -64,6 +66,8 @@ private:
     QLabel*         cardErs      = nullptr;
     QLabel*         cardPos      = nullptr;
     TelemetryChart* chart        = nullptr;
+    SessionModel*   model_       = nullptr;
+    QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
     QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;
     QLabel*         dmgBrakeFl  = nullptr; QLabel* dmgBrakeFr = nullptr;
@@ -159,7 +163,6 @@ private:
     bool         inPlayback_     = false;
     bool         seekerUpdating_ = false;
     bool         pbLastPlaying_  = false;   // only swap the play/pause icon on change
-    float        lastErs_        = 0.0f;
     QWidget*     pb_bar_         = nullptr;
     QFrame*      pb_sep_         = nullptr;
     QPushButton* pb_playBtn_     = nullptr;
@@ -236,6 +239,7 @@ private:
     void processPacket(const uint8_t* data, int length);
     void recordRow(const nlohmann::json& row, float sessionTime);
     void emitLiveData(const nlohmann::json& row);
+    void ingestForModel(const nlohmann::json& row, float sessionTime);
     bool isDuplicate(const std::string& type, const nlohmann::json& row);
 
     gzFile gzOpenPath(const QString& path, const char* mode);

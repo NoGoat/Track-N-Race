@@ -1,54 +1,66 @@
 #pragma once
 
-#include <QChartView>
-#include <QList>
-#include <QPointF>
+#include "components/ChartView.h"
 
-class QChart;
-class QLineSeries;
-class QValueAxis;
+#include <QPointer>
+#include <QVector>
 
-// GPU-accelerated speed / RPM / ERS overlay built on Qt Charts. Replaces the
-// hand-drawn QPainter chart; each series uses an OpenGL render path so paint
-// cost no longer scales with the number of retained points.
-class TelemetryChart : public QChartView {
+class SessionModel;
+struct LapBlock;
+class QTimer;
+
+// Viewing modes, mirroring the Electron Speed/RPM/ERS chart.
+enum class ChartMode { Default, CurrentLap, PreviousLap, FastestLap, Compare };
+
+// Speed / RPM / ERS overlay. A thin domain configuration over the generic
+// ChartView, driven entirely by a SessionModel: it queries the model for the
+// active mode's data and rebuilds its series on the model's change signals (and
+// on the playback playhead). No per-point feeding — paint cost stays flat.
+class TelemetryChart : public ChartView {
     Q_OBJECT
 
 public:
     explicit TelemetryChart(QWidget* parent = nullptr);
 
+    void setModel(SessionModel* m);
+    void setPlaybackMode(bool on);
+    void setWindowSeconds(float seconds);   // Default mode window
+
 public slots:
-    // Live append of a single sample (speed kph, rpm, ers %).
-    void addPoint(float sessionTime, float speed, int rpm, float ers);
-
-    // Bulk replace — used to refill history in one shot after a seek.
-    void replaceAll(const QList<QPointF>& speed,
-                    const QList<QPointF>& rpm,
-                    const QList<QPointF>& ers,
-                    float latestTime);
-
-    void setWindowSeconds(float seconds);
-    void reset();
+    void setMode(ChartMode m);
+    void setCompareLap(int lapNum);
+    void setCurrentTime(float t);           // playback playhead
 
 protected:
-    void changeEvent(QEvent* e) override;   // keep legend color in sync with the theme
+    void showEvent(QShowEvent* e) override;
 
 private:
+    void requestRefresh();                  // ~30 Hz coalesced
+    void refresh();
+
+    void buildDefault(float endTime);
+    void buildSingleLap(const LapBlock* lap, float upTo);
+    void buildOverlay(const LapBlock* ref, const LapBlock* cur, float curUpTo);
+    void showReference(bool on);            // toggle the 3 muted reference series
+
+    float currentTime() const;
+    const LapBlock* currentLapBlock() const;
+    const LapBlock* previousLapBlock() const;
+
     static constexpr float MAX_SPEED = 380.0f;
     static constexpr float MAX_RPM   = 16000.0f;
 
-    void rescaleX();
-    void trim(QLineSeries* s, float cutoff);
+    QPointer<SessionModel> model_;
+    QTimer*   refreshTimer_ = nullptr;
+    bool      dirty_        = false;
 
-    QChart*      chart_   = nullptr;
-    QLineSeries* speedS_  = nullptr;
-    QLineSeries* rpmS_    = nullptr;
-    QLineSeries* ersS_    = nullptr;
-    QValueAxis*  axX_     = nullptr;
-    QValueAxis*  axRpm_   = nullptr;
-    QValueAxis*  axSpeed_ = nullptr;
-    QValueAxis*  axErs_   = nullptr;
+    bool      playback_     = false;
+    float     currentTime_  = 0.0f;
+    ChartMode mode_         = ChartMode::Default;
+    int       compareLap_   = -1;
+    float     windowS_      = 30.0f;
 
-    float windowS_ = 30.0f;
-    float latestT_ = 0.0f;
+    int axXId_ = -1;
+    int spId_  = -1, rpId_  = -1, erId_  = -1;   // current (full colour)
+    int rSpId_ = -1, rRpId_ = -1, rErId_ = -1;   // reference (muted)
 };
