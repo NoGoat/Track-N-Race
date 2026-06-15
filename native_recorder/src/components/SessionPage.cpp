@@ -206,7 +206,7 @@ QWidget* MainWindow::buildSessionPage() {
     QWidget* w = new QWidget;
     QVBoxLayout* root = new QVBoxLayout(w);
     root->setContentsMargins(10, 8, 0, 0);
-    root->setSpacing(6);
+    root->setSpacing(0);
 
     // ── Header ───────────────────────────────────────────────────
     QWidget* hdr = new QWidget;
@@ -280,6 +280,9 @@ QWidget* MainWindow::buildSessionPage() {
     hh->addWidget(tmBlock);
 
     root->addWidget(hdr);
+
+    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::HLine); f->setFrameShadow(QFrame::Sunken);
+        root->addWidget(f); }
 
     // ── Stat cards ───────────────────────────────────────────────
     QWidget* statsRow = new QWidget;
