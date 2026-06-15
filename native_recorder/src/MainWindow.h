@@ -158,6 +158,7 @@ private:
     TnrdPlayer*  player_         = nullptr;
     bool         inPlayback_     = false;
     bool         seekerUpdating_ = false;
+    bool         pbLastPlaying_  = false;   // only swap the play/pause icon on change
     float        lastErs_        = 0.0f;
     QWidget*     pb_bar_         = nullptr;
     QFrame*      pb_sep_         = nullptr;

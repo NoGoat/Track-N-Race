@@ -314,7 +314,12 @@ void TnrdPlayer::setSpeed(float mult) {
 
 void TnrdPlayer::tick() {
     qint64 deltaMs = elapsed_.restart();
-    currentTime_ += (float)(deltaMs / 1000.0) * speed_;
+    // Cap how much session time a single tick advances. If the UI thread stalls
+    // (or speed is high), this stops one tick from emitting a huge packet batch
+    // synchronously and freezing the app — playback degrades gracefully instead.
+    double step = (deltaMs / 1000.0) * speed_;
+    if (step > 0.10) step = 0.10;
+    currentTime_ += (float)step;
 
     if (currentTime_ >= totalTime_) {
         currentTime_ = totalTime_;

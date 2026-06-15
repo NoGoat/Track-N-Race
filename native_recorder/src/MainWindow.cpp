@@ -271,6 +271,7 @@ MainWindow::MainWindow(QWidget* parent)
         pb_sep_->show();
         pb_bar_->show();
         pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+        pbLastPlaying_ = false;
         pb_slider_->setValue(0);
         pb_speedCombo_->setCurrentIndex(2); // reset to 1×
         player_->setSpeed(1.0f);
@@ -285,7 +286,7 @@ MainWindow::MainWindow(QWidget* parent)
         const std::string type = j.value("type", std::string{});
         if (type == "status")
             lastErs_ = j.value("ers_pct", 0.0f);
-        else if (type == "telemetry" && chart)
+        else if (type == "telemetry" && chart && currentPage_ == 0)
             chart->addPoint(j.value("session_time", 0.0f),
                             j.value("speed_kph", 0.0f),
                             j.value("rpm", 0),
@@ -318,8 +319,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
-        pb_playBtn_->setIcon(paletteIcon(
-            playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
+        if (playing != pbLastPlaying_) {
+            pb_playBtn_->setIcon(paletteIcon(
+                playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
+            pbLastPlaying_ = playing;
+        }
         if (total > 0.0f) {
             seekerUpdating_ = true;
             pb_slider_->setValue((int)(cur / total * 1000.0f));
@@ -330,6 +334,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(player_, &TnrdPlayer::finished, this, [this] {
         pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+        pbLastPlaying_ = false;
     });
 
     connect(pb_playBtn_, &QPushButton::clicked, this, [this] {
@@ -812,7 +817,7 @@ void MainWindow::processPacket(const uint8_t* data, int length) {
         const std::string rtype = row["type"].get<std::string>();
         if (rtype == "status")
             lastErs_ = row["ers_pct"].get<float>();
-        else if (rtype == "telemetry" && chart)
+        else if (rtype == "telemetry" && chart && currentPage_ == 0)
             chart->addPoint(hdr.sessionTime,
                             row["speed_kph"].get<float>(),
                             row["rpm"].get<int>(),

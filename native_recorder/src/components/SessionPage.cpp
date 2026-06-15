@@ -422,7 +422,7 @@ QWidget* MainWindow::buildSessionPage() {
     QWidget* rightPanel = new QWidget;
     rightPanel->setFixedWidth(240);
     QVBoxLayout* rv = new QVBoxLayout(rightPanel);
-    rv->setContentsMargins(14, 10, 14, 10);
+    rv->setContentsMargins(0, 10, 0, 10);
     rv->setSpacing(6);
 
     auto makeSection = [&](const QString& title) {
@@ -430,6 +430,7 @@ QWidget* MainWindow::buildSessionPage() {
         QFont f; f.setPointSize(8); f.setBold(true);
         lbl->setFont(f);
         lbl->setForegroundRole(QPalette::PlaceholderText);
+        lbl->setContentsMargins(14, 0, 14, 0);
         rv->addWidget(lbl);
     };
 
@@ -445,7 +446,7 @@ QWidget* MainWindow::buildSessionPage() {
         QWidget* row = new QWidget;
         sp_proxRow[i] = row;
         QHBoxLayout* ph = new QHBoxLayout(row);
-        ph->setContentsMargins(0, 4, 0, 4);
+        ph->setContentsMargins(14, 4, 14, 4);
         ph->setSpacing(6);
 
         sp_proxPos[i] = new QLabel("—");
@@ -660,7 +661,7 @@ void MainWindow::updateSessionEvents() {
         const int hMargin = 10, vMargin = 5, spacing = 2;
         int avail = sp_eventsList->viewport()->width();
         if (avail <= 0) avail = sp_eventsList->width() - 4;
-        if (avail <= 0) avail = 212;            // panel width fallback before first show
+        if (avail <= 0) avail = 240;            // panel width fallback before first show
         int textW = avail - 2 * hMargin;
 
         // Two-line row: muted time on top, bold colored event text below.
