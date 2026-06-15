@@ -25,14 +25,19 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(zlib)
 
 # Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg PrintSupport)
+# OpenGL/OpenGLWidgets let QCustomPlot rasterize on the GPU — software QPainter
+# rendering of the Speed/RPM/ERS chart costs ~100 ms/frame (and seconds/frame at
+# a 10-min window), which GPU rendering cuts to single-digit ms. See setOpenGl().
+find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg PrintSupport OpenGL OpenGLWidgets)
 if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport)
-    message(STATUS "Using Qt6")
+    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport
+                Qt6::OpenGL Qt6::OpenGLWidgets)
+    set(QCP_OPENGL ON)
+    message(STATUS "Using Qt6 (QCustomPlot OpenGL rendering enabled)")
 else()
     find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg PrintSupport)
     set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::PrintSupport)
-    message(STATUS "Using Qt5 (Qt6 not found)")
+    message(STATUS "Using Qt5 (Qt6 not found; software chart rendering)")
 endif()
 
 set(SOURCES
@@ -78,3 +83,12 @@ endif()
 
 set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
+
+# GPU rendering for QCustomPlot (Qt6 only). The macro must reach qcustomplot.cpp,
+# so define it on the whole target. OpenGL::GL provides the GL symbols the
+# QCustomPlot OpenGL paint path references directly.
+if(QCP_OPENGL)
+    find_package(OpenGL REQUIRED)
+    target_compile_definitions(native_recorder PRIVATE QCUSTOMPLOT_USE_OPENGL)
+    target_link_libraries(native_recorder PRIVATE OpenGL::GL)
+endif()

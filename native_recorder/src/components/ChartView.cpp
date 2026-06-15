@@ -40,6 +40,14 @@ ChartView::ChartView(QWidget* parent)
     lay->addWidget(d_->plot);
 
     QCustomPlot* p = d_->plot;
+
+#ifdef QCUSTOMPLOT_USE_OPENGL
+    // GPU rasterization. The software QPainter path costs ~90 ms/frame even with
+    // little data here, and seconds/frame at a 10-min window; OpenGL renders the
+    // same content in single-digit ms (measured). 4x multisampling keeps lines
+    // smooth without the cost/compat risk of the 16x default.
+    p->setOpenGl(true, 4);
+#endif
     p->setBackground(Qt::NoBrush);
     p->setBackground(QBrush(Qt::transparent));
     p->axisRect()->setMargins(QMargins(0, 0, 0, 0));

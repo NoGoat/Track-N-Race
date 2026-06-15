@@ -41,6 +41,7 @@ private:
     void buildDefault(float endTime);
     void buildSingleLap(const LapBlock* lap, float upTo);
     void buildOverlay(const LapBlock* ref, const LapBlock* cur, float curUpTo);
+    void putSeries(int id, const QVector<double>& xs, const QVector<double>& ys);
     void showReference(bool on);            // toggle the 3 muted reference series
 
     float currentTime() const;
