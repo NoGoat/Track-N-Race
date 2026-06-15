@@ -54,6 +54,11 @@ void fillLap(const LapBlock* lap, float originT, float upTo,
 }
 }
 
+QVector<TelemetryChart::LegendEntry> TelemetryChart::legendEntries()
+{
+    return { { "Speed", C_SPEED }, { "RPM", C_RPM }, { "ERS", C_ERS } };
+}
+
 TelemetryChart::TelemetryChart(QWidget* parent)
     : ChartView(parent)
 {
@@ -74,6 +79,7 @@ TelemetryChart::TelemetryChart(QWidget* parent)
 
     showReference(false);
     setHoverReadout(true);
+    setLegendVisible(false);   // legend lives in the toolbar (see OverviewPage)
 
     refreshTimer_ = new QTimer(this);
     refreshTimer_->setInterval(33);   // ~30 Hz, coalesces rebuilds

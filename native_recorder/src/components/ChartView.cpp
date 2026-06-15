@@ -148,6 +148,11 @@ void ChartView::setSeriesVisible(int seriesId, bool visible)
     else                                 g->removeFromLegend();
 }
 
+void ChartView::setLegendVisible(bool on)
+{
+    d_->plot->legend->setVisible(on);
+}
+
 void ChartView::setAxisTimeTicker(int axisId, const QString& format)
 {
     if (axisId < 0 || axisId >= d_->axes.size()) return;

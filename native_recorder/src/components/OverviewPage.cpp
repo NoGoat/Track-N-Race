@@ -142,6 +142,17 @@ QWidget* MainWindow::buildOverviewTab() {
     ov_lapCombo_->setMinimumWidth(70);
     mb->addWidget(ov_lapCombo_);
     mb->addStretch(1);
+
+    // Chart legend, pinned to the right of this row (the chart's own overlay
+    // legend is hidden) so it never covers the traces. Coloured swatch + name,
+    // sourced from the chart so colours stay in sync.
+    for (const auto& e : TelemetryChart::legendEntries()) {
+        QLabel* item = new QLabel(
+            QString("<span style='color:%1'>●</span> %2").arg(e.color.name(), e.name));
+        item->setTextFormat(Qt::RichText);
+        mb->addWidget(item);
+    }
+
     vbox->addWidget(modeBar);
 
     connect(ov_lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {

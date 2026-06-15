@@ -60,6 +60,9 @@ public:
     // Format an axis's tick labels as time (QCPAxisTickerTime, e.g. "%m:%s").
     void setAxisTimeTicker(int axisId, const QString& format);
 
+    // Show/hide the built-in overlay legend (off when an external legend is used).
+    void setLegendVisible(bool on);
+
     // Enable a crosshair + value readout that tracks the cursor across the chart,
     // showing the nearest value of each visible series (and the x as m:ss.s).
     void setHoverReadout(bool on);

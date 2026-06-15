@@ -22,6 +22,11 @@ class TelemetryChart : public ChartView {
 public:
     explicit TelemetryChart(QWidget* parent = nullptr);
 
+    // The named series shown in the legend, in display order, with their colours,
+    // so an external legend (e.g. in the toolbar) can stay in sync with the chart.
+    struct LegendEntry { QString name; QColor color; };
+    static QVector<LegendEntry> legendEntries();
+
     void setModel(SessionModel* m);
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);   // Default mode window
