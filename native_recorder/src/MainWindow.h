@@ -214,6 +214,7 @@ private:
     // panel per packet locks the UI. Each packet only marks its panel dirty and
     // the heavy rebuild runs once per refresh tick.
     QTimer* uiRefreshTimer_ = nullptr;
+    int  currentPage_    = 0;   // visible stack index; updaters skip hidden pages
     bool dirtyTiming_    = false;
     bool dirtyRacePanel_ = false;
     bool dirtyTyres_     = false;

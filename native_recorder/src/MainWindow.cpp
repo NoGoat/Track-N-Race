@@ -223,6 +223,10 @@ MainWindow::MainWindow(QWidget* parent)
     loadingOverlay_->hide();
 
     connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
+    connect(pageCombo, &QComboBox::currentIndexChanged, this, [this](int i) {
+        currentPage_ = i;       // refresh the newly-shown page from any pending data
+        flushUiRefresh();
+    });
     connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
         float secs = windowCombo->itemData(idx).toFloat();
         if (chart) chart->setWindowSeconds(secs);
@@ -727,14 +731,28 @@ void MainWindow::scheduleUiRefresh() {
 }
 
 void MainWindow::flushUiRefresh() {
-    if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
-    if (dirtyProximity_) { updateProximityWidget(); dirtyProximity_ = false; }
-    if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
-    if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
-    if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
-    if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
-    if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
-    if (dirtyTrackMap_)  { updateTrackMapPage();     dirtyTrackMap_  = false; }
+    // Only rebuild the panels on the visible page; others stay marked dirty and
+    // refresh when shown (see the pageCombo switch handler). This keeps hidden
+    // pages (e.g. the 20-row standings table) from hitching the visible page's
+    // animations on the shared UI thread. Index: 1=Standings 2=Session 3=Tyres.
+    switch (currentPage_) {
+        case 1:
+            if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
+            if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
+            break;
+        case 2:
+            if (dirtyProximity_) { updateProximityWidget(); dirtyProximity_ = false; }
+            if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
+            if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
+            if (dirtyTrackMap_)  { updateTrackMapPage();     dirtyTrackMap_  = false; }
+            break;
+        case 3:
+            if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
+            if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
+            break;
+        default:
+            break;  // Overview / Settings have no coalesced panels
+    }
 }
 
 // ── Central packet router ──────────────────────────────────────────────────

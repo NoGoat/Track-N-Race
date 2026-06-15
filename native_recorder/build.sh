@@ -17,7 +17,13 @@ echo "============================================="
 echo "   TNRD Background Recorder - Build Script"
 echo "============================================="
 
-CMAKE_ARGS=(-S "$SCRIPT_DIR" -B "$SCRIPT_DIR/build" -DCMAKE_BUILD_TYPE=Release)
+CMAKE_ARGS=(
+    -S "$SCRIPT_DIR" -B "$SCRIPT_DIR/build"
+    -DCMAKE_BUILD_TYPE=Release
+    # Aggressive optimisation: tune for the build host's CPU + interprocedural (LTO).
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -funroll-loops"
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+)
 if [ -n "$QT_PREFIX" ]; then
     CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
 fi

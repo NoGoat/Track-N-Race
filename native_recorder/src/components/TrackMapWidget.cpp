@@ -58,7 +58,6 @@ QString abbrev(const QString& name) {
 } // namespace
 
 TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
-    setAttribute(Qt::WA_OpaquePaintEvent, false);
     setMinimumSize(200, 200);
     animTimer_ = new QTimer(this);
     animTimer_->setInterval(16);   // ~60fps

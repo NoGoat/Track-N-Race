@@ -535,9 +535,15 @@ void MainWindow::updateSessionPage() {
 
     sp_trackLen->setText(trackLenM > 0 ? QString::number(trackLenM / 1000.0, 'f', 3) + " km" : "—");
 
-    sp_timeOfDay->setText(QString("%1:%2")
-        .arg(todS / 3600, 2, 10, QChar('0'))
-        .arg((todS % 3600) / 60, 2, 10, QChar('0')));
+    // time_of_day is minutes since midnight; show 12-hour clock like the app.
+    const int tod  = (int)todS;
+    const int h24  = (tod / 60) % 24;
+    const int mins = tod % 60;
+    const int h12  = (h24 % 12) ? (h24 % 12) : 12;
+    sp_timeOfDay->setText(QString("%1:%2 %3")
+        .arg(h12)
+        .arg(mins, 2, 10, QChar('0'))
+        .arg(h24 >= 12 ? "PM" : "AM"));
 
     sp_weatherNow->setText(weatherLabel(weather));
 
