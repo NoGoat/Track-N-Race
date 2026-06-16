@@ -24,6 +24,8 @@
 #include <nlohmann/json.hpp>
 #include <zlib.h>
 
+#include "components/OverviewLayout.h"
+
 class TelemetryChart;
 class TnrdPlayer;
 class TrackMapWidget;
@@ -37,6 +39,11 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
+
+    // Overview "Edit Layout" dialog reads/writes through these — the dialog
+    // itself doesn't get access to the underlying QFrame* card pointers.
+    OverviewLayout loadOverviewLayout();
+    void applyAndSaveOverviewLayout(const OverviewLayout& layout);
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
@@ -70,6 +77,16 @@ private:
     QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)
     QPushButton*    ov_compareBtn_ = nullptr; // enabled only while a file is loaded
     QPushButton*    ov_defaultBtn_ = nullptr; // re-selected when a recording closes
+    QWidget*        ov_modeBar_  = nullptr;   // chart-mode row; hidden together with the chart
+    QFrame*         ov_statsFrame_ = nullptr; // stats row container; hidden if all stat cards are hidden
+    QFrame*         ov_sep1_     = nullptr;   // separator below the stats row
+    QFrame*         ov_sep2_     = nullptr;   // separator above the damage rows
+    QFrame*         ov_dmgFrame_ = nullptr;   // damage rows container; hidden if both rows are hidden
+    QFrame*         ov_dmgRowA_  = nullptr;   // tyre/brake damage row
+    QFrame*         ov_dmgRowB_  = nullptr;   // wing/body damage row
+    QFrame*         ov_dmgHdiv_  = nullptr;   // separator between the two damage rows
+    QFrame*         ov_statCardFrame_[OverviewLayout::StatCardCount] = {};
+    QFrame*         ov_dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
     QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;
     QLabel*         dmgBrakeFl  = nullptr; QLabel* dmgBrakeFr = nullptr;
@@ -206,6 +223,8 @@ private:
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
     QWidget* buildSettingsTab();
+    void     saveOverviewLayout(const OverviewLayout& layout);
+    void     applyOverviewLayout(const OverviewLayout& layout);
     void     updateTimingTable();
     void     updateRacePanel();
     void     updateSessionPage();

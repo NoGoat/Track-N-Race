@@ -2,6 +2,7 @@
 #include "TelemetryChart.h"
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
+#include "components/EditOverviewLayoutDialog.h"
 
 #include <QApplication>
 #include <QToolBar>
@@ -178,6 +179,13 @@ MainWindow::MainWindow(QWidget* parent)
         windowCombo->addItem(windows[i].label, windows[i].secs);
     windowCombo->setCurrentIndex(1);
     toolbar->addWidget(windowCombo);
+
+    auto* editLayoutBtn = new QPushButton("Edit Layout", this);
+    toolbar->addWidget(editLayoutBtn);
+    connect(editLayoutBtn, &QPushButton::clicked, this, [this] {
+        EditOverviewLayoutDialog dlg(this);
+        dlg.exec();
+    });
 
     // Lap-aware session model — the chart's single source of truth, fed by both
     // live UDP and playback. Created before the Overview tab so the chart can bind it.

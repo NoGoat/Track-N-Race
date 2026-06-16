@@ -80,42 +80,50 @@ QWidget* MainWindow::buildOverviewTab() {
     vbox->setSpacing(6);
 
     // ── Stats row ────────────────────────────────────────────────
-    QFrame* statsFrame = new QFrame;
-    statsFrame->setFixedHeight(80);
-    QHBoxLayout* sh = new QHBoxLayout(statsFrame);
+    ov_statsFrame_ = new QFrame;
+    ov_statsFrame_->setFixedHeight(80);
+    QHBoxLayout* sh = new QHBoxLayout(ov_statsFrame_);
     sh->setContentsMargins(0, 0, 0, 0);
     sh->setSpacing(0);
 
-    sh->addWidget(makeStatCard("Speed",    "kph", cardSpeed));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Speed] =
+        makeStatCard("Speed",    "kph", cardSpeed));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("RPM",      "",    cardRpm));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Rpm] =
+        makeStatCard("RPM",      "",    cardRpm));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("Gear",     "",    cardGear));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Gear] =
+        makeStatCard("Gear",     "",    cardGear));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("Throttle", "%",   cardThrottle));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Throttle] =
+        makeStatCard("Throttle", "%",   cardThrottle));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("Brake",    "%",   cardBrake));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Brake] =
+        makeStatCard("Brake",    "%",   cardBrake));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("DRS",      "",    cardDrs));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Drs] =
+        makeStatCard("DRS",      "",    cardDrs));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("ERS",      "%",   cardErs));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Ers] =
+        makeStatCard("ERS",      "%",   cardErs));
     sh->addWidget(vsep());
-    sh->addWidget(makeStatCard("Pos",      "",    cardPos));
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Pos] =
+        makeStatCard("Pos",      "",    cardPos));
 
-    vbox->addWidget(statsFrame);
+    vbox->addWidget(ov_statsFrame_);
 
-    auto* sep1 = new QFrame;
-    sep1->setFrameShape(QFrame::HLine);
-    sep1->setFrameShadow(QFrame::Sunken);
-    vbox->addWidget(sep1);
+    ov_sep1_ = new QFrame;
+    ov_sep1_->setFrameShape(QFrame::HLine);
+    ov_sep1_->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(ov_sep1_);
 
     // ── Chart mode controls ──────────────────────────────────────
-    QWidget* modeBar = new QWidget;
-    QHBoxLayout* mb = new QHBoxLayout(modeBar);
+    ov_modeBar_ = new QWidget;
+    QHBoxLayout* mb = new QHBoxLayout(ov_modeBar_);
     mb->setContentsMargins(0, 2, 0, 2);
     mb->setSpacing(4);
 
-    auto* modeGroup = new QButtonGroup(modeBar);
+    auto* modeGroup = new QButtonGroup(ov_modeBar_);
     modeGroup->setExclusive(true);
     struct { const char* label; ChartMode mode; } modes[] = {
         { "Default",      ChartMode::Default     },
@@ -156,7 +164,7 @@ QWidget* MainWindow::buildOverviewTab() {
         mb->addWidget(item);
     }
 
-    vbox->addWidget(modeBar);
+    vbox->addWidget(ov_modeBar_);
 
     connect(ov_lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
         if (chart && idx >= 0)
@@ -185,53 +193,139 @@ QWidget* MainWindow::buildOverviewTab() {
         if (chart && sel >= 0) chart->setCompareLap(ov_lapCombo_->itemData(sel).toInt());
     });
 
-    auto* sep2 = new QFrame;
-    sep2->setFrameShape(QFrame::HLine);
-    sep2->setFrameShadow(QFrame::Sunken);
-    vbox->addWidget(sep2);
+    ov_sep2_ = new QFrame;
+    ov_sep2_->setFrameShape(QFrame::HLine);
+    ov_sep2_->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(ov_sep2_);
 
     // ── Damage rows ──────────────────────────────────────────────
-    QFrame* dmgFrame = new QFrame;
-    QVBoxLayout* dv = new QVBoxLayout(dmgFrame);
+    ov_dmgFrame_ = new QFrame;
+    QVBoxLayout* dv = new QVBoxLayout(ov_dmgFrame_);
     dv->setContentsMargins(0, 0, 0, 0);
     dv->setSpacing(0);
 
-    QFrame* rowA = new QFrame;
-    rowA->setFixedHeight(60);
-    QHBoxLayout* ah = new QHBoxLayout(rowA);
+    ov_dmgRowA_ = new QFrame;
+    ov_dmgRowA_->setFixedHeight(60);
+    QHBoxLayout* ah = new QHBoxLayout(ov_dmgRowA_);
     ah->setContentsMargins(0, 0, 0, 0);
     ah->setSpacing(0);
-    ah->addWidget(makeDmgCard("Tyre FL",  dmgTyreFl));   ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Tyre FR",  dmgTyreFr));   ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Tyre RL",  dmgTyreRl));   ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Tyre RR",  dmgTyreRr));   ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Brake FL", dmgBrakeFl));  ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Brake FR", dmgBrakeFr));  ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Brake RL", dmgBrakeRl));  ah->addWidget(vsep());
-    ah->addWidget(makeDmgCard("Brake RR", dmgBrakeRr));
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::TyreFl] =
+        makeDmgCard("Tyre FL",  dmgTyreFl));   ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::TyreFr] =
+        makeDmgCard("Tyre FR",  dmgTyreFr));   ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::TyreRl] =
+        makeDmgCard("Tyre RL",  dmgTyreRl));   ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::TyreRr] =
+        makeDmgCard("Tyre RR",  dmgTyreRr));   ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::BrakeFl] =
+        makeDmgCard("Brake FL", dmgBrakeFl));  ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::BrakeFr] =
+        makeDmgCard("Brake FR", dmgBrakeFr));  ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::BrakeRl] =
+        makeDmgCard("Brake RL", dmgBrakeRl));  ah->addWidget(vsep());
+    ah->addWidget(ov_dmgCardFrame_[OverviewLayout::BrakeRr] =
+        makeDmgCard("Brake RR", dmgBrakeRr));
 
-    QFrame* hdiv = new QFrame;
-    hdiv->setFrameShape(QFrame::HLine);
-    hdiv->setFrameShadow(QFrame::Sunken);
+    ov_dmgHdiv_ = new QFrame;
+    ov_dmgHdiv_->setFrameShape(QFrame::HLine);
+    ov_dmgHdiv_->setFrameShadow(QFrame::Sunken);
 
-    QFrame* rowB = new QFrame;
-    rowB->setFixedHeight(60);
-    QHBoxLayout* bh = new QHBoxLayout(rowB);
+    ov_dmgRowB_ = new QFrame;
+    ov_dmgRowB_->setFixedHeight(60);
+    QHBoxLayout* bh = new QHBoxLayout(ov_dmgRowB_);
     bh->setContentsMargins(0, 0, 0, 0);
     bh->setSpacing(0);
-    bh->addWidget(makeDmgCard("Wing FL",   dmgWingFl));   bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Wing FR",   dmgWingFr));   bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Wing Rear", dmgWingRear)); bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Floor",     dmgFloor));    bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Sidepod",   dmgSidepod));  bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Diffuser",  dmgDiffuser)); bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Gearbox",   dmgGearbox));  bh->addWidget(vsep());
-    bh->addWidget(makeDmgCard("Engine",    dmgEngine));
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::WingFl] =
+        makeDmgCard("Wing FL",   dmgWingFl));   bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::WingFr] =
+        makeDmgCard("Wing FR",   dmgWingFr));   bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::WingRear] =
+        makeDmgCard("Wing Rear", dmgWingRear)); bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::Floor] =
+        makeDmgCard("Floor",     dmgFloor));    bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::Sidepod] =
+        makeDmgCard("Sidepod",   dmgSidepod));  bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::Diffuser] =
+        makeDmgCard("Diffuser",  dmgDiffuser)); bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::Gearbox] =
+        makeDmgCard("Gearbox",   dmgGearbox));  bh->addWidget(vsep());
+    bh->addWidget(ov_dmgCardFrame_[OverviewLayout::Engine] =
+        makeDmgCard("Engine",    dmgEngine));
 
-    dv->addWidget(rowA);
-    dv->addWidget(hdiv);
-    dv->addWidget(rowB);
+    dv->addWidget(ov_dmgRowA_);
+    dv->addWidget(ov_dmgHdiv_);
+    dv->addWidget(ov_dmgRowB_);
 
-    vbox->addWidget(dmgFrame);
+    vbox->addWidget(ov_dmgFrame_);
+
+    applyOverviewLayout(loadOverviewLayout());
     return w;
+}
+
+OverviewLayout MainWindow::loadOverviewLayout()
+{
+    OverviewLayout L;
+    settings.beginGroup("overviewLayout");
+    L.showChart = settings.value("showChart", true).toBool();
+    settings.beginGroup("statCards");
+    for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
+        L.statCards[i] = settings.value(OverviewLayout::statCardKey(i), true).toBool();
+    settings.endGroup();
+    settings.beginGroup("dmgCards");
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        const bool defaultHidden = i < OverviewLayout::WingFl;   // tyre/brake row defaults hidden
+        L.dmgCards[i] = settings.value(OverviewLayout::dmgCardKey(i), !defaultHidden).toBool();
+    }
+    settings.endGroup();
+    settings.endGroup();
+    return L;
+}
+
+void MainWindow::saveOverviewLayout(const OverviewLayout& L)
+{
+    settings.beginGroup("overviewLayout");
+    settings.setValue("showChart", L.showChart);
+    settings.beginGroup("statCards");
+    for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
+        settings.setValue(OverviewLayout::statCardKey(i), L.statCards[i]);
+    settings.endGroup();
+    settings.beginGroup("dmgCards");
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i)
+        settings.setValue(OverviewLayout::dmgCardKey(i), L.dmgCards[i]);
+    settings.endGroup();
+    settings.endGroup();
+}
+
+void MainWindow::applyOverviewLayout(const OverviewLayout& L)
+{
+    bool anyStat = false;
+    for (int i = 0; i < OverviewLayout::StatCardCount; ++i) {
+        if (ov_statCardFrame_[i]) ov_statCardFrame_[i]->setVisible(L.statCards[i]);
+        anyStat = anyStat || L.statCards[i];
+    }
+    if (ov_statsFrame_) ov_statsFrame_->setVisible(anyStat);
+    if (ov_sep1_)       ov_sep1_->setVisible(anyStat);
+
+    bool rowAVisible = false, rowBVisible = false;
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        if (ov_dmgCardFrame_[i]) ov_dmgCardFrame_[i]->setVisible(L.dmgCards[i]);
+        if (i < OverviewLayout::WingFl) rowAVisible = rowAVisible || L.dmgCards[i];
+        else                            rowBVisible = rowBVisible || L.dmgCards[i];
+    }
+    // A row whose cards are all hidden collapses entirely (rather than leaving
+    // an empty 60px bar) so the chart's stretch factor can expand into the space.
+    if (ov_dmgRowA_) ov_dmgRowA_->setVisible(rowAVisible);
+    if (ov_dmgRowB_) ov_dmgRowB_->setVisible(rowBVisible);
+    if (ov_dmgHdiv_) ov_dmgHdiv_->setVisible(rowAVisible && rowBVisible);
+    if (ov_dmgFrame_) ov_dmgFrame_->setVisible(rowAVisible || rowBVisible);
+    if (ov_sep2_)     ov_sep2_->setVisible(rowAVisible || rowBVisible);
+
+    if (chart)       chart->setVisible(L.showChart);
+    if (ov_modeBar_) ov_modeBar_->setVisible(L.showChart);
+}
+
+void MainWindow::applyAndSaveOverviewLayout(const OverviewLayout& L)
+{
+    applyOverviewLayout(L);
+    saveOverviewLayout(L);
 }

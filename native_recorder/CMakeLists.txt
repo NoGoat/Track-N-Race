@@ -54,6 +54,10 @@ set(SOURCES
     src/components/ChartView.h
     src/third_party/qcustomplot/qcustomplot.cpp
     src/third_party/qcustomplot/qcustomplot.h
+    src/components/OverviewLayout.h
+    src/components/OverviewLayout.cpp
+    src/components/EditOverviewLayoutDialog.h
+    src/components/EditOverviewLayoutDialog.cpp
     src/components/OverviewPage.cpp
     src/components/SettingsPage.cpp
     src/components/TyresPage.cpp
