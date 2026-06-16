@@ -1,5 +1,10 @@
 param(
     [string]$QtPrefix = $(if ($env:QT_PREFIX) { $env:QT_PREFIX } else { "C:\Qt\6.11.1\msvc2022_64" }),
+    # -WithBreeze bundles the prebuilt Breeze style stack (see breeze_stack/) next
+    # to the app. $BreezeRuntimeDir is where libintl/iconv live (the gettext bin).
+    [switch]$WithBreeze,
+    [string]$BreezePrefix = "",
+    [string]$BreezeRuntimeDir = "C:\vcpkg\installed\x64-windows\bin",
     [switch]$NoLaunch
 )
 
@@ -56,6 +61,18 @@ $cmakeArgs = @(
 if ($QtPrefix) {
     $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtPrefix"
     Write-Host "Qt prefix: $QtPrefix" -ForegroundColor Gray
+}
+
+if ($WithBreeze) {
+    if (-not $BreezePrefix) { $BreezePrefix = Join-Path $scriptDir "build\breeze_stack\prefix" }
+    if (-not (Test-Path $BreezePrefix)) {
+        Write-Error "-WithBreeze: stack prefix not found: $BreezePrefix`nBuild it first (see breeze_stack\CMakeLists.txt)."
+        exit 1
+    }
+    Write-Host "Bundling Breeze from: $BreezePrefix" -ForegroundColor Gray
+    Write-Host "Breeze runtime DLLs:  $BreezeRuntimeDir" -ForegroundColor Gray
+    $cmakeArgs += "-DBREEZE_STACK_PREFIX=$BreezePrefix"
+    $cmakeArgs += "-DBREEZE_WIN_RUNTIME_DIR=$BreezeRuntimeDir"
 }
 
 & $cmakePath @cmakeArgs

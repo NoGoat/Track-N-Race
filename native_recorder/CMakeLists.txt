@@ -107,11 +107,55 @@ endif()
 # Leaving BREEZE_STACK_PREFIX unset (the default) makes this a no-op, so normal
 # dev builds are unaffected.
 set(BREEZE_STACK_PREFIX "" CACHE PATH "Install prefix from the breeze_stack/ superbuild; set to bundle Breeze next to the app")
+# Windows only: directory holding the non-KF6 runtime DLLs the stack links but
+# which live outside the superbuild prefix — libintl (intl-8.dll, used by
+# KF6I18n) and its iconv companion. Point at the gettext bin, e.g. the vcpkg
+# install's  <vcpkg>/installed/x64-windows/bin .
+set(BREEZE_WIN_RUNTIME_DIR "" CACHE PATH "Windows: dir with intl-8.dll/iconv (e.g. vcpkg .../x64-windows/bin)")
+
 if(BREEZE_STACK_PREFIX)
-    if(NOT UNIX OR APPLE)
-        message(WARNING "Breeze bundling is currently Linux-only; skipping on this platform "
-                        "(Windows/macOS use their own deploy tooling).")
-    else()
+    set(_breeze_styldir "$<TARGET_FILE_DIR:native_recorder>/plugins/styles")
+    set(_breeze_appdir  "$<TARGET_FILE_DIR:native_recorder>")
+
+    if(WIN32)
+        # Windows resolves a plugin's dependent DLLs from the *executable's*
+        # directory, so the KF6 DLLs sit next to the .exe and breeze6.dll goes in
+        # plugins/styles/. No RPATH/patchelf concept here — just copies.
+        # Glob all KF6 + zlib DLLs from the prefix (a superset of breeze6.dll's
+        # closure; the unused ones are never loaded, so they're harmless). Globbed
+        # at configure time — reconfigure if the superbuild's DLL set changes.
+        file(GLOB _breeze_win_dlls "${BREEZE_STACK_PREFIX}/bin/*.dll")
+
+        add_custom_command(TARGET native_recorder POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_styldir}"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${BREEZE_STACK_PREFIX}/lib/plugins/styles/breeze6.dll" "${_breeze_styldir}/"
+            COMMAND ${CMAKE_COMMAND} -E copy ${_breeze_win_dlls} "${_breeze_appdir}/"
+            COMMENT "Bundling Breeze style plugin + KF6 DLLs (Windows)"
+            VERBATIM)
+
+        # libintl/iconv (KF6I18n's runtime deps) live in the gettext install, not
+        # the prefix — copy them next to the .exe too.
+        if(BREEZE_WIN_RUNTIME_DIR)
+            file(GLOB _breeze_rt_dlls
+                "${BREEZE_WIN_RUNTIME_DIR}/intl-*.dll"   "${BREEZE_WIN_RUNTIME_DIR}/libintl*.dll"
+                "${BREEZE_WIN_RUNTIME_DIR}/iconv*.dll"   "${BREEZE_WIN_RUNTIME_DIR}/libiconv*.dll"
+                "${BREEZE_WIN_RUNTIME_DIR}/charset*.dll" "${BREEZE_WIN_RUNTIME_DIR}/libcharset*.dll")
+            if(_breeze_rt_dlls)
+                add_custom_command(TARGET native_recorder POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy ${_breeze_rt_dlls} "${_breeze_appdir}/"
+                    VERBATIM)
+            endif()
+        else()
+            message(WARNING "BREEZE_WIN_RUNTIME_DIR not set — intl-8.dll/iconv (needed by KF6I18n) "
+                            "won't be bundled, so Breeze will fail to load. Set it to your gettext "
+                            "bin, e.g. C:/vcpkg/installed/x64-windows/bin.")
+        endif()
+
+    elseif(APPLE)
+        message(WARNING "Breeze bundling for macOS not implemented yet; skipping.")
+
+    elseif(UNIX)
         # patchelf rewrites the absolute build-prefix RPATHs to $ORIGIN-relative
         # ones so the copied libs find each other on any machine.
         find_program(PATCHELF_EXE patchelf)
@@ -129,8 +173,7 @@ if(BREEZE_STACK_PREFIX)
             libKF6GuiAddons.so.6   libKF6Archive.so.6     libKF6BreezeIcons.so.6
             libKF6I18n.so.6)
 
-        set(_breeze_libdir  "$<TARGET_FILE_DIR:native_recorder>/lib_breeze")
-        set(_breeze_styldir "$<TARGET_FILE_DIR:native_recorder>/plugins/styles")
+        set(_breeze_libdir "$<TARGET_FILE_DIR:native_recorder>/lib_breeze")
 
         # Style plugin → plugins/styles/, RPATH pointing two levels up to lib_breeze/.
         add_custom_command(TARGET native_recorder POST_BUILD
