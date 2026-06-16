@@ -12,6 +12,8 @@
 #include <QWidget>
 #include <QHBoxLayout>
 #include <QSlider>
+#include <QMouseEvent>
+#include <QWheelEvent>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSizePolicy>
@@ -75,6 +77,54 @@ static QIcon paletteIcon(const QString& resource, const QColor& tint) {
     p.end();
     return QIcon(QPixmap::fromImage(img));
 }
+
+// Prefer the OS/desktop theme's play/pause icon (e.g. Breeze on KDE) so the
+// button matches the rest of the system; our tinted SVG is the fallback where
+// no theme icon is available (e.g. Windows, which has no icon theme concept).
+static QIcon playPauseIcon(bool playing, const QColor& tint) {
+    return QIcon::fromTheme(
+        playing ? QIcon::ThemeIcon::MediaPlaybackPause : QIcon::ThemeIcon::MediaPlaybackStart,
+        paletteIcon(playing ? ":/pause.svg" : ":/play.svg", tint));
+}
+
+// QSlider's click behaviour is style-dependent: Windows' native style jumps the
+// handle straight to the clicked position, but Linux styles (Breeze, Fusion,
+// GTK) treat a groove click as a page step in that direction instead — hence
+// the playback bar "jumping by a few seconds" instead of seeking to the click.
+// Override to always seek to the clicked position, and ignore the wheel so
+// scrolling over the bar doesn't nudge playback either.
+class ScrubSlider : public QSlider {
+public:
+    using QSlider::QSlider;
+protected:
+    // Handled entirely ourselves rather than delegating to QSlider's built-in
+    // press/move handling, whose drag-tracking only engages for clicks that
+    // land exactly on the handle — clicking the groove wouldn't let a drag
+    // that started there continue to track the cursor.
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() != Qt::LeftButton) { QSlider::mousePressEvent(e); return; }
+        dragging_ = true;
+        seekToPos(e->pos().x());
+        e->accept();
+    }
+    void mouseMoveEvent(QMouseEvent* e) override {
+        if (!dragging_) { QSlider::mouseMoveEvent(e); return; }
+        seekToPos(e->pos().x());
+        e->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent* e) override {
+        if (!dragging_) { QSlider::mouseReleaseEvent(e); return; }
+        dragging_ = false;
+        e->accept();
+    }
+    void wheelEvent(QWheelEvent* e) override { e->ignore(); }
+private:
+    void seekToPos(int x) {
+        const double ratio = qBound(0.0, double(x) / qMax(1, width()), 1.0);
+        setValue(minimum() + qRound(ratio * (maximum() - minimum())));
+    }
+    bool dragging_ = false;
+};
 
 static void setDmgValue(QLabel* lbl, int val) {
     if (val < 0) { lbl->setText("—"); lbl->setStyleSheet(""); return; }
@@ -163,13 +213,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     const QColor iconTint = palette().color(QPalette::Text);
     pb_playBtn_ = new QPushButton(pb_bar_);
-    pb_playBtn_->setIcon(paletteIcon(":/play.svg", iconTint));
+    pb_playBtn_->setIcon(playPauseIcon(false, iconTint));
     pb_playBtn_->setIconSize(QSize(20, 20));
     pb_playBtn_->setFixedSize(34, 34);
     pb_playBtn_->setFlat(true);
     pbLayout->addWidget(pb_playBtn_);
 
-    pb_slider_ = new QSlider(Qt::Horizontal, pb_bar_);
+    pb_slider_ = new ScrubSlider(Qt::Horizontal, pb_bar_);
     pb_slider_->setRange(0, 1000);
     pb_slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     pbLayout->addWidget(pb_slider_);
@@ -277,7 +327,7 @@ MainWindow::MainWindow(QWidget* parent)
         closeActiveStream();
         pb_sep_->show();
         pb_bar_->show();
-        pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+        pb_playBtn_->setIcon(playPauseIcon(false, palette().color(QPalette::Text)));
         pbLastPlaying_ = false;
         pb_slider_->setValue(0);
         pb_speedCombo_->setCurrentIndex(2); // reset to 1×
@@ -297,8 +347,7 @@ MainWindow::MainWindow(QWidget* parent)
         // session_time, so hand the chart the absolute playhead.
         if (chart) chart->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
-            pb_playBtn_->setIcon(paletteIcon(
-                playing ? ":/pause.svg" : ":/play.svg", palette().color(QPalette::Text)));
+            pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
         }
         if (total > 0.0f) {
@@ -310,7 +359,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(player_, &TnrdPlayer::finished, this, [this] {
-        pb_playBtn_->setIcon(paletteIcon(":/play.svg", palette().color(QPalette::Text)));
+        pb_playBtn_->setIcon(playPauseIcon(false, palette().color(QPalette::Text)));
         pbLastPlaying_ = false;
     });
 
