@@ -165,7 +165,7 @@ void TelemetryChart::refresh()
     const float now = currentTime();
     switch (mode_) {
         case ChartMode::Default:     buildDefault(now); break;
-        case ChartMode::CurrentLap:  buildSingleLap(currentLapBlock(), now); break;
+        case ChartMode::CurrentLap:  buildOverlay(currentLapBlock(), currentLapBlock(), now); break;
         case ChartMode::PreviousLap: buildOverlay(previousLapBlock(), currentLapBlock(), now); break;
         case ChartMode::FastestLap:  buildOverlay(model_->data().fastestLap(), currentLapBlock(), now); break;
         case ChartMode::Compare:     buildOverlay(model_->data().lapByNum(compareLap_), currentLapBlock(), now); break;
@@ -199,19 +199,6 @@ void TelemetryChart::buildDefault(float endTime)
     const double lo = tx.isEmpty() ? 0.0 : std::max<double>(left, tx.first());
     const double hi = tx.isEmpty() ? windowS_ : endTime;
     setXRange(axXId_, lo, hi > lo ? hi : lo + 1.0);
-}
-
-void TelemetryChart::buildSingleLap(const LapBlock* lap, float upTo)
-{
-    showReference(false);
-    QVector<double> tx, spd, rpm, ex, ers;
-    fillLap(lap, lap ? lap->startSessionTime : 0.0f, upTo, tx, spd, rpm, ex, ers);
-    putSeries(spId_, tx, spd);
-    putSeries(rpId_, tx, rpm);
-    putSeries(erId_, ex, ers);
-
-    const double dur = lap ? (lap->endSessionTime - lap->startSessionTime) : windowS_;
-    setXRange(axXId_, 0.0, dur > 1.0 ? dur : windowS_);
 }
 
 void TelemetryChart::buildOverlay(const LapBlock* ref, const LapBlock* cur, float curUpTo)
