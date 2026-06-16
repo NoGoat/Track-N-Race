@@ -280,6 +280,13 @@ MainWindow::MainWindow(QWidget* parent)
         dlg.exec();
     });
 
+    // The toolbar is built entirely from custom widgets (page tabs, window-size
+    // segment) rather than QActions, which Qt's overflow extension button can't
+    // reliably reparent into its popup menu — the button appears but its menu
+    // silently fails to populate. Rather than fight that, just never let the
+    // window get narrow enough to trigger it.
+    setMinimumWidth(qMax(minimumWidth(), toolbar->sizeHint().width()));
+
     // Lap-aware session model — the chart's single source of truth, fed by both
     // live UDP and playback. Created before the Overview tab so the chart can bind it.
     model_ = new SessionModel(this);
