@@ -186,10 +186,17 @@ MainWindow::MainWindow(QWidget* parent)
         ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
     toolbar->setContentsMargins(0, 0, 0, 0);
     if (toolbar->layout()) toolbar->layout()->setContentsMargins(0, 0, 0, 0);
+    if (toolbar->layout()) toolbar->layout()->setSpacing(4);
     // Breeze (and other styles) draw the QToolBar's own 1px bottom border across
     // its full width regardless of what the tab bar does — left alone, it shows
-    // up as a second line stacked right under our accent underline.
-    toolbar->setStyleSheet("QToolBar { border: none; }");
+    // up as a second line stacked right under our accent underline. QToolBar also
+    // reserves its own internal padding/margin around every item regardless of
+    // a widget's own size policy — zeroing it here too, since that inset (not
+    // anything in the page buttons themselves) was the source of the remaining
+    // gap between the active-page underline and the toolbar's true bottom edge.
+    toolbar->setStyleSheet("QToolBar { border: none; margin: 0px; padding: 0px; }");
+    static constexpr int kToolbarHeight = 44;
+    toolbar->setFixedHeight(kToolbarHeight);
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
     // QMainWindow draws its own separator line between the toolbar area and the
@@ -207,6 +214,7 @@ MainWindow::MainWindow(QWidget* parent)
     // have no such native "tab base" painting path, so there's nothing for an
     // unselected button to draw beyond what its own (empty) stylesheet says.
     QWidget* pageTabsWidget = new QWidget;
+    pageTabsWidget->setFixedHeight(kToolbarHeight - 0.5);
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
     pageTabsLay->setContentsMargins(0, 0, 0, 0);
     pageTabsLay->setSpacing(4);
@@ -217,7 +225,7 @@ MainWindow::MainWindow(QWidget* parent)
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     const QString pageBtnStyle = QString(
-        "QToolButton { padding: 10px 14px; border: none; background: transparent; }"
+        "QToolButton { padding: 0px 14px; border: none; background: transparent; }"
         "QToolButton:checked { border-bottom: %1px solid %2; }"
     ).arg(kUnderlineWidth).arg(accent);
     for (int i = 0; i < kPageCount; ++i) {
@@ -225,6 +233,7 @@ MainWindow::MainWindow(QWidget* parent)
         b->setText(kPageNames[i]);
         b->setCheckable(true);
         b->setAutoRaise(true);
+        b->setFixedHeight(kToolbarHeight);
         b->setStyleSheet(pageBtnStyle);
         pageGroup->addButton(b, i);
         pageTabsLay->addWidget(b);
