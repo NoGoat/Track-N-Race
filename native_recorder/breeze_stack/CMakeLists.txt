@@ -41,20 +41,30 @@ set(BREEZE_TAG  "v6.7.0" CACHE STRING "Breeze (Plasma) git tag")
 # Qt prefix the whole stack builds against — MUST match the app's Qt.
 set(BREEZE_QT_PREFIX "" CACHE PATH "Prefix of the Qt6 the app links against (e.g. /usr)")
 
+# Extra ';'-separated prefixes added to every sub-build's CMAKE_PREFIX_PATH.
+# On Windows this is how you point ki18n at a gettext/libintl install (the
+# system has neither); unused on Linux where they're found on the system.
+set(BREEZE_EXTRA_PREFIX "" CACHE STRING "Extra ;-separated prefixes for sub-builds (e.g. a Windows gettext install)")
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
 set(PREFIX "${CMAKE_BINARY_DIR}/prefix")
 
-# Prefix path every sub-build sees: our growing install tree first, then Qt.
-# Joined with "|" (not ";") because ExternalProject splits ";" in CMAKE_ARGS into
-# separate arguments — LIST_SEPARATOR below turns the "|" back into ";" for the
-# sub-cmake. Without this the Qt prefix is silently dropped ("Ignoring extra path").
-set(STACK_PREFIX_PATH "${PREFIX}")
+# Prefix path every sub-build sees: our growing install tree first, then Qt, then
+# any extra prefixes (gettext on Windows). Joined with "|" (not ";") because
+# ExternalProject splits ";" in CMAKE_ARGS into separate arguments — LIST_SEPARATOR
+# below turns the "|" back into ";" for the sub-cmake. Without this the extra
+# prefixes are silently dropped ("Ignoring extra path").
+set(_prefixes "${PREFIX}")
 if(BREEZE_QT_PREFIX)
-    set(STACK_PREFIX_PATH "${PREFIX}|${BREEZE_QT_PREFIX}")
+    list(APPEND _prefixes "${BREEZE_QT_PREFIX}")
 endif()
+foreach(_p ${BREEZE_EXTRA_PREFIX})
+    list(APPEND _prefixes "${_p}")
+endforeach()
+string(JOIN "|" STACK_PREFIX_PATH ${_prefixes})
 
 # Args common to every framework/Breeze configure step.
 set(COMMON_CMAKE_ARGS
@@ -109,16 +119,37 @@ add_kf(kwindowsystem kwindowsystem DEPENDS ecm
 # KI18n needs gettext/libintl — present on Linux/macOS; the sticky bit on MSVC
 # (see the plan's Risks). Build minimal.
 add_kf(ki18n         ki18n         DEPENDS ecm)
+# Windows has no system zlib (Linux/macOS do), and KArchive REQUIREs it. Vendor
+# it from source into the prefix so FindZLIB resolves there — same zlib the app
+# already vendors. On Unix we let the system zlib satisfy KArchive as before.
+if(WIN32)
+    ExternalProject_Add(zlib
+        GIT_REPOSITORY https://github.com/madler/zlib.git
+        GIT_TAG        v1.3.1
+        GIT_SHALLOW    ON
+        LIST_SEPARATOR "|"
+        CMAKE_ARGS     -DCMAKE_INSTALL_PREFIX=${PREFIX}
+                       -DCMAKE_PREFIX_PATH=${STACK_PREFIX_PATH}
+                       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        UPDATE_COMMAND ""
+    )
+    set(_karchive_extra_deps zlib)
+else()
+    set(_karchive_extra_deps "")
+endif()
 # KArchive only needs zlib for Breeze's purposes — drop the other backends.
-add_kf(karchive      karchive      DEPENDS ecm
-       EXTRA -DWITH_BZIP2=OFF -DWITH_LIBLZMA=OFF -DWITH_LIBZSTD=OFF)
+# ZLIB_ROOT points FindZLIB at our vendored copy (Windows; harmless on Unix).
+add_kf(karchive      karchive      DEPENDS ecm ${_karchive_extra_deps}
+       EXTRA -DWITH_BZIP2=OFF -DWITH_LIBLZMA=OFF -DWITH_LIBZSTD=OFF -DZLIB_ROOT=${PREFIX})
 # breeze-icons: KIconThemes hard-links libKF6BreezeIcons (a compiled-in fallback
 # icon theme), so we must build it here or the bundle silently resolves it from
 # the system /usr — which won't exist on a non-KDE/Windows target.
 add_kf(breezeicons   breeze-icons  DEPENDS ecm)
 
 # ── Tier-2 (depend on the leaves above) ──────────────────────────────────────
-add_kf(kcolorscheme  kcolorscheme  DEPENDS ecm kconfig kguiaddons kcoreaddons)
+# kcolorscheme itself find_package(KF6I18n), so ki18n must precede it — without
+# this the parallel Windows build races kcolorscheme ahead of ki18n.
+add_kf(kcolorscheme  kcolorscheme  DEPENDS ecm kconfig kguiaddons kcoreaddons ki18n)
 add_kf(kconfigwidgets kconfigwidgets DEPENDS ecm kconfig kcodecs kwidgetsaddons
        kguiaddons kcoreaddons kcolorscheme ki18n)
 add_kf(kiconthemes   kiconthemes   DEPENDS ecm kconfigwidgets karchive kcolorscheme
