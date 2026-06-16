@@ -214,7 +214,7 @@ MainWindow::MainWindow(QWidget* parent)
     // have no such native "tab base" painting path, so there's nothing for an
     // unselected button to draw beyond what its own (empty) stylesheet says.
     QWidget* pageTabsWidget = new QWidget;
-    pageTabsWidget->setFixedHeight(kToolbarHeight - 0.5);
+    pageTabsWidget->setFixedHeight(kToolbarHeight);
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
     pageTabsLay->setContentsMargins(0, 0, 0, 0);
     pageTabsLay->setSpacing(4);
@@ -224,8 +224,12 @@ MainWindow::MainWindow(QWidget* parent)
     static constexpr int kPageCount = 5;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
+    // Every button — checked or not — reserves the same border-bottom width
+    // (transparent unless checked), so switching pages only changes its color,
+    // never shifts the text within the button's fixed height.
     const QString pageBtnStyle = QString(
-        "QToolButton { padding: 0px 14px; border: none; background: transparent; }"
+        "QToolButton { padding: 0px 14px; border: none; background: transparent;"
+        " border-bottom: %1px solid transparent; }"
         "QToolButton:checked { border-bottom: %1px solid %2; }"
     ).arg(kUnderlineWidth).arg(accent);
     for (int i = 0; i < kPageCount; ++i) {
@@ -233,7 +237,7 @@ MainWindow::MainWindow(QWidget* parent)
         b->setText(kPageNames[i]);
         b->setCheckable(true);
         b->setAutoRaise(true);
-        b->setFixedHeight(kToolbarHeight);
+        b->setFixedHeight(kToolbarHeight - 2);
         b->setStyleSheet(pageBtnStyle);
         pageGroup->addButton(b, i);
         pageTabsLay->addWidget(b);

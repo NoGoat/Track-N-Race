@@ -11,9 +11,16 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     : QDialog(parent), mainWindow_(mainWindow)
 {
     setWindowTitle("Edit Overview Layout");
+    // Belt-and-suspenders: some window managers don't infer "no maximize" from
+    // a fixed-size layout alone, so drop the hint explicitly too.
+    setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
     layout_ = mainWindow_->loadOverviewLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);
+    // A fixed-size top-level layout makes Qt drop the resize handles and the
+    // maximize button — this should behave like a plain modal child dialog,
+    // not a regular resizable/maximizable window.
+    main->setSizeConstraint(QLayout::SetFixedSize);
 
     // ── Chart ────────────────────────────────────────────────────
     QGroupBox* chartBox = new QGroupBox("Chart");
