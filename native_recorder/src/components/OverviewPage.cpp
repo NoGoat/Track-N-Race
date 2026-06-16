@@ -178,8 +178,11 @@ QWidget* MainWindow::buildOverviewTab() {
         for (const LapBlock& l : model_->data().laps)
             ov_lapCombo_->addItem(QString("Lap %1").arg(l.lapNum), l.lapNum);
         int sel = ov_lapCombo_->findData(prev);
+        if (sel < 0 && ov_lapCombo_->count() > 0) sel = 0;   // no prior selection — default to the first lap
         if (sel >= 0) ov_lapCombo_->setCurrentIndex(sel);
-        else if (ov_lapCombo_->count() > 0) ov_lapCombo_->setCurrentIndex(ov_lapCombo_->count() - 1);
+        // QSignalBlocker above suppresses currentIndexChanged, so the chart never
+        // learns about this selection on its own — sync it explicitly.
+        if (chart && sel >= 0) chart->setCompareLap(ov_lapCombo_->itemData(sel).toInt());
     });
 
     auto* sep2 = new QFrame;
