@@ -11,9 +11,12 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     : QDialog(parent), mainWindow_(mainWindow)
 {
     setWindowTitle("Edit Overview Layout");
-    // Belt-and-suspenders: some window managers don't infer "no maximize" from
-    // a fixed-size layout alone, so drop the hint explicitly too.
-    setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
+    // Qt::Dialog gives the plain dialog frame (no minimize/maximize buttons).
+    setWindowFlags(Qt::Dialog);
+    // Modal + parented to MainWindow (see the call site) is what keeps this
+    // above MainWindow and blocks it now that it's shown via show() rather
+    // than exec() — the window-type flag alone doesn't do either.
+    setWindowModality(Qt::ApplicationModal);
     layout_ = mainWindow_->loadOverviewLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);

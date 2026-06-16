@@ -34,7 +34,12 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     : QDialog(parent), mainWindow_(mainWindow)
 {
     setWindowTitle("Settings");
-    setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
+    // Qt::Dialog gives the plain dialog frame (no minimize/maximize buttons)
+    // without the bitwise flag-stripping the old code needed for that. Modal +
+    // parented to MainWindow (see the call site) is what actually keeps this
+    // above MainWindow and blocks it — the window-type flag alone doesn't.
+    setWindowFlags(Qt::Dialog);
+    setWindowModality(Qt::ApplicationModal);
 
     QVBoxLayout* main = new QVBoxLayout(this);
     main->setSizeConstraint(QLayout::SetFixedSize);

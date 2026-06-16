@@ -282,13 +282,17 @@ MainWindow::MainWindow(QWidget* parent)
     QAction* openAct = toolbar->addAction(openRecordingIcon(this), "Open Recording");
     QAction* editLayoutAct = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
     connect(editLayoutAct, &QAction::triggered, this, [this] {
-        EditOverviewLayoutDialog dlg(this);
-        dlg.exec();
+        // Parented to `this` (not just passed the MainWindow* data pointer) so
+        // the window manager ties it to the main window and keeps it above it.
+        EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
+        connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+        dlg->show();
     });
     QAction* settingsAct = toolbar->addAction(settingsIcon(this), "Settings");
     connect(settingsAct, &QAction::triggered, this, [this] {
-        SettingsDialog dlg(this);
-        dlg.exec();
+        SettingsDialog* dlg = new SettingsDialog(this, this);
+        connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+        dlg->show();
     });
 
     // The toolbar is built entirely from custom widgets (page tabs, window-size
