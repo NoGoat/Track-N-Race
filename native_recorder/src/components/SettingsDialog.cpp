@@ -8,6 +8,8 @@
 #include <QLabel>
 #include <QCheckBox>
 #include <QRadioButton>
+#include <QComboBox>
+#include <QStyleFactory>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QSizePolicy>
@@ -122,6 +124,25 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
     else                      themeSystem_->setChecked(true);
 
     form->addRow("Theme:", themeRow);
+
+    // Style selector — lists the QStyles actually available at runtime, so a
+    // bundled "Breeze" only appears once its plugin has loaded. "System default"
+    // restores Qt's native platform style. Each item's userData is the lowercased
+    // QStyleFactory key (what setStyleName/QSettings store); "system" is special.
+    styleCombo_ = new QComboBox;
+    styleCombo_->addItem("System default", "system");
+    const QString curStyle = mainWindow_->currentStyleName();
+    for (const QString& key : QStyleFactory::keys()) {
+        styleCombo_->addItem(key, key.toLower());
+        if (key.compare(curStyle, Qt::CaseInsensitive) == 0)
+            styleCombo_->setCurrentIndex(styleCombo_->count() - 1);
+    }
+    // Connect after populating so the initial setCurrentIndex above doesn't
+    // re-trigger an apply during construction.
+    connect(styleCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setStyleName(styleCombo_->currentData().toString());
+    });
+    form->addRow("Style:", styleCombo_);
 
     toolbarLabelsCheck_ = new QCheckBox("Show button labels in toolbar");
     toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());

@@ -53,6 +53,8 @@ public:
     void    setAutoRecord(bool checked);
     QString currentTheme() const { return settings.value("theme", "system").toString(); }
     void    setTheme(const QString& theme);
+    QString currentStyleName() const { return settings.value("style", "system").toString(); }
+    void    setStyleName(const QString& name);
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
 

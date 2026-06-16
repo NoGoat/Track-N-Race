@@ -6,6 +6,7 @@ class MainWindow;
 class QLabel;
 class QCheckBox;
 class QRadioButton;
+class QComboBox;
 class QFormLayout;
 
 // Modal Settings dialog, opened from its own toolbar icon. A single flat
@@ -30,5 +31,6 @@ private:
     QRadioButton* themeSystem_        = nullptr;
     QRadioButton* themeLight_         = nullptr;
     QRadioButton* themeDark_          = nullptr;
+    QComboBox*    styleCombo_         = nullptr;
     QCheckBox*    toolbarLabelsCheck_ = nullptr;
 };

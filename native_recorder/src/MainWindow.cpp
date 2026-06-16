@@ -625,6 +625,20 @@ void MainWindow::setTheme(const QString& theme) {
     settings.setValue("theme", theme);
 }
 
+void MainWindow::setStyleName(const QString& name) {
+    // Swap the active QStyle live — Qt repolishes every existing widget, so no
+    // restart is needed. "system" restores the platform default captured at
+    // startup (main.cpp), since by now it may already have been overridden.
+    if (name == "system") {
+        const QString def = qApp->property("defaultStyleName").toString();
+        if (!def.isEmpty())
+            if (QStyle* s = QStyleFactory::create(def)) QApplication::setStyle(s);
+    } else if (QStyle* s = QStyleFactory::create(name)) {
+        QApplication::setStyle(s);
+    }
+    settings.setValue("style", name);
+}
+
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
     if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);

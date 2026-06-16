@@ -5,10 +5,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QT_PREFIX="${QT_PREFIX:-}"
+# Set with --with-breeze to bundle the prebuilt Breeze style stack (see
+# breeze_stack/) next to the app. Defaults to the superbuild's standard prefix.
+BREEZE_PREFIX=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --qt-prefix) QT_PREFIX="$2"; shift 2 ;;
+        # Optional explicit prefix path; bare --with-breeze uses the default.
+        --with-breeze)
+            if [[ -n "$2" && "$2" != --* ]]; then BREEZE_PREFIX="$2"; shift 2
+            else BREEZE_PREFIX="$SCRIPT_DIR/build/breeze_stack/prefix"; shift 1; fi ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -26,6 +33,15 @@ CMAKE_ARGS=(
 )
 if [ -n "$QT_PREFIX" ]; then
     CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
+fi
+if [ -n "$BREEZE_PREFIX" ]; then
+    if [ ! -d "$BREEZE_PREFIX" ]; then
+        echo "--with-breeze: prefix not found: $BREEZE_PREFIX"
+        echo "Build it first:  cmake -S breeze_stack -B build/breeze_stack -DBREEZE_QT_PREFIX=/usr && cmake --build build/breeze_stack"
+        exit 1
+    fi
+    echo "Bundling Breeze from: $BREEZE_PREFIX"
+    CMAKE_ARGS+=(-DBREEZE_STACK_PREFIX="$BREEZE_PREFIX")
 fi
 
 echo ""

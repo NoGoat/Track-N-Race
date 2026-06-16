@@ -97,3 +97,59 @@ if(QCP_OPENGL)
     target_compile_definitions(native_recorder PRIVATE QCUSTOMPLOT_USE_OPENGL)
     target_link_libraries(native_recorder PRIVATE OpenGL::GL)
 endif()
+
+# ── Optional: bundle a prebuilt Breeze style stack (see breeze_stack/) ────────
+# When BREEZE_STACK_PREFIX points at the superbuild's install prefix, copy the
+# Breeze style plugin + its exact KF6 runtime closure next to the app so Breeze
+# is selectable on machines without KDE. The app never links any of this; Qt
+# loads breeze6.so at runtime via QStyleFactory (main.cpp adds <exe>/plugins to
+# the library path), and breeze6.so pulls the KF6 libs in via an $ORIGIN RPATH.
+# Leaving BREEZE_STACK_PREFIX unset (the default) makes this a no-op, so normal
+# dev builds are unaffected.
+set(BREEZE_STACK_PREFIX "" CACHE PATH "Install prefix from the breeze_stack/ superbuild; set to bundle Breeze next to the app")
+if(BREEZE_STACK_PREFIX)
+    if(NOT UNIX OR APPLE)
+        message(WARNING "Breeze bundling is currently Linux-only; skipping on this platform "
+                        "(Windows/macOS use their own deploy tooling).")
+    else()
+        # patchelf rewrites the absolute build-prefix RPATHs to $ORIGIN-relative
+        # ones so the copied libs find each other on any machine.
+        find_program(PATCHELF_EXE patchelf)
+        if(NOT PATCHELF_EXE)
+            message(FATAL_ERROR "patchelf not found — required to set \$ORIGIN RPATH on the "
+                                "bundled Breeze libs. Install it (e.g. pacman -S patchelf).")
+        endif()
+
+        # Exact runtime closure of breeze6.so, verified via `ldd` (sonames only —
+        # each is a symlink to the real .so.6.x.y; cmake -E copy dereferences it).
+        # If the Breeze/KF6 versions are bumped, re-verify this list with ldd.
+        set(_breeze_kf6_libs
+            libKF6CoreAddons.so.6  libKF6IconThemes.so.6  libKF6WindowSystem.so.6
+            libKF6ColorScheme.so.6 libKF6ConfigGui.so.6   libKF6ConfigCore.so.6
+            libKF6GuiAddons.so.6   libKF6Archive.so.6     libKF6BreezeIcons.so.6
+            libKF6I18n.so.6)
+
+        set(_breeze_libdir  "$<TARGET_FILE_DIR:native_recorder>/lib_breeze")
+        set(_breeze_styldir "$<TARGET_FILE_DIR:native_recorder>/plugins/styles")
+
+        # Style plugin → plugins/styles/, RPATH pointing two levels up to lib_breeze/.
+        add_custom_command(TARGET native_recorder POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_libdir}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_styldir}"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${BREEZE_STACK_PREFIX}/lib/plugins/styles/breeze6.so" "${_breeze_styldir}/"
+            COMMAND ${PATCHELF_EXE} --set-rpath "$ORIGIN/../../lib_breeze" "${_breeze_styldir}/breeze6.so"
+            COMMENT "Bundling Breeze style plugin + KF6 runtime closure"
+            VERBATIM)
+
+        # Each KF6 lib → lib_breeze/ (real content under its soname), RPATH=$ORIGIN
+        # so it finds its siblings in the same directory.
+        foreach(_lib ${_breeze_kf6_libs})
+            add_custom_command(TARGET native_recorder POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy
+                        "${BREEZE_STACK_PREFIX}/lib/${_lib}" "${_breeze_libdir}/"
+                COMMAND ${PATCHELF_EXE} --set-rpath "$ORIGIN" "${_breeze_libdir}/${_lib}"
+                VERBATIM)
+        endforeach()
+    endif()
+endif()
