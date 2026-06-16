@@ -30,6 +30,9 @@
 #include <QProgressBar>
 #include <QStyle>
 #include <QAction>
+#include <QTabBar>
+#include <QToolButton>
+#include <QButtonGroup>
 
 #include <chrono>
 #include <ctime>
@@ -65,6 +68,13 @@ static const std::unordered_map<int, int> SLOW_RATE_MS = {
 static const std::unordered_set<std::string> DEDUPE_TYPES = {
     "session", "tyre_sets", "participants", "all_status", "status", "timing", "damage"
 };
+
+// Chart window-size options, shown as a segmented toolbar control.
+static const struct { const char* label; float secs; } kWindowOptions[] = {
+    {"15s", 15}, {"30s", 30}, {"1m", 60},
+    {"2m", 120}, {"5m", 300}, {"10m", 600}
+};
+static constexpr int kWindowOptionCount = 6;
 
 // ── Damage value helper (used in constructor lambda) ───────────────────────
 
@@ -176,28 +186,48 @@ MainWindow::MainWindow(QWidget* parent)
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
 
-    QComboBox* pageCombo = new QComboBox;
-    pageCombo->addItem("Overview");   // index 0
-    pageCombo->addItem("Standings");  // index 1
-    pageCombo->addItem("Session");    // index 2
-    pageCombo->addItem("Tyres");      // index 3
-    pageCombo->addItem("Settings");   // index 4
-    toolbar->addWidget(pageCombo);
+    QTabBar* pageTabs = new QTabBar;
+    pageTabs->setDocumentMode(true);    // flatter, toolbar-friendly look (no page-frame border)
+    pageTabs->setExpanding(false);
+    pageTabs->addTab("Overview");   // index 0
+    pageTabs->addTab("Standings");  // index 1
+    pageTabs->addTab("Session");    // index 2
+    pageTabs->addTab("Tyres");      // index 3
+    pageTabs->addTab("Settings");   // index 4
+    toolbar->addWidget(pageTabs);
 
     QWidget* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    QAction* spacerAct = toolbar->addWidget(spacer);
+    toolbar->addWidget(spacer);
 
-    QComboBox* windowCombo = new QComboBox;
-    const struct { const char* label; float secs; } windows[] = {
-        {"15s", 15}, {"30s", 30}, {"1m", 60},
-        {"2m", 120}, {"5m", 300}, {"10m", 600}
-    };
-    for (int i = 0; i < 6; ++i)
-        windowCombo->addItem(windows[i].label, windows[i].secs);
-    windowCombo->setCurrentIndex(1);
-    toolbar->addWidget(windowCombo);
+    // Window-size segmented control: an exclusive row of checkable QToolButtons
+    // drawn edge-to-edge in a flat frame, styled by the active QStyle (so it
+    // renders native to whatever platform/theme is running, not a fixed look).
+    QWidget* windowSeg = new QWidget;
+    windowSeg->setObjectName("windowSeg");
+    windowSeg->setStyleSheet(
+        "#windowSeg { border: 1px solid palette(mid); border-radius: 4px; }");
+    QHBoxLayout* segLay = new QHBoxLayout(windowSeg);
+    segLay->setContentsMargins(0, 0, 0, 0);
+    segLay->setSpacing(0);
+    QButtonGroup* windowGroup = new QButtonGroup(this);
+    windowGroup->setExclusive(true);
+    for (int i = 0; i < kWindowOptionCount; ++i) {
+        QToolButton* b = new QToolButton;
+        b->setText(kWindowOptions[i].label);
+        b->setCheckable(true);
+        b->setAutoRaise(true);
+        windowGroup->addButton(b, i);
+        segLay->addWidget(b);
+    }
+    static_cast<QToolButton*>(windowGroup->button(1))->setChecked(true);   // default 30s
+    toolbar->addWidget(windowSeg);
+    connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) {
+        if (chart) chart->setWindowSeconds(kWindowOptions[idx].secs);
+    });
 
+    toolbar->addSeparator();
+    QAction* openAct = toolbar->addAction(openRecordingIcon(this), "Open Recording");
     QAction* editLayoutAct = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
     connect(editLayoutAct, &QAction::triggered, this, [this] {
         EditOverviewLayoutDialog dlg(this);
@@ -302,20 +332,11 @@ MainWindow::MainWindow(QWidget* parent)
     ol->addWidget(spinner);
     loadingOverlay_->hide();
 
-    connect(pageCombo, &QComboBox::currentIndexChanged, stack, &QStackedWidget::setCurrentIndex);
-    connect(pageCombo, &QComboBox::currentIndexChanged, this, [this](int i) {
+    connect(pageTabs, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
+    connect(pageTabs, &QTabBar::currentChanged, this, [this](int i) {
         currentPage_ = i;       // refresh the newly-shown page from any pending data
         flushUiRefresh();
     });
-    connect(windowCombo, &QComboBox::currentIndexChanged, this, [this, windowCombo](int idx) {
-        float secs = windowCombo->itemData(idx).toFloat();
-        if (chart) chart->setWindowSeconds(secs);
-    });
-
-    // Open Recording stays in the toolbar
-    QAction* openAct = new QAction(openRecordingIcon(this), "Open Recording", this);
-    toolbar->insertSeparator(spacerAct);
-    toolbar->insertAction(spacerAct, openAct);
 
     // Helper for formatting session time as M:SS
     auto fmtTime = [](float s) -> QString {
