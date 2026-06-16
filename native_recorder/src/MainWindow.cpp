@@ -178,16 +178,17 @@ MainWindow::MainWindow(QWidget* parent)
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
 
-    static constexpr int kToolbarHeight = 40;
-
     QToolBar* toolbar = new QToolBar(this);
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     toolbar->setToolButtonStyle(settings.value("ui/toolbarShowLabels", false).toBool()
         ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
     toolbar->setContentsMargins(0, 0, 0, 0);
-    toolbar->setFixedHeight(kToolbarHeight);
     if (toolbar->layout()) toolbar->layout()->setContentsMargins(0, 0, 0, 0);
+    // Breeze (and other styles) draw the QToolBar's own 1px bottom border across
+    // its full width regardless of what the tab bar does — left alone, it shows
+    // up as a second line stacked right under our accent underline.
+    toolbar->setStyleSheet("QToolBar { border: none; }");
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
 
@@ -195,22 +196,24 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabs->setDocumentMode(true);    // flatter, toolbar-friendly look (no page-frame border)
     pageTabs->setExpanding(false);
     pageTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    // Tabs span the full toolbar height; inactive tabs stay transparent so they
-    // blend into the toolbar background instead of showing a contrasting box.
+    // Tabs span the full toolbar height (driven by this padding, not a hard-coded
+    // pixel total matched against the toolbar) and inactive tabs stay transparent
+    // so they blend into the toolbar background instead of showing a contrasting
+    // box. Every tab — active or not — reserves the same border-bottom width, so
+    // switching the active tab only changes its color, never the box height; that
+    // keeps the row's total height self-consistent instead of depending on outside
+    // arithmetic (which kept silently clipping the underline in earlier attempts).
     // The accent color is read from the live palette (not the "palette(highlight)"
     // QSS keyword, which renders as a near-invisible gray once any stylesheet is
-    // applied to the tab bar) so the active-tab underline stays theme-aware.
-    // Qt's "height" property excludes the border, so every tab reserves the same
-    // 3px border-bottom (transparent unless selected) — otherwise the selected
-    // tab's box grows 3px taller than the others and the underline gets clipped
-    // by the toolbar's fixed height instead of rendering inside it.
-    static constexpr int kUnderlineWidth = 3;
+    // applied to the tab bar) so the underline stays theme-aware.
+    static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     pageTabs->setStyleSheet(QString(
-        "QTabBar::tab { height: %1px; padding: 0 14px; background: transparent;"
-        " border: none; border-bottom: %2px solid transparent; }"
-        "QTabBar::tab:selected { border-bottom: %2px solid %3; }"
-    ).arg(kToolbarHeight - kUnderlineWidth).arg(kUnderlineWidth).arg(accent));
+        "QTabBar { border: none; }"
+        "QTabBar::tab { padding: 10px 14px; background: transparent;"
+        " border: none; border-bottom: %1px solid transparent; }"
+        "QTabBar::tab:selected { border-bottom: %1px solid %2; }"
+    ).arg(kUnderlineWidth).arg(accent));
     pageTabs->addTab("Overview");   // index 0
     pageTabs->addTab("Standings");  // index 1
     pageTabs->addTab("Session");    // index 2
