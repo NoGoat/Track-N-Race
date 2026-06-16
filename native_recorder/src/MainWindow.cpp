@@ -3,6 +3,7 @@
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
+#include "components/SettingsDialog.h"
 
 #include <QApplication>
 #include <QToolBar>
@@ -114,6 +115,11 @@ static QIcon editLayoutIcon(QWidget* w) {
         w->style()->standardIcon(QStyle::SP_FileDialogDetailedView));
 }
 
+static QIcon settingsIcon(QWidget* w) {
+    return QIcon::fromTheme("configure", QIcon::fromTheme("preferences-system",
+        w->style()->standardIcon(QStyle::SP_FileDialogListView)));
+}
+
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
 // handle straight to the clicked position, but Linux styles (Breeze, Fusion,
 // GTK) treat a groove click as a page step in that direction instead — hence
@@ -220,8 +226,8 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabsLay->setSpacing(4);
     QButtonGroup* pageGroup = new QButtonGroup(this);
     pageGroup->setExclusive(true);
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Settings" };
-    static constexpr int kPageCount = 5;
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres" };
+    static constexpr int kPageCount = 4;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     // Every button — checked or not — reserves the same border-bottom width
@@ -279,6 +285,11 @@ MainWindow::MainWindow(QWidget* parent)
         EditOverviewLayoutDialog dlg(this);
         dlg.exec();
     });
+    QAction* settingsAct = toolbar->addAction(settingsIcon(this), "Settings");
+    connect(settingsAct, &QAction::triggered, this, [this] {
+        SettingsDialog dlg(this);
+        dlg.exec();
+    });
 
     // The toolbar is built entirely from custom widgets (page tabs, window-size
     // segment) rather than QActions, which Qt's overflow extension button can't
@@ -296,7 +307,6 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildStandingsPage()); // index 1
     stack->addWidget(buildSessionPage());   // index 2
     stack->addWidget(buildTyresPage());     // index 3
-    stack->addWidget(buildSettingsTab());   // index 4
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -555,38 +565,30 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
 
 // ── Slots ──────────────────────────────────────────────────────────────────
 
-void MainWindow::onBrowseDirectory() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Select Output Directory", outputDirectory);
-    if (!dir.isEmpty()) {
-        outputDirectory = dir;
-        dirLabel->setText(dir);
-        settings.setValue("outputDirectory", dir);
-    }
+void MainWindow::setOutputDirectory(const QString& dir) {
+    outputDirectory = dir;
+    settings.setValue("outputDirectory", dir);
 }
 
-void MainWindow::onAutoRecordToggled(bool checked) {
+void MainWindow::setAutoRecord(bool checked) {
     wantRecord = checked;
     settings.setValue("autoRecord", checked);
     if (!checked) closeActiveStream();
 }
 
-void MainWindow::onThemeChanged() {
-    QString themeVal = "system";
+void MainWindow::setTheme(const QString& theme) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    if (themeLight->isChecked()) {
+    if (theme == "light")
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
-        themeVal = "light";
-    } else if (themeDark->isChecked()) {
+    else if (theme == "dark")
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
-        themeVal = "dark";
-    } else {
+    else
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Unknown);
-    }
 #endif
-    settings.setValue("theme", themeVal);
+    settings.setValue("theme", theme);
 }
 
-void MainWindow::onToolbarLabelsToggled(bool checked) {
+void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
     if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
 }
@@ -891,7 +893,7 @@ void MainWindow::flushUiRefresh() {
             if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
             break;
         default:
-            break;  // Overview / Settings have no coalesced panels
+            break;  // Overview has no coalesced panels
     }
 }
 

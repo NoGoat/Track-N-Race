@@ -3,8 +3,6 @@
 #include <QMainWindow>
 #include <QLabel>
 #include <QPushButton>
-#include <QCheckBox>
-#include <QRadioButton>
 #include <QTableWidget>
 #include <QProgressBar>
 #include <QScrollArea>
@@ -46,6 +44,18 @@ public:
     OverviewLayout loadOverviewLayout();
     void applyAndSaveOverviewLayout(const OverviewLayout& layout);
 
+    // Settings dialog reads/writes through these — it owns its own widgets
+    // and persists immediately on every change, same immediate-apply pattern
+    // as the Overview layout dialog above.
+    QString currentOutputDirectory() const { return outputDirectory; }
+    void    setOutputDirectory(const QString& dir);
+    bool    autoRecordEnabled() const { return wantRecord; }
+    void    setAutoRecord(bool checked);
+    QString currentTheme() const { return settings.value("theme", "system").toString(); }
+    void    setTheme(const QString& theme);
+    bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
+    void    setToolbarLabels(bool checked);
+
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
                           float throttle, float brake, bool drs, int engineTemp);
@@ -58,10 +68,6 @@ signals:
     void lapUpdated(int position, int lapNum);
 
 private slots:
-    void onBrowseDirectory();
-    void onAutoRecordToggled(bool checked);
-    void onThemeChanged();
-    void onToolbarLabelsToggled(bool checked);
     void onDatagramReady();
 
 private:
@@ -172,16 +178,8 @@ private:
     nlohmann::json  lastPositionsData;
     int             mapTrackId_    = -1;   // last track loaded into the map widget
 
-    // ── Settings page ─────────────────────────────────────────────
-    QLabel*       dirLabel           = nullptr;
-    QCheckBox*    recordCheck        = nullptr;
-    QRadioButton* themeSystem        = nullptr;
-    QRadioButton* themeLight         = nullptr;
-    QRadioButton* themeDark          = nullptr;
-    QCheckBox*    toolbarLabelsCheck = nullptr;
-
     // ── Toolbar ───────────────────────────────────────────────────
-    QToolBar* toolbar_ = nullptr;   // referenced by the Settings page's label toggle
+    QToolBar* toolbar_ = nullptr;   // referenced by the Settings dialog's label toggle
 
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
@@ -228,7 +226,6 @@ private:
     QWidget* buildRacePanel();
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
-    QWidget* buildSettingsTab();
     void     saveOverviewLayout(const OverviewLayout& layout);
     void     applyOverviewLayout(const OverviewLayout& layout);
     void     updateTimingTable();

@@ -1,0 +1,34 @@
+#pragma once
+
+#include <QDialog>
+
+class MainWindow;
+class QLabel;
+class QCheckBox;
+class QRadioButton;
+class QFormLayout;
+
+// Modal Settings dialog, opened from its own toolbar icon. A single flat
+// label/control form (no sidebar, no boxed groups) — bold section headers
+// span the full row, every other row is a right-aligned label beside its
+// control, native-preferences style. Immediate-apply, same as
+// EditOverviewLayoutDialog — every control updates MainWindow and persists
+// right away, so there's only a Close button.
+class SettingsDialog : public QDialog {
+    Q_OBJECT
+
+public:
+    explicit SettingsDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
+
+private:
+    void addRecordingSection(QFormLayout* form);
+    void addAppearanceSection(QFormLayout* form);
+
+    MainWindow*   mainWindow_;
+    QLabel*       dirLabel_           = nullptr;
+    QCheckBox*    recordCheck_        = nullptr;
+    QRadioButton* themeSystem_        = nullptr;
+    QRadioButton* themeLight_         = nullptr;
+    QRadioButton* themeDark_          = nullptr;
+    QCheckBox*    toolbarLabelsCheck_ = nullptr;
+};

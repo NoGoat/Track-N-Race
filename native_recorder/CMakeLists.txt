@@ -59,7 +59,8 @@ set(SOURCES
     src/components/EditOverviewLayoutDialog.h
     src/components/EditOverviewLayoutDialog.cpp
     src/components/OverviewPage.cpp
-    src/components/SettingsPage.cpp
+    src/components/SettingsDialog.h
+    src/components/SettingsDialog.cpp
     src/components/TyresPage.cpp
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
