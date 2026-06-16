@@ -13,6 +13,7 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QSignalBlocker>
+#include <QApplication>
 
 // ── UI helpers ────────────────────────────────────────────────────────────
 
@@ -132,10 +133,19 @@ QWidget* MainWindow::buildOverviewTab() {
         { "Fastest Lap",  ChartMode::FastestLap  },
         { "Compare",      ChartMode::Compare     },
     };
+    // Same flat, underline-on-active style as the page switcher in the toolbar,
+    // instead of these being raised/boxed buttons.
+    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
+    const QString modeBtnStyle = QString(
+        "QPushButton { padding: 6px 12px; border: none; background: transparent; }"
+        "QPushButton:checked { border-bottom: 2px solid %1; }"
+    ).arg(accent);
     for (const auto& m : modes) {
         QPushButton* b = new QPushButton(m.label);
         b->setCheckable(true);
+        b->setFlat(true);
         b->setChecked(m.mode == ChartMode::Default);
+        b->setStyleSheet(modeBtnStyle);
         modeGroup->addButton(b);
         mb->addWidget(b);
         // Compare needs a loaded recording's laps; disabled until one is opened.
