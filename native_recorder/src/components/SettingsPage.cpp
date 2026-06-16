@@ -63,14 +63,19 @@ QWidget* MainWindow::buildSettingsTab() {
     av->addWidget(themeLight);
     av->addWidget(themeDark);
 
+    toolbarLabelsCheck = new QCheckBox("Show button labels in toolbar");
+    toolbarLabelsCheck->setChecked(settings.value("ui/toolbarShowLabels", false).toBool());
+    av->addWidget(toolbarLabelsCheck);
+
     vbox->addWidget(appGroup);
     vbox->addStretch();
 
-    connect(browseBtn,   &QPushButton::clicked,  this, &MainWindow::onBrowseDirectory);
-    connect(recordCheck, &QCheckBox::toggled,     this, &MainWindow::onAutoRecordToggled);
-    connect(themeSystem, &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
-    connect(themeLight,  &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
-    connect(themeDark,   &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
+    connect(browseBtn,           &QPushButton::clicked,  this, &MainWindow::onBrowseDirectory);
+    connect(recordCheck,         &QCheckBox::toggled,     this, &MainWindow::onAutoRecordToggled);
+    connect(themeSystem,         &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
+    connect(themeLight,          &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
+    connect(themeDark,           &QRadioButton::toggled,  this, [this](bool) { onThemeChanged(); });
+    connect(toolbarLabelsCheck,  &QCheckBox::toggled,     this, &MainWindow::onToolbarLabelsToggled);
 
     return w;
 }

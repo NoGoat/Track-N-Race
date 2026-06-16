@@ -28,6 +28,8 @@
 #include <QPixmap>
 #include <QResizeEvent>
 #include <QProgressBar>
+#include <QStyle>
+#include <QAction>
 
 #include <chrono>
 #include <ctime>
@@ -86,6 +88,19 @@ static QIcon playPauseIcon(bool playing, const QColor& tint) {
     return QIcon::fromTheme(
         playing ? QIcon::ThemeIcon::MediaPlaybackPause : QIcon::ThemeIcon::MediaPlaybackStart,
         paletteIcon(playing ? ":/pause.svg" : ":/play.svg", tint));
+}
+
+// No bundled SVG for these two — prefer the OS/desktop theme icon, and fall
+// back to Qt's own built-in standard-pixmap icon (always available, even on
+// Windows which has no icon theme concept) rather than a tinted SVG.
+static QIcon openRecordingIcon(QWidget* w) {
+    return QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen,
+        w->style()->standardIcon(QStyle::SP_DialogOpenButton));
+}
+
+static QIcon editLayoutIcon(QWidget* w) {
+    return QIcon::fromTheme("document-edit",
+        w->style()->standardIcon(QStyle::SP_FileDialogDetailedView));
 }
 
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
@@ -156,7 +171,10 @@ MainWindow::MainWindow(QWidget* parent)
     QToolBar* toolbar = new QToolBar(this);
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
+    toolbar->setToolButtonStyle(settings.value("ui/toolbarShowLabels", false).toBool()
+        ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
     addToolBar(Qt::TopToolBarArea, toolbar);
+    toolbar_ = toolbar;
 
     QComboBox* pageCombo = new QComboBox;
     pageCombo->addItem("Overview");   // index 0
@@ -180,9 +198,8 @@ MainWindow::MainWindow(QWidget* parent)
     windowCombo->setCurrentIndex(1);
     toolbar->addWidget(windowCombo);
 
-    auto* editLayoutBtn = new QPushButton("Edit Layout", this);
-    toolbar->addWidget(editLayoutBtn);
-    connect(editLayoutBtn, &QPushButton::clicked, this, [this] {
+    QAction* editLayoutAct = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
+    connect(editLayoutAct, &QAction::triggered, this, [this] {
         EditOverviewLayoutDialog dlg(this);
         dlg.exec();
     });
@@ -296,9 +313,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     // Open Recording stays in the toolbar
-    auto* openBtn = new QPushButton("Open Recording", this);
+    QAction* openAct = new QAction(openRecordingIcon(this), "Open Recording", this);
     toolbar->insertSeparator(spacerAct);
-    toolbar->insertWidget(spacerAct, openBtn);
+    toolbar->insertAction(spacerAct, openAct);
 
     // Helper for formatting session time as M:SS
     auto fmtTime = [](float s) -> QString {
@@ -307,7 +324,7 @@ MainWindow::MainWindow(QWidget* parent)
         return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
     };
 
-    connect(openBtn, &QPushButton::clicked, this, [this] {
+    connect(openAct, &QAction::triggered, this, [this] {
         QString path = QFileDialog::getOpenFileName(
             this, "Open Recording", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
@@ -493,6 +510,11 @@ void MainWindow::onThemeChanged() {
     }
 #endif
     settings.setValue("theme", themeVal);
+}
+
+void MainWindow::onToolbarLabelsToggled(bool checked) {
+    settings.setValue("ui/toolbarShowLabels", checked);
+    if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
 }
 
 void MainWindow::onDatagramReady() {

@@ -32,6 +32,7 @@ class TrackMapWidget;
 class SessionModel;
 class QComboBox;
 class QTimer;
+class QToolBar;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -60,6 +61,7 @@ private slots:
     void onBrowseDirectory();
     void onAutoRecordToggled(bool checked);
     void onThemeChanged();
+    void onToolbarLabelsToggled(bool checked);
     void onDatagramReady();
 
 private:
@@ -171,11 +173,15 @@ private:
     int             mapTrackId_    = -1;   // last track loaded into the map widget
 
     // ── Settings page ─────────────────────────────────────────────
-    QLabel*       dirLabel    = nullptr;
-    QCheckBox*    recordCheck = nullptr;
-    QRadioButton* themeSystem = nullptr;
-    QRadioButton* themeLight  = nullptr;
-    QRadioButton* themeDark   = nullptr;
+    QLabel*       dirLabel           = nullptr;
+    QCheckBox*    recordCheck        = nullptr;
+    QRadioButton* themeSystem        = nullptr;
+    QRadioButton* themeLight         = nullptr;
+    QRadioButton* themeDark          = nullptr;
+    QCheckBox*    toolbarLabelsCheck = nullptr;
+
+    // ── Toolbar ───────────────────────────────────────────────────
+    QToolBar* toolbar_ = nullptr;   // referenced by the Settings page's label toggle
 
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
