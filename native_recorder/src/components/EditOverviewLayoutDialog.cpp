@@ -6,6 +6,37 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QPushButton>
+#include <QStyleOptionButton>
+
+namespace {
+
+// A checkable button that wears the active QStyle's default-button look (the
+// blue Breeze/Fusion outline) while it's toggled on, and draws plain while off.
+//
+// The DefaultButton feature alone isn't enough here: a checked checkable button
+// is drawn sunken (State_On), and the style paints that sunken bevel over the
+// default-button frame, hiding it — which is why a naive "set DefaultButton when
+// checked" shows nothing on the on state. So we also strip State_On (and force
+// State_Raised) for the *drawing only*: isChecked() is untouched, so the toggle
+// logic still works; the button just paints raised + outlined when on. It's the
+// real native style, not a stylesheet, and it never touches the dialog's actual
+// default-button/Enter-key bookkeeping.
+class ToggleButton : public QPushButton {
+public:
+    using QPushButton::QPushButton;
+
+protected:
+    void initStyleOption(QStyleOptionButton* option) const override {
+        QPushButton::initStyleOption(option);
+        if (isChecked()) {
+            option->features |= QStyleOptionButton::DefaultButton;
+            option->state &= ~QStyle::State_On;
+            option->state |= QStyle::State_Raised;
+        }
+    }
+};
+
+} // namespace
 
 EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidget* parent)
     : QDialog(parent), mainWindow_(mainWindow)
@@ -28,7 +59,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     // ── Chart ────────────────────────────────────────────────────
     QGroupBox* chartBox = new QGroupBox("Chart");
     QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
-    chartBtn_ = new QPushButton("Speed / RPM / ERS Chart");
+    chartBtn_ = new ToggleButton("Speed / RPM / ERS Chart");
     chartBtn_->setCheckable(true);
     chartBtn_->setChecked(layout_.showChart);
     connect(chartBtn_, &QPushButton::toggled, this, &EditOverviewLayoutDialog::toggleChart);
@@ -39,7 +70,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     QGroupBox* statsBox = new QGroupBox("Stats");
     QGridLayout* statsLay = new QGridLayout(statsBox);
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i) {
-        QPushButton* b = new QPushButton(OverviewLayout::statCardLabel(i));
+        QPushButton* b = new ToggleButton(OverviewLayout::statCardLabel(i));
         b->setCheckable(true);
         b->setChecked(layout_.statCards[i]);
         connect(b, &QPushButton::toggled, this, [this, i](bool on) { toggleStat(i, on); });
@@ -52,7 +83,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     QGroupBox* dmgBox = new QGroupBox("Damage");
     QGridLayout* dmgLay = new QGridLayout(dmgBox);
     for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
-        QPushButton* b = new QPushButton(OverviewLayout::dmgCardLabel(i));
+        QPushButton* b = new ToggleButton(OverviewLayout::dmgCardLabel(i));
         b->setCheckable(true);
         b->setChecked(layout_.dmgCards[i]);
         connect(b, &QPushButton::toggled, this, [this, i](bool on) { toggleDmg(i, on); });
@@ -65,6 +96,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     QHBoxLayout* bottom = new QHBoxLayout;
     bottom->addStretch(1);
     QPushButton* closeBtn = new QPushButton("Close");
+    closeBtn->setDefault(true);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(closeBtn);
     main->addLayout(bottom);
