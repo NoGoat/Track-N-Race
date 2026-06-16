@@ -178,17 +178,29 @@ MainWindow::MainWindow(QWidget* parent)
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
 
+    static constexpr int kToolbarHeight = 40;
+
     QToolBar* toolbar = new QToolBar(this);
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     toolbar->setToolButtonStyle(settings.value("ui/toolbarShowLabels", false).toBool()
         ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->setFixedHeight(kToolbarHeight);
+    if (toolbar->layout()) toolbar->layout()->setContentsMargins(0, 0, 0, 0);
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
 
     QTabBar* pageTabs = new QTabBar;
     pageTabs->setDocumentMode(true);    // flatter, toolbar-friendly look (no page-frame border)
     pageTabs->setExpanding(false);
+    pageTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    // Tabs span the full toolbar height; inactive tabs stay transparent so they
+    // blend into the toolbar background instead of showing a contrasting box.
+    pageTabs->setStyleSheet(QString(
+        "QTabBar::tab { height: %1px; padding: 0 14px; background: transparent; border: none; }"
+        "QTabBar::tab:selected { border-bottom: 2px solid palette(highlight); }"
+    ).arg(kToolbarHeight));
     pageTabs->addTab("Overview");   // index 0
     pageTabs->addTab("Standings");  // index 1
     pageTabs->addTab("Session");    // index 2
@@ -201,12 +213,9 @@ MainWindow::MainWindow(QWidget* parent)
     toolbar->addWidget(spacer);
 
     // Window-size segmented control: an exclusive row of checkable QToolButtons
-    // drawn edge-to-edge in a flat frame, styled by the active QStyle (so it
-    // renders native to whatever platform/theme is running, not a fixed look).
+    // drawn edge-to-edge, styled by the active QStyle (so it renders native to
+    // whatever platform/theme is running, not a fixed look).
     QWidget* windowSeg = new QWidget;
-    windowSeg->setObjectName("windowSeg");
-    windowSeg->setStyleSheet(
-        "#windowSeg { border: 1px solid palette(mid); border-radius: 4px; }");
     QHBoxLayout* segLay = new QHBoxLayout(windowSeg);
     segLay->setContentsMargins(0, 0, 0, 0);
     segLay->setSpacing(0);
