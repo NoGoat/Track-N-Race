@@ -908,7 +908,15 @@ void QCPPaintBufferGlFbo::draw(QCPPainter *painter) const
     qDebug() << Q_FUNC_INFO << "OpenGL frame buffer object doesn't exist, reallocateBuffer was not called?";
     return;
   }
-  painter->drawImage(0, 0, mGlFrameBuffer->toImage());
+  // toImage() returns a QImage with devicePixelRatio 1.0 regardless of the FBO's
+  // actual (DPR-scaled) pixel size, so without this, drawImage below draws the
+  // full physical-pixel image into the buffer's logical coordinate space — at any
+  // devicePixelRatio != 1 the chart renders oversized by that ratio and clips.
+  QImage image = mGlFrameBuffer->toImage();
+#ifdef QCP_DEVICEPIXELRATIO_SUPPORTED
+  image.setDevicePixelRatio(mDevicePixelRatio);
+#endif
+  painter->drawImage(0, 0, image);
 }
 
 /* inherits documentation from base class */
