@@ -35,6 +35,8 @@
 #include <QToolButton>
 #include <QButtonGroup>
 #include <QStyleFactory>
+#include <QStyleOptionButton>
+#include <QStylePainter>
 
 #include <chrono>
 #include <ctime>
@@ -77,6 +79,37 @@ static const struct { const char* label; float secs; } kWindowOptions[] = {
     {"2m", 120}, {"5m", 300}, {"10m", 600}
 };
 static constexpr int kWindowOptionCount = 6;
+
+namespace {
+
+// Segmented-control button for the toolbar's window-size picker. When checked it
+// paints itself as the active QStyle's *default button* — the same blue outline
+// the Edit-Layout dialog's on-toggles wear (see ToggleButton in
+// EditOverviewLayoutDialog.cpp). QToolButton can't reuse that trick directly:
+// the DefaultButton look lives on QStyleOptionButton, which only QPushButton
+// feeds the style, so for the checked state we draw a default QPushButton bevel
+// + label ourselves (same CE_PushButton + DefaultButton code path the dialog
+// hits). Unchecked segments fall through to the normal flat auto-raised look.
+class SegmentButton : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+
+protected:
+    void paintEvent(QPaintEvent* e) override {
+        if (!isChecked()) { QToolButton::paintEvent(e); return; }
+        QStylePainter p(this);
+        QStyleOptionButton opt;
+        opt.initFrom(this);
+        opt.rect = rect();
+        opt.text = text();
+        opt.features = QStyleOptionButton::DefaultButton;
+        opt.state |= QStyle::State_Raised;
+        opt.state &= ~(QStyle::State_On | QStyle::State_Sunken);
+        p.drawControl(QStyle::CE_PushButton, opt);
+    }
+};
+
+} // namespace
 
 // ── Damage value helper (used in constructor lambda) ───────────────────────
 
@@ -265,7 +298,7 @@ MainWindow::MainWindow(QWidget* parent)
     QButtonGroup* windowGroup = new QButtonGroup(this);
     windowGroup->setExclusive(true);
     for (int i = 0; i < kWindowOptionCount; ++i) {
-        QToolButton* b = new QToolButton;
+        SegmentButton* b = new SegmentButton;
         b->setText(kWindowOptions[i].label);
         b->setCheckable(true);
         b->setAutoRaise(true);
