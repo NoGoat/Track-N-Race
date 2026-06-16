@@ -134,10 +134,13 @@ QWidget* MainWindow::buildOverviewTab() {
         { "Compare",      ChartMode::Compare     },
     };
     // Same flat, underline-on-active style as the page switcher in the toolbar,
-    // instead of these being raised/boxed buttons.
+    // instead of these being raised/boxed buttons. Every button — checked or
+    // not — reserves the same border-bottom width (transparent unless checked),
+    // so switching the active one only changes its color, not the row's height.
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     const QString modeBtnStyle = QString(
-        "QPushButton { padding: 6px 12px; border: none; background: transparent; }"
+        "QPushButton { padding: 6px 12px; border: none; background: transparent;"
+        " border-bottom: 2px solid transparent; }"
         "QPushButton:checked { border-bottom: 2px solid %1; }"
     ).arg(accent);
     for (const auto& m : modes) {
