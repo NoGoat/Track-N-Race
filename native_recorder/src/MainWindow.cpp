@@ -197,10 +197,20 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     // Tabs span the full toolbar height; inactive tabs stay transparent so they
     // blend into the toolbar background instead of showing a contrasting box.
+    // The accent color is read from the live palette (not the "palette(highlight)"
+    // QSS keyword, which renders as a near-invisible gray once any stylesheet is
+    // applied to the tab bar) so the active-tab underline stays theme-aware.
+    // Qt's "height" property excludes the border, so every tab reserves the same
+    // 3px border-bottom (transparent unless selected) — otherwise the selected
+    // tab's box grows 3px taller than the others and the underline gets clipped
+    // by the toolbar's fixed height instead of rendering inside it.
+    static constexpr int kUnderlineWidth = 3;
+    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     pageTabs->setStyleSheet(QString(
-        "QTabBar::tab { height: %1px; padding: 0 14px; background: transparent; border: none; }"
-        "QTabBar::tab:selected { border-bottom: 2px solid palette(highlight); }"
-    ).arg(kToolbarHeight));
+        "QTabBar::tab { height: %1px; padding: 0 14px; background: transparent;"
+        " border: none; border-bottom: %2px solid transparent; }"
+        "QTabBar::tab:selected { border-bottom: %2px solid %3; }"
+    ).arg(kToolbarHeight - kUnderlineWidth).arg(kUnderlineWidth).arg(accent));
     pageTabs->addTab("Overview");   // index 0
     pageTabs->addTab("Standings");  // index 1
     pageTabs->addTab("Session");    // index 2
