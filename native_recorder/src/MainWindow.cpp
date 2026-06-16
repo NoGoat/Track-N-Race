@@ -33,6 +33,7 @@
 #include <QTabBar>
 #include <QToolButton>
 #include <QButtonGroup>
+#include <QStyleFactory>
 
 #include <chrono>
 #include <ctime>
@@ -191,35 +192,45 @@ MainWindow::MainWindow(QWidget* parent)
     toolbar->setStyleSheet("QToolBar { border: none; }");
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
+    // QMainWindow draws its own separator line between the toolbar area and the
+    // central widget — a different element again from QToolBar's/QTabBar's own
+    // borders, and the most likely source of the line that's survived every fix
+    // to those two so far.
+    setStyleSheet("QMainWindow::separator { width: 0px; height: 0px; background: transparent; }");
 
-    QTabBar* pageTabs = new QTabBar;
-    pageTabs->setDocumentMode(true);    // flatter, toolbar-friendly look (no page-frame border)
-    pageTabs->setExpanding(false);
-    pageTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    // Tabs span the full toolbar height (driven by this padding, not a hard-coded
-    // pixel total matched against the toolbar) and inactive tabs stay transparent
-    // so they blend into the toolbar background instead of showing a contrasting
-    // box. Every tab — active or not — reserves the same border-bottom width, so
-    // switching the active tab only changes its color, never the box height; that
-    // keeps the row's total height self-consistent instead of depending on outside
-    // arithmetic (which kept silently clipping the underline in earlier attempts).
-    // The accent color is read from the live palette (not the "palette(highlight)"
-    // QSS keyword, which renders as a near-invisible gray once any stylesheet is
-    // applied to the tab bar) so the underline stays theme-aware.
+    // Page switcher: plain checkable QToolButtons in an exclusive group, same
+    // approach as the window-size segmented control below. QTabBar was tried
+    // first, but it has a hardcoded internal paint call (PE_FrameTabBarBase)
+    // for the base line under inactive tabs that's supposed to be suppressed by
+    // documentMode(true) and isn't, in this style/Qt-version combination — and
+    // that line isn't reachable through any stylesheet rule. Plain QToolButtons
+    // have no such native "tab base" painting path, so there's nothing for an
+    // unselected button to draw beyond what its own (empty) stylesheet says.
+    QWidget* pageTabsWidget = new QWidget;
+    QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
+    pageTabsLay->setContentsMargins(0, 0, 0, 0);
+    pageTabsLay->setSpacing(4);
+    QButtonGroup* pageGroup = new QButtonGroup(this);
+    pageGroup->setExclusive(true);
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Settings" };
+    static constexpr int kPageCount = 5;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
-    pageTabs->setStyleSheet(QString(
-        "QTabBar { border: none; }"
-        "QTabBar::tab { padding: 10px 14px; background: transparent;"
-        " border: none; border-bottom: %1px solid transparent; }"
-        "QTabBar::tab:selected { border-bottom: %1px solid %2; }"
-    ).arg(kUnderlineWidth).arg(accent));
-    pageTabs->addTab("Overview");   // index 0
-    pageTabs->addTab("Standings");  // index 1
-    pageTabs->addTab("Session");    // index 2
-    pageTabs->addTab("Tyres");      // index 3
-    pageTabs->addTab("Settings");   // index 4
-    toolbar->addWidget(pageTabs);
+    const QString pageBtnStyle = QString(
+        "QToolButton { padding: 10px 14px; border: none; background: transparent; }"
+        "QToolButton:checked { border-bottom: %1px solid %2; }"
+    ).arg(kUnderlineWidth).arg(accent);
+    for (int i = 0; i < kPageCount; ++i) {
+        QToolButton* b = new QToolButton;
+        b->setText(kPageNames[i]);
+        b->setCheckable(true);
+        b->setAutoRaise(true);
+        b->setStyleSheet(pageBtnStyle);
+        pageGroup->addButton(b, i);
+        pageTabsLay->addWidget(b);
+    }
+    static_cast<QToolButton*>(pageGroup->button(0))->setChecked(true);   // default: Overview
+    toolbar->addWidget(pageTabsWidget);
 
     QWidget* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -354,8 +365,8 @@ MainWindow::MainWindow(QWidget* parent)
     ol->addWidget(spinner);
     loadingOverlay_->hide();
 
-    connect(pageTabs, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
-    connect(pageTabs, &QTabBar::currentChanged, this, [this](int i) {
+    connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
+    connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
         currentPage_ = i;       // refresh the newly-shown page from any pending data
         flushUiRefresh();
     });
