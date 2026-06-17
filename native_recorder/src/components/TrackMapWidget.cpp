@@ -532,26 +532,15 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
         QPainterPath bg;
         bg.addRoundedRect(box, LABEL_R, LABEL_R);
-        p.setPen(Qt::NoPen);
-        p.setBrush(dark_ ? QColor(10, 15, 30, 235) : QColor(255, 255, 255, 245));
-        p.drawPath(bg);
-        if (!dark_) {
-            p.setPen(QColor(0, 0, 0, 38));
-            p.setBrush(Qt::NoBrush);
-            p.drawPath(bg);
-        }
-
-        // Left livery accent bar
-        QPainterPath accent;
-        accent.addRoundedRect(QRectF(bx, by, ACCENT_W, LABEL_H), LABEL_R, LABEL_R);
+        
         p.setPen(Qt::NoPen);
         p.setBrush(job.color);
-        p.drawPath(accent);
-        p.fillRect(QRectF(bx + ACCENT_W - LABEL_R, by, LABEL_R, LABEL_H), job.color);
+        p.drawPath(bg);
 
         // Text
-        p.setPen(dark_ ? QColor("#ffffff") : QColor("#111827"));
-        p.drawText(box.adjusted(ACCENT_W, 0, 0, 0), Qt::AlignCenter, job.text);
+        double luminance = (0.299 * job.color.red() + 0.587 * job.color.green() + 0.114 * job.color.blue());
+        p.setPen(luminance > 140 ? Qt::black : Qt::white);
+        p.drawText(box, Qt::AlignCenter, job.text);
     }
 }
 
