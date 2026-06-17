@@ -55,8 +55,9 @@ QWidget* MainWindow::buildTyresPage() {
     createSetsTable(tp_drySetsTable, 0);
     createSetsTable(tp_wetSetsTable, 1);
 
-    tp_drySetsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    tp_drySetsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    tp_drySetsTable->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    tp_drySetsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tp_drySetsTable->setMinimumHeight(0);
     
     tp_wetSetsTable->setMinimumHeight(0);
 
@@ -322,5 +323,5 @@ void MainWindow::updateTyreSetsTable() {
     for (int r = 0; r < tp_drySetsTable->rowCount(); ++r) {
         totalH += tp_drySetsTable->rowHeight(r);
     }
-    tp_drySetsTable->setFixedHeight(totalH);
+    tp_drySetsTable->setMaximumHeight(totalH);
 }
