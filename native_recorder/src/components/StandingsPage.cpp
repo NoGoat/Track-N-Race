@@ -65,7 +65,7 @@ QWidget* MainWindow::buildStandingsPage() {
     timingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     timingTable->setSelectionMode(QAbstractItemView::NoSelection);
     timingTable->setShowGrid(false);
-    timingTable->setAlternatingRowColors(false);
+    timingTable->setAlternatingRowColors(true);
     // Pixel-based scrolling — the default ScrollPerItem snaps a whole row per
     // wheel notch / scrollbar step, which feels chunky and "laggy"; per-pixel is
     // smooth.
@@ -434,19 +434,20 @@ void MainWindow::updateTimingTable() {
         QFont cellFont;
         if (showingThisDriver) cellFont.setBold(true);
 
-        auto makeItem = [&](const QString& text) {
+        auto makeItem = [&](const QString& text, bool center = false) {
             auto* item = new QTableWidgetItem(text);
             item->setFont(cellFont);
+            if (center) item->setTextAlignment(Qt::AlignCenter);
             return item;
         };
 
         // Col 0: POS
-        auto* posItem = makeItem(QString::number(pos));
+        auto* posItem = makeItem(QString("P%1").arg(pos), true);
         if (posColor.isValid()) posItem->setForeground(posColor);
         timingTable->setItem(row, 0, posItem);
 
         // Col 1: #
-        auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—");
+        auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—", true);
         numItem->setForeground(driverColor);
         timingTable->setItem(row, 1, numItem);
 
@@ -455,15 +456,15 @@ void MainWindow::updateTimingTable() {
         drvItem->setForeground(driverColor);
         timingTable->setItem(row, 2, drvItem);
 
-        timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—"));
-        timingTable->setItem(row, 4, makeItem(formatLapTime(lastLapMs)));
-        timingTable->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1)));
-        timingTable->setItem(row, 6, makeItem(formatSector(s1Ms)));
-        timingTable->setItem(row, 7, makeItem(formatSector(s2Ms)));
-        timingTable->setItem(row, 8, makeItem(formatSector(s3Ms)));
+        timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
+        timingTable->setItem(row, 4, makeItem(formatLapTime(lastLapMs), true));
+        timingTable->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1), true));
+        timingTable->setItem(row, 6, makeItem(formatSector(s1Ms), true));
+        timingTable->setItem(row, 7, makeItem(formatSector(s2Ms), true));
+        timingTable->setItem(row, 8, makeItem(formatSector(s3Ms), true));
 
         // Col 9: TYRE
-        auto* tyreItem = makeItem(tyreLabel(compound));
+        auto* tyreItem = makeItem(tyreLabel(compound), true);
         QColor tyreFg = tyreTextColor(visual);
         if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
         timingTable->setItem(row, 9, tyreItem);
