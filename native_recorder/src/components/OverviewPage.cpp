@@ -57,7 +57,6 @@ static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& 
 
     cv->addWidget(lbl);
     cv->addWidget(valRow);
-    cv->addStretch();
     return card;
 }
 
@@ -92,7 +91,6 @@ QWidget* MainWindow::buildOverviewTab() {
 
     // ── Stats row ────────────────────────────────────────────────
     ov_statsFrame_ = new QFrame;
-    ov_statsFrame_->setFixedHeight(80);
     QHBoxLayout* sh = new QHBoxLayout(ov_statsFrame_);
     sh->setContentsMargins(0, 0, 0, 0);
     sh->setSpacing(0);
