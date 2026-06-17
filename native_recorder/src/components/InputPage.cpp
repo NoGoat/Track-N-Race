@@ -29,15 +29,17 @@ QWidget* MainWindow::buildInputPage() {
         hl->addStretch();
         
         for (const auto& item : legend) {
-            QWidget* colorBox = new QWidget;
-            colorBox->setFixedSize(12, 12);
-            colorBox->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(item.second.name()));
+            if (item.second.isValid() && item.second != Qt::transparent) {
+                QWidget* colorBox = new QWidget;
+                colorBox->setFixedSize(12, 12);
+                colorBox->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(item.second.name()));
+                hl->addWidget(colorBox);
+            }
             QLabel* legLabel = new QLabel(item.first);
             QFont lf; lf.setPointSize(8);
             legLabel->setFont(lf);
             legLabel->setForegroundRole(QPalette::PlaceholderText);
             
-            hl->addWidget(colorBox);
             hl->addWidget(legLabel);
             hl->addSpacing(8);
         }
@@ -88,7 +90,8 @@ QWidget* MainWindow::buildInputPage() {
     steeringLay->setContentsMargins(0, 0, 0, 0);
     steeringLay->setSpacing(0);
     steeringLay->addWidget(makeHeader("STEERING TELEMETRY", {
-        {"Steering", QColor("#BF5FFF")}
+        {"Steering", QColor("#BF5FFF")},
+        {"(- Left / + Right)", QColor()}
     }));
     steeringChart_ = new SteeringChart;
     steeringChart_->setModel(model_);
