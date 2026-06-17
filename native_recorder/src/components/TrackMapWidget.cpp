@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QToolButton>
 #include <QFontMetrics>
+#include "../IconUtils.h"
 #include <QShowEvent>
 #include <QHideEvent>
 #include <QResizeEvent>
@@ -61,7 +62,12 @@ class ClearableComboBox : public QComboBox {
 public:
     explicit ClearableComboBox(QWidget* parent = nullptr) : QComboBox(parent) {
         clearBtn_ = new QToolButton(this);
-        clearBtn_->setText("×");
+        QIcon clearIcon = adaptThemeIcon(
+            QIcon::fromTheme("edit-clear"),
+            palette().color(QPalette::WindowText),
+            style()->standardIcon(QStyle::SP_LineEditClearButton)
+        );
+        clearBtn_->setIcon(clearIcon);
         clearBtn_->setCursor(Qt::PointingHandCursor);
         clearBtn_->setStyleSheet(
             "QToolButton {"
@@ -568,7 +574,15 @@ void TrackMapWidget::hideEvent(QHideEvent*) {
 void TrackMapWidget::positionControls() {
     if (!driverCombo_) return;
     const int margin = 8, gap = 6;
-    const int dw = std::max(120, driverCombo_->sizeHint().width());
+    int maxNameWidth = 0;
+    QFontMetrics fm = driverCombo_->fontMetrics();
+    for (int i = 0; i < driverCombo_->count(); ++i) {
+        maxNameWidth = std::max(maxNameWidth, fm.horizontalAdvance(driverCombo_->itemText(i)));
+    }
+    
+    // As requested: the widest name + 32px for the clear icon 
+    // (+ 32px for the native dropdown arrow and borders)
+    const int dw = std::max(120, maxNameWidth + 32 + 32);
     driverCombo_->setFixedWidth(dw);
     
     int currentX = width() - margin;
