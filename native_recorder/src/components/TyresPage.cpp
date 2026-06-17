@@ -191,15 +191,33 @@ void MainWindow::updateTyresPage() {
 void MainWindow::updateTyreSetsTable() {
     if (!tp_setsTable || lastTyreSetsData.empty() || !lastTyreSetsData.contains("sets")) return;
 
-    std::vector<nlohmann::json> sets;
+    std::vector<nlohmann::json> drySets;
+    std::vector<nlohmann::json> wetSets;
     for (const auto& s : lastTyreSetsData["sets"]) {
-        if (s.value("actual_compound", 0) != 0)
-            sets.push_back(s);
+        int compound = s.value("actual_compound", 0);
+        if (compound != 0) {
+            if (compound == 7 || compound == 8) {
+                wetSets.push_back(s);
+            } else {
+                drySets.push_back(s);
+            }
+        }
     }
 
-    std::sort(sets.begin(), sets.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
-        return a.value("idx", 99) < b.value("idx", 99);
-    });
+    auto sortSets = [](std::vector<nlohmann::json>& vec) {
+        std::sort(vec.begin(), vec.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+            return a.value("idx", 99) < b.value("idx", 99);
+        });
+    };
+    sortSets(drySets);
+    sortSets(wetSets);
+
+    int totalRows = 0;
+    if (!drySets.empty()) totalRows += 1 + drySets.size();
+    if (!wetSets.empty()) totalRows += 1 + wetSets.size();
+    
+    tp_setsTable->setRowCount(totalRows);
+    tp_setsTable->clearSpans();
 
     static const char* sessionLabels[] = {
         "—", "FP1", "FP2", "FP3", "Short P",
@@ -208,9 +226,31 @@ void MainWindow::updateTyreSetsTable() {
         "Race", "Race 2", "Race 3", "Time Trial"
     };
 
-    tp_setsTable->setRowCount((int)sets.size());
-    for (int row = 0; row < (int)sets.size(); ++row) {
-        const auto& s  = sets[row];
+    int row = 0;
+    auto makeItem = [](const QString& text) { return new QTableWidgetItem(text); };
+
+    auto addSectionHeader = [&](const QString& text) {
+        auto* item = makeItem(text);
+        item->setFlags(Qt::NoItemFlags);
+        QFont f = item->font();
+        f.setBold(true);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
+        f.setPointSize(8);
+        item->setFont(f);
+        item->setForeground(QColor("#8A8D9F"));
+        
+        tp_setsTable->setItem(row, 0, item);
+        for(int c=1; c<7; ++c) {
+            auto* emptyItem = makeItem("");
+            emptyItem->setFlags(Qt::NoItemFlags);
+            tp_setsTable->setItem(row, c, emptyItem);
+        }
+        tp_setsTable->setSpan(row, 0, 1, 7);
+        tp_setsTable->setRowHeight(row, 32);
+        row++;
+    };
+
+    auto addSetRow = [&](const nlohmann::json& s) {
         int idx        = s.value("idx", 0);
         int compound   = s.value("actual_compound",     0);
         int visual     = s.value("visual_compound",     0);
@@ -289,5 +329,16 @@ void MainWindow::updateTyreSetsTable() {
         tp_setsTable->setItem(row, 6, deltaItem);
 
         tp_setsTable->setRowHeight(row, 22);
+        row++;
+    };
+
+    if (!drySets.empty()) {
+        addSectionHeader("DRY SETS (SLICKS)");
+        for (const auto& s : drySets) addSetRow(s);
+    }
+    
+    if (!wetSets.empty()) {
+        addSectionHeader("WET / INTER SETS");
+        for (const auto& s : wetSets) addSetRow(s);
     }
 }
