@@ -88,6 +88,7 @@ void TelemetryChart::setCompareLap(int n)     { compareLap_ = n; requestRefresh(
 void TelemetryChart::setWindowSeconds(float seconds)
 {
     windowS_ = seconds;
+    prevEndTime_ = -9999.0f;
     requestRefresh();
 }
 

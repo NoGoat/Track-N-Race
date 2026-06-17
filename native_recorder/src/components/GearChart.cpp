@@ -50,7 +50,7 @@ void GearChart::setModel(SessionModel* m) {
 
 void GearChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void GearChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
-void GearChart::setWindowSeconds(float seconds) { windowS_ = seconds; requestRefresh(); }
+void GearChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
 void GearChart::requestRefresh() { dirty_ = true; }
 
 float GearChart::currentTime() const {

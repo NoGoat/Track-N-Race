@@ -46,7 +46,7 @@ void InputsChart::setModel(SessionModel* m) {
 
 void InputsChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void InputsChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
-void InputsChart::setWindowSeconds(float seconds) { windowS_ = seconds; requestRefresh(); }
+void InputsChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
 void InputsChart::requestRefresh() { dirty_ = true; }
 
 float InputsChart::currentTime() const {

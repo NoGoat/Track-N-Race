@@ -48,7 +48,7 @@ void SteeringChart::setModel(SessionModel* m) {
 
 void SteeringChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void SteeringChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
-void SteeringChart::setWindowSeconds(float seconds) { windowS_ = seconds; requestRefresh(); }
+void SteeringChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
 void SteeringChart::requestRefresh() { dirty_ = true; }
 
 float SteeringChart::currentTime() const {

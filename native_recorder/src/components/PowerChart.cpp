@@ -59,7 +59,7 @@ void PowerChart::setModel(SessionModel* m) {
 
 void PowerChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void PowerChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
-void PowerChart::setWindowSeconds(float seconds) { windowS_ = seconds; requestRefresh(); }
+void PowerChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
 void PowerChart::requestRefresh() { dirty_ = true; }
 
 float PowerChart::currentTime() const {
