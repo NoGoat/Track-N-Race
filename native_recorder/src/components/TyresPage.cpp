@@ -25,30 +25,37 @@ QWidget* MainWindow::buildTyresPage() {
     hbox->setSpacing(0);
 
     // ── Tyre sets table (left) ───────────────────────────────────
-    tp_setsTable = new QTableWidget;
-    tp_setsTable->setColumnCount(7);
-    tp_setsTable->setHorizontalHeaderLabels({"#", "COMPOUND", "STATUS", "WEAR", "LIFE", "SESSION", "DELTA"});
-    tp_setsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tp_setsTable->setSelectionMode(QAbstractItemView::NoSelection);
-    tp_setsTable->setShowGrid(false);
-    tp_setsTable->setAlternatingRowColors(false);
-    // Smooth per-pixel scrolling instead of Qt's default row-snapping (see the
-    // timing table for the rationale).
-    tp_setsTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    tp_setsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    tp_setsTable->verticalHeader()->setVisible(false);
-    // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
-    // cell on each rebuild (see the timing table for the same fix).
-    tp_setsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    tp_setsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    {
+    QWidget* leftWidget = new QWidget;
+    QVBoxLayout* leftLayout = new QVBoxLayout(leftWidget);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(0);
+
+    auto createSetsTable = [&](QTableWidget*& outTable, int stretch) {
+        outTable = new QTableWidget;
+        outTable->setColumnCount(7);
+        outTable->setHorizontalHeaderLabels({"#", "COMPOUND", "STATUS", "WEAR", "LIFE", "SESSION", "DELTA"});
+        outTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        outTable->setSelectionMode(QAbstractItemView::NoSelection);
+        outTable->setShowGrid(false);
+        outTable->setAlternatingRowColors(false);
+        outTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        outTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+        outTable->verticalHeader()->setVisible(false);
+        outTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+        outTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
         const int colW[7] = { 36, 92, 72, 0, 52, 84, 72 };
         for (int c = 0; c < 7; ++c)
-            if (c != 3) tp_setsTable->setColumnWidth(c, colW[c]);
-    }
-    QFont hf; hf.setPointSize(7);
-    tp_setsTable->horizontalHeader()->setFont(hf);
-    hbox->addWidget(tp_setsTable, 1);
+            if (c != 3) outTable->setColumnWidth(c, colW[c]);
+        QFont hf; hf.setPointSize(7);
+        outTable->horizontalHeader()->setFont(hf);
+        
+        leftLayout->addWidget(outTable, stretch);
+    };
+
+    createSetsTable(tp_drySetsTable, 3);
+    createSetsTable(tp_wetSetsTable, 1);
+
+    hbox->addWidget(leftWidget, 1);
 
     // Vertical divider
     QFrame* vdiv = new QFrame;
@@ -189,7 +196,7 @@ void MainWindow::updateTyresPage() {
 // ── Tyre sets table updater ───────────────────────────────────────────────
 
 void MainWindow::updateTyreSetsTable() {
-    if (!tp_setsTable || lastTyreSetsData.empty() || !lastTyreSetsData.contains("sets")) return;
+    if (!tp_drySetsTable || !tp_wetSetsTable || lastTyreSetsData.empty() || !lastTyreSetsData.contains("sets")) return;
 
     std::vector<nlohmann::json> drySets;
     std::vector<nlohmann::json> wetSets;
@@ -212,12 +219,8 @@ void MainWindow::updateTyreSetsTable() {
     sortSets(drySets);
     sortSets(wetSets);
 
-    int totalRows = 0;
-    if (!drySets.empty()) totalRows += 1 + drySets.size();
-    if (!wetSets.empty()) totalRows += 1 + wetSets.size();
-    
-    tp_setsTable->setRowCount(totalRows);
-    tp_setsTable->clearSpans();
+    tp_drySetsTable->setRowCount(drySets.size());
+    tp_wetSetsTable->setRowCount(wetSets.size());
 
     static const char* sessionLabels[] = {
         "—", "FP1", "FP2", "FP3", "Short P",
@@ -226,119 +229,83 @@ void MainWindow::updateTyreSetsTable() {
         "Race", "Race 2", "Race 3", "Time Trial"
     };
 
-    int row = 0;
     auto makeItem = [](const QString& text) { return new QTableWidgetItem(text); };
 
-    auto addSectionHeader = [&](const QString& text) {
-        auto* item = makeItem(text);
-        item->setFlags(Qt::NoItemFlags);
-        QFont f = item->font();
-        f.setBold(true);
-        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
-        f.setPointSize(8);
-        item->setFont(f);
-        item->setForeground(QColor("#8A8D9F"));
-        
-        tp_setsTable->setItem(row, 0, item);
-        for(int c=1; c<7; ++c) {
-            auto* emptyItem = makeItem("");
-            emptyItem->setFlags(Qt::NoItemFlags);
-            tp_setsTable->setItem(row, c, emptyItem);
+    auto populateTable = [&](QTableWidget* table, const std::vector<nlohmann::json>& setsList) {
+        for (int row = 0; row < (int)setsList.size(); ++row) {
+            const auto& s = setsList[row];
+            int idx        = s.value("idx", 0);
+            int compound   = s.value("actual_compound",     0);
+            int visual     = s.value("visual_compound",     0);
+            int wear       = s.value("wear",                0);
+            int lifeSpan   = s.value("life_span",           0);
+            int usable     = s.value("usable_life",         0);
+            int recSess    = s.value("recommended_session", 0);
+            int deltaMs    = s.value("lap_delta_ms",        0);
+
+            QString status    = setStatusText(s);
+            QColor  statusCol = setStatusColor(s);
+            QColor  cmpFg     = tyreTextColor(visual);
+
+            table->setItem(row, 0, makeItem(QString::number(idx + 1)));
+
+            auto* cmpItem = makeItem(tyreLabel(compound));
+            if (cmpFg.isValid()) cmpItem->setForeground(cmpFg);
+            table->setItem(row, 1, cmpItem);
+
+            auto* stItem = makeItem(status);
+            stItem->setForeground(statusCol);
+            table->setItem(row, 2, stItem);
+
+            {
+                const QString wc = wearPctColor(wear).name();
+                QWidget* cell = new QWidget;
+                cell->setStyleSheet("background: transparent;");
+                QHBoxLayout* wh = new QHBoxLayout(cell);
+                wh->setContentsMargins(4, 0, 4, 0);
+                wh->setSpacing(4);
+
+                auto* bar = new QProgressBar;
+                bar->setRange(0, 100);
+                bar->setValue(wear);
+                bar->setTextVisible(false);
+                bar->setFixedHeight(6);
+                bar->setStyleSheet(QString(
+                    "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                    "QProgressBar::chunk { background: %1; border-radius: 3px; }"
+                ).arg(wc));
+
+                auto* wearLbl = new QLabel(QString::number(wear) + "%");
+                wearLbl->setStyleSheet("color: " + wc + "; font-weight: bold; background: transparent;");
+                QFont wf; wf.setPointSize(8);
+                wearLbl->setFont(wf);
+                wearLbl->setFixedWidth(36);
+                wearLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+                wh->addWidget(bar, 1);
+                wh->addWidget(wearLbl);
+                table->setCellWidget(row, 3, cell);
+            }
+
+            QString lifeText = (lifeSpan > 0 || usable > 0)
+                ? QString("%1/%2L").arg(lifeSpan).arg(usable) : "—";
+            table->setItem(row, 4, makeItem(lifeText));
+
+            int rsIdx = (recSess >= 0 && recSess < 19) ? recSess : 0;
+            table->setItem(row, 5, makeItem(sessionLabels[rsIdx]));
+
+            QString deltaText;
+            if (deltaMs != 0)
+                deltaText = QString("%1%2").arg(deltaMs > 0 ? "+" : "").arg(deltaMs / 1000.0, 0, 'f', 3);
+            auto* deltaItem = makeItem(deltaText);
+            if (deltaMs > 0)      deltaItem->setForeground(QColor("#C4162A"));
+            else if (deltaMs < 0) deltaItem->setForeground(QColor("#37872D"));
+            table->setItem(row, 6, deltaItem);
+
+            table->setRowHeight(row, 22);
         }
-        tp_setsTable->setSpan(row, 0, 1, 7);
-        tp_setsTable->setRowHeight(row, 32);
-        row++;
     };
 
-    auto addSetRow = [&](const nlohmann::json& s) {
-        int idx        = s.value("idx", 0);
-        int compound   = s.value("actual_compound",     0);
-        int visual     = s.value("visual_compound",     0);
-        int wear       = s.value("wear",                0);
-        int lifeSpan   = s.value("life_span",           0);
-        int usable     = s.value("usable_life",         0);
-        int recSess    = s.value("recommended_session", 0);
-        int deltaMs    = s.value("lap_delta_ms",        0);
-
-        QString status    = setStatusText(s);
-        QColor  statusCol = setStatusColor(s);
-        QColor  cmpFg     = tyreTextColor(visual);
-
-        auto makeItem = [](const QString& text) { return new QTableWidgetItem(text); };
-
-        // Col 0: #
-        tp_setsTable->setItem(row, 0, makeItem(QString::number(idx + 1)));
-
-        // Col 1: Compound
-        auto* cmpItem = makeItem(tyreLabel(compound));
-        if (cmpFg.isValid()) cmpItem->setForeground(cmpFg);
-        tp_setsTable->setItem(row, 1, cmpItem);
-
-        // Col 2: Status
-        auto* stItem = makeItem(status);
-        stItem->setForeground(statusCol);
-        tp_setsTable->setItem(row, 2, stItem);
-
-        // Col 3: Wear — bar + percentage label
-        {
-            const QString wc = wearPctColor(wear).name();
-            QWidget* cell = new QWidget;
-            cell->setStyleSheet("background: transparent;");
-            QHBoxLayout* wh = new QHBoxLayout(cell);
-            wh->setContentsMargins(4, 0, 4, 0);
-            wh->setSpacing(4);
-
-            auto* bar = new QProgressBar;
-            bar->setRange(0, 100);
-            bar->setValue(wear);
-            bar->setTextVisible(false);
-            bar->setFixedHeight(6);
-            bar->setStyleSheet(QString(
-                "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
-                "QProgressBar::chunk { background: %1; border-radius: 3px; }"
-            ).arg(wc));
-
-            auto* wearLbl = new QLabel(QString::number(wear) + "%");
-            wearLbl->setStyleSheet("color: " + wc + "; font-weight: bold; background: transparent;");
-            QFont wf; wf.setPointSize(8);
-            wearLbl->setFont(wf);
-            wearLbl->setFixedWidth(36);
-            wearLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-            wh->addWidget(bar, 1);
-            wh->addWidget(wearLbl);
-            tp_setsTable->setCellWidget(row, 3, cell);
-        }
-
-        // Col 4: Life
-        QString lifeText = (lifeSpan > 0 || usable > 0)
-            ? QString("%1/%2L").arg(lifeSpan).arg(usable) : "—";
-        tp_setsTable->setItem(row, 4, makeItem(lifeText));
-
-        // Col 5: Recommended session
-        int rsIdx = (recSess >= 0 && recSess < 19) ? recSess : 0;
-        tp_setsTable->setItem(row, 5, makeItem(sessionLabels[rsIdx]));
-
-        // Col 6: Lap delta (seconds, no unit suffix)
-        QString deltaText;
-        if (deltaMs != 0)
-            deltaText = QString("%1%2").arg(deltaMs > 0 ? "+" : "").arg(deltaMs / 1000.0, 0, 'f', 3);
-        auto* deltaItem = makeItem(deltaText);
-        if (deltaMs > 0)      deltaItem->setForeground(QColor("#C4162A"));
-        else if (deltaMs < 0) deltaItem->setForeground(QColor("#37872D"));
-        tp_setsTable->setItem(row, 6, deltaItem);
-
-        tp_setsTable->setRowHeight(row, 22);
-        row++;
-    };
-
-    if (!drySets.empty()) {
-        addSectionHeader("DRY SETS (SLICKS)");
-        for (const auto& s : drySets) addSetRow(s);
-    }
-    
-    if (!wetSets.empty()) {
-        addSectionHeader("WET / INTER SETS");
-        for (const auto& s : wetSets) addSetRow(s);
-    }
+    populateTable(tp_drySetsTable, drySets);
+    populateTable(tp_wetSetsTable, wetSets);
 }

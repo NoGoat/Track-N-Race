@@ -147,7 +147,8 @@ private:
     QLabel*       tp_wearLabel[4]   = {};  // "34%" text next to "Wear" label
     QProgressBar* tp_wear[4]        = {};  // colored fill bar
     QLabel*       tp_blisters[4]    = {};
-    QTableWidget* tp_setsTable      = nullptr;
+    QTableWidget* tp_drySetsTable   = nullptr;
+    QTableWidget* tp_wetSetsTable   = nullptr;
     nlohmann::json lastPlayerTelemetryData;
     nlohmann::json lastPlayerDamageData;
     nlohmann::json lastTyreSetsData;
