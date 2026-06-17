@@ -70,15 +70,22 @@ void SteeringChart::buildDefault(float endTime) {
     const SessionData& d = model_->data();
     const float left = endTime - windowS_;
 
-    QVector<double> tx, st;
-    auto lb = [](const auto& v, float t) {
-        return std::lower_bound(v.begin(), v.end(), t,
-            [](const auto& s, float key) { return s.t < key; });
-    };
-    for (auto it = lb(d.telBuf, left); it != d.telBuf.end() && it->t <= endTime; ++it) {
-        tx.append(it->t); st.append(it->steering);
+    if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
+        clear(stId_);
+        lastAddedTime_ = left;
     }
-    putSeries(stId_, tx, st);
+    auto lb = [](const auto& v, float t) {
+        return std::lower_bound(v.begin(), v.end(), t, [](const auto& s, float key) { return s.t < key; });
+    };
+    int startIndex = std::distance(d.telBuf.begin(), lb(d.telBuf, lastAddedTime_ + 0.0001f));
+    for (int i = startIndex; i < d.telBuf.size(); ++i) {
+        const auto& s = d.telBuf[i];
+        if (s.t > endTime) break;
+        appendPoint(stId_, s.t, s.steering);
+        lastAddedTime_ = s.t;
+    }
+    trimBefore(stId_, left);
+    prevEndTime_ = endTime;
 
     const double lo = std::max(0.0f, left);
     const double hi = std::max(windowS_, endTime);

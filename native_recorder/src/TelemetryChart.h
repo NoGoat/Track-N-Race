@@ -45,7 +45,7 @@ private:
 
     void buildDefault(float endTime);
     void buildOverlay(const LapBlock* ref, const LapBlock* cur, float curUpTo);
-    void putSeries(int id, const QVector<double>& xs, const QVector<double>& ys);
+    
     void showReference(bool on);            // toggle the 3 muted reference series
 
     float currentTime() const;
@@ -64,6 +64,9 @@ private:
     ChartMode mode_         = ChartMode::Default;
     int       compareLap_   = -1;
     float     windowS_      = 30.0f;
+    float     prevEndTime_  = -1.0f;
+    float     lastAddedTime_= -1.0f;
+    float     lastAddedStsTime_= -1.0f;
 
     int axXId_ = -1;
     int spId_  = -1, rpId_  = -1, erId_  = -1;   // current (full colour)

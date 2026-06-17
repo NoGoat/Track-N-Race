@@ -10,35 +10,6 @@ const QColor C_SPEED("#37872D"), C_RPM("#C4162A"), C_ERS("#FADE2A");
 // Reference (other-lap) traces are drawn dimmer so the current lap reads on top.
 QColor muted(QColor c) { c.setAlpha(110); return c; }
 
-// Min/max bucket decimation. A chart only ~W px wide can't show more than ~2
-// points per column, so reduce each series to ~2*targetCols points before it
-// reaches QCustomPlot. This keeps per-frame cost flat whether the window holds
-// 30 s or 10 min of data. Min+max per bucket preserves spikes; points are
-// emitted in x order so the polyline stays monotonic.
-void decimate(const QVector<double>& xs, const QVector<double>& ys, int targetCols,
-              QVector<double>& ox, QVector<double>& oy) {
-    const int n = xs.size();
-    if (targetCols <= 0 || n <= targetCols * 2) { ox = xs; oy = ys; return; }
-    const double bucket = double(n) / targetCols;
-    ox.clear(); oy.clear();
-    ox.reserve(targetCols * 2); oy.reserve(targetCols * 2);
-    for (int c = 0; c < targetCols; ++c) {
-        const int start = int(c * bucket);
-        int end = int((c + 1) * bucket);
-        if (end > n) end = n;
-        if (start >= end) continue;
-        int lo = start, hi = start;
-        for (int i = start + 1; i < end; ++i) {
-            if (ys[i] < ys[lo]) lo = i;
-            if (ys[i] > ys[hi]) hi = i;
-        }
-        const int a = std::min(lo, hi), b = std::max(lo, hi);
-        ox.append(xs[a]); oy.append(ys[a]);
-        if (b != a) { ox.append(xs[b]); oy.append(ys[b]); }
-    }
-}
-
-// Append a lap's samples (those with t <= upTo) as (t - originT, value) pairs.
 void fillLap(const LapBlock* lap, float originT, float upTo,
              QVector<double>& tx, QVector<double>& spd, QVector<double>& rpm,
              QVector<double>& ex, QVector<double>& ers) {
@@ -143,15 +114,6 @@ const LapBlock* TelemetryChart::previousLapBlock() const
     return model_->data().lapByNum(cur->lapNum - 1);
 }
 
-void TelemetryChart::putSeries(int id, const QVector<double>& xs, const QVector<double>& ys)
-{
-    // ~2 points per horizontal pixel is the most the chart can render.
-    const int cols = std::max(width(), 400);
-    QVector<double> ox, oy;
-    decimate(xs, ys, cols, ox, oy);
-    setSeriesData(id, ox, oy);
-}
-
 void TelemetryChart::showReference(bool on)
 {
     setSeriesVisible(rSpId_, on);
@@ -181,20 +143,33 @@ void TelemetryChart::buildDefault(float endTime)
 
     // Buffers are time-sorted, so binary-search the window instead of scanning
     // the whole (full-session, in playback) buffer each refresh.
-    QVector<double> tx, spd, rpm, ex, ers;
+    if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
+        clear(spId_); clear(rpId_); clear(erId_);
+        lastAddedTime_ = left;
+        lastAddedStsTime_ = left;
+    }
     auto lb = [](const auto& v, float t) {
-        return std::lower_bound(v.begin(), v.end(), t,
-            [](const auto& s, float key) { return s.t < key; });
+        return std::lower_bound(v.begin(), v.end(), t, [](const auto& s, float key) { return s.t < key; });
     };
-    for (auto it = lb(d.telBuf, left); it != d.telBuf.end() && it->t <= endTime; ++it) {
-        tx.append(it->t); spd.append(it->speed); rpm.append(it->rpm);
+    int startIndex = std::distance(d.telBuf.begin(), lb(d.telBuf, lastAddedTime_ + 0.0001f));
+    for (int i = startIndex; i < d.telBuf.size(); ++i) {
+        const auto& s = d.telBuf[i];
+        if (s.t > endTime) break;
+        appendPoint(spId_, s.t, s.speed);
+        appendPoint(rpId_, s.t, s.rpm);
+        lastAddedTime_ = s.t;
     }
-    for (auto it = lb(d.stsBuf, left); it != d.stsBuf.end() && it->t <= endTime; ++it) {
-        ex.append(it->t); ers.append(it->ers);
+    int stsIndex = std::distance(d.stsBuf.begin(), lb(d.stsBuf, lastAddedStsTime_ + 0.0001f));
+    for (int i = stsIndex; i < d.stsBuf.size(); ++i) {
+        const auto& s = d.stsBuf[i];
+        if (s.t > endTime) break;
+        appendPoint(erId_, s.t, s.ers);
+        lastAddedStsTime_ = s.t;
     }
-    putSeries(spId_, tx, spd);
-    putSeries(rpId_, tx, rpm);
-    putSeries(erId_, ex, ers);
+    trimBefore(spId_, left);
+    trimBefore(rpId_, left);
+    trimBefore(erId_, left);
+    prevEndTime_ = endTime;
 
     const double lo = std::max(0.0f, left);
     const double hi = std::max(windowS_, endTime);
@@ -206,9 +181,9 @@ void TelemetryChart::buildOverlay(const LapBlock* ref, const LapBlock* cur, floa
     // Current lap (full colour).
     QVector<double> tx, spd, rpm, ex, ers;
     fillLap(cur, cur ? cur->startSessionTime : 0.0f, curUpTo, tx, spd, rpm, ex, ers);
-    putSeries(spId_, tx, spd);
-    putSeries(rpId_, tx, rpm);
-    putSeries(erId_, ex, ers);
+    setSeriesData(spId_, tx, spd);
+    setSeriesData(rpId_, tx, rpm);
+    setSeriesData(erId_, ex, ers);
 
     // Reference lap (muted) — shown in full, aligned by time-from-lap-start.
     const bool haveRef = ref && !ref->tel.isEmpty();
@@ -217,9 +192,9 @@ void TelemetryChart::buildOverlay(const LapBlock* ref, const LapBlock* cur, floa
     if (haveRef) {
         QVector<double> rtx, rspd, rrpm, rex, rers;
         fillLap(ref, ref->startSessionTime, ref->endSessionTime, rtx, rspd, rrpm, rex, rers);
-        putSeries(rSpId_, rtx, rspd);
-        putSeries(rRpId_, rtx, rrpm);
-        putSeries(rErId_, rex, rers);
+        setSeriesData(rSpId_, rtx, rspd);
+        setSeriesData(rRpId_, rtx, rrpm);
+        setSeriesData(rErId_, rex, rers);
         refDur = ref->endSessionTime - ref->startSessionTime;
     }
 

@@ -40,6 +40,8 @@ private:
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;
+    float     prevEndTime_  = -1.0f;
+    float     lastAddedTime_= -1.0f;
 
     int axXId_  = -1;
     int thId_   = -1;

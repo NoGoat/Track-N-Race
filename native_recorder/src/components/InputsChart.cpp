@@ -68,16 +68,24 @@ void InputsChart::buildDefault(float endTime) {
     const SessionData& d = model_->data();
     const float left = endTime - windowS_;
 
-    QVector<double> tx, th, br;
-    auto lb = [](const auto& v, float t) {
-        return std::lower_bound(v.begin(), v.end(), t,
-            [](const auto& s, float key) { return s.t < key; });
-    };
-    for (auto it = lb(d.telBuf, left); it != d.telBuf.end() && it->t <= endTime; ++it) {
-        tx.append(it->t); th.append(it->throttle); br.append(-it->brake);
+    if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
+        clear(thId_); clear(brId_);
+        lastAddedTime_ = left;
     }
-    putSeries(thId_, tx, th);
-    putSeries(brId_, tx, br);
+    auto lb = [](const auto& v, float t) {
+        return std::lower_bound(v.begin(), v.end(), t, [](const auto& s, float key) { return s.t < key; });
+    };
+    int startIndex = std::distance(d.telBuf.begin(), lb(d.telBuf, lastAddedTime_ + 0.0001f));
+    for (int i = startIndex; i < d.telBuf.size(); ++i) {
+        const auto& s = d.telBuf[i];
+        if (s.t > endTime) break;
+        appendPoint(thId_, s.t, s.throttle);
+        appendPoint(brId_, s.t, -s.brake);
+        lastAddedTime_ = s.t;
+    }
+    trimBefore(thId_, left);
+    trimBefore(brId_, left);
+    prevEndTime_ = endTime;
 
     const double lo = std::max(0.0f, left);
     const double hi = std::max(windowS_, endTime);
