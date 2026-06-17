@@ -91,11 +91,15 @@ private:
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
     QTimer*       animTimer_ = nullptr;     // ~60fps redraw while visible
 
-    // ── Follow-driver camera + zoom ───────────────────────────────────────
+    enum class LabelMode { DotsAndLabels, DotsOnly, LabelsOnly };
+
+    // ── Follow-driver camera + zoom + labels ──────────────────────────────
     QComboBox* driverCombo_ = nullptr;   // "Follow driver…"
     QComboBox* zoomCombo_   = nullptr;   // 2x / 4x / 8x / 16x
+    QComboBox* labelsCombo_ = nullptr;   // "Dots & Labels" / "Dots Only" / "Labels Only"
     int        selectedDriverIdx_ = -1;  // -1 = no follow
     double     zoomLevel_ = 4.0;
+    LabelMode  labelMode_ = LabelMode::DotsAndLabels;
     Layout     cam_{};                   // active follow camera (scale, ox, oy)
     bool       hasCam_ = false;          // camera animating or active
     QString    driverSig_;               // signature to detect participant changes

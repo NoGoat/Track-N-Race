@@ -129,6 +129,16 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
         positionControls();
     });
 
+    labelsCombo_ = new QComboBox(this);
+    labelsCombo_->addItem("Dots & Labels", (int)LabelMode::DotsAndLabels);
+    labelsCombo_->addItem("Dots Only", (int)LabelMode::DotsOnly);
+    labelsCombo_->addItem("Labels Only", (int)LabelMode::LabelsOnly);
+    labelsCombo_->setCurrentIndex(0);
+    connect(labelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        labelMode_ = static_cast<LabelMode>(labelsCombo_->currentData().toInt());
+        update();
+    });
+
     positionControls();
 }
 
@@ -511,23 +521,29 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
         const QColor livery(QString::fromStdString(d->value("livery_color", "#8e8e8e")));
 
         // Dot
-        p.setPen(Qt::NoPen);
-        p.setBrush(livery);
-        p.drawEllipse(pt, DOT_R, DOT_R);
+        if (labelMode_ != LabelMode::LabelsOnly) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(livery);
+            p.drawEllipse(pt, DOT_R, DOT_R);
+        }
 
         // Label text: driver abbreviation, else race number
-        QString name = QString::fromStdString(d->value("name", ""));
-        QString text = name.trimmed().isEmpty()
-            ? QString::number(d->value("race_number", 0))
-            : abbrev(name);
-        labels.push_back({ pt, text, livery });
+        if (labelMode_ != LabelMode::DotsOnly) {
+            QString name = QString::fromStdString(d->value("name", ""));
+            QString text = name.trimmed().isEmpty()
+                ? QString::number(d->value("race_number", 0))
+                : abbrev(name);
+            labels.push_back({ pt, text, livery });
+        }
     }
 
     // Labels drawn after dots so they sit on top.
     p.setFont(labelFont);
     for (const LabelJob& job : labels) {
         const double bx = job.c.x() - LABEL_W / 2.0;
-        const double by = job.c.y() - DOT_R - LABEL_GAP - LABEL_H;
+        const double by = labelMode_ == LabelMode::LabelsOnly 
+            ? job.c.y() - LABEL_H / 2.0 
+            : job.c.y() - DOT_R - LABEL_GAP - LABEL_H;
         const QRectF box(bx, by, LABEL_W, LABEL_H);
 
         QPainterPath bg;
@@ -586,6 +602,14 @@ void TrackMapWidget::positionControls() {
         currentX -= gap + zw;
         zoomCombo_->move(currentX, margin);
         zoomCombo_->raise();
+    }
+
+    if (labelsCombo_) {
+        const int lw = std::max(120, labelsCombo_->sizeHint().width());
+        labelsCombo_->setFixedWidth(lw);
+        currentX -= gap + lw;
+        labelsCombo_->move(currentX, margin);
+        labelsCombo_->raise();
     }
 }
 
