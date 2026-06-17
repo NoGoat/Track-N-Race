@@ -217,11 +217,25 @@ void MainWindow::updateTyreSetsTable() {
         }
     }
 
-    auto sortSets = [](std::vector<nlohmann::json>& vec) {
-        std::sort(vec.begin(), vec.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+    auto statusPriority = [](const nlohmann::json& s) {
+        QString st = setStatusText(s);
+        if (st == "FITTED")   return 1;
+        if (st == "NEW")      return 2;
+        if (st == "USED")     return 3;
+        if (st == "RESERVED") return 4;
+        return 5;
+    };
+
+    auto sortSets = [&](std::vector<nlohmann::json>& vec) {
+        std::sort(vec.begin(), vec.end(), [&](const nlohmann::json& a, const nlohmann::json& b) {
             int vcA = a.value("visual_compound", 99);
             int vcB = b.value("visual_compound", 99);
             if (vcA != vcB) return vcA < vcB;
+            
+            int spA = statusPriority(a);
+            int spB = statusPriority(b);
+            if (spA != spB) return spA < spB;
+            
             return a.value("idx", 99) < b.value("idx", 99);
         });
     };
