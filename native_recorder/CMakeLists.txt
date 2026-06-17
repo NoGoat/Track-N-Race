@@ -66,6 +66,13 @@ set(SOURCES
     src/components/TyresPage.cpp
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
+    src/components/InputPage.cpp
+    src/components/GearChart.cpp
+    src/components/GearChart.h
+    src/components/InputsChart.cpp
+    src/components/InputsChart.h
+    src/components/SteeringChart.cpp
+    src/components/SteeringChart.h
     src/components/TrackMapPage.cpp
     src/components/TrackMapWidget.cpp
     src/components/TrackMapWidget.h

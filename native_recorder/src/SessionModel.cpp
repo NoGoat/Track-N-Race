@@ -4,10 +4,10 @@
 
 // ── SessionData: lap segmentation + buffering ───────────────────────────────
 
-void SessionData::onTelemetry(float t, float speed, int rpm) {
+void SessionData::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
     latestTime = t;
-    telBuf.push_back({ t, speed, rpm });
-    if (curLapNum >= 0) curLap.tel.push_back({ t, speed, rpm });
+    telBuf.push_back({ t, speed, rpm, gear, throttle, brake, steering });
+    if (curLapNum >= 0) curLap.tel.push_back({ t, speed, rpm, gear, throttle, brake, steering });
     trim();
 }
 
@@ -110,8 +110,8 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
     flush_->start();
 }
 
-void SessionModel::onTelemetry(float t, float speed, int rpm) {
-    d_.onTelemetry(t, speed, rpm);
+void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
+    d_.onTelemetry(t, speed, rpm, gear, throttle, brake, steering);
     telemetryDirty_ = true;
 }
 

@@ -339,7 +339,13 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
             try {
                 nlohmann::json j = nlohmann::json::parse(ld, ld + ll);
                 if (tid == 1)
-                    scanned_.onTelemetry(t, j.value("speed_kph", 0.0f), j.value("rpm", 0));
+                    scanned_.onTelemetry(t,
+                                         j.value("speed_kph", 0.0f),
+                                         j.value("rpm", 0),
+                                         j.value("gear", 0),
+                                         j.value("throttle", 0.0f),
+                                         j.value("brake", 0.0f),
+                                         j.value("steering", 0.0f));
                 else if (tid == 2)
                     scanned_.onStatus(t, j.value("ers_pct", 0.0f));
                 else

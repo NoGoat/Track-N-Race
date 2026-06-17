@@ -6,7 +6,7 @@
 #include <climits>
 
 // Slim per-sample records — only what the Speed/RPM/ERS chart needs.
-struct TelSample { float t = 0; float speed = 0; int rpm = 0; };
+struct TelSample { float t = 0; float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
 struct StsSample { float t = 0; float ers = 0; };
 
 // One lap's telemetry/status, plus its timing. Mirrors the Electron
@@ -44,7 +44,7 @@ struct SessionData {
 
     static constexpr float BUFFER_S = 600.0f;   // 10 min, matches Electron MAX_ROWS
 
-    void onTelemetry(float t, float speed, int rpm);
+    void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);          // time went backward → fresh session
@@ -69,7 +69,7 @@ public:
     explicit SessionModel(QObject* parent = nullptr);
 
     // Live ingest.
-    void onTelemetry(float t, float speed, int rpm);
+    void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);

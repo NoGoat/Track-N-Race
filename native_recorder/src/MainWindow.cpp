@@ -1,5 +1,8 @@
 #include "MainWindow.h"
 #include "TelemetryChart.h"
+#include "components/GearChart.h"
+#include "components/InputsChart.h"
+#include "components/SteeringChart.h"
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
@@ -322,8 +325,8 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabsLay->setSpacing(4);
     QButtonGroup* pageGroup = new QButtonGroup(this);
     pageGroup->setExclusive(true);
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres" };
-    static constexpr int kPageCount = 4;
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input" };
+    static constexpr int kPageCount = 5;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     // Every button — checked or not — reserves the same border-bottom width
@@ -371,7 +374,11 @@ MainWindow::MainWindow(QWidget* parent)
     static_cast<QToolButton*>(windowGroup->button(1))->setChecked(true);   // default 30s
     toolbar->addWidget(windowSeg);
     connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) {
-        if (chart) chart->setWindowSeconds(kWindowOptions[idx].secs);
+        float secs = kWindowOptions[idx].secs;
+        if (chart) chart->setWindowSeconds(secs);
+        if (gearChart_) gearChart_->setWindowSeconds(secs);
+        if (inputsChart_) inputsChart_->setWindowSeconds(secs);
+        if (steeringChart_) steeringChart_->setWindowSeconds(secs);
     });
 
     toolbar->addSeparator();
@@ -407,6 +414,7 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildStandingsPage()); // index 1
     stack->addWidget(buildSessionPage());   // index 2
     stack->addWidget(buildTyresPage());     // index 3
+    stack->addWidget(buildInputPage());     // index 4
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -532,6 +540,9 @@ MainWindow::MainWindow(QWidget* parent)
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
         if (model_) model_->load(player_->takeScannedData());
         if (chart) { chart->setPlaybackMode(true); chart->setCurrentTime(player_->currentTime()); }
+        if (gearChart_) { gearChart_->setPlaybackMode(true); gearChart_->setCurrentTime(player_->currentTime()); }
+        if (inputsChart_) { inputsChart_->setPlaybackMode(true); inputsChart_->setCurrentTime(player_->currentTime()); }
+        if (steeringChart_) { steeringChart_->setPlaybackMode(true); steeringChart_->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
         closeActiveStream();
         pb_sep_->show();
@@ -555,6 +566,9 @@ MainWindow::MainWindow(QWidget* parent)
         // `cur` is session-relative (for the slider); the model is keyed on absolute
         // session_time, so hand the chart the absolute playhead.
         if (chart) chart->setCurrentTime(player_->currentTime());
+        if (gearChart_) gearChart_->setCurrentTime(player_->currentTime());
+        if (inputsChart_) inputsChart_->setCurrentTime(player_->currentTime());
+        if (steeringChart_) steeringChart_->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
             pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
@@ -591,6 +605,9 @@ MainWindow::MainWindow(QWidget* parent)
         inPlayback_ = false;
         if (model_) model_->clear();
         if (chart) { chart->setPlaybackMode(false); chart->setMode(ChartMode::Default); }
+        if (gearChart_) gearChart_->setPlaybackMode(false);
+        if (inputsChart_) inputsChart_->setPlaybackMode(false);
+        if (steeringChart_) steeringChart_->setPlaybackMode(false);
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(false);
         if (ov_defaultBtn_) ov_defaultBtn_->setChecked(true);
         if (ov_lapCombo_) ov_lapCombo_->setVisible(false);
@@ -611,7 +628,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(this, &MainWindow::telemetryUpdated,
             this, [this](float speed, int rpm, int gear,
-                         float throttle, float brake, bool drs, int /*eng*/) {
+                         float throttle, float brake, float steering, bool drs, int /*eng*/) {
         cardSpeed->setText(QString::number((int)speed));
         cardRpm->setText(QString::number(rpm / 1000.0, 'f', 1) + "k");
         cardGear->setText(gear <= 0 ? "N" : QString::number(gear));
@@ -633,7 +650,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(this, &MainWindow::telemetryUpdated,
-            chart, [](float, int, int, float, float, bool, int) {
+            chart, [](float, int, int, float, float, float, bool, int) {
         // chart is updated directly from processPacket
     });
 
@@ -951,6 +968,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["gear"].get<int>(),
             row["throttle"].get<float>(),
             row["brake"].get<float>(),
+            row.value("steering", 0.0f),
             row.value("drs", 0) != 0,
             row.value("engine_temp", 0)
         );
@@ -1107,7 +1125,11 @@ void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
     if (rtype == "telemetry")
         model_->onTelemetry(sessionTime,
                             row.value("speed_kph", 0.0f),
-                            row.value("rpm", 0));
+                            row.value("rpm", 0),
+                            row.value("gear", 0),
+                            row.value("throttle", 0.0f),
+                            row.value("brake", 0.0f),
+                            row.value("steering", 0.0f));
     else if (rtype == "status")
         model_->onStatus(sessionTime, row.value("ers_pct", 0.0f));
     else if (rtype == "lap")

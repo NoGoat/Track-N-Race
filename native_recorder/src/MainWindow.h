@@ -25,6 +25,9 @@
 #include "components/OverviewLayout.h"
 
 class TelemetryChart;
+class GearChart;
+class InputsChart;
+class SteeringChart;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
@@ -61,7 +64,7 @@ public:
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
-                          float throttle, float brake, bool drs, int engineTemp);
+                          float throttle, float brake, float steering, bool drs, int engineTemp);
     void statusUpdated(float ersPct, int ersMode, float fuelKg,
                        float fuelLaps, int tyreCompound, int tyreAgeLaps);
     void damageUpdated(int tyreFl, int tyreFr, int tyreRl, int tyreRr,
@@ -181,7 +184,12 @@ private:
     nlohmann::json  lastPositionsData;
     int             mapTrackId_    = -1;   // last track loaded into the map widget
 
-    // ── Toolbar ───────────────────────────────────────────────────
+    // ── Input tab ──────────────────────────────────────────────
+    GearChart*      gearChart_     = nullptr;
+    InputsChart*    inputsChart_   = nullptr;
+    SteeringChart*  steeringChart_ = nullptr;
+
+    // ── Dialogs ───────────────────────────────────────────────────
     QToolBar* toolbar_ = nullptr;   // referenced by the Settings dialog's label toggle
     // Theme-icon actions kept so their (tinted) icons can be rebuilt when the
     // palette changes at runtime — see changeEvent()/refreshThemedIcons().
@@ -238,6 +246,7 @@ private:
     QWidget* buildRacePanel();
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
+    QWidget* buildInputPage();
     void     saveOverviewLayout(const OverviewLayout& layout);
     void     applyOverviewLayout(const OverviewLayout& layout);
     void     updateTimingTable();
