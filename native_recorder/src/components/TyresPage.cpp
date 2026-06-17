@@ -37,7 +37,7 @@ QWidget* MainWindow::buildTyresPage() {
         outTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         outTable->setSelectionMode(QAbstractItemView::NoSelection);
         outTable->setShowGrid(false);
-        outTable->setAlternatingRowColors(false);
+        outTable->setAlternatingRowColors(true);
         outTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
         outTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
         outTable->verticalHeader()->setVisible(false);
@@ -297,7 +297,7 @@ void MainWindow::updateTyreSetsTable() {
                 bar->setTextVisible(false);
                 bar->setFixedHeight(6);
                 bar->setStyleSheet(QString(
-                    "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                    "QProgressBar { border: none; background: rgba(128, 128, 128, 0.3); border-radius: 3px; }"
                     "QProgressBar::chunk { background: %1; border-radius: 3px; }"
                 ).arg(wc));
 
