@@ -104,7 +104,7 @@ QWidget* MainWindow::buildPowerPage() {
     QWidget* gridWidget = new QWidget;
     QGridLayout* grid = new QGridLayout(gridWidget);
     grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(1); // will show background color as borders if we set background
+    grid->setSpacing(0);
 
     // Power Split
     QWidget* splitContainer = new QWidget;
@@ -147,9 +147,18 @@ QWidget* MainWindow::buildPowerPage() {
     fuelLay->addWidget(pp_fuelChart, 1);
 
     grid->addWidget(splitContainer, 0, 0);
-    grid->addWidget(harvContainer,  0, 1);
-    grid->addWidget(storeContainer, 1, 0);
-    grid->addWidget(fuelContainer,  1, 1);
+    grid->addWidget(harvContainer,  0, 2);
+    grid->addWidget(storeContainer, 2, 0);
+    grid->addWidget(fuelContainer,  2, 2);
+
+    QFrame* vline = new QFrame; vline->setFrameShape(QFrame::VLine); vline->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(vline, 0, 1, 3, 1);
+
+    QFrame* hline1 = new QFrame; hline1->setFrameShape(QFrame::HLine); hline1->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(hline1, 1, 0);
+
+    QFrame* hline2 = new QFrame; hline2->setFrameShape(QFrame::HLine); hline2->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(hline2, 1, 2);
 
     vbox->addWidget(gridWidget, 1);
 
