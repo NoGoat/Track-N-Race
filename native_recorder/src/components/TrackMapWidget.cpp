@@ -63,9 +63,9 @@ public:
     explicit ClearableComboBox(QWidget* parent = nullptr) : QComboBox(parent) {
         clearBtn_ = new QToolButton(this);
         QIcon clearIcon = adaptThemeIcon(
-            QIcon::fromTheme("edit-clear"),
+            QIcon::fromTheme("window-close"),
             palette().color(QPalette::WindowText),
-            style()->standardIcon(QStyle::SP_LineEditClearButton)
+            style()->standardIcon(QStyle::SP_DialogCloseButton)
         );
         clearBtn_->setIcon(clearIcon);
         clearBtn_->setCursor(Qt::PointingHandCursor);
