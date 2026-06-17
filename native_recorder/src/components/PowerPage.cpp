@@ -100,13 +100,18 @@ QWidget* MainWindow::buildPowerPage() {
     vbox->addWidget(pp_topBar_);
     pp_hdiv_ = new QFrame; pp_hdiv_->setFrameShape(QFrame::HLine); pp_hdiv_->setFrameShadow(QFrame::Sunken); vbox->addWidget(pp_hdiv_);
 
-    // ── Charts Grid ───────────────────────────────────────────────
-    QWidget* gridWidget = new QWidget;
-    QGridLayout* grid = new QGridLayout(gridWidget);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(0);
+    // ── Charts ───────────────────────────────────────────────
+    QWidget* chartsWidget = new QWidget;
+    QVBoxLayout* chartsLay = new QVBoxLayout(chartsWidget);
+    chartsLay->setContentsMargins(0, 0, 0, 0);
+    chartsLay->setSpacing(0);
 
-    // Power Split
+    // Top Row: Split & Harvest
+    pp_topChartsRow_ = new QWidget;
+    QHBoxLayout* topChartsLay = new QHBoxLayout(pp_topChartsRow_);
+    topChartsLay->setContentsMargins(0, 0, 0, 0);
+    topChartsLay->setSpacing(0);
+
     pp_splitContainer_ = new QWidget;
     QVBoxLayout* splitLay = new QVBoxLayout(pp_splitContainer_);
     splitLay->setContentsMargins(0, 0, 0, 0);
@@ -116,7 +121,6 @@ QWidget* MainWindow::buildPowerPage() {
     pp_splitChart->setModel(model_);
     splitLay->addWidget(pp_splitChart, 1);
 
-    // ERS Harvest
     pp_harvContainer_ = new QWidget;
     QVBoxLayout* harvLay = new QVBoxLayout(pp_harvContainer_);
     harvLay->setContentsMargins(0, 0, 0, 0);
@@ -126,7 +130,17 @@ QWidget* MainWindow::buildPowerPage() {
     pp_harvestChart->setModel(model_);
     harvLay->addWidget(pp_harvestChart, 1);
 
-    // ERS Store
+    topChartsLay->addWidget(pp_splitContainer_, 1);
+    QFrame* topVline = new QFrame; topVline->setFrameShape(QFrame::VLine); topVline->setFrameShadow(QFrame::Sunken);
+    topChartsLay->addWidget(topVline, 0);
+    topChartsLay->addWidget(pp_harvContainer_, 1);
+
+    // Bottom Row: Store & Fuel
+    pp_bottomChartsRow_ = new QWidget;
+    QHBoxLayout* bottomChartsLay = new QHBoxLayout(pp_bottomChartsRow_);
+    bottomChartsLay->setContentsMargins(0, 0, 0, 0);
+    bottomChartsLay->setSpacing(0);
+
     pp_storeContainer_ = new QWidget;
     QVBoxLayout* storeLay = new QVBoxLayout(pp_storeContainer_);
     storeLay->setContentsMargins(0, 0, 0, 0);
@@ -136,7 +150,6 @@ QWidget* MainWindow::buildPowerPage() {
     pp_storeChart->setModel(model_);
     storeLay->addWidget(pp_storeChart, 1);
 
-    // Fuel History
     pp_fuelContainer_ = new QWidget;
     QVBoxLayout* fuelLay = new QVBoxLayout(pp_fuelContainer_);
     fuelLay->setContentsMargins(0, 0, 0, 0);
@@ -146,21 +159,21 @@ QWidget* MainWindow::buildPowerPage() {
     pp_fuelChart->setModel(model_);
     fuelLay->addWidget(pp_fuelChart, 1);
 
-    grid->addWidget(pp_splitContainer_, 0, 0);
-    grid->addWidget(pp_harvContainer_,  0, 2);
-    grid->addWidget(pp_storeContainer_, 2, 0);
-    grid->addWidget(pp_fuelContainer_,  2, 2);
+    bottomChartsLay->addWidget(pp_storeContainer_, 1);
+    QFrame* bottomVline = new QFrame; bottomVline->setFrameShape(QFrame::VLine); bottomVline->setFrameShadow(QFrame::Sunken);
+    bottomChartsLay->addWidget(bottomVline, 0);
+    bottomChartsLay->addWidget(pp_fuelContainer_, 1);
 
-    pp_vline_ = new QFrame; pp_vline_->setFrameShape(QFrame::VLine); pp_vline_->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(pp_vline_, 0, 1, 3, 1);
-
+    chartsLay->addWidget(pp_topChartsRow_, 1);
     pp_hline1_ = new QFrame; pp_hline1_->setFrameShape(QFrame::HLine); pp_hline1_->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(pp_hline1_, 1, 0);
+    chartsLay->addWidget(pp_hline1_, 0);
+    chartsLay->addWidget(pp_bottomChartsRow_, 1);
 
-    pp_hline2_ = new QFrame; pp_hline2_->setFrameShape(QFrame::HLine); pp_hline2_->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(pp_hline2_, 1, 2);
+    // Store references for layout toggling
+    pp_vline_ = topVline;
+    pp_hline2_ = bottomVline;
 
-    vbox->addWidget(gridWidget, 1);
+    vbox->addWidget(chartsWidget, 1);
 
     applyPowerLayout(loadPowerLayout());
 
@@ -225,10 +238,16 @@ void MainWindow::applyPowerLayout(const PowerLayout& L)
     if (pp_storeContainer_) pp_storeContainer_->setVisible(L.showStore);
     if (pp_fuelContainer_) pp_fuelContainer_->setVisible(L.showFuel);
 
-    if (pp_vline_) pp_vline_->setVisible((L.showSplit || L.showStore) && (L.showHarvest || L.showFuel));
-    if (pp_hline1_) pp_hline1_->setVisible(L.showSplit && L.showStore);
-    if (pp_hline2_) pp_hline2_->setVisible(L.showHarvest && L.showFuel);
-    if (pp_hdiv_) pp_hdiv_->setVisible(anyCard && (L.showSplit || L.showHarvest || L.showStore || L.showFuel));
+    bool topVisible = L.showSplit || L.showHarvest;
+    bool bottomVisible = L.showStore || L.showFuel;
+
+    if (pp_topChartsRow_) pp_topChartsRow_->setVisible(topVisible);
+    if (pp_bottomChartsRow_) pp_bottomChartsRow_->setVisible(bottomVisible);
+
+    if (pp_vline_) pp_vline_->setVisible(L.showSplit && L.showHarvest); // Top VLine
+    if (pp_hline2_) pp_hline2_->setVisible(L.showStore && L.showFuel);  // Bottom VLine
+    if (pp_hline1_) pp_hline1_->setVisible(topVisible && bottomVisible); // Horizontal Line between rows
+    if (pp_hdiv_) pp_hdiv_->setVisible(anyCard && (topVisible || bottomVisible)); // Line below cards
 }
 
 void MainWindow::applyAndSavePowerLayout(const PowerLayout& L)

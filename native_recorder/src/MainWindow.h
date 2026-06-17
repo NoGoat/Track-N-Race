@@ -224,6 +224,8 @@ private:
     QWidget* pp_harvContainer_ = nullptr;
     QWidget* pp_storeContainer_ = nullptr;
     QWidget* pp_fuelContainer_ = nullptr;
+    QWidget* pp_topChartsRow_ = nullptr;
+    QWidget* pp_bottomChartsRow_ = nullptr;
     QFrame*  pp_vline_ = nullptr;
     QFrame*  pp_hline1_ = nullptr;
     QFrame*  pp_hline2_ = nullptr;
