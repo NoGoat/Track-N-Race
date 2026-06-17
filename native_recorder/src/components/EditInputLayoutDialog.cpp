@@ -35,7 +35,7 @@ EditInputLayoutDialog::EditInputLayoutDialog(MainWindow* mainWindow, QWidget* pa
     main->setSizeConstraint(QLayout::SetFixedSize);
 
     QGroupBox* chartBox = new QGroupBox("Charts");
-    QVBoxLayout* chartLay = new QVBoxLayout(chartBox);
+    QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
     
     gearBtn_ = new ToggleButton("Gear Indicator");
     gearBtn_->setCheckable(true);

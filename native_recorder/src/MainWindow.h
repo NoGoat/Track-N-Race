@@ -24,6 +24,7 @@
 
 #include "components/OverviewLayout.h"
 #include "components/InputLayout.h"
+#include "components/PowerLayout.h"
 
 class TelemetryChart;
 class GearChart;
@@ -51,6 +52,9 @@ public:
 
     InputLayout loadInputLayout();
     void applyAndSaveInputLayout(const InputLayout& layout);
+
+    PowerLayout loadPowerLayout();
+    void applyAndSavePowerLayout(const PowerLayout& layout);
 
     // Settings dialog reads/writes through these — it owns its own widgets
     // and persists immediately on every change, same immediate-apply pattern
@@ -212,6 +216,13 @@ private:
     QLabel* pp_ersStoreVal   = nullptr;
     QLabel* pp_ersPctVal     = nullptr;
     QLabel* pp_fuelVal       = nullptr;
+    QWidget* pp_splitContainer_ = nullptr;
+    QWidget* pp_harvContainer_ = nullptr;
+    QWidget* pp_storeContainer_ = nullptr;
+    QWidget* pp_fuelContainer_ = nullptr;
+    QFrame*  pp_vline_ = nullptr;
+    QFrame*  pp_hline1_ = nullptr;
+    QFrame*  pp_hline2_ = nullptr;
     class PowerChart* pp_splitChart  = nullptr;
     class PowerChart* pp_harvestChart= nullptr;
     class PowerChart* pp_storeChart  = nullptr;
@@ -280,6 +291,8 @@ private:
     void     applyOverviewLayout(const OverviewLayout& layout);
     void     saveInputLayout(const InputLayout& layout);
     void     applyInputLayout(const InputLayout& layout);
+    void     savePowerLayout(const PowerLayout& layout);
+    void     applyPowerLayout(const PowerLayout& layout);
     void     updateTimingTable();
     void     updateRacePanel();
     void     updateSessionPage();

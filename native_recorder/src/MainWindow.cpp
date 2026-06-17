@@ -8,6 +8,7 @@
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/EditInputLayoutDialog.h"
+#include "components/EditPowerLayoutDialog.h"
 #include "components/SettingsDialog.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
@@ -349,6 +350,10 @@ MainWindow::MainWindow(QWidget* parent)
             EditInputLayoutDialog* dlg = new EditInputLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == 5) {
+            EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(this, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
         }
     });
     settingsAct_ = toolbar->addAction(settingsIcon(this), "Settings");
@@ -467,7 +472,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
     connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
         currentPage_ = i;       // refresh the newly-shown page from any pending data
-        editLayoutAct_->setEnabled(i == 0 || i == 4);
+        editLayoutAct_->setEnabled(i == 0 || i == 4 || i == 5);
         flushUiRefresh();
     });
 

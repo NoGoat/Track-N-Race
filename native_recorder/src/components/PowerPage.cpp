@@ -107,8 +107,8 @@ QWidget* MainWindow::buildPowerPage() {
     grid->setSpacing(0);
 
     // Power Split
-    QWidget* splitContainer = new QWidget;
-    QVBoxLayout* splitLay = new QVBoxLayout(splitContainer);
+    pp_splitContainer_ = new QWidget;
+    QVBoxLayout* splitLay = new QVBoxLayout(pp_splitContainer_);
     splitLay->setContentsMargins(0, 0, 0, 0);
     splitLay->setSpacing(0);
     splitLay->addWidget(makeHeader("POWER SPLIT"));
@@ -117,8 +117,8 @@ QWidget* MainWindow::buildPowerPage() {
     splitLay->addWidget(pp_splitChart, 1);
 
     // ERS Harvest
-    QWidget* harvContainer = new QWidget;
-    QVBoxLayout* harvLay = new QVBoxLayout(harvContainer);
+    pp_harvContainer_ = new QWidget;
+    QVBoxLayout* harvLay = new QVBoxLayout(pp_harvContainer_);
     harvLay->setContentsMargins(0, 0, 0, 0);
     harvLay->setSpacing(0);
     harvLay->addWidget(makeHeader("ERS HARVEST THIS LAP"));
@@ -127,8 +127,8 @@ QWidget* MainWindow::buildPowerPage() {
     harvLay->addWidget(pp_harvestChart, 1);
 
     // ERS Store
-    QWidget* storeContainer = new QWidget;
-    QVBoxLayout* storeLay = new QVBoxLayout(storeContainer);
+    pp_storeContainer_ = new QWidget;
+    QVBoxLayout* storeLay = new QVBoxLayout(pp_storeContainer_);
     storeLay->setContentsMargins(0, 0, 0, 0);
     storeLay->setSpacing(0);
     storeLay->addWidget(makeHeader("ERS STORE HISTORY"));
@@ -137,8 +137,8 @@ QWidget* MainWindow::buildPowerPage() {
     storeLay->addWidget(pp_storeChart, 1);
 
     // Fuel History
-    QWidget* fuelContainer = new QWidget;
-    QVBoxLayout* fuelLay = new QVBoxLayout(fuelContainer);
+    pp_fuelContainer_ = new QWidget;
+    QVBoxLayout* fuelLay = new QVBoxLayout(pp_fuelContainer_);
     fuelLay->setContentsMargins(0, 0, 0, 0);
     fuelLay->setSpacing(0);
     fuelLay->addWidget(makeHeader("FUEL HISTORY"));
@@ -146,23 +146,65 @@ QWidget* MainWindow::buildPowerPage() {
     pp_fuelChart->setModel(model_);
     fuelLay->addWidget(pp_fuelChart, 1);
 
-    grid->addWidget(splitContainer, 0, 0);
-    grid->addWidget(harvContainer,  0, 2);
-    grid->addWidget(storeContainer, 2, 0);
-    grid->addWidget(fuelContainer,  2, 2);
+    grid->addWidget(pp_splitContainer_, 0, 0);
+    grid->addWidget(pp_harvContainer_,  0, 2);
+    grid->addWidget(pp_storeContainer_, 2, 0);
+    grid->addWidget(pp_fuelContainer_,  2, 2);
 
-    QFrame* vline = new QFrame; vline->setFrameShape(QFrame::VLine); vline->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(vline, 0, 1, 3, 1);
+    pp_vline_ = new QFrame; pp_vline_->setFrameShape(QFrame::VLine); pp_vline_->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(pp_vline_, 0, 1, 3, 1);
 
-    QFrame* hline1 = new QFrame; hline1->setFrameShape(QFrame::HLine); hline1->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(hline1, 1, 0);
+    pp_hline1_ = new QFrame; pp_hline1_->setFrameShape(QFrame::HLine); pp_hline1_->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(pp_hline1_, 1, 0);
 
-    QFrame* hline2 = new QFrame; hline2->setFrameShape(QFrame::HLine); hline2->setFrameShadow(QFrame::Sunken);
-    grid->addWidget(hline2, 1, 2);
+    pp_hline2_ = new QFrame; pp_hline2_->setFrameShape(QFrame::HLine); pp_hline2_->setFrameShadow(QFrame::Sunken);
+    grid->addWidget(pp_hline2_, 1, 2);
 
     vbox->addWidget(gridWidget, 1);
 
+    applyPowerLayout(loadPowerLayout());
+
     return w;
+}
+
+PowerLayout MainWindow::loadPowerLayout()
+{
+    PowerLayout L;
+    settings.beginGroup("powerLayout");
+    L.showSplit = settings.value("showSplit", true).toBool();
+    L.showHarvest = settings.value("showHarvest", true).toBool();
+    L.showStore = settings.value("showStore", true).toBool();
+    L.showFuel = settings.value("showFuel", true).toBool();
+    settings.endGroup();
+    return L;
+}
+
+void MainWindow::savePowerLayout(const PowerLayout& L)
+{
+    settings.beginGroup("powerLayout");
+    settings.setValue("showSplit", L.showSplit);
+    settings.setValue("showHarvest", L.showHarvest);
+    settings.setValue("showStore", L.showStore);
+    settings.setValue("showFuel", L.showFuel);
+    settings.endGroup();
+}
+
+void MainWindow::applyPowerLayout(const PowerLayout& L)
+{
+    if (pp_splitContainer_) pp_splitContainer_->setVisible(L.showSplit);
+    if (pp_harvContainer_) pp_harvContainer_->setVisible(L.showHarvest);
+    if (pp_storeContainer_) pp_storeContainer_->setVisible(L.showStore);
+    if (pp_fuelContainer_) pp_fuelContainer_->setVisible(L.showFuel);
+
+    if (pp_vline_) pp_vline_->setVisible((L.showSplit || L.showStore) && (L.showHarvest || L.showFuel));
+    if (pp_hline1_) pp_hline1_->setVisible(L.showSplit && L.showStore);
+    if (pp_hline2_) pp_hline2_->setVisible(L.showHarvest && L.showFuel);
+}
+
+void MainWindow::applyAndSavePowerLayout(const PowerLayout& L)
+{
+    applyPowerLayout(L);
+    savePowerLayout(L);
 }
 
 void MainWindow::updatePowerPage() {
