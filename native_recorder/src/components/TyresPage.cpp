@@ -52,8 +52,13 @@ QWidget* MainWindow::buildTyresPage() {
         leftLayout->addWidget(outTable, stretch);
     };
 
-    createSetsTable(tp_drySetsTable, 3);
+    createSetsTable(tp_drySetsTable, 0);
     createSetsTable(tp_wetSetsTable, 1);
+
+    tp_drySetsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tp_drySetsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    
+    tp_wetSetsTable->setMinimumHeight(0);
 
     hbox->addWidget(leftWidget, 1);
 
@@ -308,4 +313,14 @@ void MainWindow::updateTyreSetsTable() {
 
     populateTable(tp_drySetsTable, drySets);
     populateTable(tp_wetSetsTable, wetSets);
+
+    int hh = tp_drySetsTable->horizontalHeader()->height();
+    if (hh <= 0) hh = tp_drySetsTable->horizontalHeader()->sizeHint().height();
+    if (hh <= 0) hh = 30; // Better fallback for Breeze
+
+    int totalH = hh + (tp_drySetsTable->frameWidth() * 2);
+    for (int r = 0; r < tp_drySetsTable->rowCount(); ++r) {
+        totalH += tp_drySetsTable->rowHeight(r);
+    }
+    tp_drySetsTable->setFixedHeight(totalH);
 }
