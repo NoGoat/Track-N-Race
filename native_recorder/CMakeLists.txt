@@ -133,6 +133,18 @@ if(BREEZE_STACK_PREFIX)
                         "load but render with the host's default palette, not KDE colours.")
     endif()
 
+    # Link KF6BreezeIcons (already in the bundle) so we can call BreezeIcons::
+    # initIcons() — it registers the embedded Breeze icon theme under :/icons and
+    # makes it QIcon's fallback (Linux: OS theme first; Windows: we set it primary).
+    find_package(KF6BreezeIcons QUIET)
+    if(KF6BreezeIcons_FOUND)
+        target_link_libraries(native_recorder PRIVATE KF6::BreezeIcons)
+        target_compile_definitions(native_recorder PRIVATE HAVE_BREEZE_ICONS)
+    else()
+        message(WARNING "KF6BreezeIcons not found under ${BREEZE_STACK_PREFIX} — the bundled "
+                        "Breeze icon theme won't be set up.")
+    endif()
+
     # Bundle the Breeze colour-scheme files (installed by the superbuild) next to
     # the app; BreezePalette.cpp loads them from <appdir>/color-schemes/. KDE's
     # data dir is share/ on Unix but bin/data/ on Windows (KDE_INSTALL_USE_QT_SYS_

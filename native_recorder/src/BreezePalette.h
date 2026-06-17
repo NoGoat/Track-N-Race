@@ -25,3 +25,9 @@ void applyBreezePalette(const QString& theme);
 // colours again. No-op if Breeze was never applied — so it never disturbs styles
 // like windows11/Kvantum that manage their own palette.
 void restoreDefaultPalette();
+
+// Set up the bundled Breeze icon theme via BreezeIcons::initIcons() — registers
+// the embedded :/icons/breeze resource and makes Breeze QIcon's *fallback* theme.
+// On Windows (no system icon theme) it's also made the primary theme. Call once
+// at startup. No-op in builds without the bundled KF6BreezeIcons.
+void setupBreezeIconTheme();

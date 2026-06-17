@@ -27,6 +27,11 @@ int main(int argc, char* argv[]) {
     // just keep finding the system styles on the default plugin path.
     QApplication::addLibraryPath(QCoreApplication::applicationDirPath() + "/plugins");
 
+    // Set up the bundled Breeze icon theme: OS theme stays primary on Linux with
+    // Breeze as the fallback; on Windows Breeze becomes the icon theme. No-op in
+    // non-bundled builds. (Independent of the selected widget style.)
+    setupBreezeIconTheme();
+
     // Apply the saved style before the window is built so the first paint is
     // already correct. Key matches MainWindow's QSettings store; an empty value
     // or "system" leaves Qt's native platform style untouched.

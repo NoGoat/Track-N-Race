@@ -4,6 +4,11 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 
+#ifdef HAVE_BREEZE_ICONS
+#include <QIcon>
+#include <breezeicons.h>
+#endif
+
 #ifdef HAVE_BREEZE_KCOLORSCHEME
 #include <QStyleHints>
 #include <QPalette>
@@ -57,3 +62,18 @@ void applyBreezePalette(const QString&) {}
 void restoreDefaultPalette() {}
 
 #endif
+
+void setupBreezeIconTheme() {
+#ifdef HAVE_BREEZE_ICONS
+    // Mounts the embedded Breeze icon set at :/icons/breeze and sets it as the
+    // QIcon fallback theme (only if none is set yet) — so on Linux the OS icon
+    // theme stays primary and Breeze fills the gaps.
+    BreezeIcons::initIcons();
+#ifdef Q_OS_WIN
+    // Windows has no system icon theme, so promote Breeze to the primary theme;
+    // otherwise QIcon::fromTheme() would have nothing to resolve against.
+    if (QIcon::themeName().isEmpty())
+        QIcon::setThemeName(QStringLiteral("breeze"));
+#endif
+#endif
+}
