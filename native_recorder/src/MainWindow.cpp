@@ -134,7 +134,7 @@ static QIcon paletteIcon(const QString& resource, const QColor& tint) {
 // them, or no Breeze bundled) the icon is returned untouched.
 static QIcon adaptThemeIcon(const QIcon& themed, const QColor& tint, const QIcon& fallback) {
     if (themed.isNull()) return fallback;
-#if defined(HAVE_BREEZE_ICONS) && defined(Q_OS_WIN)
+#if defined(Q_OS_WIN)
     QIcon out;
     for (int sz : {16, 22, 32, 48}) {
         const QPixmap pm = themed.pixmap(sz);
@@ -345,17 +345,17 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     toolbar->addSeparator();
-    QAction* openAct = toolbar->addAction(openRecordingIcon(this), "Open Recording");
-    QAction* editLayoutAct = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
-    connect(editLayoutAct, &QAction::triggered, this, [this] {
+    openAct_ = toolbar->addAction(openRecordingIcon(this), "Open Recording");
+    editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
+    connect(editLayoutAct_, &QAction::triggered, this, [this] {
         // Parented to `this` (not just passed the MainWindow* data pointer) so
         // the window manager ties it to the main window and keeps it above it.
         EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
         connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
         dlg->show();
     });
-    QAction* settingsAct = toolbar->addAction(settingsIcon(this), "Settings");
-    connect(settingsAct, &QAction::triggered, this, [this] {
+    settingsAct_ = toolbar->addAction(settingsIcon(this), "Settings");
+    connect(settingsAct_, &QAction::triggered, this, [this] {
         SettingsDialog* dlg = new SettingsDialog(this, this);
         connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
         dlg->show();
@@ -478,7 +478,7 @@ MainWindow::MainWindow(QWidget* parent)
         return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
     };
 
-    connect(openAct, &QAction::triggered, this, [this] {
+    connect(openAct_, &QAction::triggered, this, [this] {
         QString path = QFileDialog::getOpenFileName(
             this, "Open Recording", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
@@ -631,6 +631,20 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
     QMainWindow::resizeEvent(e);
     if (loadingOverlay_ && loadingOverlay_->isVisible() && container_)
         loadingOverlay_->setGeometry(container_->rect());
+}
+
+void MainWindow::refreshThemedIcons() {
+    // The toolbar theme icons are tinted to the palette foreground (on Windows),
+    // so rebuild them whenever the palette changes to re-tint for the new mode.
+    if (openAct_)       openAct_->setIcon(openRecordingIcon(this));
+    if (editLayoutAct_) editLayoutAct_->setIcon(editLayoutIcon(this));
+    if (settingsAct_)   settingsAct_->setIcon(settingsIcon(this));
+}
+
+void MainWindow::changeEvent(QEvent* e) {
+    QMainWindow::changeEvent(e);
+    if (e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::PaletteChange)
+        refreshThemedIcons();
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────

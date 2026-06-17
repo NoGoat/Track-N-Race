@@ -31,6 +31,7 @@ class SessionModel;
 class QComboBox;
 class QTimer;
 class QToolBar;
+class QAction;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -182,6 +183,11 @@ private:
 
     // ── Toolbar ───────────────────────────────────────────────────
     QToolBar* toolbar_ = nullptr;   // referenced by the Settings dialog's label toggle
+    // Theme-icon actions kept so their (tinted) icons can be rebuilt when the
+    // palette changes at runtime — see changeEvent()/refreshThemedIcons().
+    QAction*  openAct_       = nullptr;
+    QAction*  editLayoutAct_ = nullptr;
+    QAction*  settingsAct_   = nullptr;
 
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
@@ -221,6 +227,10 @@ private:
     std::unordered_map<std::string, std::string> dedupeCache;
 
     void resizeEvent(QResizeEvent* e) override;
+    // Rebuilds the toolbar's tinted theme icons when the application palette
+    // changes (e.g. Light↔Dark), so they re-tint to the new foreground colour.
+    void changeEvent(QEvent* e) override;
+    void refreshThemedIcons();
 
     // ── Builders ──────────────────────────────────────────────────
     QWidget* buildOverviewTab();
