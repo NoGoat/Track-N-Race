@@ -7,29 +7,6 @@
 
 namespace {
 const QColor C_STEER("#BF5FFF");
-
-void decimate(const QVector<double>& xs, const QVector<double>& ys, int targetCols,
-              QVector<double>& ox, QVector<double>& oy) {
-    const int n = xs.size();
-    if (targetCols <= 0 || n <= targetCols * 2) { ox = xs; oy = ys; return; }
-    const double bucket = double(n) / targetCols;
-    ox.clear(); oy.clear();
-    ox.reserve(targetCols * 2); oy.reserve(targetCols * 2);
-    for (int c = 0; c < targetCols; ++c) {
-        const int start = int(c * bucket);
-        int end = int((c + 1) * bucket);
-        if (end > n) end = n;
-        if (start >= end) continue;
-        int lo = start, hi = start;
-        for (int i = start + 1; i < end; ++i) {
-            if (ys[i] < ys[lo]) lo = i;
-            if (ys[i] > ys[hi]) hi = i;
-        }
-        const int a = std::min(lo, hi), b = std::max(lo, hi);
-        ox.append(xs[a]); oy.append(ys[a]);
-        if (b != a) { ox.append(xs[b]); oy.append(ys[b]); }
-    }
-}
 }
 
 SteeringChart::SteeringChart(QWidget* parent)
@@ -80,10 +57,7 @@ float SteeringChart::currentTime() const {
 }
 
 void SteeringChart::putSeries(int id, const QVector<double>& xs, const QVector<double>& ys) {
-    const int cols = std::max(width(), 400);
-    QVector<double> ox, oy;
-    decimate(xs, ys, cols, ox, oy);
-    setSeriesData(id, ox, oy);
+    setSeriesData(id, xs, ys);
 }
 
 void SteeringChart::refresh() {

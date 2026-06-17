@@ -908,6 +908,11 @@ void QCPPaintBufferGlFbo::draw(QCPPainter *painter) const
     qDebug() << Q_FUNC_INFO << "OpenGL frame buffer object doesn't exist, reallocateBuffer was not called?";
     return;
   }
+
+  QSharedPointer<QOpenGLContext> context = mGlContext.toStrongRef();
+  if (context && QOpenGLContext::currentContext() != context.data())
+    context->makeCurrent(context->surface());
+
   // toImage() returns a QImage with devicePixelRatio 1.0 regardless of the FBO's
   // actual (DPR-scaled) pixel size, so without this, drawImage below draws the
   // full physical-pixel image into the buffer's logical coordinate space — at any
