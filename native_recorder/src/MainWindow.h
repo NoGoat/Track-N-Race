@@ -286,6 +286,11 @@ private:
     // changes (e.g. Light↔Dark), so they re-tint to the new foreground colour.
     void changeEvent(QEvent* e) override;
     void refreshThemedIcons();
+    // Forces the toolbar to the app's window colour only when the app's chosen
+    // light/dark differs from the OS scheme (otherwise the native Breeze "tools
+    // area" colour, taken from the OS scheme, would clash). When they match — or
+    // the theme is "system" — the native unified header look is left alone.
+    void updateToolbarColorScheme();
 
     // ── Builders ──────────────────────────────────────────────────
     QWidget* buildOverviewTab();

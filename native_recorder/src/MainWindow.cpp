@@ -252,11 +252,13 @@ MainWindow::MainWindow(QWidget* parent)
     // a widget's own size policy — zeroing it here too, since that inset (not
     // anything in the page buttons themselves) was the source of the remaining
     // gap between the active-page underline and the toolbar's true bottom edge.
-    toolbar->setStyleSheet("QToolBar { border: none; margin: 0px; padding: 0px; }");
     static constexpr int kToolbarHeight = 44;
     toolbar->setFixedHeight(kToolbarHeight);
     addToolBar(Qt::TopToolBarArea, toolbar);
     toolbar_ = toolbar;
+    // Sets the toolbar stylesheet (border/margins, + a window-colour background
+    // when the app's mode differs from the OS — see the method).
+    updateToolbarColorScheme();
     // QMainWindow draws its own separator line between the toolbar area and the
     // central widget — a different element again from QToolBar's/QTabBar's own
     // borders, and the most likely source of the line that's survived every fix
@@ -678,6 +680,22 @@ void MainWindow::changeEvent(QEvent* e) {
         refreshThemedIcons();
 }
 
+void MainWindow::updateToolbarColorScheme() {
+    if (!toolbar_) return;
+    // The native Breeze "tools area" colours the toolbar from the *OS* colour
+    // scheme (same source as the window titlebar). When the app is forced to the
+    // opposite mode, that leaves a dark bar over light content (or vice-versa), so
+    // override it with the app's own window colour. When the app's mode matches the
+    // OS — or follows it via "system" — leave the native unified look untouched.
+    const QString theme = currentTheme();
+    const auto os = Qt::ColorScheme(qApp->property("osColorScheme").toInt());
+    const bool osDark = (os == Qt::ColorScheme::Dark);
+    const bool mismatch = (theme == "light" && osDark) || (theme == "dark" && !osDark);
+    toolbar_->setStyleSheet(mismatch
+        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(window); }"
+        : "QToolBar { border: none; margin: 0px; padding: 0px; }");
+}
+
 // ── Slots ──────────────────────────────────────────────────────────────────
 
 void MainWindow::setOutputDirectory(const QString& dir) {
@@ -705,6 +723,9 @@ void MainWindow::setTheme(const QString& theme) {
     // styles follow the theme via setColorScheme above.
     if (currentStyleName().compare("breeze", Qt::CaseInsensitive) == 0)
         applyBreezePalette(theme);
+    // Re-evaluate whether the toolbar needs the window-colour override for the new
+    // mode (forced light/dark over an opposite OS scheme).
+    updateToolbarColorScheme();
 }
 
 void MainWindow::setStyleName(const QString& name) {

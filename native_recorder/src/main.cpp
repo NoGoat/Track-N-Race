@@ -3,6 +3,7 @@
 #include <QStyleFactory>
 #include <QSettings>
 #include <QVariant>
+#include <QStyleHints>
 #include "MainWindow.h"
 #include "BreezePalette.h"
 
@@ -21,6 +22,11 @@ int main(int argc, char* argv[]) {
     // back when the user switches away from Breeze, so other styles aren't left
     // wearing Breeze's colours.
     app.setProperty("defaultPalette", QVariant::fromValue(app.palette()));
+
+    // Record the OS colour scheme *before* any setColorScheme() override, so the
+    // toolbar logic can tell when the app's forced mode differs from the system
+    // (see MainWindow::updateToolbarColorScheme).
+    app.setProperty("osColorScheme", int(QApplication::styleHints()->colorScheme()));
 
     // Let QStyleFactory discover a Breeze (or any) style plugin bundled next to
     // the executable under plugins/styles/. Harmless when absent — dev builds
