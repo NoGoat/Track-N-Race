@@ -3,6 +3,7 @@
 #include <QStyleFactory>
 #include <QSettings>
 #include "MainWindow.h"
+#include "BreezePalette.h"
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -29,6 +30,11 @@ int main(int argc, char* argv[]) {
         if (QStyle* s = QStyleFactory::create(styleName))
             QApplication::setStyle(s);
     }
+
+    // Give the (bundled) Breeze style the real KDE palette before first paint;
+    // no-op for other styles and in non-bundled builds. See BreezePalette.h.
+    applyBreezePalette(styleName.isEmpty() ? "system" : styleName,
+                       settings.value("theme", "system").toString());
 
     MainWindow w;
     w.show();

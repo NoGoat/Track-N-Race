@@ -4,6 +4,7 @@
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/SettingsDialog.h"
+#include "BreezePalette.h"
 
 #include <QApplication>
 #include <QToolBar>
@@ -623,6 +624,8 @@ void MainWindow::setTheme(const QString& theme) {
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Unknown);
 #endif
     settings.setValue("theme", theme);
+    // If Breeze is active, reload its light/dark palette to match the new theme.
+    applyBreezePalette(currentStyleName(), theme);
 }
 
 void MainWindow::setStyleName(const QString& name) {
@@ -637,6 +640,8 @@ void MainWindow::setStyleName(const QString& name) {
         QApplication::setStyle(s);
     }
     settings.setValue("style", name);
+    // Apply/clear the KDE Breeze palette to match the new style (bundled builds).
+    applyBreezePalette(name, currentTheme());
 }
 
 void MainWindow::setToolbarLabels(bool checked) {

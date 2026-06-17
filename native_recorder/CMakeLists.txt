@@ -44,6 +44,8 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/BreezePalette.cpp
+    src/BreezePalette.h
     src/TnrdPlayer.cpp
     src/TnrdPlayer.h
     src/SessionModel.cpp
@@ -116,6 +118,34 @@ set(BREEZE_WIN_RUNTIME_DIR "" CACHE PATH "Windows: dir with intl-8.dll/iconv (e.
 if(BREEZE_STACK_PREFIX)
     set(_breeze_styldir "$<TARGET_FILE_DIR:native_recorder>/plugins/styles")
     set(_breeze_appdir  "$<TARGET_FILE_DIR:native_recorder>")
+
+    # Link KColorScheme (already in the bundle) so the app can build the exact KDE
+    # Breeze palette at runtime — the Breeze plugin only draws shapes, the colours
+    # come from the QPalette, which off-KDE we must set ourselves (see
+    # BreezePalette.cpp). Found via the superbuild prefix.
+    list(APPEND CMAKE_PREFIX_PATH "${BREEZE_STACK_PREFIX}")
+    find_package(KF6ColorScheme QUIET)
+    if(KF6ColorScheme_FOUND)
+        target_link_libraries(native_recorder PRIVATE KF6::ColorScheme KF6::ConfigCore)
+        target_compile_definitions(native_recorder PRIVATE HAVE_BREEZE_KCOLORSCHEME)
+    else()
+        message(WARNING "KF6ColorScheme not found under ${BREEZE_STACK_PREFIX} — Breeze will "
+                        "load but render with the host's default palette, not KDE colours.")
+    endif()
+
+    # Bundle the Breeze colour-scheme files (installed by the superbuild) next to
+    # the app; BreezePalette.cpp loads them from <appdir>/color-schemes/.
+    file(GLOB _breeze_colors "${BREEZE_STACK_PREFIX}/share/color-schemes/Breeze*.colors")
+    if(_breeze_colors)
+        add_custom_command(TARGET native_recorder POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_appdir}/color-schemes"
+            COMMAND ${CMAKE_COMMAND} -E copy ${_breeze_colors} "${_breeze_appdir}/color-schemes/"
+            COMMENT "Bundling Breeze colour schemes"
+            VERBATIM)
+    else()
+        message(WARNING "No Breeze*.colors under ${BREEZE_STACK_PREFIX}/share/color-schemes — "
+                        "the KDE palette can't be applied; Breeze will use a fallback palette.")
+    endif()
 
     if(WIN32)
         # Windows resolves a plugin's dependent DLLs from the *executable's*
@@ -194,5 +224,13 @@ if(BREEZE_STACK_PREFIX)
                 COMMAND ${PATCHELF_EXE} --set-rpath "$ORIGIN" "${_breeze_libdir}/${_lib}"
                 VERBATIM)
         endforeach()
+
+        # The app itself now links KF6ColorScheme, so its binary must find the
+        # bundled KF6 libs in lib_breeze/ at startup — add (not replace) the RPATH.
+        if(KF6ColorScheme_FOUND)
+            add_custom_command(TARGET native_recorder POST_BUILD
+                COMMAND ${PATCHELF_EXE} --add-rpath "$ORIGIN/lib_breeze" "$<TARGET_FILE:native_recorder>"
+                VERBATIM)
+        endif()
     endif()
 endif()
