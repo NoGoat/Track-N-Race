@@ -82,7 +82,7 @@ void GearChart::buildDefault(float endTime) {
     }
     putSeries(grId_, tx, gr);
 
-    const double lo = tx.isEmpty() ? 0.0 : std::max<double>(left, tx.first());
-    const double hi = tx.isEmpty() ? windowS_ : endTime;
+    const double lo = std::max(0.0f, left);
+    const double hi = std::max(windowS_, endTime);
     setXRange(axXId_, lo, hi > lo ? hi : lo + 1.0);
 }

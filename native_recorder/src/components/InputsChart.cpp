@@ -79,7 +79,7 @@ void InputsChart::buildDefault(float endTime) {
     putSeries(thId_, tx, th);
     putSeries(brId_, tx, br);
 
-    const double lo = tx.isEmpty() ? 0.0 : std::max<double>(left, tx.first());
-    const double hi = tx.isEmpty() ? windowS_ : endTime;
+    const double lo = std::max(0.0f, left);
+    const double hi = std::max(windowS_, endTime);
     setXRange(axXId_, lo, hi > lo ? hi : lo + 1.0);
 }
