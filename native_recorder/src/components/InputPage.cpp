@@ -32,14 +32,14 @@ QWidget* MainWindow::buildInputPage() {
     };
 
     // ── Top Row: Gear and Inputs ──────────────────────────────────
-    QWidget* topRow = new QWidget;
-    QHBoxLayout* topLay = new QHBoxLayout(topRow);
+    ip_topRow_ = new QWidget;
+    QHBoxLayout* topLay = new QHBoxLayout(ip_topRow_);
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
 
     // Gear Chart
-    QWidget* gearContainer = new QWidget;
-    QVBoxLayout* gearLay = new QVBoxLayout(gearContainer);
+    ip_gearContainer_ = new QWidget;
+    QVBoxLayout* gearLay = new QVBoxLayout(ip_gearContainer_);
     gearLay->setContentsMargins(0, 0, 0, 0);
     gearLay->setSpacing(0);
     gearLay->addWidget(makeHeader("GEAR INDICATOR"));
@@ -48,8 +48,8 @@ QWidget* MainWindow::buildInputPage() {
     gearLay->addWidget(gearChart_, 1);
 
     // Inputs Chart (Throttle/Brake)
-    QWidget* inputsContainer = new QWidget;
-    QVBoxLayout* inputsLay = new QVBoxLayout(inputsContainer);
+    ip_inputsContainer_ = new QWidget;
+    QVBoxLayout* inputsLay = new QVBoxLayout(ip_inputsContainer_);
     inputsLay->setContentsMargins(0, 0, 0, 0);
     inputsLay->setSpacing(0);
     inputsLay->addWidget(makeHeader("THROTTLE / BRAKE CHART"));
@@ -58,16 +58,16 @@ QWidget* MainWindow::buildInputPage() {
     inputsLay->addWidget(inputsChart_, 1);
 
     // Add to top row with a vertical divider
-    topLay->addWidget(gearContainer, 1);
-    QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine);
-    vdiv->setFrameShadow(QFrame::Sunken);
-    topLay->addWidget(vdiv);
-    topLay->addWidget(inputsContainer, 1);
+    topLay->addWidget(ip_gearContainer_, 1);
+    ip_vdiv_ = new QFrame;
+    ip_vdiv_->setFrameShape(QFrame::VLine);
+    ip_vdiv_->setFrameShadow(QFrame::Sunken);
+    topLay->addWidget(ip_vdiv_);
+    topLay->addWidget(ip_inputsContainer_, 1);
 
     // ── Bottom Row: Steering ──────────────────────────────────────
-    QWidget* steeringContainer = new QWidget;
-    QVBoxLayout* steeringLay = new QVBoxLayout(steeringContainer);
+    ip_steeringContainer_ = new QWidget;
+    QVBoxLayout* steeringLay = new QVBoxLayout(ip_steeringContainer_);
     steeringLay->setContentsMargins(0, 0, 0, 0);
     steeringLay->setSpacing(0);
     steeringLay->addWidget(makeHeader("STEERING TELEMETRY"));
@@ -76,18 +76,52 @@ QWidget* MainWindow::buildInputPage() {
     steeringLay->addWidget(steeringChart_, 1);
 
     // ── Assemble Page ─────────────────────────────────────────────
-    vbox->addWidget(topRow, 1);
-    QFrame* hdiv = new QFrame;
-    hdiv->setFrameShape(QFrame::HLine);
-    hdiv->setFrameShadow(QFrame::Sunken);
-    vbox->addWidget(hdiv);
-    vbox->addWidget(steeringContainer, 1);
+    vbox->addWidget(ip_topRow_, 1);
+    ip_hdiv_ = new QFrame;
+    ip_hdiv_->setFrameShape(QFrame::HLine);
+    ip_hdiv_->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(ip_hdiv_);
+    vbox->addWidget(ip_steeringContainer_, 1);
 
-    // If the window-size segment changes, these charts won't automatically sync
-    // unless we also wire up the windowGroup. In MainWindow::MainWindow, the
-    // windowGroup changes chart->setWindowSeconds(). Here, since there are
-    // multiple charts, we would normally manage them via a list or similar.
-    // For now, they start with the default 30s. We can add signals later if needed.
+    applyInputLayout(loadInputLayout());
 
     return w;
+}
+
+InputLayout MainWindow::loadInputLayout()
+{
+    InputLayout L;
+    settings.beginGroup("inputLayout");
+    L.showGear = settings.value("showGear", true).toBool();
+    L.showInputs = settings.value("showInputs", true).toBool();
+    L.showSteering = settings.value("showSteering", true).toBool();
+    settings.endGroup();
+    return L;
+}
+
+void MainWindow::saveInputLayout(const InputLayout& L)
+{
+    settings.beginGroup("inputLayout");
+    settings.setValue("showGear", L.showGear);
+    settings.setValue("showInputs", L.showInputs);
+    settings.setValue("showSteering", L.showSteering);
+    settings.endGroup();
+}
+
+void MainWindow::applyInputLayout(const InputLayout& L)
+{
+    if (ip_gearContainer_) ip_gearContainer_->setVisible(L.showGear);
+    if (ip_inputsContainer_) ip_inputsContainer_->setVisible(L.showInputs);
+    if (ip_steeringContainer_) ip_steeringContainer_->setVisible(L.showSteering);
+
+    bool topVisible = L.showGear || L.showInputs;
+    if (ip_topRow_) ip_topRow_->setVisible(topVisible);
+    if (ip_vdiv_) ip_vdiv_->setVisible(L.showGear && L.showInputs);
+    if (ip_hdiv_) ip_hdiv_->setVisible(topVisible && L.showSteering);
+}
+
+void MainWindow::applyAndSaveInputLayout(const InputLayout& L)
+{
+    applyInputLayout(L);
+    saveInputLayout(L);
 }

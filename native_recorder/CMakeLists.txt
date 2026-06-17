@@ -60,6 +60,8 @@ set(SOURCES
     src/components/OverviewLayout.cpp
     src/components/EditOverviewLayoutDialog.h
     src/components/EditOverviewLayoutDialog.cpp
+    src/components/EditInputLayoutDialog.h
+    src/components/EditInputLayoutDialog.cpp
     src/components/OverviewPage.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp

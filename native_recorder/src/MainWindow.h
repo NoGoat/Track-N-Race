@@ -23,6 +23,7 @@
 #include <zlib.h>
 
 #include "components/OverviewLayout.h"
+#include "components/InputLayout.h"
 
 class TelemetryChart;
 class GearChart;
@@ -47,6 +48,9 @@ public:
     // itself doesn't get access to the underlying QFrame* card pointers.
     OverviewLayout loadOverviewLayout();
     void applyAndSaveOverviewLayout(const OverviewLayout& layout);
+
+    InputLayout loadInputLayout();
+    void applyAndSaveInputLayout(const InputLayout& layout);
 
     // Settings dialog reads/writes through these — it owns its own widgets
     // and persists immediately on every change, same immediate-apply pattern
@@ -190,9 +194,15 @@ private:
     int             mapTrackId_    = -1;   // last track loaded into the map widget
 
     // ── Input tab ──────────────────────────────────────────────
-    GearChart*      gearChart_     = nullptr;
-    InputsChart*    inputsChart_   = nullptr;
-    SteeringChart*  steeringChart_ = nullptr;
+    QWidget*      ip_topRow_         = nullptr;
+    QWidget*      ip_gearContainer_  = nullptr;
+    QWidget*      ip_inputsContainer_= nullptr;
+    QFrame*       ip_vdiv_           = nullptr;
+    QWidget*      ip_steeringContainer_= nullptr;
+    QFrame*       ip_hdiv_           = nullptr;
+    GearChart*    gearChart_         = nullptr;
+    InputsChart*  inputsChart_       = nullptr;
+    SteeringChart* steeringChart_    = nullptr;
 
     // ── Power page ─────────────────────────────────────────────
     QLabel* pp_totalPowerVal = nullptr;
@@ -268,6 +278,8 @@ private:
     QWidget* buildPowerPage();
     void     saveOverviewLayout(const OverviewLayout& layout);
     void     applyOverviewLayout(const OverviewLayout& layout);
+    void     saveInputLayout(const InputLayout& layout);
+    void     applyInputLayout(const InputLayout& layout);
     void     updateTimingTable();
     void     updateRacePanel();
     void     updateSessionPage();

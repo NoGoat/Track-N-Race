@@ -7,6 +7,7 @@
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
+#include "components/EditInputLayoutDialog.h"
 #include "components/SettingsDialog.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
@@ -338,12 +339,17 @@ MainWindow::MainWindow(QWidget* parent)
     toolbar->addSeparator();
     openAct_ = toolbar->addAction(openRecordingIcon(this), "Open Recording");
     editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
+    editLayoutAct_->setEnabled(true); // Default is Overview page (0)
     connect(editLayoutAct_, &QAction::triggered, this, [this] {
-        // Parented to `this` (not just passed the MainWindow* data pointer) so
-        // the window manager ties it to the main window and keeps it above it.
-        EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
-        connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
-        dlg->show();
+        if (currentPage_ == 0) {
+            EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
+        } else if (currentPage_ == 4) {
+            EditInputLayoutDialog* dlg = new EditInputLayoutDialog(this, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
+        }
     });
     settingsAct_ = toolbar->addAction(settingsIcon(this), "Settings");
     connect(settingsAct_, &QAction::triggered, this, [this] {
@@ -461,6 +467,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
     connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
         currentPage_ = i;       // refresh the newly-shown page from any pending data
+        editLayoutAct_->setEnabled(i == 0 || i == 4);
         flushUiRefresh();
     });
 
