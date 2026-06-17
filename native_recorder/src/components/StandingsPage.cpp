@@ -66,6 +66,11 @@ QWidget* MainWindow::buildStandingsPage() {
     timingTable->setSelectionMode(QAbstractItemView::NoSelection);
     timingTable->setShowGrid(false);
     timingTable->setAlternatingRowColors(false);
+    // Pixel-based scrolling — the default ScrollPerItem snaps a whole row per
+    // wheel notch / scrollbar step, which feels chunky and "laggy"; per-pixel is
+    // smooth.
+    timingTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    timingTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     timingTable->verticalHeader()->setVisible(false);
     // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
     // cell on every setItem and tanks the UI when the table rebuilds rapidly.

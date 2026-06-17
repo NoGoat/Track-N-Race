@@ -32,6 +32,10 @@ QWidget* MainWindow::buildTyresPage() {
     tp_setsTable->setSelectionMode(QAbstractItemView::NoSelection);
     tp_setsTable->setShowGrid(false);
     tp_setsTable->setAlternatingRowColors(false);
+    // Smooth per-pixel scrolling instead of Qt's default row-snapping (see the
+    // timing table for the rationale).
+    tp_setsTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    tp_setsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     tp_setsTable->verticalHeader()->setVisible(false);
     // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
     // cell on each rebuild (see the timing table for the same fix).
