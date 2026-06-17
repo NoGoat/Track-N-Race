@@ -16,8 +16,7 @@ QWidget* MainWindow::buildInputPage() {
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
 
-    // Helper to create a styled header for each chart section
-    auto makeHeader = [](const QString& titleText) -> QWidget* {
+    auto makeHeader = [](const QString& titleText, const QList<QPair<QString, QColor>>& legend = {}) -> QWidget* {
         QWidget* header = new QWidget;
         header->setFixedHeight(24);
         QHBoxLayout* hl = new QHBoxLayout(header);
@@ -28,6 +27,21 @@ QWidget* MainWindow::buildInputPage() {
         label->setForegroundRole(QPalette::PlaceholderText);
         hl->addWidget(label);
         hl->addStretch();
+        
+        for (const auto& item : legend) {
+            QWidget* colorBox = new QWidget;
+            colorBox->setFixedSize(12, 12);
+            colorBox->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(item.second.name()));
+            QLabel* legLabel = new QLabel(item.first);
+            QFont lf; lf.setPointSize(8);
+            legLabel->setFont(lf);
+            legLabel->setForegroundRole(QPalette::PlaceholderText);
+            
+            hl->addWidget(colorBox);
+            hl->addWidget(legLabel);
+            hl->addSpacing(8);
+        }
+        
         return header;
     };
 
@@ -52,7 +66,10 @@ QWidget* MainWindow::buildInputPage() {
     QVBoxLayout* inputsLay = new QVBoxLayout(ip_inputsContainer_);
     inputsLay->setContentsMargins(0, 0, 0, 0);
     inputsLay->setSpacing(0);
-    inputsLay->addWidget(makeHeader("THROTTLE / BRAKE CHART"));
+    inputsLay->addWidget(makeHeader("THROTTLE / BRAKE CHART", {
+        {"Throttle", QColor("#2FC584")},
+        {"Brake", QColor("#FF4040")}
+    }));
     inputsChart_ = new InputsChart;
     inputsChart_->setModel(model_);
     inputsLay->addWidget(inputsChart_, 1);
@@ -70,7 +87,9 @@ QWidget* MainWindow::buildInputPage() {
     QVBoxLayout* steeringLay = new QVBoxLayout(ip_steeringContainer_);
     steeringLay->setContentsMargins(0, 0, 0, 0);
     steeringLay->setSpacing(0);
-    steeringLay->addWidget(makeHeader("STEERING TELEMETRY"));
+    steeringLay->addWidget(makeHeader("STEERING TELEMETRY", {
+        {"Steering", QColor("#BF5FFF")}
+    }));
     steeringChart_ = new SteeringChart;
     steeringChart_->setModel(model_);
     steeringLay->addWidget(steeringChart_, 1);
