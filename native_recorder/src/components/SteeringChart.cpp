@@ -13,11 +13,11 @@ SteeringChart::SteeringChart(QWidget* parent)
     : ChartView(parent)
 {
     axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
-    int axPct = addAxis({ Side::Left, -1.0, 1.0, QColor(), true,  'f', 0 });
+    int axPct = addAxis({ Side::Left, -1.0, 1.0, QColor(), true,  'f', 2 });
 
     setAxisTimeTicker(axXId_, "%m:%s");
 
-    stId_ = addSeries({ "Steering", C_STEER, 2.0, axXId_, axPct, "", 0, false });
+    stId_ = addSeries({ "Steering", C_STEER, 2.0, axXId_, axPct, "", 2, false });
 
     // Add a center zero-line reference series manually or rely on ChartView's graticule.
     // ChartView already draws the zero line.
