@@ -134,8 +134,12 @@ if(BREEZE_STACK_PREFIX)
     endif()
 
     # Bundle the Breeze colour-scheme files (installed by the superbuild) next to
-    # the app; BreezePalette.cpp loads them from <appdir>/color-schemes/.
-    file(GLOB _breeze_colors "${BREEZE_STACK_PREFIX}/share/color-schemes/Breeze*.colors")
+    # the app; BreezePalette.cpp loads them from <appdir>/color-schemes/. KDE's
+    # data dir is share/ on Unix but bin/data/ on Windows (KDE_INSTALL_USE_QT_SYS_
+    # PATHS=OFF), so look in both.
+    file(GLOB _breeze_colors
+        "${BREEZE_STACK_PREFIX}/share/color-schemes/Breeze*.colors"
+        "${BREEZE_STACK_PREFIX}/bin/data/color-schemes/Breeze*.colors")
     if(_breeze_colors)
         add_custom_command(TARGET native_recorder POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_breeze_appdir}/color-schemes"
