@@ -216,6 +216,10 @@ private:
     QLabel* pp_ersStoreVal   = nullptr;
     QLabel* pp_ersPctVal     = nullptr;
     QLabel* pp_fuelVal       = nullptr;
+    QWidget* pp_topBar_      = nullptr;
+    QWidget* pp_cardFrames_[PowerLayout::CardCount] = {};
+    QFrame*  pp_cardDivs_[PowerLayout::CardCount - 1] = {};
+    QFrame*  pp_hdiv_        = nullptr;
     QWidget* pp_splitContainer_ = nullptr;
     QWidget* pp_harvContainer_ = nullptr;
     QWidget* pp_storeContainer_ = nullptr;

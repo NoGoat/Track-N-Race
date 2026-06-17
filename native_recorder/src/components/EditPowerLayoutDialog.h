@@ -13,6 +13,7 @@ public:
     explicit EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
 
 private:
+    void toggleCard(int idx, bool on);
     void toggleSplit(bool on);
     void toggleHarvest(bool on);
     void toggleStore(bool on);
@@ -20,6 +21,7 @@ private:
 
     MainWindow*    mainWindow_;
     PowerLayout    layout_;
+    QPushButton*   cardBtns_[PowerLayout::CardCount] = {};
     QPushButton*   splitBtn_ = nullptr;
     QPushButton*   harvestBtn_ = nullptr;
     QPushButton*   storeBtn_ = nullptr;

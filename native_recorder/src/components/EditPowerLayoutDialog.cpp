@@ -34,6 +34,19 @@ EditPowerLayoutDialog::EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* pa
     QVBoxLayout* main = new QVBoxLayout(this);
     main->setSizeConstraint(QLayout::SetFixedSize);
 
+    // ── Stats ────────────────────────────────────────────────────
+    QGroupBox* statsBox = new QGroupBox("Stats");
+    QGridLayout* statsLay = new QGridLayout(statsBox);
+    for (int i = 0; i < PowerLayout::CardCount; ++i) {
+        QPushButton* b = new ToggleButton(PowerLayout::cardLabel(i));
+        b->setCheckable(true);
+        b->setChecked(layout_.cards[i]);
+        connect(b, &QPushButton::toggled, this, [this, i](bool on) { toggleCard(i, on); });
+        cardBtns_[i] = b;
+        statsLay->addWidget(b, i / 4, i % 4);
+    }
+    main->addWidget(statsBox);
+
     QGroupBox* chartBox = new QGroupBox("Charts");
     QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
     
@@ -70,6 +83,11 @@ EditPowerLayoutDialog::EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* pa
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(closeBtn);
     main->addLayout(bottom);
+}
+
+void EditPowerLayoutDialog::toggleCard(int idx, bool on) {
+    layout_.cards[idx] = on;
+    mainWindow_->applyAndSavePowerLayout(layout_);
 }
 
 void EditPowerLayoutDialog::toggleSplit(bool on) {

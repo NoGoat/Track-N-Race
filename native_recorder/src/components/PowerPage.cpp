@@ -74,8 +74,8 @@ QWidget* MainWindow::buildPowerPage() {
     vbox->setSpacing(0);
 
     // ── Top Bar ───────────────────────────────────────────────────
-    QWidget* topBar = new QWidget;
-    QHBoxLayout* topLay = new QHBoxLayout(topBar);
+    pp_topBar_ = new QWidget;
+    QHBoxLayout* topLay = new QHBoxLayout(pp_topBar_);
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
 
@@ -83,22 +83,22 @@ QWidget* MainWindow::buildPowerPage() {
     const QColor cMguk("#FADE2A");
     const QColor cFuel("#F0A500");
 
-    topLay->addWidget(makeStatCard("TOTAL POWER", &pp_totalPowerVal, "kW", QColor()), 1);
-    QFrame* d1 = new QFrame; d1->setFrameShape(QFrame::VLine); d1->setFrameShadow(QFrame::Sunken); topLay->addWidget(d1);
-    topLay->addWidget(makeStatCard("ICE", &pp_iceVal, "kW", cIce), 1);
-    QFrame* d2 = new QFrame; d2->setFrameShape(QFrame::VLine); d2->setFrameShadow(QFrame::Sunken); topLay->addWidget(d2);
-    topLay->addWidget(makeStatCard("MGU-K", &pp_mgukVal, "kW", cMguk), 1);
-    QFrame* d3 = new QFrame; d3->setFrameShape(QFrame::VLine); d3->setFrameShadow(QFrame::Sunken); topLay->addWidget(d3);
-    topLay->addWidget(makeStatCard("SPLIT", &pp_splitVal, "", QColor()), 1);
-    QFrame* d4 = new QFrame; d4->setFrameShape(QFrame::VLine); d4->setFrameShadow(QFrame::Sunken); topLay->addWidget(d4);
-    topLay->addWidget(makeStatCard("ERS STORE", &pp_ersStoreVal, "MJ", QColor()), 1);
-    QFrame* d5 = new QFrame; d5->setFrameShape(QFrame::VLine); d5->setFrameShadow(QFrame::Sunken); topLay->addWidget(d5);
-    topLay->addWidget(makeStatCard("ERS %", &pp_ersPctVal, "%", QColor()), 1);
-    QFrame* d6 = new QFrame; d6->setFrameShape(QFrame::VLine); d6->setFrameShadow(QFrame::Sunken); topLay->addWidget(d6);
-    topLay->addWidget(makeStatCard("FUEL", &pp_fuelVal, "kg", cFuel), 1);
+    topLay->addWidget(pp_cardFrames_[0] = makeStatCard("TOTAL POWER", &pp_totalPowerVal, "kW", QColor()), 1);
+    pp_cardDivs_[0] = new QFrame; pp_cardDivs_[0]->setFrameShape(QFrame::VLine); pp_cardDivs_[0]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[0]);
+    topLay->addWidget(pp_cardFrames_[1] = makeStatCard("ICE", &pp_iceVal, "kW", cIce), 1);
+    pp_cardDivs_[1] = new QFrame; pp_cardDivs_[1]->setFrameShape(QFrame::VLine); pp_cardDivs_[1]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[1]);
+    topLay->addWidget(pp_cardFrames_[2] = makeStatCard("MGU-K", &pp_mgukVal, "kW", cMguk), 1);
+    pp_cardDivs_[2] = new QFrame; pp_cardDivs_[2]->setFrameShape(QFrame::VLine); pp_cardDivs_[2]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[2]);
+    topLay->addWidget(pp_cardFrames_[3] = makeStatCard("SPLIT", &pp_splitVal, "", QColor()), 1);
+    pp_cardDivs_[3] = new QFrame; pp_cardDivs_[3]->setFrameShape(QFrame::VLine); pp_cardDivs_[3]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[3]);
+    topLay->addWidget(pp_cardFrames_[4] = makeStatCard("ERS STORE", &pp_ersStoreVal, "MJ", QColor()), 1);
+    pp_cardDivs_[4] = new QFrame; pp_cardDivs_[4]->setFrameShape(QFrame::VLine); pp_cardDivs_[4]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[4]);
+    topLay->addWidget(pp_cardFrames_[5] = makeStatCard("ERS %", &pp_ersPctVal, "%", QColor()), 1);
+    pp_cardDivs_[5] = new QFrame; pp_cardDivs_[5]->setFrameShape(QFrame::VLine); pp_cardDivs_[5]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[5]);
+    topLay->addWidget(pp_cardFrames_[6] = makeStatCard("FUEL", &pp_fuelVal, "kg", cFuel), 1);
 
-    vbox->addWidget(topBar);
-    QFrame* hdiv = new QFrame; hdiv->setFrameShape(QFrame::HLine); hdiv->setFrameShadow(QFrame::Sunken); vbox->addWidget(hdiv);
+    vbox->addWidget(pp_topBar_);
+    pp_hdiv_ = new QFrame; pp_hdiv_->setFrameShape(QFrame::HLine); pp_hdiv_->setFrameShadow(QFrame::Sunken); vbox->addWidget(pp_hdiv_);
 
     // ── Charts Grid ───────────────────────────────────────────────
     QWidget* gridWidget = new QWidget;
@@ -171,6 +171,10 @@ PowerLayout MainWindow::loadPowerLayout()
 {
     PowerLayout L;
     settings.beginGroup("powerLayout");
+    settings.beginGroup("cards");
+    for (int i = 0; i < PowerLayout::CardCount; ++i)
+        L.cards[i] = settings.value(PowerLayout::cardKey(i), true).toBool();
+    settings.endGroup();
     L.showSplit = settings.value("showSplit", true).toBool();
     L.showHarvest = settings.value("showHarvest", true).toBool();
     L.showStore = settings.value("showStore", true).toBool();
@@ -182,6 +186,10 @@ PowerLayout MainWindow::loadPowerLayout()
 void MainWindow::savePowerLayout(const PowerLayout& L)
 {
     settings.beginGroup("powerLayout");
+    settings.beginGroup("cards");
+    for (int i = 0; i < PowerLayout::CardCount; ++i)
+        settings.setValue(PowerLayout::cardKey(i), L.cards[i]);
+    settings.endGroup();
     settings.setValue("showSplit", L.showSplit);
     settings.setValue("showHarvest", L.showHarvest);
     settings.setValue("showStore", L.showStore);
@@ -191,6 +199,27 @@ void MainWindow::savePowerLayout(const PowerLayout& L)
 
 void MainWindow::applyPowerLayout(const PowerLayout& L)
 {
+    bool anyCard = false;
+    for (int i = 0; i < PowerLayout::CardCount; ++i) {
+        if (pp_cardFrames_[i]) pp_cardFrames_[i]->setVisible(L.cards[i]);
+        anyCard = anyCard || L.cards[i];
+    }
+
+    int lastVisibleIdx = -1;
+    for (int i = 0; i < PowerLayout::CardCount; ++i) {
+        if (i > 0 && pp_cardDivs_[i - 1]) {
+            pp_cardDivs_[i - 1]->setVisible(false);
+        }
+        if (L.cards[i]) {
+            if (lastVisibleIdx != -1 && i > 0) {
+                if (pp_cardDivs_[i - 1]) pp_cardDivs_[i - 1]->setVisible(true);
+            }
+            lastVisibleIdx = i;
+        }
+    }
+
+    if (pp_topBar_) pp_topBar_->setVisible(anyCard);
+
     if (pp_splitContainer_) pp_splitContainer_->setVisible(L.showSplit);
     if (pp_harvContainer_) pp_harvContainer_->setVisible(L.showHarvest);
     if (pp_storeContainer_) pp_storeContainer_->setVisible(L.showStore);
@@ -199,6 +228,7 @@ void MainWindow::applyPowerLayout(const PowerLayout& L)
     if (pp_vline_) pp_vline_->setVisible((L.showSplit || L.showStore) && (L.showHarvest || L.showFuel));
     if (pp_hline1_) pp_hline1_->setVisible(L.showSplit && L.showStore);
     if (pp_hline2_) pp_hline2_->setVisible(L.showHarvest && L.showFuel);
+    if (pp_hdiv_) pp_hdiv_->setVisible(anyCard && (L.showSplit || L.showHarvest || L.showStore || L.showFuel));
 }
 
 void MainWindow::applyAndSavePowerLayout(const PowerLayout& L)
