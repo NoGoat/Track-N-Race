@@ -219,6 +219,9 @@ void MainWindow::updateTyreSetsTable() {
 
     auto sortSets = [](std::vector<nlohmann::json>& vec) {
         std::sort(vec.begin(), vec.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+            int vcA = a.value("visual_compound", 99);
+            int vcB = b.value("visual_compound", 99);
+            if (vcA != vcB) return vcA < vcB;
             return a.value("idx", 99) < b.value("idx", 99);
         });
     };
@@ -253,10 +256,13 @@ void MainWindow::updateTyreSetsTable() {
             QColor  statusCol = setStatusColor(s);
             QColor  cmpFg     = tyreTextColor(visual);
 
-            table->setItem(row, 0, makeItem(QString::number(idx + 1)));
+            auto* idxItem = makeItem(QString::number(idx + 1));
+            idxItem->setTextAlignment(Qt::AlignCenter);
+            table->setItem(row, 0, idxItem);
 
             auto* cmpItem = makeItem(tyreLabel(compound));
             if (cmpFg.isValid()) cmpItem->setForeground(cmpFg);
+            cmpItem->setTextAlignment(Qt::AlignCenter);
             table->setItem(row, 1, cmpItem);
 
             auto* stItem = makeItem(status);
