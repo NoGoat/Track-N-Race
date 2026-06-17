@@ -61,6 +61,8 @@ public:
     void    setStyleName(const QString& name);
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
+    float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
+    void    setContrastThreshold(float val);
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
@@ -114,6 +116,8 @@ private:
     QTableWidget*    timingTable         = nullptr;
     int              selectedCarIdx      = -1;   // -1 = no selection (show player)
     std::vector<int> tableRowCarIdx;             // row index → car idx
+    std::vector<QColor> rowSafeColors;           // cached contrast colors per row
+    float            lastContrastThreshold = -1.0f;
     nlohmann::json   lastTimingData;
     nlohmann::json   lastParticipantsData;
     nlohmann::json   lastAllStatusData;

@@ -148,6 +148,21 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
     toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
     form->addRow("Toolbar:", toolbarLabelsCheck_);
 
+    form->addRow(horizontalSeparator());
+    form->addRow(sectionHeading("Accessibility"));
+
+    QWidget* contrastRow = new QWidget;
+    QHBoxLayout* ch = new QHBoxLayout(contrastRow);
+    ch->setContentsMargins(0, 0, 0, 0);
+    QSlider* contrastSlider = new QSlider(Qt::Horizontal);
+    contrastSlider->setRange(100, 2100);
+    contrastSlider->setValue((int)(mainWindow_->contrastThreshold() * 100.0f));
+    QLabel* contrastVal = new QLabel(QString::number(mainWindow_->contrastThreshold(), 'f', 2));
+    contrastVal->setFixedWidth(40);
+    ch->addWidget(contrastSlider);
+    ch->addWidget(contrastVal);
+    form->addRow("Contrast Threshold:", contrastRow);
+
     auto applyTheme = [this](bool) {
         QString val = "system";
         if (themeLight_->isChecked())     val = "light";
@@ -159,5 +174,10 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
     connect(themeDark_,   &QRadioButton::toggled, this, applyTheme);
     connect(toolbarLabelsCheck_, &QCheckBox::toggled, this, [this](bool on) {
         mainWindow_->setToolbarLabels(on);
+    });
+    connect(contrastSlider, &QSlider::valueChanged, this, [this, contrastVal](int val) {
+        float f = val / 100.0f;
+        contrastVal->setText(QString::number(f, 'f', 2));
+        mainWindow_->setContrastThreshold(f);
     });
 }

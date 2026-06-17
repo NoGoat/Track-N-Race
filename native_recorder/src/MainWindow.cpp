@@ -751,6 +751,12 @@ void MainWindow::setToolbarLabels(bool checked) {
     if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
 }
 
+void MainWindow::setContrastThreshold(float val) {
+    settings.setValue("ui/contrastThreshold", val);
+    dirtyTiming_ = true;
+    scheduleUiRefresh();
+}
+
 void MainWindow::onDatagramReady() {
     if (inPlayback_) {
         while (udpSocket->hasPendingDatagrams())

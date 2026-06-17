@@ -20,7 +20,32 @@
 #include <unordered_map>
 #include <vector>
 
+#include <cmath>
+
 // ── Standings helpers ─────────────────────────────────────────────────────
+
+static float relativeLuminance(const QColor& c) {
+    auto toLinear = [](float v) {
+        return v <= 0.03928f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+    };
+    float r = toLinear(c.redF());
+    float g = toLinear(c.greenF());
+    float b = toLinear(c.blueF());
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+}
+
+static float contrastRatio(const QColor& c1, const QColor& c2) {
+    float l1 = relativeLuminance(c1);
+    float l2 = relativeLuminance(c2);
+    if (l1 < l2) std::swap(l1, l2);
+    return (l1 + 0.05f) / (l2 + 0.05f);
+}
+
+static QColor ensureContrast(const QColor& fg, const QColor& bg, const QColor& fallback, float threshold) {
+    if (!fg.isValid()) return fallback;
+    if (contrastRatio(fg, bg) < threshold) return fallback;
+    return fg;
+}
 
 static QString formatLapTime(int ms) {
     if (ms <= 0) return "—";
@@ -375,6 +400,31 @@ void MainWindow::updateTimingTable() {
             return a.value("position", 99) < b.value("position", 99);
         });
 
+    bool orderOrSettingChanged = false;
+    float currentThreshold = contrastThreshold();
+    if (active.size() != tableRowCarIdx.size() || lastContrastThreshold != currentThreshold) {
+        orderOrSettingChanged = true;
+    } else {
+        for (int i = 0; i < (int)active.size(); ++i) {
+            if (active[i].value("idx", -1) != tableRowCarIdx[i]) {
+                orderOrSettingChanged = true; break;
+            }
+        }
+    }
+    lastContrastThreshold = currentThreshold;
+
+    if (orderOrSettingChanged) {
+        rowSafeColors.resize(active.size());
+        for (int row = 0; row < (int)active.size(); ++row) {
+            int idx = active[row].value("idx", -1);
+            auto di = driverMap.find(idx);
+            QColor rawColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
+            QColor bgColor = timingTable->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
+            QColor fallback = timingTable->palette().color(QPalette::Text);
+            rowSafeColors[row] = ensureContrast(rawColor, bgColor, fallback, currentThreshold);
+        }
+    }
+
     timingTable->setRowCount((int)active.size());
     tableRowCarIdx.resize(active.size());
     for (int i = 0; i < (int)active.size(); ++i)
@@ -446,14 +496,16 @@ void MainWindow::updateTimingTable() {
         if (posColor.isValid()) posItem->setForeground(posColor);
         timingTable->setItem(row, 0, posItem);
 
+        QColor safeDriverColor = rowSafeColors[row];
+
         // Col 1: #
         auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—", true);
-        numItem->setForeground(driverColor);
+        numItem->setForeground(safeDriverColor);
         timingTable->setItem(row, 1, numItem);
 
         // Col 2: DRIVER
         auto* drvItem = makeItem(driverName);
-        drvItem->setForeground(driverColor);
+        drvItem->setForeground(safeDriverColor);
         timingTable->setItem(row, 2, drvItem);
 
         timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
