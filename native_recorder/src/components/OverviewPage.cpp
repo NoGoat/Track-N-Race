@@ -36,18 +36,28 @@ static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& 
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
 
+    QWidget* valRow = new QWidget;
+    QHBoxLayout* hl = new QHBoxLayout(valRow);
+    hl->setContentsMargins(0, 0, 0, 0);
+    hl->setSpacing(4);
+
     valueOut = new QLabel("—");
     QFont vf; vf.setPointSize(15); vf.setBold(true);
     valueOut->setFont(vf);
 
-    QLabel* ulbl = new QLabel(unit);
-    QFont uf; uf.setPointSize(7);
-    ulbl->setFont(uf);
-    ulbl->setForegroundRole(QPalette::PlaceholderText);
+    hl->addWidget(valueOut);
+    if (!unit.isEmpty()) {
+        QLabel* ulbl = new QLabel(unit);
+        QFont uf; uf.setPointSize(7);
+        ulbl->setFont(uf);
+        ulbl->setForegroundRole(QPalette::PlaceholderText);
+        hl->addWidget(ulbl);
+    }
+    hl->addStretch();
 
     cv->addWidget(lbl);
-    cv->addWidget(valueOut);
-    cv->addWidget(ulbl);
+    cv->addWidget(valRow);
+    cv->addStretch();
     return card;
 }
 

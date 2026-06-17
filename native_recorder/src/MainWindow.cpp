@@ -44,6 +44,7 @@
 #include <QStyleFactory>
 #include <QStyleOptionButton>
 #include <QStylePainter>
+#include <QLocale>
 
 #include <chrono>
 #include <ctime>
@@ -592,18 +593,26 @@ MainWindow::MainWindow(QWidget* parent)
             this, [this](float speed, int rpm, int gear,
                          float throttle, float brake, float steering, bool drs, int /*eng*/) {
         cardSpeed->setText(QString::number((int)speed));
-        cardRpm->setText(QString::number(rpm / 1000.0, 'f', 1) + "k");
-        cardGear->setText(gear <= 0 ? "N" : QString::number(gear));
+        cardSpeed->setStyleSheet("color: #37872D; font-weight: bold;");
+        cardRpm->setText(QLocale().toString(rpm));
+        cardRpm->setStyleSheet("color: #C4162A; font-weight: bold;");
+        cardGear->setText(gear <= 0 ? (gear < 0 ? "R" : "N") : QString::number(gear));
+        QString gearColor = gear <= 2 ? "#5794F2" : (gear <= 4 ? "#FADE2A" : (gear <= 6 ? "#c47d0e" : "#C4162A"));
+        cardGear->setStyleSheet(QString("color: %1; font-weight: bold;").arg(gearColor));
         cardThrottle->setText(QString::number((int)(throttle * 100)));
+        cardThrottle->setStyleSheet("color: #37872D; font-weight: bold;");
         cardBrake->setText(QString::number((int)(brake * 100)));
+        cardBrake->setStyleSheet(brake > 0.05 ? "color: #C4162A; font-weight: bold;" : "font-weight: bold;");
         cardDrs->setText(drs ? "ON" : "OFF");
         cardDrs->setStyleSheet(drs ? "color: #37872D; font-weight: bold;"
                                    : "color: gray; font-weight: bold;");
     });
 
     connect(this, &MainWindow::statusUpdated,
-            this, [this](float ersPct, int, float, float, int, int) {
+            this, [this](float ersPct, int ersMode, float, float, int, int) {
         cardErs->setText(QString::number((int)ersPct));
+        QString ersColor = ersMode == 3 ? "#C4162A" : (ersPct < 20 ? "#FADE2A" : "#5794F2");
+        cardErs->setStyleSheet(QString("color: %1; font-weight: bold;").arg(ersColor));
     });
 
     connect(this, &MainWindow::lapUpdated,
