@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QFile>
 #include <QComboBox>
+#include <QToolButton>
 #include <QFontMetrics>
 #include <QShowEvent>
 #include <QHideEvent>
@@ -55,6 +56,42 @@ QString abbrev(const QString& name) {
     if (parts.isEmpty()) return QString();
     return parts.last().left(3).toUpper();
 }
+
+class ClearableComboBox : public QComboBox {
+public:
+    explicit ClearableComboBox(QWidget* parent = nullptr) : QComboBox(parent) {
+        clearBtn_ = new QToolButton(this);
+        clearBtn_->setText("×");
+        clearBtn_->setCursor(Qt::PointingHandCursor);
+        clearBtn_->setStyleSheet(
+            "QToolButton {"
+            "  border: none; background: transparent; font-weight: bold; font-size: 16px;"
+            "  color: #888; padding: 0px; margin: 0px;"
+            "}"
+            "QToolButton:hover { color: palette(text); }"
+        );
+        connect(clearBtn_, &QToolButton::clicked, this, [this]{
+            setCurrentIndex(0);
+        });
+        clearBtn_->hide();
+    }
+
+    void setClearVisible(bool visible) {
+        clearBtn_->setVisible(visible);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* e) override {
+        QComboBox::resizeEvent(e);
+        int arrowWidth = 24;
+        int btnSize = 18;
+        clearBtn_->setGeometry(width() - arrowWidth - btnSize, (height() - btnSize) / 2, btnSize, btnSize);
+    }
+
+private:
+    QToolButton* clearBtn_;
+};
+
 } // namespace
 
 TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
@@ -76,11 +113,13 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
         zoomLevel_ = zoomCombo_->currentData().toDouble();
     });
 
-    driverCombo_ = new QComboBox(this);
+    driverCombo_ = new ClearableComboBox(this);
     driverCombo_->addItem("Follow driver…", -1);
+    
     connect(driverCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         selectedDriverIdx_ = driverCombo_->currentData().toInt();
         zoomCombo_->setVisible(selectedDriverIdx_ >= 0);
+        static_cast<ClearableComboBox*>(driverCombo_)->setClearVisible(selectedDriverIdx_ >= 0);
         positionControls();
     });
 
@@ -531,13 +570,18 @@ void TrackMapWidget::positionControls() {
     const int margin = 8, gap = 6;
     const int dw = std::max(120, driverCombo_->sizeHint().width());
     driverCombo_->setFixedWidth(dw);
-    const int x = width() - margin - dw;
-    driverCombo_->move(x, margin);
+    
+    int currentX = width() - margin;
+    
+    currentX -= dw;
+    driverCombo_->move(currentX, margin);
     driverCombo_->raise();
+
     if (zoomCombo_->isVisible()) {
         const int zw = std::max(58, zoomCombo_->sizeHint().width());
         zoomCombo_->setFixedWidth(zw);
-        zoomCombo_->move(x - gap - zw, margin);
+        currentX -= gap + zw;
+        zoomCombo_->move(currentX, margin);
         zoomCombo_->raise();
     }
 }
