@@ -67,6 +67,9 @@ set(SOURCES
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
     src/components/InputPage.cpp
+    src/components/PowerPage.cpp
+    src/components/PowerChart.cpp
+    src/components/PowerChart.h
     src/components/GearChart.cpp
     src/components/GearChart.h
     src/components/InputsChart.cpp

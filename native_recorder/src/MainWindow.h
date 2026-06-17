@@ -194,6 +194,19 @@ private:
     InputsChart*    inputsChart_   = nullptr;
     SteeringChart*  steeringChart_ = nullptr;
 
+    // ── Power page ─────────────────────────────────────────────
+    QLabel* pp_totalPowerVal = nullptr;
+    QLabel* pp_iceVal        = nullptr;
+    QLabel* pp_mgukVal       = nullptr;
+    QLabel* pp_splitVal      = nullptr;
+    QLabel* pp_ersStoreVal   = nullptr;
+    QLabel* pp_ersPctVal     = nullptr;
+    QLabel* pp_fuelVal       = nullptr;
+    class PowerChart* pp_splitChart  = nullptr;
+    class PowerChart* pp_harvestChart= nullptr;
+    class PowerChart* pp_storeChart  = nullptr;
+    class PowerChart* pp_fuelChart   = nullptr;
+
     // ── Dialogs ───────────────────────────────────────────────────
     QToolBar* toolbar_ = nullptr;   // referenced by the Settings dialog's label toggle
     // Theme-icon actions kept so their (tinted) icons can be rebuilt when the
@@ -252,6 +265,7 @@ private:
     QWidget* buildSessionPage();
     QWidget* buildTyresPage();
     QWidget* buildInputPage();
+    QWidget* buildPowerPage();
     void     saveOverviewLayout(const OverviewLayout& layout);
     void     applyOverviewLayout(const OverviewLayout& layout);
     void     updateTimingTable();
@@ -262,6 +276,7 @@ private:
     void     updateTyresPage();
     void     updateTyreSetsTable();
     void     updateTrackMapPage();
+    void     updatePowerPage();
 
     // ── Coalesced panel refresh ───────────────────────────────────
     // Packets can arrive in bursts (especially fast playback); rebuilding a
@@ -277,6 +292,7 @@ private:
     bool dirtyEvents_    = false;
     bool dirtyProximity_ = false;
     bool dirtyTrackMap_  = false;
+    bool dirtyPower_     = false;
     void scheduleUiRefresh();
     void flushUiRefresh();
 

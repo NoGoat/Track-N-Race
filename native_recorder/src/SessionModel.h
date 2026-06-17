@@ -7,7 +7,15 @@
 
 // Slim per-sample records — only what the Speed/RPM/ERS chart needs.
 struct TelSample { float t = 0; float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
-struct StsSample { float t = 0; float ers = 0; };
+struct StsSample {
+    float t = 0;
+    float ers = 0;
+    float fuel_kg = 0;
+    float ice_kw = 0;
+    float mguk_kw = 0;
+    float mguk_harvest_j = 0;
+    float mguh_harvest_j = 0;
+};
 
 // One lap's telemetry/status, plus its timing. Mirrors the Electron
 // SpeedRpmLapBlock used by the chart's per-lap and comparison modes.
@@ -45,7 +53,7 @@ struct SessionData {
     static constexpr float BUFFER_S = 600.0f;   // 10 min, matches Electron MAX_ROWS
 
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
-    void onStatus(float t, float ers);
+    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);          // time went backward → fresh session
     void finalizeOpenLap();                       // push the trailing in-progress lap
@@ -70,7 +78,7 @@ public:
 
     // Live ingest.
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
-    void onStatus(float t, float ers);
+    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);
     void clear();

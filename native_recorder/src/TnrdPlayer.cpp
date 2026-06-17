@@ -346,13 +346,22 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
                                          j.value("throttle", 0.0f),
                                          j.value("brake", 0.0f),
                                          j.value("steering", 0.0f));
-                else if (tid == 2)
-                    scanned_.onStatus(t, j.value("ers_pct", 0.0f));
-                else
+                else if (tid == 2) {
+                    scanned_.onStatus(
+                        t,
+                        j.value("ers_pct", 0.0f),
+                        j.value("fuel_kg", 0.0f),
+                        j.value("engine_power_ice_kw", 0.0f),
+                        j.value("engine_power_mguk_kw", 0.0f),
+                        j.value("ers_harvested_mguk_j", 0.0f),
+                        j.value("ers_harvested_mguh_j", 0.0f)
+                    );
+                } else if (tid == 4) {
                     scanned_.onLap(j.value("lap_num", 0),
                                    j.value("current_lap_ms", 0),
                                    j.value("last_lap_ms", 0),
                                    j.value("lap_invalid", false));
+                }
             } catch (...) {}
         }
     };

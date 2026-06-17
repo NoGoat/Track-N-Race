@@ -3,6 +3,7 @@
 #include "components/GearChart.h"
 #include "components/InputsChart.h"
 #include "components/SteeringChart.h"
+#include "components/PowerChart.h"
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
 #include "components/EditOverviewLayoutDialog.h"
@@ -266,6 +267,7 @@ MainWindow::MainWindow(QWidget* parent)
     // that line isn't reachable through any stylesheet rule. Plain QToolButtons
     // have no such native "tab base" painting path, so there's nothing for an
     // unselected button to draw beyond what its own (empty) stylesheet says.
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input", "Power" };
     QWidget* pageTabsWidget = new QWidget;
     pageTabsWidget->setFixedHeight(kToolbarHeight);
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
@@ -273,8 +275,7 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabsLay->setSpacing(4);
     QButtonGroup* pageGroup = new QButtonGroup(this);
     pageGroup->setExclusive(true);
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input" };
-    static constexpr int kPageCount = 5;
+    static constexpr int kPageCount = 6;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     // Every button — checked or not — reserves the same border-bottom width
@@ -327,6 +328,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (gearChart_) gearChart_->setWindowSeconds(secs);
         if (inputsChart_) inputsChart_->setWindowSeconds(secs);
         if (steeringChart_) steeringChart_->setWindowSeconds(secs);
+        if (pp_splitChart) pp_splitChart->setWindowSeconds(secs);
+        if (pp_harvestChart) pp_harvestChart->setWindowSeconds(secs);
+        if (pp_storeChart) pp_storeChart->setWindowSeconds(secs);
+        if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
     });
 
     toolbar->addSeparator();
@@ -363,6 +368,7 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildSessionPage());   // index 2
     stack->addWidget(buildTyresPage());     // index 3
     stack->addWidget(buildInputPage());     // index 4
+    stack->addWidget(buildPowerPage());     // index 5
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -491,6 +497,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (gearChart_) { gearChart_->setPlaybackMode(true); gearChart_->setCurrentTime(player_->currentTime()); }
         if (inputsChart_) { inputsChart_->setPlaybackMode(true); inputsChart_->setCurrentTime(player_->currentTime()); }
         if (steeringChart_) { steeringChart_->setPlaybackMode(true); steeringChart_->setCurrentTime(player_->currentTime()); }
+        if (pp_splitChart) { pp_splitChart->setPlaybackMode(true); pp_splitChart->setCurrentTime(player_->currentTime()); }
+        if (pp_harvestChart) { pp_harvestChart->setPlaybackMode(true); pp_harvestChart->setCurrentTime(player_->currentTime()); }
+        if (pp_storeChart) { pp_storeChart->setPlaybackMode(true); pp_storeChart->setCurrentTime(player_->currentTime()); }
+        if (pp_fuelChart) { pp_fuelChart->setPlaybackMode(true); pp_fuelChart->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
         closeActiveStream();
         pb_sep_->show();
@@ -517,6 +527,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (gearChart_) gearChart_->setCurrentTime(player_->currentTime());
         if (inputsChart_) inputsChart_->setCurrentTime(player_->currentTime());
         if (steeringChart_) steeringChart_->setCurrentTime(player_->currentTime());
+        if (pp_splitChart) pp_splitChart->setCurrentTime(player_->currentTime());
+        if (pp_harvestChart) pp_harvestChart->setCurrentTime(player_->currentTime());
+        if (pp_storeChart) pp_storeChart->setCurrentTime(player_->currentTime());
+        if (pp_fuelChart) pp_fuelChart->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
             pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
@@ -938,7 +952,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["tyre_age_laps"].get<int>()
         );
         lastPlayerStatusData = row;
-        dirtyRacePanel_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
     } else if (type == "damage") {
         emit damageUpdated(
             row.value("tyre_dmg_fl",   0), row.value("tyre_dmg_fr",   0),
@@ -1005,8 +1019,11 @@ void MainWindow::flushUiRefresh() {
             if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
             if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
             break;
+        case 5:
+            if (dirtyPower_)     { updatePowerPage();        dirtyPower_     = false; }
+            break;
         default:
-            break;  // Overview has no coalesced panels
+            break;  // Overview (0) and Input (4) have no coalesced panels
     }
 }
 
@@ -1085,7 +1102,15 @@ void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
                             row.value("brake", 0.0f),
                             row.value("steering", 0.0f));
     else if (rtype == "status")
-        model_->onStatus(sessionTime, row.value("ers_pct", 0.0f));
+        model_->onStatus(
+            sessionTime,
+            row.value("ers_pct", 0.0f),
+            row.value("fuel_kg", 0.0f),
+            row.value("engine_power_ice_kw", 0.0f),
+            row.value("engine_power_mguk_kw", 0.0f),
+            row.value("ers_harvested_mguk_j", 0.0f),
+            row.value("ers_harvested_mguh_j", 0.0f)
+        );
     else if (rtype == "lap")
         model_->onLap(row.value("lap_num", 0),
                      row.value("current_lap_ms", 0),

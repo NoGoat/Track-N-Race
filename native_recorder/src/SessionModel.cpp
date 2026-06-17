@@ -11,9 +11,9 @@ void SessionData::onTelemetry(float t, float speed, int rpm, int gear, float thr
     trim();
 }
 
-void SessionData::onStatus(float t, float ers) {
-    stsBuf.push_back({ t, ers });
-    if (curLapNum >= 0) curLap.sts.push_back({ t, ers });
+void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
+    stsBuf.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j });
+    if (curLapNum >= 0) curLap.sts.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j });
     trim();
 }
 
@@ -115,8 +115,8 @@ void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float th
     telemetryDirty_ = true;
 }
 
-void SessionModel::onStatus(float t, float ers) {
-    d_.onStatus(t, ers);
+void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
+    d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j);
     telemetryDirty_ = true;
 }
 
