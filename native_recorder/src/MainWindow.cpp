@@ -624,14 +624,22 @@ void MainWindow::setTheme(const QString& theme) {
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Unknown);
 #endif
     settings.setValue("theme", theme);
-    // If Breeze is active, reload its light/dark palette to match the new theme.
-    applyBreezePalette(currentStyleName(), theme);
+    // Only reload Breeze's light/dark palette if Breeze is the active style; other
+    // styles follow the theme via setColorScheme above.
+    if (currentStyleName().compare("breeze", Qt::CaseInsensitive) == 0)
+        applyBreezePalette(theme);
 }
 
 void MainWindow::setStyleName(const QString& name) {
     // Swap the active QStyle live — Qt repolishes every existing widget, so no
     // restart is needed. "system" restores the platform default captured at
     // startup (main.cpp), since by now it may already have been overridden.
+    const bool breeze = name.compare("breeze", Qt::CaseInsensitive) == 0;
+    // Leaving Breeze: give the palette back to the platform *before* the new style
+    // polishes, so a style that sets its own palette (e.g. Kvantum) or relies on
+    // the platform one (windows11) isn't left wearing Breeze's colours.
+    if (!breeze) restoreDefaultPalette();
+
     if (name == "system") {
         const QString def = qApp->property("defaultStyleName").toString();
         if (!def.isEmpty())
@@ -640,8 +648,9 @@ void MainWindow::setStyleName(const QString& name) {
         QApplication::setStyle(s);
     }
     settings.setValue("style", name);
-    // Apply/clear the KDE Breeze palette to match the new style (bundled builds).
-    applyBreezePalette(name, currentTheme());
+    // Breeze's plugin draws shapes but never sets a palette — apply the KDE one
+    // after the style is in place. (No-op in non-bundled builds.)
+    if (breeze) applyBreezePalette(currentTheme());
 }
 
 void MainWindow::setToolbarLabels(bool checked) {

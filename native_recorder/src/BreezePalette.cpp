@@ -1,17 +1,23 @@
 #include "BreezePalette.h"
 
 #include <QApplication>
-#include <QStyle>
-#include <QStyleHints>
 #include <QCoreApplication>
 #include <QFileInfo>
 
 #ifdef HAVE_BREEZE_KCOLORSCHEME
+#include <QStyleHints>
+#include <QPalette>
+#include <QVariant>
 #include <KColorScheme>
 #include <KSharedConfig>
 #include <KConfig>
 
 namespace {
+// Tracks whether *we* currently own the application palette. Only true after we
+// apply a Breeze palette, so restoreDefaultPalette() never clobbers a palette
+// that another style (Kvantum, windows11, the platform) legitimately set.
+bool s_breezeApplied = false;
+
 bool wantsDark(const QString& theme) {
     if (theme == "dark")  return true;
     if (theme == "light") return false;
@@ -20,16 +26,9 @@ bool wantsDark(const QString& theme) {
 }
 }
 
-void applyBreezePalette(const QString& styleName, const QString& theme) {
-    if (styleName.compare("breeze", Qt::CaseInsensitive) != 0) {
-        // Leaving Breeze: hand the palette back to the active style's default.
-        if (QStyle* s = QApplication::style())
-            QApplication::setPalette(s->standardPalette());
-        return;
-    }
-
-    // The Breeze colour-scheme files are bundled next to the executable (copied
-    // from the superbuild's share/color-schemes by the CMake bundling step).
+void applyBreezePalette(const QString& theme) {
+    // Breeze colour-scheme files are bundled next to the executable by the CMake
+    // bundling step (copied from the superbuild's color-schemes data dir).
     const QString file = QCoreApplication::applicationDirPath() + "/color-schemes/"
         + (wantsDark(theme) ? "BreezeDark.colors" : "BreezeLight.colors");
     if (!QFileInfo::exists(file))
@@ -40,10 +39,21 @@ void applyBreezePalette(const QString& styleName, const QString& theme) {
     // is the same call the KDE platform theme uses, so the result is identical.
     KSharedConfigPtr cfg = KSharedConfig::openConfig(file, KConfig::SimpleConfig);
     QApplication::setPalette(KColorScheme::createApplicationPalette(cfg));
+    s_breezeApplied = true;
+}
+
+void restoreDefaultPalette() {
+    if (!s_breezeApplied)
+        return;  // we never hijacked the palette — leave the current style alone
+    const QVariant v = qApp->property("defaultPalette");
+    if (v.isValid())
+        QApplication::setPalette(v.value<QPalette>());
+    s_breezeApplied = false;
 }
 
 #else  // no bundled KColorScheme — system platform theme owns the palette
 
-void applyBreezePalette(const QString&, const QString&) {}
+void applyBreezePalette(const QString&) {}
+void restoreDefaultPalette() {}
 
 #endif

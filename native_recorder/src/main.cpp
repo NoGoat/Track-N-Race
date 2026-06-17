@@ -2,6 +2,7 @@
 #include <QStyle>
 #include <QStyleFactory>
 #include <QSettings>
+#include <QVariant>
 #include "MainWindow.h"
 #include "BreezePalette.h"
 
@@ -15,6 +16,11 @@ int main(int argc, char* argv[]) {
     // a later "System default" choice can be restored at runtime (the style's
     // objectName is its lowercased QStyleFactory key, e.g. "breeze"/"windows11").
     app.setProperty("defaultStyleName", QApplication::style()->objectName());
+
+    // Snapshot the pristine platform palette too — restoreDefaultPalette() puts it
+    // back when the user switches away from Breeze, so other styles aren't left
+    // wearing Breeze's colours.
+    app.setProperty("defaultPalette", QVariant::fromValue(app.palette()));
 
     // Let QStyleFactory discover a Breeze (or any) style plugin bundled next to
     // the executable under plugins/styles/. Harmless when absent — dev builds
@@ -31,10 +37,10 @@ int main(int argc, char* argv[]) {
             QApplication::setStyle(s);
     }
 
-    // Give the (bundled) Breeze style the real KDE palette before first paint;
-    // no-op for other styles and in non-bundled builds. See BreezePalette.h.
-    applyBreezePalette(styleName.isEmpty() ? "system" : styleName,
-                       settings.value("theme", "system").toString());
+    // Only Breeze needs its palette applied (its plugin doesn't set one); every
+    // other style keeps the platform palette. No-op in non-bundled builds.
+    if (styleName.compare("breeze", Qt::CaseInsensitive) == 0)
+        applyBreezePalette(settings.value("theme", "system").toString());
 
     MainWindow w;
     w.show();
