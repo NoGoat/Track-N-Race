@@ -127,31 +127,63 @@ static QIcon paletteIcon(const QString& resource, const QColor& tint) {
     return QIcon(QPixmap::fromImage(img));
 }
 
+// On Windows the bundled Breeze icons are monochrome and won't recolour for dark
+// mode (that needs the KDE platform theme, which we don't ship), so they'd render
+// black. Tint the theme icon to `tint` ourselves — same SourceIn trick as
+// paletteIcon, across a few sizes for crispness. Everywhere else (KDE recolours
+// them, or no Breeze bundled) the icon is returned untouched.
+static QIcon adaptThemeIcon(const QIcon& themed, const QColor& tint, const QIcon& fallback) {
+    if (themed.isNull()) return fallback;
+#if defined(HAVE_BREEZE_ICONS) && defined(Q_OS_WIN)
+    QIcon out;
+    for (int sz : {16, 22, 32, 48}) {
+        const QPixmap pm = themed.pixmap(sz);
+        if (pm.isNull()) continue;
+        QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QPainter p(&img);
+        p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        p.fillRect(img.rect(), tint);
+        p.end();
+        out.addPixmap(QPixmap::fromImage(img));
+    }
+    return out.isNull() ? fallback : out;
+#else
+    Q_UNUSED(tint);
+    return themed;
+#endif
+}
+
 // Prefer the OS/desktop theme's play/pause icon (e.g. Breeze on KDE) so the
 // button matches the rest of the system; our tinted SVG is the fallback where
 // no theme icon is available (e.g. Windows, which has no icon theme concept).
 static QIcon playPauseIcon(bool playing, const QColor& tint) {
-    return QIcon::fromTheme(
-        playing ? QIcon::ThemeIcon::MediaPlaybackPause : QIcon::ThemeIcon::MediaPlaybackStart,
+    return adaptThemeIcon(
+        QIcon::fromTheme(playing ? QIcon::ThemeIcon::MediaPlaybackPause
+                                 : QIcon::ThemeIcon::MediaPlaybackStart),
+        tint,
         paletteIcon(playing ? ":/pause.svg" : ":/play.svg", tint));
 }
 
-// No bundled SVG for these two — prefer the OS/desktop theme icon, and fall
-// back to Qt's own built-in standard-pixmap icon (always available, even on
-// Windows which has no icon theme concept) rather than a tinted SVG.
+// No bundled SVG for these two — prefer the OS/desktop theme icon (tinted to the
+// toolbar foreground on Windows so the monochrome Breeze icons stay visible in
+// dark mode), and fall back to Qt's own built-in standard-pixmap icon.
 static QIcon openRecordingIcon(QWidget* w) {
-    return QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen,
+    return adaptThemeIcon(QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen),
+        w->palette().color(QPalette::WindowText),
         w->style()->standardIcon(QStyle::SP_DialogOpenButton));
 }
 
 static QIcon editLayoutIcon(QWidget* w) {
-    return QIcon::fromTheme("document-edit",
+    return adaptThemeIcon(QIcon::fromTheme("document-edit"),
+        w->palette().color(QPalette::WindowText),
         w->style()->standardIcon(QStyle::SP_FileDialogDetailedView));
 }
 
 static QIcon settingsIcon(QWidget* w) {
-    return QIcon::fromTheme("configure", QIcon::fromTheme("preferences-system",
-        w->style()->standardIcon(QStyle::SP_FileDialogListView)));
+    return adaptThemeIcon(
+        QIcon::fromTheme("configure", QIcon::fromTheme("preferences-system")),
+        w->palette().color(QPalette::WindowText),
+        w->style()->standardIcon(QStyle::SP_FileDialogListView));
 }
 
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
