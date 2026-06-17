@@ -17,7 +17,12 @@ GearChart::GearChart(QWidget* parent)
 
     setAxisTimeTicker(axXId_, "%m:%s");
 
-    grId_ = addSeries({ "Gear", C_GEAR, 2.0, axXId_, axGear, "", 0, false });
+    addBand({ axGear, 0.5, 2.5, QColor(31, 96, 196, 51) });
+    addBand({ axGear, 2.5, 4.5, QColor(212, 173, 4, 51) });
+    addBand({ axGear, 4.5, 6.5, QColor(196, 125, 14, 51) });
+    addBand({ axGear, 6.5, 8.5, QColor(196, 22, 42, 51) });
+
+    grId_ = addSeries({ "Gear", C_GEAR, 2.0, axXId_, axGear, "", 0, false, false, QColor(), true });
 
     setHoverReadout(true);
     setLegendVisible(false);

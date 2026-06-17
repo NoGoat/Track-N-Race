@@ -156,11 +156,43 @@ int ChartView::addSeries(const SeriesSpec& spec)
     g->setName(spec.name);
     g->setPen(QPen(spec.color, spec.width));
     g->setAdaptiveSampling(true);   // per-pixel decimation — flat paint cost
+    if (spec.step) g->setLineStyle(QCPGraph::lsStepLeft);
+
+    if (spec.fill) {
+        QColor c = spec.fillColor.isValid() ? spec.fillColor : spec.color;
+        c.setAlpha(40);
+        g->setBrush(QBrush(c));
+    }
 
     const int id = d_->graphs.size();
     d_->graphs.append(g);
     d_->meta.append({ spec.unit, spec.tipPrecision, spec.tipGroupThousands });
+    applyPaletteText();
     return id;
+}
+
+void ChartView::addBand(const BandSpec& spec)
+{
+    QCPAxis* vax = (spec.axisId >= 0 && spec.axisId < d_->axes.size())
+                       ? d_->axes[spec.axisId] : d_->plot->yAxis;
+
+    QCPItemRect* rect = new QCPItemRect(d_->plot);
+    rect->setClipToAxisRect(true);
+
+    rect->topLeft->setTypeX(QCPItemPosition::ptAxisRectRatio);
+    rect->topLeft->setTypeY(QCPItemPosition::ptPlotCoords);
+    rect->topLeft->setAxes(d_->keyAxis, vax);
+    rect->topLeft->setCoords(0.0, spec.max);
+
+    rect->bottomRight->setTypeX(QCPItemPosition::ptAxisRectRatio);
+    rect->bottomRight->setTypeY(QCPItemPosition::ptPlotCoords);
+    rect->bottomRight->setAxes(d_->keyAxis, vax);
+    rect->bottomRight->setCoords(1.0, spec.min);
+
+    rect->setPen(Qt::NoPen);
+    rect->setBrush(QBrush(spec.color));
+
+    rect->setLayer("background");
 }
 
 void ChartView::appendPoint(int seriesId, double x, double y)

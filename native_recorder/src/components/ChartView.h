@@ -40,6 +40,16 @@ public:
         QString unit;                    // appended after the value in the hover tooltip
         int     tipPrecision = 0;        // tooltip value decimals (e.g. 1 for "90.3%")
         bool    tipGroupThousands = false; // tooltip thousands separator (e.g. "11,580")
+        bool    fill = false;            // if true, fills under the curve to zero
+        QColor  fillColor = QColor();    // if invalid, uses semi-transparent series color
+        bool    step = false;            // if true, use lsStepLeft
+    };
+
+    struct BandSpec {
+        int     axisId = -1;
+        double  min = 0.0;
+        double  max = 0.0;
+        QColor  color;
     };
 
     explicit ChartView(QWidget* parent = nullptr);
@@ -49,6 +59,7 @@ public:
     // calls below. Series are drawn in creation order (later draws on top).
     int  addAxis(const AxisSpec& spec);
     int  addSeries(const SeriesSpec& spec);
+    void addBand(const BandSpec& spec);
 
     // Data.
     void appendPoint(int seriesId, double x, double y);
