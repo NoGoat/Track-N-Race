@@ -596,6 +596,19 @@ void MainWindow::updateSessionEvents() {
 
     sp_eventsList->clear();
 
+    auto get3LetterCode = [&](int carIdx) -> QString {
+        if (carIdx < 0 || !lastParticipantsData.contains("drivers")) return "—";
+        for (const auto& d : lastParticipantsData["drivers"]) {
+            if (d.value("idx", -1) == carIdx) {
+                QString qn = QString::fromStdString(d.value("name", ""));
+                QStringList parts = qn.split(' ');
+                QString last = parts.size() > 1 ? parts.last() : qn;
+                return last.left(3).toUpper();
+            }
+        }
+        return "—";
+    };
+
     for (int i = (int)sessionEventLog.size() - 1; i >= 0; --i) {
         const auto& ev = sessionEventLog[i];
         std::string code = ev.value("code", "");
@@ -605,95 +618,115 @@ void MainWindow::updateSessionEvents() {
             .arg(totalSecs / 60, 2, 10, QChar('0'))
             .arg(totalSecs % 60, 2, 10, QChar('0'));
 
-        QString label  = eventCodeLabel(code);
-        QString detail;
-        QColor  colorOverride;
+        QString eventType;
+        QString text;
+        QColor colorOverride;
 
         if (code == "FTLP") {
+            eventType = "Fastest Lap";
             float lapS = ev.value("lap_time_s", 0.0f);
             int lapMs  = (int)(lapS * 1000.0f);
-            detail = QString("%1:%2.%3")
+            QString lapTimeStr = QString("%1:%2.%3")
                 .arg(lapMs / 60000)
                 .arg((lapMs % 60000) / 1000, 2, 10, QChar('0'))
                 .arg(lapMs % 1000, 3, 10, QChar('0'));
-            int carIdx = ev.value("car_idx", -1);
-            if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
-                for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")) + "  " + detail; break; }
+            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
+            text = nameCode + " - " + lapTimeStr;
+            colorOverride = QColor("#BF5FFF"); // Purple
+        } else if (code == "PENA") {
+            int pt = ev.value("penalty_type", -1);
+            const char* ptLabel = penaltyTypeLabel(pt);
+            if (!ptLabel) continue;
+
+            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
+            QString inf = infringementLabel(ev.value("infringement_type", -1));
+
+            if (pt == 5) {
+                eventType = "Warning";
+                text = nameCode + " - " + (inf.isEmpty() ? "Warning" : inf);
+                colorOverride = QColor("#ffd700"); // Yellow
+            } else {
+                eventType = "Penalty";
+                QString penText = ptLabel;
+                int timeS = ev.value("penalty_time_s", 0);
+                if ((pt == 1 || pt == 4) && timeS > 0) penText += QString(" %1s").arg(timeS);
+                text = nameCode + " - " + penText;
+                if (!inf.isEmpty()) text += " (" + inf + ")";
+                colorOverride = QColor("#e10600"); // Red
+            }
         } else if (code == "SCAR") {
             int t = ev.value("safety_car_type", 0);
-            QString type = (t == 1) ? "Safety Car" : (t == 2) ? "Virtual SC"
+            eventType = (t == 1) ? "Safety Car" : (t == 2) ? "Virtual SC"
                          : (t == 3) ? "Formation Lap" : "SC";
             int a = ev.value("event_type", 0);
             const char* action = (a == 0) ? "Deployed" : (a == 1) ? "Returning"
                                : (a == 2) ? "Returned" : (a == 3) ? "Resume Race" : "";
-            label  = type;
-            detail = action;
+            text = action;
         } else if (code == "RTMT" || code == "RCWN" || code == "DTSV" || code == "SGSV") {
-            int carIdx = ev.value("car_idx", -1);
-            if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
-                for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
-        } else if (code == "PENA") {
-            int pt = ev.value("penalty_type", -1);
-            const char* ptLabel = penaltyTypeLabel(pt);
-            if (!ptLabel) continue;  // unknown penalty type — hidden (matches Electron)
-
-            label = ptLabel;
-            // Time suffix only for Stop-Go (1) and Time Penalty (4).
-            int timeS = ev.value("penalty_time_s", 0);
-            if ((pt == 1 || pt == 4) && timeS > 0) label += QString(" %1s").arg(timeS);
-
-            int carIdx = ev.value("car_idx", -1);
-            if (carIdx >= 0 && lastParticipantsData.contains("drivers"))
-                for (const auto& d : lastParticipantsData["drivers"])
-                    if (d.value("idx",-1) == carIdx) { detail = QString::fromStdString(d.value("name","")); break; }
-
-            QString inf = infringementLabel(ev.value("infringement_type", -1));
-            if (!inf.isEmpty()) detail += (detail.isEmpty() ? "" : "  —  ") + inf;
-
-            colorOverride = penaltyTypeColor(pt);
+            eventType = eventCodeLabel(code);
+            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
+            text = nameCode;
+        } else {
+            eventType = eventCodeLabel(code);
+            text = "";
         }
-
-        QString text = label;
-        if (!detail.isEmpty()) text += "  —  " + detail;
 
         QColor c = colorOverride.isValid() ? colorOverride : eventCodeColor(code);
         if (!c.isValid()) c = QColor("#c8ccd4");
 
-        const int hMargin = 10, vMargin = 5, spacing = 2;
+        const int hPad = 8, vPad = 6, gap = 2;
         int avail = sp_eventsList->viewport()->width();
         if (avail <= 0) avail = sp_eventsList->width() - 4;
-        if (avail <= 0) avail = 240;            // panel width fallback before first show
-        int textW = avail - 2 * hMargin;
-
-        // Two-line row: muted time on top, bold colored event text below.
+        if (avail <= 0) avail = 240;
+        
         QWidget* rowW = new QWidget;
-        QVBoxLayout* rl = new QVBoxLayout(rowW);
-        rl->setContentsMargins(hMargin, vMargin, hMargin, vMargin);
-        rl->setSpacing(spacing);
+        rowW->setObjectName("eventRow");
+        rowW->setStyleSheet(QString(
+            "#eventRow {"
+            "  border-left: 3px solid %1;"
+            "}"
+        ).arg(c.name()));
 
+        QVBoxLayout* vl = new QVBoxLayout(rowW);
+        vl->setContentsMargins(hPad, vPad, hPad, vPad);
+        vl->setSpacing(gap);
+
+        QHBoxLayout* topH = new QHBoxLayout;
+        topH->setContentsMargins(0, 0, 0, 0);
+
+        QLabel* timeLbl = new QLabel(timeStr);
         QFont tf; tf.setPointSize(7); tf.setBold(true);
         tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
-        QLabel* timeLbl = new QLabel(timeStr);
         timeLbl->setFont(tf);
-        timeLbl->setStyleSheet(QString("color:rgba(%1,%2,%3,170);")
-            .arg(c.red()).arg(c.green()).arg(c.blue()));
+        timeLbl->setStyleSheet("color: #a0a8b8;");
 
-        QFont lf; lf.setPointSize(9); lf.setBold(true);
-        QLabel* textLbl = new QLabel(text);
-        textLbl->setFont(lf);
-        textLbl->setWordWrap(true);
-        textLbl->setStyleSheet("color:" + c.name() + ";");
+        QLabel* typeLbl = new QLabel(eventType);
+        QFont typeF; typeF.setPointSize(7); typeF.setBold(true);
+        typeLbl->setFont(typeF);
+        typeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        typeLbl->setStyleSheet("color: " + c.name() + ";");
 
-        rl->addWidget(timeLbl);
-        rl->addWidget(textLbl);
+        topH->addWidget(timeLbl);
+        topH->addWidget(typeLbl, 1);
+        vl->addLayout(topH);
 
-        // Word-wrap height must be computed explicitly for list-item widgets.
-        int timeH = QFontMetrics(tf).height();
-        int textH = QFontMetrics(lf).boundingRect(
-            QRect(0, 0, textW, 10000), Qt::TextWordWrap, text).height();
-        int rowH = 2 * vMargin + timeH + spacing + textH;
+        int timeH = std::max(QFontMetrics(tf).height(), QFontMetrics(typeF).height());
+        int textH = 0;
+
+        if (!text.isEmpty()) {
+            QLabel* textLbl = new QLabel(text);
+            QFont lf; lf.setPointSize(9); lf.setWeight(QFont::DemiBold);
+            textLbl->setFont(lf);
+            textLbl->setWordWrap(true);
+            textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
+            vl->addWidget(textLbl);
+            
+            textH = QFontMetrics(lf).boundingRect(
+                QRect(0, 0, avail - (2 * hPad), 10000), Qt::TextWordWrap, text).height();
+        }
+
+        int rowH = (2 * vPad) + timeH;
+        if (textH > 0) rowH += gap + textH;
 
         auto* item = new QListWidgetItem;
         item->setSizeHint(QSize(avail, rowH));
