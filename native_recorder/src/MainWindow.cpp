@@ -682,17 +682,20 @@ void MainWindow::changeEvent(QEvent* e) {
 
 void MainWindow::updateToolbarColorScheme() {
     if (!toolbar_) return;
-    // The native Breeze "tools area" colours the toolbar from the *OS* colour
-    // scheme (same source as the window titlebar). When the app is forced to the
-    // opposite mode, that leaves a dark bar over light content (or vice-versa), so
-    // override it with the app's own window colour. When the app's mode matches the
-    // OS — or follows it via "system" — leave the native unified look untouched.
+    // The dark-bar problem is specific to Breeze's "tools area", which colours the
+    // toolbar from the *OS* scheme (same source as the titlebar). So only override
+    // when (a) the user explicitly picked the Breeze style, AND (b) the app is
+    // forced to the opposite mode from the OS — there the native colour clashes.
+    // For System Default / any other style, or when the app matches the OS (incl.
+    // "system" theme), leave the toolbar to the style/OS.
+    const bool breezeStyle = currentStyleName().compare("breeze", Qt::CaseInsensitive) == 0;
     const QString theme = currentTheme();
     const auto os = Qt::ColorScheme(qApp->property("osColorScheme").toInt());
     const bool osDark = (os == Qt::ColorScheme::Dark);
-    const bool mismatch = (theme == "light" && osDark) || (theme == "dark" && !osDark);
+    const bool mismatch = breezeStyle &&
+        ((theme == "light" && osDark) || (theme == "dark" && !osDark));
     toolbar_->setStyleSheet(mismatch
-        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(window); }"
+        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(midlight); }"
         : "QToolBar { border: none; margin: 0px; padding: 0px; }");
 }
 
@@ -749,6 +752,8 @@ void MainWindow::setStyleName(const QString& name) {
     // Breeze's plugin draws shapes but never sets a palette — apply the KDE one
     // after the style is in place. (No-op in non-bundled builds.)
     if (breeze) applyBreezePalette(currentTheme());
+    // The toolbar override only applies under Breeze, so re-evaluate on style change.
+    updateToolbarColorScheme();
 }
 
 void MainWindow::setToolbarLabels(bool checked) {
