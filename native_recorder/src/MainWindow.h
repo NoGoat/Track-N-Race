@@ -71,6 +71,8 @@ public:
     void    setToolbarLabels(bool checked);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
+    int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
+    void    setTrackMapLabelMode(int mode);
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,

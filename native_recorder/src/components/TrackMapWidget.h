@@ -17,6 +17,8 @@ class QComboBox;
 class TrackMapWidget : public QWidget {
     Q_OBJECT
 public:
+    enum class LabelMode { DotsAndLabels, DotsOnly, LabelsOnly };
+
     explicit TrackMapWidget(QWidget* parent = nullptr);
 
     // Loads :/maps/track_<id>.json and rebuilds the prepared geometry + static layer.
@@ -25,6 +27,7 @@ public:
     void setPositions(const nlohmann::json& positions);   // {cars:[{idx,x,z}], ...}
     void setParticipants(const nlohmann::json& participants);
     void setDark(bool dark);
+    void setLabelMode(LabelMode mode);
     bool hasTrack() const { return loaded_; }
 
 protected:
@@ -91,12 +94,9 @@ private:
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
     QTimer*       animTimer_ = nullptr;     // ~60fps redraw while visible
 
-    enum class LabelMode { DotsAndLabels, DotsOnly, LabelsOnly };
-
     // ── Follow-driver camera + zoom + labels ──────────────────────────────
     QComboBox* driverCombo_ = nullptr;   // "Follow driver…"
     QComboBox* zoomCombo_   = nullptr;   // 2x / 4x / 8x / 16x
-    QComboBox* labelsCombo_ = nullptr;   // "Dots & Labels" / "Dots Only" / "Labels Only"
     int        selectedDriverIdx_ = -1;  // -1 = no follow
     double     zoomLevel_ = 4.0;
     LabelMode  labelMode_ = LabelMode::DotsAndLabels;

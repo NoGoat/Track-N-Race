@@ -57,6 +57,8 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     addRecordingSection(form);
     form->addRow(horizontalSeparator());
     addAppearanceSection(form);
+    form->addRow(horizontalSeparator());
+    addTrackMapSection(form);
 
     main->addLayout(form);
 
@@ -180,4 +182,19 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
         contrastVal->setText(QString::number(f, 'f', 2));
         mainWindow_->setContrastThreshold(f);
     });
+}
+
+void SettingsDialog::addTrackMapSection(QFormLayout* form) {
+    form->addRow(sectionHeading("Track Map"));
+
+    trackMapLabelsCombo_ = new QComboBox;
+    trackMapLabelsCombo_->addItem("Dots & Labels", 0);
+    trackMapLabelsCombo_->addItem("Dots Only", 1);
+    trackMapLabelsCombo_->addItem("Labels Only", 2);
+    trackMapLabelsCombo_->setCurrentIndex(mainWindow_->trackMapLabelMode());
+
+    connect(trackMapLabelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setTrackMapLabelMode(trackMapLabelsCombo_->currentData().toInt());
+    });
+    form->addRow("Labels:", trackMapLabelsCombo_);
 }

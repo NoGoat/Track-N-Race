@@ -10,6 +10,7 @@
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
 #include "components/SettingsDialog.h"
+#include "components/TrackMapWidget.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
 
@@ -731,13 +732,20 @@ void MainWindow::setStyleName(const QString& name) {
 
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
-    if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+        if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
 }
 
 void MainWindow::setContrastThreshold(float val) {
     settings.setValue("ui/contrastThreshold", val);
     dirtyTiming_ = true;
     scheduleUiRefresh();
+}
+
+void MainWindow::setTrackMapLabelMode(int mode) {
+    settings.setValue("ui/trackMapLabelMode", mode);
+    if (trackMap_) {
+        trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(mode));
+    }
 }
 
 void MainWindow::onDatagramReady() {

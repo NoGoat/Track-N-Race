@@ -23,6 +23,7 @@ void MainWindow::updateTrackMapPage() {
     // Theme: derive light/dark from the active palette.
     const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
     trackMap_->setDark(dark);
+    trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(trackMapLabelMode()));
 
     if (!lastParticipantsData.empty())
         trackMap_->setParticipants(lastParticipantsData);

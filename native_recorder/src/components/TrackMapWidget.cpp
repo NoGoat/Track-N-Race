@@ -129,16 +129,6 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
         positionControls();
     });
 
-    labelsCombo_ = new QComboBox(this);
-    labelsCombo_->addItem("Dots & Labels", (int)LabelMode::DotsAndLabels);
-    labelsCombo_->addItem("Dots Only", (int)LabelMode::DotsOnly);
-    labelsCombo_->addItem("Labels Only", (int)LabelMode::LabelsOnly);
-    labelsCombo_->setCurrentIndex(0);
-    connect(labelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        labelMode_ = static_cast<LabelMode>(labelsCombo_->currentData().toInt());
-        update();
-    });
-
     positionControls();
 }
 
@@ -430,6 +420,12 @@ void TrackMapWidget::setDark(bool dark) {
     update();
 }
 
+void TrackMapWidget::setLabelMode(LabelMode mode) {
+    if (labelMode_ == mode) return;
+    labelMode_ = mode;
+    update();
+}
+
 bool TrackMapWidget::interpCar(int idx, double t, double& outX, double& outZ) const {
     const Car* cur = nullptr;
     for (const Car& c : curSnap_.cars) if (c.idx == idx) { cur = &c; break; }
@@ -602,14 +598,6 @@ void TrackMapWidget::positionControls() {
         currentX -= gap + zw;
         zoomCombo_->move(currentX, margin);
         zoomCombo_->raise();
-    }
-
-    if (labelsCombo_) {
-        const int lw = std::max(120, labelsCombo_->sizeHint().width());
-        labelsCombo_->setFixedWidth(lw);
-        currentX -= gap + lw;
-        labelsCombo_->move(currentX, margin);
-        labelsCombo_->raise();
     }
 }
 
