@@ -83,20 +83,19 @@ QWidget* MainWindow::buildPowerPage() {
     const QColor cMguk("#FADE2A");
     const QColor cFuel("#F0A500");
 
-    topLay->addWidget(makeStatCard("TOTAL POWER", &pp_totalPowerVal, "kW", QColor()));
+    topLay->addWidget(makeStatCard("TOTAL POWER", &pp_totalPowerVal, "kW", QColor()), 1);
     QFrame* d1 = new QFrame; d1->setFrameShape(QFrame::VLine); d1->setFrameShadow(QFrame::Sunken); topLay->addWidget(d1);
-    topLay->addWidget(makeStatCard("ICE", &pp_iceVal, "kW", cIce));
+    topLay->addWidget(makeStatCard("ICE", &pp_iceVal, "kW", cIce), 1);
     QFrame* d2 = new QFrame; d2->setFrameShape(QFrame::VLine); d2->setFrameShadow(QFrame::Sunken); topLay->addWidget(d2);
-    topLay->addWidget(makeStatCard("MGU-K", &pp_mgukVal, "kW", cMguk));
+    topLay->addWidget(makeStatCard("MGU-K", &pp_mgukVal, "kW", cMguk), 1);
     QFrame* d3 = new QFrame; d3->setFrameShape(QFrame::VLine); d3->setFrameShadow(QFrame::Sunken); topLay->addWidget(d3);
-    topLay->addWidget(makeStatCard("SPLIT", &pp_splitVal, "", QColor()));
+    topLay->addWidget(makeStatCard("SPLIT", &pp_splitVal, "", QColor()), 1);
     QFrame* d4 = new QFrame; d4->setFrameShape(QFrame::VLine); d4->setFrameShadow(QFrame::Sunken); topLay->addWidget(d4);
-    topLay->addWidget(makeStatCard("ERS STORE", &pp_ersStoreVal, "MJ", QColor()));
+    topLay->addWidget(makeStatCard("ERS STORE", &pp_ersStoreVal, "MJ", QColor()), 1);
     QFrame* d5 = new QFrame; d5->setFrameShape(QFrame::VLine); d5->setFrameShadow(QFrame::Sunken); topLay->addWidget(d5);
-    topLay->addWidget(makeStatCard("ERS %", &pp_ersPctVal, "%", QColor()));
+    topLay->addWidget(makeStatCard("ERS %", &pp_ersPctVal, "%", QColor()), 1);
     QFrame* d6 = new QFrame; d6->setFrameShape(QFrame::VLine); d6->setFrameShadow(QFrame::Sunken); topLay->addWidget(d6);
-    topLay->addWidget(makeStatCard("FUEL", &pp_fuelVal, "kg", cFuel));
-    topLay->addStretch();
+    topLay->addWidget(makeStatCard("FUEL", &pp_fuelVal, "kg", cFuel), 1);
 
     vbox->addWidget(topBar);
     QFrame* hdiv = new QFrame; hdiv->setFrameShape(QFrame::HLine); hdiv->setFrameShadow(QFrame::Sunken); vbox->addWidget(hdiv);
