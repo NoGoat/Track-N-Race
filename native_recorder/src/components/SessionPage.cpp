@@ -23,30 +23,46 @@ public:
     std::vector<std::pair<float, int>> zones;
 
     explicit MarshalStripWidget(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedHeight(14);
+        setFixedHeight(4);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
         const int w = width(), h = height();
-        p.fillRect(0, 0, w, h, QColor("#484c62"));
+        
+        if (zones.empty()) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 18));
+            p.drawRoundedRect(0, 0, w, h, h / 2.0, h / 2.0);
+            return;
+        }
+
+        const int gap = 2;
+        p.setPen(Qt::NoPen);
         for (size_t i = 0; i < zones.size(); ++i) {
             float start = zones[i].first;
             float end   = (i + 1 < zones.size()) ? zones[i + 1].first : 1.0f;
             int x0 = (int)(start * w);
             int x1 = (int)(end   * w);
             if (x1 <= x0) x1 = x0 + 1;
+            
+            if (i + 1 < zones.size() && x1 - x0 > gap) {
+                x1 -= gap;
+            }
+
             QColor c;
             switch (zones[i].second) {
                 case 1:  c = QColor("#fdd835"); break;
                 case 2:  c = QColor("#00c853"); break;
                 case 3:  c = QColor("#2196f3"); break;
                 case 4:  c = QColor("#e53935"); break;
-                default: c = QColor("#484c62"); break;
+                default: c = QColor(255, 255, 255, 18); break;
             }
-            p.fillRect(x0, 0, x1 - x0, h, c);
+            p.setBrush(c);
+            p.drawRoundedRect(x0, 0, x1 - x0, h, h / 2.0, h / 2.0);
         }
     }
 };
@@ -233,32 +249,46 @@ QWidget* MainWindow::buildSessionPage() {
 
     QWidget* zoneWrap = new QWidget;
     QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
-    zv->setContentsMargins(0, 6, 0, 6);
-    zv->setSpacing(5);
+    zv->setContentsMargins(16, 6, 16, 6);
+    zv->setSpacing(8);
+    
+    QWidget* headerWrap = new QWidget;
+    QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
+    headerL->setContentsMargins(0, 0, 0, 0);
+    
     QLabel* zonesLbl = new QLabel("ZONES");
     QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
     zonesLbl->setFont(zlf);
     zonesLbl->setForegroundRole(QPalette::PlaceholderText);
-    zv->addWidget(zonesLbl);
-    auto* strip = new MarshalStripWidget;
-    sp_marshalStrip = strip;
-    zv->addWidget(strip);
+    headerL->addWidget(zonesLbl);
+    headerL->addStretch();
+    
     QWidget* legend = new QWidget;
     QHBoxLayout* lh = new QHBoxLayout(legend);
     lh->setContentsMargins(0, 0, 0, 0);
-    lh->setSpacing(8);
+    lh->setSpacing(12);
     struct LegItem { const char* col; const char* name; };
-    LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"#484c62","Clear"}};
+    LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"rgba(255,255,255,0.07)","Clear"}};
     for (auto& li : legItems) {
-        QLabel* dot = new QLabel; dot->setFixedSize(8, 8);
-        dot->setStyleSheet(QString("background:%1; border-radius:4px;").arg(li.col));
+        QLabel* dot = new QLabel; dot->setFixedSize(12, 12);
+        dot->setStyleSheet(QString("background:%1; border: 1px solid rgba(255,255,255,0.1); border-radius:2px;").arg(li.col));
         QLabel* txt = new QLabel(li.name);
         QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
         txt->setForegroundRole(QPalette::PlaceholderText);
-        lh->addWidget(dot); lh->addWidget(txt);
+        
+        QWidget* wrap = new QWidget;
+        QHBoxLayout* wh = new QHBoxLayout(wrap);
+        wh->setContentsMargins(0,0,0,0);
+        wh->setSpacing(4);
+        wh->addWidget(dot); wh->addWidget(txt);
+        lh->addWidget(wrap);
     }
-    lh->addStretch();
-    zv->addWidget(legend);
+    headerL->addWidget(legend);
+    zv->addWidget(headerWrap);
+
+    auto* strip = new MarshalStripWidget;
+    sp_marshalStrip = strip;
+    zv->addWidget(strip);
     hh->addWidget(zoneWrap, 1);
 
     QWidget* tmBlock = new QWidget;
@@ -571,8 +601,12 @@ void MainWindow::updateSessionPage() {
     if (lastSessionData.contains("marshal_zones")) {
         auto* ms = static_cast<MarshalStripWidget*>(sp_marshalStrip);
         ms->zones.clear();
-        for (const auto& z : lastSessionData["marshal_zones"])
-            ms->zones.push_back({z.value("zone_start", 0.0f), z.value("flag", 0)});
+        for (const auto& z : lastSessionData["marshal_zones"]) {
+            int flag = z.value("flag", -1);
+            if (flag != -1) {
+                ms->zones.push_back({z.value("zone_start", 0.0f), flag});
+            }
+        }
         ms->update();
     }
 
