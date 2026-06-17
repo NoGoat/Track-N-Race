@@ -55,10 +55,10 @@ protected:
 
             QColor c;
             switch (zones[i].second) {
-                case 1:  c = QColor("#fdd835"); break;
-                case 2:  c = QColor("#00c853"); break;
-                case 3:  c = QColor("#2196f3"); break;
-                case 4:  c = QColor("#e53935"); break;
+                case 1:  c = QColor("#00c853"); break; // green
+                case 2:  c = QColor("#2196f3"); break; // blue
+                case 3:  c = QColor("#fdd835"); break; // yellow
+                case 4:  c = QColor("#e53935"); break; // red
                 default: c = QColor(255, 255, 255, 18); break;
             }
             p.setBrush(c);
