@@ -131,6 +131,9 @@ private:
     nlohmann::json   lastTimingData;
     nlohmann::json   lastParticipantsData;
     nlohmann::json   lastAllStatusData;
+    int              fastestLapCarIdx_ = -1;
+    bool             fastestLapSet_    = false;
+    std::unordered_map<int, int> sessionHistoryBest_;
     nlohmann::json   lastPlayerLapData;
     nlohmann::json   lastPlayerStatusData;
 
@@ -345,6 +348,7 @@ private:
     void truncateTimeline(float newSessionTime);
     void processPacket(const uint8_t* data, int length);
     void recordRow(const nlohmann::json& row, float sessionTime);
+    void resetFastestLapState();
     void emitLiveData(const nlohmann::json& row);
     void ingestForModel(const nlohmann::json& row, float sessionTime);
     bool isDuplicate(const std::string& type, const nlohmann::json& row);

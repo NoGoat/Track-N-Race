@@ -962,6 +962,7 @@ void MainWindow::closeActiveStream() {
     activeGzipPath.clear();
     lastSessionTime = -1.0f;
     dedupeCache.clear();
+    resetFastestLapState();
 }
 
 void MainWindow::startNewStream(int trackId, int sessionType, int format) {
@@ -1145,7 +1146,10 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         lastSessionData = row;
         dirtySession_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
-        if (row.value("code", "") == "SSTA") sessionEventLog.clear();
+        if (row.value("code", "") == "SSTA") {
+            sessionEventLog.clear();
+            resetFastestLapState();
+        }
         sessionEventLog.push_back(row);
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (type == "timing") {
@@ -1157,7 +1161,32 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
     } else if (type == "all_status") {
         lastAllStatusData = row;
         dirtyTiming_ = true; scheduleUiRefresh();
+    } else if (type == "fastest_lap") {
+        fastestLapCarIdx_ = row.value("car_idx", -1);
+        fastestLapSet_ = true;
+        dirtyTiming_ = true; scheduleUiRefresh();
+    } else if (type == "session_history_fastest") {
+        if (!fastestLapSet_) {
+            int carIdx = row.value("car_idx", -1);
+            int ms = row.value("best_lap_time_ms", 0);
+            sessionHistoryBest_[carIdx] = ms;
+            int minMs = std::numeric_limits<int>::max();
+            int minIdx = -1;
+            for (const auto& kv : sessionHistoryBest_) {
+                if (kv.second < minMs) { minMs = kv.second; minIdx = kv.first; }
+            }
+            if (fastestLapCarIdx_ != minIdx) {
+                fastestLapCarIdx_ = minIdx;
+                dirtyTiming_ = true; scheduleUiRefresh();
+            }
+        }
     }
+}
+
+void MainWindow::resetFastestLapState() {
+    fastestLapCarIdx_ = -1;
+    fastestLapSet_ = false;
+    sessionHistoryBest_.clear();
 }
 
 void MainWindow::scheduleUiRefresh() {

@@ -477,17 +477,31 @@ void MainWindow::updateTimingTable() {
         else if (pos == 2) posColor = QColor("#C0C0C0");
         else if (pos == 3) posColor = QColor("#CD7F32");
 
-        // Bold when this driver's data is shown in the race panel:
+        // Highlight when this driver's data is shown in the race panel:
         // — explicit selection, or player when nothing is selected
         bool showingThisDriver = (idx == selectedCarIdx) ||
                                  (isPlayer && selectedCarIdx == -1);
         QFont cellFont;
-        if (showingThisDriver) cellFont.setBold(true);
+
+        bool isFastest = (idx == fastestLapCarIdx_);
+        QBrush bgBrush;
+        bool hasCustomBg = false;
+
+        if (showingThisDriver) {
+            QColor accentColor = timingTable->palette().color(QPalette::Highlight);
+            accentColor.setAlpha(38); // ~15% opacity
+            bgBrush = QBrush(accentColor);
+            hasCustomBg = true;
+        } else if (isFastest) {
+            bgBrush = QBrush(QColor(191, 95, 255, 38)); // #BF5FFF ~15% opacity
+            hasCustomBg = true;
+        }
 
         auto makeItem = [&](const QString& text, bool center = false) {
             auto* item = new QTableWidgetItem(text);
             item->setFont(cellFont);
             if (center) item->setTextAlignment(Qt::AlignCenter);
+            if (hasCustomBg) item->setBackground(bgBrush);
             return item;
         };
 
