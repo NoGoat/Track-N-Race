@@ -21,7 +21,7 @@ RideHeightChart::RideHeightChart(QWidget* parent) : ChartView(parent) {
     yAx.side = ChartView::Side::Left;
     yAx.min = 0.0;
     yAx.max = 150.0;
-    yAx.grid = true;
+    yAx.grid = false;
     int axYId = addAxis(yAx);
     setAxisNumberSuffix(axYId, 1.0, " mm", 10.0);
 
@@ -44,6 +44,7 @@ RideHeightChart::RideHeightChart(QWidget* parent) : ChartView(parent) {
     rearId_ = addSeries(rearSpec);
 
     setHoverReadout(true);
+    setLegendVisible(false);
 }
 
 void RideHeightChart::setModel(SessionModel* m) {
@@ -125,29 +126,18 @@ void RideHeightChart::buildDefault(float endTime) {
 
     int startIndex = 0;
     if (lastAddedTime_ >= 0) {
-        auto it = std::lower_bound(buf.begin(), buf.end(), lastAddedTime_,
+        auto it = std::lower_bound(buf.begin(), buf.end(), lastAddedTime_ + 0.0001f,
             [](const MotionExSample& s, float t) { return s.t < t; });
         startIndex = std::distance(buf.begin(), it);
     }
 
     if (startIndex < buf.size()) {
-        QVector<double> ts, fronts, rears;
-        ts.reserve(buf.size() - startIndex);
-        fronts.reserve(buf.size() - startIndex);
-        rears.reserve(buf.size() - startIndex);
-
         for (int i = startIndex; i < buf.size(); ++i) {
             const auto& s = buf[i];
             if (s.t > endTime) break;
-            ts.push_back(s.t);
-            fronts.push_back(s.front_aero);
-            rears.push_back(s.rear_aero);
+            appendPoint(frontId_, s.t, s.front_aero);
+            appendPoint(rearId_, s.t, s.rear_aero);
             lastAddedTime_ = s.t;
-        }
-
-        if (!ts.isEmpty()) {
-            putSeries(frontId_, ts, fronts);
-            putSeries(rearId_, ts, rears);
         }
     }
 
@@ -155,14 +145,4 @@ void RideHeightChart::buildDefault(float endTime) {
     trimBefore(frontId_, startTime);
     trimBefore(rearId_, startTime);
     prevEndTime_ = endTime;
-}
-
-void RideHeightChart::putSeries(int id, const QVector<double>& xs, const QVector<double>& ys) {
-    if (lastAddedTime_ < 0) {
-        setSeriesData(id, xs, ys);
-    } else {
-        for (int i = 0; i < xs.size(); ++i) {
-            appendPoint(id, xs[i], ys[i]);
-        }
-    }
 }

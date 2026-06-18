@@ -21,7 +21,7 @@ GForceChart::GForceChart(QWidget* parent) : ChartView(parent) {
     yAx.side = ChartView::Side::Left;
     yAx.min = -6.0;
     yAx.max = 6.0;
-    yAx.grid = true;
+    yAx.grid = false;
     int axYId = addAxis(yAx);
     setAxisNumberSuffix(axYId, 1.0, " G", 1.0);
 
@@ -44,6 +44,7 @@ GForceChart::GForceChart(QWidget* parent) : ChartView(parent) {
     longId_ = addSeries(longSpec);
 
     setHoverReadout(true);
+    setLegendVisible(false);
 }
 
 void GForceChart::setModel(SessionModel* m) {
@@ -125,29 +126,18 @@ void GForceChart::buildDefault(float endTime) {
 
     int startIndex = 0;
     if (lastAddedTime_ >= 0) {
-        auto it = std::lower_bound(buf.begin(), buf.end(), lastAddedTime_,
+        auto it = std::lower_bound(buf.begin(), buf.end(), lastAddedTime_ + 0.0001f,
             [](const MotionSample& s, float t) { return s.t < t; });
         startIndex = std::distance(buf.begin(), it);
     }
 
     if (startIndex < buf.size()) {
-        QVector<double> ts, lats, longs;
-        ts.reserve(buf.size() - startIndex);
-        lats.reserve(buf.size() - startIndex);
-        longs.reserve(buf.size() - startIndex);
-
         for (int i = startIndex; i < buf.size(); ++i) {
             const auto& s = buf[i];
             if (s.t > endTime) break;
-            ts.push_back(s.t);
-            lats.push_back(s.g_lat);
-            longs.push_back(s.g_long);
+            appendPoint(latId_, s.t, s.g_lat);
+            appendPoint(longId_, s.t, s.g_long);
             lastAddedTime_ = s.t;
-        }
-
-        if (!ts.isEmpty()) {
-            putSeries(latId_, ts, lats);
-            putSeries(longId_, ts, longs);
         }
     }
 
@@ -155,14 +145,4 @@ void GForceChart::buildDefault(float endTime) {
     trimBefore(latId_, startTime);
     trimBefore(longId_, startTime);
     prevEndTime_ = endTime;
-}
-
-void GForceChart::putSeries(int id, const QVector<double>& xs, const QVector<double>& ys) {
-    if (lastAddedTime_ < 0) {
-        setSeriesData(id, xs, ys);
-    } else {
-        for (int i = 0; i < xs.size(); ++i) {
-            appendPoint(id, xs[i], ys[i]);
-        }
-    }
 }

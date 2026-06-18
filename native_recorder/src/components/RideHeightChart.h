@@ -29,7 +29,6 @@ private:
     void refresh();
 
     void buildDefault(float endTime);
-    void putSeries(int id, const QVector<double>& xs, const QVector<double>& ys);
 
     float currentTime() const;
 

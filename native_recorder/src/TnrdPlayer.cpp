@@ -48,6 +48,8 @@ static uint8_t scanType(const char* d, int len) {
             if (r >= 8  && memcmp(v, "session\"",     8)  == 0) return 5;
             if (r >= 10 && memcmp(v, "race_event",  10)  == 0) return 6;
             if (r >= 9  && memcmp(v, "tyre_sets",    9)  == 0) return 10;
+            if (r >= 7  && memcmp(v, "motion\"",     7)  == 0) return 11;
+            if (r >= 10 && memcmp(v, "motion_ex\"", 10)  == 0) return 12;
             return 0;
         }
     }
@@ -65,6 +67,8 @@ uint8_t TnrdPlayer::typeId(const std::string& s) {
     if (s == "participants") return 8;
     if (s == "all_status")   return 9;
     if (s == "tyre_sets")    return 10;
+    if (s == "motion")       return 11;
+    if (s == "motion_ex")    return 12;
     return 0;
 }
 
@@ -342,7 +346,7 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
 
         // Build the chart's session model in the same pass. Only the three row
         // types the chart needs are parsed; timing/participants/etc are skipped.
-        if (tid == 1 || tid == 2 || tid == 4) {
+        if (tid == 1 || tid == 2 || tid == 4 || tid == 11 || tid == 12) {
             try {
                 nlohmann::json j = nlohmann::json::parse(ld, ld + ll);
                 if (tid == 1)
@@ -368,6 +372,14 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
                                    j.value("current_lap_ms", 0),
                                    j.value("last_lap_ms", 0),
                                    j.value("lap_invalid", false));
+                } else if (tid == 11) {
+                    scanned_.onMotion(t,
+                                      j.value("g_lat", 0.0f),
+                                      j.value("g_long", 0.0f));
+                } else if (tid == 12) {
+                    scanned_.onMotionEx(t,
+                                        j.value("front_aero_height_mm", 0.0f),
+                                        j.value("rear_aero_height_mm", 0.0f));
                 }
             } catch (...) {}
         }
@@ -419,6 +431,8 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
     auto byT = [](auto a, auto b) { return a.t < b.t; };
     std::sort(scanned_.telBuf.begin(), scanned_.telBuf.end(), byT);
     std::sort(scanned_.stsBuf.begin(), scanned_.stsBuf.end(), byT);
+    std::sort(scanned_.motionBuf.begin(), scanned_.motionBuf.end(), byT);
+    std::sort(scanned_.motionExBuf.begin(), scanned_.motionExBuf.end(), byT);
     for (LapBlock& l : scanned_.laps) {
         std::sort(l.tel.begin(), l.tel.end(), byT);
         std::sort(l.sts.begin(), l.sts.end(), byT);
