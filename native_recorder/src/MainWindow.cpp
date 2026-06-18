@@ -180,6 +180,20 @@ static QIcon closeRecordingIcon(QWidget* w) {
         w->style()->standardIcon(QStyle::SP_DialogCloseButton));
 }
 
+static QIcon seekBackwardIcon(QWidget* w, const QColor& tint) {
+    return adaptThemeIcon(
+        QIcon::fromTheme("media-seek-backward", QIcon::fromTheme("go-previous")),
+        tint,
+        w->style()->standardIcon(QStyle::SP_MediaSeekBackward));
+}
+
+static QIcon seekForwardIcon(QWidget* w, const QColor& tint) {
+    return adaptThemeIcon(
+        QIcon::fromTheme("media-seek-forward", QIcon::fromTheme("go-next")),
+        tint,
+        w->style()->standardIcon(QStyle::SP_MediaSeekForward));
+}
+
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
 // handle straight to the clicked position, but Linux styles (Breeze, Fusion,
 // GTK) treat a groove click as a page step in that direction instead — hence
@@ -415,12 +429,29 @@ MainWindow::MainWindow(QWidget* parent)
     pbLayout->setSpacing(10);
 
     const QColor iconTint = palette().color(QPalette::Text);
+
+    pb_seekBackBtn_ = new QPushButton(pb_bar_);
+    pb_seekBackBtn_->setIcon(seekBackwardIcon(this, iconTint));
+    pb_seekBackBtn_->setIconSize(QSize(20, 20));
+    pb_seekBackBtn_->setFixedSize(34, 34);
+    pb_seekBackBtn_->setFlat(true);
+    pb_seekBackBtn_->setToolTip("Skip Backward 5s");
+    pbLayout->addWidget(pb_seekBackBtn_);
+
     pb_playBtn_ = new QPushButton(pb_bar_);
     pb_playBtn_->setIcon(playPauseIcon(false, iconTint));
     pb_playBtn_->setIconSize(QSize(20, 20));
     pb_playBtn_->setFixedSize(34, 34);
     pb_playBtn_->setFlat(true);
     pbLayout->addWidget(pb_playBtn_);
+
+    pb_seekFwdBtn_ = new QPushButton(pb_bar_);
+    pb_seekFwdBtn_->setIcon(seekForwardIcon(this, iconTint));
+    pb_seekFwdBtn_->setIconSize(QSize(20, 20));
+    pb_seekFwdBtn_->setFixedSize(34, 34);
+    pb_seekFwdBtn_->setFlat(true);
+    pb_seekFwdBtn_->setToolTip("Skip Forward 5s");
+    pbLayout->addWidget(pb_seekFwdBtn_);
 
     pb_slider_ = new ScrubSlider(Qt::Horizontal, pb_bar_);
     pb_slider_->setRange(0, 1000);
@@ -626,9 +657,17 @@ MainWindow::MainWindow(QWidget* parent)
         pbLastPlaying_ = false;
     });
 
+    connect(pb_seekBackBtn_, &QPushButton::clicked, this, [this] {
+        player_->seekToTime(player_->currentTime() - 5.0f);
+    });
+
     connect(pb_playBtn_, &QPushButton::clicked, this, [this] {
         if (player_->isPlaying()) player_->pause();
         else player_->play();
+    });
+
+    connect(pb_seekFwdBtn_, &QPushButton::clicked, this, [this] {
+        player_->seekToTime(player_->currentTime() + 5.0f);
     });
 
     connect(pb_slider_, &QSlider::valueChanged, this, [this](int val) {

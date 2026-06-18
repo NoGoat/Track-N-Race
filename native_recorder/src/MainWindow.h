@@ -251,7 +251,9 @@ private:
     bool         pbLastPlaying_  = false;   // only swap the play/pause icon on change
     QWidget*     pb_bar_         = nullptr;
     QFrame*      pb_sep_         = nullptr;
+    QPushButton* pb_seekBackBtn_ = nullptr;
     QPushButton* pb_playBtn_     = nullptr;
+    QPushButton* pb_seekFwdBtn_  = nullptr;
     QSlider*     pb_slider_      = nullptr;
     QLabel*      pb_timeLabel_   = nullptr;
     QComboBox*   pb_speedCombo_  = nullptr;
