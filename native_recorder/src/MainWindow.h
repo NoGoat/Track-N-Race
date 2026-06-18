@@ -255,6 +255,7 @@ private:
     QSlider*     pb_slider_      = nullptr;
     QLabel*      pb_timeLabel_   = nullptr;
     QComboBox*   pb_speedCombo_  = nullptr;
+    QComboBox*   pb_lapCombo_    = nullptr;
     QWidget*     container_      = nullptr;
     QWidget*     loadingOverlay_ = nullptr;
 

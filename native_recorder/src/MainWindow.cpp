@@ -422,6 +422,10 @@ MainWindow::MainWindow(QWidget* parent)
     pb_timeLabel_ = new QLabel("0:00 / 0:00", pb_bar_);
     pbLayout->addWidget(pb_timeLabel_);
 
+    pb_lapCombo_ = new QComboBox(pb_bar_);
+    pb_lapCombo_->addItem("Select Lap...", -1.0f);
+    pbLayout->addWidget(pb_lapCombo_);
+
     pb_speedCombo_ = new QComboBox(pb_bar_);
     pb_speedCombo_->addItem("0.25×", 0.25f);
     pb_speedCombo_->addItem("0.5×",  0.5f);
@@ -509,6 +513,19 @@ MainWindow::MainWindow(QWidget* parent)
         inPlayback_ = true;
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
         if (model_) model_->load(player_->takeScannedData());
+        
+        if (pb_lapCombo_) {
+            pb_lapCombo_->blockSignals(true);
+            pb_lapCombo_->clear();
+            pb_lapCombo_->addItem("Select Lap...", -1.0f);
+            if (model_) {
+                for (const auto& lap : model_->data().laps) {
+                    pb_lapCombo_->addItem(QString("Lap %1").arg(lap.lapNum), lap.startSessionTime);
+                }
+            }
+            pb_lapCombo_->setCurrentIndex(0);
+            pb_lapCombo_->blockSignals(false);
+        }
         if (chart) { chart->setPlaybackMode(true); chart->setCurrentTime(player_->currentTime()); }
         if (gearChart_) { gearChart_->setPlaybackMode(true); gearChart_->setCurrentTime(player_->currentTime()); }
         if (inputsChart_) { inputsChart_->setPlaybackMode(true); inputsChart_->setCurrentTime(player_->currentTime()); }
@@ -557,6 +574,27 @@ MainWindow::MainWindow(QWidget* parent)
             seekerUpdating_ = false;
         }
         pb_timeLabel_->setText(fmtTime(cur) + " / " + fmtTime(total));
+        if (model_ && pb_lapCombo_) {
+            const LapBlock* currentLap = model_->data().lapAtTime(player_->currentTime());
+            if (currentLap) {
+                for (int i = 1; i < pb_lapCombo_->count(); ++i) {
+                    if (pb_lapCombo_->itemData(i).toFloat() == currentLap->startSessionTime) {
+                        if (pb_lapCombo_->currentIndex() != i) {
+                            pb_lapCombo_->blockSignals(true);
+                            pb_lapCombo_->setCurrentIndex(i);
+                            pb_lapCombo_->blockSignals(false);
+                        }
+                        break;
+                    }
+                }
+            } else {
+                if (pb_lapCombo_->currentIndex() != 0) {
+                    pb_lapCombo_->blockSignals(true);
+                    pb_lapCombo_->setCurrentIndex(0);
+                    pb_lapCombo_->blockSignals(false);
+                }
+            }
+        }
     });
 
     connect(player_, &TnrdPlayer::finished, this, [this] {
@@ -576,6 +614,15 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(pb_speedCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
         player_->setSpeed(pb_speedCombo_->itemData(idx).toFloat());
+    });
+
+    connect(pb_lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        if (idx > 0) {
+            float targetTime = pb_lapCombo_->itemData(idx).toFloat();
+            if (targetTime >= 0) {
+                player_->seekToTime(targetTime);
+            }
+        }
     });
 
     connect(closeRecBtn, &QPushButton::clicked, this, [this] {

@@ -25,6 +25,7 @@ public:
     void pause();
     void close();
     void seek(float pct);
+    void seekToTime(float absoluteTime);
     void setSpeed(float mult);
 
     float totalTime()   const { return totalTime_; }

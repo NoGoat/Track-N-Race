@@ -237,6 +237,13 @@ void TnrdPlayer::seek(float pct) {
     emitState();
 }
 
+void TnrdPlayer::seekToTime(float targetTime) {
+    if (index_.empty()) return;
+    const float duration = std::max(0.0f, totalTime_ - startTime_);
+    float pct = duration > 0.0f ? (targetTime - startTime_) / duration : 0.0f;
+    seek(pct);
+}
+
 void TnrdPlayer::setSpeed(float mult) {
     speed_ = mult;
     emitState();
