@@ -479,13 +479,31 @@ void MainWindow::updateTimingTable() {
 
     if (orderOrSettingChanged) {
         rowSafeColors.resize(active.size());
+        auto blend = [](const QColor& fg, const QColor& bg) {
+            float alpha = fg.alphaF();
+            return QColor::fromRgbF(
+                fg.redF() * alpha + bg.redF() * (1.0f - alpha),
+                fg.greenF() * alpha + bg.greenF() * (1.0f - alpha),
+                fg.blueF() * alpha + bg.blueF() * (1.0f - alpha)
+            );
+        };
         for (int row = 0; row < (int)active.size(); ++row) {
             int idx = active[row].value("idx", -1);
             auto di = driverMap.find(idx);
             QColor rawColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
-            QColor bgColor = timingTable->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
+            QColor bgNormal = timingTable->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
             QColor fallback = timingTable->palette().color(QPalette::Text);
-            rowSafeColors[row] = ensureContrast(rawColor, bgColor, fallback, currentThreshold);
+
+            QColor accentColor = timingTable->palette().color(QPalette::Highlight);
+            accentColor.setAlpha(38);
+            QColor bgHighlight = blend(accentColor, bgNormal);
+
+            QColor fastestColor(191, 95, 255, 38);
+            QColor bgFastest = blend(fastestColor, bgNormal);
+
+            rowSafeColors[row].normal = ensureContrast(rawColor, bgNormal, fallback, currentThreshold);
+            rowSafeColors[row].highlighted = ensureContrast(rawColor, bgHighlight, fallback, currentThreshold);
+            rowSafeColors[row].fastestLap = ensureContrast(rawColor, bgFastest, fallback, currentThreshold);
         }
     }
 
@@ -573,7 +591,10 @@ void MainWindow::updateTimingTable() {
         if (posColor.isValid()) posItem->setForeground(posColor);
         timingTable->setItem(row, 0, posItem);
 
-        QColor safeDriverColor = rowSafeColors[row];
+        QColor safeDriverColor;
+        if (showingThisDriver) safeDriverColor = rowSafeColors[row].highlighted;
+        else if (isFastest)    safeDriverColor = rowSafeColors[row].fastestLap;
+        else                   safeDriverColor = rowSafeColors[row].normal;
 
         // Col 1: #
         auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—", true);

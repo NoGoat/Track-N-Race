@@ -125,8 +125,13 @@ private:
     // ── Standings page ────────────────────────────────────────────
     QTableWidget*    timingTable         = nullptr;
     int              selectedCarIdx      = -1;   // -1 = no selection (show player)
+    struct RowContrastColors {
+        QColor normal;
+        QColor highlighted;
+        QColor fastestLap;
+    };
     std::vector<int> tableRowCarIdx;             // row index → car idx
-    std::vector<QColor> rowSafeColors;           // cached contrast colors per row
+    std::vector<RowContrastColors> rowSafeColors; // cached contrast colors per row
     float            lastContrastThreshold = -1.0f;
     nlohmann::json   lastTimingData;
     nlohmann::json   lastParticipantsData;
