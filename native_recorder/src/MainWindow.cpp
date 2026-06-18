@@ -363,6 +363,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (pp_harvestChart) pp_harvestChart->setWindowSeconds(secs);
         if (pp_storeChart) pp_storeChart->setWindowSeconds(secs);
         if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
+        if (gforceChart_) gforceChart_->setWindowSeconds(secs);
+        if (rideHeightChart_) rideHeightChart_->setWindowSeconds(secs);
     });
 
     toolbar->addSeparator();

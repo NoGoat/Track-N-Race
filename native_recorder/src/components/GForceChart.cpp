@@ -23,7 +23,7 @@ GForceChart::GForceChart(QWidget* parent) : ChartView(parent) {
     yAx.max = 6.0;
     yAx.grid = false;
     int axYId = addAxis(yAx);
-    setAxisNumberSuffix(axYId, 1.0, " G", 1.0);
+    setAxisNumberSuffix(axYId, 1.0, " G");
 
     ChartView::SeriesSpec latSpec;
     latSpec.name = "Lateral G";
@@ -75,8 +75,9 @@ void GForceChart::setPlaybackMode(bool on) {
 void GForceChart::setWindowSeconds(float seconds) {
     if (qFuzzyCompare(windowS_, seconds)) return;
     windowS_ = seconds;
-    prevEndTime_ = -1.0f;
-    requestRefresh();
+    prevEndTime_ = 999999.0f;
+    dirty_ = true;
+    refresh();
 }
 
 void GForceChart::setCurrentTime(float t) {

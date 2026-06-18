@@ -20,10 +20,10 @@ RideHeightChart::RideHeightChart(QWidget* parent) : ChartView(parent) {
     ChartView::AxisSpec yAx;
     yAx.side = ChartView::Side::Left;
     yAx.min = 0.0;
-    yAx.max = 150.0;
+    yAx.max = 100.0;
     yAx.grid = false;
     int axYId = addAxis(yAx);
-    setAxisNumberSuffix(axYId, 1.0, " mm", 10.0);
+    setAxisNumberSuffix(axYId, 1.0, " mm");
 
     ChartView::SeriesSpec frontSpec;
     frontSpec.name = "Front";
@@ -75,8 +75,9 @@ void RideHeightChart::setPlaybackMode(bool on) {
 void RideHeightChart::setWindowSeconds(float seconds) {
     if (qFuzzyCompare(windowS_, seconds)) return;
     windowS_ = seconds;
-    prevEndTime_ = -1.0f;
-    requestRefresh();
+    prevEndTime_ = 999999.0f;
+    dirty_ = true;
+    refresh();
 }
 
 void RideHeightChart::setCurrentTime(float t) {
