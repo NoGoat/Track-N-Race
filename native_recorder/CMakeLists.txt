@@ -72,6 +72,9 @@ set(SOURCES
     src/components/SessionPage.cpp
     src/components/InputPage.cpp
     src/components/PowerPage.cpp
+    src/components/MiscPage.cpp
+    src/components/EditMiscLayoutDialog.h
+    src/components/EditMiscLayoutDialog.cpp
     src/components/PowerChart.cpp
     src/components/PowerChart.h
     src/components/GearChart.cpp
@@ -80,6 +83,10 @@ set(SOURCES
     src/components/InputsChart.h
     src/components/SteeringChart.cpp
     src/components/SteeringChart.h
+    src/components/GForceChart.cpp
+    src/components/GForceChart.h
+    src/components/RideHeightChart.cpp
+    src/components/RideHeightChart.h
     src/components/TrackMapPage.cpp
     src/components/TrackMapWidget.cpp
     src/components/TrackMapWidget.h

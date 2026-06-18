@@ -16,6 +16,8 @@ struct StsSample {
     float mguk_harvest_j = 0;
     float mguh_harvest_j = 0;
 };
+struct MotionSample { float t = 0; float g_lat = 0; float g_long = 0; };
+struct MotionExSample { float t = 0; float front_aero = 0; float rear_aero = 0; };
 
 // One lap's telemetry/status, plus its timing. Mirrors the Electron
 // SpeedRpmLapBlock used by the chart's per-lap and comparison modes.
@@ -39,6 +41,8 @@ struct SessionData {
     // whole session (so a window can end anywhere on the slider).
     QVector<TelSample> telBuf;
     QVector<StsSample> stsBuf;
+    QVector<MotionSample> motionBuf;
+    QVector<MotionExSample> motionExBuf;
 
     QVector<LapBlock>  laps;       // completed (and, after load, the final) laps
     LapBlock           curLap;     // in-progress lap (live only)
@@ -54,6 +58,8 @@ struct SessionData {
 
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
+    void onMotion(float t, float g_lat, float g_long);
+    void onMotionEx(float t, float front_aero, float rear_aero);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);          // time went backward → fresh session
     void finalizeOpenLap();                       // push the trailing in-progress lap
@@ -79,6 +85,8 @@ public:
     // Live ingest.
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
+    void onMotion(float t, float g_lat, float g_long);
+    void onMotionEx(float t, float front_aero, float rear_aero);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);
     void clear();

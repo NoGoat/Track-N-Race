@@ -25,11 +25,14 @@
 #include "components/OverviewLayout.h"
 #include "components/InputLayout.h"
 #include "components/PowerLayout.h"
+#include "components/MiscLayout.h"
 
 class TelemetryChart;
 class GearChart;
 class InputsChart;
 class SteeringChart;
+class GForceChart;
+class RideHeightChart;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
@@ -55,6 +58,9 @@ public:
 
     PowerLayout loadPowerLayout();
     void applyAndSavePowerLayout(const PowerLayout& layout);
+
+    MiscLayout loadMiscLayout();
+    void applyAndSaveMiscLayout(const MiscLayout& layout);
 
     // Settings dialog reads/writes through these — it owns its own widgets
     // and persists immediately on every change, same immediate-apply pattern
@@ -218,6 +224,13 @@ private:
     InputsChart*  inputsChart_       = nullptr;
     SteeringChart* steeringChart_    = nullptr;
 
+    // ── Misc tab ──────────────────────────────────────────────
+    QWidget*      misc_gforceContainer_  = nullptr;
+    QWidget*      misc_rideHeightContainer_ = nullptr;
+    QFrame*       misc_hdiv_             = nullptr;
+    GForceChart*  gforceChart_           = nullptr;
+    RideHeightChart* rideHeightChart_    = nullptr;
+
     // ── Power page ─────────────────────────────────────────────
     QLabel* pp_totalPowerVal = nullptr;
     QLabel* pp_iceVal        = nullptr;
@@ -311,12 +324,15 @@ private:
     QWidget* buildTyresPage();
     QWidget* buildInputPage();
     QWidget* buildPowerPage();
+    QWidget* buildMiscPage();
     void     saveOverviewLayout(const OverviewLayout& layout);
     void     applyOverviewLayout(const OverviewLayout& layout);
     void     saveInputLayout(const InputLayout& layout);
     void     applyInputLayout(const InputLayout& layout);
     void     savePowerLayout(const PowerLayout& layout);
     void     applyPowerLayout(const PowerLayout& layout);
+    void     saveMiscLayout(const MiscLayout& layout);
+    void     applyMiscLayout(const MiscLayout& layout);
     void     updateTimingTable();
     void     updateRacePanel();
     void     updateSessionPage();

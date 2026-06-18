@@ -17,6 +17,16 @@ void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, floa
     trim();
 }
 
+void SessionData::onMotion(float t, float g_lat, float g_long) {
+    motionBuf.push_back({ t, g_lat, g_long });
+    trim();
+}
+
+void SessionData::onMotionEx(float t, float front_aero, float rear_aero) {
+    motionExBuf.push_back({ t, front_aero, rear_aero });
+    trim();
+}
+
 void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {
     if (curLapNum < 0) {
         // First lap seen: backtrack its start from the elapsed lap time.
@@ -69,6 +79,8 @@ void SessionData::onSessionReset(float newTime) {
 void SessionData::clear() {
     telBuf.clear();
     stsBuf.clear();
+    motionBuf.clear();
+    motionExBuf.clear();
     laps.clear();
     curLap = LapBlock{};
     curLapNum = -1;
@@ -86,6 +98,10 @@ void SessionData::trim() {
     if (dt > 0) telBuf.remove(0, dt);
     int ds = 0; while (ds < stsBuf.size() && stsBuf[ds].t < cutoff) ++ds;
     if (ds > 0) stsBuf.remove(0, ds);
+    int dm = 0; while (dm < motionBuf.size() && motionBuf[dm].t < cutoff) ++dm;
+    if (dm > 0) motionBuf.remove(0, dm);
+    int dmx = 0; while (dmx < motionExBuf.size() && motionExBuf[dmx].t < cutoff) ++dmx;
+    if (dmx > 0) motionExBuf.remove(0, dmx);
 }
 
 const LapBlock* SessionData::lapByNum(int n) const {
@@ -117,6 +133,16 @@ void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float th
 
 void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
     d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j);
+    telemetryDirty_ = true;
+}
+
+void SessionModel::onMotion(float t, float g_lat, float g_long) {
+    d_.onMotion(t, g_lat, g_long);
+    telemetryDirty_ = true;
+}
+
+void SessionModel::onMotionEx(float t, float front_aero, float rear_aero) {
+    d_.onMotionEx(t, front_aero, rear_aero);
     telemetryDirty_ = true;
 }
 

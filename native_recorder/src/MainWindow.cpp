@@ -9,6 +9,9 @@
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
+#include "components/EditMiscLayoutDialog.h"
+#include "components/GForceChart.h"
+#include "components/RideHeightChart.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
 #include "BreezePalette.h"
@@ -295,7 +298,7 @@ MainWindow::MainWindow(QWidget* parent)
     // that line isn't reachable through any stylesheet rule. Plain QToolButtons
     // have no such native "tab base" painting path, so there's nothing for an
     // unselected button to draw beyond what its own (empty) stylesheet says.
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input", "Power" };
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input", "Power", "Misc" };
     QWidget* pageTabsWidget = new QWidget;
     pageTabsWidget->setFixedHeight(kToolbarHeight);
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
@@ -303,7 +306,7 @@ MainWindow::MainWindow(QWidget* parent)
     pageTabsLay->setSpacing(4);
     QButtonGroup* pageGroup = new QButtonGroup(this);
     pageGroup->setExclusive(true);
-    static constexpr int kPageCount = 6;
+    static constexpr int kPageCount = 7;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     // Every button — checked or not — reserves the same border-bottom width
@@ -379,6 +382,10 @@ MainWindow::MainWindow(QWidget* parent)
             EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == 6) {
+            EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(this, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
         }
     });
     settingsAct_ = toolbar->addAction(settingsIcon(this), "Settings");
@@ -406,6 +413,7 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(buildTyresPage());     // index 3
     stack->addWidget(buildInputPage());     // index 4
     stack->addWidget(buildPowerPage());     // index 5
+    stack->addWidget(buildMiscPage());      // index 6
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -523,7 +531,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
     connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
         currentPage_ = i;       // refresh the newly-shown page from any pending data
-        editLayoutAct_->setEnabled(i == 0 || i == 4 || i == 5);
+        editLayoutAct_->setEnabled(i == 0 || i == 4 || i == 5 || i == 6);
         flushUiRefresh();
     });
 
@@ -589,6 +597,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (pp_harvestChart) { pp_harvestChart->setPlaybackMode(true); pp_harvestChart->setCurrentTime(player_->currentTime()); }
         if (pp_storeChart) { pp_storeChart->setPlaybackMode(true); pp_storeChart->setCurrentTime(player_->currentTime()); }
         if (pp_fuelChart) { pp_fuelChart->setPlaybackMode(true); pp_fuelChart->setCurrentTime(player_->currentTime()); }
+        if (gforceChart_) { gforceChart_->setPlaybackMode(true); gforceChart_->setCurrentTime(player_->currentTime()); }
+        if (rideHeightChart_) { rideHeightChart_->setPlaybackMode(true); rideHeightChart_->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
         closeActiveStream();
         pb_sep_->show();
@@ -619,6 +629,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (pp_harvestChart) pp_harvestChart->setCurrentTime(player_->currentTime());
         if (pp_storeChart) pp_storeChart->setCurrentTime(player_->currentTime());
         if (pp_fuelChart) pp_fuelChart->setCurrentTime(player_->currentTime());
+        if (gforceChart_) gforceChart_->setCurrentTime(player_->currentTime());
+        if (rideHeightChart_) rideHeightChart_->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
             pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
@@ -696,6 +708,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (gearChart_) gearChart_->setPlaybackMode(false);
         if (inputsChart_) inputsChart_->setPlaybackMode(false);
         if (steeringChart_) steeringChart_->setPlaybackMode(false);
+        if (gforceChart_) gforceChart_->setPlaybackMode(false);
+        if (rideHeightChart_) rideHeightChart_->setPlaybackMode(false);
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(false);
         if (ov_defaultBtn_) ov_defaultBtn_->setChecked(true);
         if (ov_lapCombo_) ov_lapCombo_->setVisible(false);
@@ -1310,4 +1324,12 @@ void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
                      row.value("current_lap_ms", 0),
                      row.value("last_lap_ms", 0),
                      row.value("lap_invalid", false));
+    else if (rtype == "motion")
+        model_->onMotion(sessionTime,
+                         row.value("g_lat", 0.0f),
+                         row.value("g_long", 0.0f));
+    else if (rtype == "motion_ex")
+        model_->onMotionEx(sessionTime,
+                           row.value("front_aero_height_mm", 0.0f),
+                           row.value("rear_aero_height_mm", 0.0f));
 }
