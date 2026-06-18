@@ -15,6 +15,8 @@
 #include <QScrollArea>
 #include <QProgressBar>
 #include <QStringList>
+#include <QStyledItemDelegate>
+#include <QPainter>
 
 #include <algorithm>
 #include <unordered_map>
@@ -75,6 +77,66 @@ static QString formatGap(int ms, bool isLeader) {
         .arg(min).arg(sec, 2, 10, QChar('0')).arg(msec, 3, 10, QChar('0'));
 }
 
+class DriverDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+
+        painter->save();
+
+        if (opt.backgroundBrush.style() != Qt::NoBrush) {
+            painter->fillRect(opt.rect, opt.backgroundBrush);
+        }
+
+        bool isPlayer = index.data(Qt::UserRole).toBool();
+        QString text = index.data(Qt::DisplayRole).toString();
+
+        QRect textRect = opt.rect.adjusted(4, 0, -4, 0);
+
+        painter->setFont(opt.font);
+        painter->setPen(opt.palette.color(QPalette::Text));
+
+        if (!isPlayer) {
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, text);
+        } else {
+            QFontMetrics fm(opt.font);
+            int nameWidth = fm.horizontalAdvance(text);
+
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, text);
+
+            QString chipText = "YOU";
+            QFont chipFont = opt.font;
+            chipFont.setPointSize(std::max(1, chipFont.pointSize() - 2));
+            chipFont.setBold(true);
+            QFontMetrics chipFm(chipFont);
+
+            int chipWidth = chipFm.horizontalAdvance(chipText) + 8;
+            int chipHeight = chipFm.height() + 2;
+
+            int chipX = textRect.left() + nameWidth + 8;
+            int chipY = textRect.top() + (textRect.height() - chipHeight) / 2;
+
+            QRect chipRect(chipX, chipY, chipWidth, chipHeight);
+
+            painter->setPen(Qt::NoPen);
+            QColor chipBg = opt.palette.color(QPalette::Highlight);
+            chipBg.setAlpha(80);
+            painter->setBrush(chipBg);
+            painter->drawRoundedRect(chipRect, 4, 4);
+
+            painter->setFont(chipFont);
+            QColor chipFg = opt.palette.color(QPalette::Highlight).lighter(150);
+            painter->setPen(chipFg);
+            painter->drawText(chipRect, Qt::AlignCenter, chipText);
+        }
+
+        painter->restore();
+    }
+};
+
 // ── Standings page builder ────────────────────────────────────────────────
 
 QWidget* MainWindow::buildStandingsPage() {
@@ -109,6 +171,8 @@ QWidget* MainWindow::buildStandingsPage() {
 
     QFont hf; hf.setPointSize(7);
     timingTable->horizontalHeader()->setFont(hf);
+
+    timingTable->setItemDelegateForColumn(2, new DriverDelegate(timingTable));
 
     connect(timingTable, &QTableWidget::cellClicked, this, [this](int row, int) {
         int clicked = (row >= 0 && row < (int)tableRowCarIdx.size())
@@ -453,7 +517,6 @@ void MainWindow::updateTimingTable() {
         int     raceNum    = (di != driverMap.end()) ? di->second.raceNum : 0;
         QString driverName = (di != driverMap.end())
             ? di->second.name : QString("Car %1").arg(idx);
-        if (isPlayer) driverName += " (You)";
         QColor driverColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
 
         int compound = tyreMap.count(idx) ? tyreMap.at(idx).compound : -1;
@@ -520,6 +583,7 @@ void MainWindow::updateTimingTable() {
         // Col 2: DRIVER
         auto* drvItem = makeItem(driverName);
         drvItem->setForeground(safeDriverColor);
+        if (isPlayer) drvItem->setData(Qt::UserRole, true);
         timingTable->setItem(row, 2, drvItem);
 
         timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
