@@ -27,6 +27,7 @@
 #include <QWheelEvent>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QFileInfo>
 #include <QSizePolicy>
 #include <QStyleHints>
 #include <QCoreApplication>
@@ -170,6 +171,13 @@ static QIcon settingsIcon(QWidget* w) {
         QIcon::fromTheme("configure", QIcon::fromTheme("preferences-system")),
         w->palette().color(QPalette::WindowText),
         w->style()->standardIcon(QStyle::SP_FileDialogListView));
+}
+
+static QIcon closeRecordingIcon(QWidget* w) {
+    return adaptThemeIcon(
+        QIcon::fromTheme("window-close", QIcon::fromTheme("process-stop")),
+        w->palette().color(QPalette::WindowText),
+        w->style()->standardIcon(QStyle::SP_DialogCloseButton));
 }
 
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
@@ -435,7 +443,12 @@ MainWindow::MainWindow(QWidget* parent)
     pb_speedCombo_->setCurrentIndex(2);
     pbLayout->addWidget(pb_speedCombo_);
 
-    auto* closeRecBtn = new QPushButton("✕ Close", pb_bar_);
+    auto* closeRecBtn = new QPushButton(pb_bar_);
+    closeRecBtn->setIcon(closeRecordingIcon(this));
+    closeRecBtn->setIconSize(QSize(20, 20));
+    closeRecBtn->setFixedSize(34, 34);
+    closeRecBtn->setFlat(true);
+    closeRecBtn->setToolTip("Close Recording");
     pbLayout->addWidget(closeRecBtn);
 
     pb_bar_->hide();
@@ -494,7 +507,18 @@ MainWindow::MainWindow(QWidget* parent)
         QString path = QFileDialog::getOpenFileName(
             this, "Open Recording", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
-        if (!path.isEmpty()) player_->load(path);
+        if (!path.isEmpty()) {
+            QMessageBox msgBox(this);
+            msgBox.setWindowTitle("Open Session File");
+            msgBox.setText("Are you sure you want to open this file?");
+            msgBox.setInformativeText("Opening it will stop the event bridge and if you have an session right now with the game, it will be closed.\n\nSelected file: " + QFileInfo(path).fileName());
+            msgBox.setIcon(QMessageBox::Warning);
+            msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+            msgBox.setDefaultButton(QMessageBox::No);
+            if (msgBox.exec() == QMessageBox::Yes) {
+                player_->load(path);
+            }
+        }
     });
 
     connect(player_, &TnrdPlayer::loadingStarted, this, [this] {
