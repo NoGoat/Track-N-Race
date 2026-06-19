@@ -25,4 +25,11 @@ QList<QPointF> minMaxByPixel(const QList<QPointF>& pts, int targetBuckets);
 // survive — yielding a clean, single-valued polygon.
 QList<QPointF> peakByPixel(const QList<QPointF>& pts, int targetBuckets);
 
+// Drop the interior points of flat runs (consecutive equal y), keeping each run's
+// endpoints. Essential for filled series whose curve sits at exactly 0 for long
+// stretches (throttle/brake): the area renderer starts a new subpath at every
+// consecutive zero-pair, so an un-collapsed flat-zero run spawns hundreds of
+// degenerate subpaths and tanks the fill's tessellation. Visually identical.
+QList<QPointF> collapseFlats(const QList<QPointF>& pts);
+
 }

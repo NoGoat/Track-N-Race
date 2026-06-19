@@ -317,20 +317,32 @@ void ChartViewModel::flush(int plotWidthPx)
         // Filled series need a clean single-valued polygon (min/max pairs corrupt
         // the area fill and tank perf on noisy data); plain lines keep the
         // peak-preserving min/max envelope.
+        // Filled series: collapse flat runs so long stretches at exactly 0
+        // (throttle/brake off) don't explode the area renderer into hundreds of
+        // degenerate subpaths (the Inputs-page lag).
         const QList<QPointF> dec = s.fill
-            ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
+            ? ChartDecimate::collapseFlats(ChartDecimate::peakByPixel(s.raw, lastPlotWidth_))
             : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_);
         s.line->replace(dec);
         if (s.areaUpper) {
-            // Anchor the fill to the y=0 baseline at the start. The area renderer
-            // splits the fill into subpaths wherever the curve sits at zero and
-            // closes each one back to the polygon's first point; if that first
-            // point isn't on the baseline (e.g. ICE starting at ~400), the close
-            // becomes a diagonal slash. Prepending (firstX, 0) keeps every close
-            // on the baseline. (The end is already dropped to 0 by the renderer.)
+            // The area renderer starts a NEW subpath wherever the curve sits at
+            // exactly zero (two consecutive y==0 points). That gives: hundreds of
+            // degenerate subpaths for throttle/brake sitting at 0 (the Inputs lag),
+            // and malformed closes when the data starts off-baseline (ICE/first-hump
+            // diagonal). Cure both by nudging exact zeros by an invisible epsilon so
+            // y==0 never holds → the whole curve is ONE subpath, which the renderer
+            // still closes down to y=0 via its own end points. Sign follows the data
+            // so the nudge stays on the fill's side; magnitude is ~0.01% of the axis.
             QList<QPointF> up = dec;
-            if (!up.isEmpty() && up.first().y() != 0.0)
-                up.prepend(QPointF(up.first().x(), 0.0));
+            double peak = 0.0;
+            for (const QPointF& p : up)
+                if (std::abs(p.y()) > std::abs(peak)) peak = p.y();
+            double yspan = 1.0;
+            if (s.yAxisId >= 0 && s.yAxisId < axes_.size())
+                yspan = std::max(1e-9, axes_[s.yAxisId].max - axes_[s.yAxisId].min);
+            const double eps = (peak >= 0.0 ? 1.0 : -1.0) * yspan * 1e-4;
+            for (QPointF& p : up)
+                if (p.y() == 0.0) p.setY(eps);
             s.areaUpper->replace(up);
         }
     }
