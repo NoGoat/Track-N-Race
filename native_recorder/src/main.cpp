@@ -4,10 +4,26 @@
 #include <QSettings>
 #include <QVariant>
 #include <QStyleHints>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include "MainWindow.h"
 #include "BreezePalette.h"
 
 int main(int argc, char* argv[]) {
+    // The charts render through Qt Graphs on the Qt Quick scene graph, which draws
+    // via Qt's RHI. Pin each platform to its modern backend so the QQuickWidget-
+    // hosted graphs run on Vulkan/Direct3D/Metal rather than legacy OpenGL. Must be
+    // set before the first QQuickWindow (i.e. any chart's QQuickWidget) is created;
+    // all QQuickWidgets in a window must share one graphics API, which this global
+    // call guarantees. QSG_RHI_BACKEND in the environment still overrides it.
+#if defined(Q_OS_WIN)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+#elif defined(Q_OS_MACOS)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Metal);
+#else
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+#endif
+
     QApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");
     app.setOrganizationName("TrackNRace");

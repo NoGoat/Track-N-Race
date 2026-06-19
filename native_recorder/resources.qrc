@@ -4,5 +4,6 @@
     <file alias="icon.ico">assets/icon_transparent.ico</file>
     <file alias="play.svg">assets/play.svg</file>
     <file alias="pause.svg">assets/pause.svg</file>
+    <file alias="qml/ChartSurface.qml">src/components/qml/ChartSurface.qml</file>
 </qresource>
 </RCC>

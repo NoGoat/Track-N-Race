@@ -1,0 +1,467 @@
+#include "ChartViewModel.h"
+#include "ChartDecimate.h"
+
+#include <QtGraphs/QLineSeries>
+#include <QtGraphs/QAreaSeries>
+#include <QtGraphs/QValueAxis>
+#include <QtGraphs/QAbstractAxis>
+#include <QtGraphs/QAbstractSeries>
+
+#include <QQuickItem>
+#include <QLocale>
+#include <QVariantMap>
+
+#include <algorithm>
+#include <cmath>
+
+namespace {
+const QColor AXIS_LINE(150, 150, 150, 130);
+const QColor GRID_LINE(150, 150, 150, 40);
+
+// A "nice" 1/2/5×10^n step that yields roughly `target` ticks across `span`.
+double niceStep(double span, int target = 6)
+{
+    if (span <= 0 || target <= 0) return 1.0;
+    const double rough = span / target;
+    const double mag = std::pow(10.0, std::floor(std::log10(rough)));
+    const double norm = rough / mag;
+    double nice = 10.0;
+    if (norm < 1.5)      nice = 1.0;
+    else if (norm < 3.0) nice = 2.0;
+    else if (norm < 7.0) nice = 5.0;
+    return nice * mag;
+}
+}
+
+ChartViewModel::ChartViewModel(QObject* parent) : QObject(parent) {}
+ChartViewModel::~ChartViewModel() = default;
+
+QColor ChartViewModel::axisLineColor() const { return AXIS_LINE; }
+QColor ChartViewModel::gridColor()     const { return GRID_LINE; }
+
+void ChartViewModel::attach(QQuickItem* graphsView)
+{
+    view_ = graphsView;
+    // Any axes/series added before the QML scene was Ready get wired in now.
+    for (const Axis& a : axes_) {
+        if (a.isX && !gridXSet_) {
+            view_->setProperty("axisX", QVariant::fromValue<QAbstractAxis*>(a.obj));
+            gridXSet_ = true;
+        }
+        if (!a.isX && a.side == ChartView::Side::Left && !gridYSet_) {
+            view_->setProperty("axisY", QVariant::fromValue<QAbstractAxis*>(a.obj));
+            gridYSet_ = true;
+        }
+    }
+    for (const Series& s : series_) {
+        if (s.area) addSeriesToView(s.area);   // fill behind
+        addSeriesToView(s.line);               // stroke on top
+    }
+    buildLabels();
+}
+
+void ChartViewModel::addSeriesToView(QAbstractSeries* s)
+{
+    // QGraphsView::addSeries takes QObject* (it accepts any series type).
+    if (view_ && s)
+        QMetaObject::invokeMethod(view_, "addSeries", Q_ARG(QObject*, s));
+}
+
+int ChartViewModel::addAxis(const ChartView::AxisSpec& spec)
+{
+    Axis a;
+    a.side = spec.side;
+    a.isX  = (spec.side == ChartView::Side::Bottom);
+    a.min  = spec.min;
+    a.max  = spec.max;
+    a.inheritColor = !spec.labelColor.isValid();
+    a.color = spec.labelColor;
+    a.grid  = spec.grid;
+    a.precision = spec.precision;
+
+    // Column among axes on the same side, so multiple right (or left) axes' labels
+    // stack outward instead of overlapping at one x.
+    for (const Axis& other : axes_)
+        if (other.side == spec.side) ++a.sideIndex;
+
+    auto* ax = new QValueAxis(this);
+    ax->setMin(spec.min);
+    ax->setMax(spec.max);
+    ax->setLabelsVisible(false);   // we draw tick labels ourselves in the overlay
+    ax->setLineVisible(false);     // and stack the columns ourselves — hide native lines
+    ax->setGridVisible(spec.grid);
+    ax->setSubGridVisible(false);
+    switch (spec.side) {
+        case ChartView::Side::Bottom: ax->setAlignment(Qt::AlignBottom); break;
+        case ChartView::Side::Left:   ax->setAlignment(Qt::AlignLeft);   break;
+        case ChartView::Side::Right:  ax->setAlignment(Qt::AlignRight);  break;
+    }
+    a.obj = ax;
+
+    const int id = axes_.size();
+    axes_.append(a);
+    if (a.isX && keyAxisId_ < 0) keyAxisId_ = id;
+    if (spec.side == ChartView::Side::Left && primaryLeftId_ < 0) primaryLeftId_ = id;
+
+    // The GraphsView needs a primary x/y axis to define the plot area + grid.
+    if (view_) {
+        if (a.isX && !gridXSet_) {
+            view_->setProperty("axisX", QVariant::fromValue<QAbstractAxis*>(ax));
+            gridXSet_ = true;
+        }
+        if (!a.isX && spec.side == ChartView::Side::Left && !gridYSet_) {
+            view_->setProperty("axisY", QVariant::fromValue<QAbstractAxis*>(ax));
+            gridYSet_ = true;
+        }
+    }
+    buildLabels();
+    return id;
+}
+
+int ChartViewModel::addSeries(const ChartView::SeriesSpec& spec)
+{
+    Series s;
+    s.name = spec.name;
+    s.color = spec.color;
+    s.unit = spec.unit;
+    s.precision = spec.tipPrecision;
+    s.group = spec.tipGroupThousands;
+    s.xAxisId = spec.xAxisId;
+    s.yAxisId = spec.yAxisId;
+
+    s.fill = spec.fill;
+
+    auto* line = new QLineSeries(this);
+    line->setName(spec.name);
+    line->setColor(spec.color);
+    line->setWidth(spec.width);
+    if (spec.step) line->setLineStyle(QLineSeries::LineStyle::StepLeft);
+    s.line = line;
+
+    QValueAxis* xax = (spec.xAxisId >= 0 && spec.xAxisId < axes_.size()) ? axes_[spec.xAxisId].obj : nullptr;
+    QValueAxis* yax = (spec.yAxisId >= 0 && spec.yAxisId < axes_.size()) ? axes_[spec.yAxisId].obj : nullptr;
+    // Axis attachment rule:
+    //  - A series wholly on the GraphsView's primary x/y axes must INHERIT them.
+    //    Re-associating a primary axis per-series triggers the "axis already
+    //    associated" warning and corrupts the area-fill coordinate transform.
+    //  - A series touching ANY secondary axis (e.g. TelemetryChart's right-hand
+    //    RPM/ERS) is multi-axis and must set BOTH axes explicitly (the documented
+    //    pattern); inheriting only one is unreliable. These are plain lines, never
+    //    fills, so the benign primary-x re-association warning is harmless.
+    const bool multiAxis = (xax && spec.xAxisId != keyAxisId_)
+                        || (yax && spec.yAxisId != primaryLeftId_);
+    const bool setX = multiAxis && xax;
+    const bool setY = multiAxis && yax;
+
+    if (spec.fill) {
+        // Translucent fill with ONLY an upperSeries and NO lowerSeries: the area
+        // renderer then fills the curve down to y=0 itself (arearenderer.cpp adds
+        // its own baseline-closing points and breaks the subpath wherever the
+        // curve sits at zero). Adding a lowerSeries instead produces the diagonal-
+        // slash corruption, because the upper loop still inserts those zero-breaks
+        // but the lower baseline is appended as one run that bridges across them.
+        // The area's upperSeries is owned by the area and must NOT also be added to
+        // the GraphsView; the crisp coloured stroke stays the separate `line`.
+        QColor fc = spec.fillColor.isValid() ? spec.fillColor : spec.color;
+        fc.setAlpha(40);
+        auto* upper = new QLineSeries(this);
+        auto* area = new QAreaSeries(this);
+        area->setUpperSeries(upper);
+        area->setColor(fc);
+        area->setBorderWidth(0);
+        if (setX) area->setAxisX(xax);
+        if (setY) area->setAxisY(yax);
+        s.area = area;
+        s.areaUpper = upper;
+    }
+
+    if (setX) line->setAxisX(xax);
+    if (setY) line->setAxisY(yax);
+
+    const int id = series_.size();
+    series_.append(s);
+    // Area behind, line on top (later additions draw over earlier ones).
+    if (s.area) addSeriesToView(s.area);
+    addSeriesToView(line);
+    emit legendChanged();
+    return id;
+}
+
+void ChartViewModel::addBand(const ChartView::BandSpec& spec)
+{
+    // No native band item in Qt Graphs — record it; QML draws it as a background
+    // rectangle behind the series (mapped through bandRects()).
+    bands_.append({ spec.axisId, spec.min, spec.max, spec.color });
+    emit bandsChanged();
+}
+
+QVariantList ChartViewModel::bandRects() const
+{
+    QVariantList out;
+    for (const Band& b : bands_) {
+        if (b.axisId < 0 || b.axisId >= axes_.size()) continue;
+        const Axis& a = axes_[b.axisId];
+        const double span = a.max - a.min;
+        if (span <= 0) continue;
+        QVariantMap m;
+        m["t0"] = (b.min - a.min) / span;   // bottom (lower value)
+        m["t1"] = (b.max - a.min) / span;   // top (higher value)
+        m["color"] = b.color;
+        out.append(m);
+    }
+    return out;
+}
+
+void ChartViewModel::appendPoint(int seriesId, double x, double y)
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return;
+    series_[seriesId].raw.append(QPointF(x, y));
+}
+
+void ChartViewModel::setSeriesData(int seriesId, const QVector<double>& xs, const QVector<double>& ys)
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return;
+    QList<QPointF>& raw = series_[seriesId].raw;
+    raw.clear();
+    const int n = std::min(xs.size(), ys.size());
+    raw.reserve(n);
+    for (int i = 0; i < n; ++i) raw.append(QPointF(xs[i], ys[i]));
+}
+
+void ChartViewModel::trimBefore(int seriesId, double x)
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return;
+    QList<QPointF>& raw = series_[seriesId].raw;
+    int cut = 0;
+    while (cut < raw.size() && raw[cut].x() < x) ++cut;
+    if (cut > 0) raw.remove(0, cut);
+}
+
+void ChartViewModel::clear(int seriesId)
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return;
+    series_[seriesId].raw.clear();
+}
+
+void ChartViewModel::clearAll()
+{
+    for (Series& s : series_) s.raw.clear();
+}
+
+void ChartViewModel::setSeriesVisible(int seriesId, bool visible)
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return;
+    Series& s = series_[seriesId];
+    s.visible = visible;
+    if (s.line) s.line->setVisible(visible);
+    if (s.area) s.area->setVisible(visible);
+    emit legendChanged();
+}
+
+void ChartViewModel::setAxisTimeTicker(int axisId)
+{
+    if (axisId < 0 || axisId >= axes_.size()) return;
+    axes_[axisId].fmt = Formatter::Time;
+    buildLabels();
+}
+
+void ChartViewModel::setAxisNumberSuffix(int axisId, double scale, const QString& suffix, double fixedStep)
+{
+    if (axisId < 0 || axisId >= axes_.size()) return;
+    Axis& a = axes_[axisId];
+    a.fmt = Formatter::Suffix;
+    a.scale = scale;
+    a.suffix = suffix;
+    a.fixedStep = fixedStep;
+    buildLabels();
+}
+
+void ChartViewModel::setLegendVisible(bool on)
+{
+    legendVisible_ = on;
+    emit legendChanged();
+}
+
+void ChartViewModel::setHoverReadout(bool on)
+{
+    hoverEnabled_ = on;
+    if (!on) hoverLeave();
+}
+
+bool ChartViewModel::seriesKeyRange(int seriesId, double& lo, double& hi) const
+{
+    if (seriesId < 0 || seriesId >= series_.size()) return false;
+    const QList<QPointF>& raw = series_[seriesId].raw;
+    if (raw.isEmpty()) return false;
+    lo = raw.first().x();
+    hi = raw.last().x();
+    return true;
+}
+
+void ChartViewModel::setXRange(int axisId, double min, double max)
+{
+    if (axisId < 0 || axisId >= axes_.size()) return;
+    Axis& a = axes_[axisId];
+    if (a.min == min && a.max == max) return;   // ticks unchanged — skip the rebuild
+    a.min = min;
+    a.max = max;
+    if (a.obj) { a.obj->setMin(min); a.obj->setMax(max); }
+    buildLabels();
+}
+
+void ChartViewModel::flush(int plotWidthPx)
+{
+    if (plotWidthPx > 0) lastPlotWidth_ = plotWidthPx;
+    for (Series& s : series_) {
+        if (!s.line) continue;
+        // Filled series need a clean single-valued polygon (min/max pairs corrupt
+        // the area fill and tank perf on noisy data); plain lines keep the
+        // peak-preserving min/max envelope.
+        const QList<QPointF> dec = s.fill
+            ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
+            : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_);
+        s.line->replace(dec);
+        if (s.areaUpper) {
+            // Anchor the fill to the y=0 baseline at the start. The area renderer
+            // splits the fill into subpaths wherever the curve sits at zero and
+            // closes each one back to the polygon's first point; if that first
+            // point isn't on the baseline (e.g. ICE starting at ~400), the close
+            // becomes a diagonal slash. Prepending (firstX, 0) keeps every close
+            // on the baseline. (The end is already dropped to 0 by the renderer.)
+            QList<QPointF> up = dec;
+            if (!up.isEmpty() && up.first().y() != 0.0)
+                up.prepend(QPointF(up.first().x(), 0.0));
+            s.areaUpper->replace(up);
+        }
+    }
+    // Ticks depend only on axis range/formatters/theme, not on the data, so they
+    // are rebuilt by setXRange/setAxis*Ticker/setThemeColors — not on every flush.
+    emit replotRequested();
+}
+
+void ChartViewModel::setThemeColors(const QColor& text)
+{
+    text_ = text;
+    buildLabels();
+    emit themeChanged();
+}
+
+// ── tick label construction ──────────────────────────────────────────────────
+
+QString ChartViewModel::formatTick(const Axis& a, double value) const
+{
+    switch (a.fmt) {
+        case Formatter::Time: {
+            const int tenths = int(std::llround(value * 10.0));
+            const int whole  = tenths / 10;
+            return QString("%1:%2.%3")
+                .arg(whole / 60).arg(whole % 60, 2, 10, QChar('0')).arg(std::abs(tenths) % 10);
+        }
+        case Formatter::Suffix:
+            return QString::number(value / a.scale, 'f', a.precision) + a.suffix;
+        case Formatter::Plain:
+        default:
+            return QString::number(value, 'f', a.precision);
+    }
+}
+
+double ChartViewModel::stepFor(const Axis& a) const
+{
+    if (a.fmt == Formatter::Suffix && a.fixedStep > 0) return a.fixedStep;
+    return niceStep(a.max - a.min);
+}
+
+void ChartViewModel::appendTicksFor(const Axis& a)
+{
+    const double span = a.max - a.min;
+    if (span <= 0) return;
+    const double step = stepFor(a);
+    const QColor c = a.inheritColor ? text_ : a.color;
+    const int align = a.isX ? int(Qt::AlignBottom)
+                            : int(a.side == ChartView::Side::Left ? Qt::AlignLeft : Qt::AlignRight);
+
+    double first = std::ceil(a.min / step) * step;
+    for (double v = first; v <= a.max + step * 1e-6; v += step) {
+        QVariantMap m;
+        m["isX"] = a.isX;
+        m["alignment"] = align;
+        m["depth"] = a.sideIndex;             // label column (0 = innermost)
+        m["t"] = (v - a.min) / span;          // 0..1 along the axis
+        m["text"] = formatTick(a, v);
+        m["color"] = c;
+        labels_.append(m);
+    }
+}
+
+void ChartViewModel::buildLabels()
+{
+    labels_.clear();
+    for (Axis& a : axes_) {
+        // Drive the native axis ticks at the same step as our overlay labels so
+        // Qt Graphs' gridlines land exactly under the numbers we draw. Anchored at
+        // 0 (and no sub-ticks) so both systems agree on tick positions.
+        if (a.obj) {
+            const double step = stepFor(a);
+            if (step > 0) a.obj->setTickInterval(step);
+            a.obj->setTickAnchor(0.0);
+            a.obj->setSubTickCount(0);
+        }
+        appendTicksFor(a);
+    }
+    emit labelsChanged();
+}
+
+// ── legend / hover ───────────────────────────────────────────────────────────
+
+QVariantList ChartViewModel::legendEntries() const
+{
+    QVariantList out;
+    for (const Series& s : series_) {
+        if (!s.visible || s.name.isEmpty()) continue;
+        QVariantMap m;
+        m["name"] = s.name;
+        m["color"] = s.color;
+        out.append(m);
+    }
+    return out;
+}
+
+void ChartViewModel::hoverAt(qreal t)
+{
+    if (!hoverEnabled_ || keyAxisId_ < 0) { hoverLeave(); return; }
+    const Axis& kx = axes_[keyAxisId_];
+    const double key = kx.min + t * (kx.max - kx.min);
+
+    const int totalSec = std::max(0, int(key + 0.5));
+    QString html = QString("<div style='color:rgba(%1,%2,%3,0.6)'>%4:%5</div>")
+        .arg(text_.red()).arg(text_.green()).arg(text_.blue())
+        .arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0'));
+
+    const QLocale loc;
+    for (const Series& s : series_) {
+        if (!s.visible || s.name.isEmpty() || s.raw.isEmpty()) continue;
+        // Nearest sample at or before `key` (raw is sorted by x).
+        auto it = std::lower_bound(s.raw.begin(), s.raw.end(), key,
+                                   [](const QPointF& p, double k) { return p.x() < k; });
+        if (it == s.raw.end()) --it;
+        const double value = it->y();
+        QString val = s.group ? loc.toString(value, 'f', s.precision)
+                              : QString::number(value, 'f', s.precision);
+        if (!s.unit.isEmpty()) val += (s.unit == "%" ? "" : " ") + s.unit;
+        html += QString("<div style='color:%1'><b>%2:</b> %3</div>")
+            .arg(s.color.name(), s.name, val);
+    }
+
+    crosshairT_ = t;
+    hoverActive_ = true;
+    tooltipHtml_ = html;
+    emit hoverChanged();
+}
+
+void ChartViewModel::hoverLeave()
+{
+    if (!hoverActive_) return;
+    hoverActive_ = false;
+    tooltipHtml_.clear();
+    emit hoverChanged();
+}

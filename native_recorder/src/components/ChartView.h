@@ -6,14 +6,18 @@
 #include <QVector>
 #include <memory>
 
+QT_BEGIN_NAMESPACE
+class QResizeEvent;
+QT_END_NAMESPACE
+
 // Generic, backend-agnostic time-series chart widget.
 //
-// Wraps a charting backend (currently QCustomPlot) but exposes none of its
-// types — the backend lives entirely behind a pimpl in ChartView.cpp, so it can
-// be swapped without touching any caller. Charts are declared by config:
-// add some axes, add some series bound to those axes, then push data. Series use
-// adaptive sampling (per-pixel decimation) so paint cost stays flat even with
-// tens of thousands of retained points.
+// Wraps a charting backend (Qt Graphs 2D, hosted in a QQuickWidget) but exposes
+// none of its types — the backend lives entirely behind a pimpl in ChartView.cpp
+// (and ChartViewModel), so it can be swapped without touching any caller. Charts
+// are declared by config: add some axes, add some series bound to those axes,
+// then push data. Series are decimated per-pixel (see ChartDecimate) so paint
+// cost stays flat even with tens of thousands of retained points.
 class ChartView : public QWidget {
     Q_OBJECT
 
@@ -26,7 +30,7 @@ public:
         double  max          = 1.0;
         QColor  labelColor   = QColor();   // invalid → inherit theme text color
         bool    visible      = true;
-        char    numberFormat = 'f';        // QCPAxis number format: 'f', 'g', 'e'
+        char    numberFormat = 'f';        // number format: 'f', 'g', 'e'
         int     precision    = 0;          // tick label decimal precision
         bool    grid         = false;      // draw this axis's (faint) grid lines
     };
@@ -42,7 +46,7 @@ public:
         bool    tipGroupThousands = false; // tooltip thousands separator (e.g. "11,580")
         bool    fill = false;            // if true, fills under the curve to zero
         QColor  fillColor = QColor();    // if invalid, uses semi-transparent series color
-        bool    step = false;            // if true, use lsStepLeft
+        bool    step = false;            // if true, draw as a left-step line
     };
 
     struct BandSpec {
@@ -72,7 +76,7 @@ public:
     // and two-lap overlay layouts without rebuilding the chart.
     void setSeriesVisible(int seriesId, bool visible);
 
-    // Format an axis's tick labels as time (QCPAxisTickerTime, e.g. "%m:%s").
+    // Format an axis's tick labels as time "m:ss.t" (the format arg is legacy/ignored).
     void setAxisTimeTicker(int axisId, const QString& format);
 
     // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
@@ -96,6 +100,7 @@ public:
 
 protected:
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
+    void resizeEvent(QResizeEvent* e) override;   // re-decimate series to the new pixel width
 
 private:
     void applyPaletteText();

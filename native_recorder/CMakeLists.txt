@@ -24,21 +24,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zlib)
 
-# Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
-# OpenGL/OpenGLWidgets let QCustomPlot rasterize on the GPU — software QPainter
-# rendering of the Speed/RPM/ERS chart costs ~100 ms/frame (and seconds/frame at
-# a 10-min window), which GPU rendering cuts to single-digit ms. See setOpenGl().
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg PrintSupport OpenGL OpenGLWidgets)
-if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport
-                Qt6::OpenGL Qt6::OpenGLWidgets)
-    set(QCP_OPENGL ON)
-    message(STATUS "Using Qt6 (QCustomPlot OpenGL rendering enabled)")
-else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg PrintSupport)
-    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::PrintSupport)
-    message(STATUS "Using Qt5 (Qt6 not found; software chart rendering)")
-endif()
+# Qt 6.11+ is required: the charts render through Qt Graphs (2D), whose multi-axis
+# 2D support landed in 6.10 and whose native step lines (GearChart) in 6.11. Qt
+# Graphs draws via the Qt Quick scene graph on Qt's RHI, so charts run on Vulkan
+# (Linux), Direct3D 11 (Windows) and Metal (macOS) instead of the legacy OpenGL
+# path the old vendored QCustomPlot used. Qt Graphs is QML-only, so the chart
+# surface is embedded into the Widgets UI via QQuickWidget (Quick/Qml/QuickWidgets).
+find_package(Qt6 6.11 REQUIRED COMPONENTS
+    Core Widgets Network Svg PrintSupport Quick Qml QuickWidgets Graphs)
+set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport
+            Qt6::Quick Qt6::Qml Qt6::QuickWidgets Qt6::Graphs)
 
 set(SOURCES
     src/main.cpp
@@ -54,8 +49,10 @@ set(SOURCES
     src/TelemetryChart.h
     src/components/ChartView.cpp
     src/components/ChartView.h
-    src/third_party/qcustomplot/qcustomplot.cpp
-    src/third_party/qcustomplot/qcustomplot.h
+    src/components/ChartViewModel.cpp
+    src/components/ChartViewModel.h
+    src/components/ChartDecimate.cpp
+    src/components/ChartDecimate.h
     src/components/OverviewLayout.h
     src/components/OverviewLayout.cpp
     src/components/EditOverviewLayoutDialog.h
@@ -111,15 +108,6 @@ endif()
 
 set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
-
-# GPU rendering for QCustomPlot (Qt6 only). The macro must reach qcustomplot.cpp,
-# so define it on the whole target. OpenGL::GL provides the GL symbols the
-# QCustomPlot OpenGL paint path references directly.
-if(QCP_OPENGL)
-    find_package(OpenGL REQUIRED)
-    target_compile_definitions(native_recorder PRIVATE QCUSTOMPLOT_USE_OPENGL)
-    target_link_libraries(native_recorder PRIVATE OpenGL::GL)
-endif()
 
 # ── Optional: bundle a prebuilt Breeze style stack (see breeze_stack/) ────────
 # When BREEZE_STACK_PREFIX points at the superbuild's install prefix, copy the
