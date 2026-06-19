@@ -42,6 +42,11 @@ QColor ChartViewModel::gridColor()     const { return GRID_LINE; }
 void ChartViewModel::attach(QQuickItem* graphsView)
 {
     view_ = graphsView;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    // Size each visible axis's label area to its actual content, so native labels
+    // (applyAxisLabelMode) don't force Qt's fixed ~60px reservation. (Qt 6.12+.)
+    view_->setProperty("dynamicLabelMargins", true);
+#endif
     // Any axes/series added before the QML scene was Ready get wired in now.
     for (const Axis& a : axes_) {
         if (a.isX && !gridXSet_) {
@@ -57,7 +62,9 @@ void ChartViewModel::attach(QQuickItem* graphsView)
         if (s.area) addSeriesToView(s.area);   // fill behind
         addSeriesToView(s.line);               // stroke on top
     }
+    applyAxisLabelMode();
     buildLabels();
+    updateMargins();
 }
 
 void ChartViewModel::addSeriesToView(QAbstractSeries* s)
@@ -87,10 +94,14 @@ int ChartViewModel::addAxis(const ChartView::AxisSpec& spec)
     auto* ax = new QValueAxis(this);
     ax->setMin(spec.min);
     ax->setMax(spec.max);
-    ax->setLabelsVisible(false);   // we draw tick labels ourselves in the overlay
-    ax->setLineVisible(false);     // and stack the columns ourselves — hide native lines
     ax->setGridVisible(spec.grid);
     ax->setSubGridVisible(false);
+    // Axis visibility (and thus whether its labels are native or overlay) is decided
+    // in applyAxisLabelMode() below. A visible axis reserves a fixed 60px label area
+    // in Qt 6.11 (collapsed when invisible — see updateAxisAreas()); 6.12's
+    // dynamicLabelMargins sizes that area to content, enabling tight native labels.
+    // The grid keys off gridVisible (not visibility) and series map off the range,
+    // so collapsing the area doesn't affect either.
     switch (spec.side) {
         case ChartView::Side::Bottom: ax->setAlignment(Qt::AlignBottom); break;
         case ChartView::Side::Left:   ax->setAlignment(Qt::AlignLeft);   break;
@@ -114,7 +125,9 @@ int ChartViewModel::addAxis(const ChartView::AxisSpec& spec)
             gridYSet_ = true;
         }
     }
+    applyAxisLabelMode();
     buildLabels();
+    updateMargins();
     return id;
 }
 
@@ -262,7 +275,9 @@ void ChartViewModel::setAxisTimeTicker(int axisId)
 {
     if (axisId < 0 || axisId >= axes_.size()) return;
     axes_[axisId].fmt = Formatter::Time;
+    applyAxisLabelMode();
     buildLabels();
+    updateMargins();
 }
 
 void ChartViewModel::setAxisNumberSuffix(int axisId, double scale, const QString& suffix, double fixedStep)
@@ -273,13 +288,16 @@ void ChartViewModel::setAxisNumberSuffix(int axisId, double scale, const QString
     a.scale = scale;
     a.suffix = suffix;
     a.fixedStep = fixedStep;
+    applyAxisLabelMode();
     buildLabels();
+    updateMargins();
 }
 
 void ChartViewModel::setLegendVisible(bool on)
 {
     legendVisible_ = on;
     emit legendChanged();
+    updateMargins();
 }
 
 void ChartViewModel::setHoverReadout(bool on)
@@ -417,6 +435,67 @@ void ChartViewModel::appendTicksFor(const Axis& a)
     }
 }
 
+// Per-stacked-column spacing for same-side axes. Must match ChartSurface.qml's
+// `colW` so the reserved margin lines up with where the overlay draws the labels.
+static constexpr double kAxisColW = 40.0;
+
+void ChartViewModel::applyAxisLabelMode()
+{
+    // Draw printf-friendly, theme-coloured axes natively (Qt-drawn) on every Qt
+    // version. On 6.11 a visible axis reserves a fixed ~60px label area; on 6.12
+    // GraphsView.dynamicLabelMargins (set in attach()) sizes that area to its
+    // content. Qt has no per-axis label colour, so colour-coded axes (Overview's
+    // green speed / yellow ERS) and formats Qt can't do (time "m:ss.t", scaled RPM
+    // "16k") stay on the overlay. Only the sole axis of a side qualifies — multi-axis
+    // sides keep the overlay's column stacking.
+    int sideN[3] = {0, 0, 0};   // Bottom, Left, Right
+    for (const Axis& a : axes_) sideN[int(a.side)]++;
+    for (Axis& a : axes_) {
+        const bool friendly = a.fmt == Formatter::Plain
+                           || (a.fmt == Formatter::Suffix && a.scale == 1.0);
+        a.native = friendly && a.inheritColor && sideN[int(a.side)] == 1;
+        if (!a.obj) continue;
+        if (a.native) {
+            QString f = QString("%.%1f").arg(a.precision);
+            if (a.fmt == Formatter::Suffix) {
+                QString suf = a.suffix;
+                suf.replace("%", "%%");   // escape for the printf-style labelFormat
+                f += suf;
+            }
+            a.obj->setLabelFormat(f);
+            a.obj->setLabelsVisible(true);
+            a.obj->setVisible(true);
+        } else {
+            a.obj->setVisible(false);   // overlay draws it; invisible → 0 reserved area
+        }
+    }
+}
+
+void ChartViewModel::updateMargins()
+{
+    if (!view_) return;
+
+    // Reserve just enough room for our overlay tick labels (Qt Graphs' default
+    // margins assume native axis labels + titles, which we hide — that was the
+    // wasted space). Estimate each axis's label width from its formatted extremes.
+    const double charW = 7.0;   // ~px per char at the overlay's 11px font
+    double leftW = 0.0, rightW = 0.0;
+    for (const Axis& a : axes_) {
+        if (a.isX || a.native) continue;   // native axes are sized by dynamicLabelMargins
+        const int chars = std::max(formatTick(a, a.min).size(), formatTick(a, a.max).size());
+        const double w = chars * charW + 8.0 + a.sideIndex * kAxisColW;
+        if (a.side == ChartView::Side::Left) leftW  = std::max(leftW,  w);
+        else                                 rightW = std::max(rightW, w);
+    }
+
+    // Floor at 24px each side so the first/last x-axis time label (centred on its
+    // tick, ~halfway over the plot edge) has room and doesn't clip.
+    view_->setProperty("marginLeft",   std::max(leftW,  24.0));
+    view_->setProperty("marginRight",  std::max(rightW, 24.0));
+    view_->setProperty("marginBottom", 22.0);                          // x time labels
+    view_->setProperty("marginTop",    legendVisible_ ? 24.0 : 8.0);   // overlay legend
+}
+
 void ChartViewModel::buildLabels()
 {
     labels_.clear();
@@ -430,7 +509,7 @@ void ChartViewModel::buildLabels()
             a.obj->setTickAnchor(0.0);
             a.obj->setSubTickCount(0);
         }
-        appendTicksFor(a);
+        if (!a.native) appendTicksFor(a);   // native axes are drawn by Qt
     }
     emit labelsChanged();
 }

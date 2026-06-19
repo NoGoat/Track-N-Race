@@ -45,6 +45,13 @@ Item {
             grid.mainWidth: 1
             axisX.mainColor: Qt.rgba(0.59, 0.59, 0.59, 0.5)
             axisY.mainColor: Qt.rgba(0.59, 0.59, 0.59, 0.5)
+            // Native axis labels (Qt 6.12+) match the overlay's colour/size; no-op
+            // on 6.11 where all labels are overlay-drawn.
+            labelTextColor: vm.textColor
+            axisX.labelTextColor: vm.textColor
+            axisY.labelTextColor: vm.textColor
+            axisXLabelFont.pixelSize: 11
+            axisYLabelFont.pixelSize: 11
         }
     }
 
@@ -58,7 +65,7 @@ Item {
             // Qt::AlignBottom == 0x20 (x axis), AlignLeft == 1, AlignRight == 2.
             // depth stacks multiple same-side axes into separate columns.
             readonly property bool isX: modelData.isX
-            readonly property int colW: 36
+            readonly property int colW: 40   // must match kAxisColW in ChartViewModel.cpp
             x: isX ? (root.xPix(modelData.t) - width / 2)
                    : (modelData.alignment === 2
                         ? pa.x + pa.width + 4 + modelData.depth * colW

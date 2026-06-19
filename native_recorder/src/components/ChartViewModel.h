@@ -134,6 +134,7 @@ private:
         QString suffix;         // Suffix
         double fixedStep = 0.0; // Suffix; <=0 means auto
         int    precision = 0;
+        bool   native = false;  // labels drawn natively by Qt (tight on 6.12 via dynamicLabelMargins)
     };
     struct Series {
         QLineSeries* line = nullptr;       // the stroke (added to the view)
@@ -156,6 +157,8 @@ private:
     double stepFor(const Axis& a) const;
     QString formatTick(const Axis& a, double value) const;
     void addSeriesToView(QAbstractSeries* s);
+    void updateMargins();        // size the GraphsView plot margins to the overlay labels
+    void applyAxisLabelMode();   // 6.12+: native vs overlay labels + axis visibility
 
     QQuickItem* view_ = nullptr;
     QList<Axis>   axes_;
