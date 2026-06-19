@@ -12,6 +12,13 @@ Item {
     // Plot rectangle (in this item's coordinates) that the axes/series occupy.
     readonly property rect pa: graphsView.plotArea
 
+    // Stroke width (logical px) for the cartesian grid and the axis tick marks.
+    readonly property real lineW: 2
+    // Gap between a tick label and the plot edge, and the length of the tick mark
+    // that bridges it. Must stay in sync with updateMargins() in ChartViewModel.cpp.
+    readonly property real labelGap: 8
+    readonly property real tickLen: 6
+
     function xPix(t) { return pa.x + t * pa.width; }
     function yPix(t) { return pa.y + (1.0 - t) * pa.height; }   // value grows upward
 
@@ -27,19 +34,7 @@ Item {
         }
     }
 
-    // ── Cartesian grid (we draw it, not Qt: Qt only grids visible axes, and ours
-    //    are hidden). Thin 1px lines; colour adapts to light/dark via gridColor. ──
-    Repeater {
-        model: vm.gridLines
-        Rectangle {
-            readonly property bool isX: modelData.isX
-            color: vm.gridColor
-            x: isX ? root.xPix(modelData.t) : pa.x
-            y: isX ? pa.y : root.yPix(modelData.t)
-            width:  isX ? 1 : pa.width
-            height: isX ? pa.height : 1
-        }
-    }
+
 
     GraphsView {
         id: graphsView
@@ -52,10 +47,7 @@ Item {
             // chart blends into the widget background like the old QCustomPlot did.
             backgroundVisible: false
             plotAreaBackgroundVisible: false
-            // Qt's own grid is off — the overlay draws the grid (see the gridLines
-            // Repeater) so it shows for our hidden time/colored axes too and adapts
-            // to light/dark. Only the axis baselines come from Qt here.
-            grid.mainColor: "transparent"
+            grid.mainColor: vm.gridColor
             grid.subColor: "transparent"
             axisX.mainColor: vm.axisLineColor
             axisY.mainColor: vm.axisLineColor
@@ -69,6 +61,22 @@ Item {
         }
     }
 
+    // ── Axis tick marks (short lines tying each number to the plot edge) ──────
+    Repeater {
+        model: vm.axisLabels
+        Rectangle {
+            readonly property bool isX: modelData.isX
+            readonly property bool onRight: modelData.alignment === 2   // AlignRight
+            color: vm.axisLineColor
+            antialiasing: false
+            x: isX ? root.xPix(modelData.t)
+                   : (onRight ? pa.x + pa.width : pa.x - root.tickLen)
+            y: isX ? (pa.y + pa.height) : root.yPix(modelData.t)
+            width:  isX ? root.lineW : root.tickLen
+            height: isX ? root.tickLen : root.lineW
+        }
+    }
+
     // ── Custom axis tick labels ──────────────────────────────────────────────
     Repeater {
         model: vm.axisLabels
@@ -77,14 +85,15 @@ Item {
             color: modelData.color
             font.pixelSize: 11
             // Qt::AlignBottom == 0x20 (x axis), AlignLeft == 1, AlignRight == 2.
-            // depth stacks multiple same-side axes into separate columns.
+            // depth stacks multiple same-side axes into separate columns. labelGap
+            // sits the number past the tick mark; the X label also clears the ticks.
             readonly property bool isX: modelData.isX
             readonly property int colW: 40   // must match kAxisColW in ChartViewModel.cpp
             x: isX ? (root.xPix(modelData.t) - width / 2)
                    : (modelData.alignment === 2
-                        ? pa.x + pa.width + 4 + modelData.depth * colW
-                        : pa.x - width - 4 - modelData.depth * colW)
-            y: isX ? (pa.y + pa.height + 3)
+                        ? pa.x + pa.width + root.labelGap + modelData.depth * colW
+                        : pa.x - width - root.labelGap - modelData.depth * colW)
+            y: isX ? (pa.y + pa.height + root.labelGap)
                    : (root.yPix(modelData.t) - height / 2)
         }
     }

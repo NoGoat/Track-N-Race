@@ -51,7 +51,6 @@ class ChartViewModel : public QObject {
 
     // Lists the overlays bind to; each re-evaluates when its NOTIFY fires.
     Q_PROPERTY(QVariantList axisLabels    READ axisLabels    NOTIFY labelsChanged)
-    Q_PROPERTY(QVariantList gridLines     READ gridLines     NOTIFY labelsChanged)
     Q_PROPERTY(QVariantList legendEntries READ legendEntries NOTIFY legendChanged)
     Q_PROPERTY(QVariantList bandRects     READ bandRects     NOTIFY bandsChanged)
 
@@ -100,11 +99,6 @@ public:
     // Flat list of every axis tick to draw: { isX, alignment, t, text, color }.
     // alignment uses Qt::Alignment ints (AlignBottom/AlignLeft/AlignRight).
     QVariantList axisLabels() const { return labels_; }
-    // Cartesian grid lines QML strokes itself: { isX, t } as a 0..1 fraction along
-    // the plot. Qt Graphs only draws grid for visible axes (our time/colored axes
-    // are hidden), so the overlay draws all of them — colour from gridColor (palette
-    // text, so it adapts to light/dark), width fully under our control.
-    QVariantList gridLines() const { return gridLines_; }
     // Overlay legend rows: { name, color } for named, visible series.
     QVariantList legendEntries() const;
     // Background bands as { t0, t1, color } fractions up the band's y axis; QML
@@ -160,7 +154,6 @@ private:
 
     void buildLabels();
     void appendTicksFor(const Axis& a);
-    void appendGridFor(int axisId);   // grid-line positions for one gridded axis
     double stepFor(const Axis& a) const;
     QString formatTick(const Axis& a, double value) const;
     void addSeriesToView(QAbstractSeries* s);
@@ -182,7 +175,6 @@ private:
     QString tooltipHtml_;
     int    lastPlotWidth_ = 1000;
     QVariantList labels_;
-    QVariantList gridLines_;
     bool   gridXSet_ = false;   // GraphsView.axisX assigned (drives plot extent + grid)
     bool   gridYSet_ = false;   // GraphsView.axisY assigned
 };

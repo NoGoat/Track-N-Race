@@ -483,7 +483,8 @@ void ChartViewModel::updateMargins()
     for (const Axis& a : axes_) {
         if (a.isX || a.native) continue;   // native axes are sized by dynamicLabelMargins
         const int chars = std::max(formatTick(a, a.min).size(), formatTick(a, a.max).size());
-        const double w = chars * charW + 8.0 + a.sideIndex * kAxisColW;
+        // labelGap(8) + a little slack; sideIndex columns push stacked axes outward.
+        const double w = chars * charW + 12.0 + a.sideIndex * kAxisColW;
         if (a.side == ChartView::Side::Left) leftW  = std::max(leftW,  w);
         else                                 rightW = std::max(rightW, w);
     }
@@ -492,31 +493,15 @@ void ChartViewModel::updateMargins()
     // tick, ~halfway over the plot edge) has room and doesn't clip.
     view_->setProperty("marginLeft",   std::max(leftW,  24.0));
     view_->setProperty("marginRight",  std::max(rightW, 24.0));
-    view_->setProperty("marginBottom", 22.0);                          // x time labels
+    view_->setProperty("marginBottom", 26.0);                          // x labels + gap/tick
     view_->setProperty("marginTop",    legendVisible_ ? 24.0 : 8.0);   // overlay legend
 }
 
-void ChartViewModel::appendGridFor(int axisId)
-{
-    if (axisId < 0 || axisId >= axes_.size()) return;
-    const Axis& a = axes_[axisId];
-    if (!a.grid) return;
-    const double span = a.max - a.min;
-    if (span <= 0) return;
-    const double step = stepFor(a);
-    const double first = std::ceil(a.min / step) * step;
-    for (double v = first; v <= a.max + step * 1e-6; v += step) {
-        QVariantMap m;
-        m["isX"] = a.isX;
-        m["t"]   = (v - a.min) / span;   // 0..1 along the axis
-        gridLines_.append(m);
-    }
-}
+
 
 void ChartViewModel::buildLabels()
 {
     labels_.clear();
-    gridLines_.clear();
     for (Axis& a : axes_) {
         // Drive the native axis ticks at the same step as our overlay labels so
         // Qt Graphs' gridlines land exactly under the numbers we draw. Anchored at
@@ -529,11 +514,6 @@ void ChartViewModel::buildLabels()
         }
         if (!a.native) appendTicksFor(a);   // native axes are drawn by Qt
     }
-    // Vertical lines from the key (time) x axis; horizontal lines from the primary
-    // left y axis. Both are drawn by the overlay since their axes are hidden — Qt's
-    // own grid is disabled (transparent in the GraphsTheme) to avoid double lines.
-    appendGridFor(keyAxisId_);
-    appendGridFor(primaryLeftId_);
     emit labelsChanged();
 }
 
