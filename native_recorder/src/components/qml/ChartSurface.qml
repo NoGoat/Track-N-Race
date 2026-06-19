@@ -27,6 +27,20 @@ Item {
         }
     }
 
+    // ── Cartesian grid (we draw it, not Qt: Qt only grids visible axes, and ours
+    //    are hidden). Thin 1px lines; colour adapts to light/dark via gridColor. ──
+    Repeater {
+        model: vm.gridLines
+        Rectangle {
+            readonly property bool isX: modelData.isX
+            color: vm.gridColor
+            x: isX ? root.xPix(modelData.t) : pa.x
+            y: isX ? pa.y : root.yPix(modelData.t)
+            width:  isX ? 1 : pa.width
+            height: isX ? pa.height : 1
+        }
+    }
+
     GraphsView {
         id: graphsView
         objectName: "graphsView"
@@ -38,13 +52,13 @@ Item {
             // chart blends into the widget background like the old QCustomPlot did.
             backgroundVisible: false
             plotAreaBackgroundVisible: false
-            // Faint grid + axis lines (Qt Graphs' default is bright white). Grid
-            // lines are aligned to our overlay labels via QValueAxis::tickInterval.
-            grid.mainColor: Qt.rgba(0.59, 0.59, 0.59, 0.16)
+            // Qt's own grid is off — the overlay draws the grid (see the gridLines
+            // Repeater) so it shows for our hidden time/colored axes too and adapts
+            // to light/dark. Only the axis baselines come from Qt here.
+            grid.mainColor: "transparent"
             grid.subColor: "transparent"
-            grid.mainWidth: 1
-            axisX.mainColor: Qt.rgba(0.59, 0.59, 0.59, 0.5)
-            axisY.mainColor: Qt.rgba(0.59, 0.59, 0.59, 0.5)
+            axisX.mainColor: vm.axisLineColor
+            axisY.mainColor: vm.axisLineColor
             // Native axis labels (Qt 6.12+) match the overlay's colour/size; no-op
             // on 6.11 where all labels are overlay-drawn.
             labelTextColor: vm.textColor
