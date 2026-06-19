@@ -91,7 +91,7 @@ ChartView::ChartView(QWidget* parent)
     // little data here, and seconds/frame at a 10-min window; OpenGL renders the
     // same content in single-digit ms (measured). 4x multisampling keeps lines
     // smooth without the cost/compat risk of the 16x default.
-    p->setOpenGl(true, 4);
+    p->setOpenGl(true, 16);
 #endif
     p->setBackground(Qt::NoBrush);
     p->setBackground(QBrush(Qt::transparent));
