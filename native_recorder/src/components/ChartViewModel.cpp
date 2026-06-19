@@ -312,18 +312,27 @@ void ChartViewModel::setXRange(int axisId, double min, double max)
 void ChartViewModel::flush(int plotWidthPx)
 {
     if (plotWidthPx > 0) lastPlotWidth_ = plotWidthPx;
+
+    // Only decimate for wide time windows (>= 2 min). Narrower windows hold few
+    // enough samples to plot in full; the pixel-bucketing reduction kicks in only
+    // for the long 2/5/10-min views where the raw point count would otherwise hurt.
+    double winSpan = 0.0;
+    if (keyAxisId_ >= 0 && keyAxisId_ < axes_.size())
+        winSpan = axes_[keyAxisId_].max - axes_[keyAxisId_].min;
+    const bool decimate = winSpan >= 120.0;
+
     for (Series& s : series_) {
         if (!s.line) continue;
-        // Filled series need a clean single-valued polygon (min/max pairs corrupt
-        // the area fill and tank perf on noisy data); plain lines keep the
-        // peak-preserving min/max envelope.
-        // Drop duplicate-x points first: the session-start burst of samples at t=0
-        // stacks hundreds of points at the same x, which makes the area fill render
-        // as a degenerate wedge and tanks tessellation until the window scrolls past
-        // it (the data-shorter-than-window lag + wedge).
-        QList<QPointF> dec = s.fill
-            ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
-            : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_);
+        // Filled series need a clean single-valued polygon (peakByPixel); plain
+        // lines keep the peak-preserving min/max envelope. dropDuplicateX always
+        // runs (correctness, not decimation): the session-start burst of samples at
+        // t=0 stacks hundreds of points at the same x, which makes the area fill
+        // render as a degenerate wedge and tanks tessellation until the window
+        // scrolls past it.
+        QList<QPointF> dec = decimate
+            ? (s.fill ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
+                      : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_))
+            : s.raw;
         dec = ChartDecimate::dropDuplicateX(dec);
         s.line->replace(dec);
         if (s.areaUpper && !dec.isEmpty()) {
