@@ -33,8 +33,13 @@ ChartView::ChartView(QWidget* parent)
 
     d_->quick = new QQuickWidget(this);
     d_->quick->setResizeMode(QQuickWidget::SizeRootObjectToView);
-    d_->quick->setClearColor(Qt::transparent);   // blend into the widget background
-    d_->quick->setAttribute(Qt::WA_AlwaysStackOnTop);
+    // Paint the chart's clear colour with the window colour (opaque) rather than
+    // making the widget transparent. A transparent QQuickWidget needs
+    // WA_AlwaysStackOnTop to composite, which forced the chart above every sibling
+    // and made the series draw over overlays like "Loading recording…". An opaque
+    // widget the same colour as the window looks identical but stacks normally.
+    // (Kept in sync with the theme in applyPaletteText.)
+    d_->quick->setClearColor(palette().color(QPalette::Window));
     d_->quick->rootContext()->setContextProperty("vm", d_->vm);
 
     auto* lay = new QVBoxLayout(this);
@@ -109,6 +114,7 @@ void ChartView::resizeEvent(QResizeEvent* e)
 void ChartView::applyPaletteText()
 {
     d_->vm->setThemeColors(palette().color(QPalette::Text));
+    if (d_->quick) d_->quick->setClearColor(palette().color(QPalette::Window));
 }
 
 void ChartView::changeEvent(QEvent* e)

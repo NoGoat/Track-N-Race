@@ -8,22 +8,25 @@
 // sample set is kept in C++ and a reduced copy sized to the plot's pixel width is
 // pushed to the QLineSeries on each replot.
 //
-// Points are assumed sorted by x (key). For each horizontal pixel bucket the
-// min-y and max-y samples are emitted (in x order) so spikes/dips survive the
-// reduction — a flat average would swallow them. The first and last points are
-// always kept so the curve still spans the full range.
+// Points are assumed sorted by x (key). Buckets are a FIXED ABSOLUTE x grid —
+// a sample's bucket is floor(x / bucketWidth), independent of the point count or
+// how the window pans. (Index-based bucketing reshuffled every bucket each time a
+// point was appended/trimmed, making the decimated curve shimmer as it panned.)
+// For each occupied bucket the min-y and max-y samples are emitted (in x order)
+// so spikes/dips survive — a flat average would swallow them. The first and last
+// points are always kept so the curve still spans the full range.
 namespace ChartDecimate {
 
-// targetBuckets is typically the plot width in pixels. When the input already
-// fits (<= 2 points per bucket) it is returned unchanged.
-QList<QPointF> minMaxByPixel(const QList<QPointF>& pts, int targetBuckets);
+// bucketWidth is the x-extent of one pixel column (window span / plot pixel width).
+// When the input is trivially small it is returned unchanged.
+QList<QPointF> minMaxByPixel(const QList<QPointF>& pts, double bucketWidth);
 
 // Single-point-per-bucket variant for FILLED series. minMaxByPixel emits a
 // vertical min/max pair per bucket, which for an area turns into self-overlapping
 // triangles (visual corruption) and, on noisy data, a triangulation perf cliff.
 // This keeps one sample per bucket — the one furthest from zero, so peaks/dips
 // survive — yielding a clean, single-valued polygon.
-QList<QPointF> peakByPixel(const QList<QPointF>& pts, int targetBuckets);
+QList<QPointF> peakByPixel(const QList<QPointF>& pts, double bucketWidth);
 
 // Drop the interior points of flat runs (consecutive equal y), keeping each run's
 // endpoints. Essential for filled series whose curve sits at exactly 0 for long

@@ -320,6 +320,9 @@ void ChartViewModel::flush(int plotWidthPx)
     if (keyAxisId_ >= 0 && keyAxisId_ < axes_.size())
         winSpan = axes_[keyAxisId_].max - axes_[keyAxisId_].min;
     const bool decimate = winSpan >= 120.0;
+    // x-extent of one pixel column. Decimators bucket on a fixed absolute grid of
+    // this width, so the reduced curve stays put as the window pans (no shimmer).
+    const double bucketWidth = winSpan / std::max(1, lastPlotWidth_);
 
     for (Series& s : series_) {
         if (!s.line) continue;
@@ -330,8 +333,8 @@ void ChartViewModel::flush(int plotWidthPx)
         // render as a degenerate wedge and tanks tessellation until the window
         // scrolls past it.
         QList<QPointF> dec = decimate
-            ? (s.fill ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
-                      : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_))
+            ? (s.fill ? ChartDecimate::peakByPixel(s.raw, bucketWidth)
+                      : ChartDecimate::minMaxByPixel(s.raw, bucketWidth))
             : s.raw;
         dec = ChartDecimate::dropDuplicateX(dec);
         s.line->replace(dec);
