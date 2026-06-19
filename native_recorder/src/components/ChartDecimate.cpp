@@ -62,6 +62,19 @@ QList<QPointF> peakByPixel(const QList<QPointF>& pts, int targetBuckets)
     return out;
 }
 
+QList<QPointF> dropDuplicateX(const QList<QPointF>& pts)
+{
+    if (pts.size() < 2) return pts;
+    QList<QPointF> out;
+    out.reserve(pts.size());
+    out.append(pts.first());
+    for (int i = 1; i < pts.size(); ++i) {
+        if (pts[i].x() > out.last().x()) out.append(pts[i]);
+        else                             out.last() = pts[i];   // same x → keep latest y
+    }
+    return out;
+}
+
 QList<QPointF> collapseFlats(const QList<QPointF>& pts)
 {
     const int n = pts.size();

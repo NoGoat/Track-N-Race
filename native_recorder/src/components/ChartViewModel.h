@@ -138,7 +138,7 @@ private:
     struct Series {
         QLineSeries* line = nullptr;       // the stroke (added to the view)
         QAreaSeries* area = nullptr;       // fill, drawn behind the line (added to the view)
-        QLineSeries* areaUpper = nullptr;  // area's upperSeries — NOT added to the view, NO lower
+        QLineSeries* areaUpper = nullptr;  // area's upperSeries — NOT added to the view
         QList<QPointF> raw;                // full, un-decimated samples (sorted by x)
         QString name;
         QColor  color;

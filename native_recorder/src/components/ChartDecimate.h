@@ -32,4 +32,11 @@ QList<QPointF> peakByPixel(const QList<QPointF>& pts, int targetBuckets);
 // degenerate subpaths and tanks the fill's tessellation. Visually identical.
 QList<QPointF> collapseFlats(const QList<QPointF>& pts);
 
+// Enforce strictly-increasing x, keeping the latest y at each x. At session start
+// the telemetry timestamps a burst of samples at t=0, producing hundreds of points
+// stacked at the same x; that degenerate vertical fan breaks the area fill (wedge)
+// and tanks its tessellation (lag) until the window scrolls past it. Assumes input
+// sorted by x.
+QList<QPointF> dropDuplicateX(const QList<QPointF>& pts);
+
 }

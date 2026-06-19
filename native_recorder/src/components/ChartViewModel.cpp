@@ -166,7 +166,7 @@ int ChartViewModel::addSeries(const ChartView::SeriesSpec& spec)
         fc.setAlpha(40);
         auto* upper = new QLineSeries(this);
         auto* area = new QAreaSeries(this);
-        area->setUpperSeries(upper);
+        area->setUpperSeries(upper);   // no lowerSeries: renderer fills to y=0
         area->setColor(fc);
         area->setBorderWidth(0);
         if (setX) area->setAxisX(xax);
@@ -317,22 +317,22 @@ void ChartViewModel::flush(int plotWidthPx)
         // Filled series need a clean single-valued polygon (min/max pairs corrupt
         // the area fill and tank perf on noisy data); plain lines keep the
         // peak-preserving min/max envelope.
-        // Filled series: collapse flat runs so long stretches at exactly 0
-        // (throttle/brake off) don't explode the area renderer into hundreds of
-        // degenerate subpaths (the Inputs-page lag).
-        const QList<QPointF> dec = s.fill
-            ? ChartDecimate::collapseFlats(ChartDecimate::peakByPixel(s.raw, lastPlotWidth_))
+        // Drop duplicate-x points first: the session-start burst of samples at t=0
+        // stacks hundreds of points at the same x, which makes the area fill render
+        // as a degenerate wedge and tanks tessellation until the window scrolls past
+        // it (the data-shorter-than-window lag + wedge).
+        QList<QPointF> dec = s.fill
+            ? ChartDecimate::peakByPixel(s.raw, lastPlotWidth_)
             : ChartDecimate::minMaxByPixel(s.raw, lastPlotWidth_);
+        dec = ChartDecimate::dropDuplicateX(dec);
         s.line->replace(dec);
-        if (s.areaUpper) {
-            // The area renderer starts a NEW subpath wherever the curve sits at
-            // exactly zero (two consecutive y==0 points). That gives: hundreds of
-            // degenerate subpaths for throttle/brake sitting at 0 (the Inputs lag),
-            // and malformed closes when the data starts off-baseline (ICE/first-hump
-            // diagonal). Cure both by nudging exact zeros by an invisible epsilon so
-            // y==0 never holds → the whole curve is ONE subpath, which the renderer
-            // still closes down to y=0 via its own end points. Sign follows the data
-            // so the nudge stays on the fill's side; magnitude is ~0.01% of the axis.
+        if (s.areaUpper && !dec.isEmpty()) {
+            // Nudge exact zeros by an invisible epsilon. The area renderer starts a
+            // NEW subpath at every consecutive y==0 pair — that's what gave both the
+            // throttle/brake idle lag (hundreds of degenerate subpaths) and the
+            // diagonal wedges (subpaths closing to non-baseline points). With no
+            // exact zeros the whole curve is ONE subpath the renderer closes to y=0.
+            // Sign follows the data; magnitude is ~0.01% of the axis (invisible).
             QList<QPointF> up = dec;
             double peak = 0.0;
             for (const QPointF& p : up)
