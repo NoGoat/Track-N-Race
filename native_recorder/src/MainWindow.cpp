@@ -206,8 +206,7 @@ static QIcon seekForwardIcon(QWidget* w, const QColor& tint) {
 // button would use) so it always renders even when the theme lacks an overflow icon.
 static QIcon overflowIcon(QWidget* w) {
     return adaptThemeIcon(
-        QIcon::fromTheme("application-menu",
-            QIcon::fromTheme("overflow-menu", QIcon::fromTheme("view-more-symbolic"))),
+        QIcon::fromTheme("overflow-menu-symbolic"),
         w->palette().color(QPalette::WindowText),
         w->style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton));
 }
