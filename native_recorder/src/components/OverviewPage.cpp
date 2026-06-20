@@ -106,13 +106,15 @@ static QFrame* makeDmgCard(const QString& label, QLabel*& valueOut) {
 QWidget* MainWindow::buildOverviewTab() {
     QWidget* w = new QWidget;
     QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setContentsMargins(8, 8, 8, 8);
+    // No outer padding so the separator lines reach every edge; the inset is
+    // re-added to the inner rows below (the chart keeps its own 8px L/R inset).
+    vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(6);
 
     // ── Stats row ────────────────────────────────────────────────
     ov_statsFrame_ = new QFrame;
     QHBoxLayout* sh = new QHBoxLayout(ov_statsFrame_);
-    sh->setContentsMargins(0, 0, 0, 0);
+    sh->setContentsMargins(8, 0, 8, 0);   // L/R inset; lines above/below reach edges
     sh->setSpacing(0);
 
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Speed] =
@@ -158,7 +160,7 @@ QWidget* MainWindow::buildOverviewTab() {
     // ── Chart mode controls ──────────────────────────────────────
     ov_modeBar_ = new QWidget;
     QHBoxLayout* mb = new QHBoxLayout(ov_modeBar_);
-    mb->setContentsMargins(0, 2, 0, 2);
+    mb->setContentsMargins(8, 2, 8, 2);
     mb->setSpacing(4);
 
     auto* modeGroup = new QButtonGroup(ov_modeBar_);
@@ -222,9 +224,16 @@ QWidget* MainWindow::buildOverviewTab() {
     });
 
     // ── Chart ────────────────────────────────────────────────────
+    // Wrapped so it keeps the same 8px L/R inset as the rows above/below now that
+    // the outer layout has no margins.
     chart = new TelemetryChart;
     chart->setModel(model_);
-    vbox->addWidget(chart, 1);
+    QWidget* chartWrap = new QWidget;
+    QVBoxLayout* chartWrapLay = new QVBoxLayout(chartWrap);
+    chartWrapLay->setContentsMargins(8, 0, 8, 0);
+    chartWrapLay->setSpacing(0);
+    chartWrapLay->addWidget(chart);
+    vbox->addWidget(chartWrap, 1);
 
     // Repopulate the compare-lap selector whenever the set of laps changes.
     connect(model_, &SessionModel::lapsChanged, this, [this] {
@@ -257,7 +266,7 @@ QWidget* MainWindow::buildOverviewTab() {
     ov_dmgRowA_ = new QFrame;
     ov_dmgRowA_->setFixedHeight(60);
     QHBoxLayout* ah = new QHBoxLayout(ov_dmgRowA_);
-    ah->setContentsMargins(0, 0, 0, 0);
+    ah->setContentsMargins(8, 0, 8, 0);   // L/R inset; the row's lines reach edges
     ah->setSpacing(0);
     ah->addWidget(ov_dmgCardFrame_[OverviewLayout::TyreFl] =
         makeDmgCard("Tyre FL",  dmgTyreFl));   ah->addWidget(vsep());
@@ -283,7 +292,7 @@ QWidget* MainWindow::buildOverviewTab() {
     ov_dmgRowB_ = new QFrame;
     ov_dmgRowB_->setFixedHeight(60);
     QHBoxLayout* bh = new QHBoxLayout(ov_dmgRowB_);
-    bh->setContentsMargins(0, 0, 0, 0);
+    bh->setContentsMargins(8, 0, 8, 0);   // L/R inset; the row's lines reach edges
     bh->setSpacing(0);
     bh->addWidget(ov_dmgCardFrame_[OverviewLayout::WingFl] =
         makeDmgCard("Wing FL",   dmgWingFl));   bh->addWidget(vsep());
@@ -370,7 +379,9 @@ void MainWindow::applyOverviewLayout(const OverviewLayout& L)
     if (ov_dmgFrame_) ov_dmgFrame_->setVisible(rowAVisible || rowBVisible);
     if (ov_sep2_)     ov_sep2_->setVisible(rowAVisible || rowBVisible);
 
-    if (chart)       chart->setVisible(L.showChart);
+    // Toggle the chart's wrapper (its parent) so hiding it collapses the row
+    // instead of leaving the inset wrapper as an empty stretched gap.
+    if (chart && chart->parentWidget()) chart->parentWidget()->setVisible(L.showChart);
     if (ov_modeBar_) ov_modeBar_->setVisible(L.showChart);
 }
 
