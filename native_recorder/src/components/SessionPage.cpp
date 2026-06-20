@@ -221,14 +221,16 @@ static QColor airTempColor(int c) {
 QWidget* MainWindow::buildSessionPage() {
     QWidget* w = new QWidget;
     QVBoxLayout* root = new QVBoxLayout(w);
-    root->setContentsMargins(10, 8, 0, 0);
+    // No left padding here so the full-width separator lines reach the left edge;
+    // the left inset is re-added to the inner text rows below instead.
+    root->setContentsMargins(0, 8, 0, 0);
     root->setSpacing(0);
 
     // ── Header ───────────────────────────────────────────────────
     QWidget* hdr = new QWidget;
     hdr->setFixedHeight(58);
     QHBoxLayout* hh = new QHBoxLayout(hdr);
-    hh->setContentsMargins(0, 0, 0, 0);
+    hh->setContentsMargins(10, 0, 0, 0);   // left inset for the header text
     hh->setSpacing(16);
 
     QWidget* gpBlock = new QWidget;
@@ -318,7 +320,7 @@ QWidget* MainWindow::buildSessionPage() {
     QWidget* statsRow = new QWidget;
     statsRow->setFixedHeight(58);
     QHBoxLayout* sh = new QHBoxLayout(statsRow);
-    sh->setContentsMargins(0, 0, 0, 0);
+    sh->setContentsMargins(10, 0, 0, 0);   // left inset for the first stat card
     sh->setSpacing(0);
 
     auto makeStatCard = [&](const QString& cap, QLabel*& out, const QString& accent = "") -> QWidget* {
