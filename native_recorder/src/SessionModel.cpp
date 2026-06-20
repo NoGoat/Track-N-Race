@@ -76,6 +76,43 @@ void SessionData::onSessionReset(float newTime) {
     latestTime = newTime;
 }
 
+void SessionData::truncateAfter(float newTime) {
+    // In-game flashback/rewind: the game replays from an earlier point, so drop
+    // every sample newer than the rewind target and keep the earlier history —
+    // mirrors the Electron buffer filter (keep session_time < incoming) instead of
+    // wiping the whole session. Buffers are time-ordered, so trim from the tail.
+    auto cutTail = [newTime](auto& buf) {
+        int n = buf.size();
+        while (n > 0 && buf[n - 1].t >= newTime) --n;
+        buf.remove(n, buf.size() - n);
+    };
+    cutTail(telBuf);
+    cutTail(stsBuf);
+    cutTail(motionBuf);
+    cutTail(motionExBuf);
+
+    // Drop completed laps recorded at/after the rewind point.
+    while (!laps.isEmpty() && laps.last().startSessionTime >= newTime)
+        laps.removeLast();
+
+    // Discard the in-progress lap; lap tracking re-initialises from the next lap
+    // packet (matches resetting lapNum/lapStart on a backward step in Electron).
+    curLap = LapBlock{};
+    curLapNum = -1;
+    lapStartTime = newTime;
+
+    // Recompute the fastest lap over the laps that survived the rewind.
+    fastestLapNum = -1;
+    fastestLapMs  = INT_MAX;
+    for (const LapBlock& l : laps)
+        if (l.lapTimeMs > 0 && l.lapTimeMs < 300000 && l.lapTimeMs < fastestLapMs) {
+            fastestLapMs  = l.lapTimeMs;
+            fastestLapNum = l.lapNum;
+        }
+
+    latestTime = telBuf.isEmpty() ? newTime : telBuf.last().t;
+}
+
 void SessionData::clear() {
     telBuf.clear();
     stsBuf.clear();
@@ -156,6 +193,13 @@ void SessionModel::onSessionReset(float newTime) {
     d_.onSessionReset(newTime);
     emit wasReset();
     emit lapsChanged();
+}
+
+void SessionModel::truncateAfter(float newTime) {
+    d_.truncateAfter(newTime);
+    // Charts re-query the (now shorter) buffers; lap selectors re-read the laps.
+    emit lapsChanged();
+    emit telemetryAppended();
 }
 
 void SessionModel::clear() {

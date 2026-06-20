@@ -1404,9 +1404,12 @@ void MainWindow::processPacket(const uint8_t* data, int length) {
 void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
     if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
     const std::string rtype = row.value("type", std::string{});
-    // A large backward jump in session time means a new session/restart.
-    if (rtype == "telemetry" && sessionTime < model_->data().latestTime - 2.0f)
-        model_->onSessionReset(sessionTime);
+    // A backward jump in session time is an in-game flashback/rewind: drop only the
+    // samples newer than the rewind point and keep the rest (NOT a full reset — that
+    // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
+    // anyway. Same 0.2s guard as the recording-side truncate above.
+    if (rtype == "telemetry" && sessionTime < model_->data().latestTime - 0.2f)
+        model_->truncateAfter(sessionTime);
     if (rtype == "telemetry")
         model_->onTelemetry(sessionTime,
                             row.value("speed_kph", 0.0f),

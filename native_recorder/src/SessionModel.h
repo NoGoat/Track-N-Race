@@ -62,6 +62,7 @@ struct SessionData {
     void onMotionEx(float t, float front_aero, float rear_aero);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);          // time went backward → fresh session
+    void truncateAfter(float newTime);            // in-game rewind → drop samples newer than newTime
     void finalizeOpenLap();                       // push the trailing in-progress lap
     void clear();
 
@@ -89,6 +90,7 @@ public:
     void onMotionEx(float t, float front_aero, float rear_aero);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);
+    void truncateAfter(float newTime);
     void clear();
 
     // Playback: replace everything with a pre-scanned session in one shot.

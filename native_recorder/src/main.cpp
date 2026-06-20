@@ -4,14 +4,34 @@
 #include <QSettings>
 #include <QVariant>
 #include <QStyleHints>
+#include <QIcon>
+#include <QImageReader>
+#include <QPixmap>
 #include "MainWindow.h"
 #include "BreezePalette.h"
+
+// Build a multi-resolution app icon from every frame in the .ico. QIcon(".ico")
+// alone only takes the first frame (16x16 here), which the window manager then
+// upscales into a pixelated mess for the (HiDPI) titlebar. Adding all frames lets
+// Qt pick the right size and downscale the large ones smoothly.
+static QIcon loadAppIcon(const QString& resource) {
+    QIcon icon;
+    QImageReader reader(resource);
+    const int n = reader.imageCount();
+    for (int i = 0; i < n; ++i) {
+        reader.jumpToImage(i);
+        const QImage img = reader.read();
+        if (!img.isNull()) icon.addPixmap(QPixmap::fromImage(img));
+    }
+    if (icon.isNull()) icon = QIcon(resource);   // fallback
+    return icon;
+}
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");
     app.setOrganizationName("TrackNRace");
-    app.setWindowIcon(QIcon(":/icon.ico"));
+    app.setWindowIcon(loadAppIcon(":/icon.ico"));
 
     // Remember the platform's default style *before* anything can override it, so
     // a later "System default" choice can be restored at runtime (the style's
