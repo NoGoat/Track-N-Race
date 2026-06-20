@@ -10,7 +10,7 @@
 struct OverviewLayout {
     bool showChart = true;
 
-    enum StatCard { Speed, Rpm, Gear, Throttle, Brake, Drs, Engine, Ers, Fuel, Pos, Tyre, StatCardCount };
+    enum StatCard { Speed, Rpm, Gear, Throttle, Brake, Drs, EngineTemp, Ers, Fuel, Pos, Tyre, StatCardCount };
     std::array<bool, StatCardCount> statCards = {
         true, true, true, true, true, true, true, true, true, true, true,
     };

@@ -89,7 +89,8 @@ signals:
     void damageUpdated(int tyreFl, int tyreFr, int tyreRl, int tyreRr,
                        int brakeFl, int brakeFr, int brakeRl, int brakeRr,
                        int wingFl, int wingFr, int wingRear,
-                       int floor, int sidepod, int diffuser, int gearbox, int engine);
+                       int floor, int sidepod, int diffuser, int gearbox, int engine,
+                       int drsFault, int ersFault);
     void lapUpdated(int position, int lapNum);
 
 private slots:
@@ -109,10 +110,16 @@ private:
     QLabel*         cardPos      = nullptr;
     QLabel*         cardTyre     = nullptr;
     // Top-right heading-row sub-labels (e.g. ERS mode, "+4.2 vs fin", "Lap 1").
+    QLabel*         cardDrsSub   = nullptr;
     QLabel*         cardErsSub   = nullptr;
     QLabel*         cardFuelSub  = nullptr;
     QLabel*         cardPosSub   = nullptr;
     QLabel*         cardTyreSub  = nullptr;
+    // The ERS sub shows the deploy mode, but a fault (from the damage packet)
+    // overrides it. Both arrive on separate packets, so latch each and recompute.
+    int             ovErsMode_   = -1;
+    bool            ovErsFault_  = false;
+    void            refreshErsSub();
     TelemetryChart* chart        = nullptr;
     SessionModel*   model_       = nullptr;
     QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)

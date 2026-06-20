@@ -131,9 +131,9 @@ QWidget* MainWindow::buildOverviewTab() {
         makeStatCard("Brake",    "%",   cardBrake));
     sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Drs] =
-        makeStatCard("DRS",      "",    cardDrs));
+        makeStatCard("DRS",      "",    cardDrs, &cardDrsSub));
     sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Engine] =
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::EngineTemp] =
         makeStatCard("Engine",   "°C",  cardEngine));
     sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Ers] =

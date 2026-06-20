@@ -330,6 +330,8 @@ std::vector<nlohmann::json> F1_25::ParsePacket(const uint8_t* data, int length, 
             uint8_t blRL = data[o++]; uint8_t blRR = data[o++]; uint8_t blFL = data[o++]; uint8_t blFR = data[o++];
             uint8_t wingFL = data[o++]; uint8_t wingFR = data[o++]; uint8_t wingRear = data[o++];
             uint8_t floorDmg = data[o++]; uint8_t carpetDmg = data[o++]; uint8_t diffuserDmg = data[o++];
+            // CarDamageData order here is ...sidepod, drsFault, ersFault, gearBox, engine.
+            uint8_t drsFault = data[o++]; uint8_t ersFault = data[o++];
             uint8_t gearboxDmg = data[o++]; uint8_t engineDmg = data[o++];
 
             nlohmann::json row = {
@@ -341,7 +343,8 @@ std::vector<nlohmann::json> F1_25::ParsePacket(const uint8_t* data, int length, 
                 {"blisters_rl", blRL}, {"blisters_rr", blRR}, {"blisters_fl", blFL}, {"blisters_fr", blFR},
                 {"wing_fl", wingFL}, {"wing_fr", wingFR}, {"wing_rear", wingRear},
                 {"floor_damage", floorDmg}, {"sidepod_damage", carpetDmg},
-                {"diffuser_damage", diffuserDmg}, {"gearbox_damage", gearboxDmg}, {"engine_damage", engineDmg}
+                {"diffuser_damage", diffuserDmg}, {"gearbox_damage", gearboxDmg}, {"engine_damage", engineDmg},
+                {"drs_fault", drsFault}, {"ers_fault", ersFault}
             };
             rows.push_back(row);
             break;

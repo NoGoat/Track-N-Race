@@ -756,13 +756,13 @@ MainWindow::MainWindow(QWidget* parent)
     connect(this, &MainWindow::statusUpdated,
             this, [this](float ersPct, int ersMode, float fuelKg, float fuelLaps,
                          int tyreCompound, int tyreAgeLaps, int fuelMix, int visualCompound) {
-        static const char* ERS_MODES[] = { "None", "Auto", "Hotlap", "Overtake" };
         static const char* FUEL_MIX[]  = { "Lean", "Std", "Rich", "Max" };
 
         cardErs->setText(QString::number((int)ersPct));
         QString ersColor = ersMode == 3 ? "#C4162A" : (ersPct < 20 ? "#FADE2A" : "#5794F2");
         cardErs->setStyleSheet(QString("color: %1; font-weight: bold;").arg(ersColor));
-        cardErsSub->setText(ersMode >= 0 && ersMode < 4 ? ERS_MODES[ersMode] : "");
+        ovErsMode_ = ersMode;
+        refreshErsSub();
 
         cardFuel->setText(QString::number(fuelKg, 'f', 1));
         QString fuelColor = fuelLaps > 1 ? "#37872D" : (fuelLaps >= 0 ? "#FADE2A" : "#C4162A");
@@ -794,7 +794,8 @@ MainWindow::MainWindow(QWidget* parent)
         [this](int tfl, int tfr, int trl, int trr,
                int bfl, int bfr, int brl, int brr,
                int wfl, int wfr, int wr,
-               int fl, int sp, int diff, int gb, int eng) {
+               int fl, int sp, int diff, int gb, int eng,
+               int drsFault, int ersFault) {
             setDmgValue(dmgTyreFl,   tfl); setDmgValue(dmgTyreFr,   tfr);
             setDmgValue(dmgTyreRl,   trl); setDmgValue(dmgTyreRr,   trr);
             setDmgValue(dmgBrakeFl,  bfl); setDmgValue(dmgBrakeFr,  bfr);
@@ -803,7 +804,24 @@ MainWindow::MainWindow(QWidget* parent)
             setDmgValue(dmgWingRear,  wr); setDmgValue(dmgFloor,     fl);
             setDmgValue(dmgSidepod,   sp); setDmgValue(dmgDiffuser, diff);
             setDmgValue(dmgGearbox,   gb); setDmgValue(dmgEngine,   eng);
+
+            cardDrsSub->setText(drsFault == 1 ? "FAULT" : "");
+            cardDrsSub->setStyleSheet(drsFault == 1 ? "color: #C4162A;" : "");
+            ovErsFault_ = (ersFault == 1);
+            refreshErsSub();
         });
+}
+
+void MainWindow::refreshErsSub() {
+    if (!cardErsSub) return;
+    static const char* ERS_MODES[] = { "None", "Auto", "Hotlap", "Overtake" };
+    if (ovErsFault_) {
+        cardErsSub->setText("FAULT");
+        cardErsSub->setStyleSheet("color: #C4162A;");
+    } else {
+        cardErsSub->setText(ovErsMode_ >= 0 && ovErsMode_ < 4 ? ERS_MODES[ovErsMode_] : "");
+        cardErsSub->setStyleSheet("");
+    }
 }
 
 MainWindow::~MainWindow() {
@@ -1170,7 +1188,8 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row.value("wing_fl",           0), row.value("wing_fr",           0),
             row.value("wing_rear",         0), row.value("floor_damage",      0),
             row.value("sidepod_damage",    0), row.value("diffuser_damage",   0),
-            row.value("gearbox_damage",    0), row.value("engine_damage",     0)
+            row.value("gearbox_damage",    0), row.value("engine_damage",     0),
+            row.value("drs_fault",         0), row.value("ers_fault",         0)
         );
         lastPlayerDamageData = row;
         dirtyTyres_ = true; scheduleUiRefresh();
