@@ -16,6 +16,11 @@ namespace {
 const QColor AXIS_LINE(150, 150, 150, 130);
 const QColor GRID_LINE(150, 150, 150, 40);
 
+// Per-pixel decimation (adaptive sampling) is only enabled once the visible time
+// window reaches this width. Below it the on-screen sample count is small enough
+// to draw raw — crisper lines and exact hover values, no measurable paint cost.
+const double DECIMATE_MIN_WINDOW_S = 120.0;   // 2 minutes
+
 // Ticker that scales the value and appends a suffix: "16000" -> "16k", "80" -> "80%".
 // A positive fixedStep forces evenly spaced ticks (e.g. every 2000 for RPM).
 class SuffixTicker : public QCPAxisTicker {
@@ -155,7 +160,10 @@ int ChartView::addSeries(const SeriesSpec& spec)
     QCPGraph* g = d_->plot->addGraph(kax, vax);
     g->setName(spec.name);
     g->setPen(QPen(spec.color, spec.width));
-    g->setAdaptiveSampling(true);   // per-pixel decimation — flat paint cost
+    // Decimation is gated on the current window width (see setXRange); a new
+    // series inherits whatever the shared key axis already implies.
+    const double window = d_->keyAxis ? d_->keyAxis->range().size() : 0.0;
+    g->setAdaptiveSampling(window >= DECIMATE_MIN_WINDOW_S);
     if (spec.step) g->setLineStyle(QCPGraph::lsStepLeft);
 
     if (spec.fill) {
@@ -349,7 +357,17 @@ bool ChartView::seriesKeyRange(int seriesId, double& lo, double& hi) const
 void ChartView::setXRange(int axisId, double min, double max)
 {
     if (axisId < 0 || axisId >= d_->axes.size()) return;
-    d_->axes[axisId]->setRange(min, max);
+    QCPAxis* ax = d_->axes[axisId];
+    ax->setRange(min, max);
+
+    // Only decimate when the visible window is wide enough to warrant it. Gating
+    // on the shared key (x) axis keeps every series in lock-step; below 2 minutes
+    // we keep all points, at/above we let QCustomPlot collapse to ~per-pixel.
+    if (ax == d_->keyAxis) {
+        const bool decimate = (max - min) >= DECIMATE_MIN_WINDOW_S;
+        for (QCPGraph* g : d_->graphs)
+            g->setAdaptiveSampling(decimate);
+    }
 }
 
 void ChartView::requestReplot()

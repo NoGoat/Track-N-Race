@@ -12,8 +12,9 @@
 // types — the backend lives entirely behind a pimpl in ChartView.cpp, so it can
 // be swapped without touching any caller. Charts are declared by config:
 // add some axes, add some series bound to those axes, then push data. Series use
-// adaptive sampling (per-pixel decimation) so paint cost stays flat even with
-// tens of thousands of retained points.
+// adaptive sampling (per-pixel decimation) once the visible x-window is wide
+// enough (see setXRange), keeping paint cost flat even with tens of thousands of
+// retained points; narrow windows draw every point raw.
 class ChartView : public QWidget {
     Q_OBJECT
 
