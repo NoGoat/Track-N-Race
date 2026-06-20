@@ -22,6 +22,7 @@
 
 #include <QApplication>
 #include <QToolBar>
+#include <QMenu>
 #include <QStackedWidget>
 #include <QComboBox>
 #include <QLabel>
@@ -200,6 +201,17 @@ static QIcon seekForwardIcon(QWidget* w, const QColor& tint) {
         w->style()->standardIcon(QStyle::SP_MediaSeekForward));
 }
 
+// "⋯" overflow button — same theme-icon-with-fallback pattern as the toolbar icons
+// above, ending at the style's horizontal-extension glyph (what Qt's own overflow
+// button would use) so it always renders even when the theme lacks an overflow icon.
+static QIcon overflowIcon(QWidget* w) {
+    return adaptThemeIcon(
+        QIcon::fromTheme("application-menu",
+            QIcon::fromTheme("overflow-menu", QIcon::fromTheme("view-more-symbolic"))),
+        w->palette().color(QPalette::WindowText),
+        w->style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton));
+}
+
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
 // handle straight to the clicked position, but Linux styles (Breeze, Fusion,
 // GTK) treat a groove click as a page step in that direction instead — hence
@@ -251,7 +263,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle("Track N Race Background Recorder");
-    setMinimumSize(720, 520);
+    setMinimumSize(480, 520);   // toolbar collapses into its ⋯ menu below ~full width
     resize(780, 580);
 
     outputDirectory = settings.value("outputDirectory").toString();
@@ -307,7 +319,8 @@ MainWindow::MainWindow(QWidget* parent)
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
     pageTabsLay->setContentsMargins(0, 0, 0, 0);
     pageTabsLay->setSpacing(4);
-    QButtonGroup* pageGroup = new QButtonGroup(this);
+    tb_pageGroup_ = new QButtonGroup(this);
+    QButtonGroup* pageGroup = tb_pageGroup_;
     pageGroup->setExclusive(true);
     static constexpr int kPageCount = 7;
     static constexpr int kUnderlineWidth = 2;
@@ -329,6 +342,7 @@ MainWindow::MainWindow(QWidget* parent)
         b->setStyleSheet(pageBtnStyle);
         pageGroup->addButton(b, i);
         pageTabsLay->addWidget(b);
+        tb_pageButtons_.push_back(b);
     }
     static_cast<QToolButton*>(pageGroup->button(0))->setChecked(true);   // default: Overview
     toolbar->addWidget(pageTabsWidget);
@@ -341,10 +355,12 @@ MainWindow::MainWindow(QWidget* parent)
     // drawn edge-to-edge, styled by the active QStyle (so it renders native to
     // whatever platform/theme is running, not a fixed look).
     QWidget* windowSeg = new QWidget;
+    tb_windowSeg_ = windowSeg;
     QHBoxLayout* segLay = new QHBoxLayout(windowSeg);
     segLay->setContentsMargins(0, 0, 0, 0);
     segLay->setSpacing(0);
-    QButtonGroup* windowGroup = new QButtonGroup(this);
+    tb_windowGroup_ = new QButtonGroup(this);
+    QButtonGroup* windowGroup = tb_windowGroup_;
     windowGroup->setExclusive(true);
     for (int i = 0; i < kWindowOptionCount; ++i) {
         SegmentButton* b = new SegmentButton;
@@ -355,22 +371,10 @@ MainWindow::MainWindow(QWidget* parent)
         segLay->addWidget(b);
     }
     static_cast<QToolButton*>(windowGroup->button(1))->setChecked(true);   // default 30s
-    toolbar->addWidget(windowSeg);
-    connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) {
-        float secs = kWindowOptions[idx].secs;
-        if (chart) chart->setWindowSeconds(secs);
-        if (gearChart_) gearChart_->setWindowSeconds(secs);
-        if (inputsChart_) inputsChart_->setWindowSeconds(secs);
-        if (steeringChart_) steeringChart_->setWindowSeconds(secs);
-        if (pp_splitChart) pp_splitChart->setWindowSeconds(secs);
-        if (pp_harvestChart) pp_harvestChart->setWindowSeconds(secs);
-        if (pp_storeChart) pp_storeChart->setWindowSeconds(secs);
-        if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
-        if (gforceChart_) gforceChart_->setWindowSeconds(secs);
-        if (rideHeightChart_) rideHeightChart_->setWindowSeconds(secs);
-    });
+    tb_windowAct_ = toolbar->addWidget(windowSeg);
+    connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) { applyChartWindow(idx); });
 
-    toolbar->addSeparator();
+    tb_iconSep_ = toolbar->addSeparator();
     openAct_ = toolbar->addAction(openRecordingIcon(this), "Open Recording");
     editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
     editLayoutAct_->setEnabled(true); // Default is Overview page (0)
@@ -400,12 +404,24 @@ MainWindow::MainWindow(QWidget* parent)
         dlg->show();
     });
 
-    // The toolbar is built entirely from custom widgets (page tabs, window-size
-    // segment) rather than QActions, which Qt's overflow extension button can't
-    // reliably reparent into its popup menu — the button appears but its menu
-    // silently fails to populate. Rather than fight that, just never let the
-    // window get narrow enough to trigger it.
-    setMinimumWidth(qMax(minimumWidth(), toolbar->sizeHint().width()));
+    // Custom overflow: the toolbar is built from composite custom widgets (page
+    // tabs, window-size segment), which Qt's native QToolBarExtension can't reparent
+    // into its popup. Instead we manage it ourselves — relayoutToolbar() collapses
+    // low-priority items into this "⋯" button's menu when the window is too narrow,
+    // so the broken native extension never appears.
+    tb_overflowMenu_ = new QMenu(this);
+    tb_overflowBtn_  = new QToolButton;
+    tb_overflowBtn_->setAutoRaise(true);
+    tb_overflowBtn_->setIcon(overflowIcon(this));
+    tb_overflowBtn_->setPopupMode(QToolButton::InstantPopup);
+    tb_overflowBtn_->setMenu(tb_overflowMenu_);
+    tb_overflowBtn_->setToolTip("More");
+    // Control visibility via the toolbar action so its slot is fully removed when
+    // hidden (toggling just the widget leaves a reserved empty slot).
+    tb_overflowAct_ = toolbar->addWidget(tb_overflowBtn_);
+    tb_overflowAct_->setVisible(false);
+    // Initial pass once the toolbar has a real width (after the window is shown).
+    QTimer::singleShot(0, this, [this] { relayoutToolbar(); });
 
     // Lap-aware session model — the chart's single source of truth, fed by both
     // live UDP and playback. Created before the Overview tab so the chart can bind it.
@@ -545,6 +561,7 @@ MainWindow::MainWindow(QWidget* parent)
         currentPage_ = i;       // refresh the newly-shown page from any pending data
         editLayoutAct_->setEnabled(i == 0 || i == 4 || i == 5 || i == 6);
         flushUiRefresh();
+        relayoutToolbar();      // the active tab is kept inline — re-evaluate overflow
     });
 
     // Helper for formatting session time as M:SS
@@ -848,14 +865,127 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
         loadingOverlay_->setGeometry(container_->rect());
     // Keep any visible toasts pinned to the content area's top-right corner.
     Toast::updateAllPositions();
+    relayoutToolbar();   // collapse/expand toolbar items for the new width
 }
 
 void MainWindow::refreshThemedIcons() {
     // The toolbar theme icons are tinted to the palette foreground (on Windows),
     // so rebuild them whenever the palette changes to re-tint for the new mode.
-    if (openAct_)       openAct_->setIcon(openRecordingIcon(this));
-    if (editLayoutAct_) editLayoutAct_->setIcon(editLayoutIcon(this));
-    if (settingsAct_)   settingsAct_->setIcon(settingsIcon(this));
+    if (openAct_)        openAct_->setIcon(openRecordingIcon(this));
+    if (editLayoutAct_)  editLayoutAct_->setIcon(editLayoutIcon(this));
+    if (settingsAct_)    settingsAct_->setIcon(settingsIcon(this));
+    if (tb_overflowBtn_) tb_overflowBtn_->setIcon(overflowIcon(this));
+}
+
+void MainWindow::applyChartWindow(int idx) {
+    if (idx < 0 || idx >= kWindowOptionCount) return;
+    tb_windowIdx_ = idx;
+    const float secs = kWindowOptions[idx].secs;
+    if (chart) chart->setWindowSeconds(secs);
+    if (gearChart_) gearChart_->setWindowSeconds(secs);
+    if (inputsChart_) inputsChart_->setWindowSeconds(secs);
+    if (steeringChart_) steeringChart_->setWindowSeconds(secs);
+    if (pp_splitChart) pp_splitChart->setWindowSeconds(secs);
+    if (pp_harvestChart) pp_harvestChart->setWindowSeconds(secs);
+    if (pp_storeChart) pp_storeChart->setWindowSeconds(secs);
+    if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
+    if (gforceChart_) gforceChart_->setWindowSeconds(secs);
+    if (rideHeightChart_) rideHeightChart_->setWindowSeconds(secs);
+    // Keep the inline segment in sync when the choice came from the overflow menu
+    // (a programmatic setChecked emits idToggled, not idClicked, so no recursion).
+    if (tb_windowGroup_)
+        if (auto* b = tb_windowGroup_->button(idx))
+            if (!b->isChecked()) b->setChecked(true);
+}
+
+// Collapse low-priority toolbar items into the "⋯" menu when the window is too
+// narrow to fit everything, expanding them back as it widens. Order of collapse:
+// icon actions → window-size segment → page tabs (right-to-left, active tab kept).
+void MainWindow::relayoutToolbar() {
+    if (!toolbar_ || !tb_overflowBtn_ || tb_pageButtons_.empty()) return;
+    const int avail = toolbar_->width();
+    if (avail <= 0) return;
+    const int spacing = toolbar_->layout() ? toolbar_->layout()->spacing() : 4;
+    const int n = (int)tb_pageButtons_.size();
+
+    auto actW = [&](QAction* a) -> int {
+        QWidget* w = a ? toolbar_->widgetForAction(a) : nullptr;
+        return w ? w->sizeHint().width() : 0;
+    };
+    int tabsTotal = 0;
+    for (auto* b : tb_pageButtons_) tabsTotal += b->sizeHint().width();
+    const int tabsComposite = tabsTotal + spacing * (n - 1);
+    const int wSeg   = tb_windowSeg_->sizeHint().width();
+    const int wIcons = actW(tb_iconSep_) + actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
+    const int wOver  = tb_overflowBtn_->sizeHint().width();
+    // Full inline width (item widths + inter-item spacing), padded a touch so we
+    // collapse a hair early rather than ever trip Qt's native extension button.
+    const int needAll = tabsComposite + wSeg + wIcons + spacing * 6 + 8;
+
+    auto setIconsVisible = [&](bool v) {
+        if (tb_iconSep_)     tb_iconSep_->setVisible(v);
+        if (openAct_)        openAct_->setVisible(v);
+        if (editLayoutAct_)  editLayoutAct_->setVisible(v);
+        if (settingsAct_)    settingsAct_->setVisible(v);
+    };
+
+    if (avail >= needAll) {                       // everything fits inline
+        if (tb_windowAct_) tb_windowAct_->setVisible(true);
+        setIconsVisible(true);
+        for (auto* b : tb_pageButtons_) b->setVisible(true);
+        if (tb_overflowAct_) tb_overflowAct_->setVisible(false);
+        return;
+    }
+
+    if (tb_overflowAct_) tb_overflowAct_->setVisible(true);
+    int mustFree = needAll - (avail - wOver - spacing);
+
+    bool segIn = true, iconsIn = true;
+    std::vector<bool> tabIn(n, true);
+    // Collapse order: icon actions (toolbar buttons) first, then the window-size
+    // segment (chart timer), then page tabs right-to-left.
+    if (mustFree > 0 && iconsIn) { iconsIn = false; mustFree -= wIcons + spacing; }
+    if (mustFree > 0 && segIn)   { segIn   = false; mustFree -= wSeg + spacing; }
+    for (int i = n - 1; i >= 0 && mustFree > 0; --i) {
+        if (i == currentPage_) continue;          // always keep the active tab inline
+        tabIn[i] = false;
+        mustFree -= tb_pageButtons_[i]->sizeHint().width() + spacing;
+    }
+
+    if (tb_windowAct_) tb_windowAct_->setVisible(segIn);
+    setIconsVisible(iconsIn);
+    for (int i = 0; i < n; ++i) tb_pageButtons_[i]->setVisible(tabIn[i]);
+
+    // Rebuild the overflow menu from whatever collapsed.
+    tb_overflowMenu_->clear();
+    for (int i = 0; i < n; ++i) {
+        if (tabIn[i]) continue;
+        QAction* a = tb_overflowMenu_->addAction(tb_pageButtons_[i]->text());
+        a->setCheckable(true);
+        a->setChecked(i == currentPage_);
+        connect(a, &QAction::triggered, this, [this, i] {
+            if (tb_pageGroup_) if (auto* b = tb_pageGroup_->button(i)) b->click();
+        });
+    }
+    if (!segIn) {
+        tb_overflowMenu_->addSection("Chart Window");
+        for (int i = 0; i < kWindowOptionCount; ++i) {
+            QAction* a = tb_overflowMenu_->addAction(kWindowOptions[i].label);
+            a->setCheckable(true);
+            a->setChecked(i == tb_windowIdx_);
+            connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
+        }
+    }
+    if (!iconsIn) {
+        tb_overflowMenu_->addSeparator();
+        QAction* mo = tb_overflowMenu_->addAction(openRecordingIcon(this), "Open Recording");
+        connect(mo, &QAction::triggered, openAct_, &QAction::trigger);
+        QAction* me = tb_overflowMenu_->addAction(editLayoutIcon(this), "Edit Layout");
+        me->setEnabled(editLayoutAct_ && editLayoutAct_->isEnabled());
+        connect(me, &QAction::triggered, editLayoutAct_, &QAction::trigger);
+        QAction* ms = tb_overflowMenu_->addAction(settingsIcon(this), "Settings");
+        connect(ms, &QAction::triggered, settingsAct_, &QAction::trigger);
+    }
 }
 
 void MainWindow::changeEvent(QEvent* e) {
@@ -942,7 +1072,8 @@ void MainWindow::setStyleName(const QString& name) {
 
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
-        if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    relayoutToolbar();   // text-beside-icon changes the icon-action widths
 }
 
 void MainWindow::setContrastThreshold(float val) {

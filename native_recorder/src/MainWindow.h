@@ -40,6 +40,9 @@ class QComboBox;
 class QTimer;
 class QToolBar;
 class QAction;
+class QButtonGroup;
+class QToolButton;
+class QMenu;
 struct ToastSpec;
 
 class MainWindow : public QMainWindow {
@@ -285,6 +288,23 @@ private:
     QAction*  openAct_       = nullptr;
     QAction*  editLayoutAct_ = nullptr;
     QAction*  settingsAct_   = nullptr;
+
+    // ── Toolbar overflow ──────────────────────────────────────────
+    // When the window is too narrow to fit everything, low-priority items collapse
+    // into tb_overflowBtn_'s menu (window-size segment → icon actions → page tabs,
+    // right-to-left). See relayoutToolbar().
+    QButtonGroup* tb_pageGroup_   = nullptr;   // exclusive page tabs
+    QButtonGroup* tb_windowGroup_ = nullptr;   // exclusive window-size segment
+    QWidget*      tb_windowSeg_   = nullptr;   // window-size segmented control widget
+    QAction*      tb_windowAct_   = nullptr;   // its toolbar action (hide to free space)
+    QAction*      tb_iconSep_     = nullptr;   // separator before the icon actions
+    QToolButton*  tb_overflowBtn_ = nullptr;   // "⋯" menu button (hidden until needed)
+    QAction*      tb_overflowAct_ = nullptr;   // its toolbar action (toggle visibility)
+    QMenu*        tb_overflowMenu_= nullptr;
+    std::vector<class QToolButton*> tb_pageButtons_;   // the 7 page-tab buttons
+    int           tb_windowIdx_   = 1;         // selected window-size option (default 30s)
+    void applyChartWindow(int idx);            // set chart window + sync inline/menu state
+    void relayoutToolbar();                    // collapse/expand on resize
 
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
