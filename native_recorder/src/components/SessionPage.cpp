@@ -249,6 +249,10 @@ QWidget* MainWindow::buildSessionPage() {
     gpv->addWidget(sp_circuitName);
     hh->addWidget(gpBlock);
 
+    // Separator: Heading | Marshal Strip
+    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken);
+        hh->addWidget(f); }
+
     QWidget* zoneWrap = new QWidget;
     QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
     zv->setContentsMargins(16, 6, 16, 6);
@@ -293,9 +297,13 @@ QWidget* MainWindow::buildSessionPage() {
     zv->addWidget(strip);
     hh->addWidget(zoneWrap, 1);
 
+    // Separator: Marshal Strip | Timer
+    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken);
+        hh->addWidget(f); }
+
     QWidget* tmBlock = new QWidget;
     QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
-    tmv->setContentsMargins(0, 0, 0, 0);
+    tmv->setContentsMargins(0, 0, 16, 0);   // right padding so the timer isn't flush to the edge
     tmv->setSpacing(3);
     tmv->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     sp_timeLeft = new QLabel("—:——");
@@ -460,12 +468,12 @@ QWidget* MainWindow::buildSessionPage() {
     rv->setContentsMargins(0, 0, 0, 0);
     rv->setSpacing(6);
 
-    auto makeSection = [&](const QString& title) {
+    auto makeSection = [&](const QString& title, int topPad = 0) {
         QLabel* lbl = new QLabel(title);
         QFont f; f.setPointSize(8); f.setBold(true);
         lbl->setFont(f);
         lbl->setForegroundRole(QPalette::PlaceholderText);
-        lbl->setContentsMargins(14, 0, 14, 0);
+        lbl->setContentsMargins(14, topPad, 14, 0);
         rv->addWidget(lbl);
     };
 
@@ -476,7 +484,7 @@ QWidget* MainWindow::buildSessionPage() {
     };
 
     // PROXIMITY
-    makeSection("PROXIMITY");
+    makeSection("PROXIMITY", 10);
     for (int i = 0; i < 3; ++i) {
         QWidget* row = new QWidget;
         sp_proxRow[i] = row;
