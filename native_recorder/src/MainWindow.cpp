@@ -1282,18 +1282,10 @@ void MainWindow::resetFastestLapState() {
 void MainWindow::showToast(const ToastSpec& spec) {
     if (!settings.value("ui/toastsEnabled", true).toBool()) return;
 
-    // The event's severity colour is the toast background. Title/text colour is
-    // chosen for contrast against it using the same perceived-luminance test as the
-    // track-map labels (see TrackMapWidget): black on light backgrounds, white on
-    // dark. The sub line uses the same colour, slightly dimmed.
-    const QColor bg  = spec.color;
-    const double luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue();
-    const QColor fg  = luminance > 140 ? Qt::black : Qt::white;
-    // Sub line slightly dimmed toward the background — blended opaque because the
-    // Toast widget renders colours via QColor::name(), which drops alpha.
-    const QColor sub((fg.red()   * 3 + bg.red()   ) / 4,
-                     (fg.green() * 3 + bg.green() ) / 4,
-                     (fg.blue()  * 3 + bg.blue()  ) / 4);
+    // ToolTipBase reads as a raised card distinct from the page background; the
+    // per-event accent drives the title, secondary text for the sub line.
+    const QColor bg  = palette().color(QPalette::ToolTipBase);
+    const QColor sub = palette().color(QPalette::PlaceholderText);
 
     // Parented to the central content widget so the toast renders inline (a child
     // overlay), not as its own window — required for correct positioning on Wayland.
@@ -1307,7 +1299,7 @@ void MainWindow::showToast(const ToastSpec& spec) {
     t->setDuration(settings.value("ui/bannerDuration", 3).toInt() * 1000);
     t->setBackgroundColor(bg);
     t->setTitle(spec.label);
-    t->setTitleColor(fg);
+    t->setTitleColor(spec.color);
     if (!spec.sub.isEmpty()) {
         t->setText(spec.sub);
         t->setTextColor(sub);
