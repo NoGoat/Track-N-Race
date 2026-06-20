@@ -1285,7 +1285,8 @@ void MainWindow::showToast(const ToastSpec& spec) {
     // Theme-aware surface: app window colour for the card, secondary text for the
     // sub line; the per-event accent drives the title + the duration bar. No icon
     // (the left severity glyph) — just the coloured text, per design.
-    const QColor bg  = palette().color(QPalette::Window);
+    // ToolTipBase reads as a raised card distinct from the page background.
+    const QColor bg  = palette().color(QPalette::ToolTipBase);
     const QColor sub = palette().color(QPalette::PlaceholderText);
 
     // Parented to the central content widget so the toast renders inline (a child
@@ -1293,7 +1294,9 @@ void MainWindow::showToast(const ToastSpec& spec) {
     Toast* t = new Toast(container_);
     t->setShowIcon(false);
     t->setShowIconSeparator(false);
-    t->setShowCloseButton(false);   // asset-free; toasts auto-dismiss via the bar
+    t->setShowCloseButton(false);   // asset-free; toasts auto-dismiss on a timer
+    t->setShowDurationBar(false);   // no countdown bar
+    t->setFixedWidth(250);          // uniform width across all toasts (long text wraps)
     t->setBorderRadius(8);
     t->setDuration(settings.value("ui/bannerDuration", 3).toInt() * 1000);
     t->setBackgroundColor(bg);
@@ -1303,7 +1306,6 @@ void MainWindow::showToast(const ToastSpec& spec) {
         t->setText(spec.sub);
         t->setTextColor(sub);
     }
-    t->setDurationBarColor(spec.color);
     t->show();
 }
 
