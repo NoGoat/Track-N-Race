@@ -40,15 +40,21 @@ protected:
             return;
         }
 
+        // The first zone's raw zone_start is often > 0, which with absolute
+        // positioning leaves a gap on the left. Normalise [firstStart, 1.0] → the
+        // full width so the bar fills edge-to-edge (the first zone anchored left,
+        // the last extending to the right), like the Electron MarshalStrip.
+        const float base = zones.front().first;
+        const float span = std::max(1.0f - base, 1e-4f);
         const int gap = 2;
         p.setPen(Qt::NoPen);
         for (size_t i = 0; i < zones.size(); ++i) {
-            float start = zones[i].first;
-            float end   = (i + 1 < zones.size()) ? zones[i + 1].first : 1.0f;
+            float start = (zones[i].first - base) / span;
+            float end   = ((i + 1 < zones.size() ? zones[i + 1].first : 1.0f) - base) / span;
             int x0 = (int)(start * w);
             int x1 = (int)(end   * w);
             if (x1 <= x0) x1 = x0 + 1;
-            
+
             if (i + 1 < zones.size() && x1 - x0 > gap) {
                 x1 -= gap;
             }
@@ -276,6 +282,10 @@ QWidget* MainWindow::buildSessionPage() {
     QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
     zv->setContentsMargins(16, 6, 16, 6);
     zv->setSpacing(8);
+    // Keep the ZONES label + strip a tight, vertically-centred group (like the GP
+    // block). Without this the default-policy headerWrap expands to fill the 58px
+    // header and pushes the 4px strip far below the label, leaving a big gap.
+    zv->setAlignment(Qt::AlignVCenter);
     
     QWidget* headerWrap = new QWidget;
     QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
