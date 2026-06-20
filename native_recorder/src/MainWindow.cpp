@@ -340,6 +340,12 @@ MainWindow::MainWindow(QWidget* parent)
         b->setAutoRaise(true);
         b->setFixedHeight(kToolbarHeight - 2);
         b->setStyleSheet(pageBtnStyle);
+        // Pin each tab to its natural width so it can't compress: when space runs
+        // out the only way the strip shrinks is by *hiding* a whole tab (handled by
+        // relayoutToolbar). Otherwise the buttons and the toolbar both try to shrink
+        // at once and the overflow measurement never settles — that was the flicker.
+        b->ensurePolished();
+        b->setFixedWidth(b->sizeHint().width());
         pageGroup->addButton(b, i);
         pageTabsLay->addWidget(b);
         tb_pageButtons_.push_back(b);
@@ -420,6 +426,14 @@ MainWindow::MainWindow(QWidget* parent)
     // hidden (toggling just the widget leaves a reserved empty slot).
     tb_overflowAct_ = toolbar->addWidget(tb_overflowBtn_);
     tb_overflowAct_->setVisible(false);
+    // Disable Qt's own overflow: its extension button (objectName "qt_toolbar_ext_button")
+    // would otherwise flash in/out as items reflow, fighting our ⋯ menu. Keep it
+    // permanently hidden via the event filter below.
+    tb_extButton_ = toolbar->findChild<QWidget*>("qt_toolbar_ext_button");
+    if (tb_extButton_) {
+        tb_extButton_->hide();
+        tb_extButton_->installEventFilter(this);
+    }
     // Initial pass once the toolbar has a real width (after the window is shown).
     QTimer::singleShot(0, this, [this] { relayoutToolbar(); });
 
@@ -868,6 +882,15 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
     relayoutToolbar();   // collapse/expand toolbar items for the new width
 }
 
+bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
+    // Qt's QToolBarLayout re-shows its extension button whenever it thinks items
+    // overflow; hide it again every time so only our ⋯ overflow is ever seen.
+    if (obj == tb_extButton_ &&
+        (e->type() == QEvent::Show || e->type() == QEvent::ShowToParent))
+        tb_extButton_->hide();
+    return QMainWindow::eventFilter(obj, e);
+}
+
 void MainWindow::refreshThemedIcons() {
     // The toolbar theme icons are tinted to the palette foreground (on Windows),
     // so rebuild them whenever the palette changes to re-tint for the new mode.
@@ -905,43 +928,64 @@ void MainWindow::relayoutToolbar() {
     if (!toolbar_ || !tb_overflowAct_ || tb_pageButtons_.empty()) return;
     const int avail = toolbar_->width();
     if (avail <= 0) return;
+    const int spacing = toolbar_->layout() ? toolbar_->layout()->spacing() : 4;
     const int n = (int)tb_pageButtons_.size();
+    // Deliberate slack so we always collapse a little EARLY rather than ever let the
+    // toolbar genuinely overflow. A real overflow makes Qt's (suppressed) extension
+    // button fight our event filter — show/hide/show — which is the flicker. Showing
+    // the ⋯ a few px sooner is harmless; oscillation is not.
+    constexpr int kSlack = 40;
 
+    auto actW = [&](QAction* a) -> int {
+        QWidget* w = a ? toolbar_->widgetForAction(a) : nullptr;
+        return w ? w->sizeHint().width() : 0;
+    };
     auto setIconsVisible = [&](bool v) {
         if (tb_iconSep_)     tb_iconSep_->setVisible(v);
         if (openAct_)        openAct_->setVisible(v);
         if (editLayoutAct_)  editLayoutAct_->setVisible(v);
         if (settingsAct_)    settingsAct_->setVisible(v);
     };
-    // The toolbar's own layout sizeHint is exactly the width it needs to show every
-    // currently-visible item without its native extension. Measuring it (rather than
-    // estimating widths) is what keeps the native ">" from ever flashing — the old
-    // estimate undercounted and let the toolbar overflow before we collapsed.
-    auto wants = [&]() -> int {
-        QLayout* l = toolbar_->layout();
-        if (l) { l->invalidate(); return l->sizeHint().width(); }
-        return toolbar_->sizeHint().width();
-    };
 
-    // Start fully inline (overflow hidden); if that already fits, we're done.
-    if (tb_windowAct_) tb_windowAct_->setVisible(true);
-    setIconsVisible(true);
-    for (auto* b : tb_pageButtons_) b->setVisible(true);
-    tb_overflowAct_->setVisible(false);
-    if (wants() <= avail) return;
+    // Pure arithmetic from stable sizeHints (tabs are fixed-width; the rest are
+    // content-sized and don't depend on the live layout), so the decision is
+    // deterministic — identical for a given width every call, no oscillation.
+    std::vector<int> tabW(n);
+    int sumTabs = 0;
+    for (int i = 0; i < n; ++i) { tabW[i] = tb_pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
+    const int wSeg   = tb_windowSeg_->sizeHint().width();
+    const int wIcons = actW(tb_iconSep_) + actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
+    const int wOver  = tb_overflowBtn_->sizeHint().width();
+    // Inter-item gaps: 7 toolbar items (tab strip, spacer, seg, sep, 3 icons) → 6
+    // gaps, plus the tab strip's own gaps between its n buttons.
+    const int needAll = sumTabs + wSeg + wIcons + spacing * 6 + spacing * (n - 1);
 
-    // Doesn't fit — show the overflow button and collapse units (re-measuring after
-    // each) until the toolbar fits. Order: icons → window segment → tabs (R→L).
+    if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
+        if (tb_windowAct_) tb_windowAct_->setVisible(true);
+        setIconsVisible(true);
+        for (auto* b : tb_pageButtons_) b->setVisible(true);
+        tb_overflowAct_->setVisible(false);
+        return;
+    }
+
+    // Need overflow. Collapse units (icons → window segment → tabs R→L, active tab
+    // kept) until inline content + ⋯ leaves at least kSlack of headroom.
     tb_overflowAct_->setVisible(true);
+    const int budget = avail - wOver - spacing - kSlack;
+    int inlineW = needAll;
     bool segIn = true, iconsIn = true;
     std::vector<bool> tabIn(n, true);
-    if (wants() > avail && iconsIn) { iconsIn = false; setIconsVisible(false); }
-    if (wants() > avail && segIn)   { segIn   = false; if (tb_windowAct_) tb_windowAct_->setVisible(false); }
-    for (int i = n - 1; i >= 0 && wants() > avail; --i) {
+    if (inlineW > budget && iconsIn) { iconsIn = false; inlineW -= wIcons + spacing; }
+    if (inlineW > budget && segIn)   { segIn   = false; inlineW -= wSeg + spacing; }
+    for (int i = n - 1; i >= 0 && inlineW > budget; --i) {
         if (i == currentPage_) continue;          // always keep the active tab inline
         tabIn[i] = false;
-        tb_pageButtons_[i]->setVisible(false);
+        inlineW -= tabW[i] + spacing;
     }
+
+    if (tb_windowAct_) tb_windowAct_->setVisible(segIn);
+    setIconsVisible(iconsIn);
+    for (int i = 0; i < n; ++i) tb_pageButtons_[i]->setVisible(tabIn[i]);
 
     // Rebuild the overflow menu from whatever collapsed.
     tb_overflowMenu_->clear();

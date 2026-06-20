@@ -301,6 +301,7 @@ private:
     QToolButton*  tb_overflowBtn_ = nullptr;   // "⋯" menu button (hidden until needed)
     QAction*      tb_overflowAct_ = nullptr;   // its toolbar action (toggle visibility)
     QMenu*        tb_overflowMenu_= nullptr;
+    QWidget*      tb_extButton_   = nullptr;   // Qt's native QToolBar extension — kept hidden
     std::vector<class QToolButton*> tb_pageButtons_;   // the 7 page-tab buttons
     int           tb_windowIdx_   = 1;         // selected window-size option (default 30s)
     void applyChartWindow(int idx);            // set chart window + sync inline/menu state
@@ -347,6 +348,9 @@ private:
     std::unordered_map<std::string, std::string> dedupeCache;
 
     void resizeEvent(QResizeEvent* e) override;
+    // Keeps Qt's native toolbar extension button (tb_extButton_) hidden — we do
+    // our own overflow via the ⋯ menu.
+    bool eventFilter(QObject* obj, QEvent* e) override;
     // Rebuilds the toolbar's tinted theme icons when the application palette
     // changes (e.g. Light↔Dark), so they re-tint to the new foreground colour.
     void changeEvent(QEvent* e) override;
