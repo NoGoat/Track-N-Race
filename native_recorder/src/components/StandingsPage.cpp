@@ -17,6 +17,7 @@
 #include <QStringList>
 #include <QStyledItemDelegate>
 #include <QPainter>
+#include <QEvent>
 
 #include <algorithm>
 #include <unordered_map>
@@ -137,6 +138,31 @@ public:
     }
 };
 
+// Keeps the Driver column (col 2) stretching to fill spare width, but never below
+// a readable floor. QHeaderView::Stretch shrinks a section without limit on narrow
+// windows; instead we size the column on every viewport resize to
+// max(MIN, available) so it grows with the table yet stays >= MIN, letting the
+// table scroll horizontally rather than crushing the names.
+class DriverColumnSizer : public QObject {
+public:
+    static constexpr int kMinWidth = 150;
+    static constexpr int kCol      = 2;
+    explicit DriverColumnSizer(QTableWidget* t) : QObject(t), t_(t) {}
+    void apply() {
+        int others = 0;
+        for (int c = 0; c < t_->columnCount(); ++c)
+            if (c != kCol) others += t_->columnWidth(c);
+        t_->setColumnWidth(kCol, std::max(kMinWidth, t_->viewport()->width() - others));
+    }
+protected:
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (e->type() == QEvent::Resize) apply();
+        return QObject::eventFilter(o, e);
+    }
+private:
+    QTableWidget* t_;
+};
+
 // ── Standings page builder ────────────────────────────────────────────────
 
 QWidget* MainWindow::buildStandingsPage() {
@@ -162,11 +188,17 @@ QWidget* MainWindow::buildStandingsPage() {
     // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
     // cell on every setItem and tanks the UI when the table rebuilds rapidly.
     timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    timingTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     {
-        const int colW[12] = { 44, 36, 0, 46, 84, 80, 60, 60, 60, 52, 74, 72 };
+        const int colW[12] = { 44, 36, 150, 46, 84, 80, 60, 60, 60, 52, 74, 72 };
         for (int c = 0; c < 12; ++c)
-            if (c != 2) timingTable->setColumnWidth(c, colW[c]);
+            timingTable->setColumnWidth(c, colW[c]);
+    }
+    // Driver column fills spare width but stays >= 150px (see DriverColumnSizer);
+    // on narrow windows the table scrolls instead of crushing the names.
+    {
+        auto* sizer = new DriverColumnSizer(timingTable);
+        timingTable->viewport()->installEventFilter(sizer);
+        sizer->apply();
     }
 
     QFont hf; hf.setPointSize(7);

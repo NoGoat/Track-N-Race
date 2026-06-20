@@ -1297,7 +1297,7 @@ void MainWindow::showToast(const ToastSpec& spec) {
     t->setShowCloseButton(false);   // asset-free; toasts auto-dismiss on a timer
     t->setShowDurationBar(false);   // no countdown bar
     t->setFixedWidth(250);          // uniform width across all toasts (long text wraps)
-    t->setBorderRadius(8);
+    t->setBorderRadius(3);
     t->setDuration(settings.value("ui/bannerDuration", 3).toInt() * 1000);
     t->setBackgroundColor(bg);
     t->setTitle(spec.label);
