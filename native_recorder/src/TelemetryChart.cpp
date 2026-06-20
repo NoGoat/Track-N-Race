@@ -38,11 +38,9 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     // so there are no horizontal grid lines to misalign with one axis or the other.
     axXId_      = addAxis({ Side::Bottom, 0.0, windowS_,        QColor(), true, 'f', 0, true,  true });
     int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED,       QColor(), true, 'f', 0, false });
-    // TEST: secondary RPM axis disabled — route RPM onto the left (Speed) axis so the
-    // chart is single-axis, to confirm the second axis is what drifts the X grid.
-    int axRpm   = axSpeed;
-    // int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM * RPM_K, QColor(), true, 'f', 0, false });
-    // setAxisNumberSuffix(axRpm, 1.0, "k", 2);   // axis 0–16 → "0k".."16k", ticks every 2k
+    int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM * RPM_K, QColor(), true, 'f', 0, false });
+
+    setAxisNumberSuffix(axRpm, 1.0, "k", 2);   // axis 0–16 → "0k".."16k", ticks every 2k
 
     ChartView::SeriesSpec rRpm{ "", muted(C_RPM), 2.0, axXId_, axRpm };
     rRpm.yScale = RPM_K;

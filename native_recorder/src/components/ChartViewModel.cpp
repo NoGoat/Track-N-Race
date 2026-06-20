@@ -181,12 +181,7 @@ int ChartViewModel::addSeries(const ChartView::SeriesSpec& spec)
     };
     QAbstractAxis* xax = baseAxis(spec.xAxisId);
     QAbstractAxis* yax = baseAxis(spec.yAxisId);
-    // Axis attachment rule: only attach an axis EXPLICITLY when it is a secondary
-    // (non-primary) axis. The GraphsView's primary x/y axes must be INHERITED, never
-    // re-passed per series — re-associating the primary X to a series (as the
-    // secondary-Y RPM line does) makes Qt Graphs render that X axis a second time
-    // with its own independently auto-computed ticks, so its grid drifts away from
-    // the primary axis' labels. Inheriting keeps one set of X ticks for everyone.
+    // Attach only genuinely-secondary axes; the primary x/y are inherited.
     const bool setX = xax && spec.xAxisId != keyAxisId_;
     const bool setY = yax && spec.yAxisId != primaryLeftId_;
 
@@ -398,31 +393,10 @@ void ChartViewModel::applyAxisFormat(Axis& a)
 
 void ChartViewModel::updateMargins()
 {
-    if (!view_) return;
-
-    // Native axis labels are drawn by Qt in the margin area, so each side's margin
-    // must be wide enough for its labels. Estimate from the formatted extremes.
-    const double charW = 7.0;   // ~px per char at the 11px label font
-    auto labelW = [&](const Axis& a) -> double {
-        if (a.dateTime) return 5 * charW;   // "m:ss"
-        const QString fmt = labelFormatFor(a);
-        const QString lo = QString::asprintf(fmt.toUtf8().constData(), a.min);
-        const QString hi = QString::asprintf(fmt.toUtf8().constData(), a.max);
-        return std::max(lo.size(), hi.size()) * charW;
-    };
-
-    double leftW = 0.0, rightW = 0.0;
-    bool haveLeft = false, haveRight = false, haveBottom = false;
-    for (const Axis& a : axes_) {
-        if (a.isX) { haveBottom = true; continue; }
-        if (a.side == ChartView::Side::Left)  { leftW  = std::max(leftW,  labelW(a)); haveLeft  = true; }
-        else                                  { rightW = std::max(rightW, labelW(a)); haveRight = true; }
-    }
-
-    view_->setProperty("marginLeft",   haveLeft  ? std::max(leftW  + 12.0, 24.0) : 8.0);
-    view_->setProperty("marginRight",  haveRight ? std::max(rightW + 12.0, 24.0) : 8.0);
-    view_->setProperty("marginBottom", haveBottom ? 28.0 : 8.0);
-    view_->setProperty("marginTop",    legendVisible_ ? 24.0 : 8.0);   // overlay legend
+    // Intentionally does NOT set marginLeft/Right/Top/Bottom. Hand-rolled margins are
+    // suspected of desyncing the native grid from the native labels when a secondary
+    // axis is present, so the GraphsView is left to own its own plot rect (its default
+    // margins) — keeping grid and labels on one plot width.
 }
 
 // ── legend / hover (kept custom — no native Qt Graphs equivalent) ───────────────
