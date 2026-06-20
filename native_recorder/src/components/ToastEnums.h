@@ -5,11 +5,11 @@ enum class ToastPreset
 {
     SUCCESS,
     WARNING,
-    ERROR,
+    TOASTERROR,
     INFORMATION,
     SUCCESS_DARK,
     WARNING_DARK,
-    ERROR_DARK,
+    TOASTERROR_DARK,
     INFORMATION_DARK
 };
 
@@ -18,7 +18,7 @@ enum class ToastIcon
 {
     SUCCESS,
     WARNING,
-    ERROR,
+    TOASTERROR,
     INFORMATION,
     CLOSE
 };

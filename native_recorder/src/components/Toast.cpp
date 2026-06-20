@@ -1135,9 +1135,9 @@ void Toast::applyPreset(ToastPreset preset)
         setIconColor(sc_warningAccentColor);
         setDurationBarColor(sc_warningAccentColor);
     }
-    else if (preset == ToastPreset::ERROR || preset == ToastPreset::ERROR_DARK)
+    else if (preset == ToastPreset::TOASTERROR || preset == ToastPreset::TOASTERROR_DARK)
     {
-        setIcon(ToastIcon::ERROR);
+        setIcon(ToastIcon::TOASTERROR);
         setIconColor(sc_errorAccentColor);
         setDurationBarColor(sc_errorAccentColor);
     }
@@ -1149,7 +1149,7 @@ void Toast::applyPreset(ToastPreset preset)
     }
 
     if (preset == ToastPreset::SUCCESS || preset == ToastPreset::WARNING
-        || preset == ToastPreset::ERROR || preset == ToastPreset::INFORMATION)
+        || preset == ToastPreset::TOASTERROR || preset == ToastPreset::INFORMATION)
     {
         setBackgroundColor(sc_defaultBackgroundColor);
         setCloseButtonIconColor(sc_defaultCloseButtonIconColor);
@@ -1158,7 +1158,7 @@ void Toast::applyPreset(ToastPreset preset)
         setTextColor(sc_defaultTextColor);
     }
     else if (preset == ToastPreset::SUCCESS_DARK || preset == ToastPreset::WARNING_DARK
-        || preset == ToastPreset::ERROR_DARK || preset == ToastPreset::INFORMATION_DARK)
+        || preset == ToastPreset::TOASTERROR_DARK || preset == ToastPreset::INFORMATION_DARK)
     {
         setBackgroundColor(sc_defaultBackgroundColorDark);
         setCloseButtonIconColor(sc_defaultCloseButtonIconColorDark);
@@ -1886,7 +1886,7 @@ QPixmap Toast::getIconFromEnum(ToastIcon enumIcon)
     {
         return QPixmap(currentDirectiory + "/icons/warning.png");
     }
-    else if (enumIcon == ToastIcon::ERROR)
+    else if (enumIcon == ToastIcon::TOASTERROR)
     {
         return QPixmap(currentDirectiory + "/icons/error.png");
     }
