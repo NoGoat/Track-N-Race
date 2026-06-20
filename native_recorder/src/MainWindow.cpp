@@ -902,25 +902,10 @@ void MainWindow::applyChartWindow(int idx) {
 // narrow to fit everything, expanding them back as it widens. Order of collapse:
 // icon actions → window-size segment → page tabs (right-to-left, active tab kept).
 void MainWindow::relayoutToolbar() {
-    if (!toolbar_ || !tb_overflowBtn_ || tb_pageButtons_.empty()) return;
+    if (!toolbar_ || !tb_overflowAct_ || tb_pageButtons_.empty()) return;
     const int avail = toolbar_->width();
     if (avail <= 0) return;
-    const int spacing = toolbar_->layout() ? toolbar_->layout()->spacing() : 4;
     const int n = (int)tb_pageButtons_.size();
-
-    auto actW = [&](QAction* a) -> int {
-        QWidget* w = a ? toolbar_->widgetForAction(a) : nullptr;
-        return w ? w->sizeHint().width() : 0;
-    };
-    int tabsTotal = 0;
-    for (auto* b : tb_pageButtons_) tabsTotal += b->sizeHint().width();
-    const int tabsComposite = tabsTotal + spacing * (n - 1);
-    const int wSeg   = tb_windowSeg_->sizeHint().width();
-    const int wIcons = actW(tb_iconSep_) + actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
-    const int wOver  = tb_overflowBtn_->sizeHint().width();
-    // Full inline width (item widths + inter-item spacing), padded a touch so we
-    // collapse a hair early rather than ever trip Qt's native extension button.
-    const int needAll = tabsComposite + wSeg + wIcons + spacing * 6 + 8;
 
     auto setIconsVisible = [&](bool v) {
         if (tb_iconSep_)     tb_iconSep_->setVisible(v);
@@ -928,33 +913,35 @@ void MainWindow::relayoutToolbar() {
         if (editLayoutAct_)  editLayoutAct_->setVisible(v);
         if (settingsAct_)    settingsAct_->setVisible(v);
     };
+    // The toolbar's own layout sizeHint is exactly the width it needs to show every
+    // currently-visible item without its native extension. Measuring it (rather than
+    // estimating widths) is what keeps the native ">" from ever flashing — the old
+    // estimate undercounted and let the toolbar overflow before we collapsed.
+    auto wants = [&]() -> int {
+        QLayout* l = toolbar_->layout();
+        if (l) { l->invalidate(); return l->sizeHint().width(); }
+        return toolbar_->sizeHint().width();
+    };
 
-    if (avail >= needAll) {                       // everything fits inline
-        if (tb_windowAct_) tb_windowAct_->setVisible(true);
-        setIconsVisible(true);
-        for (auto* b : tb_pageButtons_) b->setVisible(true);
-        if (tb_overflowAct_) tb_overflowAct_->setVisible(false);
-        return;
-    }
+    // Start fully inline (overflow hidden); if that already fits, we're done.
+    if (tb_windowAct_) tb_windowAct_->setVisible(true);
+    setIconsVisible(true);
+    for (auto* b : tb_pageButtons_) b->setVisible(true);
+    tb_overflowAct_->setVisible(false);
+    if (wants() <= avail) return;
 
-    if (tb_overflowAct_) tb_overflowAct_->setVisible(true);
-    int mustFree = needAll - (avail - wOver - spacing);
-
+    // Doesn't fit — show the overflow button and collapse units (re-measuring after
+    // each) until the toolbar fits. Order: icons → window segment → tabs (R→L).
+    tb_overflowAct_->setVisible(true);
     bool segIn = true, iconsIn = true;
     std::vector<bool> tabIn(n, true);
-    // Collapse order: icon actions (toolbar buttons) first, then the window-size
-    // segment (chart timer), then page tabs right-to-left.
-    if (mustFree > 0 && iconsIn) { iconsIn = false; mustFree -= wIcons + spacing; }
-    if (mustFree > 0 && segIn)   { segIn   = false; mustFree -= wSeg + spacing; }
-    for (int i = n - 1; i >= 0 && mustFree > 0; --i) {
+    if (wants() > avail && iconsIn) { iconsIn = false; setIconsVisible(false); }
+    if (wants() > avail && segIn)   { segIn   = false; if (tb_windowAct_) tb_windowAct_->setVisible(false); }
+    for (int i = n - 1; i >= 0 && wants() > avail; --i) {
         if (i == currentPage_) continue;          // always keep the active tab inline
         tabIn[i] = false;
-        mustFree -= tb_pageButtons_[i]->sizeHint().width() + spacing;
+        tb_pageButtons_[i]->setVisible(false);
     }
-
-    if (tb_windowAct_) tb_windowAct_->setVisible(segIn);
-    setIconsVisible(iconsIn);
-    for (int i = 0; i < n; ++i) tb_pageButtons_[i]->setVisible(tabIn[i]);
 
     // Rebuild the overflow menu from whatever collapsed.
     tb_overflowMenu_->clear();
