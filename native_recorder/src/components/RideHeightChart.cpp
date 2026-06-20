@@ -14,8 +14,8 @@ RideHeightChart::RideHeightChart(QWidget* parent) : ChartView(parent) {
     xAx.grid = true;
     xAx.numberFormat = 'f';
     xAx.precision = 1;
+    xAx.dateTime = true;   // native Qt QDateTimeAxis "m:ss" labels
     axXId_ = addAxis(xAx);
-    setAxisTimeTicker(axXId_, "%m:%s");
 
     ChartView::AxisSpec yAx;
     yAx.side = ChartView::Side::Left;

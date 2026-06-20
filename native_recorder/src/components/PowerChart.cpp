@@ -12,8 +12,8 @@ const QColor C_ICE("#5794F2"), C_MGUK("#FADE2A"), C_HARV_K("#37872D"), C_HARV_H(
 PowerChart::PowerChart(PowerChartType type, QWidget* parent)
     : ChartView(parent), type_(type)
 {
-    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
-    
+    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true, true });
+
     int axYId = -1;
     if (type_ == PowerChartType::Split) {
         axYId = addAxis({ Side::Left, 0.0, 1000.0, QColor(), true,  'f', 0 });
@@ -32,7 +32,6 @@ PowerChart::PowerChart(PowerChartType type, QWidget* parent)
         s1Id_ = addSeries({ "Fuel", C_FUEL, 1.5, axXId_, axYId, "", 2, false, true });
     }
 
-    setAxisTimeTicker(axXId_, "%m:%s");
     setHoverReadout(true);
     setLegendVisible(false);
 

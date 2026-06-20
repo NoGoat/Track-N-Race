@@ -13,10 +13,10 @@
 // QCustomPlot is gone — ChartView now hosts a Qt Graphs (2D) scene in a
 // QQuickWidget and delegates every call to ChartViewModel, which owns the series,
 // axes and raw sample store. Rendering goes through the Qt Quick scene graph on
-// Qt's RHI (Vulkan/Direct3D/Metal — see main.cpp), and the decoration Qt Graphs
-// can't draw (custom tick labels, crosshair, tooltip, legend, bands) is rendered
-// by ChartSurface.qml bound to the view model. The public API is unchanged, so no
-// chart subclass or caller needed touching.
+// Qt's RHI (Vulkan/Direct3D/Metal — see main.cpp). Axes, ticks, grid and labels
+// are drawn natively by Qt Graphs; only the hover crosshair/tooltip and the legend
+// (which Qt Graphs has no native equivalent for) are rendered by ChartSurface.qml
+// bound to the view model.
 struct ChartView::Impl {
     QQuickWidget*   quick = nullptr;
     ChartViewModel* vm    = nullptr;
@@ -61,7 +61,6 @@ ChartView::~ChartView() = default;
 
 int  ChartView::addAxis(const AxisSpec& spec)   { return d_->vm->addAxis(spec); }
 int  ChartView::addSeries(const SeriesSpec& spec) { return d_->vm->addSeries(spec); }
-void ChartView::addBand(const BandSpec& spec)   { d_->vm->addBand(spec); }
 
 void ChartView::appendPoint(int seriesId, double x, double y) { d_->vm->appendPoint(seriesId, x, y); }
 
@@ -74,8 +73,6 @@ void ChartView::trimBefore(int seriesId, double x) { d_->vm->trimBefore(seriesId
 void ChartView::clear(int seriesId)                { d_->vm->clear(seriesId); }
 void ChartView::clearAll()                         { d_->vm->clearAll(); }
 void ChartView::setSeriesVisible(int seriesId, bool visible) { d_->vm->setSeriesVisible(seriesId, visible); }
-
-void ChartView::setAxisTimeTicker(int axisId, const QString& /*format*/) { d_->vm->setAxisTimeTicker(axisId); }
 
 void ChartView::setAxisNumberSuffix(int axisId, double scale, const QString& suffix, double fixedStep)
 {
@@ -113,7 +110,8 @@ void ChartView::resizeEvent(QResizeEvent* e)
 
 void ChartView::applyPaletteText()
 {
-    d_->vm->setThemeColors(palette().color(QPalette::Text));
+    d_->vm->setThemeColors(palette().color(QPalette::Text),
+                           palette().color(QPalette::PlaceholderText));
     if (d_->quick) d_->quick->setClearColor(palette().color(QPalette::Window));
 }
 

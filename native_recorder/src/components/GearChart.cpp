@@ -12,15 +12,8 @@ const QColor C_GEAR("#5794F2");
 GearChart::GearChart(QWidget* parent)
     : ChartView(parent)
 {
-    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
+    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true, true });
     int axGear = addAxis({ Side::Left, 0.0, 9.0, QColor(), true,  'f', 0 });
-
-    setAxisTimeTicker(axXId_, "%m:%s");
-
-    addBand({ axGear, 0.0, 2.5, QColor(196, 22, 42, 51) });
-    addBand({ axGear, 2.5, 4.5, QColor(212, 173, 4, 51) });
-    addBand({ axGear, 4.5, 6.5, QColor(0, 200, 83, 51) });
-    addBand({ axGear, 6.5, 9.0, QColor(31, 96, 196, 51) });
 
     grId_ = addSeries({ "Gear", C_GEAR, 2.0, axXId_, axGear, "", 0, false, false, QColor(), true });
 

@@ -6,48 +6,53 @@
 #include <algorithm>
 
 namespace {
-const QColor C_SPEED("#37872D"), C_RPM("#C4162A"), C_ERS("#FADE2A");
+const QColor C_SPEED("#37872D"), C_RPM("#C4162A");
+const double RPM_K = 1.0 / 1000.0;   // RPM axis runs 0–16 ("16k") → scale data by 1/1000
 // Reference (other-lap) traces are drawn dimmer so the current lap reads on top.
 QColor muted(QColor c) { c.setAlpha(110); return c; }
 
 void fillLap(const LapBlock* lap, float originT, float upTo,
-             QVector<double>& tx, QVector<double>& spd, QVector<double>& rpm,
-             QVector<double>& ex, QVector<double>& ers) {
+             QVector<double>& tx, QVector<double>& spd, QVector<double>& rpm) {
     if (!lap) return;
     for (const TelSample& s : lap->tel) {
         if (s.t > upTo) break;
         tx.append(s.t - originT); spd.append(s.speed); rpm.append(s.rpm);
-    }
-    for (const StsSample& s : lap->sts) {
-        if (s.t > upTo) break;
-        ex.append(s.t - originT); ers.append(s.ers);
     }
 }
 }
 
 QVector<TelemetryChart::LegendEntry> TelemetryChart::legendEntries()
 {
-    return { { "Speed", C_SPEED }, { "RPM", C_RPM }, { "ERS", C_ERS } };
+    return { { "Speed", C_SPEED }, { "RPM", C_RPM } };
 }
 
 TelemetryChart::TelemetryChart(QWidget* parent)
     : ChartView(parent)
 {
-    axXId_      = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
-    int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED, C_SPEED, true,  'f', 0 });
-    int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM,   C_RPM,   true,  'f', 0 });
-    int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   true,  'f', 0 });
+    // X is a native QDateTimeAxis ("m:ss"); Speed/RPM are native value axes with no
+    // colour, so Qt draws the whole cartesian grid + labels itself. RPM runs 0–16
+    // (data scaled by RPM_K) so its native "%.0fk" format reads "16k". Only the two
+    // primary axes (X + Speed) carry grid lines; RPM is labels-only to avoid a second,
+    // differently-scaled horizontal grid.
+    // Only X carries grid lines (vertical); both Y axes are labels-only (grid=false)
+    // so there are no horizontal grid lines to misalign with one axis or the other.
+    axXId_      = addAxis({ Side::Bottom, 0.0, windowS_,        QColor(), true, 'f', 0, true,  true });
+    int axSpeed = addAxis({ Side::Left,   0.0, MAX_SPEED,       QColor(), true, 'f', 0, false });
+    // TEST: secondary RPM axis disabled — route RPM onto the left (Speed) axis so the
+    // chart is single-axis, to confirm the second axis is what drifts the X grid.
+    int axRpm   = axSpeed;
+    // int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM * RPM_K, QColor(), true, 'f', 0, false });
+    // setAxisNumberSuffix(axRpm, 1.0, "k", 2);   // axis 0–16 → "0k".."16k", ticks every 2k
 
-    setAxisTimeTicker(axXId_, "%m:%s");             // m:ss.t labels, like Electron's fmtTime
-    setAxisNumberSuffix(axRpm, 1000.0, "k", 2000);  // 16000 -> "16k", ticks every 2k
-    setAxisNumberSuffix(axErs, 1.0, "%");           // 80    -> "80%"
+    ChartView::SeriesSpec rRpm{ "", muted(C_RPM), 2.0, axXId_, axRpm };
+    rRpm.yScale = RPM_K;
+    ChartView::SeriesSpec rpm{ "RPM", C_RPM, 2.5, axXId_, axRpm, "", 0, true };
+    rpm.yScale = RPM_K;
 
     // Reference series first (drawn behind), then the current-lap series on top.
-    rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs   });
-    rRpId_ = addSeries({ "",      muted(C_RPM),   2.0, axXId_, axRpm   });
+    rRpId_ = addSeries(rRpm);
     rSpId_ = addSeries({ "",      muted(C_SPEED), 2.0, axXId_, axSpeed });
-    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs,   "%",   1, false });
-    rpId_  = addSeries({ "RPM",   C_RPM,   2.5, axXId_, axRpm,   "",    0, true  });
+    rpId_  = addSeries(rpm);
     spId_  = addSeries({ "Speed", C_SPEED, 2.5, axXId_, axSpeed, "kph", 0, false });
 
     showReference(false);
@@ -119,7 +124,6 @@ void TelemetryChart::showReference(bool on)
 {
     setSeriesVisible(rSpId_, on);
     setSeriesVisible(rRpId_, on);
-    setSeriesVisible(rErId_, on);
 }
 
 void TelemetryChart::refresh()
@@ -145,9 +149,8 @@ void TelemetryChart::buildDefault(float endTime)
     // Buffers are time-sorted, so binary-search the window instead of scanning
     // the whole (full-session, in playback) buffer each refresh.
     if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
-        clear(spId_); clear(rpId_); clear(erId_);
+        clear(spId_); clear(rpId_);
         lastAddedTime_ = left;
-        lastAddedStsTime_ = left;
     }
     auto lb = [](const auto& v, float t) {
         return std::lower_bound(v.begin(), v.end(), t, [](const auto& s, float key) { return s.t < key; });
@@ -160,16 +163,8 @@ void TelemetryChart::buildDefault(float endTime)
         appendPoint(rpId_, s.t, s.rpm);
         lastAddedTime_ = s.t;
     }
-    int stsIndex = std::distance(d.stsBuf.begin(), lb(d.stsBuf, lastAddedStsTime_ + 0.0001f));
-    for (int i = stsIndex; i < d.stsBuf.size(); ++i) {
-        const auto& s = d.stsBuf[i];
-        if (s.t > endTime) break;
-        appendPoint(erId_, s.t, s.ers);
-        lastAddedStsTime_ = s.t;
-    }
     trimBefore(spId_, left);
     trimBefore(rpId_, left);
-    trimBefore(erId_, left);
     prevEndTime_ = endTime;
 
     const double lo = std::max(0.0f, left);
@@ -180,22 +175,20 @@ void TelemetryChart::buildDefault(float endTime)
 void TelemetryChart::buildOverlay(const LapBlock* ref, const LapBlock* cur, float curUpTo)
 {
     // Current lap (full colour).
-    QVector<double> tx, spd, rpm, ex, ers;
-    fillLap(cur, cur ? cur->startSessionTime : 0.0f, curUpTo, tx, spd, rpm, ex, ers);
+    QVector<double> tx, spd, rpm;
+    fillLap(cur, cur ? cur->startSessionTime : 0.0f, curUpTo, tx, spd, rpm);
     setSeriesData(spId_, tx, spd);
     setSeriesData(rpId_, tx, rpm);
-    setSeriesData(erId_, ex, ers);
 
     // Reference lap (muted) — shown in full, aligned by time-from-lap-start.
     const bool haveRef = ref && !ref->tel.isEmpty();
     showReference(haveRef);
     double refDur = 0.0;
     if (haveRef) {
-        QVector<double> rtx, rspd, rrpm, rex, rers;
-        fillLap(ref, ref->startSessionTime, ref->endSessionTime, rtx, rspd, rrpm, rex, rers);
+        QVector<double> rtx, rspd, rrpm;
+        fillLap(ref, ref->startSessionTime, ref->endSessionTime, rtx, rspd, rrpm);
         setSeriesData(rSpId_, rtx, rspd);
         setSeriesData(rRpId_, rtx, rrpm);
-        setSeriesData(rErId_, rex, rers);
         refDur = ref->endSessionTime - ref->startSessionTime;
     }
 

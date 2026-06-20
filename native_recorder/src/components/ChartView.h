@@ -33,6 +33,10 @@ public:
         char    numberFormat = 'f';        // number format: 'f', 'g', 'e'
         int     precision    = 0;          // tick label decimal precision
         bool    grid         = false;      // draw this axis's (faint) grid lines
+        // Render the axis as a Qt QDateTimeAxis with an "m:ss" label format (the key
+        // values are still plain seconds; the model converts to msecs internally).
+        // Set this on a time (x) axis to get native Qt-drawn time labels + grid.
+        bool    dateTime     = false;
     };
 
     struct SeriesSpec {
@@ -47,13 +51,10 @@ public:
         bool    fill = false;            // if true, fills under the curve to zero
         QColor  fillColor = QColor();    // if invalid, uses semi-transparent series color
         bool    step = false;            // if true, draw as a left-step line
-    };
-
-    struct BandSpec {
-        int     axisId = -1;
-        double  min = 0.0;
-        double  max = 0.0;
-        QColor  color;
+        // Multiplier applied to y only when pushing to the plot, so an axis can run
+        // in scaled units (e.g. RPM axis 0–16 with yScale 1/1000 → native "16k"
+        // labels) while the raw store/hover keep the true value.
+        double  yScale = 1.0;
     };
 
     explicit ChartView(QWidget* parent = nullptr);
@@ -63,7 +64,6 @@ public:
     // calls below. Series are drawn in creation order (later draws on top).
     int  addAxis(const AxisSpec& spec);
     int  addSeries(const SeriesSpec& spec);
-    void addBand(const BandSpec& spec);
 
     // Data.
     void appendPoint(int seriesId, double x, double y);
@@ -75,9 +75,6 @@ public:
     // Hide a series (and its legend entry) — used to switch between single-lap
     // and two-lap overlay layouts without rebuilding the chart.
     void setSeriesVisible(int seriesId, bool visible);
-
-    // Format an axis's tick labels as time "m:ss.t" (the format arg is legacy/ignored).
-    void setAxisTimeTicker(int axisId, const QString& format);
 
     // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
     // 16000 into "16k", or (1,"%") turns 80 into "80%". A positive fixedStep forces

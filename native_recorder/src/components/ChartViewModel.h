@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ChartView.h"   // for ChartView::AxisSpec/SeriesSpec/BandSpec/Side
+#include "ChartView.h"   // for ChartView::AxisSpec/SeriesSpec/Side
 
 #include <QObject>
 #include <QColor>
@@ -15,25 +15,31 @@ class QQuickItem;
 class QLineSeries;
 class QAreaSeries;
 class QValueAxis;
+class QDateTimeAxis;
+class QAbstractAxis;
 class QAbstractSeries;
 QT_END_NAMESPACE
 
-// Backend engine + QML bridge for ChartView, replacing the old QCustomPlot Impl.
+// Backend engine + QML bridge for ChartView, on Qt Graphs (2D).
 //
-// Owns the Qt Graphs objects (QLineSeries/QAreaSeries/QValueAxis) and the full
-// raw sample store. The GraphsView lives in ChartSurface.qml; once that scene is
-// ready ChartView calls attach() with the GraphsView item, and every series/axis
-// created afterwards is wired straight into it. On flush() the raw data is
-// decimated to the plot's pixel width and pushed to the line series — the
-// stand-in for QCustomPlot's adaptive sampling.
+// Axes, ticks, grid and axis labels are now drawn NATIVELY by Qt Graphs: each
+// axis is a QValueAxis / QDateTimeAxis with a printf labelFormat, so the bespoke
+// overlay tick-labels/tick-marks are gone (and with them the things they enabled
+// that the library can't do: sub-second time labels, colour-coded axis labels,
+// background bands). The series are QLineSeries/QAreaSeries.
 //
-// QML binds to the exposed properties/signals to draw what Qt Graphs can't: the
-// custom axis tick labels (time "m:ss.t", scaled "16k", "%"), the hover crosshair
-// and the per-series tooltip, the overlay legend, and theme-driven colors.
+// Two overlays are KEPT custom, because Qt Graphs has no native equivalent:
+//   * the hover crosshair + per-series value tooltip, and
+//   * the legend.
+// Both are bound from the QML overlay to the properties below.
+//
+// Decimation is also kept out of the library (Qt Graphs has none): the full raw
+// samples live here and a reduced copy sized to the plot width is pushed to the
+// line series on flush().
 class ChartViewModel : public QObject {
     Q_OBJECT
 
-    // Theme colors, kept in sync with the widget palette (see ChartView::changeEvent).
+    // Theme colours, kept in sync with the widget palette (see ChartView::changeEvent).
     Q_PROPERTY(QColor textColor     READ textColor     NOTIFY themeChanged)
     Q_PROPERTY(QColor axisLineColor READ axisLineColor NOTIFY themeChanged)
     Q_PROPERTY(QColor gridColor     READ gridColor     NOTIFY themeChanged)
@@ -48,11 +54,7 @@ class ChartViewModel : public QObject {
     Q_PROPERTY(QString tooltipHtml    READ tooltipHtml    NOTIFY hoverChanged)
 
     Q_PROPERTY(bool legendVisible READ legendVisible NOTIFY legendChanged)
-
-    // Lists the overlays bind to; each re-evaluates when its NOTIFY fires.
-    Q_PROPERTY(QVariantList axisLabels    READ axisLabels    NOTIFY labelsChanged)
     Q_PROPERTY(QVariantList legendEntries READ legendEntries NOTIFY legendChanged)
-    Q_PROPERTY(QVariantList bandRects     READ bandRects     NOTIFY bandsChanged)
 
 public:
     explicit ChartViewModel(QObject* parent = nullptr);
@@ -65,7 +67,6 @@ public:
     // ── mirror of the ChartView public API ───────────────────────────────────
     int  addAxis(const ChartView::AxisSpec& spec);
     int  addSeries(const ChartView::SeriesSpec& spec);
-    void addBand(const ChartView::BandSpec& spec);
 
     void appendPoint(int seriesId, double x, double y);
     void setSeriesData(int seriesId, const QVector<double>& xs, const QVector<double>& ys);
@@ -74,17 +75,16 @@ public:
     void clearAll();
 
     void setSeriesVisible(int seriesId, bool visible);
-    void setAxisTimeTicker(int axisId);
     void setAxisNumberSuffix(int axisId, double scale, const QString& suffix, double fixedStep);
     void setLegendVisible(bool on);
     void setHoverReadout(bool on);
     bool seriesKeyRange(int seriesId, double& lo, double& hi) const;
     void setXRange(int axisId, double min, double max);
 
-    // Decimate + push every series to its QLineSeries and recompute tick labels.
+    // Decimate + push every series to its QLineSeries.
     void flush(int plotWidthPx);
 
-    void setThemeColors(const QColor& text);
+    void setThemeColors(const QColor& text, const QColor& line);
 
     // ── QML-facing reads/invokables ──────────────────────────────────────────
     QColor textColor()     const { return text_; }
@@ -95,15 +95,8 @@ public:
     bool   tooltipVisible()   const { return hoverActive_ && !tooltipHtml_.isEmpty(); }
     QString tooltipHtml()     const { return tooltipHtml_; }
     bool   legendVisible()    const { return legendVisible_; }
-
-    // Flat list of every axis tick to draw: { isX, alignment, t, text, color }.
-    // alignment uses Qt::Alignment ints (AlignBottom/AlignLeft/AlignRight).
-    QVariantList axisLabels() const { return labels_; }
     // Overlay legend rows: { name, color } for named, visible series.
     QVariantList legendEntries() const;
-    // Background bands as { t0, t1, color } fractions up the band's y axis; QML
-    // maps them onto plotArea and draws them behind the series (GearChart).
-    QVariantList bandRects() const;
 
     // QML reports the pointer as a 0..1 fraction across the plot's x extent.
     Q_INVOKABLE void hoverAt(qreal t);
@@ -113,28 +106,21 @@ signals:
     void themeChanged();
     void hoverChanged();
     void legendChanged();
-    void labelsChanged();
-    void bandsChanged();
-    void replotRequested();   // QML may use this to nudge the overlay repaint
+    void replotRequested();
 
 private:
-    enum class Formatter { Plain, Time, Suffix };
-
     struct Axis {
-        QValueAxis*  obj = nullptr;
+        QValueAxis*    obj   = nullptr;   // value axis (null when dateTime)
+        QDateTimeAxis* dtObj = nullptr;   // time axis (null unless dateTime)
+        bool   dateTime = false;          // rendered natively as m:ss via dtObj
         ChartView::Side side = ChartView::Side::Left;
         bool   isX = false;
-        int    sideIndex = 0;   // order among axes on the same side (label column)
         double min = 0.0, max = 1.0;
-        bool   inheritColor = true;
-        QColor color;
         bool   grid = false;
-        Formatter fmt = Formatter::Plain;
-        double scale = 1.0;     // Suffix
-        QString suffix;         // Suffix
-        double fixedStep = 0.0; // Suffix; <=0 means auto
+        double scale = 1.0;     // Suffix label divisor
+        QString suffix;         // Suffix label text
+        double fixedStep = 0.0; // forced tick interval (raw value units); <=0 means auto
         int    precision = 0;
-        bool   native = false;  // labels drawn natively by Qt (tight on 6.12 via dynamicLabelMargins)
     };
     struct Series {
         QLineSeries* line = nullptr;       // the stroke (added to the view)
@@ -148,33 +134,29 @@ private:
         bool    group = false;
         bool    visible = true;
         bool    fill = false;
+        double  yScale = 1.0;   // y multiplier applied only when pushing to the plot
         int     xAxisId = -1, yAxisId = -1;
     };
-    struct Band { int axisId = -1; double min = 0.0, max = 0.0; QColor color; };
 
-    void buildLabels();
-    void appendTicksFor(const Axis& a);
-    double stepFor(const Axis& a) const;
-    QString formatTick(const Axis& a, double value) const;
     void addSeriesToView(QAbstractSeries* s);
-    void updateMargins();        // size the GraphsView plot margins to the overlay labels
-    void applyAxisLabelMode();   // 6.12+: native vs overlay labels + axis visibility
+    void applyAxisFormat(Axis& a);   // native labelFormat + tick interval
+    void updateMargins();            // size the GraphsView plot margins for native labels
+    QString labelFormatFor(const Axis& a) const;
 
     QQuickItem* view_ = nullptr;
     QList<Axis>   axes_;
     QList<Series> series_;
-    QList<Band>   bands_;
 
     int    keyAxisId_ = -1;     // first Bottom axis — the primary (GraphsView) x
     int    primaryLeftId_ = -1; // first Left axis — the primary (GraphsView) y
     QColor text_ = QColor(220, 220, 220);
+    QColor line_ = QColor(150, 150, 150);   // grid/axis lines (QPalette::PlaceholderText)
     bool   legendVisible_ = true;
     bool   hoverEnabled_  = false;
     bool   hoverActive_   = false;
     qreal  crosshairT_    = 0.0;
     QString tooltipHtml_;
     int    lastPlotWidth_ = 1000;
-    QVariantList labels_;
     bool   gridXSet_ = false;   // GraphsView.axisX assigned (drives plot extent + grid)
     bool   gridYSet_ = false;   // GraphsView.axisY assigned
 };

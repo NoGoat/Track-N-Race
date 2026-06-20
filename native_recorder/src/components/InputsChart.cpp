@@ -12,10 +12,8 @@ const QColor C_THROTTLE("#2FC584"), C_BRAKE("#FF4040");
 InputsChart::InputsChart(QWidget* parent)
     : ChartView(parent)
 {
-    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true });
+    axXId_ = addAxis({ Side::Bottom, 0.0, windowS_, QColor(), true,  'f', 0, true, true });
     int axPct = addAxis({ Side::Left, -1.0, 1.0, QColor(), true,  'f', 2 });
-
-    setAxisTimeTicker(axXId_, "%m:%s");
 
     thId_ = addSeries({ "Throttle", C_THROTTLE, 2.0, axXId_, axPct, "", 2, false, true });
     brId_ = addSeries({ "Brake",    C_BRAKE,    2.0, axXId_, axPct, "", 2, false, true });

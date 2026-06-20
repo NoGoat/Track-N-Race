@@ -66,9 +66,8 @@ private:
     float     windowS_      = 30.0f;
     float     prevEndTime_  = -1.0f;
     float     lastAddedTime_= -1.0f;
-    float     lastAddedStsTime_= -1.0f;
 
     int axXId_ = -1;
-    int spId_  = -1, rpId_  = -1, erId_  = -1;   // current (full colour)
-    int rSpId_ = -1, rRpId_ = -1, rErId_ = -1;   // reference (muted)
+    int spId_  = -1, rpId_  = -1;   // current (full colour)
+    int rSpId_ = -1, rRpId_ = -1;   // reference (muted)
 };
