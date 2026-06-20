@@ -56,6 +56,11 @@ set(SOURCES
     src/components/ChartView.h
     src/third_party/qcustomplot/qcustomplot.cpp
     src/third_party/qcustomplot/qcustomplot.h
+    src/components/Toast.cpp
+    src/components/Toast.h
+    src/components/ToastEnums.h
+    src/components/ToastEvents.cpp
+    src/components/ToastEvents.h
     src/components/OverviewLayout.h
     src/components/OverviewLayout.cpp
     src/components/EditOverviewLayoutDialog.h

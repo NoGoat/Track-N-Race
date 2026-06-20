@@ -15,6 +15,8 @@
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
 #include "components/TyreHelpers.h"
+#include "components/ToastEvents.h"
+#include "components/Toast.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
 
@@ -510,6 +512,13 @@ MainWindow::MainWindow(QWidget* parent)
     vbox->addWidget(pb_bar_);
     setCentralWidget(container_);
 
+    // Event toasts: top-right of the screen, stacked, max a few at once (rest queue).
+    // These are process-wide statics on the vendored Toast class, set once.
+    Toast::setPosition(ToastPosition::TOP_RIGHT);
+    Toast::setMaximumOnScreen(4);
+    Toast::setSpacing(10);
+    Toast::setOffset(20, 20);
+
     // Loading overlay (shown over the entire central area while decompressing/indexing)
     loadingOverlay_ = new QWidget(container_);
     loadingOverlay_->setAutoFillBackground(true);
@@ -619,6 +628,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(player_, &TnrdPlayer::packetReady, this, [this](const nlohmann::json& j) {
         emitLiveData(j);   // panels only — the chart reads the pre-scanned model
     });
+
+    // A seek replays a state snapshot (incl. the session packet); swallow the one
+    // safety-car toast that snapshot would otherwise raise — race_events aren't
+    // replayed on seek, so those need no special handling.
+    connect(player_, &TnrdPlayer::seeked, this, [this] { scSuppressOnce_ = true; });
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
@@ -832,6 +846,8 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
     QMainWindow::resizeEvent(e);
     if (loadingOverlay_ && loadingOverlay_->isVisible() && container_)
         loadingOverlay_->setGeometry(container_->rect());
+    // Keep any visible toasts pinned to the content area's top-right corner.
+    Toast::updateAllPositions();
 }
 
 void MainWindow::refreshThemedIcons() {
@@ -1205,13 +1221,26 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "session") {
         lastSessionData = row;
+        // Safety-car state changes raise a toast (live and during playback). A seek
+        // resyncs the status silently via the one-shot flag set in seeked().
+        const int sc = row.value("safety_car_status", 0);
+        const bool suppress = scSuppressOnce_;
+        scSuppressOnce_ = false;
+        if (!suppress && sc != lastSafetyCarStatus_) {
+            if (auto spec = safetyCarToast(lastSafetyCarStatus_, sc)) showToast(*spec);
+        }
+        lastSafetyCarStatus_ = sc;
         dirtySession_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
         if (row.value("code", "") == "SSTA") {
             sessionEventLog.clear();
             resetFastestLapState();
+            lastSafetyCarStatus_ = 0;
         }
         sessionEventLog.push_back(row);
+        // Transient notification for the event, both live and during playback.
+        // race_events are never replayed on seek, so scrubbing won't re-fire them.
+        if (auto spec = buildToast(row, lastParticipantsData)) showToast(*spec);
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (type == "timing") {
         lastTimingData = row;
@@ -1248,6 +1277,34 @@ void MainWindow::resetFastestLapState() {
     fastestLapCarIdx_ = -1;
     fastestLapSet_ = false;
     sessionHistoryBest_.clear();
+}
+
+void MainWindow::showToast(const ToastSpec& spec) {
+    if (!settings.value("ui/toastsEnabled", true).toBool()) return;
+
+    // Theme-aware surface: app window colour for the card, secondary text for the
+    // sub line; the per-event accent drives the title + the duration bar. No icon
+    // (the left severity glyph) — just the coloured text, per design.
+    const QColor bg  = palette().color(QPalette::Window);
+    const QColor sub = palette().color(QPalette::PlaceholderText);
+
+    // Parented to the central content widget so the toast renders inline (a child
+    // overlay), not as its own window — required for correct positioning on Wayland.
+    Toast* t = new Toast(container_);
+    t->setShowIcon(false);
+    t->setShowIconSeparator(false);
+    t->setShowCloseButton(false);   // asset-free; toasts auto-dismiss via the bar
+    t->setBorderRadius(8);
+    t->setDuration(settings.value("ui/bannerDuration", 3).toInt() * 1000);
+    t->setBackgroundColor(bg);
+    t->setTitle(spec.label);
+    t->setTitleColor(spec.color);
+    if (!spec.sub.isEmpty()) {
+        t->setText(spec.sub);
+        t->setTextColor(sub);
+    }
+    t->setDurationBarColor(spec.color);
+    t->show();
 }
 
 void MainWindow::scheduleUiRefresh() {

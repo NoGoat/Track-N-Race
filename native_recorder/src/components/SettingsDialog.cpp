@@ -58,6 +58,8 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     form->addRow(horizontalSeparator());
     addAppearanceSection(form);
     form->addRow(horizontalSeparator());
+    addNotificationsSection(form);
+    form->addRow(horizontalSeparator());
     addTrackMapSection(form);
 
     main->addLayout(form);
@@ -181,6 +183,30 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
         float f = val / 100.0f;
         contrastVal->setText(QString::number(f, 'f', 2));
         mainWindow_->setContrastThreshold(f);
+    });
+}
+
+void SettingsDialog::addNotificationsSection(QFormLayout* form) {
+    form->addRow(sectionHeading("Notifications"));
+
+    toastsCheck_ = new QCheckBox("Show event toasts (penalties, flags, fastest lap…)");
+    toastsCheck_->setChecked(mainWindow_->toastsEnabled());
+    form->addRow(QString(), toastsCheck_);
+
+    toastDurationCombo_ = new QComboBox;
+    for (int s : { 2, 3, 5, 8, 10 })
+        toastDurationCombo_->addItem(QString("%1s").arg(s), s);
+    const int cur = toastDurationCombo_->findData(mainWindow_->toastDurationSecs());
+    toastDurationCombo_->setCurrentIndex(cur >= 0 ? cur : 1);   // default 3s
+    toastDurationCombo_->setEnabled(toastsCheck_->isChecked());
+    form->addRow("Toast duration:", toastDurationCombo_);
+
+    connect(toastsCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setToastsEnabled(on);
+        toastDurationCombo_->setEnabled(on);
+    });
+    connect(toastDurationCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
     });
 }
 

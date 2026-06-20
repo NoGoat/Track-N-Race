@@ -40,6 +40,7 @@ class QComboBox;
 class QTimer;
 class QToolBar;
 class QAction;
+struct ToastSpec;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -79,6 +80,10 @@ public:
     void    setContrastThreshold(float val);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
+    bool    toastsEnabled() const { return settings.value("ui/toastsEnabled", true).toBool(); }
+    void    setToastsEnabled(bool on) { settings.setValue("ui/toastsEnabled", on); }
+    int     toastDurationSecs() const { return settings.value("ui/bannerDuration", 3).toInt(); }
+    void    setToastDurationSecs(int s) { settings.setValue("ui/bannerDuration", s); }
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
@@ -387,6 +392,15 @@ private:
     void recordRow(const nlohmann::json& row, float sessionTime);
     void resetFastestLapState();
     void emitLiveData(const nlohmann::json& row);
+
+    // Event toast notifications (vendored qt-toast). showToast() builds and shows
+    // one transient popup, themed + gated by settings; lastSafetyCarStatus_ tracks
+    // the session packet's SC state so changes can be toasted.
+    void showToast(const ToastSpec& spec);
+    int  lastSafetyCarStatus_ = 0;
+    // Set when the player seeks: the safety-car snapshot that follows resyncs
+    // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
+    bool scSuppressOnce_ = false;
     void ingestForModel(const nlohmann::json& row, float sessionTime);
     bool isDuplicate(const std::string& type, const nlohmann::json& row);
 

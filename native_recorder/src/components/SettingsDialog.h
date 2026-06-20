@@ -24,6 +24,7 @@ public:
 private:
     void addRecordingSection(QFormLayout* form);
     void addAppearanceSection(QFormLayout* form);
+    void addNotificationsSection(QFormLayout* form);
     void addTrackMapSection(QFormLayout* form);
 
     MainWindow*   mainWindow_;
@@ -34,5 +35,7 @@ private:
     QRadioButton* themeDark_          = nullptr;
     QComboBox*    styleCombo_         = nullptr;
     QCheckBox*    toolbarLabelsCheck_ = nullptr;
+    QCheckBox*    toastsCheck_        = nullptr;
+    QComboBox*    toastDurationCombo_ = nullptr;
     QComboBox*    trackMapLabelsCombo_= nullptr;
 };
