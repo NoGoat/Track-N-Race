@@ -3,7 +3,8 @@
 const char* OverviewLayout::statCardLabel(int i)
 {
     static const char* labels[StatCardCount] = {
-        "Speed", "RPM", "Gear", "Throttle", "Brake", "DRS", "ERS", "Pos"
+        "Speed", "RPM", "Gear", "Throttle", "Brake", "DRS",
+        "Engine", "ERS", "Fuel", "Pos", "Tyre"
     };
     return labels[i];
 }
@@ -22,7 +23,8 @@ const char* OverviewLayout::dmgCardLabel(int i)
 const char* OverviewLayout::statCardKey(int i)
 {
     static const char* keys[StatCardCount] = {
-        "speed", "rpm", "gear", "throttle", "brake", "drs", "ers", "pos"
+        "speed", "rpm", "gear", "throttle", "brake", "drs",
+        "engine", "ers", "fuel", "pos", "tyre"
     };
     return keys[i];
 }

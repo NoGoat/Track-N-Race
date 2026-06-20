@@ -24,7 +24,11 @@ static QFrame* vsep() {
     return f;
 }
 
-static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut) {
+// subOut, when non-null, receives a small bold label pinned to the top-right of
+// the heading row — the native home for the per-card extra info the Electron app
+// shows as a sub-row under the value (ERS mode, fuel "vs fin", lap, tyre age).
+static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut,
+                            QLabel** subOut = nullptr) {
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     QVBoxLayout* cv = new QVBoxLayout(card);
@@ -35,6 +39,22 @@ static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& 
     QFont lf; lf.setPointSize(7);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
+
+    // Heading row: title on the left, optional sub-info pinned to the right.
+    QWidget* hdrRow = new QWidget;
+    QHBoxLayout* hh = new QHBoxLayout(hdrRow);
+    hh->setContentsMargins(0, 0, 0, 0);
+    hh->setSpacing(4);
+    hh->addWidget(lbl);
+    hh->addStretch();
+    if (subOut) {
+        QLabel* sub = new QLabel;
+        QFont sf; sf.setPointSize(7); sf.setBold(true);
+        sub->setFont(sf);
+        sub->setForegroundRole(QPalette::PlaceholderText);
+        hh->addWidget(sub);
+        *subOut = sub;
+    }
 
     QWidget* valRow = new QWidget;
     QHBoxLayout* hl = new QHBoxLayout(valRow);
@@ -55,7 +75,7 @@ static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& 
     }
     hl->addStretch();
 
-    cv->addWidget(lbl);
+    cv->addWidget(hdrRow);
     cv->addWidget(valRow);
     return card;
 }
@@ -113,11 +133,20 @@ QWidget* MainWindow::buildOverviewTab() {
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Drs] =
         makeStatCard("DRS",      "",    cardDrs));
     sh->addWidget(vsep());
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Engine] =
+        makeStatCard("Engine",   "°C",  cardEngine));
+    sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Ers] =
-        makeStatCard("ERS",      "%",   cardErs));
+        makeStatCard("ERS",      "%",   cardErs, &cardErsSub));
+    sh->addWidget(vsep());
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Fuel] =
+        makeStatCard("Fuel",     "kg",  cardFuel, &cardFuelSub));
     sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Pos] =
-        makeStatCard("Pos",      "",    cardPos));
+        makeStatCard("Pos",      "",    cardPos, &cardPosSub));
+    sh->addWidget(vsep());
+    sh->addWidget(ov_statCardFrame_[OverviewLayout::Tyre] =
+        makeStatCard("Tyre",     "",    cardTyre, &cardTyreSub));
 
     vbox->addWidget(ov_statsFrame_);
 

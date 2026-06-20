@@ -84,7 +84,8 @@ signals:
     void telemetryUpdated(float speed, int rpm, int gear,
                           float throttle, float brake, float steering, bool drs, int engineTemp);
     void statusUpdated(float ersPct, int ersMode, float fuelKg,
-                       float fuelLaps, int tyreCompound, int tyreAgeLaps);
+                       float fuelLaps, int tyreCompound, int tyreAgeLaps,
+                       int fuelMix, int visualCompound);
     void damageUpdated(int tyreFl, int tyreFr, int tyreRl, int tyreRr,
                        int brakeFl, int brakeFr, int brakeRl, int brakeRr,
                        int wingFl, int wingFr, int wingRear,
@@ -102,8 +103,16 @@ private:
     QLabel*         cardThrottle = nullptr;
     QLabel*         cardBrake    = nullptr;
     QLabel*         cardDrs      = nullptr;
+    QLabel*         cardEngine   = nullptr;
     QLabel*         cardErs      = nullptr;
+    QLabel*         cardFuel     = nullptr;
     QLabel*         cardPos      = nullptr;
+    QLabel*         cardTyre     = nullptr;
+    // Top-right heading-row sub-labels (e.g. ERS mode, "+4.2 vs fin", "Lap 1").
+    QLabel*         cardErsSub   = nullptr;
+    QLabel*         cardFuelSub  = nullptr;
+    QLabel*         cardPosSub   = nullptr;
+    QLabel*         cardTyreSub  = nullptr;
     TelemetryChart* chart        = nullptr;
     SessionModel*   model_       = nullptr;
     QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)

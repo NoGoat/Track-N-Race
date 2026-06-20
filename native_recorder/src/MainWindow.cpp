@@ -14,6 +14,7 @@
 #include "components/RideHeightChart.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
+#include "components/TyreHelpers.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
 
@@ -732,7 +733,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(this, &MainWindow::telemetryUpdated,
             this, [this](float speed, int rpm, int gear,
-                         float throttle, float brake, float steering, bool drs, int /*eng*/) {
+                         float throttle, float brake, float steering, bool drs, int engineTemp) {
         cardSpeed->setText(QString::number((int)speed));
         cardSpeed->setStyleSheet("color: #37872D; font-weight: bold;");
         cardRpm->setText(QLocale().toString(rpm));
@@ -747,18 +748,41 @@ MainWindow::MainWindow(QWidget* parent)
         cardDrs->setText(drs ? "ON" : "OFF");
         cardDrs->setStyleSheet(drs ? "color: #37872D; font-weight: bold;"
                                    : "color: gray; font-weight: bold;");
+        cardEngine->setText(QString::number(engineTemp));
+        cardEngine->setStyleSheet(engineTemp > 112 ? "color: #C4162A; font-weight: bold;"
+                                                   : "font-weight: bold;");
     });
 
     connect(this, &MainWindow::statusUpdated,
-            this, [this](float ersPct, int ersMode, float, float, int, int) {
+            this, [this](float ersPct, int ersMode, float fuelKg, float fuelLaps,
+                         int tyreCompound, int tyreAgeLaps, int fuelMix, int visualCompound) {
+        static const char* ERS_MODES[] = { "None", "Auto", "Hotlap", "Overtake" };
+        static const char* FUEL_MIX[]  = { "Lean", "Std", "Rich", "Max" };
+
         cardErs->setText(QString::number((int)ersPct));
         QString ersColor = ersMode == 3 ? "#C4162A" : (ersPct < 20 ? "#FADE2A" : "#5794F2");
         cardErs->setStyleSheet(QString("color: %1; font-weight: bold;").arg(ersColor));
+        cardErsSub->setText(ersMode >= 0 && ersMode < 4 ? ERS_MODES[ersMode] : "");
+
+        cardFuel->setText(QString::number(fuelKg, 'f', 1));
+        QString fuelColor = fuelLaps > 1 ? "#37872D" : (fuelLaps >= 0 ? "#FADE2A" : "#C4162A");
+        cardFuel->setStyleSheet(QString("color: %1; font-weight: bold;").arg(fuelColor));
+        cardFuelSub->setText(QString("%1%2 vs fin")
+            .arg(fuelLaps >= 0 ? "+" : "").arg(fuelLaps, 0, 'f', 1));
+
+        cardTyre->setText(tyreLabel(tyreCompound));
+        const QColor tc = tyreTextColor(visualCompound);
+        cardTyre->setStyleSheet(tc.isValid()
+            ? QString("color: %1; font-weight: bold;").arg(tc.name())
+            : "font-weight: bold;");
+        cardTyreSub->setText(QString("%1L · %2")
+            .arg(tyreAgeLaps).arg(fuelMix >= 0 && fuelMix < 4 ? FUEL_MIX[fuelMix] : ""));
     });
 
     connect(this, &MainWindow::lapUpdated,
-            this, [this](int pos, int) {
+            this, [this](int pos, int lapNum) {
         cardPos->setText("P" + QString::number(pos));
+        cardPosSub->setText("Lap " + QString::number(lapNum));
     });
 
     connect(this, &MainWindow::telemetryUpdated,
@@ -1131,7 +1155,9 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["fuel_kg"].get<float>(),
             row["fuel_laps"].get<float>(),
             row["tyre_compound"].get<int>(),
-            row["tyre_age_laps"].get<int>()
+            row["tyre_age_laps"].get<int>(),
+            row.value("fuel_mix", 0),
+            row.value("visual_compound", 0)
         );
         lastPlayerStatusData = row;
         dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
