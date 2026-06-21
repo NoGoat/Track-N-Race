@@ -36,6 +36,7 @@ class RideHeightChart;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
+class Toast;
 class QComboBox;
 class QTimer;
 class QToolBar;
@@ -429,8 +430,9 @@ private:
     // Event toast notifications (vendored qt-toast). showToast() builds and shows
     // one transient popup, themed + gated by settings; lastSafetyCarStatus_ tracks
     // the session packet's SC state so changes can be toasted.
-    void showToast(const ToastSpec& spec);
-    int  lastSafetyCarStatus_ = 0;
+    void   showToast(const ToastSpec& spec);
+    Toast* m_persistentToast_ = nullptr; // single persistent slot; null when empty
+    int    lastSafetyCarStatus_ = 0;
     // Set when the player seeks: the safety-car snapshot that follows resyncs
     // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
     bool scSuppressOnce_ = false;

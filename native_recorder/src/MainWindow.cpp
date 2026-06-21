@@ -1449,13 +1449,20 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         dirtyTrackMap_ = true; scheduleUiRefresh();
     } else if (type == "session") {
         lastSessionData = row;
-        // Safety-car state changes raise a toast (live and during playback). A seek
-        // resyncs the status silently via the one-shot flag set in seeked().
+        // Safety-car state changes update the persistent banner. SC/VSC/FL show a
+        // persistent toast; returning to green (sc=0) silently dismisses it — no
+        // "Track Clear" notification, matching the Electron app. Seeks are suppressed
+        // via the one-shot flag set in seeked().
         const int sc = row.value("safety_car_status", 0);
         const bool suppress = scSuppressOnce_;
         scSuppressOnce_ = false;
         if (!suppress && sc != lastSafetyCarStatus_) {
-            if (auto spec = safetyCarToast(lastSafetyCarStatus_, sc)) showToast(*spec);
+            if (auto spec = safetyCarToast(lastSafetyCarStatus_, sc)) {
+                showToast(*spec);
+            } else if (sc == 0 && m_persistentToast_) {
+                m_persistentToast_->hide();
+                m_persistentToast_ = nullptr;
+            }
         }
         lastSafetyCarStatus_ = sc;
         dirtySession_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
@@ -1510,6 +1517,14 @@ void MainWindow::resetFastestLapState() {
 void MainWindow::showToast(const ToastSpec& spec) {
     if (!settings.value("ui/toastsEnabled", true).toBool()) return;
 
+    // Evict the current persistent toast (SC/VSC/FL) when the incoming event
+    // takes over that slot — either by replacing it with a new persistent toast,
+    // or by an ending event (Track Clear, Red Flag) that occupies then auto-dismisses.
+    if ((spec.persistent || spec.dismissesPersistent) && m_persistentToast_) {
+        m_persistentToast_->hide();
+        m_persistentToast_ = nullptr;
+    }
+
     // ToolTipBase reads as a raised card distinct from the page background; the
     // per-event accent drives the title, secondary text for the sub line.
     const QColor bg  = palette().color(QPalette::ToolTipBase);
@@ -1520,11 +1535,30 @@ void MainWindow::showToast(const ToastSpec& spec) {
     Toast* t = new Toast(container_);
     t->setShowIcon(false);
     t->setShowIconSeparator(false);
-    t->setShowCloseButton(false);   // asset-free; toasts auto-dismiss on a timer
+    t->setShowCloseButton(spec.persistent); // persistent toasts need manual dismissal
     t->setShowDurationBar(false);   // no countdown bar
     t->setFixedWidth(250);          // uniform width across all toasts (long text wraps)
     t->setBorderRadius(3);
-    t->setDuration(settings.value("ui/bannerDuration", 3).toInt() * 1000);
+    t->setDuration(spec.persistent ? 0 : settings.value("ui/bannerDuration", 3).toInt() * 1000);
+    if (spec.persistent) {
+        // The vendor's icon assets aren't bundled, so draw the × inline.
+        // recolorImage() preserves alpha, so white-on-transparent gets tinted correctly.
+        QPixmap closePix(10, 10);
+        closePix.fill(Qt::transparent);
+        QPainter painter(&closePix);
+        painter.setPen(QPen(Qt::white, 1.5, Qt::SolidLine, Qt::RoundCap));
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.drawLine(2, 2, 8, 8);
+        painter.drawLine(8, 2, 2, 8);
+        painter.end();
+        t->setCloseButtonIcon(closePix);
+        t->setCloseButtonIconColor(sub);
+
+        m_persistentToast_ = t;
+        connect(t, &Toast::closed, this, [this, t]() {
+            if (m_persistentToast_ == t) m_persistentToast_ = nullptr;
+        });
+    }
     t->setBackgroundColor(bg);
     t->setTitle(spec.label);
     t->setTitleColor(spec.color);

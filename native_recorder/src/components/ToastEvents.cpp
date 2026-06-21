@@ -104,13 +104,11 @@ std::optional<ToastSpec> buildToast(const nlohmann::json& event,
 std::optional<ToastSpec> safetyCarToast(int oldStatus, int newStatus) {
     if (newStatus == oldStatus) return std::nullopt;
     switch (newStatus) {
-        case 1: return ToastSpec{ "Safety Car",         {}, QColor("#ffd700") };
-        case 2: return ToastSpec{ "Virtual Safety Car", {}, QColor("#ffb347") };
-        case 3: return ToastSpec{ "Formation Lap",      {}, QColor("#ffd700") };
-        case 0:  // back to green — only notify if we were under some SC before
-            return oldStatus > 0
-                ? std::optional<ToastSpec>{ ToastSpec{ "Track Clear", {}, QColor("#37872D") } }
-                : std::nullopt;
+        case 1: return ToastSpec{ "Safety Car",         {}, QColor("#ffd700"), true,  true };
+        case 2: return ToastSpec{ "Virtual Safety Car", {}, QColor("#ffb347"), true,  true };
+        case 3: return ToastSpec{ "Formation Lap",      {}, QColor("#ffd700"), true,  true };
+        case 0:  // back to green — caller dismisses the persistent banner silently (no toast)
+            return std::nullopt;
         default: return std::nullopt;
     }
 }

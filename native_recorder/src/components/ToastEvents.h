@@ -9,9 +9,11 @@
 // vendored Toast widget (third_party/qt-toast). Kept Qt-widget-free so the
 // mapping below stays pure data-in/data-out.
 struct ToastSpec {
-    QString label;   // headline (e.g. "Red Flag")
-    QString sub;     // optional secondary line (driver / lap time / reason)
-    QColor  color;   // accent + headline colour (per event severity)
+    QString label;               // headline (e.g. "Red Flag")
+    QString sub;                 // optional secondary line (driver / lap time / reason)
+    QColor  color;               // accent + headline colour (per event severity)
+    bool    persistent;          // occupies the single persistent slot; no auto-dismiss (duration=0)
+    bool    dismissesPersistent; // evicts the current persistent toast before showing self
 };
 
 // Pure mapping from telemetry rows to a toast, mirroring the Electron app's
