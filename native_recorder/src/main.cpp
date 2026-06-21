@@ -10,6 +10,7 @@
 #include <QFont>
 #include "MainWindow.h"
 #include "BreezePalette.h"
+#include "IconUtils.h"
 
 // Build a multi-resolution app icon from every frame in the .ico. QIcon(".ico")
 // alone only takes the first frame (16x16 here), which the window manager then
@@ -71,8 +72,10 @@ int main(int argc, char* argv[]) {
     QSettings settings("TrackNRace", "NativeRecorder");
     const QString styleName = settings.value("style").toString();
     if (!styleName.isEmpty() && styleName != "system") {
-        if (QStyle* s = QStyleFactory::create(styleName))
-            QApplication::setStyle(s);
+        // Wrap Breeze so its monochrome standard button icons (QMessageBox /
+        // QDialogButtonBox) get recoloured for the palette — see setApplicationStyle.
+        setApplicationStyle(QStyleFactory::create(styleName),
+                            styleName.compare("breeze", Qt::CaseInsensitive) == 0);
     }
 
     // Only Breeze needs its palette applied (its plugin doesn't set one); every

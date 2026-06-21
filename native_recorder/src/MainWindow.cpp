@@ -1149,9 +1149,10 @@ void MainWindow::setStyleName(const QString& name) {
     if (name == "system") {
         const QString def = qApp->property("defaultStyleName").toString();
         if (!def.isEmpty())
-            if (QStyle* s = QStyleFactory::create(def)) QApplication::setStyle(s);
-    } else if (QStyle* s = QStyleFactory::create(name)) {
-        QApplication::setStyle(s);
+            setApplicationStyle(QStyleFactory::create(def),
+                                def.compare("breeze", Qt::CaseInsensitive) == 0);
+    } else {
+        setApplicationStyle(QStyleFactory::create(name), breeze);
     }
     settings.setValue("style", name);
     // Breeze's plugin draws shapes but never sets a palette — apply the KDE one

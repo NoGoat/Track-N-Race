@@ -5,6 +5,10 @@
 #include <QPainter>
 #include <QStyle>
 #include <QWidget>
+#include <QApplication>
+#include <QProxyStyle>
+#include <QStyleFactory>
+#include <QPalette>
 
 // Recolours a source theme icon to a fixed tint while keeping it fully scalable.
 // It renders the source at the exact size + device-pixel-ratio Qt requests (so it
@@ -61,4 +65,59 @@ inline QIcon adaptThemeIcon(const QIcon& themed, const QColor& tint, const QIcon
 #endif
     Q_UNUSED(tint);
     return themed;
+}
+
+#if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
+// QMessageBox / QDialogButtonBox don't build their button icons through
+// adaptThemeIcon — they ask the active QStyle for them via standardIcon(). Under
+// Breeze those are the same monochrome theme icons plain Qt won't recolour, so
+// they render black (invisible in dark mode), as seen on a dialog's No/Cancel
+// button. Wrap the style so the *monochrome* button/navigation standard icons are
+// tinted to the palette foreground while the bundled Breeze theme is active.
+// Colourful standard icons (message-box severity, file/device icons) fall through
+// the switch and are returned untouched.
+class BreezeIconProxyStyle : public QProxyStyle {
+public:
+    explicit BreezeIconProxyStyle(QStyle* base) : QProxyStyle(base) {}
+
+    QIcon standardIcon(StandardPixmap sp, const QStyleOption* opt,
+                       const QWidget* w) const override {
+        const QIcon base = QProxyStyle::standardIcon(sp, opt, w);
+        if (base.isNull() || QIcon::themeName() != QLatin1String("breeze"))
+            return base;
+        switch (sp) {
+            case SP_DialogOkButton:      case SP_DialogCancelButton:
+            case SP_DialogYesButton:     case SP_DialogNoButton:
+            case SP_DialogApplyButton:   case SP_DialogResetButton:
+            case SP_DialogDiscardButton: case SP_DialogHelpButton:
+            case SP_DialogSaveButton:    case SP_DialogOpenButton:
+            case SP_DialogCloseButton:
+            case SP_ArrowBack: case SP_ArrowForward:
+            case SP_ArrowUp:   case SP_ArrowDown:
+            case SP_ArrowLeft: case SP_ArrowRight:
+                break;        // monochrome — tint below
+            default:
+                return base;  // colourful or unknown — leave as-is
+        }
+        const QPalette pal = w ? w->palette() : QApplication::palette();
+        return QIcon(new TintedIconEngine(base, pal.color(QPalette::WindowText)));
+    }
+};
+#endif
+
+// Apply `base` as the application style, wrapping it in BreezeIconProxyStyle when
+// Breeze is selected so its monochrome standard button icons get recoloured (see
+// above). Takes ownership of `base` (QApplication::setStyle / QProxyStyle do).
+// A no-op if `base` is null.
+inline void setApplicationStyle(QStyle* base, bool isBreeze) {
+    if (!base) return;
+#if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
+    if (isBreeze) {
+        QApplication::setStyle(new BreezeIconProxyStyle(base));
+        return;
+    }
+#else
+    Q_UNUSED(isBreeze);
+#endif
+    QApplication::setStyle(base);
 }
