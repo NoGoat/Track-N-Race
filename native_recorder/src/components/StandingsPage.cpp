@@ -364,17 +364,25 @@ void MainWindow::updateRacePanel() {
     {
         const int targetIdx = viewingOther ? selectedCarIdx : playerIdx;
         QString name;
+        QColor liveryColor;
         if (targetIdx >= 0 && !lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
             for (const auto& d : lastParticipantsData["drivers"]) {
                 if (d.value("idx", -1) == targetIdx) {
                     name = QString("#%1 %2")
                         .arg(d.value("race_number", 0))
                         .arg(QString::fromStdString(d.value("name", "")));
+                    liveryColor = QColor(QString::fromStdString(d.value("livery_color", "")));
                     break;
                 }
             }
         }
         rp_driverName->setText(name.isEmpty() ? (targetIdx >= 0 ? QString("Car %1").arg(targetIdx) : "—") : name);
+
+        const QColor bg = rp_driverName->palette().color(QPalette::Window);
+        if (liveryColor.isValid() && contrastRatio(liveryColor, bg) >= contrastThreshold())
+            rp_driverName->setStyleSheet(QString("color: %1;").arg(liveryColor.name()));
+        else
+            rp_driverName->setStyleSheet(QString());
     }
 
     auto applyTiming = [&](const nlohmann::json& lap) {
