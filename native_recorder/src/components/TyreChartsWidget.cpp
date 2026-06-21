@@ -121,7 +121,7 @@ void TyreChartsWidget::setModel(SessionModel* m) {
 
 void TyreChartsWidget::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void TyreChartsWidget::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
-void TyreChartsWidget::setWindowSeconds(float s) { windowS_ = s; requestRefresh(); }
+void TyreChartsWidget::setWindowSeconds(float s) { windowS_ = s; prevEndTime_ = -9999.0f; requestRefresh(); }
 void TyreChartsWidget::requestRefresh() { dirty_ = true; }
 
 void TyreChartsWidget::setChartSectionVisible(int i, bool on)
