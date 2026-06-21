@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QFont>
+#include <QVariant>
 
 #ifdef HAVE_BREEZE_ICONS
 #include <QIcon>
@@ -77,3 +79,54 @@ void setupBreezeIconTheme() {
 #endif
 #endif
 }
+
+// ── Breeze default UI font (Noto Sans) ───────────────────────────────────────
+// Unlike the palette, the font isn't tied to KColorScheme, so this is built in
+// every configuration. KDE's Breeze default general font is Noto Sans at 10pt.
+namespace {
+bool s_breezeFontApplied = false;
+}
+
+void applyBreezeFont() {
+    if (s_breezeFontApplied)
+        return;
+    QApplication::setFont(QFont(QStringLiteral("Noto Sans"), 10));
+    s_breezeFontApplied = true;
+}
+
+void restoreDefaultFont() {
+    if (!s_breezeFontApplied)
+        return;  // we never set the Breeze font — leave the current font alone
+    const QVariant v = qApp->property("defaultFont");
+    if (v.isValid())
+        QApplication::setFont(v.value<QFont>());
+    s_breezeFontApplied = false;
+}
+
+#ifdef HAVE_BREEZE_ICONS
+
+namespace {
+bool s_breezeIconThemeApplied = false;
+}
+
+void applyBreezeIconTheme() {
+    // initIcons() (called once at startup) registered the "breeze" theme under
+    // :/icons/breeze; promote it to the *active* theme so QIcon::fromTheme()
+    // resolves against the bundled Breeze icons while Breeze is the style.
+    QIcon::setThemeName(QStringLiteral("breeze"));
+    s_breezeIconThemeApplied = true;
+}
+
+void restoreDefaultIconTheme() {
+    if (!s_breezeIconThemeApplied)
+        return;  // we never switched the icon theme — leave it alone
+    QIcon::setThemeName(qApp->property("defaultIconTheme").toString());
+    s_breezeIconThemeApplied = false;
+}
+
+#else  // no bundled Breeze icons — the platform's icon theme is used as-is
+
+void applyBreezeIconTheme() {}
+void restoreDefaultIconTheme() {}
+
+#endif

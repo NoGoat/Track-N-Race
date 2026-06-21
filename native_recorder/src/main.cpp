@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QImageReader>
 #include <QPixmap>
+#include <QFont>
 #include "MainWindow.h"
 #include "BreezePalette.h"
 
@@ -48,6 +49,12 @@ int main(int argc, char* argv[]) {
     // (see MainWindow::updateToolbarColorScheme).
     app.setProperty("osColorScheme", int(QApplication::styleHints()->colorScheme()));
 
+    // Snapshot the platform font and icon theme too, so leaving Breeze can restore
+    // them (Breeze swaps in Noto Sans + the bundled Breeze icon theme). The icon
+    // theme is captured *before* setupBreezeIconTheme() so it's the pristine value.
+    app.setProperty("defaultFont", QVariant::fromValue(app.font()));
+    app.setProperty("defaultIconTheme", QIcon::themeName());
+
     // Let QStyleFactory discover a Breeze (or any) style plugin bundled next to
     // the executable under plugins/styles/. Harmless when absent — dev builds
     // just keep finding the system styles on the default plugin path.
@@ -69,9 +76,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Only Breeze needs its palette applied (its plugin doesn't set one); every
-    // other style keeps the platform palette. No-op in non-bundled builds.
-    if (styleName.compare("breeze", Qt::CaseInsensitive) == 0)
+    // other style keeps the platform palette. Breeze also uses its default font
+    // (Noto Sans) and the bundled Breeze icon theme. All no-ops in non-bundled
+    // builds / for other styles.
+    if (styleName.compare("breeze", Qt::CaseInsensitive) == 0) {
         applyBreezePalette(settings.value("theme", "system").toString());
+        applyBreezeFont();
+        applyBreezeIconTheme();
+    }
 
     MainWindow w;
     w.show();

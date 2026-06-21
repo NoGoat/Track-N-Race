@@ -31,3 +31,19 @@ void restoreDefaultPalette();
 // On Windows (no system icon theme) it's also made the primary theme. Call once
 // at startup. No-op in builds without the bundled KF6BreezeIcons.
 void setupBreezeIconTheme();
+
+// Apply / restore the default Breeze UI font (Noto Sans 10), handled like the
+// palette: call applyBreezeFont() when Breeze is the selected style and
+// restoreDefaultFont() when leaving it. restore puts back the application font
+// captured at startup (qApp "defaultFont"); it's a no-op unless we actually
+// applied the Breeze font, so it never disturbs a non-Breeze style.
+void applyBreezeFont();
+void restoreDefaultFont();
+
+// Make the bundled Breeze icon theme the *active* QIcon theme (applyBreezeIconTheme)
+// or put back the icon theme captured at startup in qApp "defaultIconTheme"
+// (restoreDefaultIconTheme). Call to match the selected style — Breeze style uses
+// the bundled Breeze icons; other styles keep the platform's icon theme. No-ops
+// in builds without the bundled KF6BreezeIcons.
+void applyBreezeIconTheme();
+void restoreDefaultIconTheme();

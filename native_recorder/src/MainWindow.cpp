@@ -1081,8 +1081,14 @@ void MainWindow::setStyleName(const QString& name) {
     const bool breeze = name.compare("breeze", Qt::CaseInsensitive) == 0;
     // Leaving Breeze: give the palette back to the platform *before* the new style
     // polishes, so a style that sets its own palette (e.g. Kvantum) or relies on
-    // the platform one (windows11) isn't left wearing Breeze's colours.
-    if (!breeze) restoreDefaultPalette();
+    // the platform one (windows11) isn't left wearing Breeze's colours. Restore the
+    // platform font and icon theme too, since Breeze swapped in Noto Sans + the
+    // bundled Breeze icons.
+    if (!breeze) {
+        restoreDefaultPalette();
+        restoreDefaultFont();
+        restoreDefaultIconTheme();
+    }
 
     if (name == "system") {
         const QString def = qApp->property("defaultStyleName").toString();
@@ -1093,8 +1099,13 @@ void MainWindow::setStyleName(const QString& name) {
     }
     settings.setValue("style", name);
     // Breeze's plugin draws shapes but never sets a palette — apply the KDE one
-    // after the style is in place. (No-op in non-bundled builds.)
-    if (breeze) applyBreezePalette(currentTheme());
+    // after the style is in place, along with Breeze's default font (Noto Sans)
+    // and the bundled Breeze icon theme. (No-ops in non-bundled builds.)
+    if (breeze) {
+        applyBreezePalette(currentTheme());
+        applyBreezeFont();
+        applyBreezeIconTheme();
+    }
     // The toolbar override only applies under Breeze, so re-evaluate on style change.
     updateToolbarColorScheme();
 }
