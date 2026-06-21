@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include "OverviewLayout.h"
 
 class MainWindow;
 class QLabel;
@@ -25,6 +26,7 @@ private:
     void addRecordingSection(QFormLayout* form);
     void addAppearanceSection(QFormLayout* form);
     void addNotificationsSection(QFormLayout* form);
+    void addOverviewSection(QFormLayout* form);
     void addTrackMapSection(QFormLayout* form);
 
     MainWindow*   mainWindow_;
@@ -37,5 +39,6 @@ private:
     QCheckBox*    toolbarLabelsCheck_ = nullptr;
     QCheckBox*    toastsCheck_        = nullptr;
     QComboBox*    toastDurationCombo_ = nullptr;
-    QComboBox*    trackMapLabelsCombo_= nullptr;
+    QComboBox*    tyreViewCombo_       = nullptr;
+    QComboBox*    trackMapLabelsCombo_ = nullptr;
 };

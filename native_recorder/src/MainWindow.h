@@ -59,6 +59,8 @@ public:
     // itself doesn't get access to the underlying QFrame* card pointers.
     OverviewLayout loadOverviewLayout();
     void applyAndSaveOverviewLayout(const OverviewLayout& layout);
+    OverviewLayout::TyreView currentTyreView();
+    void setTyreView(OverviewLayout::TyreView v);
 
     InputLayout loadInputLayout();
     void applyAndSaveInputLayout(const InputLayout& layout);
@@ -144,13 +146,10 @@ private:
     QFrame*           ov_dmgRowA_  = nullptr;   // tyre/brake damage row
     QFrame*           ov_dmgRowB_  = nullptr;   // wing/body damage row
     QFrame*           ov_dmgHdiv_  = nullptr;   // separator between the two damage rows
-    // Tyre section (cards / charts toggle)
-    QFrame*           ov_tyreSep_         = nullptr;
-    QWidget*          ov_tyreToggleBar_   = nullptr;
-    TyreCardsWidget*  ov_tyreCards_       = nullptr;
-    TyreChartsWidget* ov_tyreCharts_      = nullptr;
-    QPushButton*      ov_tyreCardsBtn_    = nullptr;
-    QPushButton*      ov_tyreChartsBtn_   = nullptr;
+    // Tyre section
+    QFrame*           ov_tyreSep_    = nullptr;
+    TyreCardsWidget*  ov_tyreCards_  = nullptr;
+    TyreChartsWidget* ov_tyreCharts_ = nullptr;
     QFrame*         ov_statCardFrame_[OverviewLayout::StatCardCount] = {};
     QFrame*         ov_dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;

@@ -60,6 +60,8 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     form->addRow(horizontalSeparator());
     addNotificationsSection(form);
     form->addRow(horizontalSeparator());
+    addOverviewSection(form);
+    form->addRow(horizontalSeparator());
     addTrackMapSection(form);
 
     main->addLayout(form);
@@ -208,6 +210,22 @@ void SettingsDialog::addNotificationsSection(QFormLayout* form) {
     connect(toastDurationCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
     });
+}
+
+void SettingsDialog::addOverviewSection(QFormLayout* form) {
+    form->addRow(sectionHeading("Overview"));
+
+    tyreViewCombo_ = new QComboBox;
+    tyreViewCombo_->addItem("Cards",  (int)OverviewLayout::TyreCards);
+    tyreViewCombo_->addItem("Charts", (int)OverviewLayout::TyreCharts);
+    tyreViewCombo_->setCurrentIndex(
+        mainWindow_->currentTyreView() == OverviewLayout::TyreCharts ? 1 : 0);
+    connect(tyreViewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setTyreView(
+            tyreViewCombo_->currentData().toInt() == (int)OverviewLayout::TyreCharts
+                ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards);
+    });
+    form->addRow("Tyre view:", tyreViewCombo_);
 }
 
 void SettingsDialog::addTrackMapSection(QFormLayout* form) {

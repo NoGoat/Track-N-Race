@@ -260,60 +260,15 @@ QWidget* MainWindow::buildOverviewTab() {
     ov_tyreSep_->setFrameShadow(QFrame::Sunken);
     vbox->addWidget(ov_tyreSep_);
 
-    // Cards | Charts toggle bar, same flat-underline style as the chart-mode bar
-    ov_tyreToggleBar_ = new QWidget;
-    QHBoxLayout* tyreToggleLay = new QHBoxLayout(ov_tyreToggleBar_);
-    tyreToggleLay->setContentsMargins(8, 2, 8, 2);
-    tyreToggleLay->setSpacing(4);
-
-    auto* tyreViewGroup = new QButtonGroup(ov_tyreToggleBar_);
-    tyreViewGroup->setExclusive(true);
-    const QString accent2 = QApplication::palette().color(QPalette::Highlight).name();
-    const QString tyreBtnStyle = QString(
-        "QPushButton { padding: 4px 10px; border: none; background: transparent;"
-        " border-bottom: 2px solid transparent; }"
-        "QPushButton:checked { border-bottom: 2px solid %1; }"
-    ).arg(accent2);
-
-    ov_tyreCardsBtn_  = new QPushButton("Cards");
-    ov_tyreChartsBtn_ = new QPushButton("Charts");
-    QPushButton* cardsBtn  = ov_tyreCardsBtn_;
-    QPushButton* chartsBtn = ov_tyreChartsBtn_;
-    for (auto* b : { cardsBtn, chartsBtn }) {
-        b->setCheckable(true);
-        b->setFlat(true);
-        b->setStyleSheet(tyreBtnStyle);
-        tyreViewGroup->addButton(b);
-        tyreToggleLay->addWidget(b);
-    }
-    cardsBtn->setChecked(true);
-    tyreToggleLay->addStretch(1);
-    vbox->addWidget(ov_tyreToggleBar_);
-
     ov_tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
     ov_tyreCards_->setFixedHeight(160);
     vbox->addWidget(ov_tyreCards_);
 
     ov_tyreCharts_ = new TyreChartsWidget;
-    ov_tyreCharts_->setFixedHeight(300);
+    ov_tyreCharts_->setFixedHeight(200);
     ov_tyreCharts_->setModel(model_);
     ov_tyreCharts_->setVisible(false);
     vbox->addWidget(ov_tyreCharts_);
-
-    connect(cardsBtn, &QPushButton::clicked, this, [this] {
-        ov_tyreCards_->setVisible(true);
-        ov_tyreCharts_->setVisible(false);
-        OverviewLayout L = loadOverviewLayout();
-        L.tyreView = OverviewLayout::TyreCards;
-        saveOverviewLayout(L);
-    });
-    connect(chartsBtn, &QPushButton::clicked, this, [this] {
-        ov_tyreCards_->setVisible(false);
-        ov_tyreCharts_->setVisible(true);
-        OverviewLayout L = loadOverviewLayout();
-        L.tyreView = OverviewLayout::TyreCharts;
-        saveOverviewLayout(L);
-    });
 
     ov_sep2_ = new QFrame;
     ov_sep2_->setFrameShape(QFrame::HLine);
@@ -454,18 +409,25 @@ void MainWindow::applyOverviewLayout(const OverviewLayout& L)
 
     // Tyre section
     const bool showTyre = L.showTyreSection;
-    if (ov_tyreSep_)       ov_tyreSep_->setVisible(showTyre);
-    if (ov_tyreToggleBar_) ov_tyreToggleBar_->setVisible(showTyre);
+    if (ov_tyreSep_)    ov_tyreSep_->setVisible(showTyre);
     const bool showCards  = showTyre && (L.tyreView == OverviewLayout::TyreCards);
     const bool showCharts = showTyre && (L.tyreView == OverviewLayout::TyreCharts);
-    if (ov_tyreCards_)    ov_tyreCards_->setVisible(showCards);
-    if (ov_tyreCharts_)   ov_tyreCharts_->setVisible(showCharts);
-    if (ov_tyreCardsBtn_)  ov_tyreCardsBtn_->setChecked(L.tyreView  == OverviewLayout::TyreCards);
-    if (ov_tyreChartsBtn_) ov_tyreChartsBtn_->setChecked(L.tyreView == OverviewLayout::TyreCharts);
+    if (ov_tyreCards_)  ov_tyreCards_->setVisible(showCards);
+    if (ov_tyreCharts_) ov_tyreCharts_->setVisible(showCharts);
 }
 
 void MainWindow::applyAndSaveOverviewLayout(const OverviewLayout& L)
 {
     applyOverviewLayout(L);
     saveOverviewLayout(L);
+}
+
+OverviewLayout::TyreView MainWindow::currentTyreView() {
+    return loadOverviewLayout().tyreView;
+}
+
+void MainWindow::setTyreView(OverviewLayout::TyreView v) {
+    OverviewLayout L = loadOverviewLayout();
+    L.tyreView = v;
+    applyAndSaveOverviewLayout(L);
 }

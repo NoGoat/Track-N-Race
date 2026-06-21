@@ -2,18 +2,22 @@
 #include "ChartView.h"
 #include "../SessionModel.h"
 
-#include <QGridLayout>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFrame>
+#include <QLabel>
+#include <QFont>
+#include <QPalette>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
 #include <algorithm>
 
 namespace {
-// Per-corner colors matching the Electron TyreTrendCharts
-const QColor C_FL("#e10600");   // Front Left  — red
-const QColor C_FR("#4488ff");   // Front Right — blue
-const QColor C_RL("#37872D");   // Rear Left   — green
-const QColor C_RR("#ffd700");   // Rear Right  — gold
+const QColor C_FL("#e10600");
+const QColor C_FR("#4488ff");
+const QColor C_RL("#37872D");
+const QColor C_RR("#ffd700");
 const QColor kWheelColors[4] = { C_FL, C_FR, C_RL, C_RR };
 const char*  kWheelNames[4]  = { "FL", "FR", "RL", "RR" };
 }
@@ -21,12 +25,54 @@ const char*  kWheelNames[4]  = { "FL", "FR", "RL", "RR" };
 TyreChartsWidget::TyreChartsWidget(QWidget* parent)
     : QWidget(parent)
 {
-    auto* grid = new QGridLayout(this);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(2);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
 
-    auto buildChart = [&](const QString& yLabel, double yMin, double yMax,
-                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId) {
+    // 4 charts side by side
+    auto* row = new QWidget;
+    auto* hbox = new QHBoxLayout(row);
+    hbox->setContentsMargins(0, 0, 0, 0);
+    hbox->setSpacing(0);
+
+    auto addSection = [&](const QString& title, double yMin, double yMax,
+                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId,
+                          bool sep) {
+        if (sep) {
+            auto* line = new QFrame;
+            line->setFrameShape(QFrame::VLine);
+            line->setFrameShadow(QFrame::Sunken);
+            hbox->addWidget(line);
+        }
+        auto* section = new QWidget;
+        auto* sl = new QVBoxLayout(section);
+        sl->setContentsMargins(0, 0, 0, 0);
+        sl->setSpacing(0);
+
+        auto* header = new QWidget;
+        header->setFixedHeight(24);
+        auto* hl = new QHBoxLayout(header);
+        hl->setContentsMargins(6, 0, 6, 0);
+        auto* titleLabel = new QLabel(title);
+        QFont f; f.setPointSize(8); f.setBold(true);
+        titleLabel->setFont(f);
+        titleLabel->setForegroundRole(QPalette::PlaceholderText);
+        hl->addWidget(titleLabel);
+        hl->addStretch();
+        for (int i = 0; i < 4; ++i) {
+            auto* sw = new QWidget;
+            sw->setFixedSize(10, 10);
+            sw->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(kWheelColors[i].name()));
+            hl->addWidget(sw);
+            auto* lbl = new QLabel(kWheelNames[i]);
+            QFont lf; lf.setPointSize(8);
+            lbl->setFont(lf);
+            lbl->setForegroundRole(QPalette::PlaceholderText);
+            hl->addWidget(lbl);
+            hl->addSpacing(4);
+        }
+        sl->addWidget(header);
+
         outChart = new ChartView;
         outXId = outChart->addAxis({ ChartView::Side::Bottom, 0.0, windowS_, QColor(), true, 'f', 0, true });
         int yId = outChart->addAxis({ ChartView::Side::Left, yMin, yMax, QColor(), true, 'f', 0 });
@@ -37,23 +83,17 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
             });
         }
         outChart->setHoverReadout(true);
-        outChart->setLegendVisible(true);
-        return outChart;
+        outChart->setLegendVisible(false);
+        sl->addWidget(outChart, 1);
+        hbox->addWidget(section, 1);
     };
 
-    surfChart_  = buildChart("°C",  0, 200, "°C", surfChart_,  surfIds_,  surfXId_);
-    innerChart_ = buildChart("°C",  0, 200, "°C", innerChart_, innerIds_, innerXId_);
-    brakeChart_ = buildChart("°C",  0, 1200,"°C", brakeChart_, brakeIds_, brakeXId_);
-    wearChart_  = buildChart("%",   0, 100, "%",  wearChart_,  wearIds_,  wearXId_);
+    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_,  false);
+    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_, true);
+    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_, true);
+    addSection("TYRE WEAR",    0, 100,  "%",  wearChart_,  wearIds_,  wearXId_,  true);
 
-    grid->addWidget(surfChart_,  0, 0);
-    grid->addWidget(innerChart_, 0, 1);
-    grid->addWidget(brakeChart_, 1, 0);
-    grid->addWidget(wearChart_,  1, 1);
-    grid->setRowStretch(0, 1);
-    grid->setRowStretch(1, 1);
-    grid->setColumnStretch(0, 1);
-    grid->setColumnStretch(1, 1);
+    outer->addWidget(row, 1);
 
     refreshTimer_ = new QTimer(this);
     refreshTimer_->setInterval(33);

@@ -69,7 +69,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     // ── Tyre section ─────────────────────────────────────────────
     QGroupBox* tyreBox = new QGroupBox("Tyres");
     QHBoxLayout* tyreLay = new QHBoxLayout(tyreBox);
-    tyreSectionBtn_ = new ToggleButton("Tyre Cards / Charts");
+    tyreSectionBtn_ = new ToggleButton("Show Tyre Section");
     tyreSectionBtn_->setCheckable(true);
     tyreSectionBtn_->setChecked(layout_.showTyreSection);
     connect(tyreSectionBtn_, &QPushButton::toggled, this, &EditOverviewLayoutDialog::toggleTyreSection);
@@ -135,3 +135,4 @@ void EditOverviewLayoutDialog::toggleTyreSection(bool on)
     layout_.showTyreSection = on;
     mainWindow_->applyAndSaveOverviewLayout(layout_);
 }
+
