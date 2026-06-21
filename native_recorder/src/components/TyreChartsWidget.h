@@ -33,7 +33,7 @@ private:
     bool      dirty_        = false;
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
-    float     windowS_      = 120.0f;   // 2 min default view window
+    float     windowS_      = 30.0f;    // default view window (matches toolbar default tb_windowIdx_=1 = 30s)
 
     float currentTime() const;
 
