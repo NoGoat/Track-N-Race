@@ -12,6 +12,8 @@
 #include "components/EditMiscLayoutDialog.h"
 #include "components/GForceChart.h"
 #include "components/RideHeightChart.h"
+#include "components/TyreCardsWidget.h"
+#include "components/TyreChartsWidget.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
 #include "components/TyreHelpers.h"
@@ -642,6 +644,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (pp_fuelChart) { pp_fuelChart->setPlaybackMode(true); pp_fuelChart->setCurrentTime(player_->currentTime()); }
         if (gforceChart_) { gforceChart_->setPlaybackMode(true); gforceChart_->setCurrentTime(player_->currentTime()); }
         if (rideHeightChart_) { rideHeightChart_->setPlaybackMode(true); rideHeightChart_->setCurrentTime(player_->currentTime()); }
+        if (ov_tyreCharts_) { ov_tyreCharts_->setPlaybackMode(true); ov_tyreCharts_->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
         closeActiveStream();
         pb_sep_->show();
@@ -679,6 +682,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (pp_fuelChart) pp_fuelChart->setCurrentTime(player_->currentTime());
         if (gforceChart_) gforceChart_->setCurrentTime(player_->currentTime());
         if (rideHeightChart_) rideHeightChart_->setCurrentTime(player_->currentTime());
+        if (ov_tyreCharts_) ov_tyreCharts_->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
             pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
@@ -758,6 +762,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (steeringChart_) steeringChart_->setPlaybackMode(false);
         if (gforceChart_) gforceChart_->setPlaybackMode(false);
         if (rideHeightChart_) rideHeightChart_->setPlaybackMode(false);
+        if (ov_tyreCharts_) ov_tyreCharts_->setPlaybackMode(false);
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(false);
         if (ov_defaultBtn_) ov_defaultBtn_->setChecked(true);
         if (ov_lapCombo_) ov_lapCombo_->setVisible(false);
@@ -1674,7 +1679,7 @@ void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
     // anyway. Same 0.2s guard as the recording-side truncate above.
     if (rtype == "telemetry" && sessionTime < model_->data().latestTime - 0.2f)
         model_->truncateAfter(sessionTime);
-    if (rtype == "telemetry")
+    if (rtype == "telemetry") {
         model_->onTelemetry(sessionTime,
                             row.value("speed_kph", 0.0f),
                             row.value("rpm", 0),
@@ -1682,6 +1687,17 @@ void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
                             row.value("throttle", 0.0f),
                             row.value("brake", 0.0f),
                             row.value("steering", 0.0f));
+        // Combine live tyre temps with last-seen wear from the damage packet.
+        model_->onTyre(sessionTime,
+            row.value("tyre_temp_surface_fl", 0.0f), row.value("tyre_temp_surface_fr", 0.0f),
+            row.value("tyre_temp_surface_rl", 0.0f), row.value("tyre_temp_surface_rr", 0.0f),
+            row.value("tyre_temp_inner_fl",   0.0f), row.value("tyre_temp_inner_fr",   0.0f),
+            row.value("tyre_temp_inner_rl",   0.0f), row.value("tyre_temp_inner_rr",   0.0f),
+            row.value("brake_temp_fl",        0.0f), row.value("brake_temp_fr",        0.0f),
+            row.value("brake_temp_rl",        0.0f), row.value("brake_temp_rr",        0.0f),
+            lastPlayerDamageData.value("tyre_wear_fl",  0.0f), lastPlayerDamageData.value("tyre_wear_fr",  0.0f),
+            lastPlayerDamageData.value("tyre_wear_rl",  0.0f), lastPlayerDamageData.value("tyre_wear_rr",  0.0f));
+    }
     else if (rtype == "status")
         model_->onStatus(
             sessionTime,

@@ -7,6 +7,14 @@
 
 // Slim per-sample records — only what the Speed/RPM/ERS chart needs.
 struct TelSample { float t = 0; float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0; float steering = 0; };
+
+struct TyreSample {
+    float t = 0;
+    float surfFl=0, surfFr=0, surfRl=0, surfRr=0;
+    float innerFl=0, innerFr=0, innerRl=0, innerRr=0;
+    float brakeFl=0, brakeFr=0, brakeRl=0, brakeRr=0;
+    float wearFl=0,  wearFr=0,  wearRl=0,  wearRr=0;
+};
 struct StsSample {
     float t = 0;
     float ers = 0;
@@ -43,6 +51,7 @@ struct SessionData {
     QVector<StsSample> stsBuf;
     QVector<MotionSample> motionBuf;
     QVector<MotionExSample> motionExBuf;
+    QVector<TyreSample> tyreBuf;
 
     QVector<LapBlock>  laps;       // completed (and, after load, the final) laps
     LapBlock           curLap;     // in-progress lap (live only)
@@ -60,6 +69,11 @@ struct SessionData {
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
     void onMotion(float t, float g_lat, float g_long);
     void onMotionEx(float t, float front_aero, float rear_aero);
+    void onTyre(float t,
+                float surfFl, float surfFr, float surfRl, float surfRr,
+                float innerFl, float innerFr, float innerRl, float innerRr,
+                float brakeFl, float brakeFr, float brakeRl, float brakeRr,
+                float wearFl,  float wearFr,  float wearRl,  float wearRr);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);          // time went backward → fresh session
     void truncateAfter(float newTime);            // in-game rewind → drop samples newer than newTime
@@ -88,6 +102,11 @@ public:
     void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
     void onMotion(float t, float g_lat, float g_long);
     void onMotionEx(float t, float front_aero, float rear_aero);
+    void onTyre(float t,
+                float surfFl, float surfFr, float surfRl, float surfRr,
+                float innerFl, float innerFr, float innerRl, float innerRr,
+                float brakeFl, float brakeFr, float brakeRl, float brakeRr,
+                float wearFl,  float wearFr,  float wearRl,  float wearRr);
     void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
     void onSessionReset(float newTime);
     void truncateAfter(float newTime);
@@ -106,6 +125,7 @@ public:
 
 signals:
     void telemetryAppended();   // throttled — default/current-lap views refresh
+    void tyreAppended();        // throttled — tyre chart views refresh
     void lapsChanged();         // a lap completed or a session loaded — selectors refresh
     void wasReset();
 
@@ -113,4 +133,5 @@ private:
     SessionData d_;
     QTimer*     flush_ = nullptr;
     bool        telemetryDirty_ = false;
+    bool        tyreDirty_      = false;
 };

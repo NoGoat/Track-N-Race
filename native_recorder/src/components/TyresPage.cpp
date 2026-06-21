@@ -1,4 +1,5 @@
 #include "../MainWindow.h"
+#include "TyreCardsWidget.h"
 #include "TyreHelpers.h"
 
 #include <QVBoxLayout>
@@ -70,133 +71,18 @@ QWidget* MainWindow::buildTyresPage() {
     hbox->addWidget(vdiv);
 
     // ── Right panel: WheelCards (1×4 vertical, fills height) ────────
-    QWidget* right = new QWidget;
-    right->setFixedWidth(240);
-    QVBoxLayout* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(0, 0, 0, 0);
-    rv->setSpacing(0);
+    tp_tyreCards_ = new TyreCardsWidget(Qt::Vertical);
+    tp_tyreCards_->setFixedWidth(240);
 
-    static const char* cornerNames[] = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
-
-    for (int i = 0; i < 4; ++i) {
-        QWidget* card = new QWidget;
-        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        QVBoxLayout* cv = new QVBoxLayout(card);
-        cv->setContentsMargins(10, 8, 10, 8);
-        cv->setSpacing(2);
-
-        QLabel* title = new QLabel(cornerNames[i]);
-        QFont tf; tf.setPointSize(7); tf.setBold(true);
-        title->setFont(tf);
-        title->setForegroundRole(QPalette::PlaceholderText);
-        cv->addWidget(title);
-
-        auto makeRow = [&](const QString& label, QLabel*& valueOut) {
-            QWidget* row = new QWidget;
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            QLabel* lbl = new QLabel(label);
-            QFont lf; lf.setPointSize(8); lbl->setFont(lf);
-            lbl->setForegroundRole(QPalette::PlaceholderText);
-            valueOut = new QLabel("—");
-            QFont vf; vf.setPointSize(8); vf.setBold(true);
-            valueOut->setFont(vf);
-            valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            h->addWidget(lbl);
-            h->addStretch();
-            h->addWidget(valueOut);
-            return row;
-        };
-
-        cv->addWidget(makeRow("Surface", tp_surfaceTemp[i]));
-        cv->addWidget(makeRow("Inner",   tp_innerTemp[i]));
-        cv->addWidget(makeRow("Brake",   tp_brakeTemp[i]));
-        cv->addWidget(makeRow("Wear",    tp_wearLabel[i]));
-
-        auto* wearBar = new QProgressBar;
-        wearBar->setRange(0, 100);
-        wearBar->setValue(0);
-        wearBar->setTextVisible(false);
-        wearBar->setFixedHeight(6);
-        wearBar->setStyleSheet(
-            "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
-            "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
-        );
-        tp_wear[i] = wearBar;
-        cv->addWidget(wearBar);
-
-        tp_blisters[i] = new QLabel;
-        tp_blisters[i]->setVisible(false);
-        QFont bf; bf.setPointSize(7);
-        tp_blisters[i]->setFont(bf);
-        tp_blisters[i]->setForegroundRole(QPalette::PlaceholderText);
-        cv->addWidget(tp_blisters[i]);
-
-        rv->addWidget(card, 1);
-
-        if (i < 3) {
-            QFrame* hdiv = new QFrame;
-            hdiv->setFrameShape(QFrame::HLine);
-            hdiv->setFrameShadow(QFrame::Sunken);
-            rv->addWidget(hdiv);
-        }
-    }
-
-    hbox->addWidget(right);
+    hbox->addWidget(tp_tyreCards_);
     return w;
 }
 
 // ── Tyres page updater ────────────────────────────────────────────────────
 
 void MainWindow::updateTyresPage() {
-    if (!tp_surfaceTemp[0]) return;
-
-    static const char* surfKeys[]    = { "tyre_temp_surface_fl", "tyre_temp_surface_fr", "tyre_temp_surface_rl", "tyre_temp_surface_rr" };
-    static const char* innerKeys[]   = { "tyre_temp_inner_fl",   "tyre_temp_inner_fr",   "tyre_temp_inner_rl",   "tyre_temp_inner_rr"   };
-    static const char* brakeKeys[]   = { "brake_temp_fl",        "brake_temp_fr",        "brake_temp_rl",        "brake_temp_rr"        };
-    static const char* wearKeys[]    = { "tyre_wear_fl",         "tyre_wear_fr",         "tyre_wear_rl",         "tyre_wear_rr"         };
-    static const char* blisterKeys[] = { "blisters_fl",          "blisters_fr",          "blisters_rl",          "blisters_rr"          };
-
-    for (int i = 0; i < 4; ++i) {
-        if (!lastPlayerTelemetryData.empty()) {
-            int surf = lastPlayerTelemetryData.value(surfKeys[i], -1);
-            if (surf >= 0) {
-                tp_surfaceTemp[i]->setText(QString::number(surf) + "°C");
-                tp_surfaceTemp[i]->setStyleSheet("color: " + tyreTempColor(surf).name() + "; font-weight: bold;");
-            }
-            int inner = lastPlayerTelemetryData.value(innerKeys[i], -1);
-            if (inner >= 0) {
-                tp_innerTemp[i]->setText(QString::number(inner) + "°C");
-                tp_innerTemp[i]->setStyleSheet("color: " + tyreTempColor(inner).name() + "; font-weight: bold;");
-            }
-            int brk = lastPlayerTelemetryData.value(brakeKeys[i], -1);
-            if (brk >= 0) {
-                tp_brakeTemp[i]->setText(QString::number(brk) + "°C");
-                tp_brakeTemp[i]->setStyleSheet("color: " + brakeTempColor(brk).name() + "; font-weight: bold;");
-            }
-        }
-
-        if (!lastPlayerDamageData.empty()) {
-            int wear = lastPlayerDamageData.value(wearKeys[i], -1);
-            if (wear >= 0) {
-                const QString wearCol = wearPctColor(wear).name();
-                tp_wearLabel[i]->setText(QString::number(wear) + "%");
-                tp_wearLabel[i]->setStyleSheet("color: " + wearCol + "; font-weight: bold;");
-                tp_wear[i]->setValue(wear);
-                tp_wear[i]->setStyleSheet(QString(
-                    "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
-                    "QProgressBar::chunk { background: %1; border-radius: 3px; }"
-                ).arg(wearCol));
-            }
-            int blisters = lastPlayerDamageData.value(blisterKeys[i], 0);
-            if (blisters > 0) {
-                tp_blisters[i]->setText(QString("· %1% blisters").arg(blisters));
-                tp_blisters[i]->setVisible(true);
-            } else {
-                tp_blisters[i]->setVisible(false);
-            }
-        }
-    }
+    if (tp_tyreCards_) tp_tyreCards_->update(lastPlayerTelemetryData, lastPlayerDamageData);
+    if (ov_tyreCards_) ov_tyreCards_->update(lastPlayerTelemetryData, lastPlayerDamageData);
 }
 
 // ── Tyre sets table updater ───────────────────────────────────────────────

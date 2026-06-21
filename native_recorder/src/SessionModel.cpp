@@ -27,6 +27,19 @@ void SessionData::onMotionEx(float t, float front_aero, float rear_aero) {
     trim();
 }
 
+void SessionData::onTyre(float t,
+                         float surfFl, float surfFr, float surfRl, float surfRr,
+                         float innerFl, float innerFr, float innerRl, float innerRr,
+                         float brakeFl, float brakeFr, float brakeRl, float brakeRr,
+                         float wearFl,  float wearFr,  float wearRl,  float wearRr) {
+    tyreBuf.push_back({ t,
+        surfFl, surfFr, surfRl, surfRr,
+        innerFl, innerFr, innerRl, innerRr,
+        brakeFl, brakeFr, brakeRl, brakeRr,
+        wearFl, wearFr, wearRl, wearRr });
+    trim();
+}
+
 void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {
     if (curLapNum < 0) {
         // First lap seen: backtrack its start from the elapsed lap time.
@@ -90,6 +103,7 @@ void SessionData::truncateAfter(float newTime) {
     cutTail(stsBuf);
     cutTail(motionBuf);
     cutTail(motionExBuf);
+    cutTail(tyreBuf);
 
     // Drop completed laps recorded at/after the rewind point.
     while (!laps.isEmpty() && laps.last().startSessionTime >= newTime)
@@ -118,6 +132,7 @@ void SessionData::clear() {
     stsBuf.clear();
     motionBuf.clear();
     motionExBuf.clear();
+    tyreBuf.clear();
     laps.clear();
     curLap = LapBlock{};
     curLapNum = -1;
@@ -139,6 +154,8 @@ void SessionData::trim() {
     if (dm > 0) motionBuf.remove(0, dm);
     int dmx = 0; while (dmx < motionExBuf.size() && motionExBuf[dmx].t < cutoff) ++dmx;
     if (dmx > 0) motionExBuf.remove(0, dmx);
+    int dty = 0; while (dty < tyreBuf.size() && tyreBuf[dty].t < cutoff) ++dty;
+    if (dty > 0) tyreBuf.remove(0, dty);
 }
 
 const LapBlock* SessionData::lapByNum(int n) const {
@@ -159,6 +176,7 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
     flush_->setInterval(33);   // ~30 Hz
     connect(flush_, &QTimer::timeout, this, [this] {
         if (telemetryDirty_) { telemetryDirty_ = false; emit telemetryAppended(); }
+        if (tyreDirty_)      { tyreDirty_      = false; emit tyreAppended(); }
     });
     flush_->start();
 }
@@ -195,6 +213,19 @@ void SessionModel::onMotionEx(float t, float front_aero, float rear_aero) {
     telemetryDirty_ = true;
 }
 
+void SessionModel::onTyre(float t,
+                          float surfFl, float surfFr, float surfRl, float surfRr,
+                          float innerFl, float innerFr, float innerRl, float innerRr,
+                          float brakeFl, float brakeFr, float brakeRl, float brakeRr,
+                          float wearFl,  float wearFr,  float wearRl,  float wearRr) {
+    d_.onTyre(t,
+              surfFl, surfFr, surfRl, surfRr,
+              innerFl, innerFr, innerRl, innerRr,
+              brakeFl, brakeFr, brakeRl, brakeRr,
+              wearFl, wearFr, wearRl, wearRr);
+    tyreDirty_ = true;
+}
+
 void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {
     const int before = d_.laps.size();
     d_.onLap(lapNum, currentLapMs, lastLapMs, invalid);
@@ -212,6 +243,7 @@ void SessionModel::truncateAfter(float newTime) {
     // Charts re-query the (now shorter) buffers; lap selectors re-read the laps.
     emit lapsChanged();
     emit telemetryAppended();
+    emit tyreAppended();
 }
 
 void SessionModel::clear() {
@@ -223,6 +255,8 @@ void SessionModel::clear() {
 void SessionModel::load(SessionData&& data) {
     d_ = std::move(data);
     telemetryDirty_ = false;
+    tyreDirty_      = false;
     emit lapsChanged();
     emit telemetryAppended();
+    emit tyreAppended();
 }

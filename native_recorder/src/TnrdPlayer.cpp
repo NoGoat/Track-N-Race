@@ -316,6 +316,7 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
     index_.clear();
     scanned_.clear();
     scanned_.trimBuffers = false;   // playback keeps the whole session in memory
+    lastDmg_[0] = lastDmg_[1] = lastDmg_[2] = lastDmg_[3] = 0.0f;
     startTime_   = 0.0f;
     totalTime_   = 0.0f;
     currentTime_ = 0.0f;
@@ -344,12 +345,12 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
         index_.push_back({ lineOffset, t, tid });
         totalTime_ = std::max(totalTime_, t);
 
-        // Build the chart's session model in the same pass. Only the three row
-        // types the chart needs are parsed; timing/participants/etc are skipped.
-        if (tid == 1 || tid == 2 || tid == 4 || tid == 11 || tid == 12) {
+        // Build the chart's session model in the same pass. Only the row types
+        // the charts need are parsed; timing/participants/etc are skipped.
+        if (tid == 1 || tid == 2 || tid == 3 || tid == 4 || tid == 11 || tid == 12) {
             try {
                 nlohmann::json j = nlohmann::json::parse(ld, ld + ll);
-                if (tid == 1)
+                if (tid == 1) {
                     scanned_.onTelemetry(t,
                                          j.value("speed_kph", 0.0f),
                                          j.value("rpm", 0),
@@ -357,7 +358,16 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
                                          j.value("throttle", 0.0f),
                                          j.value("brake", 0.0f),
                                          j.value("steering", 0.0f));
-                else if (tid == 2) {
+                    // Combine telemetry temps with last-seen wear from damage rows.
+                    scanned_.onTyre(t,
+                        j.value("tyre_temp_surface_fl", 0.0f), j.value("tyre_temp_surface_fr", 0.0f),
+                        j.value("tyre_temp_surface_rl", 0.0f), j.value("tyre_temp_surface_rr", 0.0f),
+                        j.value("tyre_temp_inner_fl",   0.0f), j.value("tyre_temp_inner_fr",   0.0f),
+                        j.value("tyre_temp_inner_rl",   0.0f), j.value("tyre_temp_inner_rr",   0.0f),
+                        j.value("brake_temp_fl",        0.0f), j.value("brake_temp_fr",        0.0f),
+                        j.value("brake_temp_rl",        0.0f), j.value("brake_temp_rr",        0.0f),
+                        lastDmg_[0], lastDmg_[1], lastDmg_[2], lastDmg_[3]);
+                } else if (tid == 2) {
                     scanned_.onStatus(
                         t,
                         j.value("ers_pct", 0.0f),
@@ -367,6 +377,11 @@ void TnrdPlayer::buildIndex(const QString& filePath) {
                         j.value("ers_harvested_mguk_j", 0.0f),
                         j.value("ers_harvested_mguh_j", 0.0f)
                     );
+                } else if (tid == 3) {
+                    lastDmg_[0] = j.value("tyre_wear_fl", 0.0f);
+                    lastDmg_[1] = j.value("tyre_wear_fr", 0.0f);
+                    lastDmg_[2] = j.value("tyre_wear_rl", 0.0f);
+                    lastDmg_[3] = j.value("tyre_wear_rr", 0.0f);
                 } else if (tid == 4) {
                     scanned_.onLap(j.value("lap_num", 0),
                                    j.value("current_lap_ms", 0),

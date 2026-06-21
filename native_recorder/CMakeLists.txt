@@ -73,6 +73,10 @@ set(SOURCES
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
     src/components/TyresPage.cpp
+    src/components/TyreCardsWidget.h
+    src/components/TyreCardsWidget.cpp
+    src/components/TyreChartsWidget.h
+    src/components/TyreChartsWidget.cpp
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
     src/components/InputPage.cpp

@@ -57,6 +57,7 @@ private:
 
     std::vector<IndexEntry> index_;
     SessionData             scanned_;   // built on the load thread by buildIndex()
+    float                   lastDmg_[4] = {};  // last tyre_wear_fl/fr/rl/rr seen during scan
 
     float        startTime_   = 0.0f;
     float        totalTime_   = 0.0f;

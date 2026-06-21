@@ -33,6 +33,8 @@ class InputsChart;
 class SteeringChart;
 class GForceChart;
 class RideHeightChart;
+class TyreCardsWidget;
+class TyreChartsWidget;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
@@ -138,10 +140,17 @@ private:
     QFrame*         ov_statsFrame_ = nullptr; // stats row container; hidden if all stat cards are hidden
     QFrame*         ov_sep1_     = nullptr;   // separator below the stats row
     QFrame*         ov_sep2_     = nullptr;   // separator above the damage rows
-    QFrame*         ov_dmgFrame_ = nullptr;   // damage rows container; hidden if both rows are hidden
-    QFrame*         ov_dmgRowA_  = nullptr;   // tyre/brake damage row
-    QFrame*         ov_dmgRowB_  = nullptr;   // wing/body damage row
-    QFrame*         ov_dmgHdiv_  = nullptr;   // separator between the two damage rows
+    QFrame*           ov_dmgFrame_ = nullptr;   // damage rows container; hidden if both rows are hidden
+    QFrame*           ov_dmgRowA_  = nullptr;   // tyre/brake damage row
+    QFrame*           ov_dmgRowB_  = nullptr;   // wing/body damage row
+    QFrame*           ov_dmgHdiv_  = nullptr;   // separator between the two damage rows
+    // Tyre section (cards / charts toggle)
+    QFrame*           ov_tyreSep_         = nullptr;
+    QWidget*          ov_tyreToggleBar_   = nullptr;
+    TyreCardsWidget*  ov_tyreCards_       = nullptr;
+    TyreChartsWidget* ov_tyreCharts_      = nullptr;
+    QPushButton*      ov_tyreCardsBtn_    = nullptr;
+    QPushButton*      ov_tyreChartsBtn_   = nullptr;
     QFrame*         ov_statCardFrame_[OverviewLayout::StatCardCount] = {};
     QFrame*         ov_dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
@@ -194,17 +203,12 @@ private:
     QLabel*       rp_brakeBias  = nullptr;
 
     // ── Tyres page ───────────────────────────────────────────────
-    QLabel*       tp_surfaceTemp[4] = {};  // FL, FR, RL, RR
-    QLabel*       tp_innerTemp[4]   = {};
-    QLabel*       tp_brakeTemp[4]   = {};
-    QLabel*       tp_wearLabel[4]   = {};  // "34%" text next to "Wear" label
-    QProgressBar* tp_wear[4]        = {};  // colored fill bar
-    QLabel*       tp_blisters[4]    = {};
-    QTableWidget* tp_drySetsTable   = nullptr;
-    QTableWidget* tp_wetSetsTable   = nullptr;
-    nlohmann::json lastPlayerTelemetryData;
-    nlohmann::json lastPlayerDamageData;
-    nlohmann::json lastTyreSetsData;
+    TyreCardsWidget* tp_tyreCards_    = nullptr;
+    QTableWidget*    tp_drySetsTable  = nullptr;
+    QTableWidget*    tp_wetSetsTable  = nullptr;
+    nlohmann::json   lastPlayerTelemetryData;
+    nlohmann::json   lastPlayerDamageData;
+    nlohmann::json   lastTyreSetsData;
 
     // ── Session page ──────────────────────────────────────────────
     QWidget*     sp_marshalStrip  = nullptr;

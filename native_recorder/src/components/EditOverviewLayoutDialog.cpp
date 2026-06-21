@@ -66,6 +66,16 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     chartLay->addWidget(chartBtn_);
     main->addWidget(chartBox);
 
+    // ── Tyre section ─────────────────────────────────────────────
+    QGroupBox* tyreBox = new QGroupBox("Tyres");
+    QHBoxLayout* tyreLay = new QHBoxLayout(tyreBox);
+    tyreSectionBtn_ = new ToggleButton("Tyre Cards / Charts");
+    tyreSectionBtn_->setCheckable(true);
+    tyreSectionBtn_->setChecked(layout_.showTyreSection);
+    connect(tyreSectionBtn_, &QPushButton::toggled, this, &EditOverviewLayoutDialog::toggleTyreSection);
+    tyreLay->addWidget(tyreSectionBtn_);
+    main->addWidget(tyreBox);
+
     // ── Stats ────────────────────────────────────────────────────
     QGroupBox* statsBox = new QGroupBox("Stats");
     QGridLayout* statsLay = new QGridLayout(statsBox);
@@ -117,5 +127,11 @@ void EditOverviewLayoutDialog::toggleStat(int idx, bool on)
 void EditOverviewLayoutDialog::toggleDmg(int idx, bool on)
 {
     layout_.dmgCards[idx] = on;
+    mainWindow_->applyAndSaveOverviewLayout(layout_);
+}
+
+void EditOverviewLayoutDialog::toggleTyreSection(bool on)
+{
+    layout_.showTyreSection = on;
     mainWindow_->applyAndSaveOverviewLayout(layout_);
 }

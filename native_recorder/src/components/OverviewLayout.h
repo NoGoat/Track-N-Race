@@ -9,6 +9,9 @@
 // arrays.
 struct OverviewLayout {
     bool showChart = true;
+    bool showTyreSection = true;
+    enum TyreView { TyreCards, TyreCharts };
+    TyreView tyreView = TyreCards;
 
     enum StatCard { Speed, Rpm, Gear, Throttle, Brake, Drs, EngineTemp, Ers, Fuel, Pos, Tyre, StatCardCount };
     std::array<bool, StatCardCount> statCards = {

@@ -1,6 +1,8 @@
 #include "../MainWindow.h"
 #include "../TelemetryChart.h"
 #include "../SessionModel.h"
+#include "TyreCardsWidget.h"
+#include "TyreChartsWidget.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -252,6 +254,67 @@ QWidget* MainWindow::buildOverviewTab() {
         if (chart && sel >= 0) chart->setCompareLap(ov_lapCombo_->itemData(sel).toInt());
     });
 
+    // ── Tyre section ─────────────────────────────────────────────
+    ov_tyreSep_ = new QFrame;
+    ov_tyreSep_->setFrameShape(QFrame::HLine);
+    ov_tyreSep_->setFrameShadow(QFrame::Sunken);
+    vbox->addWidget(ov_tyreSep_);
+
+    // Cards | Charts toggle bar, same flat-underline style as the chart-mode bar
+    ov_tyreToggleBar_ = new QWidget;
+    QHBoxLayout* tyreToggleLay = new QHBoxLayout(ov_tyreToggleBar_);
+    tyreToggleLay->setContentsMargins(8, 2, 8, 2);
+    tyreToggleLay->setSpacing(4);
+
+    auto* tyreViewGroup = new QButtonGroup(ov_tyreToggleBar_);
+    tyreViewGroup->setExclusive(true);
+    const QString accent2 = QApplication::palette().color(QPalette::Highlight).name();
+    const QString tyreBtnStyle = QString(
+        "QPushButton { padding: 4px 10px; border: none; background: transparent;"
+        " border-bottom: 2px solid transparent; }"
+        "QPushButton:checked { border-bottom: 2px solid %1; }"
+    ).arg(accent2);
+
+    ov_tyreCardsBtn_  = new QPushButton("Cards");
+    ov_tyreChartsBtn_ = new QPushButton("Charts");
+    QPushButton* cardsBtn  = ov_tyreCardsBtn_;
+    QPushButton* chartsBtn = ov_tyreChartsBtn_;
+    for (auto* b : { cardsBtn, chartsBtn }) {
+        b->setCheckable(true);
+        b->setFlat(true);
+        b->setStyleSheet(tyreBtnStyle);
+        tyreViewGroup->addButton(b);
+        tyreToggleLay->addWidget(b);
+    }
+    cardsBtn->setChecked(true);
+    tyreToggleLay->addStretch(1);
+    vbox->addWidget(ov_tyreToggleBar_);
+
+    ov_tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
+    ov_tyreCards_->setFixedHeight(160);
+    vbox->addWidget(ov_tyreCards_);
+
+    ov_tyreCharts_ = new TyreChartsWidget;
+    ov_tyreCharts_->setFixedHeight(300);
+    ov_tyreCharts_->setModel(model_);
+    ov_tyreCharts_->setVisible(false);
+    vbox->addWidget(ov_tyreCharts_);
+
+    connect(cardsBtn, &QPushButton::clicked, this, [this] {
+        ov_tyreCards_->setVisible(true);
+        ov_tyreCharts_->setVisible(false);
+        OverviewLayout L = loadOverviewLayout();
+        L.tyreView = OverviewLayout::TyreCards;
+        saveOverviewLayout(L);
+    });
+    connect(chartsBtn, &QPushButton::clicked, this, [this] {
+        ov_tyreCards_->setVisible(false);
+        ov_tyreCharts_->setVisible(true);
+        OverviewLayout L = loadOverviewLayout();
+        L.tyreView = OverviewLayout::TyreCharts;
+        saveOverviewLayout(L);
+    });
+
     ov_sep2_ = new QFrame;
     ov_sep2_->setFrameShape(QFrame::HLine);
     ov_sep2_->setFrameShadow(QFrame::Sunken);
@@ -325,7 +388,10 @@ OverviewLayout MainWindow::loadOverviewLayout()
 {
     OverviewLayout L;
     settings.beginGroup("overviewLayout");
-    L.showChart = settings.value("showChart", true).toBool();
+    L.showChart       = settings.value("showChart",       true).toBool();
+    L.showTyreSection = settings.value("showTyreSection", true).toBool();
+    L.tyreView        = settings.value("tyreView", 0).toInt() == 1
+                          ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards;
     settings.beginGroup("statCards");
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
         L.statCards[i] = settings.value(OverviewLayout::statCardKey(i), true).toBool();
@@ -343,7 +409,9 @@ OverviewLayout MainWindow::loadOverviewLayout()
 void MainWindow::saveOverviewLayout(const OverviewLayout& L)
 {
     settings.beginGroup("overviewLayout");
-    settings.setValue("showChart", L.showChart);
+    settings.setValue("showChart",       L.showChart);
+    settings.setValue("showTyreSection", L.showTyreSection);
+    settings.setValue("tyreView",        (int)L.tyreView);
     settings.beginGroup("statCards");
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
         settings.setValue(OverviewLayout::statCardKey(i), L.statCards[i]);
@@ -383,6 +451,17 @@ void MainWindow::applyOverviewLayout(const OverviewLayout& L)
     // instead of leaving the inset wrapper as an empty stretched gap.
     if (chart && chart->parentWidget()) chart->parentWidget()->setVisible(L.showChart);
     if (ov_modeBar_) ov_modeBar_->setVisible(L.showChart);
+
+    // Tyre section
+    const bool showTyre = L.showTyreSection;
+    if (ov_tyreSep_)       ov_tyreSep_->setVisible(showTyre);
+    if (ov_tyreToggleBar_) ov_tyreToggleBar_->setVisible(showTyre);
+    const bool showCards  = showTyre && (L.tyreView == OverviewLayout::TyreCards);
+    const bool showCharts = showTyre && (L.tyreView == OverviewLayout::TyreCharts);
+    if (ov_tyreCards_)    ov_tyreCards_->setVisible(showCards);
+    if (ov_tyreCharts_)   ov_tyreCharts_->setVisible(showCharts);
+    if (ov_tyreCardsBtn_)  ov_tyreCardsBtn_->setChecked(L.tyreView  == OverviewLayout::TyreCards);
+    if (ov_tyreChartsBtn_) ov_tyreChartsBtn_->setChecked(L.tyreView == OverviewLayout::TyreCharts);
 }
 
 void MainWindow::applyAndSaveOverviewLayout(const OverviewLayout& L)

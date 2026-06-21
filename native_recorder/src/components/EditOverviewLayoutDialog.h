@@ -20,10 +20,12 @@ private:
     void toggleChart(bool on);
     void toggleStat(int idx, bool on);
     void toggleDmg(int idx, bool on);
+    void toggleTyreSection(bool on);
 
     MainWindow*    mainWindow_;
     OverviewLayout layout_;
     QPushButton*   statBtns_[OverviewLayout::StatCardCount] = {};
     QPushButton*   dmgBtns_[OverviewLayout::DmgCardCount]   = {};
-    QPushButton*   chartBtn_ = nullptr;
+    QPushButton*   chartBtn_       = nullptr;
+    QPushButton*   tyreSectionBtn_ = nullptr;
 };
