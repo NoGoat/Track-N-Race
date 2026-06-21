@@ -990,9 +990,8 @@ void MainWindow::relayoutToolbar() {
     tb_overflowMenu_->clear();
     for (int i = 0; i < n; ++i) {
         if (tabIn[i]) continue;
+        // Tabs are navigation, not state — render as plain buttons (no checkbox).
         QAction* a = tb_overflowMenu_->addAction(tb_pageButtons_[i]->text());
-        a->setCheckable(true);
-        a->setChecked(i == currentPage_);
         connect(a, &QAction::triggered, this, [this, i] {
             if (tb_pageGroup_) if (auto* b = tb_pageGroup_->button(i)) b->click();
         });
