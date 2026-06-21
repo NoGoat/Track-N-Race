@@ -972,6 +972,7 @@ void MainWindow::applyChartWindow(int idx) {
     if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
     if (gforceChart_) gforceChart_->setWindowSeconds(secs);
     if (rideHeightChart_) rideHeightChart_->setWindowSeconds(secs);
+    if (ov_tyreCharts_) ov_tyreCharts_->setWindowSeconds(secs);
     // Keep the inline segment in sync when the choice came from the overflow menu
     // (a programmatic setChecked emits idToggled, not idClicked, so no recursion).
     if (tb_windowGroup_)
@@ -1588,6 +1589,9 @@ void MainWindow::flushUiRefresh() {
     // pages (e.g. the 20-row standings table) from hitching the visible page's
     // animations on the shared UI thread. Index: 1=Standings 2=Session 3=Tyres.
     switch (currentPage_) {
+        case 0:
+            if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
+            break;
         case 1:
             if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
             if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
@@ -1606,7 +1610,7 @@ void MainWindow::flushUiRefresh() {
             if (dirtyPower_)     { updatePowerPage();        dirtyPower_     = false; }
             break;
         default:
-            break;  // Overview (0) and Input (4) have no coalesced panels
+            break;
     }
 }
 
