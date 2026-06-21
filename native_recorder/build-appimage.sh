@@ -205,6 +205,65 @@ if [[ -e "$WGIC_SRC/libqt-plugin-wayland-egl.so" ]]; then
     done
 fi
 
+# The Breeze/KF6 stack pulls in libKF6WindowSystem, which at runtime loads a
+# per-display backend plugin from plugins/kf6/kwindowsystem/ (an X11 and a
+# KWayland one). The Breeze superbuild ships the lib but not these plugins, and
+# the AppImage's qt.conf hides the host's copies, so KWindowSystem prints "Could
+# not find any platform plugin". Stage the host plugins — their deps are all
+# already bundled (libKF6WindowSystem in lib_breeze; Qt/wayland in usr/lib) — and
+# point the rpath at both dirs. KF6 keeps ABI within 6.x, so the host plugins
+# load against the bundled lib. From usr/plugins/kf6/kwindowsystem/ that's three
+# levels up to usr/, then bin/lib_breeze and lib respectively.
+KWS_SRC="$(find /usr/lib /usr/lib64 -maxdepth 4 -type d -path '*kf6/kwindowsystem' 2>/dev/null | head -1)"
+if [[ -n "$KWS_SRC" && -d "$APPDIR/usr/bin/lib_breeze" ]]; then
+    KWS_DST="$APPDIR/usr/plugins/kf6/kwindowsystem"
+    mkdir -p "$KWS_DST"
+    cp "$KWS_SRC"/*.so "$KWS_DST/"
+    for _kws in "$KWS_DST"/*.so; do
+        patchelf --set-rpath '$ORIGIN/../../../bin/lib_breeze:$ORIGIN/../../../lib' "$_kws"
+    done
+fi
+
+# ── Make the Qt runtime fully self-contained ─────────────────────────────────
+# linuxdeploy bundles the Qt libs the app + auto-deployed plugins need, but the
+# plugins we stage by hand (wayland-egl, kwindowsystem) and the Breeze/KF6 libs
+# in lib_breeze can reference Qt libs that weren't pulled in, leaving them to
+# resolve against the host. Walk every ELF in the AppDir and copy any missing
+# libQt6*.so out of the host Qt, to a fixed point (a freshly copied Qt lib may
+# itself pull in more), each with the $ORIGIN rpath linuxdeploy uses for libs.
+QT_LIBS_DIR="$("$QMAKE" -query QT_INSTALL_LIBS)"
+while :; do
+    _added=0
+    while IFS= read -r -d '' _elf; do
+        for _need in $(patchelf --print-needed "$_elf" 2>/dev/null || true); do
+            case "$_need" in
+                libQt6*.so*)
+                    if [[ ! -e "$APPDIR/usr/lib/$_need" && -e "$QT_LIBS_DIR/$_need" ]]; then
+                        cp -L "$QT_LIBS_DIR/$_need" "$APPDIR/usr/lib/$_need"
+                        patchelf --set-rpath '$ORIGIN' "$APPDIR/usr/lib/$_need"
+                        _added=1
+                    fi
+                    ;;
+            esac
+        done
+    done < <(find "$APPDIR/usr" -type f \( -name '*.so' -o -name '*.so.*' \) -print0)
+    [[ "$_added" -eq 0 ]] && break
+done
+
+# The Breeze style plugin and the KF6 libs in lib_breeze link Qt too, but their
+# rpaths only reach within the Breeze bundle, so they'd still load Qt from the
+# host. Add the bundled Qt (usr/lib) to their rpaths so the bundle is the sole
+# source of Qt. Paths are relative to each file's own location.
+if [[ -d "$APPDIR/usr/bin/lib_breeze" ]]; then
+    # lib_breeze/foo.so → usr/lib is ../../lib; keep $ORIGIN for KF6 siblings.
+    for _kf in "$APPDIR/usr/bin/lib_breeze"/*.so*; do
+        patchelf --set-rpath '$ORIGIN:$ORIGIN/../../lib' "$_kf"
+    done
+    # plugins/styles/breeze6.so → lib_breeze is ../../lib_breeze, usr/lib is ../../../lib.
+    _bz="$APPDIR/usr/bin/plugins/styles/breeze6.so"
+    [[ -e "$_bz" ]] && patchelf --set-rpath '$ORIGIN/../../lib_breeze:$ORIGIN/../../../lib' "$_bz"
+fi
+
 # linuxdeploy rewrites the executable's RPATH while deploying Qt; re-assert
 # $ORIGIN/lib_breeze so the app keeps finding the bundled KF6 libs. Must happen
 # before packing. Harmless if already present.
