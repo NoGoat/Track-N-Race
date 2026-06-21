@@ -348,6 +348,8 @@ private:
     std::unordered_map<std::string, std::string> dedupeCache;
 
     void resizeEvent(QResizeEvent* e) override;
+    void showEvent(QShowEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
     // Keeps Qt's native toolbar extension button (tb_extButton_) hidden — we do
     // our own overflow via the ⋯ menu.
     bool eventFilter(QObject* obj, QEvent* e) override;
@@ -405,6 +407,13 @@ private:
     bool dirtyPower_     = false;
     void scheduleUiRefresh();
     void flushUiRefresh();
+
+    // ── Rendering gate (pause all UI work when the window isn't displayed) ──
+    // Recording (UDP → parse → .tnrd) is independent of these and keeps running.
+    bool renderingActive_   = true;
+    bool windowFilterHooked_ = false;   // installed the QWindow expose filter yet?
+    void updateRenderingState();        // recompute desired state from window flags
+    void setRenderingActive(bool on);   // start/stop the rendering subsystems
 
     // ── Recording helpers ─────────────────────────────────────────
     void startNewStream(int trackId, int sessionType, int format);

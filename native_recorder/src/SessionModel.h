@@ -96,6 +96,12 @@ public:
     // Playback: replace everything with a pre-scanned session in one shot.
     void load(SessionData&& data);
 
+    // Pause/resume the ~30 Hz signal flush without affecting ingest. When paused
+    // (window hidden/minimized), onTelemetry() etc. keep accumulating samples but
+    // no telemetryAppended() is emitted, so charts don't repaint. Resuming forces
+    // one flush so charts rebuild from the full retained history (no gap).
+    void setLiveFlushActive(bool on);
+
     const SessionData& data() const { return d_; }
 
 signals:

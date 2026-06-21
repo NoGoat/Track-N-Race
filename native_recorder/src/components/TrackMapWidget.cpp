@@ -562,12 +562,19 @@ void TrackMapWidget::resizeEvent(QResizeEvent*) {
 }
 
 void TrackMapWidget::showEvent(QShowEvent*) {
-    if (animTimer_) animTimer_->start();
+    if (animTimer_ && renderingActive_) animTimer_->start();
     positionControls();
 }
 
 void TrackMapWidget::hideEvent(QHideEvent*) {
     if (animTimer_) animTimer_->stop();
+}
+
+void TrackMapWidget::setRenderingActive(bool on) {
+    renderingActive_ = on;
+    if (!animTimer_) return;
+    if (on) { if (isVisible()) animTimer_->start(); }
+    else    animTimer_->stop();
 }
 
 // ── Follow-driver controls ──────────────────────────────────────────────────

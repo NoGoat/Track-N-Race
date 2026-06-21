@@ -163,6 +163,18 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
     flush_->start();
 }
 
+void SessionModel::setLiveFlushActive(bool on) {
+    if (!flush_) return;
+    if (on) {
+        if (!flush_->isActive()) {
+            telemetryDirty_ = true;   // force one flush so charts catch up on the data ingested while paused
+            flush_->start();
+        }
+    } else {
+        flush_->stop();               // ingest keeps running; samples accumulate until resumed
+    }
+}
+
 void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
     d_.onTelemetry(t, speed, rpm, gear, throttle, brake, steering);
     telemetryDirty_ = true;

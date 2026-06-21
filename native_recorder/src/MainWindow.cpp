@@ -46,6 +46,7 @@
 #include <QPixmap>
 #include <QIconEngine>
 #include <QResizeEvent>
+#include <QWindow>
 #include <QProgressBar>
 #include <QStyle>
 #include <QAction>
@@ -882,12 +883,65 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
+    // Expose on our backing QWindow: the platform tells us when the window becomes
+    // fully obscured (e.g. covered by another window) or visible again. On X11 and
+    // Windows isExposed() flips with occlusion; on Wayland occlusion isn't reported
+    // so this just no-ops there (minimize/hide still handled via changeEvent).
+    if (obj == windowHandle() && e->type() == QEvent::Expose)
+        updateRenderingState();
     // Qt's QToolBarLayout re-shows its extension button whenever it thinks items
     // overflow; hide it again every time so only our ⋯ overflow is ever seen.
     if (obj == tb_extButton_ &&
         (e->type() == QEvent::Show || e->type() == QEvent::ShowToParent))
         tb_extButton_->hide();
     return QMainWindow::eventFilter(obj, e);
+}
+
+void MainWindow::showEvent(QShowEvent* e) {
+    QMainWindow::showEvent(e);
+    // The backing QWindow only exists once the widget has been shown — install the
+    // expose filter on first show so we can detect occlusion thereafter.
+    if (!windowFilterHooked_) {
+        if (QWindow* wh = windowHandle()) {
+            wh->installEventFilter(this);
+            windowFilterHooked_ = true;
+        }
+    }
+    updateRenderingState();
+}
+
+void MainWindow::hideEvent(QHideEvent* e) {
+    QMainWindow::hideEvent(e);
+    updateRenderingState();
+}
+
+// Computes whether the window is actually being displayed, and pauses/resumes the
+// rendering subsystems accordingly. Recording (.tnrd writing) is unaffected.
+void MainWindow::updateRenderingState() {
+    const QWindow* wh = windowHandle();
+    const bool active = isVisible()
+                     && !(windowState() & Qt::WindowMinimized)
+                     && (!wh || wh->isExposed());
+    if (active != renderingActive_)
+        setRenderingActive(active);
+}
+
+void MainWindow::setRenderingActive(bool on) {
+    renderingActive_ = on;
+    if (on) {
+        // Resume: let the model flush the data it kept ingesting while paused (one
+        // emit rebuilds the charts from full history), wake the track map, and
+        // rebuild the visible page from the dirty flags accumulated while paused.
+        if (model_)    model_->setLiveFlushActive(true);
+        if (trackMap_) trackMap_->setRenderingActive(true);
+        flushUiRefresh();
+    } else {
+        // Pause: stop every timer-driven repaint. Data ingest (recordRow,
+        // ingestForModel) and the UDP path keep running so nothing is lost.
+        if (uiRefreshTimer_) uiRefreshTimer_->stop();
+        if (model_)    model_->setLiveFlushActive(false);
+        if (trackMap_) trackMap_->setRenderingActive(false);
+    }
 }
 
 void MainWindow::refreshThemedIcons() {
@@ -1021,6 +1075,8 @@ void MainWindow::changeEvent(QEvent* e) {
     QMainWindow::changeEvent(e);
     if (e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::PaletteChange)
         refreshThemedIcons();
+    else if (e->type() == QEvent::WindowStateChange)
+        updateRenderingState();   // minimize/restore toggles rendering
 }
 
 void MainWindow::updateToolbarColorScheme() {
@@ -1479,6 +1535,10 @@ void MainWindow::showToast(const ToastSpec& spec) {
 }
 
 void MainWindow::scheduleUiRefresh() {
+    // While paused (window hidden/minimized/occluded) packets still set the dirty
+    // flags, but we don't run the timer — the visible page is rebuilt once on
+    // resume (see setRenderingActive).
+    if (!renderingActive_) return;
     if (!uiRefreshTimer_->isActive()) uiRefreshTimer_->start();
 }
 

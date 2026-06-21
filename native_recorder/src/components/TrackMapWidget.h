@@ -30,6 +30,11 @@ public:
     void setLabelMode(LabelMode mode);
     bool hasTrack() const { return loaded_; }
 
+    // External render gate (driven by MainWindow when the app window is
+    // hidden/minimized/occluded). The 60fps animation timer runs only when the
+    // widget is both shown and rendering is active.
+    void setRenderingActive(bool on);
+
 protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override;
@@ -93,6 +98,7 @@ private:
     QElapsedTimer snapTimer_;        // time since curSnap_ arrived
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
     QTimer*       animTimer_ = nullptr;     // ~60fps redraw while visible
+    bool          renderingActive_ = true;  // false when the app window is hidden/minimized/occluded
 
     // ── Follow-driver camera + zoom + labels ──────────────────────────────
     QComboBox* driverCombo_ = nullptr;   // "Follow driver…"
