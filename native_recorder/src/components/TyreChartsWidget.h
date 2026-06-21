@@ -6,6 +6,7 @@
 class ChartView;
 class SessionModel;
 class QTimer;
+class QFrame;
 
 class TyreChartsWidget : public QWidget {
     Q_OBJECT
@@ -15,6 +16,7 @@ public:
     void setModel(SessionModel* m);
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
+    void setChartSectionVisible(int i, bool on);
 
 public slots:
     void setCurrentTime(float t);
@@ -37,6 +39,11 @@ private:
 
     float prevEndTime_  = -9999.0f;
     float lastAddedTime_= -9999.0f;
+
+    void updateDividers();
+
+    QWidget* sections_[4]  = {};
+    QFrame*  dividers_[3]  = {};
 
     // Four chart panels: surface temp / inner temp / brake temp / tyre wear
     ChartView* surfChart_  = nullptr;

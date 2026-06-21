@@ -344,9 +344,16 @@ OverviewLayout MainWindow::loadOverviewLayout()
     OverviewLayout L;
     settings.beginGroup("overviewLayout");
     L.showChart       = settings.value("showChart",       true).toBool();
-    L.showTyreSection = settings.value("showTyreSection", true).toBool();
-    L.tyreView        = settings.value("tyreView", 0).toInt() == 1
-                          ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards;
+    L.tyreView = settings.value("tyreView", 0).toInt() == 1
+                   ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards;
+    settings.beginGroup("tyreCards");
+    for (int i = 0; i < OverviewLayout::TyreCornerCount; ++i)
+        L.tyreCardVisible[i] = settings.value(OverviewLayout::tyreCardKey(i), true).toBool();
+    settings.endGroup();
+    settings.beginGroup("tyreCharts");
+    for (int i = 0; i < OverviewLayout::TyreChartCount; ++i)
+        L.tyreChartVisible[i] = settings.value(OverviewLayout::tyreChartKey(i), true).toBool();
+    settings.endGroup();
     settings.beginGroup("statCards");
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
         L.statCards[i] = settings.value(OverviewLayout::statCardKey(i), true).toBool();
@@ -364,9 +371,16 @@ OverviewLayout MainWindow::loadOverviewLayout()
 void MainWindow::saveOverviewLayout(const OverviewLayout& L)
 {
     settings.beginGroup("overviewLayout");
-    settings.setValue("showChart",       L.showChart);
-    settings.setValue("showTyreSection", L.showTyreSection);
-    settings.setValue("tyreView",        (int)L.tyreView);
+    settings.setValue("showChart", L.showChart);
+    settings.setValue("tyreView",  (int)L.tyreView);
+    settings.beginGroup("tyreCards");
+    for (int i = 0; i < OverviewLayout::TyreCornerCount; ++i)
+        settings.setValue(OverviewLayout::tyreCardKey(i), L.tyreCardVisible[i]);
+    settings.endGroup();
+    settings.beginGroup("tyreCharts");
+    for (int i = 0; i < OverviewLayout::TyreChartCount; ++i)
+        settings.setValue(OverviewLayout::tyreChartKey(i), L.tyreChartVisible[i]);
+    settings.endGroup();
     settings.beginGroup("statCards");
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i)
         settings.setValue(OverviewLayout::statCardKey(i), L.statCards[i]);
@@ -407,13 +421,22 @@ void MainWindow::applyOverviewLayout(const OverviewLayout& L)
     if (chart && chart->parentWidget()) chart->parentWidget()->setVisible(L.showChart);
     if (ov_modeBar_) ov_modeBar_->setVisible(L.showChart);
 
-    // Tyre section
-    const bool showTyre = L.showTyreSection;
+    // Tyre section — visibility derived from whether any card/chart is enabled
+    bool anyCard  = false, anyChart = false;
+    for (int i = 0; i < OverviewLayout::TyreCornerCount; ++i) {
+        if (ov_tyreCards_)  ov_tyreCards_->setCornerVisible(i, L.tyreCardVisible[i]);
+        anyCard = anyCard || L.tyreCardVisible[i];
+    }
+    for (int i = 0; i < OverviewLayout::TyreChartCount; ++i) {
+        if (ov_tyreCharts_) ov_tyreCharts_->setChartSectionVisible(i, L.tyreChartVisible[i]);
+        anyChart = anyChart || L.tyreChartVisible[i];
+    }
+    const bool showCards  = L.tyreView == OverviewLayout::TyreCards;
+    const bool showCharts = L.tyreView == OverviewLayout::TyreCharts;
+    const bool showTyre   = showCards ? anyCard : anyChart;
     if (ov_tyreSep_)    ov_tyreSep_->setVisible(showTyre);
-    const bool showCards  = showTyre && (L.tyreView == OverviewLayout::TyreCards);
-    const bool showCharts = showTyre && (L.tyreView == OverviewLayout::TyreCharts);
-    if (ov_tyreCards_)  ov_tyreCards_->setVisible(showCards);
-    if (ov_tyreCharts_) ov_tyreCharts_->setVisible(showCharts);
+    if (ov_tyreCards_)  ov_tyreCards_->setVisible(showTyre && showCards);
+    if (ov_tyreCharts_) ov_tyreCharts_->setVisible(showTyre && showCharts);
 }
 
 void MainWindow::applyAndSaveOverviewLayout(const OverviewLayout& L)

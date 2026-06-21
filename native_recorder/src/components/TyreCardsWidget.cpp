@@ -8,6 +8,7 @@
 #include <QFont>
 #include <QPalette>
 #include <QSizePolicy>
+#include <algorithm>
 
 static const char* kCornerNames[] = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
 
@@ -74,18 +75,33 @@ TyreCardsWidget::TyreCardsWidget(Qt::Orientation orientation, QWidget* parent)
         blisters_[i]->setForegroundRole(QPalette::PlaceholderText);
         cv->addWidget(blisters_[i]);
 
+        cards_[i] = card;
         outer->addWidget(card, 1);
 
         if (i < 3) {
             QFrame* div = new QFrame;
-            if (orientation == Qt::Horizontal) {
-                div->setFrameShape(QFrame::VLine);
-            } else {
-                div->setFrameShape(QFrame::HLine);
-            }
+            div->setFrameShape(orientation == Qt::Horizontal ? QFrame::VLine : QFrame::HLine);
             div->setFrameShadow(QFrame::Sunken);
+            dividers_[i] = div;
             outer->addWidget(div);
         }
+    }
+}
+
+void TyreCardsWidget::setCornerVisible(int i, bool on)
+{
+    if (i < 0 || i >= 4) return;
+    if (cards_[i]) cards_[i]->setVisible(on);
+    updateDividers();
+}
+
+void TyreCardsWidget::updateDividers()
+{
+    for (int d = 0; d < 3; ++d) {
+        if (dividers_[d])
+            dividers_[d]->setVisible(
+                cards_[d]   && cards_[d]->isVisible() &&
+                cards_[d+1] && cards_[d+1]->isVisible());
     }
 }
 

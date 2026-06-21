@@ -8,10 +8,16 @@
 // same index also addresses MainWindow's ov_statCardFrame_/ov_dmgCardFrame_
 // arrays.
 struct OverviewLayout {
-    bool showChart = true;
-    bool showTyreSection = true;
+    bool showChart  = true;
     enum TyreView { TyreCards, TyreCharts };
     TyreView tyreView = TyreCards;
+
+    // Per-corner card visibility (FL=0, FR=1, RL=2, RR=3)
+    static constexpr int TyreCornerCount = 4;
+    std::array<bool, TyreCornerCount> tyreCardVisible  = { true, true, true, true };
+    // Per-chart visibility (Surface=0, Inner=1, Brake=2, Wear=3)
+    static constexpr int TyreChartCount = 4;
+    std::array<bool, TyreChartCount> tyreChartVisible = { true, true, true, true };
 
     enum StatCard { Speed, Rpm, Gear, Throttle, Brake, Drs, EngineTemp, Ers, Fuel, Pos, Tyre, StatCardCount };
     std::array<bool, StatCardCount> statCards = {
@@ -32,4 +38,8 @@ struct OverviewLayout {
     static const char* dmgCardLabel(int i);
     static const char* statCardKey(int i);
     static const char* dmgCardKey(int i);
+    static const char* tyreCardLabel(int i);
+    static const char* tyreCardKey(int i);
+    static const char* tyreChartLabel(int i);
+    static const char* tyreChartKey(int i);
 };

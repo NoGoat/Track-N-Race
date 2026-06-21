@@ -68,12 +68,38 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
 
     // ── Tyre section ─────────────────────────────────────────────
     QGroupBox* tyreBox = new QGroupBox("Tyres");
-    QHBoxLayout* tyreLay = new QHBoxLayout(tyreBox);
-    tyreSectionBtn_ = new ToggleButton("Show Tyre Section");
-    tyreSectionBtn_->setCheckable(true);
-    tyreSectionBtn_->setChecked(layout_.showTyreSection);
-    connect(tyreSectionBtn_, &QPushButton::toggled, this, &EditOverviewLayoutDialog::toggleTyreSection);
-    tyreLay->addWidget(tyreSectionBtn_);
+    QVBoxLayout* tyreLay = new QVBoxLayout(tyreBox);
+
+    // Cards row: FL / FR / RL / RR (shown when view = Cards)
+    tyreCardsRow_ = new QWidget;
+    QHBoxLayout* crh = new QHBoxLayout(tyreCardsRow_);
+    crh->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < OverviewLayout::TyreCornerCount; ++i) {
+        QPushButton* b = new ToggleButton(OverviewLayout::tyreCardLabel(i));
+        b->setCheckable(true);
+        b->setChecked(layout_.tyreCardVisible[i]);
+        connect(b, &QPushButton::toggled, this, [this, i](bool on) { toggleTyreCard(i, on); });
+        tyreCardBtns_[i] = b;
+        crh->addWidget(b);
+    }
+    tyreLay->addWidget(tyreCardsRow_);
+
+    // Charts row: Surface / Inner / Brake / Wear (shown when view = Charts)
+    tyreChartsRow_ = new QWidget;
+    QHBoxLayout* chrh = new QHBoxLayout(tyreChartsRow_);
+    chrh->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < OverviewLayout::TyreChartCount; ++i) {
+        QPushButton* b = new ToggleButton(OverviewLayout::tyreChartLabel(i));
+        b->setCheckable(true);
+        b->setChecked(layout_.tyreChartVisible[i]);
+        connect(b, &QPushButton::toggled, this, [this, i](bool on) { toggleTyreChart(i, on); });
+        tyreChartBtns_[i] = b;
+        chrh->addWidget(b);
+    }
+    tyreLay->addWidget(tyreChartsRow_);
+
+    tyreCardsRow_->setVisible(layout_.tyreView  == OverviewLayout::TyreCards);
+    tyreChartsRow_->setVisible(layout_.tyreView == OverviewLayout::TyreCharts);
     main->addWidget(tyreBox);
 
     // ── Stats ────────────────────────────────────────────────────
@@ -130,9 +156,15 @@ void EditOverviewLayoutDialog::toggleDmg(int idx, bool on)
     mainWindow_->applyAndSaveOverviewLayout(layout_);
 }
 
-void EditOverviewLayoutDialog::toggleTyreSection(bool on)
+void EditOverviewLayoutDialog::toggleTyreCard(int i, bool on)
 {
-    layout_.showTyreSection = on;
+    layout_.tyreCardVisible[i] = on;
+    mainWindow_->applyAndSaveOverviewLayout(layout_);
+}
+
+void EditOverviewLayoutDialog::toggleTyreChart(int i, bool on)
+{
+    layout_.tyreChartVisible[i] = on;
     mainWindow_->applyAndSaveOverviewLayout(layout_);
 }
 

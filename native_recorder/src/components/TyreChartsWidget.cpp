@@ -35,13 +35,14 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
     hbox->setContentsMargins(0, 0, 0, 0);
     hbox->setSpacing(0);
 
+    int sectionIdx = 0;
     auto addSection = [&](const QString& title, double yMin, double yMax,
-                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId,
-                          bool sep) {
-        if (sep) {
+                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId) {
+        if (sectionIdx > 0) {
             auto* line = new QFrame;
             line->setFrameShape(QFrame::VLine);
             line->setFrameShadow(QFrame::Sunken);
+            dividers_[sectionIdx - 1] = line;
             hbox->addWidget(line);
         }
         auto* section = new QWidget;
@@ -85,13 +86,15 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
         outChart->setHoverReadout(true);
         outChart->setLegendVisible(false);
         sl->addWidget(outChart, 1);
+        sections_[sectionIdx] = section;
         hbox->addWidget(section, 1);
+        ++sectionIdx;
     };
 
-    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_,  false);
-    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_, true);
-    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_, true);
-    addSection("TYRE WEAR",    0, 100,  "%",  wearChart_,  wearIds_,  wearXId_,  true);
+    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_);
+    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_);
+    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_);
+    addSection("TYRE WEAR",    0, 100,  "%",  wearChart_,  wearIds_,  wearXId_);
 
     outer->addWidget(row, 1);
 
@@ -120,6 +123,23 @@ void TyreChartsWidget::setPlaybackMode(bool on) { playback_ = on; requestRefresh
 void TyreChartsWidget::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void TyreChartsWidget::setWindowSeconds(float s) { windowS_ = s; requestRefresh(); }
 void TyreChartsWidget::requestRefresh() { dirty_ = true; }
+
+void TyreChartsWidget::setChartSectionVisible(int i, bool on)
+{
+    if (i < 0 || i >= 4) return;
+    if (sections_[i]) sections_[i]->setVisible(on);
+    updateDividers();
+}
+
+void TyreChartsWidget::updateDividers()
+{
+    for (int d = 0; d < 3; ++d) {
+        if (dividers_[d])
+            dividers_[d]->setVisible(
+                sections_[d]   && sections_[d]->isVisible() &&
+                sections_[d+1] && sections_[d+1]->isVisible());
+    }
+}
 
 float TyreChartsWidget::currentTime() const {
     if (playback_) return currentTime_;

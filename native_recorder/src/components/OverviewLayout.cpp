@@ -39,3 +39,27 @@ const char* OverviewLayout::dmgCardKey(int i)
     };
     return keys[i];
 }
+
+const char* OverviewLayout::tyreCardLabel(int i)
+{
+    static const char* labels[TyreCornerCount] = { "FL", "FR", "RL", "RR" };
+    return labels[i];
+}
+
+const char* OverviewLayout::tyreCardKey(int i)
+{
+    static const char* keys[TyreCornerCount] = { "fl", "fr", "rl", "rr" };
+    return keys[i];
+}
+
+const char* OverviewLayout::tyreChartLabel(int i)
+{
+    static const char* labels[TyreChartCount] = { "Surface", "Inner", "Brake", "Wear" };
+    return labels[i];
+}
+
+const char* OverviewLayout::tyreChartKey(int i)
+{
+    static const char* keys[TyreChartCount] = { "surface", "inner", "brake", "wear" };
+    return keys[i];
+}

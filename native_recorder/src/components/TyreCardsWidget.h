@@ -15,8 +15,13 @@ public:
                              QWidget* parent = nullptr);
 
     void update(const nlohmann::json& telemetry, const nlohmann::json& damage);
+    void setCornerVisible(int i, bool on);
 
 private:
+    void updateDividers();
+
+    QWidget*      cards_[4]     = {};
+    QFrame*       dividers_[3]  = {};
     QLabel*       surfaceTemp_[4] = {};
     QLabel*       innerTemp_[4]   = {};
     QLabel*       brakeTemp_[4]   = {};

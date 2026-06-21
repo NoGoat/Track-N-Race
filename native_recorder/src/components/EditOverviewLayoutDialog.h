@@ -6,6 +6,7 @@
 
 class MainWindow;
 class QPushButton;
+class QWidget;
 
 // Modal "Edit Layout" dialog for the Overview page. Immediate-apply: every
 // toggle click updates MainWindow's live card visibility and persists it
@@ -20,12 +21,16 @@ private:
     void toggleChart(bool on);
     void toggleStat(int idx, bool on);
     void toggleDmg(int idx, bool on);
-    void toggleTyreSection(bool on);
+    void toggleTyreCard(int i, bool on);
+    void toggleTyreChart(int i, bool on);
 
     MainWindow*    mainWindow_;
     OverviewLayout layout_;
-    QPushButton*   statBtns_[OverviewLayout::StatCardCount] = {};
-    QPushButton*   dmgBtns_[OverviewLayout::DmgCardCount]   = {};
-    QPushButton*   chartBtn_       = nullptr;
-    QPushButton*   tyreSectionBtn_ = nullptr;
+    QPushButton*   statBtns_[OverviewLayout::StatCardCount]    = {};
+    QPushButton*   dmgBtns_[OverviewLayout::DmgCardCount]      = {};
+    QPushButton*   chartBtn_                                       = nullptr;
+    QWidget*       tyreCardsRow_                                   = nullptr;
+    QWidget*       tyreChartsRow_                                  = nullptr;
+    QPushButton*   tyreCardBtns_[OverviewLayout::TyreCornerCount]  = {};
+    QPushButton*   tyreChartBtns_[OverviewLayout::TyreChartCount]  = {};
 };
