@@ -235,14 +235,14 @@ QWidget* MainWindow::buildRacePanel() {
 
     QWidget* w = new QWidget;
     QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setContentsMargins(14, 14, 14, 14);
+    vbox->setContentsMargins(0, 14, 0, 14);
     vbox->setSpacing(6);
 
     // Helper: key / value row
     auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
         QWidget* row = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(row);
-        h->setContentsMargins(0, 4, 0, 4);
+        h->setContentsMargins(14, 4, 14, 4);
         QLabel* lbl = new QLabel(label);
         QFont lf; lf.setPointSize(9); lbl->setFont(lf);
         lbl->setForegroundRole(QPalette::PlaceholderText);
@@ -260,6 +260,7 @@ QWidget* MainWindow::buildRacePanel() {
         QFont f; f.setPointSize(8); f.setBold(true);
         lbl->setFont(f);
         lbl->setForegroundRole(QPalette::PlaceholderText);
+        lbl->setContentsMargins(14, 0, 14, 0);
         vbox->addWidget(lbl);
     };
 
@@ -275,6 +276,7 @@ QWidget* MainWindow::buildRacePanel() {
     QFont dnF; dnF.setPointSize(12); dnF.setBold(true);
     rp_driverName->setFont(dnF);
     rp_driverName->setAlignment(Qt::AlignCenter);
+    rp_driverName->setContentsMargins(14, 0, 14, 0);
     vbox->addWidget(rp_driverName);
 
     addDivider();
@@ -290,7 +292,7 @@ QWidget* MainWindow::buildRacePanel() {
     // S1 / S2 side by side
     QWidget* sectRow = new QWidget;
     QHBoxLayout* sh = new QHBoxLayout(sectRow);
-    sh->setContentsMargins(0, 4, 0, 0);
+    sh->setContentsMargins(14, 4, 14, 0);
     sh->setSpacing(8);
     auto makeSect = [&](const QString& lbl, QLabel*& out) {
         QWidget* sc = new QWidget;
@@ -316,6 +318,7 @@ QWidget* MainWindow::buildRacePanel() {
     QFont bigF; bigF.setPointSize(18); bigF.setBold(true);
     rp_ersPct->setFont(bigF);
     rp_ersPct->setAlignment(Qt::AlignCenter);
+    rp_ersPct->setContentsMargins(14, 0, 14, 0);
     vbox->addWidget(rp_ersPct);
 
     rp_ersBar = new QProgressBar;
@@ -323,7 +326,13 @@ QWidget* MainWindow::buildRacePanel() {
     rp_ersBar->setValue(0);
     rp_ersBar->setTextVisible(false);
     rp_ersBar->setFixedHeight(6);
-    vbox->addWidget(rp_ersBar);
+    {
+        QWidget* barWrap = new QWidget;
+        QHBoxLayout* bh = new QHBoxLayout(barWrap);
+        bh->setContentsMargins(14, 0, 14, 0);
+        bh->addWidget(rp_ersBar);
+        vbox->addWidget(barWrap);
+    }
 
     vbox->addWidget(makeRow("Mode", rp_ersMode));
     vbox->addWidget(makeRow("DRS",  rp_drs));
@@ -352,19 +361,20 @@ void MainWindow::updateRacePanel() {
     int playerIdx    = lastTimingData.empty() ? -1 : lastTimingData.value("player_idx", -1);
     bool viewingOther = (selectedCarIdx != -1 && selectedCarIdx != playerIdx);
 
-    if (viewingOther && !lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
+    {
+        const int targetIdx = viewingOther ? selectedCarIdx : playerIdx;
         QString name;
-        for (const auto& d : lastParticipantsData["drivers"]) {
-            if (d.value("idx", -1) == selectedCarIdx) {
-                name = QString("#%1 %2")
-                    .arg(d.value("race_number", 0))
-                    .arg(QString::fromStdString(d.value("name", "")));
-                break;
+        if (targetIdx >= 0 && !lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
+            for (const auto& d : lastParticipantsData["drivers"]) {
+                if (d.value("idx", -1) == targetIdx) {
+                    name = QString("#%1 %2")
+                        .arg(d.value("race_number", 0))
+                        .arg(QString::fromStdString(d.value("name", "")));
+                    break;
+                }
             }
         }
-        rp_driverName->setText(name.isEmpty() ? QString("Car %1").arg(selectedCarIdx) : name);
-    } else {
-        rp_driverName->setText("Your Car");
+        rp_driverName->setText(name.isEmpty() ? (targetIdx >= 0 ? QString("Car %1").arg(targetIdx) : "—") : name);
     }
 
     auto applyTiming = [&](const nlohmann::json& lap) {
