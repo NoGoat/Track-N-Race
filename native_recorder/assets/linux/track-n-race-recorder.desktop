@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Track N Race Background Recorder
+GenericName=F1 Telemetry Recorder
+Comment=Background recorder and viewer for F1 telemetry sessions
+Exec=track-n-race-recorder
+Icon=track-n-race-recorder
+Terminal=false
+Categories=Utility;Game;
+StartupWMClass=Track N Race Background Recorder
