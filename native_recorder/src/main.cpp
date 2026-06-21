@@ -30,6 +30,14 @@ static QIcon loadAppIcon(const QString& resource) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_LINUX
+    // On Linux the XDG desktop-portal plugin (bundled as platformthemes/libqxdgdesktopportal.so)
+    // gives native file dialogs on both X11 and Wayland. Qt reads QT_QPA_PLATFORMTHEME
+    // during QApplication construction, so it must be set before that. If the portal
+    // D-Bus service is not available Qt falls back to the built-in file dialog automatically.
+    if (qgetenv("QT_QPA_PLATFORMTHEME").isEmpty())
+        qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+#endif
     QApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");
     app.setOrganizationName("TrackNRace");
