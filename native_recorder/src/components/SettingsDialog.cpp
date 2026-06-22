@@ -15,22 +15,23 @@
 #include <QFileDialog>
 #include <QSizePolicy>
 #include <QFont>
-
-// Bold label spanning both form columns, used as a section header row —
-// QFormLayout::addRow(QWidget*) puts a single widget across the full width.
-static QLabel* sectionHeading(const QString& text) {
-    QLabel* l = new QLabel(text);
-    QFont f = l->font();
-    f.setBold(true);
-    l->setFont(f);
-    return l;
-}
+#include <QTabBar>
+#include <QStackedWidget>
 
 static QFrame* horizontalSeparator() {
     QFrame* f = new QFrame;
     f->setFrameShape(QFrame::HLine);
     f->setFrameShadow(QFrame::Sunken);
     return f;
+}
+
+// Bold label spanning both form columns, for a sub-section header inside a page.
+static QLabel* subHeading(const QString& text) {
+    QLabel* l = new QLabel(text);
+    QFont f = l->font();
+    f.setBold(true);
+    l->setFont(f);
+    return l;
 }
 
 SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
@@ -45,40 +46,82 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     setWindowModality(Qt::ApplicationModal);
 
     QVBoxLayout* main = new QVBoxLayout(this);
+    // A fixed-size top-level layout makes Qt drop the resize handles and the
+    // maximize button (same trick as EditOverviewLayoutDialog) — this should
+    // behave like a plain modal child dialog, not a maximizable window.
     main->setSizeConstraint(QLayout::SetFixedSize);
-    main->setContentsMargins(20, 20, 20, 16);
-    main->setSpacing(16);
+    main->setContentsMargins(0, 0, 0, 0);
+    main->setSpacing(0);
+
+    // ── Category tabs over a shared content pane ──────────────────
+    // A QTabBar + QStackedWidget (rather than a QTabWidget) so the shared Close
+    // button can live inside the same bordered pane as the tab pages — a
+    // QTabWidget has no shared footer area.
+    QTabBar*        tabBar = new QTabBar;
+    QStackedWidget* stack  = new QStackedWidget;
+    tabBar->setExpanding(false);
+    tabBar->setDrawBase(false);
+
+    struct Page { const char* title; QWidget* widget; };
+    const Page pages[] = {
+        { "Recording",     buildRecordingPage()     },
+        { "Appearance",    buildAppearancePage()    },
+        { "Notifications", buildNotificationsPage() },
+        { "Overview",      buildOverviewPage()      },
+        { "Track Map",     buildTrackMapPage()      },
+    };
+    for (const Page& p : pages) {
+        tabBar->addTab(p.title);
+        stack->addWidget(p.widget);
+    }
+    connect(tabBar, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
+    tabBar->setCurrentIndex(0);
+
+    // Bordered pane holding the page stack + the Close button row, so the button
+    // sits inside the frame for visual consistency with the content.
+    QFrame* pane = new QFrame;
+    pane->setFrameShape(QFrame::StyledPanel);
+    QVBoxLayout* paneLay = new QVBoxLayout(pane);
+    paneLay->setContentsMargins(0, 0, 0, 0);
+    paneLay->setSpacing(0);
+    paneLay->addWidget(stack, 1);
+    paneLay->addWidget(horizontalSeparator());
+
+    QHBoxLayout* bottom = new QHBoxLayout;
+    bottom->setContentsMargins(12, 8, 12, 12);
+    bottom->addStretch(1);
+    QPushButton* closeBtn = new QPushButton("Close");
+    closeBtn->setDefault(true);
+    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
+    bottom->addWidget(closeBtn);
+    paneLay->addLayout(bottom);
+
+    main->addWidget(tabBar);
+    main->addWidget(pane);
+}
+
+// Page scaffold: a right-aligned label/control form (the tab supplies the title).
+QWidget* SettingsDialog::makePage(QFormLayout*& formOut) {
+    QWidget* page = new QWidget;
+    QVBoxLayout* v = new QVBoxLayout(page);
+    v->setContentsMargins(8, 12, 8, 8);
+    v->setSpacing(12);
 
     QFormLayout* form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
     form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     form->setHorizontalSpacing(18);
     form->setVerticalSpacing(10);
+    v->addLayout(form);
+    v->addStretch(1);
 
-    addRecordingSection(form);
-    form->addRow(horizontalSeparator());
-    addAppearanceSection(form);
-    form->addRow(horizontalSeparator());
-    addNotificationsSection(form);
-    form->addRow(horizontalSeparator());
-    addOverviewSection(form);
-    form->addRow(horizontalSeparator());
-    addTrackMapSection(form);
-
-    main->addLayout(form);
-
-    // ── Close ────────────────────────────────────────────────────
-    QHBoxLayout* bottom = new QHBoxLayout;
-    bottom->addStretch(1);
-    QPushButton* closeBtn = new QPushButton("Close");
-    closeBtn->setDefault(true);
-    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
-    bottom->addWidget(closeBtn);
-    main->addLayout(bottom);
+    formOut = form;
+    return page;
 }
 
-void SettingsDialog::addRecordingSection(QFormLayout* form) {
-    form->addRow(sectionHeading("Recording"));
+QWidget* SettingsDialog::buildRecordingPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
 
     recordCheck_ = new QCheckBox("Auto-record when a session starts");
     recordCheck_->setChecked(mainWindow_->autoRecordEnabled());
@@ -109,10 +152,12 @@ void SettingsDialog::addRecordingSection(QFormLayout* form) {
             dirLabel_->setText(dir);
         }
     });
+    return page;
 }
 
-void SettingsDialog::addAppearanceSection(QFormLayout* form) {
-    form->addRow(sectionHeading("Appearance"));
+QWidget* SettingsDialog::buildAppearancePage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
 
     QWidget* themeRow = new QWidget;
     QHBoxLayout* themeLay = new QHBoxLayout(themeRow);
@@ -156,7 +201,7 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
     form->addRow("Toolbar:", toolbarLabelsCheck_);
 
     form->addRow(horizontalSeparator());
-    form->addRow(sectionHeading("Accessibility"));
+    form->addRow(subHeading("Accessibility"));
 
     QWidget* contrastRow = new QWidget;
     QHBoxLayout* ch = new QHBoxLayout(contrastRow);
@@ -187,10 +232,12 @@ void SettingsDialog::addAppearanceSection(QFormLayout* form) {
         contrastVal->setText(QString::number(f, 'f', 2));
         mainWindow_->setContrastThreshold(f);
     });
+    return page;
 }
 
-void SettingsDialog::addNotificationsSection(QFormLayout* form) {
-    form->addRow(sectionHeading("Notifications"));
+QWidget* SettingsDialog::buildNotificationsPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
 
     toastsCheck_ = new QCheckBox("Show event toasts (penalties, flags, fastest lap…)");
     toastsCheck_->setChecked(mainWindow_->toastsEnabled());
@@ -211,10 +258,12 @@ void SettingsDialog::addNotificationsSection(QFormLayout* form) {
     connect(toastDurationCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
     });
+    return page;
 }
 
-void SettingsDialog::addOverviewSection(QFormLayout* form) {
-    form->addRow(sectionHeading("Overview"));
+QWidget* SettingsDialog::buildOverviewPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
 
     tyreViewCombo_ = new QComboBox;
     tyreViewCombo_->addItem("Cards",  (int)OverviewLayout::TyreCards);
@@ -237,10 +286,12 @@ void SettingsDialog::addOverviewSection(QFormLayout* form) {
         mainWindow_->setTyreGraphLifeMode(tyreWearModeCombo_->currentData().toBool());
     });
     form->addRow("Tyre wear graph:", tyreWearModeCombo_);
+    return page;
 }
 
-void SettingsDialog::addTrackMapSection(QFormLayout* form) {
-    form->addRow(sectionHeading("Track Map"));
+QWidget* SettingsDialog::buildTrackMapPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
 
     trackMapLabelsCombo_ = new QComboBox;
     trackMapLabelsCombo_->addItem("Dots & Labels", 0);
@@ -281,4 +332,5 @@ void SettingsDialog::addTrackMapSection(QFormLayout* form) {
         mainWindow_->setTrackMapOpacity(v);
     });
     form->addRow("Map opacity:", trackMapOpacitySlider_);
+    return page;
 }

@@ -10,13 +10,13 @@ class QRadioButton;
 class QComboBox;
 class QSlider;
 class QFormLayout;
+class QWidget;
 
-// Modal Settings dialog, opened from its own toolbar icon. A single flat
-// label/control form (no sidebar, no boxed groups) — bold section headers
-// span the full row, every other row is a right-aligned label beside its
-// control, native-preferences style. Immediate-apply, same as
-// EditOverviewLayoutDialog — every control updates MainWindow and persists
-// right away, so there's only a Close button.
+// Modal Settings dialog, opened from its own toolbar icon. A standard QTabWidget
+// groups the controls into category tabs (Recording, Appearance, …), each tab a
+// label/control form. Immediate-apply, same as EditOverviewLayoutDialog — every
+// control updates MainWindow and persists right away, so there's only a Close
+// button.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 
@@ -24,11 +24,15 @@ public:
     explicit SettingsDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
 
 private:
-    void addRecordingSection(QFormLayout* form);
-    void addAppearanceSection(QFormLayout* form);
-    void addNotificationsSection(QFormLayout* form);
-    void addOverviewSection(QFormLayout* form);
-    void addTrackMapSection(QFormLayout* form);
+    // Each builds and returns a self-contained settings tab page.
+    QWidget* buildRecordingPage();
+    QWidget* buildAppearancePage();
+    QWidget* buildNotificationsPage();
+    QWidget* buildOverviewPage();
+    QWidget* buildTrackMapPage();
+
+    // Shared page scaffold: a page whose body form is returned via formOut.
+    QWidget* makePage(QFormLayout*& formOut);
 
     MainWindow*   mainWindow_;
     QLabel*       dirLabel_           = nullptr;
