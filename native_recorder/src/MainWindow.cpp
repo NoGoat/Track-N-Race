@@ -1038,9 +1038,16 @@ void MainWindow::relayoutToolbar() {
     const int wSeg   = tb_windowSeg_->sizeHint().width();
     const int wIcons = actW(tb_iconSep_) + actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = tb_overflowBtn_->sizeHint().width();
+    // The session timer lives inside the (otherwise collapsible) spacer, so the
+    // spacer can no longer shrink to 0 — it must always reserve the timer's width.
+    // The timer is persistent: it never collapses into the overflow menu, so this
+    // width stays in the inline budget throughout and is never subtracted off.
+    const int wTimer = (tb_timerLabel_ && tb_timerLabel_->isVisible())
+                           ? tb_timerLabel_->sizeHint().width() : 0;
     // Inter-item gaps: 7 toolbar items (tab strip, spacer, seg, sep, 3 icons) → 6
-    // gaps, plus the tab strip's own gaps between its n buttons.
-    const int needAll = sumTabs + wSeg + wIcons + spacing * 6 + spacing * (n - 1);
+    // gaps, plus the tab strip's own gaps between its n buttons. The timer adds no
+    // gap of its own (it rides inside the spacer).
+    const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 6 + spacing * (n - 1);
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
         if (tb_windowAct_) tb_windowAct_->setVisible(true);
@@ -1614,13 +1621,20 @@ void MainWindow::updateSessionTimer(float sessionTime) {
                                 .arg(total / 60)
                                 .arg(total % 60, 2, 10, QLatin1Char('0')));
     if (!tb_timerLabel_->isVisible()) tb_timerLabel_->show();
+    // The label's footprint changed if it just appeared or grew a digit
+    // (e.g. 9:59 → 10:00). Re-run the responsive layout so the reserved timer
+    // width stays correct and the toolbar never overflows.
+    const int w = tb_timerLabel_->sizeHint().width();
+    if (w != tb_timerW_) { tb_timerW_ = w; relayoutToolbar(); }
 }
 
 void MainWindow::resetSessionTimer() {
     tb_timerSec_ = -1;
+    tb_timerW_   = 0;
     if (tb_timerLabel_) {
         tb_timerLabel_->clear();
         tb_timerLabel_->hide();
+        relayoutToolbar();   // reclaim the freed width for the inline items
     }
 }
 

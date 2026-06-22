@@ -317,6 +317,7 @@ private:
     // until the first packet with a session_time arrives.
     QLabel*       tb_timerLabel_  = nullptr;
     int           tb_timerSec_    = -1;        // last shown whole second (skip redundant sets)
+    int           tb_timerW_      = 0;         // last reserved label width (re-layout on change)
     void updateSessionTimer(float sessionTime);
     void resetSessionTimer();
 
