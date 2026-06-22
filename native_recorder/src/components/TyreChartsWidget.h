@@ -7,6 +7,7 @@ class ChartView;
 class SessionModel;
 class QTimer;
 class QFrame;
+class QLabel;
 
 class TyreChartsWidget : public QWidget {
     Q_OBJECT
@@ -17,6 +18,9 @@ public:
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
     void setChartSectionVisible(int i, bool on);
+    // Tyre wear graph mode: true = remaining life (100 - wear), false = accumulated
+    // wear. Mirrors the Electron tyreWearMode toggle. Retitles the 4th chart.
+    void setTyreLifeMode(bool life);
 
 public slots:
     void setCurrentTime(float t);
@@ -32,6 +36,8 @@ private:
     QTimer*   refreshTimer_ = nullptr;
     bool      dirty_        = false;
     bool      playback_     = false;
+    bool      lifeMode_     = true;     // default to remaining-life, matching Electron
+    QLabel*   wearTitle_    = nullptr;  // 4th chart header (retitled on mode change)
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;    // default view window (matches toolbar default tb_windowIdx_=1 = 30s)
 

@@ -61,6 +61,8 @@ public:
     void applyAndSaveOverviewLayout(const OverviewLayout& layout);
     OverviewLayout::TyreView currentTyreView();
     void setTyreView(OverviewLayout::TyreView v);
+    bool tyreGraphLifeMode() const { return settings.value("ui/tyreWearMode", "life").toString() != "wear"; }
+    void setTyreGraphLifeMode(bool life);
 
     InputLayout loadInputLayout();
     void applyAndSaveInputLayout(const InputLayout& layout);

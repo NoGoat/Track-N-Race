@@ -41,6 +41,7 @@ private:
     QCheckBox*    toastsCheck_        = nullptr;
     QComboBox*    toastDurationCombo_ = nullptr;
     QComboBox*    tyreViewCombo_       = nullptr;
+    QComboBox*    tyreWearModeCombo_   = nullptr;
     QComboBox*    trackMapLabelsCombo_ = nullptr;
     QComboBox*    trackMapIdleCombo_   = nullptr;
     QCheckBox*    trackMapSectorColorsCheck_ = nullptr;

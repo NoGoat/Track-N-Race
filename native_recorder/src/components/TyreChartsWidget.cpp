@@ -37,7 +37,8 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
 
     int sectionIdx = 0;
     auto addSection = [&](const QString& title, double yMin, double yMax,
-                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId) {
+                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId,
+                          QLabel** outTitle) {
         if (sectionIdx > 0) {
             auto* line = new QFrame;
             line->setFrameShape(QFrame::VLine);
@@ -59,6 +60,7 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
         titleLabel->setFont(f);
         titleLabel->setForegroundRole(QPalette::PlaceholderText);
         hl->addWidget(titleLabel);
+        if (outTitle) *outTitle = titleLabel;
         hl->addStretch();
         for (int i = 0; i < 4; ++i) {
             auto* sw = new QWidget;
@@ -91,10 +93,11 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
         ++sectionIdx;
     };
 
-    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_);
-    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_);
-    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_);
-    addSection("TYRE WEAR",    0, 100,  "%",  wearChart_,  wearIds_,  wearXId_);
+    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_,  nullptr);
+    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_, nullptr);
+    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_, nullptr);
+    addSection(lifeMode_ ? "TYRE LIFE" : "TYRE WEAR",
+               0, 100, "%", wearChart_, wearIds_, wearXId_, &wearTitle_);
 
     outer->addWidget(row, 1);
 
@@ -123,6 +126,14 @@ void TyreChartsWidget::setPlaybackMode(bool on) { playback_ = on; requestRefresh
 void TyreChartsWidget::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void TyreChartsWidget::setWindowSeconds(float s) { windowS_ = s; prevEndTime_ = -9999.0f; requestRefresh(); }
 void TyreChartsWidget::requestRefresh() { dirty_ = true; }
+
+void TyreChartsWidget::setTyreLifeMode(bool life) {
+    if (lifeMode_ == life) return;
+    lifeMode_ = life;
+    if (wearTitle_) wearTitle_->setText(life ? "TYRE LIFE" : "TYRE WEAR");
+    prevEndTime_ = -9999.0f;   // force a full clear + re-append with the new mapping
+    requestRefresh();
+}
 
 void TyreChartsWidget::setChartSectionVisible(int i, bool on)
 {
@@ -188,10 +199,13 @@ void TyreChartsWidget::refresh() {
         brakeChart_->appendPoint(brakeIds_[2], s.t, s.brakeRl);
         brakeChart_->appendPoint(brakeIds_[3], s.t, s.brakeRr);
 
-        wearChart_->appendPoint(wearIds_[0], s.t, s.wearFl);
-        wearChart_->appendPoint(wearIds_[1], s.t, s.wearFr);
-        wearChart_->appendPoint(wearIds_[2], s.t, s.wearRl);
-        wearChart_->appendPoint(wearIds_[3], s.t, s.wearRr);
+        // Life mode plots remaining tyre life (100 - wear); wear mode plots the
+        // accumulated wear directly. Matches the Electron tyreWearMode toggle.
+        const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
+        wearChart_->appendPoint(wearIds_[0], s.t, wv(s.wearFl));
+        wearChart_->appendPoint(wearIds_[1], s.t, wv(s.wearFr));
+        wearChart_->appendPoint(wearIds_[2], s.t, wv(s.wearRl));
+        wearChart_->appendPoint(wearIds_[3], s.t, wv(s.wearRr));
 
         lastAddedTime_ = s.t;
     }

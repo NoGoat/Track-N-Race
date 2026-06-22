@@ -267,6 +267,7 @@ QWidget* MainWindow::buildOverviewTab() {
     ov_tyreCharts_ = new TyreChartsWidget;
     ov_tyreCharts_->setFixedHeight(200);
     ov_tyreCharts_->setModel(model_);
+    ov_tyreCharts_->setTyreLifeMode(tyreGraphLifeMode());
     ov_tyreCharts_->setVisible(false);
     vbox->addWidget(ov_tyreCharts_);
 
@@ -453,4 +454,9 @@ void MainWindow::setTyreView(OverviewLayout::TyreView v) {
     OverviewLayout L = loadOverviewLayout();
     L.tyreView = v;
     applyAndSaveOverviewLayout(L);
+}
+
+void MainWindow::setTyreGraphLifeMode(bool life) {
+    settings.setValue("ui/tyreWearMode", life ? "life" : "wear");
+    if (ov_tyreCharts_) ov_tyreCharts_->setTyreLifeMode(life);
 }

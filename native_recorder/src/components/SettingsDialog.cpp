@@ -227,6 +227,16 @@ void SettingsDialog::addOverviewSection(QFormLayout* form) {
                 ? OverviewLayout::TyreCharts : OverviewLayout::TyreCards);
     });
     form->addRow("Tyre view:", tyreViewCombo_);
+
+    // Whether the tyre graph shows remaining life (100 - wear) or accumulated wear.
+    tyreWearModeCombo_ = new QComboBox;
+    tyreWearModeCombo_->addItem("Tyre Life", true);
+    tyreWearModeCombo_->addItem("Tyre Wear", false);
+    tyreWearModeCombo_->setCurrentIndex(mainWindow_->tyreGraphLifeMode() ? 0 : 1);
+    connect(tyreWearModeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setTyreGraphLifeMode(tyreWearModeCombo_->currentData().toBool());
+    });
+    form->addRow("Tyre wear graph:", tyreWearModeCombo_);
 }
 
 void SettingsDialog::addTrackMapSection(QFormLayout* form) {
