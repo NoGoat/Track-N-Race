@@ -17,6 +17,7 @@
 #include <QFont>
 #include <QTabBar>
 #include <QStackedWidget>
+#include <QPalette>
 
 static QFrame* horizontalSeparator() {
     QFrame* f = new QFrame;
@@ -59,8 +60,8 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     // QTabWidget has no shared footer area.
     QTabBar*        tabBar = new QTabBar;
     QStackedWidget* stack  = new QStackedWidget;
-    tabBar->setExpanding(false);
-    tabBar->setDrawBase(false);
+    tabBar->setExpanding(true);   // tabs stretch to fill the full width
+    tabBar->setDrawBase(true);    // native base line divides the bar from the pane
 
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
@@ -81,6 +82,10 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     // sits inside the frame for visual consistency with the content.
     QFrame* pane = new QFrame;
     pane->setFrameShape(QFrame::StyledPanel);
+    // Fill the pane with the same colour the style paints behind the selected
+    // tab (QPalette::Window) so the bar and pane read as one seamless surface.
+    pane->setBackgroundRole(QPalette::Window);
+    pane->setAutoFillBackground(true);
     QVBoxLayout* paneLay = new QVBoxLayout(pane);
     paneLay->setContentsMargins(0, 0, 0, 0);
     paneLay->setSpacing(0);
