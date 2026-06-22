@@ -119,14 +119,24 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     static_cast<QToolButton*>(tabGroup->button(0))->setChecked(true);
     stack->setCurrentIndex(0);
 
-    // Bordered pane holding the page stack + the Close button row, so the button
-    // sits inside the frame for visual consistency with the content. The border
-    // (drawn on the window-coloured pane) gives a clean separation from the
-    // Midlight tab bar above.
+    // Pane holding the page stack + the Close button row. A single top border
+    // separates it from the tab bar above; the colour is mixed toward the text
+    // colour so it actually contrasts with the background (the palette's
+    // Mid/Sunken etch is nearly identical to Window in this dark theme, which is
+    // why earlier borders were invisible). Scoped by object name so it doesn't
+    // bleed onto children.
     QFrame* pane = new QFrame;
-    pane->setFrameShape(QFrame::StyledPanel);
-    pane->setBackgroundRole(QPalette::Window);
-    pane->setAutoFillBackground(true);
+    pane->setObjectName("settingsPane");
+    const QColor  win = QApplication::palette().color(QPalette::Window);
+    const QColor  txt = QApplication::palette().color(QPalette::WindowText);
+    // ~30% of the way from the window colour to the text colour: a clearly
+    // visible hairline in both light and dark themes.
+    const QColor  borderCol((win.red()   * 7 + txt.red()   * 3) / 10,
+                            (win.green() * 7 + txt.green() * 3) / 10,
+                            (win.blue()  * 7 + txt.blue()  * 3) / 10);
+    pane->setStyleSheet(QString(
+        "QFrame#settingsPane { background-color: %1; border-top: 1px solid %2; }")
+        .arg(win.name(), borderCol.name()));
     QVBoxLayout* paneLay = new QVBoxLayout(pane);
     paneLay->setContentsMargins(0, 0, 0, 0);
     paneLay->setSpacing(0);
