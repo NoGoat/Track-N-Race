@@ -40,6 +40,7 @@ int main(int argc, char* argv[]) {
 #endif
     QApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");
+    app.setApplicationVersion(APP_VERSION);   // defined by CMake from PROJECT_VERSION
     app.setOrganizationName("TrackNRace");
     app.setWindowIcon(loadAppIcon(":/icon.ico"));
 

@@ -30,9 +30,18 @@ private:
     QWidget* buildNotificationsPage();
     QWidget* buildOverviewPage();
     QWidget* buildTrackMapPage();
+    QWidget* buildAboutPage();
 
     // Shared page scaffold: a page whose body form is returned via formOut.
     QWidget* makePage(QFormLayout*& formOut);
+
+    // Open the standalone About modal (reached from the footer's About button),
+    // which hosts the buildAboutPage() content.
+    void showAboutDialog();
+
+    // Open a modal viewer showing the full text of an embedded license resource
+    // (e.g. ":/licenses/GPL-3.0.txt") — reused by every "View license" button.
+    void showLicenseText(const QString& title, const QString& resourcePath);
 
     MainWindow*   mainWindow_;
     QLabel*       dirLabel_           = nullptr;

@@ -18,6 +18,15 @@
 #include <QTabBar>
 #include <QStackedWidget>
 #include <QPalette>
+#include <QApplication>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QTextBrowser>
+#include <QDialogButtonBox>
+#include <QFile>
+#include <QTextStream>
+#include <QFontDatabase>
+#include <iterator>
 
 static QFrame* horizontalSeparator() {
     QFrame* f = new QFrame;
@@ -94,6 +103,9 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
 
     QHBoxLayout* bottom = new QHBoxLayout;
     bottom->setContentsMargins(12, 8, 12, 12);
+    QPushButton* aboutBtn = new QPushButton("About");
+    connect(aboutBtn, &QPushButton::clicked, this, &SettingsDialog::showAboutDialog);
+    bottom->addWidget(aboutBtn);
     bottom->addStretch(1);
     QPushButton* closeBtn = new QPushButton("Close");
     closeBtn->setDefault(true);
@@ -338,4 +350,176 @@ QWidget* SettingsDialog::buildTrackMapPage() {
     });
     form->addRow("Map opacity:", trackMapOpacitySlider_);
     return page;
+}
+
+// About: app identity + version, the project license, and attribution for every
+// bundled third-party library. Each library exposes its full license text via a
+// "View" button (showLicenseText), satisfying the GPL/LGPL notice requirements.
+QWidget* SettingsDialog::buildAboutPage() {
+    QWidget* page = new QWidget;
+    QVBoxLayout* v = new QVBoxLayout(page);
+    v->setContentsMargins(8, 12, 8, 8);
+    v->setSpacing(8);
+
+    // ── App identity ─────────────────────────────────────────────
+    QLabel* name = new QLabel(QApplication::applicationName());
+    QFont nameFont = name->font();
+    nameFont.setBold(true);
+    nameFont.setPointSizeF(nameFont.pointSizeF() + 3.0);
+    name->setFont(nameFont);
+    v->addWidget(name);
+
+    v->addWidget(new QLabel("Version " + QApplication::applicationVersion()));
+
+    QLabel* desc = new QLabel(
+        "Background telemetry recorder and live session viewer for F1 sim racing.");
+    desc->setWordWrap(true);
+    v->addWidget(desc);
+
+    QLabel* copyright = new QLabel("© 2026 Track N Race");
+    v->addWidget(copyright);
+
+    // Project license row.
+    QWidget* licRow = new QWidget;
+    QHBoxLayout* licLay = new QHBoxLayout(licRow);
+    licLay->setContentsMargins(0, 0, 0, 0);
+    licLay->addWidget(new QLabel("Licensed under the GNU General Public License v3."));
+    QPushButton* viewProjectLic = new QPushButton("View license");
+    connect(viewProjectLic, &QPushButton::clicked, this, [this] {
+        showLicenseText("GNU General Public License v3", ":/licenses/GPL-3.0.txt");
+    });
+    licLay->addWidget(viewProjectLic);
+    licLay->addStretch(1);
+    v->addWidget(licRow);
+
+    v->addWidget(horizontalSeparator());
+    v->addWidget(subHeading("Third-party software"));
+
+    // name, version, license label, homepage URL, short link text, license resource.
+    struct Lib { const char* name; QString version; const char* license;
+                 const char* url; const char* linkText; const char* resource; };
+    const Lib libs[] = {
+        { "Qt",            qVersion(), "LGPL v3",    "https://www.qt.io",                "qt.io",         ":/licenses/LGPL-3.0.txt" },
+        { "QCustomPlot",   "2.1.1",    "GPL v3",     "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt" },
+        { "nlohmann/json", "3.11.3",   "MIT",        "https://github.com/nlohmann/json", "github.com",    ":/licenses/MIT.txt"      },
+        { "zlib",          "1.3.1",    "zlib",       "https://zlib.net",                 "zlib.net",      ":/licenses/Zlib.txt"     },
+        { "KDE Frameworks / Breeze", "6", "LGPL v2.1+", "https://kde.org",               "kde.org",       ":/licenses/LGPL-2.1.txt" },
+    };
+    const int libCount = int(std::size(libs));
+
+    // A table keeps the columns aligned and width under control; the long homepage
+    // URLs (shown as short host links) were what forced the horizontal scrollbar.
+    QTableWidget* table = new QTableWidget(libCount, 5);
+    table->setHorizontalHeaderLabels({ "Library", "Version", "License", "Website", QString() });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setFocusPolicy(Qt::NoFocus);
+    table->setShowGrid(false);
+    table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    QHeaderView* hdr = table->horizontalHeader();
+    hdr->setSectionResizeMode(0, QHeaderView::Stretch);            // Library absorbs slack
+    for (int c = 1; c < 5; ++c)
+        hdr->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+
+    for (int row = 0; row < libCount; ++row) {
+        const Lib& lib = libs[row];
+
+        QTableWidgetItem* nameItem = new QTableWidgetItem(lib.name);
+        QFont nf = nameItem->font();
+        nf.setBold(true);
+        nameItem->setFont(nf);
+        table->setItem(row, 0, nameItem);
+        table->setItem(row, 1, new QTableWidgetItem(lib.version));
+        table->setItem(row, 2, new QTableWidgetItem(lib.license));
+
+        QLabel* linkLbl = new QLabel(
+            QString("<a href=\"%1\">%2</a>").arg(lib.url, lib.linkText));
+        linkLbl->setOpenExternalLinks(true);
+        linkLbl->setContentsMargins(4, 0, 8, 0);
+        table->setCellWidget(row, 3, linkLbl);
+
+        QPushButton* viewBtn = new QPushButton("View");
+        const QString title    = QString("%1 — %2").arg(lib.name, lib.license);
+        const QString resource = lib.resource;
+        connect(viewBtn, &QPushButton::clicked, this, [this, title, resource] {
+            showLicenseText(title, resource);
+        });
+        table->setCellWidget(row, 4, viewBtn);
+    }
+
+    table->resizeRowsToContents();
+    // Show every row without an inner scrollbar (header + rows + a little slack).
+    int tableHeight = table->horizontalHeader()->height() + 2 * table->frameWidth();
+    for (int row = 0; row < libCount; ++row)
+        tableHeight += table->rowHeight(row);
+    table->setFixedHeight(tableHeight);
+    v->addWidget(table);
+
+    // KDE/Breeze ships only with the optional bundled Breeze style.
+    QLabel* breezeNote = new QLabel(
+        "KDE Frameworks / Breeze are included only when the optional Breeze style is bundled.");
+    breezeNote->setWordWrap(true);
+    QFont noteFont = breezeNote->font();
+    noteFont.setItalic(true);
+    breezeNote->setFont(noteFont);
+    v->addWidget(breezeNote);
+
+    v->addStretch(1);   // keep content top-aligned in the taller About modal
+    return page;
+}
+
+// About lives in its own modal (opened from the Settings footer's About button)
+// rather than a tab, so it can be wider/taller than the cramped settings tabs.
+void SettingsDialog::showAboutDialog() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("About " + QApplication::applicationName());
+    dlg.setWindowModality(Qt::ApplicationModal);
+    dlg.resize(680, 600);
+
+    QVBoxLayout* lay = new QVBoxLayout(&dlg);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(0);
+    lay->addWidget(buildAboutPage(), 1);
+
+    lay->addWidget(horizontalSeparator());
+    QHBoxLayout* bottom = new QHBoxLayout;
+    bottom->setContentsMargins(12, 8, 12, 12);
+    bottom->addStretch(1);
+    QPushButton* closeBtn = new QPushButton("Close");
+    closeBtn->setDefault(true);
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    bottom->addWidget(closeBtn);
+    lay->addLayout(bottom);
+
+    dlg.exec();
+}
+
+void SettingsDialog::showLicenseText(const QString& title, const QString& resourcePath) {
+    QDialog dlg(this);
+    dlg.setWindowTitle(title);
+    dlg.setWindowModality(Qt::ApplicationModal);
+    dlg.resize(660, 560);
+
+    QVBoxLayout* lay = new QVBoxLayout(&dlg);
+
+    QTextBrowser* browser = new QTextBrowser;
+    browser->setOpenExternalLinks(true);
+    browser->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+
+    QFile f(resourcePath);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&f);
+        browser->setPlainText(in.readAll());
+    } else {
+        browser->setPlainText("License text could not be loaded (" + resourcePath + ").");
+    }
+    lay->addWidget(browser);
+
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+    lay->addWidget(buttons);
+
+    dlg.exec();
 }

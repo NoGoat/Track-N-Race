@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NativeRecorder CXX)
+project(NativeRecorder VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,6 +104,7 @@ set(SOURCES
     src/protocols/f1_25.cpp
     resources.qrc
     maps.qrc
+    licenses.qrc
 )
 
 if(WIN32)
@@ -119,6 +120,9 @@ else()
 endif()
 
 set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
+# Single source of truth for the version shown in Settings → About (read at
+# runtime via QApplication::applicationVersion()).
+target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
 
 # GPU rendering for QCustomPlot (Qt6 only). The macro must reach qcustomplot.cpp,
