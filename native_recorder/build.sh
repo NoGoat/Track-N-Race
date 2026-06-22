@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Build the Track N Race Background Recorder on Linux/macOS
-# Usage: ./build.sh [--qt-prefix /path/to/Qt/6.x.x/gcc_64]
+# Usage: ./build.sh [--clean] [--qt-prefix /path/to/Qt/6.x.x/gcc_64] [--with-breeze [prefix]]
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,10 +8,13 @@ QT_PREFIX="${QT_PREFIX:-}"
 # Set with --with-breeze to bundle the prebuilt Breeze style stack (see
 # breeze_stack/) next to the app. Defaults to the superbuild's standard prefix.
 BREEZE_PREFIX=""
+# Set with --clean to wipe the app's build artifacts before configuring.
+CLEAN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --qt-prefix) QT_PREFIX="$2"; shift 2 ;;
+        --clean) CLEAN=true; shift 1 ;;
         # Optional explicit prefix path; bare --with-breeze uses the default.
         --with-breeze)
             if [[ -n "$2" && "$2" != --* ]]; then BREEZE_PREFIX="$2"; shift 2
@@ -19,6 +22,18 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
+
+# A clean build wipes the app's build tree so nothing stale is reused, but keeps
+# the Breeze superbuild (build/breeze_stack — hours to rebuild, and where
+# --with-breeze's default prefix lives). The FetchContent deps (build/_deps) are
+# NOT kept: their *-subbuild caches bake in an absolute binary-dir path, so
+# preserving them across a parent-cache wipe makes CMake abort with a "directory
+# is different" error. Re-cloning json/zlib is small and fast, so just let it.
+if [ "$CLEAN" = true ] && [ -d "$SCRIPT_DIR/build" ]; then
+    echo "Clean build: removing app artifacts (keeping breeze_stack)..."
+    find "$SCRIPT_DIR/build" -mindepth 1 -maxdepth 1 \
+        ! -name breeze_stack -exec rm -rf {} +
+fi
 
 echo "============================================="
 echo "   TNRD Background Recorder - Build Script"

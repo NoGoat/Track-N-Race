@@ -150,6 +150,10 @@ set(BREEZE_STACK_PREFIX "" CACHE PATH "Install prefix from the breeze_stack/ sup
 set(BREEZE_WIN_RUNTIME_DIR "" CACHE PATH "Windows: dir with intl-8.dll/iconv (e.g. vcpkg .../x64-windows/bin)")
 
 if(BREEZE_STACK_PREFIX)
+    # Marks a build that bundles the Breeze/KF6 stack (i.e. build.sh --with-breeze).
+    # The About dialog lists the bundled KDE components only when this is defined.
+    target_compile_definitions(native_recorder PRIVATE BREEZE_BUNDLED)
+
     set(_breeze_styldir "$<TARGET_FILE_DIR:native_recorder>/plugins/styles")
     set(_breeze_appdir  "$<TARGET_FILE_DIR:native_recorder>")
 
