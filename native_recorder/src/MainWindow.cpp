@@ -401,7 +401,6 @@ MainWindow::MainWindow(QWidget* parent)
     tb_windowAct_ = toolbar->addWidget(windowSeg);
     connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) { applyChartWindow(idx); });
 
-    tb_iconSep_ = toolbar->addSeparator();
     openAct_ = toolbar->addAction(openRecordingIcon(this), "Open Recording");
     editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
     editLayoutAct_->setEnabled(true); // Default is Overview page (0)
@@ -1023,7 +1022,6 @@ void MainWindow::relayoutToolbar() {
         return w ? w->sizeHint().width() : 0;
     };
     auto setIconsVisible = [&](bool v) {
-        if (tb_iconSep_)     tb_iconSep_->setVisible(v);
         if (openAct_)        openAct_->setVisible(v);
         if (editLayoutAct_)  editLayoutAct_->setVisible(v);
         if (settingsAct_)    settingsAct_->setVisible(v);
@@ -1036,7 +1034,7 @@ void MainWindow::relayoutToolbar() {
     int sumTabs = 0;
     for (int i = 0; i < n; ++i) { tabW[i] = tb_pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
     const int wSeg   = tb_windowSeg_->sizeHint().width();
-    const int wIcons = actW(tb_iconSep_) + actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
+    const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = tb_overflowBtn_->sizeHint().width();
     // The session timer lives inside the (otherwise collapsible) spacer, so the
     // spacer can no longer shrink to 0 — it must always reserve the timer's width.
@@ -1044,10 +1042,10 @@ void MainWindow::relayoutToolbar() {
     // width stays in the inline budget throughout and is never subtracted off.
     const int wTimer = (tb_timerLabel_ && tb_timerLabel_->isVisible())
                            ? tb_timerLabel_->sizeHint().width() : 0;
-    // Inter-item gaps: 7 toolbar items (tab strip, spacer, seg, sep, 3 icons) → 6
-    // gaps, plus the tab strip's own gaps between its n buttons. The timer adds no
-    // gap of its own (it rides inside the spacer).
-    const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 6 + spacing * (n - 1);
+    // Inter-item gaps: 6 toolbar items (tab strip, spacer, seg, 3 icons) → 5 gaps,
+    // plus the tab strip's own gaps between its n buttons. The timer adds no gap of
+    // its own (it rides inside the spacer).
+    const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 5 + spacing * (n - 1);
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
         if (tb_windowAct_) tb_windowAct_->setVisible(true);

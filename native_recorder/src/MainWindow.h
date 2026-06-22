@@ -301,7 +301,6 @@ private:
     QButtonGroup* tb_windowGroup_ = nullptr;   // exclusive window-size segment
     QWidget*      tb_windowSeg_   = nullptr;   // window-size segmented control widget
     QAction*      tb_windowAct_   = nullptr;   // its toolbar action (hide to free space)
-    QAction*      tb_iconSep_     = nullptr;   // separator before the icon actions
     QToolButton*  tb_overflowBtn_ = nullptr;   // "⋯" menu button (hidden until needed)
     QAction*      tb_overflowAct_ = nullptr;   // its toolbar action (toggle visibility)
     QMenu*        tb_overflowMenu_= nullptr;
