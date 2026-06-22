@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "../MainWindow.h"
+#include "../IconUtils.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -21,6 +22,8 @@
 #include <QApplication>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QToolButton>
+#include <QStyle>
 #include <QTextBrowser>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -422,13 +425,15 @@ QWidget* SettingsDialog::buildAboutPage() {
     // A table keeps the columns aligned and width under control; the long homepage
     // URLs (shown as short host links) were what forced the horizontal scrollbar.
     QTableWidget* table = new QTableWidget(libCount, 5);
-    table->setHorizontalHeaderLabels({ "Library", "Version", "License", "Website", QString() });
+    table->setHorizontalHeaderLabels({ "Library", "Version", "License", "Website", "View License" });
     table->verticalHeader()->setVisible(false);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::NoSelection);
     table->setFocusPolicy(Qt::NoFocus);
     table->setShowGrid(false);
+    table->setAlternatingRowColors(true);   // match the app's other tables
     table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    table->setMinimumWidth(720);             // drives the fixed dialog width
 
     QHeaderView* hdr = table->horizontalHeader();
     hdr->setSectionResizeMode(0, QHeaderView::Stretch);            // Library absorbs slack
@@ -452,13 +457,28 @@ QWidget* SettingsDialog::buildAboutPage() {
         linkLbl->setContentsMargins(4, 0, 8, 0);
         table->setCellWidget(row, 3, linkLbl);
 
-        QPushButton* viewBtn = new QPushButton("View");
+        QToolButton* viewBtn = new QToolButton;
+        viewBtn->setAutoRaise(true);
+        viewBtn->setCursor(Qt::PointingHandCursor);
+        viewBtn->setToolTip("View license");
+        viewBtn->setIcon(adaptThemeIcon(
+            QIcon::fromTheme("quickview-symbolic"),
+            table->palette().color(QPalette::WindowText),
+            style()->standardIcon(QStyle::SP_FileDialogContentsView)));
         const QString title    = QString("%1 — %2").arg(lib.name, lib.license);
         const QString resource = lib.resource;
-        connect(viewBtn, &QPushButton::clicked, this, [this, title, resource] {
+        connect(viewBtn, &QToolButton::clicked, this, [this, title, resource] {
             showLicenseText(title, resource);
         });
-        table->setCellWidget(row, 4, viewBtn);
+        // Centre the icon button in its cell so the alternating row tint shows
+        // around it instead of a full-width button.
+        QWidget* viewCell = new QWidget;
+        QHBoxLayout* viewLay = new QHBoxLayout(viewCell);
+        viewLay->setContentsMargins(0, 0, 0, 0);
+        viewLay->addStretch(1);
+        viewLay->addWidget(viewBtn);
+        viewLay->addStretch(1);
+        table->setCellWidget(row, 4, viewCell);
     }
 
     table->resizeRowsToContents();
@@ -487,10 +507,13 @@ QWidget* SettingsDialog::buildAboutPage() {
 void SettingsDialog::showAboutDialog() {
     QDialog dlg(this);
     dlg.setWindowTitle("About " + QApplication::applicationName());
+    // Same recipe as the Settings dialog itself: a fixed-size, plain modal frame
+    // (no resize handles / maximize button) sized to its content.
+    dlg.setWindowFlags(Qt::Dialog);
     dlg.setWindowModality(Qt::ApplicationModal);
-    dlg.resize(900, 620);
 
     QVBoxLayout* lay = new QVBoxLayout(&dlg);
+    lay->setSizeConstraint(QLayout::SetFixedSize);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
     lay->addWidget(buildAboutPage(), 1);
