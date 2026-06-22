@@ -16,7 +16,7 @@
 #include <QFileDialog>
 #include <QSizePolicy>
 #include <QFont>
-#include <QTabBar>
+#include <QButtonGroup>
 #include <QStackedWidget>
 #include <QPalette>
 #include <QApplication>
@@ -67,13 +67,13 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     main->setSpacing(0);
 
     // ── Category tabs over a shared content pane ──────────────────
-    // A QTabBar + QStackedWidget (rather than a QTabWidget) so the shared Close
-    // button can live inside the same bordered pane as the tab pages — a
-    // QTabWidget has no shared footer area.
-    QTabBar*        tabBar = new QTabBar;
-    QStackedWidget* stack  = new QStackedWidget;
-    tabBar->setExpanding(true);   // tabs stretch to fill the full width
-    tabBar->setDrawBase(true);    // native base line divides the bar from the pane
+    // Underline tabs matching the main toolbar's page switcher (see the page
+    // tabs in MainWindow.cpp): a row of checkable QToolButtons in an exclusive
+    // group, each reserving the same border-bottom width (transparent unless
+    // checked) so the accent underline only changes colour, never shifts the
+    // text. A QStackedWidget holds the page bodies so the shared Close button
+    // can live inside the same bordered pane below.
+    QStackedWidget* stack = new QStackedWidget;
 
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
@@ -83,19 +83,48 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
         { "Overview",      buildOverviewPage()      },
         { "Track Map",     buildTrackMapPage()      },
     };
+
+    QWidget*     tabBar = new QWidget;
+    // Tint the bar a shade lighter than the window (Midlight) so it reads as a
+    // distinct surface, separated from the bordered content pane below.
+    tabBar->setBackgroundRole(QPalette::Button);
+    tabBar->setAutoFillBackground(true);
+    QHBoxLayout* tabLay = new QHBoxLayout(tabBar);
+    tabLay->setContentsMargins(8, 0, 8, 0);
+    tabLay->setSpacing(4);
+    QButtonGroup* tabGroup = new QButtonGroup(this);
+    tabGroup->setExclusive(true);
+
+    static constexpr int kUnderlineWidth = 2;
+    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
+    const QString tabBtnStyle = QString(
+        "QToolButton { padding: 8px 14px; border: none; background: transparent;"
+        " border-bottom: %1px solid transparent; }"
+        "QToolButton:checked { border-bottom: %1px solid %2; }"
+    ).arg(kUnderlineWidth).arg(accent);
+
+    int tabIndex = 0;
     for (const Page& p : pages) {
-        tabBar->addTab(p.title);
+        QToolButton* b = new QToolButton;
+        b->setText(p.title);
+        b->setCheckable(true);
+        b->setAutoRaise(true);
+        b->setStyleSheet(tabBtnStyle);
+        tabGroup->addButton(b, tabIndex++);
+        tabLay->addWidget(b);
         stack->addWidget(p.widget);
     }
-    connect(tabBar, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
-    tabBar->setCurrentIndex(0);
+    tabLay->addStretch(1);
+    connect(tabGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
+    static_cast<QToolButton*>(tabGroup->button(0))->setChecked(true);
+    stack->setCurrentIndex(0);
 
     // Bordered pane holding the page stack + the Close button row, so the button
-    // sits inside the frame for visual consistency with the content.
+    // sits inside the frame for visual consistency with the content. The border
+    // (drawn on the window-coloured pane) gives a clean separation from the
+    // Midlight tab bar above.
     QFrame* pane = new QFrame;
     pane->setFrameShape(QFrame::StyledPanel);
-    // Fill the pane with the same colour the style paints behind the selected
-    // tab (QPalette::Window) so the bar and pane read as one seamless surface.
     pane->setBackgroundRole(QPalette::Window);
     pane->setAutoFillBackground(true);
     QVBoxLayout* paneLay = new QVBoxLayout(pane);

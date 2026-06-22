@@ -369,8 +369,11 @@ private:
     std::unordered_map<std::string, std::string> dedupeCache;
 
     void resizeEvent(QResizeEvent* e) override;
+    void moveEvent(QMoveEvent* e) override;     // tracks the windowed bounds
     void showEvent(QShowEvent* e) override;
     void hideEvent(QHideEvent* e) override;
+    void closeEvent(QCloseEvent* e) override;   // persists window geometry on quit
+    void scheduleNormalGeometryCapture();       // caches the windowed bounds (deferred)
     // Keeps Qt's native toolbar extension button (tb_extButton_) hidden — we do
     // our own overflow via the ⋯ menu.
     bool eventFilter(QObject* obj, QEvent* e) override;
@@ -433,6 +436,12 @@ private:
     // Recording (UDP → parse → .tnrd) is independent of these and keeps running.
     bool renderingActive_   = true;
     bool windowFilterHooked_ = false;   // installed the QWindow expose filter yet?
+
+    // Last windowed bounds (never the maximized rect). Restored on launch, and
+    // re-applied when the user un-maximizes — the WM can otherwise restore a wrong
+    // size, especially when we launched already maximized (see changeEvent).
+    QRect normalGeometry_;
+    bool  captureScheduled_ = false;   // coalesces the deferred geometry capture
     void updateRenderingState();        // recompute desired state from window flags
     void setRenderingActive(bool on);   // start/stop the rendering subsystems
 

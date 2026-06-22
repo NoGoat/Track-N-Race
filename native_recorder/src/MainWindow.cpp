@@ -49,6 +49,11 @@
 #include <QPixmap>
 #include <QIconEngine>
 #include <QResizeEvent>
+#include <QCloseEvent>
+#include <QMoveEvent>
+#include <QWindowStateChangeEvent>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QWindow>
 #include <QProgressBar>
 #include <QStyle>
@@ -260,6 +265,19 @@ static void setDmgValue(QLabel* lbl, int val) {
     lbl->setStyleSheet(val == 0 ? "color: #37872D;" : "color: #C4162A;");
 }
 
+// A geometry "looks maximized" if it (nearly) fills the screen's available area.
+// Such a value must never be treated as the windowed/normal size: an earlier bug
+// recorded the maximized size as the normal geometry, and restoring to it makes
+// un-maximize look like a no-op. Rejecting it (on load and while tracking) both
+// clears any already-poisoned saved value and stops it from regenerating.
+static bool looksMaximized(const QRect& g, const QScreen* s) {
+    if (!g.isValid()) return false;
+    const QScreen* scr = s ? s : QGuiApplication::primaryScreen();
+    if (!scr) return false;
+    const QRect avail = scr->availableGeometry();
+    return g.width() >= avail.width() - 12 && g.height() >= avail.height() - 12;
+}
+
 // ── Construction ───────────────────────────────────────────────────────────
 
 MainWindow::MainWindow(QWidget* parent)
@@ -267,7 +285,25 @@ MainWindow::MainWindow(QWidget* parent)
 {
     setWindowTitle("Track N Race Background Recorder");
     setMinimumSize(480, 520);   // toolbar collapses into its ⋯ menu below ~full width
-    resize(780, 580);
+    // Restore the last windowed size/position, then maximize directly if we were
+    // closed maximized — setting the state before the first show maps the window
+    // maximized straight away (no small-window flash). Un-maximizing afterwards is
+    // corrected back to normalGeometry_ in changeEvent (the WM has no pre-maximize
+    // geometry to restore to when we launch already maximized). See closeEvent.
+    QRect saved = settings.value("window/normalGeometry").toRect();
+    if (!saved.isValid() || looksMaximized(saved, nullptr)) {
+        // First run, or a poisoned saved value (the maximized size stored as the
+        // windowed geometry) — fall back to a sane centred default so un-maximize
+        // always lands on a real window.
+        const QScreen* scr = QGuiApplication::primaryScreen();
+        const QRect avail = scr ? scr->availableGeometry() : QRect(0, 0, 1280, 800);
+        saved = QRect(QPoint(0, 0), QSize(780, 580));
+        saved.moveCenter(avail.center());
+    }
+    normalGeometry_ = saved;
+    setGeometry(saved);
+    if (settings.value("window/maximized", false).toBool())
+        setWindowState(windowState() | Qt::WindowMaximized);
 
     outputDirectory = settings.value("outputDirectory").toString();
     wantRecord      = settings.value("autoRecord", false).toBool();
@@ -902,11 +938,35 @@ MainWindow::~MainWindow() {
 
 void MainWindow::resizeEvent(QResizeEvent* e) {
     QMainWindow::resizeEvent(e);
+    scheduleNormalGeometryCapture();
     if (loadingOverlay_ && loadingOverlay_->isVisible() && container_)
         loadingOverlay_->setGeometry(container_->rect());
     // Keep any visible toasts pinned to the content area's top-right corner.
     Toast::updateAllPositions();
     relayoutToolbar();   // collapse/expand toolbar items for the new width
+}
+
+void MainWindow::moveEvent(QMoveEvent* e) {
+    QMainWindow::moveEvent(e);
+    scheduleNormalGeometryCapture();
+}
+
+// Cache the windowed geometry, but DEFERRED to the next event-loop turn. A resize
+// from a maximize/minimize can arrive while isMaximized()/isMinimized() still read
+// false (the state flag updates a beat later); reading the state synchronously here
+// would record the maximized size as the windowed geometry — the root cause of the
+// "maximized geometry gets stored" bug. By the time the deferred slot runs, the
+// state is settled, so we only ever record a genuine windowed rect. Coalesced via
+// captureScheduled_ so a burst of resize/move events triggers one capture.
+void MainWindow::scheduleNormalGeometryCapture() {
+    if (captureScheduled_) return;
+    captureScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+        captureScheduled_ = false;
+        if (isVisible() && !isMaximized() && !isMinimized() && !isFullScreen()
+            && !looksMaximized(geometry(), screen()))
+            normalGeometry_ = geometry();
+    });
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
@@ -940,6 +1000,16 @@ void MainWindow::showEvent(QShowEvent* e) {
 void MainWindow::hideEvent(QHideEvent* e) {
     QMainWindow::hideEvent(e);
     updateRenderingState();
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    // normalGeometry_ always holds the windowed bounds (never the maximized rect),
+    // so persist it as-is plus the maximized flag. Neither carries the minimized
+    // state, so quitting minimized still reopens at the normal/maximized size.
+    if (normalGeometry_.isValid())
+        settings.setValue("window/normalGeometry", normalGeometry_);
+    settings.setValue("window/maximized", isMaximized());
+    QMainWindow::closeEvent(e);
 }
 
 // Computes whether the window is actually being displayed, and pauses/resumes the
@@ -1109,8 +1179,28 @@ void MainWindow::changeEvent(QEvent* e) {
     QMainWindow::changeEvent(e);
     if (e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::PaletteChange)
         refreshThemedIcons();
-    else if (e->type() == QEvent::WindowStateChange)
-        updateRenderingState();   // minimize/restore toggles rendering
+    else if (e->type() == QEvent::WindowStateChange) {
+        auto* se = static_cast<QWindowStateChangeEvent*>(e);
+        const bool wasMaximized = se->oldState() & Qt::WindowMaximized;
+        const bool nowMaximized = isMaximized();
+
+        if (!wasMaximized && nowMaximized) {
+            // Entering maximized: normalGeometry_ still holds the geometry from just
+            // BEFORE this maximize (tracking never records a maximized-sized rect).
+            // Persist it right here so that closing while maximized restores to this
+            // windowed geometry — never the maximized one.
+            if (normalGeometry_.isValid())
+                settings.setValue("window/normalGeometry", normalGeometry_);
+        } else if (wasMaximized && !nowMaximized && !isMinimized() && !isFullScreen()
+                   && normalGeometry_.isValid()) {
+            // Un-maximizing: force our remembered windowed geometry (the WM may
+            // otherwise restore a wrong size). Capture first — a WM restore-resize
+            // could overwrite the member before the singleShot runs.
+            const QRect target = normalGeometry_;
+            QTimer::singleShot(0, this, [this, target] { setGeometry(target); });
+        }
+        updateRenderingState();            // minimize/restore toggles rendering
+    }
 }
 
 void MainWindow::updateToolbarColorScheme() {
@@ -1128,7 +1218,7 @@ void MainWindow::updateToolbarColorScheme() {
     const bool mismatch = breezeStyle &&
         ((theme == "light" && osDark) || (theme == "dark" && !osDark));
     toolbar_->setStyleSheet(mismatch
-        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(midlight); }"
+        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(button); }"
         : "QToolBar { border: none; margin: 0px; padding: 0px; }");
 }
 

@@ -12,11 +12,11 @@ class QSlider;
 class QFormLayout;
 class QWidget;
 
-// Modal Settings dialog, opened from its own toolbar icon. A standard QTabWidget
-// groups the controls into category tabs (Recording, Appearance, …), each tab a
-// label/control form. Immediate-apply, same as EditOverviewLayoutDialog — every
-// control updates MainWindow and persists right away, so there's only a Close
-// button.
+// Modal Settings dialog, opened from its own toolbar icon. Underline tabs
+// matching the main toolbar's page switcher group the controls into category
+// tabs (Recording, Appearance, …), each tab a label/control form. Immediate-
+// apply, same as EditOverviewLayoutDialog — every control updates MainWindow
+// and persists right away, so there's only a Close button.
 class SettingsDialog : public QDialog {
     Q_OBJECT
 
