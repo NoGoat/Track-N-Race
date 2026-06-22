@@ -31,6 +31,7 @@
 #include <QFrame>
 #include <QWidget>
 #include <QHBoxLayout>
+#include <QFont>
 #include <QSlider>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -355,8 +356,26 @@ MainWindow::MainWindow(QWidget* parent)
     static_cast<QToolButton*>(pageGroup->button(0))->setChecked(true);   // default: Overview
     toolbar->addWidget(pageTabsWidget);
 
+    // Expanding spacer that pushes the right-hand group over. The session timer
+    // rides at the right edge of this spacer (just left of the window segment) so
+    // it stays clear of the overflow logic — it's not a standalone toolbar item, so
+    // the relayout arithmetic below is untouched and the timer is always visible.
     QWidget* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    QHBoxLayout* spacerLay = new QHBoxLayout(spacer);
+    spacerLay->setContentsMargins(0, 0, 0, 0);
+    spacerLay->setSpacing(0);
+    spacerLay->addStretch(1);
+    tb_timerLabel_ = new QLabel;
+    tb_timerLabel_->setObjectName("sessionTimer");
+    tb_timerLabel_->setContentsMargins(8, 0, 8, 0);
+    tb_timerLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+    QFont timerFont = tb_timerLabel_->font();
+    timerFont.setBold(true);
+    tb_timerLabel_->setFont(timerFont);
+    tb_timerLabel_->setToolTip("Session time");
+    tb_timerLabel_->hide();   // shown once the first session_time arrives
+    spacerLay->addWidget(tb_timerLabel_);
     toolbar->addWidget(spacer);
 
     // Window-size segmented control: an exclusive row of checkable QToolButtons
@@ -619,6 +638,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
         loadingOverlay_->hide();
         inPlayback_ = true;
+        // Clear any frozen live value; the first replayed packet sets it afresh.
+        resetSessionTimer();
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
         if (model_) model_->load(player_->takeScannedData());
         
@@ -755,6 +776,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(closeRecBtn, &QPushButton::clicked, this, [this] {
         player_->close();
         inPlayback_ = false;
+        // Drop the playback timer value; live packets (if any) repopulate it.
+        resetSessionTimer();
         if (model_) model_->clear();
         if (chart) { chart->setPlaybackMode(false); chart->setMode(ChartMode::Default); }
         if (gearChart_) gearChart_->setPlaybackMode(false);
@@ -1403,6 +1426,9 @@ void MainWindow::recordRow(const nlohmann::json& row, float sessionTime) {
 
 void MainWindow::emitLiveData(const nlohmann::json& row) {
     const std::string type = row["type"].get<std::string>();
+    // Every packet carries the header session_time; drive the toolbar timer from it.
+    if (row.contains("session_time"))
+        updateSessionTimer(row["session_time"].get<float>());
     if (type == "telemetry") {
         emit telemetryUpdated(
             row["speed_kph"].get<float>(),
@@ -1573,6 +1599,29 @@ void MainWindow::showToast(const ToastSpec& spec) {
         t->setTextColor(sub);
     }
     t->show();
+}
+
+// Toolbar session timer. `sessionTime` is the header session_time carried on
+// every packet (live UDP and playback): elapsed seconds since session start.
+// Formatted M:SS to mirror the Electron titlebar timer. Guarded on the whole
+// second so a burst of same-frame packets doesn't re-set the label needlessly.
+void MainWindow::updateSessionTimer(float sessionTime) {
+    if (!tb_timerLabel_ || sessionTime < 0.0f) return;
+    const int total = (int)sessionTime;
+    if (total == tb_timerSec_ && tb_timerLabel_->isVisible()) return;
+    tb_timerSec_ = total;
+    tb_timerLabel_->setText(QString("%1:%2")
+                                .arg(total / 60)
+                                .arg(total % 60, 2, 10, QLatin1Char('0')));
+    if (!tb_timerLabel_->isVisible()) tb_timerLabel_->show();
+}
+
+void MainWindow::resetSessionTimer() {
+    tb_timerSec_ = -1;
+    if (tb_timerLabel_) {
+        tb_timerLabel_->clear();
+        tb_timerLabel_->hide();
+    }
 }
 
 void MainWindow::scheduleUiRefresh() {

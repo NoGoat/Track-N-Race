@@ -311,6 +311,15 @@ private:
     void applyChartWindow(int idx);            // set chart window + sync inline/menu state
     void relayoutToolbar();                    // collapse/expand on resize
 
+    // ── Session timer ─────────────────────────────────────────────
+    // Elapsed session time (header session_time), formatted M:SS, shown in the
+    // toolbar. Lives inside the expanding spacer so it never overflows. Hidden
+    // until the first packet with a session_time arrives.
+    QLabel*       tb_timerLabel_  = nullptr;
+    int           tb_timerSec_    = -1;        // last shown whole second (skip redundant sets)
+    void updateSessionTimer(float sessionTime);
+    void resetSessionTimer();
+
     // ── Playback ──────────────────────────────────────────────────
     TnrdPlayer*  player_         = nullptr;
     bool         inPlayback_     = false;
