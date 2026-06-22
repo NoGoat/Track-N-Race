@@ -1220,6 +1220,21 @@ void MainWindow::setTrackMapLabelMode(int mode) {
     }
 }
 
+void MainWindow::setTrackMapSectorColors(bool on) {
+    settings.setValue("ui/trackMapSectorColors", on);
+    if (trackMap_) trackMap_->setSectorColors(on);
+}
+
+void MainWindow::setTrackMapOpacity(int pct) {
+    settings.setValue("ui/trackMapOpacity", pct);
+    if (trackMap_) trackMap_->setMapOpacity(pct / 100.0);
+}
+
+void MainWindow::setTrackMapIdleTimeout(int secs) {
+    settings.setValue("ui/trackMapIdleTimeout", secs);
+    if (trackMap_) trackMap_->setIdleTimeout(secs);
+}
+
 void MainWindow::onDatagramReady() {
     if (inPlayback_) {
         while (udpSocket->hasPendingDatagrams())

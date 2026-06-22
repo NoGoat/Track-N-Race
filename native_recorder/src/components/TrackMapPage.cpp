@@ -24,6 +24,9 @@ void MainWindow::updateTrackMapPage() {
     const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
     trackMap_->setDark(dark);
     trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(trackMapLabelMode()));
+    trackMap_->setSectorColors(trackMapSectorColors());
+    trackMap_->setMapOpacity(trackMapOpacity() / 100.0);
+    trackMap_->setIdleTimeout(trackMapIdleTimeout());
 
     if (!lastParticipantsData.empty())
         trackMap_->setParticipants(lastParticipantsData);

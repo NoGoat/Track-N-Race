@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QRadioButton>
 #include <QComboBox>
+#include <QSlider>
 #include <QStyleFactory>
 #include <QPushButton>
 #include <QFileDialog>
@@ -241,4 +242,33 @@ void SettingsDialog::addTrackMapSection(QFormLayout* form) {
         mainWindow_->setTrackMapLabelMode(trackMapLabelsCombo_->currentData().toInt());
     });
     form->addRow("Labels:", trackMapLabelsCombo_);
+
+    // Hide drivers idle for longer than the selected duration (0 = never).
+    trackMapIdleCombo_ = new QComboBox;
+    trackMapIdleCombo_->addItem("Off", 0);
+    for (int s : { 3, 5, 10, 15, 30 })
+        trackMapIdleCombo_->addItem(QString("%1s").arg(s), s);
+    const int idleIdx = trackMapIdleCombo_->findData(mainWindow_->trackMapIdleTimeout());
+    trackMapIdleCombo_->setCurrentIndex(idleIdx >= 0 ? idleIdx : 0);
+    connect(trackMapIdleCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setTrackMapIdleTimeout(trackMapIdleCombo_->currentData().toInt());
+    });
+    form->addRow("Hide static drivers:", trackMapIdleCombo_);
+
+    // Per-sector colours vs plain white/black lines.
+    trackMapSectorColorsCheck_ = new QCheckBox;
+    trackMapSectorColorsCheck_->setChecked(mainWindow_->trackMapSectorColors());
+    connect(trackMapSectorColorsCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setTrackMapSectorColors(on);
+    });
+    form->addRow("Sector colors:", trackMapSectorColorsCheck_);
+
+    // Track-outline opacity (20–100%); driver dots/labels stay full strength.
+    trackMapOpacitySlider_ = new QSlider(Qt::Horizontal);
+    trackMapOpacitySlider_->setRange(20, 100);
+    trackMapOpacitySlider_->setValue(mainWindow_->trackMapOpacity());
+    connect(trackMapOpacitySlider_, &QSlider::valueChanged, this, [this](int v) {
+        mainWindow_->setTrackMapOpacity(v);
+    });
+    form->addRow("Map opacity:", trackMapOpacitySlider_);
 }

@@ -88,6 +88,12 @@ public:
     void    setContrastThreshold(float val);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
+    bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", true).toBool(); }
+    void    setTrackMapSectorColors(bool on);
+    int     trackMapOpacity() const { return settings.value("ui/trackMapOpacity", 100).toInt(); }
+    void    setTrackMapOpacity(int pct);
+    int     trackMapIdleTimeout() const { return settings.value("ui/trackMapIdleTimeout", 0).toInt(); }
+    void    setTrackMapIdleTimeout(int secs);
     bool    toastsEnabled() const { return settings.value("ui/toastsEnabled", true).toBool(); }
     void    setToastsEnabled(bool on) { settings.setValue("ui/toastsEnabled", on); }
     int     toastDurationSecs() const { return settings.value("ui/bannerDuration", 3).toInt(); }

@@ -106,6 +106,7 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
     animTimer_->setInterval(16);   // ~60fps
     connect(animTimer_, &QTimer::timeout, this, [this]{ update(); });
     snapTimer_.start();
+    idleClock_.start();
 
     // Overlay controls (top-right): follow-driver + zoom selectors.
     zoomCombo_ = new QComboBox(this);
@@ -302,6 +303,10 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         return QPointF(vb.x() * l.scale + l.ox, vb.y() * l.scale + l.oy);
     };
     const char** pal = dark_ ? SECTOR_DARK : SECTOR_LIGHT;
+    // When sector colors are off, the track is drawn as plain lines using the
+    // palette text colour (white on dark themes / black on light), keeping it in
+    // step with the active palette rather than hard-coded white/black.
+    const QColor lineCol = palette().color(QPalette::Text);
 
     for (size_t si = 0; si < prep_.sectors.size(); ++si) {
         const QPolygonF& poly = prep_.sectors[si];
@@ -310,7 +315,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         canvasPts.reserve(poly.size());
         for (const QPointF& vb : poly) canvasPts << tc(vb);
 
-        QColor col(pal[std::min(si, size_t(2))]);
+        QColor col = sectorColors_ ? QColor(pal[std::min(si, size_t(2))]) : lineCol;
         QPen pen(col);
         pen.setWidthF(TRACK_PX * tzf);
         pen.setCapStyle(Qt::RoundCap);
@@ -319,15 +324,15 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         p.drawPolyline(canvasPts);
     }
 
-    // Sectors are already colour-coded, so boundary ticks use the contrasting
-    // track colour (white on dark / black on light), matching the Electron map.
-    const QColor lineCol(dark_ ? "#ffffff" : "#000000");
-
-    // Sector-start ticks: junctions (S2, S3) …
-    for (const Junction& jc : prep_.junctions) {
+    // Sector-start ticks: junctions (S2, S3). When sectors are colour-coded the
+    // boundary ticks use the contrasting track colour; when sectors are plain the
+    // ticks carry the sector colour instead (Electron inverts these).
+    for (size_t ji = 0; ji < prep_.junctions.size(); ++ji) {
+        const Junction& jc = prep_.junctions[ji];
         const QPointF c = tc(jc.pt);
         const double half = std::max(JUNC_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
-        QPen pen(lineCol); pen.setWidthF(3.0 * zf); pen.setCapStyle(Qt::RoundCap);
+        const QColor jcol = sectorColors_ ? lineCol : QColor(pal[std::min(ji + 1, size_t(2))]);
+        QPen pen(jcol); pen.setWidthF(3.0 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
                    QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
@@ -361,7 +366,9 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         const QPointF n = perpAt(s1.constData(), s1.size(), prep_.sfIdx);
         const QPointF c = tc(prep_.sfPt);
         const double half = std::max(SF_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
-        QPen pen(lineCol); pen.setWidthF(2.5 * zf); pen.setCapStyle(Qt::RoundCap);
+        // Plain track → red start/finish; colour-coded track → contrasting line.
+        const QColor sfCol = sectorColors_ ? lineCol : QColor(SECTOR_DARK[0]);
+        QPen pen(sfCol); pen.setWidthF(2.5 * zf); pen.setCapStyle(Qt::RoundCap);
         p.setPen(pen);
         p.drawLine(QPointF(c.x() - n.x() * half, c.y() - n.y() * half),
                    QPointF(c.x() + n.x() * half, c.y() + n.y() * half));
@@ -389,13 +396,32 @@ void TrackMapWidget::rebuildStaticLayer() {
 void TrackMapWidget::setPositions(const nlohmann::json& positions) {
     if (!positions.contains("cars")) return;
 
+    playerIdx_ = positions.value("player_idx", 0);
+
     Snapshot snap;
+    const qint64 now = idleClock_.elapsed();
+    const qint64 timeoutMs = (qint64)idleTimeoutSec_ * 1000;
     for (const auto& c : positions["cars"]) {
         Car car;
         car.idx = c.value("idx", -1);
         car.x   = c.value("x", 0.0);
         car.z   = c.value("z", 0.0);
-        if (car.idx >= 0) snap.cars.push_back(car);
+        if (car.idx < 0) continue;
+
+        // Hide drivers that haven't moved for longer than the timeout. The player
+        // car is always shown. Hiding is done by zeroing coords so the existing
+        // (0,0) skip in interpCar()/paintEvent() drops the dot + label.
+        if (idleTimeoutSec_ > 0 && car.idx != playerIdx_) {
+            auto it = lastPos_.find(car.idx);
+            if (it == lastPos_.end()) {
+                lastPos_[car.idx] = { car.x, car.z, now };
+            } else if (car.x != it->second.x || car.z != it->second.z) {
+                it->second = { car.x, car.z, now };
+            } else if (now - it->second.lastMovedMs > timeoutMs) {
+                car.x = 0.0; car.z = 0.0;
+            }
+        }
+        snap.cars.push_back(car);
     }
 
     // Measure the gap since the previous snapshot so we can interpolate.
@@ -423,6 +449,26 @@ void TrackMapWidget::setDark(bool dark) {
 void TrackMapWidget::setLabelMode(LabelMode mode) {
     if (labelMode_ == mode) return;
     labelMode_ = mode;
+    update();
+}
+
+void TrackMapWidget::setSectorColors(bool on) {
+    if (sectorColors_ == on) return;
+    sectorColors_ = on;
+    rebuildStaticLayer();   // colors are baked into the cached circuit
+    update();
+}
+
+void TrackMapWidget::setMapOpacity(double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    if (mapOpacity_ == a) return;
+    mapOpacity_ = a;
+    update();   // applied at blit time, no layer rebuild needed
+}
+
+void TrackMapWidget::setIdleTimeout(int secs) {
+    if (idleTimeoutSec_ == secs) return;
+    idleTimeoutSec_ = secs;
     update();
 }
 
@@ -484,6 +530,8 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     const double effZoom = base.scale > 0 ? layout.scale / base.scale : 1.0;
 
     // ── Track: cached pixmap when idle, live vector render when zoomed ───
+    // Opacity dims only the track outline; driver dots/labels stay full strength.
+    p.setOpacity(mapOpacity_);
     if (!hasCam_) {
         if (staticLayer_.isNull() || staticLayerSize_ != size())
             rebuildStaticLayer();
@@ -491,6 +539,7 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     } else {
         drawTrack(p, layout, effZoom);
     }
+    p.setOpacity(1.0);
 
     const Layout& l = layout;
 

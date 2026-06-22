@@ -8,6 +8,7 @@ class QLabel;
 class QCheckBox;
 class QRadioButton;
 class QComboBox;
+class QSlider;
 class QFormLayout;
 
 // Modal Settings dialog, opened from its own toolbar icon. A single flat
@@ -41,4 +42,7 @@ private:
     QComboBox*    toastDurationCombo_ = nullptr;
     QComboBox*    tyreViewCombo_       = nullptr;
     QComboBox*    trackMapLabelsCombo_ = nullptr;
+    QComboBox*    trackMapIdleCombo_   = nullptr;
+    QCheckBox*    trackMapSectorColorsCheck_ = nullptr;
+    QSlider*      trackMapOpacitySlider_     = nullptr;
 };

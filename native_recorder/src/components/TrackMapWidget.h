@@ -5,6 +5,7 @@
 #include <QPolygonF>
 #include <QElapsedTimer>
 #include <vector>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 
 class QTimer;
@@ -28,6 +29,9 @@ public:
     void setParticipants(const nlohmann::json& participants);
     void setDark(bool dark);
     void setLabelMode(LabelMode mode);
+    void setSectorColors(bool on);   // rebuilds the static layer on change
+    void setMapOpacity(double a);     // 0.0–1.0, track outline only
+    void setIdleTimeout(int secs);    // 0 = disabled (never hide for inactivity)
     bool hasTrack() const { return loaded_; }
 
     // External render gate (driven by MainWindow when the app window is
@@ -92,6 +96,15 @@ private:
 
     nlohmann::json participants_;    // {drivers:[{idx,name,livery_color,race_number}]}
     bool        dark_ = true;
+    bool        sectorColors_ = true;   // colored sectors vs plain white/black lines
+    double      mapOpacity_   = 1.0;    // track-outline opacity (drivers stay full)
+
+    // ── Idle-driver hiding ─────────────────────────────────────────────────
+    int         idleTimeoutSec_ = 0;    // 0 = disabled
+    int         playerIdx_ = -1;        // player car: never hidden for inactivity
+    struct PosTrack { double x, z; qint64 lastMovedMs; };
+    std::unordered_map<int, PosTrack> lastPos_;   // per-car last-moved tracking
+    QElapsedTimer idleClock_;           // monotonic clock for inactivity timing
 
     // Interpolated motion: lerp between previous and current snapshot.
     Snapshot      prevSnap_, curSnap_;
