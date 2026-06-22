@@ -399,11 +399,23 @@ QWidget* SettingsDialog::buildAboutPage() {
     struct Lib { const char* name; QString version; const char* license;
                  const char* url; const char* linkText; const char* resource; };
     const Lib libs[] = {
-        { "Qt",            qVersion(), "LGPL v3",    "https://www.qt.io",                "qt.io",         ":/licenses/LGPL-3.0.txt" },
-        { "QCustomPlot",   "2.1.1",    "GPL v3",     "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt" },
-        { "nlohmann/json", "3.11.3",   "MIT",        "https://github.com/nlohmann/json", "github.com",    ":/licenses/MIT.txt"      },
-        { "zlib",          "1.3.1",    "zlib",       "https://zlib.net",                 "zlib.net",      ":/licenses/Zlib.txt"     },
-        { "KDE Frameworks / Breeze", "6", "LGPL v2.1+", "https://kde.org",               "kde.org",       ":/licenses/LGPL-2.1.txt" },
+        { "Qt",            qVersion(), "LGPL v3",    "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
+        { "QCustomPlot",   "2.1.1",    "GPL v3",     "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt"  },
+        { "nlohmann/json", "3.11.3",   "MIT",        "https://github.com/nlohmann/json", "github.com",      ":/licenses/MIT.txt"      },
+        { "zlib",          "1.3.1",    "zlib",       "https://zlib.net",                 "zlib.net",        ":/licenses/Zlib.txt"     },
+        // KDE — bundled only with the optional Breeze style. Frameworks (KF6) ship
+        // at 6.27.0; the Breeze widget style is from Plasma 6.7.0. These are the
+        // exact libraries copied next to the app (the breeze6 runtime closure).
+        { "Breeze style (Plasma)", "6.7.0",  "LGPL v2.1+", "https://invent.kde.org/plasma/breeze",            "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "Breeze Icons",          "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/breeze-icons",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 CoreAddons",        "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kcoreaddons",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 Config",            "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kconfig",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 GuiAddons",         "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kguiaddons",    "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 ColorScheme",       "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kcolorscheme",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 WindowSystem",      "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kwindowsystem", "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 IconThemes",        "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kiconthemes",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 Archive",           "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/karchive",      "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 I18n",              "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/ki18n",         "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
     };
     const int libCount = int(std::size(libs));
 
@@ -450,16 +462,16 @@ QWidget* SettingsDialog::buildAboutPage() {
     }
 
     table->resizeRowsToContents();
-    // Show every row without an inner scrollbar (header + rows + a little slack).
-    int tableHeight = table->horizontalHeader()->height() + 2 * table->frameWidth();
-    for (int row = 0; row < libCount; ++row)
-        tableHeight += table->rowHeight(row);
+    // Cap the visible height to ~9 rows; the rest (the KDE closure) scrolls.
+    const int visibleRows = qMin(libCount, 9);
+    int tableHeight = table->horizontalHeader()->height() + 2 * table->frameWidth()
+                      + visibleRows * table->rowHeight(0);
     table->setFixedHeight(tableHeight);
     v->addWidget(table);
 
-    // KDE/Breeze ships only with the optional bundled Breeze style.
+    // The KDE rows ship only with the optional bundled Breeze style.
     QLabel* breezeNote = new QLabel(
-        "KDE Frameworks / Breeze are included only when the optional Breeze style is bundled.");
+        "Breeze and the KF6 frameworks above are included only when the optional Breeze style is bundled.");
     breezeNote->setWordWrap(true);
     QFont noteFont = breezeNote->font();
     noteFont.setItalic(true);
@@ -476,7 +488,7 @@ void SettingsDialog::showAboutDialog() {
     QDialog dlg(this);
     dlg.setWindowTitle("About " + QApplication::applicationName());
     dlg.setWindowModality(Qt::ApplicationModal);
-    dlg.resize(680, 600);
+    dlg.resize(900, 620);
 
     QVBoxLayout* lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(0, 0, 0, 0);
