@@ -25,7 +25,7 @@
 #include <QToolButton>
 #include <QStyle>
 #include <QTextBrowser>
-#include <QDialogButtonBox>
+#include <QClipboard>
 #include <QFile>
 #include <QTextStream>
 #include <QFontDatabase>
@@ -593,9 +593,31 @@ void SettingsDialog::showLicenseText(const QString& title, const QString& resour
     }
     lay->addWidget(browser);
 
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
-    lay->addWidget(buttons);
+    QWidget* btnRow = new QWidget;
+    QHBoxLayout* btnLay = new QHBoxLayout(btnRow);
+    btnLay->setContentsMargins(0, 0, 0, 0);
+
+    QPushButton* copyBtn = new QPushButton("Copy");
+    copyBtn->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("edit-copy-symbolic"),
+        dlg.palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_FileDialogContentsView)));
+    connect(copyBtn, &QPushButton::clicked, browser, [browser] {
+        QApplication::clipboard()->setText(browser->toPlainText());
+    });
+
+    QPushButton* closeBtn = new QPushButton("Close");
+    closeBtn->setDefault(true);
+    closeBtn->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("dialog-close-symbolic"),
+        dlg.palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_DialogCloseButton)));
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    btnLay->addWidget(copyBtn);
+    btnLay->addStretch(1);
+    btnLay->addWidget(closeBtn);
+    lay->addWidget(btnRow);
 
     dlg.exec();
 }
