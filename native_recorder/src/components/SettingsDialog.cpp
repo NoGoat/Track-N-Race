@@ -429,6 +429,11 @@ QWidget* SettingsDialog::buildAboutPage() {
     QLabel* copyright = new QLabel("© 2026 Track N Race");
     v->addWidget(copyright);
 
+    QLabel* repoLink = new QLabel(
+        "<a href=\"https://github.com/nogoat/track-n-race\">github.com/nogoat/track-n-race</a>");
+    repoLink->setOpenExternalLinks(true);
+    v->addWidget(repoLink);
+
     // Project license row.
     QWidget* licRow = new QWidget;
     QHBoxLayout* licLay = new QHBoxLayout(licRow);
@@ -445,36 +450,39 @@ QWidget* SettingsDialog::buildAboutPage() {
     v->addWidget(horizontalSeparator());
     v->addWidget(subHeading("Third-party software"));
 
-    // name, version, license label, homepage URL, short link text, license resource.
-    struct Lib { const char* name; QString version; const char* license;
+    // name, version, license label, copyright holder, homepage URL, short link text, license resource.
+    struct Lib { const char* name; QString version; const char* license; const char* copyright;
                  const char* url; const char* linkText; const char* resource; };
     const Lib libs[] = {
-        { "Qt",            qVersion(), "LGPL v3",    "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
-        { "QCustomPlot",   "2.1.1",    "GPL v3",     "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt"  },
-        { "nlohmann/json", "3.11.3",   "MIT",        "https://github.com/nlohmann/json", "github.com",      ":/licenses/MIT.txt"      },
-        { "zlib",          "1.3.1",    "zlib",       "https://zlib.net",                 "zlib.net",        ":/licenses/Zlib.txt"     },
+        { "Qt",            qVersion(), "LGPL v3", "© The Qt Company Ltd.",                       "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
+        { "QCustomPlot",   "2.1.1",    "GPL v3",  "© 2011–2022 Emanuel Eichhammer",         "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt"  },
+        { "nlohmann/json", "3.11.3",   "MIT",     "© 2013–2022 Niels Lohmann",              "https://github.com/nlohmann/json", "github.com",      ":/licenses/MIT.txt"      },
+        { "zlib",          "1.3.1",    "zlib",    "© 1995–2022 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
 #ifdef BREEZE_BUNDLED
         // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). Frameworks
         // (KF6) ship at 6.27.0; the Breeze widget style is from Plasma 6.7.0. These
         // are the exact libraries copied next to the app (the breeze6 runtime closure).
-        { "Breeze style (Plasma)", "6.7.0",  "LGPL v2.1+", "https://invent.kde.org/plasma/breeze",            "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "Breeze Icons",          "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/breeze-icons",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 CoreAddons",        "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kcoreaddons",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 Config",            "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kconfig",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 GuiAddons",         "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kguiaddons",    "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 ColorScheme",       "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kcolorscheme",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 WindowSystem",      "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kwindowsystem", "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 IconThemes",        "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/kiconthemes",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 Archive",           "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/karchive",      "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 I18n",              "6.27.0", "LGPL v2.1+", "https://invent.kde.org/frameworks/ki18n",         "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "Breeze style (Plasma)", "6.7.0",  "LGPL v2.1+", "© Hugo Pereira Da Costa & KDE contributors", "https://invent.kde.org/plasma/breeze",            "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "Breeze Icons",          "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/breeze-icons",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 CoreAddons",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcoreaddons",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 Config",            "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kconfig",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 GuiAddons",         "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kguiaddons",    "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 ColorScheme",       "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcolorscheme",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 WindowSystem",      "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kwindowsystem", "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 IconThemes",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kiconthemes",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 Archive",           "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/karchive",      "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 Codecs",            "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcodecs",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 ConfigWidgets",     "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kconfigwidgets","invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 I18n",              "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/ki18n",         "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KF6 WidgetsAddons",     "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kwidgetsaddons","invent.kde.org", ":/licenses/LGPL-2.1.txt" },
 #endif
     };
     const int libCount = int(std::size(libs));
 
     // A table keeps the columns aligned and width under control; the long homepage
     // URLs (shown as short host links) were what forced the horizontal scrollbar.
-    QTableWidget* table = new QTableWidget(libCount, 5);
-    table->setHorizontalHeaderLabels({ "Library", "Version", "License", "Website", "View License" });
+    QTableWidget* table = new QTableWidget(libCount, 6);
+    table->setHorizontalHeaderLabels({ "Library", "Version", "License", "Copyright", "Website", "View License" });
     table->verticalHeader()->setVisible(false);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::NoSelection);
@@ -482,11 +490,11 @@ QWidget* SettingsDialog::buildAboutPage() {
     table->setShowGrid(false);
     table->setAlternatingRowColors(true);   // match the app's other tables
     table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    table->setMinimumWidth(720);             // drives the fixed dialog width
+    table->setMinimumWidth(860);             // drives the fixed dialog width
 
     QHeaderView* hdr = table->horizontalHeader();
     hdr->setSectionResizeMode(0, QHeaderView::Stretch);            // Library absorbs slack
-    for (int c = 1; c < 5; ++c)
+    for (int c = 1; c < 6; ++c)
         hdr->setSectionResizeMode(c, QHeaderView::ResizeToContents);
 
     for (int row = 0; row < libCount; ++row) {
@@ -499,6 +507,7 @@ QWidget* SettingsDialog::buildAboutPage() {
         table->setItem(row, 0, nameItem);
         table->setItem(row, 1, new QTableWidgetItem(lib.version));
         table->setItem(row, 2, new QTableWidgetItem(lib.license));
+        table->setItem(row, 3, new QTableWidgetItem(lib.copyright));
 
         QLabel* linkLbl = new QLabel(
             QString("<a href=\"%1\">%2</a>").arg(lib.url, lib.linkText));
@@ -510,7 +519,7 @@ QWidget* SettingsDialog::buildAboutPage() {
         // width (+ margins + a little slack) so the text always fits.
         linkLbl->setMinimumWidth(
             linkLbl->fontMetrics().horizontalAdvance(lib.linkText) + 4 + 24 + 6);
-        table->setCellWidget(row, 3, linkLbl);
+        table->setCellWidget(row, 4, linkLbl);
 
         QToolButton* viewBtn = new QToolButton;
         viewBtn->setAutoRaise(true);
@@ -533,14 +542,22 @@ QWidget* SettingsDialog::buildAboutPage() {
         viewLay->addStretch(1);
         viewLay->addWidget(viewBtn);
         viewLay->addStretch(1);
-        table->setCellWidget(row, 4, viewCell);
+        table->setCellWidget(row, 5, viewCell);
     }
 
     table->resizeRowsToContents();
+    // QLabel cell-widgets and plain QTableWidgetItems report slightly different
+    // sizeHints, so resizeRowsToContents() can give rows unequal heights. Clamp
+    // everything to the tallest row so the grid looks uniform.
+    int rowH = 0;
+    for (int r = 0; r < libCount; ++r)
+        rowH = qMax(rowH, table->rowHeight(r));
+    for (int r = 0; r < libCount; ++r)
+        table->setRowHeight(r, rowH);
     // Cap the visible height to ~9 rows; the rest (the KDE closure) scrolls.
     const int visibleRows = qMin(libCount, 9);
     int tableHeight = table->horizontalHeader()->height() + 2 * table->frameWidth()
-                      + visibleRows * table->rowHeight(0);
+                      + visibleRows * rowH;
     table->setFixedHeight(tableHeight);
     v->addWidget(table);
 
