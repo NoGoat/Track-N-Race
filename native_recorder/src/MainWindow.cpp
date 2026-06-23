@@ -43,7 +43,6 @@
 #include <QCoreApplication>
 #include <QUdpSocket>
 #include <QTimer>
-#include <QSvgRenderer>
 #include <QPainter>
 #include <QImage>
 #include <QPixmap>
@@ -139,32 +138,14 @@ protected:
 
 } // namespace
 
-// ── Damage value helper (used in constructor lambda) ───────────────────────
-
-// Renders an SVG resource and tints it with the given colour.
-static QIcon paletteIcon(const QString& resource, const QColor& tint) {
-    QSvgRenderer renderer(resource);
-    QImage img(24, 24, QImage::Format_ARGB32_Premultiplied);
-    img.fill(Qt::transparent);
-    QPainter p(&img);
-    renderer.render(&p);
-    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    p.fillRect(img.rect(), tint);
-    p.end();
-    return QIcon(QPixmap::fromImage(img));
-}
-
 // Removed TintedIconEngine and adaptThemeIcon, now in IconUtils.h
 
-// Prefer the OS/desktop theme's play/pause icon (e.g. Breeze on KDE) so the
-// button matches the rest of the system; our tinted SVG is the fallback where
-// no theme icon is available (e.g. Windows, which has no icon theme concept).
-static QIcon playPauseIcon(bool playing, const QColor& tint) {
+static QIcon playPauseIcon(bool playing, QWidget* w, const QColor& tint) {
     return adaptThemeIcon(
         QIcon::fromTheme(playing ? QIcon::ThemeIcon::MediaPlaybackPause
                                  : QIcon::ThemeIcon::MediaPlaybackStart),
         tint,
-        paletteIcon(playing ? ":/pause.svg" : ":/play.svg", tint));
+        w->style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
 }
 
 // No bundled SVG for these two — prefer the OS/desktop theme icon (tinted to the
@@ -538,7 +519,7 @@ MainWindow::MainWindow(QWidget* parent)
     pbLayout->addWidget(pb_seekBackBtn_);
 
     pb_playBtn_ = new QPushButton(pb_bar_);
-    pb_playBtn_->setIcon(playPauseIcon(false, iconTint));
+    pb_playBtn_->setIcon(playPauseIcon(false, this, iconTint));
     pb_playBtn_->setIconSize(QSize(20, 20));
     pb_playBtn_->setFixedSize(34, 34);
     pb_playBtn_->setFlat(true);
@@ -705,7 +686,7 @@ MainWindow::MainWindow(QWidget* parent)
         closeActiveStream();
         pb_sep_->show();
         pb_bar_->show();
-        pb_playBtn_->setIcon(playPauseIcon(false, palette().color(QPalette::Text)));
+        pb_playBtn_->setIcon(playPauseIcon(false, this, palette().color(QPalette::Text)));
         pbLastPlaying_ = false;
         pb_slider_->setValue(0);
         pb_speedCombo_->setCurrentIndex(2); // reset to 1×
@@ -740,7 +721,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (rideHeightChart_) rideHeightChart_->setCurrentTime(player_->currentTime());
         if (ov_tyreCharts_) ov_tyreCharts_->setCurrentTime(player_->currentTime());
         if (playing != pbLastPlaying_) {
-            pb_playBtn_->setIcon(playPauseIcon(playing, palette().color(QPalette::Text)));
+            pb_playBtn_->setIcon(playPauseIcon(playing, this, palette().color(QPalette::Text)));
             pbLastPlaying_ = playing;
         }
         if (total > 0.0f) {
@@ -773,7 +754,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(player_, &TnrdPlayer::finished, this, [this] {
-        pb_playBtn_->setIcon(playPauseIcon(false, palette().color(QPalette::Text)));
+        pb_playBtn_->setIcon(playPauseIcon(false, this, palette().color(QPalette::Text)));
         pbLastPlaying_ = false;
     });
 

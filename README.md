@@ -227,4 +227,4 @@ The installer is output to the `dist/` directory. On Windows, an NSIS installer 
 
 ## License
 
-This project is licensed under the terms of the [MIT License](LICENSE).
+This project is licensed under the terms of the [GPLv3 License](LICENSE).
