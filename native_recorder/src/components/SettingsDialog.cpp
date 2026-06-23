@@ -495,7 +495,13 @@ QWidget* SettingsDialog::buildAboutPage() {
         QLabel* linkLbl = new QLabel(
             QString("<a href=\"%1\">%2</a>").arg(lib.url, lib.linkText));
         linkLbl->setOpenExternalLinks(true);
-        linkLbl->setContentsMargins(4, 0, 8, 0);
+        linkLbl->setContentsMargins(4, 0, 24, 0);
+        // Rich-text labels report a sizeHint a hair too narrow, so ResizeToContents
+        // sizes the column just short of the widest link and clips its last glyph
+        // ("qcustomplot.com" → "qcustomplot.con"). Pin a plain-text-measured minimum
+        // width (+ margins + a little slack) so the text always fits.
+        linkLbl->setMinimumWidth(
+            linkLbl->fontMetrics().horizontalAdvance(lib.linkText) + 4 + 24 + 6);
         table->setCellWidget(row, 3, linkLbl);
 
         QToolButton* viewBtn = new QToolButton;
