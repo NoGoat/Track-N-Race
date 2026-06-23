@@ -146,11 +146,19 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     QHBoxLayout* bottom = new QHBoxLayout;
     bottom->setContentsMargins(12, 8, 12, 12);
     QPushButton* aboutBtn = new QPushButton("About");
+    aboutBtn->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("info-symbolic"),
+        palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_MessageBoxInformation)));
     connect(aboutBtn, &QPushButton::clicked, this, &SettingsDialog::showAboutDialog);
     bottom->addWidget(aboutBtn);
     bottom->addStretch(1);
     QPushButton* closeBtn = new QPushButton("Close");
     closeBtn->setDefault(true);
+    closeBtn->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("dialog-close-symbolic"),
+        palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_DialogCloseButton)));
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(closeBtn);
     paneLay->addLayout(bottom);
@@ -562,6 +570,10 @@ void SettingsDialog::showAboutDialog() {
     bottom->addStretch(1);
     QPushButton* closeBtn = new QPushButton("Close");
     closeBtn->setDefault(true);
+    closeBtn->setIcon(adaptThemeIcon(
+        QIcon::fromTheme("dialog-close-symbolic"),
+        dlg.palette().color(QPalette::WindowText),
+        style()->standardIcon(QStyle::SP_DialogCloseButton)));
     connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
     bottom->addWidget(closeBtn);
     lay->addLayout(bottom);
