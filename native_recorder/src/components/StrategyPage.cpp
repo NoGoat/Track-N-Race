@@ -443,9 +443,14 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     sidebar->setFrameShape(QFrame::NoFrame);
     sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    sidebar->setFixedWidth(230);
+    // Reserve the vertical scrollbar's gutter once, up-front: the outer width
+    // includes it but the content is capped to the base width, so the scrollbar
+    // appears within the reserved space — no layout shift when it shows/hides.
     {
+        const int sbw = sidebar->verticalScrollBar()->sizeHint().width();
+        sidebar->setFixedWidth(230 + sbw);
         auto* content = new QWidget;
+        content->setMaximumWidth(230);
         sidebarLayout_ = new QVBoxLayout(content);
         sidebarLayout_->setContentsMargins(0, 0, 0, 0);
         sidebarLayout_->setSpacing(0);
@@ -1377,12 +1382,6 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     }
 
     sidebarLayout_->addStretch();
-
-    // Widen the sidebar to keep its content width constant when the vertical
-    // scrollbar appears (it otherwise eats into the 230px). Uses the previous
-    // layout's scroll range — a one-tick lag that settles without oscillating.
-    if (auto* sa = qobject_cast<QScrollArea*>(sidebarScroll_)) {
-        const bool overflow = sa->verticalScrollBar()->maximum() > 0;
-        sidebarScroll_->setFixedWidth(overflow ? 250 : 230);
-    }
+    // Sidebar width is fixed at construction with the scrollbar gutter reserved, so
+    // the scrollbar shows/hides with no layout shift — nothing to do here per tick.
 }
