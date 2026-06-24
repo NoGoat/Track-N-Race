@@ -108,9 +108,11 @@ private:
     std::vector<DisplayStint> consDisplay_;
     std::vector<DisplayStint> aggDisplay_;
     // The stint columns are heavy (QTableWidgets); rebuild them only when their
-    // content changes, not every tick — avoids scrollbar flicker / clumping.
-    bool                      stratColumnsBuilt_ = false;
-    bool                      lastStratValid_    = false;
+    // content changes, not every tick — avoids scrollbar flicker / clumping. Once a
+    // valid strategy has shown, keep it on screen (never revert to "Waiting…").
+    bool                      stratBuilt_          = false;  // any column content built
+    bool                      stratShowingTimeline_ = false; // timeline vs waiting placeholder
+    bool                      everStratValid_      = false;  // a valid strategy has been shown
 
     bool   hasPrevAheadGap_  = false;
     bool   hasPrevBehindGap_ = false;

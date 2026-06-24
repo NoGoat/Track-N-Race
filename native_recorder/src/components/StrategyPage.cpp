@@ -470,8 +470,9 @@ void StrategyPage::resetForNewSession() {
     consDisplay_.clear();
     aggDisplay_.clear();
     tableLapComputed_ = -1;
-    stratColumnsBuilt_ = false;
-    lastStratValid_ = false;
+    stratBuilt_ = false;
+    stratShowingTimeline_ = false;
+    everStratValid_ = false;
     hasPrevAheadGap_ = hasPrevBehindGap_ = false;
     prevAheadGap_ = prevBehindGap_ = 0.0;
     playerGainingAhead_ = behindIsGaining_ = -1;
@@ -667,7 +668,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const int  totalLaps = session.is_object() ? session.value("total_laps", 0) : 0;
     const int  sessionType = session.is_object() ? session.value("session_type", -1) : -1;
     const bool isRace = (sessionType == 15 || sessionType == 16 || sessionType == 17);
-    const bool hasTyreData = status.is_object() && status.value("tyre_age_laps", 0) >= 1;
+    // A fitted tyre keeps the strategy valid regardless of age, so a fresh tyre on a
+    // pit out-lap (age 0) doesn't blank the panel back to "Waiting for tyre data".
+    const bool hasTyreData = status.is_object() && status.value("tyre_compound", 0) > 0;
     const int  trackId = session.is_object() ? session.value("track_id", -1) : -1;
     const int  weather = session.is_object() ? session.value("weather", 0) : 0;
 
@@ -1100,7 +1103,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     { QPalette p = wearPct_->palette(); p.setColor(QPalette::WindowText, wearC); wearPct_->setPalette(p); }
     wearAge_->setText(status.is_object()
         ? QString("%1L · %2%/L").arg(status.value("tyre_age_laps", 0))
-            .arg(sd.valid ? QString::number(sd.wearPerLap, 'f', 1) : QString("—"))
+            .arg(sd.valid && status.value("tyre_age_laps", 0) > 0
+                     ? QString::number(sd.wearPerLap, 'f', 1) : QString("—"))
         : QString("—"));
     wearBar_->setValue((int)std::min(100.0, sd.avgWear));
     wearBar_->setStyleSheet(QString(
@@ -1134,31 +1138,35 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const QColor blueAccent  = isDark ? kBlue  : QColor("#0B57D0");
     const QColor amberAccent = isDark ? kAmber : QColor("#B06000");
 
-    // Rebuild the (heavy) stint columns only when their content actually changes —
-    // not every tick — otherwise the QTableWidgets churn and the scrollbar flickers.
-    if (!stratColumnsBuilt_ || displayChanged || sd.valid != lastStratValid_) {
-        // Conservative column
-        clearColumn(consLayout_);
-        if (sd.valid) {
+    if (sd.valid) everStratValid_ = true;
+
+    // Once a valid strategy has shown, keep the timeline on screen through stint
+    // changes (a fresh tyre no longer blanks it). Rebuild the heavy QTableWidget
+    // columns only when content changes — not every tick — to avoid scroll flicker.
+    if (everStratValid_) {
+        if (displayChanged || !stratShowingTimeline_) {
+            clearColumn(consLayout_);
             consLayout_->addWidget(buildStintTimeline(sd.conservative.stops, sd.isMonaco,
                                                       "Conservative", blueAccent, sec, consDisplay_));
-        } else {
-            auto* wait = new QLabel("Waiting for tyre data…");
-            wait->setAlignment(Qt::AlignCenter);
-            QPalette p = wait->palette(); p.setColor(QPalette::WindowText, sec); wait->setPalette(p);
-            consLayout_->addWidget(wait);
-        }
-        consLayout_->addStretch();
-
-        // Aggressive column
-        clearColumn(aggLayout_);
-        if (sd.valid)
+            consLayout_->addStretch();
+            clearColumn(aggLayout_);
             aggLayout_->addWidget(buildStintTimeline(sd.aggressive.stops, sd.isMonaco,
                                                     "Aggressive", amberAccent, sec, aggDisplay_));
+            aggLayout_->addStretch();
+            stratShowingTimeline_ = true;
+            stratBuilt_ = true;
+        }
+    } else if (!stratBuilt_) {
+        // Only before the very first valid strategy.
+        clearColumn(consLayout_);
+        auto* wait = new QLabel("Waiting for tyre data…");
+        wait->setAlignment(Qt::AlignCenter);
+        QPalette p = wait->palette(); p.setColor(QPalette::WindowText, sec); wait->setPalette(p);
+        consLayout_->addWidget(wait);
+        consLayout_->addStretch();
+        clearColumn(aggLayout_);
         aggLayout_->addStretch();
-
-        stratColumnsBuilt_ = true;
-        lastStratValid_    = sd.valid;
+        stratBuilt_ = true;
     }
 
     // ── Sidebar ─────────────────────────────────────────────────────────
