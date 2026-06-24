@@ -35,6 +35,7 @@ class GForceChart;
 class RideHeightChart;
 class TyreCardsWidget;
 class TyreChartsWidget;
+class StrategyPage;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
@@ -52,6 +53,12 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
+    // Page tabs / stacked-widget order. Declaration order *is* the tab order and
+    // the QStackedWidget index, so inserting a page here (and in the matching
+    // kPageNames[] and stack->addWidget() list) renumbers everything for free.
+    // PageCount is the tab count — keep it last.
+    enum Page { Overview, Standings, Session, Tyres, Strategy, Input, Power, Misc, PageCount };
+
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
@@ -216,6 +223,11 @@ private:
     nlohmann::json   lastPlayerTelemetryData;
     nlohmann::json   lastPlayerDamageData;
     nlohmann::json   lastTyreSetsData;
+
+    // ── Strategy page ─────────────────────────────────────────────
+    // Self-contained: fed the cached JSON rows below on refresh, runs its own
+    // stint/undercut/wear calculations internally. No SessionModel binding.
+    StrategyPage* strategyPage_ = nullptr;
 
     // ── Session page ──────────────────────────────────────────────
     QWidget*     sp_marshalStrip  = nullptr;
@@ -392,6 +404,7 @@ private:
     QWidget* buildStandingsPage();
     QWidget* buildRacePanel();
     QWidget* buildSessionPage();
+    QWidget* buildStrategyPage();
     QWidget* buildTyresPage();
     QWidget* buildInputPage();
     QWidget* buildPowerPage();
@@ -411,6 +424,7 @@ private:
     void     updateProximityWidget();
     void     updateTyresPage();
     void     updateTyreSetsTable();
+    void     updateStrategyPage();
     void     updateTrackMapPage();
     void     updatePowerPage();
 
@@ -419,11 +433,12 @@ private:
     // panel per packet locks the UI. Each packet only marks its panel dirty and
     // the heavy rebuild runs once per refresh tick.
     QTimer* uiRefreshTimer_ = nullptr;
-    int  currentPage_    = 0;   // visible stack index; updaters skip hidden pages
+    Page currentPage_    = Overview;   // visible stack page; updaters skip hidden pages
     bool dirtyTiming_    = false;
     bool dirtyRacePanel_ = false;
     bool dirtyTyres_     = false;
     bool dirtyTyreSets_  = false;
+    bool dirtyStrategy_  = false;
     bool dirtySession_   = false;
     bool dirtyEvents_    = false;
     bool dirtyProximity_ = false;

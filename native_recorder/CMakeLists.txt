@@ -77,6 +77,8 @@ set(SOURCES
     src/components/TyreCardsWidget.cpp
     src/components/TyreChartsWidget.h
     src/components/TyreChartsWidget.cpp
+    src/components/StrategyPage.h
+    src/components/StrategyPage.cpp
     src/components/StandingsPage.cpp
     src/components/SessionPage.cpp
     src/components/InputPage.cpp

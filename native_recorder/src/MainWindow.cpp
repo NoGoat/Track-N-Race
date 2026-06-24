@@ -14,6 +14,7 @@
 #include "components/RideHeightChart.h"
 #include "components/TyreCardsWidget.h"
 #include "components/TyreChartsWidget.h"
+#include "components/StrategyPage.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
 #include "components/TyreHelpers.h"
@@ -333,7 +334,8 @@ MainWindow::MainWindow(QWidget* parent)
     // that line isn't reachable through any stylesheet rule. Plain QToolButtons
     // have no such native "tab base" painting path, so there's nothing for an
     // unselected button to draw beyond what its own (empty) stylesheet says.
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Input", "Power", "Misc" };
+    // Indexed by Page — keep in the same order as the enum and the stack adds below.
+    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" };
     QWidget* pageTabsWidget = new QWidget;
     pageTabsWidget->setFixedHeight(kToolbarHeight);
     QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
@@ -342,7 +344,7 @@ MainWindow::MainWindow(QWidget* parent)
     tb_pageGroup_ = new QButtonGroup(this);
     QButtonGroup* pageGroup = tb_pageGroup_;
     pageGroup->setExclusive(true);
-    static constexpr int kPageCount = 7;
+    static constexpr int kPageCount = PageCount;
     static constexpr int kUnderlineWidth = 2;
     const QString accent = QApplication::palette().color(QPalette::Highlight).name();
     // Every button — checked or not — reserves the same border-bottom width
@@ -422,19 +424,19 @@ MainWindow::MainWindow(QWidget* parent)
     editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
     editLayoutAct_->setEnabled(true); // Default is Overview page (0)
     connect(editLayoutAct_, &QAction::triggered, this, [this] {
-        if (currentPage_ == 0) {
+        if (currentPage_ == Overview) {
             EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
-        } else if (currentPage_ == 4) {
+        } else if (currentPage_ == Input) {
             EditInputLayoutDialog* dlg = new EditInputLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
-        } else if (currentPage_ == 5) {
+        } else if (currentPage_ == Power) {
             EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
-        } else if (currentPage_ == 6) {
+        } else if (currentPage_ == Misc) {
             EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(this, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
@@ -478,14 +480,16 @@ MainWindow::MainWindow(QWidget* parent)
     // live UDP and playback. Created before the Overview tab so the chart can bind it.
     model_ = new SessionModel(this);
 
+    // Order must match the Page enum and kPageNames[] above.
     QStackedWidget* stack = new QStackedWidget(this);
-    stack->addWidget(buildOverviewTab());   // index 0
-    stack->addWidget(buildStandingsPage()); // index 1
-    stack->addWidget(buildSessionPage());   // index 2
-    stack->addWidget(buildTyresPage());     // index 3
-    stack->addWidget(buildInputPage());     // index 4
-    stack->addWidget(buildPowerPage());     // index 5
-    stack->addWidget(buildMiscPage());      // index 6
+    stack->addWidget(buildOverviewTab());   // Overview
+    stack->addWidget(buildStandingsPage()); // Standings
+    stack->addWidget(buildSessionPage());   // Session
+    stack->addWidget(buildTyresPage());     // Tyres
+    stack->addWidget(buildStrategyPage());  // Strategy
+    stack->addWidget(buildInputPage());     // Input
+    stack->addWidget(buildPowerPage());     // Power
+    stack->addWidget(buildMiscPage());      // Misc
 
     // Coalesces panel rebuilds to ~30 Hz so bursts of packets can't lock the UI.
     uiRefreshTimer_ = new QTimer(this);
@@ -609,8 +613,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
     connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
-        currentPage_ = i;       // refresh the newly-shown page from any pending data
-        editLayoutAct_->setEnabled(i == 0 || i == 4 || i == 5 || i == 6);
+        currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
+        editLayoutAct_->setEnabled(currentPage_ == Overview || currentPage_ == Input ||
+                                   currentPage_ == Power || currentPage_ == Misc);
         flushUiRefresh();
         relayoutToolbar();      // the active tab is kept inline — re-evaluate overflow
     });
@@ -1545,7 +1550,7 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row.value("visual_compound", 0)
         );
         lastPlayerStatusData = row;
-        dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyPower_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "damage") {
         emit damageUpdated(
             row.value("tyre_dmg_fl",   0), row.value("tyre_dmg_fr",   0),
@@ -1559,14 +1564,14 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row.value("drs_fault",         0), row.value("ers_fault",         0)
         );
         lastPlayerDamageData = row;
-        dirtyTyres_ = true; scheduleUiRefresh();
+        dirtyTyres_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "tyre_sets") {
         lastTyreSetsData = row;
-        dirtyTyreSets_ = true; scheduleUiRefresh();
+        dirtyTyreSets_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "lap") {
         emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
         lastPlayerLapData = row;
-        dirtyRacePanel_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "positions") {
         lastPositionsData = row;
         dirtyTrackMap_ = true; scheduleUiRefresh();
@@ -1588,11 +1593,12 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             }
         }
         lastSafetyCarStatus_ = sc;
-        dirtySession_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
+        dirtySession_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
         if (row.value("code", "") == "SSTA") {
             sessionEventLog.clear();
             resetFastestLapState();
+            if (strategyPage_) strategyPage_->resetForNewSession();
             lastSafetyCarStatus_ = 0;
         }
         sessionEventLog.push_back(row);
@@ -1602,13 +1608,13 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (type == "timing") {
         lastTimingData = row;
-        dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyProximity_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "participants") {
         lastParticipantsData = row;
-        dirtyTiming_ = true; dirtyTrackMap_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "all_status") {
         lastAllStatusData = row;
-        dirtyTiming_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "fastest_lap") {
         fastestLapCarIdx_ = row.value("car_idx", -1);
         fastestLapSet_ = true;
@@ -1635,6 +1641,18 @@ void MainWindow::resetFastestLapState() {
     fastestLapCarIdx_ = -1;
     fastestLapSet_ = false;
     sessionHistoryBest_.clear();
+}
+
+QWidget* MainWindow::buildStrategyPage() {
+    strategyPage_ = new StrategyPage(this);
+    return strategyPage_;
+}
+
+void MainWindow::updateStrategyPage() {
+    if (!strategyPage_) return;
+    strategyPage_->update(lastPlayerLapData, lastSessionData, lastPlayerStatusData,
+                          lastPlayerDamageData, lastTimingData, lastParticipantsData,
+                          lastTyreSetsData, lastAllStatusData);
 }
 
 void MainWindow::showToast(const ToastSpec& spec) {
@@ -1732,28 +1750,31 @@ void MainWindow::scheduleUiRefresh() {
 
 void MainWindow::flushUiRefresh() {
     // Only rebuild the panels on the visible page; others stay marked dirty and
-    // refresh when shown (see the pageCombo switch handler). This keeps hidden
-    // pages (e.g. the 20-row standings table) from hitching the visible page's
-    // animations on the shared UI thread. Index: 1=Standings 2=Session 3=Tyres.
+    // refresh when shown (see the page-switch handler). This keeps hidden pages
+    // (e.g. the 20-row standings table) from hitching the visible page's
+    // animations on the shared UI thread.
     switch (currentPage_) {
-        case 0:
+        case Overview:
             if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
             break;
-        case 1:
+        case Standings:
             if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
             if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
             break;
-        case 2:
+        case Session:
             if (dirtyProximity_) { updateProximityWidget(); dirtyProximity_ = false; }
             if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
             if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
             if (dirtyTrackMap_)  { updateTrackMapPage();     dirtyTrackMap_  = false; }
             break;
-        case 3:
+        case Tyres:
             if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
             if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
             break;
-        case 5:
+        case Strategy:
+            if (dirtyStrategy_)  { updateStrategyPage();     dirtyStrategy_  = false; }
+            break;
+        case Power:
             if (dirtyPower_)     { updatePowerPage();        dirtyPower_     = false; }
             break;
         default:
