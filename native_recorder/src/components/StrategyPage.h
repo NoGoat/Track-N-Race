@@ -1,7 +1,11 @@
 #pragma once
 
 #include <QWidget>
+#include <QColor>
+#include <QString>
 #include <unordered_map>
+#include <map>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -10,6 +14,37 @@ class QProgressBar;
 class QStackedWidget;
 class QScrollArea;
 class QVBoxLayout;
+
+// One row of a stint's per-lap target table.
+struct LapRow {
+    int    lapNum = 0;
+    double requiredMs = 0, actualRequiredMs = 0, actualMs = 0;
+    double deltaLapMs = 0, deltaStintMs = 0;
+    bool   hasActual = false;
+};
+
+// A stint captured the moment it begins, so it can be kept on screen after it ends
+// (the live plan only carries the current + future stints).
+struct PastStint {
+    int     startLap = 0;
+    double  reqBaseMs = 0;
+    QString compoundName;
+    QColor  color;
+    bool    postPit = false;   // its out-lap carries the boxing-time penalty
+};
+
+// Everything needed to render one stint card + its per-lap table. Cached in members
+// and rebuilt only when the lap counter advances, so rows don't churn each tick.
+struct DisplayStint {
+    QString compoundName;
+    QColor  color;
+    int     startLap = 0, endLap = 0, lapCount = 0;
+    bool    isLast = false;
+    QString wornText;
+    bool    targetPresent = false, isEstimate = false, hasDelta = false;
+    double  targetMs = 0, deltaMs = 0;
+    std::vector<LapRow> rows;
+};
 
 // Race-strategy screen ported from the Electron StrategyPanel. Self-contained:
 // MainWindow hands it the cached telemetry JSON rows on each refresh tick and the
@@ -26,7 +61,8 @@ public:
     void update(const nlohmann::json& lap,      const nlohmann::json& session,
                 const nlohmann::json& status,   const nlohmann::json& damage,
                 const nlohmann::json& timing,    const nlohmann::json& participants,
-                const nlohmann::json& tyreSets,  const nlohmann::json& allStatus);
+                const nlohmann::json& tyreSets,  const nlohmann::json& allStatus,
+                const std::map<int, int>& lapTimesByNum);
 
     // Clears the cross-update tracking (pit counts, latched rivals, gap trend).
     // Called internally on a detected session change and by MainWindow on SSTA.
@@ -58,6 +94,23 @@ private:
     int  rivalBehindIdx_ = -1;
     bool rivalsLatched_  = false;
     int  prevLapNum_     = -1;
+
+    // Per-lap target table state (persists across the per-tick column rebuild).
+    // Actual lap times come from the authoritative SessionModel laps (passed into
+    // update()), so the table is correct live and under playback/seeking alike.
+    std::map<int, double>   consFrozenReqMs_;      // stint true-start -> frozen Required base (ms)
+    std::map<int, double>   aggFrozenReqMs_;       // stint true-start -> frozen Required base (ms)
+    std::vector<PastStint>  consPast_;             // every stint that has begun (oldest → newest)
+    std::vector<PastStint>  aggPast_;
+    // Display stints (completed + current + future) are rebuilt only when the lap
+    // counter advances (or on the first valid build), then held until the next lap.
+    int                       tableLapComputed_ = -1;
+    std::vector<DisplayStint> consDisplay_;
+    std::vector<DisplayStint> aggDisplay_;
+    // The stint columns are heavy (QTableWidgets); rebuild them only when their
+    // content changes, not every tick — avoids scrollbar flicker / clumping.
+    bool                      stratColumnsBuilt_ = false;
+    bool                      lastStratValid_    = false;
 
     bool   hasPrevAheadGap_  = false;
     bool   hasPrevBehindGap_ = false;

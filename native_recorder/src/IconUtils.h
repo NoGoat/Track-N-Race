@@ -25,10 +25,17 @@ public:
                          qreal scale) override {
         QPixmap pm = src_.pixmap(size, scale, mode, state);  // crisp at device res
         if (pm.isNull()) return pm;
+        // SourceIn fills the glyph with a flat tint, which discards the mode-specific
+        // shading Qt would normally apply. For disabled actions, tint with the
+        // palette's disabled foreground colour so they dim like every other widget
+        // instead of staying at the full-contrast foreground colour.
+        QColor tint = mode == QIcon::Disabled
+            ? QApplication::palette().color(QPalette::Disabled, QPalette::WindowText)
+            : tint_;
         QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
         QPainter p(&img);
         p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-        p.fillRect(img.rect(), tint_);
+        p.fillRect(img.rect(), tint);
         p.end();
         QPixmap out = QPixmap::fromImage(img);
         out.setDevicePixelRatio(scale);

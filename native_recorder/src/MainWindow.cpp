@@ -71,6 +71,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <cctype>
+#include <map>
 
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
@@ -1650,9 +1651,16 @@ QWidget* MainWindow::buildStrategyPage() {
 
 void MainWindow::updateStrategyPage() {
     if (!strategyPage_) return;
+    // Actual lap times for the per-stint target tables, sourced from the
+    // authoritative SessionModel laps (live ingest or the playback pre-scan), so
+    // the table stays correct under playback seeking — not just sequential replay.
+    std::map<int, int> lapTimesByNum;
+    if (model_)
+        for (const LapBlock& lb : model_->data().laps)
+            if (lb.lapTimeMs > 0) lapTimesByNum[lb.lapNum] = lb.lapTimeMs;
     strategyPage_->update(lastPlayerLapData, lastSessionData, lastPlayerStatusData,
                           lastPlayerDamageData, lastTimingData, lastParticipantsData,
-                          lastTyreSetsData, lastAllStatusData);
+                          lastTyreSetsData, lastAllStatusData, lapTimesByNum);
 }
 
 void MainWindow::showToast(const ToastSpec& spec) {

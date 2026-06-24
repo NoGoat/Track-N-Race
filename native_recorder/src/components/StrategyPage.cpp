@@ -9,6 +9,11 @@
 #include <QProgressBar>
 #include <QScrollArea>
 #include <QStackedWidget>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QHeaderView>
+#include <QAbstractItemView>
+#include <QBrush>
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -27,6 +32,7 @@ namespace {
 constexpr double CONS_PIT_COST_MS = 30000.0;
 constexpr double CALL_PIT_COST_MS = 22000.0;
 constexpr double TARGET_PIT_COST_MS = 20000.0;
+constexpr double PIT_OUTLAP_COST_MS = 25000.0;  // boxing time added to the out-lap; promote to a setting later
 
 // Domain colours (match the Electron panel + the rest of the native app).
 const QColor kBlue ("#5794F2");
@@ -64,6 +70,8 @@ struct StintTarget {
 };
 
 struct WearWarning { QString text, detail; QColor color; int priority = 3; };
+
+// LapRow / PastStint / DisplayStint live in the header (cached as members).
 
 struct TimingCar {
     int idx = -1, position = 0, driver_status = 0, result_status = 0, pit_status = 0;
@@ -455,6 +463,15 @@ void StrategyPage::resetForNewSession() {
     rivalAheadIdx_ = rivalBehindIdx_ = -1;
     rivalsLatched_ = false;
     prevLapNum_ = -1;
+    consFrozenReqMs_.clear();
+    aggFrozenReqMs_.clear();
+    consPast_.clear();
+    aggPast_.clear();
+    consDisplay_.clear();
+    aggDisplay_.clear();
+    tableLapComputed_ = -1;
+    stratColumnsBuilt_ = false;
+    lastStratValid_ = false;
     hasPrevAheadGap_ = hasPrevBehindGap_ = false;
     prevAheadGap_ = prevBehindGap_ = 0.0;
     playerGainingAhead_ = behindIsGaining_ = -1;
@@ -513,10 +530,16 @@ void clearColumn(QVBoxLayout* lay) {
 
 }  // namespace
 
-// Build one strategy column (header + stint rows).
-static QWidget* buildStintTimeline(const StrategyResult& res, int totalLaps, double avgWear,
-                                   bool isMonaco, const QString& label, const QColor& accent,
-                                   const std::vector<StintTarget>& targets, const QColor& sec) {
+// Signed delta text (+slower / −faster), matching the stint-target delta styling.
+static QString fmtDelta(double ms) {
+    return QString("%1%2s").arg(ms > 0 ? "+" : "−").arg(std::abs(ms / 1000.0), 0, 'f', 1);
+}
+
+// Build one strategy column (header + stint rows). Renders completed, current and
+// future stints alike — completed ones are kept on screen, not dropped after a pit.
+static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& label,
+                                   const QColor& accent, const QColor& sec,
+                                   const std::vector<DisplayStint>& stints) {
     auto* w = new QWidget;
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(0, 0, 0, 0); v->setSpacing(0);
@@ -527,16 +550,16 @@ static QWidget* buildStintTimeline(const StrategyResult& res, int totalLaps, dou
     hl->addWidget(secLabel(label.toUpper(), sec, 7));
     if (isMonaco) hl->addWidget(makeChip("Monaco 2-stop", kAmber));
     hl->addStretch();
-    auto* stops = new QLabel(QString::number(res.stops));
-    { QFont f = stops->font(); f.setPointSize(14); f.setBold(true); stops->setFont(f);
-      QPalette p = stops->palette(); p.setColor(QPalette::WindowText, accent); stops->setPalette(p); }
-    hl->addWidget(stops, 0, Qt::AlignBottom);
-    hl->addWidget(secLabel(res.stops == 1 ? "stop" : "stops", sec), 0, Qt::AlignBottom);
+    auto* stopsLbl = new QLabel(QString::number(stops));
+    { QFont f = stopsLbl->font(); f.setPointSize(14); f.setBold(true); stopsLbl->setFont(f);
+      QPalette p = stopsLbl->palette(); p.setColor(QPalette::WindowText, accent); stopsLbl->setPalette(p); }
+    hl->addWidget(stopsLbl, 0, Qt::AlignBottom);
+    hl->addWidget(secLabel(stops == 1 ? "stop" : "stops", sec), 0, Qt::AlignBottom);
     v->addWidget(hdr);
     v->addWidget(makeHLine());
 
-    for (size_t i = 0; i < res.stints.size(); ++i) {
-        const Stint& st = res.stints[i];
+    for (size_t i = 0; i < stints.size(); ++i) {
+        const DisplayStint& st = stints[i];
         // Row 1: compound + laps
         auto* r1 = new QWidget; auto* r1l = new QHBoxLayout(r1);
         r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
@@ -544,36 +567,31 @@ static QWidget* buildStintTimeline(const StrategyResult& res, int totalLaps, dou
         auto* laps = new QLabel(QString("~%1L").arg(st.lapCount));
         { QFont f = laps->font(); f.setBold(true); laps->setFont(f); }
         r1l->addWidget(laps);
-        const int endLap = st.isLast ? totalLaps : st.pitLap;
-        r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(endLap), sec, 7), 1);
-        r1l->addWidget(secLabel(i == 0 ? QString("%1% worn").arg((int)std::lround(avgWear))
-                                       : QString("Fresh"), sec, 7));
+        r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7), 1);
+        if (!st.wornText.isEmpty()) r1l->addWidget(secLabel(st.wornText, sec, 7));
         v->addWidget(r1);
 
         // Row 2: connector + target
         auto* r2 = new QWidget; auto* r2l = new QHBoxLayout(r2);
         r2l->setContentsMargins(12, 3, 12, 3); r2l->setSpacing(10);
-        auto* conn = new QLabel(st.isLast ? QString("Finish · Lap %1").arg(totalLaps)
-                                          : QString("Pit · Lap %1").arg(st.pitLap));
+        auto* conn = new QLabel(st.isLast ? QString("Finish · Lap %1").arg(st.endLap)
+                                          : QString("Pit · Lap %1").arg(st.endLap));
         { QFont f = conn->font(); f.setPointSize(7); f.setBold(true); conn->setFont(f);
           QPalette p = conn->palette(); p.setColor(QPalette::WindowText, st.isLast ? kGreen : kAmber);
           conn->setPalette(p); }
         r2l->addWidget(conn);
         r2l->addStretch();
-        const StintTarget t = (i < targets.size()) ? targets[i] : StintTarget{};
-        if (t.present) {
-            r2l->addWidget(secLabel(t.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
-            auto* tm = new QLabel(fmtLapTime(t.targetMs));
+        if (st.targetPresent) {
+            r2l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
+            auto* tm = new QLabel(fmtLapTime(st.targetMs));
             { QFont f = tm->font(); f.setBold(true); tm->setFont(f);
-              if (t.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
+              if (st.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
             r2l->addWidget(tm);
-            if (t.hasDelta) {
-                if (std::abs(t.deltaMs) > 50) {
-                    auto* d = new QLabel(QString("%1%2s")
-                        .arg(t.deltaMs > 0 ? "+" : "−")
-                        .arg(std::abs(t.deltaMs / 1000.0), 0, 'f', 1));
+            if (st.hasDelta) {
+                if (std::abs(st.deltaMs) > 50) {
+                    auto* d = new QLabel(fmtDelta(st.deltaMs));
                     QFont f = d->font(); f.setBold(true); d->setFont(f);
-                    QPalette p = d->palette(); p.setColor(QPalette::WindowText, t.deltaMs > 0 ? kRed : kGreen);
+                    QPalette p = d->palette(); p.setColor(QPalette::WindowText, st.deltaMs > 0 ? kRed : kGreen);
                     d->setPalette(p);
                     r2l->addWidget(d);
                 } else {
@@ -583,7 +601,45 @@ static QWidget* buildStintTimeline(const StrategyResult& res, int totalLaps, dou
         }
         v->addWidget(r2);
 
-        if (i + 1 < res.stints.size()) v->addWidget(makeHLine());
+        // Per-lap target table for this stint. Native OS styling — only the delta
+        // cells get a colour (red slower / green faster).
+        if (!st.rows.empty()) {
+            const std::vector<LapRow>& rows = st.rows;
+            const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT"};
+
+            auto* tbl = new QTableWidget((int)rows.size(), (int)heads.size());
+            tbl->setHorizontalHeaderLabels(heads);
+            tbl->verticalHeader()->setVisible(false);
+            tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+            for (int r = 0; r < (int)rows.size(); ++r) {
+                const LapRow& lr = rows[r];
+                tbl->setItem(r, 0, new QTableWidgetItem(QString::number(lr.lapNum)));
+                tbl->setItem(r, 1, new QTableWidgetItem(fmtLapTime(lr.requiredMs)));
+                tbl->setItem(r, 2, new QTableWidgetItem(fmtLapTime(lr.actualRequiredMs)));
+                tbl->setItem(r, 3, new QTableWidgetItem(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
+                auto* dl = new QTableWidgetItem(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
+                auto* ds = new QTableWidgetItem(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
+                if (lr.hasActual) {
+                    dl->setForeground(QBrush(lr.deltaLapMs   > 0 ? kRed : kGreen));
+                    ds->setForeground(QBrush(lr.deltaStintMs > 0 ? kRed : kGreen));
+                }
+                tbl->setItem(r, 4, dl);
+                tbl->setItem(r, 5, ds);
+            }
+
+            // Size to content so every lap shows inline (no inner scrollbar). Use
+            // style metrics (valid before the widget is shown) rather than laid-out
+            // geometry, which is provisional pre-show and caused height flicker.
+            tbl->ensurePolished();
+            const int rowH = tbl->verticalHeader()->defaultSectionSize();
+            const int hdrH = tbl->horizontalHeader()->sizeHint().height();
+            tbl->setFixedHeight(hdrH + (int)rows.size() * rowH + 2 * tbl->frameWidth());
+
+            v->addWidget(tbl);
+        }
+
+        if (i + 1 < stints.size()) v->addWidget(makeHLine());
     }
 
     v->addStretch();
@@ -594,7 +650,8 @@ static QWidget* buildStintTimeline(const StrategyResult& res, int totalLaps, dou
 
 void StrategyPage::update(const json& lap, const json& session, const json& status,
                           const json& damage, const json& timing, const json& participants,
-                          const json& tyreSets, const json& allStatus) {
+                          const json& tyreSets, const json& allStatus,
+                          const std::map<int, int>& lapTimesByNum) {
     const QColor sec    = palette().color(QPalette::PlaceholderText);
     const QColor priCol = palette().color(QPalette::WindowText);
 
@@ -869,6 +926,113 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         }
     }
 
+    // ── Stint display (completed + current + future) ────────────────────
+    // The live plan only carries the current + future stints, so each stint is
+    // recorded the moment it begins (compound + frozen Required, captured at its
+    // start lap). Completed stints are then kept on screen instead of vanishing
+    // after a pit. The opening stint is anchored to the tyre's fit lap (lapNum −
+    // tyre age) so laps already driven stay in the table. Actuals are gated to laps
+    // completed as of the playhead (n < lapNum), so this is identical live and in
+    // playback. The display is rebuilt once per lap and cached.
+    const int tyreAge = status.is_object() ? status.value("tyre_age_laps", 0) : 0;
+    const int openingStart = std::max(1, lapNum - tyreAge);
+
+    // Record the current opening stint into the per-variant history (idempotent —
+    // its true start only jumps forward on a pit).
+    auto recordStint = [&](const StrategyResult& res, std::map<int, double>& frozenMap,
+                           std::vector<PastStint>& past, const std::vector<StintTarget>& targets) -> bool {
+        if (!sd.valid || res.stints.empty() || targets.empty() || !targets[0].present) return false;
+        if (!past.empty() && openingStart <= past.back().startLap) return false;   // same stint
+        if (!frozenMap.count(openingStart)) frozenMap[openingStart] = targets[0].targetMs;
+        PastStint ps;
+        ps.startLap     = openingStart;
+        ps.reqBaseMs    = frozenMap[openingStart];
+        ps.compoundName = res.stints[0].compoundName;
+        ps.color        = res.stints[0].color;
+        ps.postPit      = !past.empty();
+        past.push_back(ps);
+        return true;
+    };
+    bool stintsChanged = false;
+    stintsChanged |= recordStint(sd.conservative, consFrozenReqMs_, consPast_, consTargets);
+    stintsChanged |= recordStint(sd.aggressive,  aggFrozenReqMs_, aggPast_,  aggTargets);
+
+    auto computeRows = [&](int start, int end, double base, bool postPit) {
+        std::vector<LapRow> rows;
+        double cum = 0.0;   // cumulative delta over stint, through the previous lap
+        for (int n = start; n > 0 && n <= end; ++n) {
+            LapRow lr;
+            lr.lapNum = n;
+            lr.requiredMs = base + ((postPit && n == start) ? PIT_OUTLAP_COST_MS : 0.0);
+            lr.actualRequiredMs = lr.requiredMs + cum;
+            auto it = lapTimesByNum.find(n);
+            if (n < lapNum && it != lapTimesByNum.end() && it->second > 0) {
+                lr.hasActual    = true;
+                lr.actualMs     = it->second;
+                lr.deltaLapMs   = lr.actualMs - lr.requiredMs;
+                cum            += lr.deltaLapMs;
+                lr.deltaStintMs = cum;
+            }
+            rows.push_back(lr);
+        }
+        return rows;
+    };
+
+    auto buildDisplay = [&](const StrategyResult& res, const std::vector<StintTarget>& targets,
+                            std::map<int, double>& frozenMap, const std::vector<PastStint>& past) {
+        std::vector<DisplayStint> out;
+        if (!sd.valid) return out;
+        // Stints already begun as of the playhead (keeps playback playhead-exact).
+        std::vector<const PastStint*> done;
+        for (const PastStint& ps : past) if (ps.startLap <= lapNum) done.push_back(&ps);
+
+        // Completed stints — every recorded one but the current (last) opening stint.
+        for (size_t k = 0; k + 1 < done.size(); ++k) {
+            const PastStint& ps = *done[k];
+            const int start = ps.startLap, end = done[k + 1]->startLap - 1;
+            if (end < start) continue;
+            DisplayStint d;
+            d.compoundName = ps.compoundName; d.color = ps.color;
+            d.startLap = start; d.endLap = end; d.lapCount = end - start + 1;
+            d.targetPresent = true; d.targetMs = ps.reqBaseMs;
+            d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit);
+            out.push_back(d);
+        }
+        // Current + future stints from the live forward plan. The card always shows;
+        // the target line and per-lap table appear once a target exists.
+        const bool pittedBefore = done.size() > 1;
+        for (size_t i = 0; i < res.stints.size(); ++i) {
+            const Stint& st = res.stints[i];
+            const StintTarget tg = (i < targets.size()) ? targets[i] : StintTarget{};
+            const bool isOpening = (i == 0);
+            const int  start = isOpening ? openingStart : st.startLap;
+            const int  end   = st.isLast ? totalLaps : st.pitLap;
+            DisplayStint d;
+            d.compoundName = st.compoundName; d.color = st.color;
+            d.startLap = start; d.endLap = end;
+            d.lapCount = isOpening ? std::max(1, end - start + 1) : st.lapCount;
+            d.isLast = st.isLast;
+            d.wornText = isOpening ? QString("%1% worn").arg((int)std::lround(sd.avgWear)) : QString("Fresh");
+            if (tg.present && tg.targetMs > 0) {
+                const bool postPit = isOpening ? pittedBefore : true;
+                const double base = frozenMap.count(start) ? frozenMap[start] : tg.targetMs;
+                d.targetPresent = true; d.isEstimate = tg.isEstimate; d.hasDelta = tg.hasDelta;
+                d.targetMs = tg.targetMs; d.deltaMs = tg.deltaMs;
+                d.rows = computeRows(start, end, base, postPit);
+            }
+            out.push_back(d);
+        }
+        return out;
+    };
+
+    bool displayChanged = false;
+    if (sd.valid && (lapNum != tableLapComputed_ || stintsChanged)) {
+        consDisplay_ = buildDisplay(sd.conservative, consTargets, consFrozenReqMs_, consPast_);
+        aggDisplay_  = buildDisplay(sd.aggressive,  aggTargets,  aggFrozenReqMs_, aggPast_);
+        tableLapComputed_ = lapNum;
+        displayChanged = true;
+    }
+
     // ── Undercut / overcut call ─────────────────────────────────────────
     enum CallType { None, Undercut, Overcut };
     CallType callType = None; int callTarget = -1; double callGap = 0; int callCross = 0;
@@ -970,25 +1134,32 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const QColor blueAccent  = isDark ? kBlue  : QColor("#0B57D0");
     const QColor amberAccent = isDark ? kAmber : QColor("#B06000");
 
-    // Conservative column
-    clearColumn(consLayout_);
-    if (sd.valid) {
-        consLayout_->addWidget(buildStintTimeline(sd.conservative, totalLaps, sd.avgWear,
-                                                  sd.isMonaco, "Conservative", blueAccent, consTargets, sec));
-    } else {
-        auto* wait = new QLabel("Waiting for tyre data…");
-        wait->setAlignment(Qt::AlignCenter);
-        QPalette p = wait->palette(); p.setColor(QPalette::WindowText, sec); wait->setPalette(p);
-        consLayout_->addWidget(wait);
-    }
-    consLayout_->addStretch();
+    // Rebuild the (heavy) stint columns only when their content actually changes —
+    // not every tick — otherwise the QTableWidgets churn and the scrollbar flickers.
+    if (!stratColumnsBuilt_ || displayChanged || sd.valid != lastStratValid_) {
+        // Conservative column
+        clearColumn(consLayout_);
+        if (sd.valid) {
+            consLayout_->addWidget(buildStintTimeline(sd.conservative.stops, sd.isMonaco,
+                                                      "Conservative", blueAccent, sec, consDisplay_));
+        } else {
+            auto* wait = new QLabel("Waiting for tyre data…");
+            wait->setAlignment(Qt::AlignCenter);
+            QPalette p = wait->palette(); p.setColor(QPalette::WindowText, sec); wait->setPalette(p);
+            consLayout_->addWidget(wait);
+        }
+        consLayout_->addStretch();
 
-    // Aggressive column
-    clearColumn(aggLayout_);
-    if (sd.valid)
-        aggLayout_->addWidget(buildStintTimeline(sd.aggressive, totalLaps, sd.avgWear,
-                                                sd.isMonaco, "Aggressive", amberAccent, aggTargets, sec));
-    aggLayout_->addStretch();
+        // Aggressive column
+        clearColumn(aggLayout_);
+        if (sd.valid)
+            aggLayout_->addWidget(buildStintTimeline(sd.aggressive.stops, sd.isMonaco,
+                                                    "Aggressive", amberAccent, sec, aggDisplay_));
+        aggLayout_->addStretch();
+
+        stratColumnsBuilt_ = true;
+        lastStratValid_    = sd.valid;
+    }
 
     // ── Sidebar ─────────────────────────────────────────────────────────
     clearColumn(sidebarLayout_);
