@@ -8,6 +8,7 @@
 #include <QFrame>
 #include <QProgressBar>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -77,6 +78,7 @@ struct TimingCar {
     int idx = -1, position = 0, driver_status = 0, result_status = 0, pit_status = 0;
     double gap_ms = 0.0;
     int last_lap_ms = 0;
+    int num_pit_stops = 0;
 };
 
 // wearColor()/fmtLapTime()/driverName() ported from StrategyPanel.tsx
@@ -160,6 +162,7 @@ std::vector<TimingCar> parseTiming(const json& timing) {
             t.pit_status    = c.value("pit_status", 0);
             t.gap_ms        = c.value("gap_ms", 0.0);
             t.last_lap_ms   = c.value("last_lap_ms", 0);
+            t.num_pit_stops = c.value("num_pit_stops", 0);
             out.push_back(t);
         }
     }
@@ -458,8 +461,6 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
 }
 
 void StrategyPage::resetForNewSession() {
-    pitCounts_.clear();
-    prevDriverStatus_.clear();
     rivalAheadIdx_ = rivalBehindIdx_ = -1;
     rivalsLatched_ = false;
     prevLapNum_ = -1;
@@ -531,9 +532,16 @@ void clearColumn(QVBoxLayout* lay) {
 
 }  // namespace
 
+// Seconds with up to 3 decimals, trailing zeros trimmed, no unit (e.g. "0.3", "2.456").
+static QString fmtSecs(double ms) {
+    QString s = QString::number(std::abs(ms) / 1000.0, 'f', 3);
+    if (s.contains('.')) { while (s.endsWith('0')) s.chop(1); if (s.endsWith('.')) s.chop(1); }
+    return s;
+}
+
 // Signed delta text (+slower / −faster), matching the stint-target delta styling.
 static QString fmtDelta(double ms) {
-    return QString("%1%2s").arg(ms > 0 ? "+" : "−").arg(std::abs(ms / 1000.0), 0, 'f', 1);
+    return (ms > 0 ? QString("+") : QString("−")) + fmtSecs(ms);
 }
 
 // Build one strategy column (header + stint rows). Renders completed, current and
@@ -862,15 +870,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         playerGainingAhead_ = behindIsGaining_ = -1;
     }
 
-    // ── Pit-count tracking ──────────────────────────────────────────────
-    if (!cars.empty() && hasLap) {
-        for (const auto& c : cars) {
-            const int prev = prevDriverStatus_.count(c.idx) ? prevDriverStatus_[c.idx] : -1;
-            if (prev == 2 && c.driver_status == 3 && lapNum > 1)
-                pitCounts_[c.idx] = (pitCounts_.count(c.idx) ? pitCounts_[c.idx] : 0) + 1;
-            prevDriverStatus_[c.idx] = c.driver_status;
-        }
-    }
+    // Pit counts come straight from the game's per-car num_pit_stops (replay-safe).
 
     // ── Rivals latch (lap 1 → 2) ────────────────────────────────────────
     if (hasLap && !cars.empty()) {
@@ -1186,8 +1186,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         { QFont f = nm->font(); f.setBold(true); nm->setFont(f); }
         nm->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   // shrink, don't force row wider than sidebar
         rl->addWidget(nm, 1);
-        auto* gap = new QLabel(isUnder ? QString("+%1s ahead").arg(callGap / 1000.0, 0, 'f', 1)
-                                       : QString("−%1s behind").arg(callGap / 1000.0, 0, 'f', 1));
+        auto* gap = new QLabel(isUnder ? QString("+%1 ahead").arg(fmtSecs(callGap))
+                                       : QString("−%1 behind").arg(fmtSecs(callGap)));
         { QFont f = gap->font(); f.setBold(true); gap->setFont(f);
           QPalette p = gap->palette(); p.setColor(QPalette::WindowText, color); gap->setPalette(p); }
         rl->addWidget(gap);
@@ -1243,8 +1243,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 rl->addWidget(secLabel("DNF", sec, -1, true));
             } else {
                 QString gapStr;
-                if (rr.ahead) { const double g = player->gap_ms - car->gap_ms; if (g > 0) gapStr = QString("+%1s").arg(g / 1000.0, 0, 'f', 1); }
-                else          { const double g = car->gap_ms - player->gap_ms; if (g > 0) gapStr = QString("−%1s").arg(g / 1000.0, 0, 'f', 1); }
+                if (rr.ahead) { const double g = player->gap_ms - car->gap_ms; if (g > 0) gapStr = "+" + fmtSecs(g); }
+                else          { const double g = car->gap_ms - player->gap_ms; if (g > 0) gapStr = "−" + fmtSecs(g); }
                 if (!gapStr.isEmpty()) rl->addWidget(secLabel(gapStr, sec, -1, true));
             }
             sv->addWidget(row);
@@ -1286,7 +1286,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 nm->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                 rl->addWidget(nm, 1);
 
-                const int stops = pitCounts_.count(pr.car->idx) ? pitCounts_[pr.car->idx] : 0;
+                const int stops = pr.car->num_pit_stops;   // game count — replay-safe
                 const bool inPit = pr.car->pit_status != 0;
                 if (inPit) rl->addWidget(makeChip("PIT", kAmber));
                 else if (stops > 0) rl->addWidget(secLabel(QString("%1 pit%2").arg(stops).arg(stops != 1 ? "s" : ""), sec, 7));
@@ -1304,8 +1304,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                         else if (pr.immediate) gapColor = behindIsGaining_ == 1 ? kAmber : kGreen; }
                 }
                 if (gapMs >= 0) {
-                    auto* g = new QLabel(pr.role == 0 ? QString("+%1s").arg(gapMs / 1000.0, 0, 'f', 1)
-                                                      : QString("-%1s").arg(gapMs / 1000.0, 0, 'f', 1));
+                    auto* g = new QLabel(pr.role == 0 ? "+" + fmtSecs(gapMs)
+                                                      : "-" + fmtSecs(gapMs));
                     QFont f = g->font(); f.setBold(true); g->setFont(f);
                     QPalette p = g->palette(); p.setColor(QPalette::WindowText, gapColor); g->setPalette(p);
                     rl->addWidget(g);
@@ -1374,4 +1374,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     }
 
     sidebarLayout_->addStretch();
+
+    // Widen the sidebar to keep its content width constant when the vertical
+    // scrollbar appears (it otherwise eats into the 230px). Uses the previous
+    // layout's scroll range — a one-tick lag that settles without oscillating.
+    if (auto* sa = qobject_cast<QScrollArea*>(sidebarScroll_)) {
+        const bool overflow = sa->verticalScrollBar()->maximum() > 0;
+        sidebarScroll_->setFixedWidth(overflow ? 250 : 230);
+    }
 }

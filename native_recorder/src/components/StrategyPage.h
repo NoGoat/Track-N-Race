@@ -87,9 +87,6 @@ private:
     QWidget*        sidebarSep_   = nullptr;    // divider between left pane and sidebar
 
     // ── Cross-update tracking (mirrors the React refs/effects) ───────────
-    std::unordered_map<int, int> pitCounts_;        // car idx → completed stops
-    std::unordered_map<int, int> prevDriverStatus_; // car idx → last driver_status
-
     int  rivalAheadIdx_  = -1;
     int  rivalBehindIdx_ = -1;
     bool rivalsLatched_  = false;

@@ -230,7 +230,7 @@ std::vector<nlohmann::json> F1_24::ParsePacket(const uint8_t* data, int length, 
                     uint8_t cpos = data[co++];
                     uint8_t clap = data[co++];
                     uint8_t cpit = data[co++];
-                    co += 1; // numPits skip
+                    uint8_t cnumPits = data[co++];
                     uint8_t csect = data[co++];
                     bool cinvalid = data[co++] != 0;
                     uint8_t cpen = data[co++];
@@ -246,6 +246,7 @@ std::vector<nlohmann::json> F1_24::ParsePacket(const uint8_t* data, int length, 
                         {"current_lap_ms", ccur}, {"last_lap_ms", clast},
                         {"s1_ms", cs1M * 60000 + cs1H}, {"s2_ms", cs2M * 60000 + cs2H},
                         {"gap_ms", cgapM * 60000 + cgapH}, {"pit_status", cpit},
+                        {"num_pit_stops", cnumPits},
                         {"lap_invalid", cinvalid}, {"penalties_s", cpen},
                         {"num_dt_pens", cdt}, {"num_sg_pens", csg}, {"sector", csect},
                         {"result_status", cresultStat}, {"driver_status", cdriverStat}
