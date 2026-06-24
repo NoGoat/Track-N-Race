@@ -6,6 +6,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# Default to an optimized build when the user didn't choose one. Only meaningful
+# for single-config generators (Make/Ninja); multi-config ones (MSVC, Ninja Multi-
+# Config) pick the config at build time via --config. CMake's Release flags already
+# imply -O3 -DNDEBUG (GCC/Clang) or /O2 (MSVC) for *every* target, including the
+# FetchContent deps below.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Opt-in: tune the binary for the build machine's exact CPU. Faster, but the
+# result is NOT portable — running it on an older/different CPU can fault with
+# SIGILL. Leave OFF for distributable builds. (No effect under MSVC.)
+option(NATIVE_RECORDER_MARCH_NATIVE
+    "Tune the recorder for the build machine's CPU (-march=native; not portable)" OFF)
+
 include(FetchContent)
 
 # Fetch nlohmann/json for JSON serialization
@@ -126,6 +141,44 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Backg
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
+
+# ── Maximum compiler optimization (applied to optimized configs only) ─────────
+# Link-time optimization (whole-program / cross-TU inlining) where the toolchain
+# supports it. Enabled per-config so Debug builds stay fast and debuggable.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg LANGUAGES CXX)
+if(_ipo_ok)
+    set_target_properties(native_recorder PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE        ON
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON
+        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL     ON)
+    message(STATUS "LTO/IPO enabled for optimized builds")
+else()
+    message(STATUS "LTO/IPO not supported by this toolchain: ${_ipo_msg}")
+endif()
+
+if(MSVC)
+    # /O2 full speed, /Oi intrinsics, /Ot favour speed. /GL+/LTCG is the IPO path
+    # CMake already wires up above, so it isn't repeated here. /OPT:REF,/OPT:ICF
+    # strip unused code and fold identical functions at link.
+    target_compile_options(native_recorder PRIVATE
+        $<$<NOT:$<CONFIG:Debug>>:/O2 /Oi /Ot>)
+    target_link_options(native_recorder PRIVATE
+        $<$<NOT:$<CONFIG:Debug>>:/OPT:REF /OPT:ICF>)
+else()
+    # -O3 is already in CMake's Release/RelWithDebInfo flags, but state it
+    # explicitly so any custom build type still gets it. -fno-math-errno is the
+    # one "fast-math" relaxation that's safe here (we never read errno after
+    # math calls); full -ffast-math is intentionally avoided to keep telemetry
+    # numbers IEEE-correct.
+    target_compile_options(native_recorder PRIVATE
+        $<$<NOT:$<CONFIG:Debug>>:-O3 -fno-math-errno>)
+    if(NATIVE_RECORDER_MARCH_NATIVE)
+        target_compile_options(native_recorder PRIVATE
+            $<$<NOT:$<CONFIG:Debug>>:-march=native>)
+        message(STATUS "Building with -march=native (binary not portable to other CPUs)")
+    endif()
+endif()
 
 # GPU rendering for QCustomPlot (Qt6 only). The macro must reach qcustomplot.cpp,
 # so define it on the whole target. OpenGL::GL provides the GL symbols the

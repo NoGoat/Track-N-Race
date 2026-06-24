@@ -43,10 +43,12 @@ private:
     QLabel*         cliffValue_   = nullptr;
     QLabel*         cliffPlus_    = nullptr;
 
-    QStackedWidget* bodyStack_    = nullptr;   // 0 = 3-column body, 1 = non-race placeholder
+    QStackedWidget* bodyStack_    = nullptr;   // left pane: 0 = strategy columns, 1 = non-race placeholder
     QVBoxLayout*    consLayout_   = nullptr;    // conservative column content
     QVBoxLayout*    aggLayout_    = nullptr;    // aggressive column content
     QVBoxLayout*    sidebarLayout_= nullptr;    // right sidebar sections
+    QWidget*        sidebarScroll_= nullptr;    // full-height right column (hidden when non-race)
+    QWidget*        sidebarSep_   = nullptr;    // divider between left pane and sidebar
 
     // ── Cross-update tracking (mirrors the React refs/effects) ───────────
     std::unordered_map<int, int> pitCounts_;        // car idx → completed stops

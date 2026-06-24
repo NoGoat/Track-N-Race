@@ -285,9 +285,17 @@ struct StrategyData {
 // ─── StrategyPage ──────────────────────────────────────────────────────────
 
 StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
-    auto* root = new QVBoxLayout(this);
+    // Top level is horizontal: a left pane (header + strategy columns) beside a
+    // full-height sidebar. The header therefore spans only the columns, and the
+    // sidebar runs edge-to-edge from the very top.
+    auto* root = new QHBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
+
+    auto* leftPane = new QWidget;
+    auto* lpv = new QVBoxLayout(leftPane);
+    lpv->setContentsMargins(0, 0, 0, 0);
+    lpv->setSpacing(0);
 
     auto hline = [](QWidget* p = nullptr) {
         auto* f = new QFrame(p);
@@ -373,15 +381,15 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
         hl->addWidget(cell);
     }
 
-    root->addWidget(header);
-    root->addWidget(hline());
+    lpv->addWidget(header);
+    lpv->addWidget(hline());
 
-    // ── Body: stacked (3-column vs non-race placeholder) ───────────────────
+    // ── Left pane body: strategy columns vs non-race placeholder ───────────
     bodyStack_ = new QStackedWidget;
 
-    // Page 0: 3-column body
-    auto* body = new QWidget;
-    auto* bl = new QHBoxLayout(body);
+    // Page 0: the two strategy columns
+    auto* cols = new QWidget;
+    auto* bl = new QHBoxLayout(cols);
     bl->setContentsMargins(0, 0, 0, 0); bl->setSpacing(0);
 
     auto makeColumn = [&](QVBoxLayout*& outLayout) {
@@ -401,24 +409,7 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     bl->addWidget(makeColumn(consLayout_), 1);
     bl->addWidget(vline());
     bl->addWidget(makeColumn(aggLayout_), 1);
-    bl->addWidget(vline());
-
-    {
-        auto* scroll = new QScrollArea;
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        scroll->setFixedWidth(228);
-        auto* content = new QWidget;
-        sidebarLayout_ = new QVBoxLayout(content);
-        sidebarLayout_->setContentsMargins(0, 0, 0, 0);
-        sidebarLayout_->setSpacing(0);
-        sidebarLayout_->addStretch();
-        scroll->setWidget(content);
-        bl->addWidget(scroll);
-    }
-
-    bodyStack_->addWidget(body);   // index 0
+    bodyStack_->addWidget(cols);   // index 0
 
     // Page 1: non-race placeholder
     auto* placeholder = new QWidget;
@@ -433,7 +424,29 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     pl->addWidget(pCap); pl->addWidget(pTitle); pl->addWidget(pBody);
     bodyStack_->addWidget(placeholder);   // index 1
 
-    root->addWidget(bodyStack_, 1);
+    lpv->addWidget(bodyStack_, 1);
+
+    // ── Full-height sidebar (right column) ─────────────────────────────────
+    auto* sidebar = new QScrollArea;
+    sidebar->setWidgetResizable(true);
+    sidebar->setFrameShape(QFrame::NoFrame);
+    sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    sidebar->setFixedWidth(230);
+    {
+        auto* content = new QWidget;
+        sidebarLayout_ = new QVBoxLayout(content);
+        sidebarLayout_->setContentsMargins(0, 0, 0, 0);
+        sidebarLayout_->setSpacing(0);
+        sidebarLayout_->addStretch();
+        sidebar->setWidget(content);
+    }
+    sidebarScroll_ = sidebar;
+    sidebarSep_ = vline();
+
+    root->addWidget(leftPane, 1);
+    root->addWidget(sidebarSep_);
+    root->addWidget(sidebarScroll_);
 }
 
 void StrategyPage::resetForNewSession() {
@@ -943,8 +956,15 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     }
 
     // ── Render body ─────────────────────────────────────────────────────
-    if (!isRace) { bodyStack_->setCurrentIndex(1); return; }
+    if (!isRace) {
+        bodyStack_->setCurrentIndex(1);
+        sidebarSep_->hide();
+        sidebarScroll_->hide();
+        return;
+    }
     bodyStack_->setCurrentIndex(0);
+    sidebarSep_->show();
+    sidebarScroll_->show();
 
     const bool isDark = palette().color(QPalette::Window).lightness() < 128;
     const QColor blueAccent  = isDark ? kBlue  : QColor("#0B57D0");
@@ -985,6 +1005,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         rl->addWidget(makeChip(isUnder ? "UNDERCUT" : "OVERCUT", color));
         auto* nm = new QLabel(driverName(participants, callTarget));
         { QFont f = nm->font(); f.setBold(true); nm->setFont(f); }
+        nm->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   // shrink, don't force row wider than sidebar
         rl->addWidget(nm, 1);
         auto* gap = new QLabel(isUnder ? QString("+%1s ahead").arg(callGap / 1000.0, 0, 'f', 1)
                                        : QString("−%1s behind").arg(callGap / 1000.0, 0, 'f', 1));
@@ -1037,6 +1058,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             auto* nm = new QLabel(driverName(participants, rr.idx));
             { QFont f = nm->font(); f.setBold(true); nm->setFont(f);
               QPalette p = nm->palette(); p.setColor(QPalette::WindowText, sec); nm->setPalette(p); }
+            nm->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
             rl->addWidget(nm, 1);
             if (retired) {
                 rl->addWidget(secLabel("DNF", sec, -1, true));
@@ -1082,6 +1104,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 auto* nm = new QLabel(driverName(participants, pr.car->idx));
                 { QFont f = nm->font(); f.setBold(true); nm->setFont(f);
                   QPalette p = nm->palette(); p.setColor(QPalette::WindowText, isPlayer ? priCol : sec); nm->setPalette(p); }
+                nm->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                 rl->addWidget(nm, 1);
 
                 const int stops = pitCounts_.count(pr.car->idx) ? pitCounts_[pr.car->idx] : 0;
@@ -1158,6 +1181,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             auto* warn = new QWidget; auto* wv = new QVBoxLayout(warn);
             wv->setContentsMargins(12, 6, 12, 6); wv->setSpacing(2);
             auto* t = new QLabel(QString("⚠ %1").arg(w.text));
+            t->setWordWrap(true);
             { QFont f = t->font(); f.setBold(true); t->setFont(f);
               QPalette p = t->palette(); p.setColor(QPalette::WindowText, w.color); t->setPalette(p); }
             wv->addWidget(t);
