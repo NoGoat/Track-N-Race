@@ -95,7 +95,7 @@ QString fmtLapTime(double ms) {
     double totalSecs = ms / 1000.0;
     int mins = (int)std::floor(totalSecs / 60.0);
     double secs = totalSecs - mins * 60.0;
-    return QString("%1:%2").arg(mins).arg(secs, 4, 'f', 1, QChar('0'));
+    return QString("%1:%2").arg(mins).arg(secs, 6, 'f', 3, QChar('0'));
 }
 
 QString driverName(const json& participants, int idx) {
@@ -609,6 +609,8 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
             tbl->setHorizontalHeaderLabels(heads);
             tbl->verticalHeader()->setVisible(false);
             tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);  // fill available width
+            tbl->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
 
             // The lap to pit on (the stint's in-lap) is tinted green across the row,
             // mirroring the Standings fastest-lap highlight (~15% translucent fill).
@@ -618,6 +620,7 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
                 const bool isPitRow = !st.isLast && lr.lapNum == st.endLap;
                 auto cell = [&](const QString& txt) {
                     auto* it = new QTableWidgetItem(txt);
+                    it->setTextAlignment(Qt::AlignCenter);
                     if (isPitRow) it->setBackground(pitTint);
                     return it;
                 };
@@ -965,7 +968,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             LapRow lr;
             lr.lapNum = n;
             lr.requiredMs = base + ((postPit && n == start) ? PIT_OUTLAP_COST_MS : 0.0);
-            lr.actualRequiredMs = lr.requiredMs + cum;
+            // Adjusted required = base minus the running buffer: time banked (negative
+            // cumulative delta = faster) raises the time you may run; lost time lowers it.
+            lr.actualRequiredMs = lr.requiredMs - cum;
             auto it = lapTimesByNum.find(n);
             if (n < lapNum && it != lapTimesByNum.end() && it->second > 0) {
                 lr.hasActual    = true;
