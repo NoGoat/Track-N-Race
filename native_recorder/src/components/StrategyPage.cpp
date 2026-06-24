@@ -569,7 +569,8 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
 
     for (size_t i = 0; i < stints.size(); ++i) {
         const DisplayStint& st = stints[i];
-        // Row 1: compound + laps
+        // Single header row: compound · laps · range · wear · target. The pit lap is
+        // shown by the green-highlighted row in the table below, not a text connector.
         auto* r1 = new QWidget; auto* r1l = new QHBoxLayout(r1);
         r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
         r1l->addWidget(makeChip(st.compoundName, st.color, 10));
@@ -578,37 +579,25 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
         r1l->addWidget(laps);
         r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7), 1);
         if (!st.wornText.isEmpty()) r1l->addWidget(secLabel(st.wornText, sec, 7));
-        v->addWidget(r1);
-
-        // Row 2: connector + target
-        auto* r2 = new QWidget; auto* r2l = new QHBoxLayout(r2);
-        r2l->setContentsMargins(12, 3, 12, 3); r2l->setSpacing(10);
-        auto* conn = new QLabel(st.isLast ? QString("Finish · Lap %1").arg(st.endLap)
-                                          : QString("Pit · Lap %1").arg(st.endLap));
-        { QFont f = conn->font(); f.setPointSize(7); f.setBold(true); conn->setFont(f);
-          QPalette p = conn->palette(); p.setColor(QPalette::WindowText, st.isLast ? kGreen : kAmber);
-          conn->setPalette(p); }
-        r2l->addWidget(conn);
-        r2l->addStretch();
         if (st.targetPresent) {
-            r2l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
+            r1l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
             auto* tm = new QLabel(fmtLapTime(st.targetMs));
             { QFont f = tm->font(); f.setBold(true); tm->setFont(f);
               if (st.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
-            r2l->addWidget(tm);
+            r1l->addWidget(tm);
             if (st.hasDelta) {
                 if (std::abs(st.deltaMs) > 50) {
                     auto* d = new QLabel(fmtDelta(st.deltaMs));
                     QFont f = d->font(); f.setBold(true); d->setFont(f);
                     QPalette p = d->palette(); p.setColor(QPalette::WindowText, st.deltaMs > 0 ? kRed : kGreen);
                     d->setPalette(p);
-                    r2l->addWidget(d);
+                    r1l->addWidget(d);
                 } else {
-                    r2l->addWidget(secLabel("on target", sec, 7));
+                    r1l->addWidget(secLabel("on target", sec, 7));
                 }
             }
         }
-        v->addWidget(r2);
+        v->addWidget(r1);
 
         // Per-lap target table for this stint. Native OS styling — only the delta
         // cells get a colour (red slower / green faster).
@@ -621,14 +610,23 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
             tbl->verticalHeader()->setVisible(false);
             tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
+            // The lap to pit on (the stint's in-lap) is tinted green across the row,
+            // mirroring the Standings fastest-lap highlight (~15% translucent fill).
+            const QColor pitTint(kGreen.red(), kGreen.green(), kGreen.blue(), 38);
             for (int r = 0; r < (int)rows.size(); ++r) {
                 const LapRow& lr = rows[r];
-                tbl->setItem(r, 0, new QTableWidgetItem(QString::number(lr.lapNum)));
-                tbl->setItem(r, 1, new QTableWidgetItem(fmtLapTime(lr.requiredMs)));
-                tbl->setItem(r, 2, new QTableWidgetItem(fmtLapTime(lr.actualRequiredMs)));
-                tbl->setItem(r, 3, new QTableWidgetItem(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
-                auto* dl = new QTableWidgetItem(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
-                auto* ds = new QTableWidgetItem(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
+                const bool isPitRow = !st.isLast && lr.lapNum == st.endLap;
+                auto cell = [&](const QString& txt) {
+                    auto* it = new QTableWidgetItem(txt);
+                    if (isPitRow) it->setBackground(pitTint);
+                    return it;
+                };
+                tbl->setItem(r, 0, cell(QString::number(lr.lapNum)));
+                tbl->setItem(r, 1, cell(fmtLapTime(lr.requiredMs)));
+                tbl->setItem(r, 2, cell(fmtLapTime(lr.actualRequiredMs)));
+                tbl->setItem(r, 3, cell(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
+                auto* dl = cell(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
+                auto* ds = cell(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
                 if (lr.hasActual) {
                     dl->setForeground(QBrush(lr.deltaLapMs   > 0 ? kRed : kGreen));
                     ds->setForeground(QBrush(lr.deltaStintMs > 0 ? kRed : kGreen));
