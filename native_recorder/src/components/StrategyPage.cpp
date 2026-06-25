@@ -298,6 +298,10 @@ namespace {
 struct StrategyData {
     bool   valid = false;
     double avgWear = 0.0, wearPerLap = 0.0;
+    // The limiting tyre is the corner that reaches the cliff first; pit timing
+    // follows it rather than the average (see update()).
+    double  limitWear = 0.0, limitWearPerLap = 0.0;
+    QString limitCorner;
     int    estimatedCliffLap = 0, lapsUntilCliff = 0;
     StrategyResult conservative, aggressive;
     Compound currentCompound;
@@ -814,6 +818,29 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         const double cliffPct = (visualCompound == 16 || visualCompound == 17 || visualCompound == 18) ? 80.0 : 70.0;
         const bool   isMonaco = trackId == 5;
 
+        // ── Limiting tyre ───────────────────────────────────────────────────
+        // Pit timing must follow the corner that reaches the performance cliff
+        // first, not the four-corner average. At tracks like Barcelona the
+        // average wear can read healthy while one corner (classically the
+        // front-left) is already structurally dead — pitting off the average
+        // there boxes far too late. Per corner we project laps-to-cliff from its
+        // own wear and wear rate, and the soonest one governs the strategy.
+        struct CornerWear { const char* name; double wear; };
+        const CornerWear cornersW[4] = { {"FL", flW}, {"FR", frW}, {"RL", rlW}, {"RR", rrW} };
+        // Per-corner wear rate (linear from new), with the same nominal fallback
+        // the average uses before an age baseline exists.
+        const auto cornerRate = [&](double w){ return tyreAge > 0 ? w / tyreAge : 2.0; };
+        const auto lapsToCliff = [&](double w){ return (cliffPct - w) / std::max(0.01, cornerRate(w)); };
+        int    limitIdx = 0;
+        double limitLapsLeft = lapsToCliff(cornersW[0].wear);
+        for (int i = 1; i < 4; ++i) {
+            const double left = lapsToCliff(cornersW[i].wear);
+            if (left < limitLapsLeft) { limitLapsLeft = left; limitIdx = i; }
+        }
+        const double  limitWear       = cornersW[limitIdx].wear;
+        const double  limitWearPerLap = std::max(0.01, cornerRate(limitWear));
+        const QString limitCorner     = cornersW[limitIdx].name;
+
         const bool isWet = weather >= 3;
         const auto isWetCompound = [](int c){ return c == 7 || c == 8; };
 
@@ -834,7 +861,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         cur.color = compoundColor(visualCompound, priCol);
         cur.actual = tyreCompound; cur.visual = visualCompound;
 
-        const int consLapsLeft = std::max(0, (int)std::floor((cliffPct - avgWear) / wearPerLap));
+        const int consLapsLeft = std::max(0, (int)std::floor((cliffPct - limitWear) / limitWearPerLap));
         const int consCliffLap = lapNum + consLapsLeft;
 
         const Set* fittedSet = nullptr;
@@ -850,8 +877,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         if (isMonaco)
             conservative = applyMonacoRule(conservative, consPool, usedCompoundsOf(conservative), priCol);
 
-        const double aggWearRate = wearPerLap * 1.2;
-        const int aggLapsLeft = std::max(0, (int)std::floor((cliffPct - avgWear) / aggWearRate));
+        const double aggWearRate = limitWearPerLap * 1.2;
+        const int aggLapsLeft = std::max(0, (int)std::floor((cliffPct - limitWear) / aggWearRate));
         const int aggCliffLap = lapNum + aggLapsLeft;
         const int economicOptLap = !aggPool.empty()
             ? std::max(lapNum + 1, totalLaps - aggPool.front().usable_life) : aggCliffLap;
@@ -935,6 +962,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             w.color = w.priority <= 1 ? kRed : w.priority == 2 ? kOrange : kAmber;
 
         sd.avgWear = avgWear; sd.wearPerLap = wearPerLap;
+        sd.limitWear = limitWear; sd.limitWearPerLap = limitWearPerLap; sd.limitCorner = limitCorner;
         sd.estimatedCliffLap = consCliffLap; sd.lapsUntilCliff = consLapsLeft;
         sd.conservative = conservative; sd.aggressive = aggressive;
         sd.currentCompound = cur; sd.isMonaco = isMonaco;
@@ -1138,7 +1166,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             d.startLap = start; d.endLap = end;
             d.lapCount = isOpening ? std::max(1, end - start + 1) : st.lapCount;
             d.isLast = st.isLast;
-            d.wornText = isOpening ? QString("%1% worn").arg((int)std::lround(sd.avgWear)) : QString("Fresh");
+            d.wornText = isOpening
+                ? QString("%1 %2% worn").arg(sd.limitCorner).arg((int)std::lround(sd.limitWear))
+                : QString("Fresh");
             if (tg.present && tg.targetMs > 0) {
                 const bool postPit = isOpening ? pittedBefore : true;
                 const double base = frozenMap.count(start) ? frozenMap[start] : tg.targetMs;
@@ -1213,7 +1243,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     lapValue_->setText(hasLap ? QString::number(lapNum) : "—");
     lapTotal_->setText(QString("/ %1").arg(totalLaps > 0 ? QString::number(totalLaps) : "—"));
 
-    const QColor wearC = wearColor(sd.avgWear);
+    // Headline tracks the limiting tyre so the wear figure and the cliff lap
+    // tell the same story (the per-corner Tyre Wear panel still shows all four).
+    const QColor wearC = wearColor(sd.valid ? sd.limitWear : sd.avgWear);
     compoundChip_->setText(sd.valid ? sd.currentCompound.name : "—");
     {
         const QColor cc = sd.valid ? sd.currentCompound.color : sec;
@@ -1222,14 +1254,17 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             " font-weight:bold; font-size:10px; background:%2; }")
             .arg(cc.name()).arg(rgba(cc, 0.1)));
     }
-    wearPct_->setText(QString("%1%").arg((int)std::lround(sd.avgWear)));
+    const double headlineWear = sd.valid ? sd.limitWear : sd.avgWear;
+    wearPct_->setText(QString("%1%").arg((int)std::lround(headlineWear)));
     { QPalette p = wearPct_->palette(); p.setColor(QPalette::WindowText, wearC); wearPct_->setPalette(p); }
     wearAge_->setText(status.is_object()
-        ? QString("%1L · %2%/L").arg(status.value("tyre_age_laps", 0))
-            .arg(sd.valid && status.value("tyre_age_laps", 0) > 0
-                     ? QString::number(sd.wearPerLap, 'f', 1) : QString("—"))
+        ? (sd.valid
+               ? QString("%1 · %2L · %3%/L").arg(sd.limitCorner).arg(status.value("tyre_age_laps", 0))
+                     .arg(status.value("tyre_age_laps", 0) > 0
+                              ? QString::number(sd.limitWearPerLap, 'f', 1) : QString("—"))
+               : QString("%1L · —%/L").arg(status.value("tyre_age_laps", 0)))
         : QString("—"));
-    wearBar_->setValue((int)std::min(100.0, sd.avgWear));
+    wearBar_->setValue((int)std::min(100.0, headlineWear));
     wearBar_->setStyleSheet(QString(
         "QProgressBar{ background:%1; border:none; border-radius:3px; }"
         "QProgressBar::chunk{ background:%2; border-radius:3px; }")
