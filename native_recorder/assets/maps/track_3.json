@@ -3,6 +3,9 @@
   "track_name": "Bahrain Grand Prix",
   "circuit_name": "Bahrain International Circuit",
   "track_length_m": 5408,
+  "pit_time": 21.4,
+  "inlap_pit_time": 8.5,
+  "outlap_pit_time": 10.39,
   "view_box": {
     "width": 1000,
     "height": 1000

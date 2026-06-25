@@ -3,6 +3,9 @@
   "track_name": "Azerbaijan Grand Prix",
   "circuit_name": "Baku City Circuit",
   "track_length_m": 5994,
+  "pit_time": 19.0,
+  "inlap_pit_time": 7.42,
+  "outlap_pit_time": 9.08,
   "view_box": {
     "width": 1000,
     "height": 1000

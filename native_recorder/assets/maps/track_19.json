@@ -3,6 +3,9 @@
   "track_name": "Mexico City Grand Prix",
   "circuit_name": "Aut\u00f3dromo Hermanos Rodr\u00edguez",
   "track_length_m": 4525,
+  "pit_time": 18.5,
+  "inlap_pit_time": 7.2,
+  "outlap_pit_time": 8.8,
   "view_box": {
     "width": 1000,
     "height": 1000

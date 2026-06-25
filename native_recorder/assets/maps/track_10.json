@@ -3,6 +3,9 @@
   "track_name": "Belgian Grand Prix",
   "circuit_name": "Circuit de Spa-Francorchamps",
   "track_length_m": 7007,
+  "pit_time": 20.2,
+  "inlap_pit_time": 7.96,
+  "outlap_pit_time": 9.74,
   "view_box": {
     "width": 1000,
     "height": 1000

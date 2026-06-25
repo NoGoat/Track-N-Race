@@ -3,6 +3,9 @@
   "track_name": "Chinese Grand Prix",
   "circuit_name": "Shanghai International Circuit",
   "track_length_m": 5441,
+  "pit_time": 19.73,
+  "inlap_pit_time": 7.75,
+  "outlap_pit_time": 9.48,
   "view_box": {
     "width": 1000,
     "height": 1000

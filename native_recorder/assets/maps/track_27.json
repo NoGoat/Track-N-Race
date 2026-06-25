@@ -3,6 +3,9 @@
   "track_name": "Emilia Romagna Grand Prix",
   "circuit_name": "Autodromo Enzo e Dino Ferrari",
   "track_length_m": 4910,
+  "pit_time": 27.5,
+  "inlap_pit_time": 11.25,
+  "outlap_pit_time": 13.75,
   "view_box": {
     "width": 1000,
     "height": 1000

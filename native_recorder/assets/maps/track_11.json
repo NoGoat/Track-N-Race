@@ -3,6 +3,9 @@
   "track_name": "Italian Grand Prix",
   "circuit_name": "Autodromo Nazionale Monza",
   "track_length_m": 5798,
+  "pit_time": 21.5,
+  "inlap_pit_time": 8.55,
+  "outlap_pit_time": 10.45,
   "view_box": {
     "width": 1000,
     "height": 1000

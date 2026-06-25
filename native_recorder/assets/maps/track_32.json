@@ -3,6 +3,9 @@
   "track_name": "Qatar Grand Prix",
   "circuit_name": "Losail International Circuit",
   "track_length_m": 5417,
+  "pit_time": 26.5,
+  "inlap_pit_time": 10.8,
+  "outlap_pit_time": 13.2,
   "view_box": {
     "width": 1000,
     "height": 1000
