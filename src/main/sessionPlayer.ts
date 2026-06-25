@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows } from './index'
+import { debugLog } from './debugLog'
 
 
 let activeFilePath: string | null = null
@@ -192,7 +193,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           tempOffsets.push(byteOffset)
           tempTimes.push(currentST)
           
-          // Map types: 1=telemetry, 2=motion, 3=status, 4=damage, 5=lap, 6=positions, 7=participants, 8=session, 9=timing, 10=all_status, 0=other
+          // Map types: 1=telemetry, 2=motion, 3=status, 4=damage, 5=lap, 6=positions, 7=participants, 8=session, 9=timing, 10=all_status, 11=tyre_sets, 0=other
           let typeEnum = 0
           if (obj.type === 'telemetry') typeEnum = 1
           else if (obj.type === 'motion') typeEnum = 2
@@ -204,6 +205,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           else if (obj.type === 'session') typeEnum = 8
           else if (obj.type === 'timing') typeEnum = 9
           else if (obj.type === 'all_status') typeEnum = 10
+          else if (obj.type === 'tyre_sets') typeEnum = 11
           tempTypes.push(typeEnum)
           
           if (obj.type === 'lap') {
@@ -389,7 +391,7 @@ function tempOffsetsFindIndex(offset: number): number {
 function broadcastInitialState(upToIndex: number) {
   if (offsetsArray.length === 0 || !activeTempFilePath) return
   
-  const neededTypes = new Set([6, 7, 8, 9, 10]) // positions, participants, session, timing, all_status
+  const neededTypes = new Set([6, 7, 8, 9, 10, 11]) // positions, participants, session, timing, all_status, tyre_sets
   const offsetsToRead: number[] = []
   
   const limit = Math.min(upToIndex, offsetsArray.length - 1)
@@ -509,13 +511,25 @@ function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, cu
   const motion = packets.filter(p => p.type === 'motion')
   const status = packets.filter(p => p.type === 'status')
   const damage = packets.filter(p => p.type === 'damage')
-  
+
+  const flushLap = lastPackets['lap'] ?? null
+  debugLog('[SEEK flush]', {
+    targetTime: +targetTime.toFixed(1), currentLapNum,
+    nTelemetry: telemetry.length, nStatus: status.length, nDamage: damage.length,
+    flushLapNum: flushLap?.lap_num ?? null,
+    lastStatusAge: status.length ? status[status.length - 1].tyre_age_laps : null,
+    lastStatusCompound: status.length ? status[status.length - 1].tyre_compound : null,
+    lastDamageFL: damage.length ? damage[damage.length - 1].tyre_wear_fl : null,
+  })
   broadcastToWindows({
     type: 'playback_seek_flush',
     telemetry,
     motion,
     status,
     damage,
+    // Current lap row at the seek point, so the renderer can refresh the singular
+    // `lap` state (the strategy reads lap_num/last_lap_ms from it, not the buffers).
+    lap: flushLap,
     currentLapStart,
     lapNum: currentLapNum
   })
@@ -571,7 +585,9 @@ export async function loadFile(filePath: string): Promise<boolean> {
     type: 'playback_lap_blocks',
     blocks: blocksArr,
     fastestLapNum: fastestLapInfo ? fastestLapInfo.lapNum : 0,
-    events: scannedEvents
+    events: scannedEvents,
+    // Authoritative per-lap times (seek-correct) for the Strategy page target tables.
+    laps: scannedLaps.map(l => ({ lapNum: l.lapNum, lapTimeMs: l.lapTimeMs }))
   })
   
   emitState()

@@ -9,6 +9,7 @@ import { setOverride, getProtocolConfig } from './protocolDispatcher'
 import type { ProtocolOverride } from './protocolDispatcher'
 import { initSessionRecorder } from './sessionRecorder'
 import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange, sweepTempDir, setWindowFocused } from './sessionPlayer'
+import { debugLog } from './debugLog'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -89,6 +90,8 @@ export function broadcastToWindows(row: Record<string, unknown>): void {
   }
 }
 
+
+ipcMain.on('debug-log', (_event, tag: string, data: unknown) => debugLog(tag, data))
 
 ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
   event.returnValue = store.get(key, defaultValue)

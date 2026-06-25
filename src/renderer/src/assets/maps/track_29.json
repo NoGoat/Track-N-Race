@@ -3,6 +3,9 @@
   "track_name": "Saudi Arabian Grand Prix",
   "circuit_name": "Jeddah Corniche Circuit",
   "track_length_m": 6175,
+  "pit_time": 25.5,
+  "inlap_pit_time": 10.35,
+  "outlap_pit_time": 12.65,
   "view_box": {
     "width": 1000,
     "height": 1000

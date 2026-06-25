@@ -3,6 +3,9 @@
   "track_name": "Monaco Grand Prix",
   "circuit_name": "Circuit de Monaco",
   "track_length_m": 3323,
+  "pit_time": 18.9,
+  "inlap_pit_time": 7.38,
+  "outlap_pit_time": 9.02,
   "view_box": {
     "width": 1000,
     "height": 1000

@@ -1,6 +1,24 @@
 import { useMemo, memo, useEffect, useRef, useState } from 'react'
 import type { LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, SessionMsg, TyreSetsMsg, TyreSetEntry, AllStatusMsg } from '../types'
 import { sessionAccent } from './SessionPanel'
+import { TRACK_MAPS } from '../lib/trackMaps'
+
+// ─── Circuit pit-lane time loss ────────────────────────────────────────────────
+// Read from the track map (assets/maps/track_<id>.json, same files as the map
+// renderer). Falls back to 11.25s in-lap / 13.75s out-lap / 25s total when a
+// circuit has no map. Mirrors the native StrategyPage::loadPitLoss.
+interface PitLoss { inlapMs: number; outlapMs: number; totalMs: number }
+const DEFAULT_PIT_LOSS: PitLoss = { inlapMs: 11250, outlapMs: 13750, totalMs: 25000 }
+
+function pitLossForTrack(trackId: number): PitLoss {
+  const m = TRACK_MAPS[trackId] as unknown as Record<string, number> | undefined
+  if (!m) return DEFAULT_PIT_LOSS
+  return {
+    inlapMs:  (m.inlap_pit_time  ?? DEFAULT_PIT_LOSS.inlapMs  / 1000) * 1000,
+    outlapMs: (m.outlap_pit_time ?? DEFAULT_PIT_LOSS.outlapMs / 1000) * 1000,
+    totalMs:  (m.pit_time        ?? DEFAULT_PIT_LOSS.totalMs  / 1000) * 1000,
+  }
+}
 
 // ─── Lookup tables ────────────────────────────────────────────────────────────
 
@@ -29,6 +47,7 @@ interface Props {
   participants: ParticipantsMsg | null
   tyreSets: TyreSetsMsg | null
   allStatus: AllStatusMsg | null
+  lapTimesByNum: Record<number, number>
   isDark: boolean
 }
 
@@ -63,6 +82,42 @@ interface StintTargetInfo {
   lastLapDeltaMs: number | null  // positive = player over target (bad), negative = under (building gap)
 }
 
+// One row of a stint's per-lap target table.
+interface TableLapRow {
+  lapNum: number
+  requiredMs: number
+  actualRequiredMs: number
+  actualMs: number
+  deltaLapMs: number
+  deltaStintMs: number
+  deltaTotalMs: number
+  hasActual: boolean
+}
+
+// A stint captured the moment it begins, so it can be kept on screen after it ends
+// (the live plan only carries the current + future stints).
+interface PastStint {
+  startLap: number
+  reqBaseMs: number
+  compoundName: string
+  color: string
+  postPit: boolean       // its out-lap carries the boxing-time penalty
+  expectedLaps: number   // planned length, frozen once the stint ends
+}
+
+// Everything needed to render one stint card + its per-lap table.
+interface DisplayStint {
+  compoundName: string
+  color: string
+  stintNumber: number    // 1-based position in the race (oldest = 1)
+  startLap: number
+  endLap: number
+  lapCount: number       // expected/planned laps
+  actualLaps: number     // laps actually completed on this set so far
+  isLast: boolean
+  rows: TableLapRow[]     // present once a target exists for the stint
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function driverName(p: ParticipantsMsg | null, idx: number): string {
@@ -86,6 +141,12 @@ function fmtLapTime(ms: number): string {
   const mins = Math.floor(totalSecs / 60)
   const secs = totalSecs % 60
   return `${mins}:${secs.toFixed(1).padStart(4, '0')}`
+}
+
+// Signed seconds, e.g. +0.4 / −1.2 (used by the per-lap delta columns).
+function fmtDelta(ms: number): string {
+  const s = ms / 1000
+  return `${s > 0 ? '+' : s < 0 ? '−' : ''}${Math.abs(s).toFixed(1)}`
 }
 
 // ─── Strategy calculation ────────────────────────────────────────────────────
@@ -213,21 +274,81 @@ const CompoundChip = memo(function CompoundChip({ name, color }: { name: string;
   )
 })
 
-const StintTimeline = memo(function StintTimeline({
-  result, totalLaps, avgWear, isMonaco, label, accentColor, targets,
+// One stint: header row (compound · number · range · expected/actual laps) plus
+// its per-lap target table. The in-lap (pit) row is tinted green, mirroring the
+// Standings fastest-lap highlight; delta cells are red (slower) / green (faster).
+const TABLE_HEADS = ['LAP', 'REQ', 'ADJ REQ', 'ACTUAL', 'Δ LAP', 'Δ STINT', 'Δ TOTAL'] as const
+
+const StintGroup = memo(function StintGroup({ stint, withTopSep }: { stint: DisplayStint; withTopSep: boolean }) {
+  return (
+    <div className={withTopSep ? 'border-t border-[var(--border)]' : ''}>
+      {/* Header row */}
+      <div className="flex items-center gap-2 px-4 py-2">
+        <CompoundChip name={stint.compoundName} color={stint.color} />
+        <span className="text-sm font-bold tabular-nums text-[var(--text-primary)]">{stint.stintNumber}</span>
+        <div className="flex-1" />
+        <span className="text-[10px] text-[var(--text-secondary)] tabular-nums">
+          {stint.startLap}–{stint.endLap}
+        </span>
+        <div className="flex-1" />
+        <span className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Expected</span>
+        <span className="text-sm font-bold tabular-nums text-[var(--text-primary)]">{stint.lapCount}</span>
+        <span className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Actual</span>
+        <span className="text-sm font-bold tabular-nums text-[var(--text-primary)]">{stint.actualLaps}</span>
+      </div>
+
+      {/* Per-lap target table */}
+      {stint.rows.length > 0 && (
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-y border-[var(--border)]">
+              {TABLE_HEADS.map(h => (
+                <th key={h} className="px-2 py-1 text-center text-[9px] text-[var(--text-secondary)] uppercase tracking-wider font-normal">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {stint.rows.map((r, i) => {
+              const isPit = !stint.isLast && r.lapNum === stint.endLap
+              const rowCls = isPit
+                ? 'bg-[#73BF69]/15'
+                : i % 2 === 1 ? 'bg-[var(--bg-input)]/30' : ''
+              return (
+                <tr key={r.lapNum} className={rowCls}>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums text-[var(--text-secondary)]">{r.lapNum}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums text-[var(--text-primary)]">{fmtLapTime(r.requiredMs)}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums text-[var(--text-secondary)]">{fmtLapTime(r.actualRequiredMs)}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums text-[var(--text-primary)]">{r.hasActual ? fmtLapTime(r.actualMs) : '—'}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums" style={{ color: r.hasActual ? (r.deltaLapMs   > 0 ? '#C4162A' : '#73BF69') : 'var(--text-muted)' }}>{r.hasActual ? fmtDelta(r.deltaLapMs)   : '—'}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums" style={{ color: r.hasActual ? (r.deltaStintMs > 0 ? '#C4162A' : '#73BF69') : 'var(--text-muted)' }}>{r.hasActual ? fmtDelta(r.deltaStintMs) : '—'}</td>
+                  <td className="px-2 py-1 text-center text-[11px] tabular-nums" style={{ color: r.hasActual ? (r.deltaTotalMs > 0 ? '#C4162A' : '#73BF69') : 'var(--text-muted)' }}>{r.hasActual ? fmtDelta(r.deltaTotalMs) : '—'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+})
+
+// One strategy variant column: a fixed (non-scrolling) header bar with the stop
+// count + Monaco flag, then the scrollable stack of stint groups.
+const StintColumn = memo(function StintColumn({
+  display, stops, isMonaco, label, accentColor,
 }: {
-  result: StrategyResult
-  totalLaps: number
-  avgWear: number
+  display: DisplayStint[]
+  stops: number
   isMonaco: boolean
   label: string
   accentColor: string
-  targets?: (StintTargetInfo | null)[]
 }) {
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
-      {/* Headline — compact single row */}
-      <div className="flex items-center justify-between px-4 py-2.5 shrink-0 border-b border-[var(--border)]">
+    <div className="flex flex-col h-full min-h-0">
+      {/* Fixed header bar */}
+      <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)]">
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">{label}</span>
           {isMonaco && (
@@ -240,74 +361,16 @@ const StintTimeline = memo(function StintTimeline({
           )}
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="text-2xl font-black tabular-nums leading-none" style={{ color: accentColor }}>
-            {result.stops}
-          </span>
-          <span className="text-xs font-medium text-[var(--text-secondary)]">
-            stop{result.stops !== 1 ? 's' : ''}
-          </span>
+          <span className="text-2xl font-black tabular-nums leading-none" style={{ color: accentColor }}>{stops}</span>
+          <span className="text-xs font-medium text-[var(--text-secondary)]">stop{stops !== 1 ? 's' : ''}</span>
         </div>
       </div>
 
-      {/* Stint rows — flat, divided */}
-      <div className="flex flex-col divide-y divide-[var(--border)]">
-        {result.stints.map((stint, i) => {
-          const target = targets?.[i] ?? null
-          return (
-            <div key={i}>
-              {/* Row 1: compound + laps (left), worn (right) */}
-              <div className="flex items-center gap-2.5 px-4 py-2.5">
-                <CompoundChip name={stint.compoundName} color={stint.tyreColor} />
-                <span className="text-sm font-black tabular-nums leading-none text-[var(--text-primary)]">
-                  ~{stint.lapCount}L
-                </span>
-                <span className="text-[10px] text-[var(--text-secondary)] tabular-nums flex-1">
-                  {stint.startLap}–{stint.isLast ? totalLaps : stint.pitLap}
-                </span>
-                <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">
-                  {i === 0 ? `${avgWear.toFixed(0)}% worn` : 'Fresh'}
-                </span>
-              </div>
-
-              {/* Connector + target/delta on the same line */}
-              <div className={`flex items-center gap-3 px-4 py-1.5 bg-[var(--bg-input)]/30 ${stint.isLast ? 'border-b border-[var(--border)]' : ''}`}>
-                {stint.isLast ? (
-                  <span className="text-[9px] font-bold uppercase tracking-wider shrink-0" style={{ color: '#73BF69' }}>
-                    Finish · Lap {totalLaps}
-                  </span>
-                ) : (
-                  <span className="text-[9px] font-bold uppercase tracking-wider shrink-0" style={{ color: '#FADE2A' }}>
-                    Pit · Lap {stint.pitLap}
-                  </span>
-                )}
-                <div className="flex-1" />
-                {target !== null && (
-                  <>
-                    <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">
-                      {target.isEstimate ? 'Est. pace' : 'Target'}
-                    </span>
-                    <span className="text-xs font-black tabular-nums"
-                      style={{ color: target.isEstimate ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-                    >
-                      {fmtLapTime(target.targetMs)}
-                    </span>
-                    {target.lastLapDeltaMs !== null && (
-                      Math.abs(target.lastLapDeltaMs) > 50 ? (
-                        <span className="text-[10px] font-bold tabular-nums"
-                          style={{ color: target.lastLapDeltaMs > 0 ? '#C4162A' : '#73BF69' }}
-                        >
-                          {target.lastLapDeltaMs > 0 ? '+' : '−'}{Math.abs(target.lastLapDeltaMs / 1000).toFixed(1)}s
-                        </span>
-                      ) : (
-                        <span className="text-[9px] text-[var(--text-secondary)]">on target</span>
-                      )
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          )
-        })}
+      {/* Scrollable stint groups */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {display.map((st, i) => (
+          <StintGroup key={st.stintNumber} stint={st} withTopSep={i > 0} />
+        ))}
       </div>
     </div>
   )
@@ -635,27 +698,68 @@ const TyreWearPanel = memo(function TyreWearPanel({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const StrategyPanel = memo(function StrategyPanel({
-  lap, session, status, damage, timing, participants, tyreSets, allStatus, isDark,
+  lap, session, status, damage, timing, participants, tyreSets, allStatus, lapTimesByNum, isDark,
 }: Props) {
   const accent = sessionAccent(session?.session_type ?? -1, isDark)
 
+  const pitLoss = useMemo(() => pitLossForTrack(session?.track_id ?? -1), [session?.track_id])
+
   const isRaceSession = session !== null && [15, 16, 17].includes(session.session_type)
   const hasEnoughLaps = true
-  const hasTyreData   = !!status && status.tyre_age_laps >= 1
+  // A fitted tyre keeps the strategy valid regardless of age, so a fresh tyre on a
+  // pit out-lap (age 0) doesn't blank the panel. Matches native StrategyPage.
+  const hasTyreData   = !!status && status.tyre_compound > 0
 
   const strategyData = useMemo(() => {
-    if (!lap || !session || !status || !damage || !isRaceSession || session.total_laps <= 0 || !hasTyreData) return null
+    // Hold off until lap 2 is complete (lap_num ≥ 3, so last_lap_ms is lap 2's time).
+    // Lap 1 is a standing start — its pace is useless as a Required baseline.
+    if (!lap || !session || !status || !damage || !isRaceSession || session.total_laps <= 0 || !hasTyreData || lap.lap_num < 3) return null
 
-    const avgWear    = (damage.tyre_wear_fl + damage.tyre_wear_fr + damage.tyre_wear_rl + damage.tyre_wear_rr) / 4
+    const flW = damage.tyre_wear_fl
+    const frW = damage.tyre_wear_fr
+    const rlW = damage.tyre_wear_rl
+    const rrW = damage.tyre_wear_rr
+    const avgWear    = (flW + frW + rlW + rrW) / 4
     const wearPerLap = status.tyre_age_laps > 0 ? avgWear / status.tyre_age_laps : 2
     const cliffPct   = [16, 17, 18].includes(status.visual_compound) ? 80 : 70
     const isMonaco   = session.track_id === 5
+
+    // ── Limiting tyre ──────────────────────────────────────────────────────
+    // Pit timing must follow the corner that reaches the cliff first, not the
+    // four-corner average. Per corner we project laps-to-cliff from its own wear
+    // and wear rate; the soonest one governs the strategy.
+    const cornersW = [
+      { name: 'FL', wear: flW }, { name: 'FR', wear: frW },
+      { name: 'RL', wear: rlW }, { name: 'RR', wear: rrW },
+    ]
+    const cornerRate  = (w: number) => status.tyre_age_laps > 0 ? w / status.tyre_age_laps : 2
+    const lapsToCliff = (w: number) => (cliffPct - w) / Math.max(0.01, cornerRate(w))
+    let limitIdx = 0
+    let limitLapsLeft = lapsToCliff(cornersW[0].wear)
+    for (let i = 1; i < 4; i++) {
+      const left = lapsToCliff(cornersW[i].wear)
+      if (left < limitLapsLeft) { limitLapsLeft = left; limitIdx = i }
+    }
+    const limitWear       = cornersW[limitIdx].wear
+    const limitWearPerLap = Math.max(0.01, cornerRate(limitWear))
+    const limitCorner     = cornersW[limitIdx].name
 
     const WET_COMPOUNDS = new Set([7, 8])
     const isWetWeather  = session.weather >= 3
     const basePool = (tyreSets?.sets ?? [])
       .filter(s => s.available && !s.fitted && s.usable_life > 0)
       .filter(s => isWetWeather ? WET_COMPOUNDS.has(s.actual_compound) : !WET_COMPOUNDS.has(s.actual_compound))
+
+    ;(window as any).debugBridge?.log('[STRAT pool]', {
+      weather: session.weather, isWetWeather,
+      tyreSetsNull: tyreSets === null,
+      rawSetCount: tyreSets?.sets?.length ?? 0,
+      afterFilter: basePool.length,
+      sample: (tyreSets?.sets ?? []).slice(0, 8).map(s => ({
+        ac: s.actual_compound, vc: s.visual_compound, avail: s.available,
+        fit: s.fitted, life: s.usable_life, dms: s.lap_delta_ms,
+      })),
+    })
 
     const conservativePool = [...basePool].sort((a, b) => b.usable_life - a.usable_life)
     const aggressivePool   = [...basePool].sort((a, b) => a.lap_delta_ms - b.lap_delta_ms)
@@ -667,7 +771,7 @@ const StrategyPanel = memo(function StrategyPanel({
       visual: status.visual_compound,
     }
 
-    const consLapsLeft = Math.max(0, Math.floor((cliffPct - avgWear) / wearPerLap))
+    const consLapsLeft = Math.max(0, Math.floor((cliffPct - limitWear) / limitWearPerLap))
     const consCliffLap = lap.lap_num + consLapsLeft
 
     // Estimate per-lap pace gain from the best available fresh set vs current (worn) set.
@@ -679,9 +783,8 @@ const StrategyPanel = memo(function StrategyPanel({
     const freshGainMs = bestConsSet
       ? Math.max(0, (fittedSet?.lap_delta_ms ?? 0) - bestConsSet.lap_delta_ms)
       : 0
-    const CONS_PIT_COST_MS = 30_000
-    const consFirstPit = freshGainMs > 500 && freshGainMs * consLapsLeft > CONS_PIT_COST_MS
-      ? Math.max(lap.lap_num + 1, lap.lap_num + Math.ceil(CONS_PIT_COST_MS / freshGainMs))
+    const consFirstPit = freshGainMs > 500 && freshGainMs * consLapsLeft > pitLoss.totalMs
+      ? Math.max(lap.lap_num + 1, lap.lap_num + Math.ceil(pitLoss.totalMs / freshGainMs))
       : consCliffLap
 
     let conservative = buildStints(lap.lap_num, session.total_laps, consFirstPit, currentCompound, avgWear, conservativePool)
@@ -690,8 +793,8 @@ const StrategyPanel = memo(function StrategyPanel({
       conservative = applyMonacoRule(conservative, conservativePool, usedCompounds)
     }
 
-    const aggWearRate    = wearPerLap * 1.2
-    const aggLapsLeft    = Math.max(0, Math.floor((cliffPct - avgWear) / aggWearRate))
+    const aggWearRate    = limitWearPerLap * 1.2
+    const aggLapsLeft    = Math.max(0, Math.floor((cliffPct - limitWear) / aggWearRate))
     const aggCliffLap    = lap.lap_num + aggLapsLeft
     const bestAggSet     = aggressivePool[0]
     const economicOptLap = bestAggSet
@@ -708,10 +811,15 @@ const StrategyPanel = memo(function StrategyPanel({
       aggressive = applyMonacoRule(aggressive, aggressivePool, usedCompounds)
     }
 
-    const flW = damage.tyre_wear_fl
-    const frW = damage.tyre_wear_fr
-    const rlW = damage.tyre_wear_rl
-    const rrW = damage.tyre_wear_rr
+    ;(window as any).debugBridge?.log('[STRAT calc]', {
+      lapNum: lap.lap_num, totalLaps: session.total_laps, tyreAge: status.tyre_age_laps,
+      compound: status.tyre_compound, visual: status.visual_compound, cliffPct,
+      wear: { fl: flW, fr: frW, rl: rlW, rr: rrW }, avgWear: +avgWear.toFixed(1),
+      limitCorner, limitWear: +limitWear.toFixed(1), limitWearPerLap: +limitWearPerLap.toFixed(2),
+      consLapsLeft, consCliffLap, consFirstPit, freshGainMs: +freshGainMs.toFixed(0),
+      poolSize: conservativePool.length, consStops: conservative.stops, aggStops: aggressive.stops,
+    })
+
     const leftWear  = (flW + rlW) / 2
     const rightWear = (frW + rrW) / 2
     const frontWear = (flW + frW) / 2
@@ -841,6 +949,7 @@ const StrategyPanel = memo(function StrategyPanel({
 
     return {
       avgWear, wearPerLap,
+      limitCorner, limitWear, limitWearPerLap,
       estimatedCliffLap: consCliffLap, lapsUntilCliff: consLapsLeft,
       conservative, aggressive,
       currentCompound, isMonaco, cliffPct, wearWarnings,
@@ -873,11 +982,10 @@ const StrategyPanel = memo(function StrategyPanel({
     if (playerLapMs <= 0 || playerLapMs > 600_000) return null
 
     const fittedSet = tyreSets?.sets.find(s => s.fitted)
-    const PIT_COST_MS        = 20_000
     const totalRemainingLaps = Math.max(1, session.total_laps - (lap?.lap_num ?? 0))
 
     const calcForResult = (result: StrategyResult, isAggressive: boolean): (StintTargetInfo | null)[] => {
-      const perLapOffset = isAggressive ? PIT_COST_MS / totalRemainingLaps : 0
+      const perLapOffset = isAggressive ? pitLoss.totalMs / totalRemainingLaps : 0
       return result.stints.map((stint, i) => {
         if (i === 0) {
           if (behindLapMs > 0 && behindLapMs < 600_000) {
@@ -903,7 +1011,185 @@ const StrategyPanel = memo(function StrategyPanel({
       conservative: calcForResult(strategyData.conservative, false),
       aggressive:   calcForResult(strategyData.aggressive,   true),
     }
-  }, [strategyData, stableLapPace, tyreSets, session, lap])
+  }, [strategyData, stableLapPace, tyreSets, session, lap, pitLoss])
+
+  // ─── Per-lap target tables (ported from native StrategyPage) ───────────────
+  // The live plan only carries the current + future stints, so each stint is
+  // recorded the moment it begins (compound + frozen Required base). Completed
+  // stints are kept on screen instead of vanishing after a pit. Actuals are gated
+  // to laps completed as of the playhead (n < lap_num), so this is identical live
+  // and under playback (lapTimesByNum is seek-correct in playback).
+  const consFrozenReqMs = useRef<Map<number, number>>(new Map())
+  const aggFrozenReqMs  = useRef<Map<number, number>>(new Map())
+  const consPast        = useRef<PastStint[]>([])
+  const aggPast         = useRef<PastStint[]>([])
+  const tableLapComputed = useRef<number>(-1)
+  const tableSessionKey  = useRef<string | null>(null)
+  const [consDisplay, setConsDisplay] = useState<DisplayStint[]>([])
+  const [aggDisplay,  setAggDisplay]  = useState<DisplayStint[]>([])
+
+  // Coalesce the recompute to once per animation frame, reading the SETTLED inputs.
+  // lap_num (LapData) and tyre_age (CarStatus) arrive in separate packets/renders;
+  // recomputing per-render can observe a transient where lap_num advanced but
+  // tyre_age hasn't, making openingStart = lapNum - tyreAge drift by a lap and
+  // record a phantom stint boundary. Native avoids this by reading both together on
+  // a refresh tick — this rAF coalescing replicates that.
+  const tableRaf    = useRef<number | null>(null)
+  const tableInputs = useRef({ strategyData, stintTargets, lap, session, status, lapTimesByNum, pitLoss })
+  tableInputs.current = { strategyData, stintTargets, lap, session, status, lapTimesByNum, pitLoss }
+  useEffect(() => () => {
+    if (tableRaf.current != null) { cancelAnimationFrame(tableRaf.current); tableRaf.current = null }
+  }, [])
+
+  useEffect(() => {
+    // Cancel any not-yet-fired recompute and reschedule, so multiple packet renders
+    // within one frame coalesce into a single recompute reading the settled inputs.
+    if (tableRaf.current != null) cancelAnimationFrame(tableRaf.current)
+    tableRaf.current = requestAnimationFrame(() => {
+      tableRaf.current = null
+      const { strategyData, stintTargets, lap, session, status, lapTimesByNum, pitLoss } = tableInputs.current
+
+    // Reset all cross-lap tracking only on a genuinely new session. Keyed on a
+    // STABLE identity (track + session type) — not session.ts, which is a per-packet
+    // timestamp that changes ~every second and would wipe the history mid-race.
+    const sessionKey = session ? `${session.track_id}/${session.session_type}` : null
+    if (sessionKey !== tableSessionKey.current) {
+      consFrozenReqMs.current = new Map()
+      aggFrozenReqMs.current  = new Map()
+      consPast.current = []
+      aggPast.current  = []
+      tableLapComputed.current = -1
+      tableSessionKey.current = sessionKey
+      setConsDisplay([])
+      setAggDisplay([])
+      // fall through: build immediately if this frame already has valid data
+    }
+    if (!strategyData || !stintTargets || !lap || !session || !status) return
+
+    const lapNum     = lap.lap_num
+    const totalLaps  = session.total_laps
+    const tyreAge    = status.tyre_age_laps ?? 0
+    const openingStart = Math.max(1, lapNum - tyreAge)
+
+    // Record the current opening stint into the per-variant history (idempotent —
+    // its true start only jumps forward on a pit). Keeps the open stint's planned
+    // length live until the next stint pushes in front of it.
+    const recordStint = (
+      res: StrategyResult, targets: (StintTargetInfo | null)[],
+      frozen: Map<number, number>, past: PastStint[],
+    ): boolean => {
+      if (!res.stints.length || !targets.length || !targets[0]) return false
+      let added = false
+      if (past.length === 0 || openingStart > past[past.length - 1].startLap) {
+        if (!frozen.has(openingStart)) frozen.set(openingStart, targets[0].targetMs)
+        past.push({
+          startLap: openingStart, reqBaseMs: frozen.get(openingStart)!,
+          compoundName: res.stints[0].compoundName, color: res.stints[0].tyreColor,
+          postPit: past.length > 0, expectedLaps: 0,
+        })
+        added = true
+      }
+      const s0 = res.stints[0]
+      const s0end = s0.isLast ? totalLaps : (s0.pitLap ?? totalLaps)
+      past[past.length - 1].expectedLaps = Math.max(1, s0end - openingStart + 1)
+      return added
+    }
+
+    const changedC = recordStint(strategyData.conservative, stintTargets.conservative, consFrozenReqMs.current, consPast.current)
+    const changedA = recordStint(strategyData.aggressive,   stintTargets.aggressive,   aggFrozenReqMs.current,  aggPast.current)
+    const stintsChanged = changedC || changedA
+
+    // Only rebuild the (heavy) tables when the lap advances or a stint was recorded
+    // — not on every 20Hz frame. Within a lap the table stays frozen even if the
+    // underlying plan jitters, matching native (avoids row churn / flicker).
+    if (lapNum === tableLapComputed.current && !stintsChanged) return
+
+    // Pitting costs time on two laps: the out-lap (first lap of a post-pit stint)
+    // and the in-lap (last lap of a stint that ends in a pit).
+    const computeRows = (
+      start: number, end: number, base: number, postPit: boolean, prePit: boolean,
+      raceCum: { v: number },
+    ): TableLapRow[] => {
+      const rows: TableLapRow[] = []
+      let cum = 0   // cumulative delta over the stint, through the previous lap
+      for (let n = start; n > 0 && n <= end; n++) {
+        const requiredMs = base
+          + ((postPit && n === start) ? pitLoss.outlapMs : 0)
+          + ((prePit  && n === end)   ? pitLoss.inlapMs  : 0)
+        // Adjusted required = base minus the running buffer: time banked raises the
+        // time you may run; time lost lowers it.
+        const actualRequiredMs = requiredMs - cum
+        const actual = lapTimesByNum[n]
+        const row: TableLapRow = {
+          lapNum: n, requiredMs, actualRequiredMs,
+          actualMs: 0, deltaLapMs: 0, deltaStintMs: 0, deltaTotalMs: 0, hasActual: false,
+        }
+        if (n < lapNum && actual && actual > 0) {
+          row.hasActual    = true
+          row.actualMs     = actual
+          row.deltaLapMs   = actual - requiredMs
+          cum             += row.deltaLapMs
+          row.deltaStintMs = cum
+          raceCum.v       += row.deltaLapMs
+          row.deltaTotalMs = raceCum.v
+        }
+        rows.push(row)
+      }
+      return rows
+    }
+
+    const buildDisplay = (
+      res: StrategyResult, targets: (StintTargetInfo | null)[],
+      frozen: Map<number, number>, past: PastStint[],
+    ): DisplayStint[] => {
+      const out: DisplayStint[] = []
+      const raceCum = { v: 0 }   // Δ TOTAL threads across every stint in lap order
+      const done = past.filter(ps => ps.startLap <= lapNum)
+
+      // Completed stints — every recorded one but the current (last) opening stint.
+      for (let k = 0; k + 1 < done.length; k++) {
+        const ps = done[k]
+        const start = ps.startLap, end = done[k + 1].startLap - 1
+        if (end < start) continue
+        out.push({
+          compoundName: ps.compoundName, color: ps.color,
+          stintNumber: out.length + 1, startLap: start, endLap: end,
+          lapCount: ps.expectedLaps > 0 ? ps.expectedLaps : end - start + 1,
+          actualLaps: end - start + 1, isLast: false,
+          rows: computeRows(start, end, ps.reqBaseMs, ps.postPit, true, raceCum),
+        })
+      }
+
+      // Current + future stints from the live forward plan.
+      const pittedBefore = done.length > 1
+      for (let i = 0; i < res.stints.length; i++) {
+        const st = res.stints[i]
+        const tg = i < targets.length ? targets[i] : null
+        const isOpening = i === 0
+        const start = isOpening ? openingStart : st.startLap
+        const end   = st.isLast ? totalLaps : (st.pitLap ?? totalLaps)
+        const d: DisplayStint = {
+          compoundName: st.compoundName, color: st.tyreColor,
+          stintNumber: out.length + 1, startLap: start, endLap: end,
+          lapCount: isOpening ? Math.max(1, end - start + 1) : st.lapCount,
+          actualLaps: 0, isLast: st.isLast, rows: [],
+        }
+        if (tg && tg.targetMs > 0) {
+          const postPit = isOpening ? pittedBefore : true
+          const base = frozen.has(start) ? frozen.get(start)! : tg.targetMs
+          d.rows = computeRows(start, end, base, postPit, !st.isLast, raceCum)
+        }
+        for (const r of d.rows) if (r.hasActual) d.actualLaps++
+        out.push(d)
+      }
+      return out
+    }
+
+    setConsDisplay(buildDisplay(strategyData.conservative, stintTargets.conservative, consFrozenReqMs.current, consPast.current))
+    setAggDisplay(buildDisplay(strategyData.aggressive,  stintTargets.aggressive,  aggFrozenReqMs.current,  aggPast.current))
+    tableLapComputed.current = lapNum
+    })
+  }, [strategyData, stintTargets, lap, session, status, lapTimesByNum, pitLoss])
 
   // ─── Pit count tracking ───────────────────────────────────────────────────
   const pitCountsRef     = useRef<Map<number, number>>(new Map())
@@ -1112,16 +1398,14 @@ const StrategyPanel = memo(function StrategyPanel({
         <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
 
           {/* Conservative */}
-          <div className="flex-1 min-w-0 overflow-y-auto">
-            {strategyData ? (
-              <StintTimeline
-                result={strategyData.conservative}
-                totalLaps={session!.total_laps}
-                avgWear={strategyData.avgWear}
-                isMonaco={strategyData.isMonaco}
+          <div className="flex-1 min-w-0 h-full min-h-0">
+            {consDisplay.length > 0 ? (
+              <StintColumn
+                display={consDisplay}
+                stops={strategyData?.conservative.stops ?? Math.max(0, consDisplay.length - 1)}
+                isMonaco={strategyData?.isMonaco ?? false}
                 label="Conservative"
                 accentColor={blueAccent}
-                targets={stintTargets?.conservative}
               />
             ) : (
               <div className="flex items-center justify-center h-full">
@@ -1131,16 +1415,14 @@ const StrategyPanel = memo(function StrategyPanel({
           </div>
 
           {/* Aggressive */}
-          <div className="flex-1 min-w-0 overflow-y-auto">
-            {strategyData && (
-              <StintTimeline
-                result={strategyData.aggressive}
-                totalLaps={session!.total_laps}
-                avgWear={strategyData.avgWear}
-                isMonaco={strategyData.isMonaco}
+          <div className="flex-1 min-w-0 h-full min-h-0">
+            {aggDisplay.length > 0 && (
+              <StintColumn
+                display={aggDisplay}
+                stops={strategyData?.aggressive.stops ?? Math.max(0, aggDisplay.length - 1)}
+                isMonaco={strategyData?.isMonaco ?? false}
                 label="Aggressive"
                 accentColor={amberAccent}
-                targets={stintTargets?.aggressive}
               />
             )}
           </div>

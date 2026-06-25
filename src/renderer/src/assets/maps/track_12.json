@@ -3,6 +3,9 @@
   "track_name": "Singapore Grand Prix",
   "circuit_name": "Marina Bay Street Circuit",
   "track_length_m": 4928,
+  "pit_time": 23.44,
+  "inlap_pit_time": 9.42,
+  "outlap_pit_time": 11.52,
   "view_box": {
     "width": 1000,
     "height": 1000

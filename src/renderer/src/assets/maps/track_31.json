@@ -3,6 +3,9 @@
   "track_name": "Las Vegas Grand Prix",
   "circuit_name": "Las Vegas Street Circuit",
   "track_length_m": 6200,
+  "pit_time": 19.5,
+  "inlap_pit_time": 7.65,
+  "outlap_pit_time": 9.35,
   "view_box": {
     "width": 1000,
     "height": 1000

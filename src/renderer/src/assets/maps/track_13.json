@@ -3,6 +3,9 @@
   "track_name": "Japanese Grand Prix",
   "circuit_name": "Suzuka International Racing Course",
   "track_length_m": 5809,
+  "pit_time": 20.15,
+  "inlap_pit_time": 7.94,
+  "outlap_pit_time": 9.71,
   "view_box": {
     "width": 1000,
     "height": 1000

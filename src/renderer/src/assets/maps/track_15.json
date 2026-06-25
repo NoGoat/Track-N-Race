@@ -3,6 +3,9 @@
   "track_name": "United States Grand Prix",
   "circuit_name": "Circuit of the Americas",
   "track_length_m": 5514,
+  "pit_time": 21.1,
+  "inlap_pit_time": 8.37,
+  "outlap_pit_time": 10.23,
   "view_box": {
     "width": 1000,
     "height": 1000

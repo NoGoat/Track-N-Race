@@ -3,6 +3,9 @@
   "track_name": "Austrian Grand Prix",
   "circuit_name": "Red Bull Ring (Reverse)",
   "track_length_m": 4323,
+  "pit_time": 23.5,
+  "inlap_pit_time": 9.45,
+  "outlap_pit_time": 11.55,
   "view_box": {
     "width": 1000,
     "height": 1000

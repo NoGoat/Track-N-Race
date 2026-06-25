@@ -3,6 +3,9 @@
   "track_name": "Dutch Grand Prix",
   "circuit_name": "Circuit Zandvoort",
   "track_length_m": 4258,
+  "pit_time": 22.5,
+  "inlap_pit_time": 9.0,
+  "outlap_pit_time": 11.0,
   "view_box": {
     "width": 1000,
     "height": 1000

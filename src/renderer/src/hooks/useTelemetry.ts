@@ -34,6 +34,7 @@ export interface TelemetryState {
   fastestLap: LapData | null
   lapTelemetry: TelemetryRow[]
   lapStatusHistory: StatusRow[]
+  lapTimesByNum: Record<number, number>
   isConnected: boolean
   error: string | null
   protocolStatus: ProtocolStatusMsg | null
@@ -64,6 +65,10 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [speedRpmBlocks, setSpeedRpmBlocks] = useState<any[] | null>(null)
   const [fastestLapNum, setFastestLapNum] = useState<number>(0)
   const [playbackEvents, setPlaybackEvents] = useState<RaceEventMsg[]>([])
+  // Authoritative completed-lap times keyed by lap number. Playback comes from the
+  // main-process pre-scan (seek-correct); live is accumulated as laps complete.
+  const [playbackLapTimes, setPlaybackLapTimes] = useState<Record<number, number>>({})
+  const [liveLapTimes, setLiveLapTimes] = useState<Record<number, number>>({})
   const fastestLapTimeRef = useRef<number>(Infinity)
 
   const telBufRef      = useRef<TelemetryRow[]>([])
@@ -107,6 +112,8 @@ export function useTelemetry(seconds: number): TelemetryState {
           setSpeedRpmBlocks(null)
           setFastestLapNum(0)
           setPlaybackEvents([])
+          setPlaybackLapTimes({})
+          setLiveLapTimes({})
           break
         }
         case 'telemetry': {
@@ -229,6 +236,7 @@ export function useTelemetry(seconds: number): TelemetryState {
               sessionHistoryBestRef.current.clear()
               setSpeedRpmBlocks(null)
               setFastestLapNum(0)
+              setLiveLapTimes({})
             }
           }
           break
@@ -260,6 +268,17 @@ export function useTelemetry(seconds: number): TelemetryState {
           dmgBufRef.current = flush.damage
           lapStartTimeRef.current = flush.currentLapStart
           lapNumRef.current = flush.lapNum
+          // Refresh the singular current rows the panels read directly (not the
+          // buffers). lapNumRef is set above first, so setLap's transition effect
+          // sees prevLapNum === lap_num and no-ops (no bogus lap-history entry).
+          ;(window as any).debugBridge?.log('[SEEK recv]', {
+            flushLapNum: flush.lapNum, flushLap_lap_num: flush.lap?.lap_num ?? null,
+            nStatus: flush.status?.length ?? 0, nDamage: flush.damage?.length ?? 0,
+            appliedStatusAge: flush.status?.length ? flush.status[flush.status.length - 1].tyre_age_laps : null,
+          })
+          if (flush.status?.length) setStatus(flush.status[flush.status.length - 1])
+          if (flush.damage?.length) setDamage(flush.damage[flush.damage.length - 1])
+          if (flush.lap) setLap(flush.lap)
           break
         }
         case 'playback_lap_blocks': {
@@ -268,6 +287,13 @@ export function useTelemetry(seconds: number): TelemetryState {
           setSpeedRpmBlocks(data.blocks)
           setFastestLapNum(data.fastestLapNum)
           setPlaybackEvents(data.events ?? [])
+          {
+            const map: Record<number, number> = {}
+            for (const l of (data.laps ?? []) as { lapNum: number; lapTimeMs: number }[]) {
+              if (l.lapTimeMs > 0) map[l.lapNum] = l.lapTimeMs
+            }
+            setPlaybackLapTimes(map)
+          }
           break
         }
       }
@@ -306,6 +332,10 @@ export function useTelemetry(seconds: number): TelemetryState {
 
     setLapHistoryBuf(prev => [...prev, newLapData].slice(-3))
     const lapTimeMs = lap.last_lap_ms
+    // last_lap_ms on this transition is the just-completed lap (prevLapNum).
+    if (lapTimeMs > 0 && lapTimeMs < 300_000) {
+      setLiveLapTimes(prev => prev[prevLapNum] === lapTimeMs ? prev : { ...prev, [prevLapNum]: lapTimeMs })
+    }
     if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTimeRef.current) {
       fastestLapTimeRef.current = lapTimeMs
       setFastestLap(newLapData)
@@ -321,6 +351,8 @@ export function useTelemetry(seconds: number): TelemetryState {
   const curBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum) : null
   const prevBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum - 1) : null
   const fastBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === fastestLapNum) : null
+  // Playback uses the seek-correct pre-scan; live uses the accumulated map.
+  const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
   const telemetry        = useMemo(() => telBuf.filter(d => d.session_time > cutoff),           [telBuf, cutoff])
   const motion           = useMemo(() => motBuf.filter(d => d.session_time > cutoff),           [motBuf, cutoff])
@@ -357,7 +389,7 @@ export function useTelemetry(seconds: number): TelemetryState {
     lap, timing, participants, allStatus,
     fastestLapCarIdx, raceEvent, raceEvents: resolvedRaceEvents, session, tyreSets,
     latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
-    speedRpmBlocks,
+    speedRpmBlocks, lapTimesByNum,
     isConnected: true, error: null, protocolStatus, protocolWarning,
   }
 }

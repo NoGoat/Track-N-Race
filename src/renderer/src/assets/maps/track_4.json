@@ -3,6 +3,9 @@
   "track_name": "Spanish Grand Prix",
   "circuit_name": "Circuit de Barcelona-Catalunya",
   "track_length_m": 4664,
+  "pit_time": 22.1,
+  "inlap_pit_time": 8.82,
+  "outlap_pit_time": 10.78,
   "view_box": {
     "width": 1000,
     "height": 1000

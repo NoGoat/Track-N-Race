@@ -752,7 +752,7 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
 
   speedRpmBlocksRef.current = speedRpmBlocks
 
@@ -1568,6 +1568,7 @@ export default function App() {
               participants={participants}
               tyreSets={tyreSets}
               allStatus={allStatus}
+              lapTimesByNum={lapTimesByNum}
               isDark={theme === 'dark'}
             />
           </div>
