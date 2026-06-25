@@ -19,7 +19,7 @@ class QVBoxLayout;
 struct LapRow {
     int    lapNum = 0;
     double requiredMs = 0, actualRequiredMs = 0, actualMs = 0;
-    double deltaLapMs = 0, deltaStintMs = 0;
+    double deltaLapMs = 0, deltaStintMs = 0, deltaTotalMs = 0;
     bool   hasActual = false;
 };
 
@@ -82,6 +82,8 @@ private:
     QStackedWidget* bodyStack_    = nullptr;   // left pane: 0 = strategy columns, 1 = non-race placeholder
     QScrollArea*    consScroll_   = nullptr;    // conservative column scroll area
     QScrollArea*    aggScroll_    = nullptr;    // aggressive column scroll area
+    QVBoxLayout*    consHeaderLayout_ = nullptr; // conservative fixed (non-scrolling) header bar
+    QVBoxLayout*    aggHeaderLayout_  = nullptr; // aggressive fixed (non-scrolling) header bar
     QVBoxLayout*    consLayout_   = nullptr;    // conservative column content
     QVBoxLayout*    aggLayout_    = nullptr;    // aggressive column content
     QVBoxLayout*    sidebarLayout_= nullptr;    // right sidebar sections

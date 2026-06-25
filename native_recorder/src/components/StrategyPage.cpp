@@ -403,7 +403,21 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     auto* bl = new QHBoxLayout(cols);
     bl->setContentsMargins(0, 0, 0, 0); bl->setSpacing(0);
 
-    auto makeColumn = [&](QVBoxLayout*& outLayout, QScrollArea*& outScroll) {
+    auto makeColumn = [&](QVBoxLayout*& outHeaderLayout, QVBoxLayout*& outLayout,
+                          QScrollArea*& outScroll) {
+        auto* col = new QWidget;
+        auto* cv = new QVBoxLayout(col);
+        cv->setContentsMargins(0, 0, 0, 0); cv->setSpacing(0);
+
+        // Fixed (non-scrolling) header bar — the strategy name + stop count stays put
+        // while the stint tables scroll beneath it.
+        auto* headerHolder = new QWidget;
+        outHeaderLayout = new QVBoxLayout(headerHolder);
+        outHeaderLayout->setContentsMargins(0, 0, 0, 0);
+        outHeaderLayout->setSpacing(0);
+        cv->addWidget(headerHolder);
+        cv->addWidget(hline());
+
         auto* scroll = new QScrollArea;
         outScroll = scroll;
         scroll->setWidgetResizable(true);
@@ -419,12 +433,13 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
         outLayout->setSpacing(0);
         outLayout->addStretch();
         scroll->setWidget(content);
-        return scroll;
+        cv->addWidget(scroll, 1);
+        return col;
     };
 
-    bl->addWidget(makeColumn(consLayout_, consScroll_), 1);
+    bl->addWidget(makeColumn(consHeaderLayout_, consLayout_, consScroll_), 1);
     bl->addWidget(vline());
-    bl->addWidget(makeColumn(aggLayout_, aggScroll_), 1);
+    bl->addWidget(makeColumn(aggHeaderLayout_, aggLayout_, aggScroll_), 1);
     bodyStack_->addWidget(cols);   // index 0
 
     // Page 1: non-race placeholder
@@ -565,7 +580,7 @@ const ColMetrics& colMetrics() {
     static const ColMetrics m = [] {
         ColMetrics r;
         {   // table row + header, straight from a table configured like the live ones
-            QTableWidget t(0, 6);
+            QTableWidget t(0, 7);
             t.verticalHeader()->setVisible(false);
             t.ensurePolished();
             r.tableRow    = t.verticalHeader()->defaultSectionSize();
@@ -598,20 +613,12 @@ const ColMetrics& colMetrics() {
 }
 }  // namespace
 
-// Build one strategy column (header + stint rows). Renders completed, current and
-// future stints alike — completed ones are kept on screen, not dropped after a pit.
-static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& label,
-                                   const QColor& accent, const QColor& sec,
-                                   const std::vector<DisplayStint>& stints) {
+// Fixed (non-scrolling) header bar for one column: strategy name + Monaco chip +
+// stop count. Built separately from the timeline so it stays put while the stint
+// tables scroll beneath it.
+static QWidget* buildStintHeaderBar(int stops, bool isMonaco, const QString& label,
+                                    const QColor& accent, const QColor& sec) {
     const ColMetrics& M = colMetrics();
-    auto* w = new QWidget;
-    auto* v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0); v->setSpacing(0);
-
-    int total = 0;
-    auto addSep = [&] { auto* ln = makeHLine(); ln->setFixedHeight(M.sep); v->addWidget(ln); total += M.sep; };
-
-    // Headline row (strategy heading)
     auto* hdr = new QWidget; hdr->setFixedHeight(M.heading);
     auto* hl = new QHBoxLayout(hdr);
     hl->setContentsMargins(12, 5, 12, 5); hl->setSpacing(8);
@@ -623,8 +630,21 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
       QPalette p = stopsLbl->palette(); p.setColor(QPalette::WindowText, accent); stopsLbl->setPalette(p); }
     hl->addWidget(stopsLbl, 0, Qt::AlignBottom);
     hl->addWidget(secLabel(stops == 1 ? "stop" : "stops", sec), 0, Qt::AlignBottom);
-    v->addWidget(hdr); total += M.heading;
-    addSep();
+    return hdr;
+}
+
+// Build one strategy column's scrollable body (stint rows). The fixed header bar is
+// built separately (buildStintHeaderBar). Renders completed, current and future
+// stints alike — completed ones are kept on screen, not dropped after a pit.
+static QWidget* buildStintTimeline(const QColor& sec,
+                                   const std::vector<DisplayStint>& stints) {
+    const ColMetrics& M = colMetrics();
+    auto* w = new QWidget;
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 0, 0, 0); v->setSpacing(0);
+
+    int total = 0;
+    auto addSep = [&] { auto* ln = makeHLine(); ln->setFixedHeight(M.sep); v->addWidget(ln); total += M.sep; };
 
     for (size_t i = 0; i < stints.size(); ++i) {
         const DisplayStint& st = stints[i];
@@ -663,7 +683,7 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
         // cells get a colour (red slower / green faster).
         if (!st.rows.empty()) {
             const std::vector<LapRow>& rows = st.rows;
-            const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT"};
+            const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT", "Δ TOTAL"};
 
             auto* tbl = new QTableWidget((int)rows.size(), (int)heads.size());
             tbl->setHorizontalHeaderLabels(heads);
@@ -671,6 +691,10 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
             tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
             tbl->setFrameShape(QFrame::NoFrame);
             tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            // Alternating row tint + no grid, matching the Tyres/Standings tables.
+            tbl->setShowGrid(false);
+            tbl->setAlternatingRowColors(true);
+            tbl->setSelectionMode(QAbstractItemView::NoSelection);
             tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);  // fill available width
             tbl->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
             // Enforce the measured row + header heights so the table's height equals
@@ -696,12 +720,15 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
                 tbl->setItem(r, 3, cell(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
                 auto* dl = cell(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
                 auto* ds = cell(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
+                auto* dt = cell(lr.hasActual ? fmtDelta(lr.deltaTotalMs) : "—");
                 if (lr.hasActual) {
                     dl->setForeground(QBrush(lr.deltaLapMs   > 0 ? kRed : kGreen));
                     ds->setForeground(QBrush(lr.deltaStintMs > 0 ? kRed : kGreen));
+                    dt->setForeground(QBrush(lr.deltaTotalMs > 0 ? kRed : kGreen));
                 }
                 tbl->setItem(r, 4, dl);
                 tbl->setItem(r, 5, ds);
+                tbl->setItem(r, 6, dt);
             }
 
             // table header + one row per lap (from the measured metrics).
@@ -1026,7 +1053,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     stintsChanged |= recordStint(sd.conservative, consFrozenReqMs_, consPast_, consTargets);
     stintsChanged |= recordStint(sd.aggressive,  aggFrozenReqMs_, aggPast_,  aggTargets);
 
-    auto computeRows = [&](int start, int end, double base, bool postPit) {
+    auto computeRows = [&](int start, int end, double base, bool postPit, double& raceCum) {
         std::vector<LapRow> rows;
         double cum = 0.0;   // cumulative delta over stint, through the previous lap
         for (int n = start; n > 0 && n <= end; ++n) {
@@ -1043,6 +1070,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 lr.deltaLapMs   = lr.actualMs - lr.requiredMs;
                 cum            += lr.deltaLapMs;
                 lr.deltaStintMs = cum;
+                raceCum        += lr.deltaLapMs;   // running total across the whole race
+                lr.deltaTotalMs = raceCum;
             }
             rows.push_back(lr);
         }
@@ -1053,6 +1082,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                             std::map<int, double>& frozenMap, const std::vector<PastStint>& past) {
         std::vector<DisplayStint> out;
         if (!sd.valid) return out;
+        // Δ TOTAL accumulates gain/loss across the whole race — threaded through every
+        // stint's rows in lap order so it never resets at a pit (unlike Δ STINT).
+        double raceCum = 0.0;
         // Stints already begun as of the playhead (keeps playback playhead-exact).
         std::vector<const PastStint*> done;
         for (const PastStint& ps : past) if (ps.startLap <= lapNum) done.push_back(&ps);
@@ -1066,7 +1098,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             d.compoundName = ps.compoundName; d.color = ps.color;
             d.startLap = start; d.endLap = end; d.lapCount = end - start + 1;
             d.targetPresent = true; d.targetMs = ps.reqBaseMs;
-            d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit);
+            d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit, raceCum);
             out.push_back(d);
         }
         // Current + future stints from the live forward plan. The card always shows;
@@ -1089,7 +1121,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 const double base = frozenMap.count(start) ? frozenMap[start] : tg.targetMs;
                 d.targetPresent = true; d.isEstimate = tg.isEstimate; d.hasDelta = tg.hasDelta;
                 d.targetMs = tg.targetMs; d.deltaMs = tg.deltaMs;
-                d.rows = computeRows(start, end, base, postPit);
+                d.rows = computeRows(start, end, base, postPit, raceCum);
             }
             out.push_back(d);
         }
@@ -1213,13 +1245,17 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     // columns only when content changes — not every tick — to avoid scroll flicker.
     if (everStratValid_) {
         if (displayChanged || !stratShowingTimeline_) {
+            clearColumn(consHeaderLayout_);
+            consHeaderLayout_->addWidget(buildStintHeaderBar(sd.conservative.stops, sd.isMonaco,
+                                                             "Conservative", blueAccent, sec));
             clearColumn(consLayout_);
-            consLayout_->addWidget(buildStintTimeline(sd.conservative.stops, sd.isMonaco,
-                                                      "Conservative", blueAccent, sec, consDisplay_));
+            consLayout_->addWidget(buildStintTimeline(sec, consDisplay_));
             consLayout_->addStretch();
+            clearColumn(aggHeaderLayout_);
+            aggHeaderLayout_->addWidget(buildStintHeaderBar(sd.aggressive.stops, sd.isMonaco,
+                                                            "Aggressive", amberAccent, sec));
             clearColumn(aggLayout_);
-            aggLayout_->addWidget(buildStintTimeline(sd.aggressive.stops, sd.isMonaco,
-                                                    "Aggressive", amberAccent, sec, aggDisplay_));
+            aggLayout_->addWidget(buildStintTimeline(sec, aggDisplay_));
             aggLayout_->addStretch();
             stratShowingTimeline_ = true;
             stratBuilt_ = true;
