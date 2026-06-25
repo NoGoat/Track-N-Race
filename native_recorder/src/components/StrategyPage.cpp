@@ -693,8 +693,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const int  playerIdx = timing.is_object() ? timing.value("player_idx", -1) : -1;
 
     // ── Strategy calculation ────────────────────────────────────────────
+    // Hold off until lap 2 is complete (i.e. once lap_num ≥ 3, so last_lap_ms is
+    // lap 2's time). Lap 1 is a standing start — its pace is useless and would
+    // otherwise be frozen as the stint's Required baseline; lap 2 is the first
+    // representative lap, so the strategy engages off that.
     StrategyData sd;
-    if (hasLap && session.is_object() && status.is_object() && damage.is_object() &&
+    if (hasLap && lapNum >= 3 && session.is_object() && status.is_object() && damage.is_object() &&
         isRace && totalLaps > 0 && hasTyreData) {
         sd.valid = true;
 
