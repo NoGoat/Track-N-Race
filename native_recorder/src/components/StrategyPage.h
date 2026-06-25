@@ -77,6 +77,10 @@ public:
     // Called internally on a detected session change and by MainWindow on SSTA.
     void resetForNewSession();
 
+protected:
+    // DEBUG: traces scrollbar show/hide on the strategy columns.
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
 private:
     // ── Persistent widgets (built once, refilled on update) ──────────────
     QLabel*         lapValue_     = nullptr;
@@ -117,6 +121,16 @@ private:
     int                       tableLapComputed_ = -1;
     std::vector<DisplayStint> consDisplay_;
     std::vector<DisplayStint> aggDisplay_;
+    // What is actually on screen per column. The stint widgets are reconciled
+    // against consDisplay_/aggDisplay_ so only changed stints are rebuilt; these
+    // mirror the rendered widgets one-for-one (index = layout position).
+    std::vector<DisplayStint> consRendered_;
+    std::vector<DisplayStint> aggRendered_;
+    // Last-rendered header summary, so the fixed header bar is only rebuilt when
+    // the stop count or the Monaco flag changes.
+    int                       consStopsShown_ = -1;
+    int                       aggStopsShown_  = -1;
+    bool                      monacoShown_    = false;
     // The stint columns are heavy (QTableWidgets); rebuild them only when their
     // content changes, not every tick — avoids scrollbar flicker / clumping. Once a
     // valid strategy has shown, keep it on screen (never revert to "Waiting…").

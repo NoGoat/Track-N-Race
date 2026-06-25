@@ -18,11 +18,14 @@
 #include <QFile>
 #include <QRegularExpression>
 #include <QStringList>
+#include <QDebug>
+#include <QEvent>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <set>
+#include <utility>
 #include <vector>
 
 using nlohmann::json;
@@ -500,6 +503,39 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     root->addWidget(leftPane, 1);
     root->addWidget(sidebarSep_);
     root->addWidget(sidebarScroll_);
+
+    // ── DEBUG: trace the scrollbar churn ────────────────────────────────────
+    // AsNeeded shows/hides the vertical scrollbar purely off its range, so a
+    // 0↔positive range flip is exactly the toggle the user is seeing. Log every
+    // range change and every actual show/hide, with the geometry that drives it,
+    // so we can see WHAT resizes the content to make the range collapse.
+    const auto traceScroll = [this](QScrollArea* sc, const char* name) {
+        QScrollBar* bar = sc->verticalScrollBar();
+        connect(bar, &QScrollBar::rangeChanged, this, [this, sc, bar, name](int mn, int mx) {
+            QWidget* w = sc->widget();
+            qDebug().nospace() << "[STRAT-SCROLL] " << name << " rangeChanged min=" << mn
+                << " max=" << mx << " value=" << bar->value()
+                << " visible=" << bar->isVisible()
+                << " vpH=" << sc->viewport()->height()
+                << " contentH=" << (w ? w->height() : -1)
+                << " contentHint=" << (w ? w->sizeHint().height() : -1);
+        });
+        bar->installEventFilter(this);
+    };
+    traceScroll(consScroll_, "CONS");
+    traceScroll(aggScroll_, "AGG");
+}
+
+// DEBUG: catch the moment the scrollbar itself is shown/hidden.
+bool StrategyPage::eventFilter(QObject* obj, QEvent* ev) {
+    if (ev->type() == QEvent::Show || ev->type() == QEvent::Hide) {
+        const char* tag = (obj == consScroll_->verticalScrollBar()) ? "CONS"
+                        : (obj == aggScroll_->verticalScrollBar())  ? "AGG"  : nullptr;
+        if (tag)
+            qDebug().nospace() << "[STRAT-SCROLL] " << tag << " scrollbar "
+                << (ev->type() == QEvent::Show ? "SHOW" : "HIDE");
+    }
+    return QWidget::eventFilter(obj, ev);
 }
 
 void StrategyPage::resetForNewSession() {
@@ -512,6 +548,10 @@ void StrategyPage::resetForNewSession() {
     aggPast_.clear();
     consDisplay_.clear();
     aggDisplay_.clear();
+    consRendered_.clear();
+    aggRendered_.clear();
+    consStopsShown_ = aggStopsShown_ = -1;
+    monacoShown_ = false;
     tableLapComputed_ = -1;
     stratBuilt_ = false;
     stratShowingTimeline_ = false;
@@ -650,115 +690,189 @@ static QWidget* buildStintHeaderBar(int stops, bool isMonaco, const QString& lab
     return hdr;
 }
 
-// Build one strategy column's scrollable body (stint rows). The fixed header bar is
-// built separately (buildStintHeaderBar). Renders completed, current and future
-// stints alike — completed ones are kept on screen, not dropped after a pit.
-static QWidget* buildStintTimeline(const QColor& sec,
-                                   const std::vector<DisplayStint>& stints) {
+// Exact pixel height of one stint group (optional top separator + header + table),
+// computed purely from the measured ColMetrics — never from a widget's sizeHint.
+// The column's content height is summed from this so the scroll range is a value
+// we control, not something QTableWidget's (wrong) sizeHint can collapse.
+static int stintGroupHeight(const DisplayStint& st, bool withTopSep) {
     const ColMetrics& M = colMetrics();
-    auto* w = new QWidget;
-    auto* v = new QVBoxLayout(w);
+    int h = (withTopSep ? M.sep : 0) + M.stintHead;
+    if (!st.rows.empty()) h += M.tableHeader + M.tableRow * (int)st.rows.size();
+    return h;
+}
+
+// Build the widget for a single stint: an optional top separator, the one-line
+// header (compound · laps · range · wear · target) and, when present, the per-lap
+// target table. Self-contained and fixed-height so the column reconciler can drop
+// it in or out without disturbing its neighbours — which is what keeps the
+// scrollbar from churning when only one stint changes.
+static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool withTopSep) {
+    const ColMetrics& M = colMetrics();
+    auto* g = new QWidget;
+    auto* v = new QVBoxLayout(g);
     v->setContentsMargins(0, 0, 0, 0); v->setSpacing(0);
 
-    int total = 0;
-    auto addSep = [&] { auto* ln = makeHLine(); ln->setFixedHeight(M.sep); v->addWidget(ln); total += M.sep; };
-
-    for (size_t i = 0; i < stints.size(); ++i) {
-        const DisplayStint& st = stints[i];
-        // Single header row: compound · laps · range · wear · target. The pit lap is
-        // shown by the green-highlighted row in the table below, not a text connector.
-        auto* r1 = new QWidget; r1->setFixedHeight(M.stintHead);
-        auto* r1l = new QHBoxLayout(r1);
-        r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
-        r1l->addWidget(makeChip(st.compoundName, st.color, 10));
-        auto* laps = new QLabel(QString("~%1L").arg(st.lapCount));
-        { QFont f = laps->font(); f.setBold(true); laps->setFont(f); }
-        r1l->addWidget(laps);
-        r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7), 1);
-        if (!st.wornText.isEmpty()) r1l->addWidget(secLabel(st.wornText, sec, 7));
-        if (st.targetPresent) {
-            r1l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
-            auto* tm = new QLabel(fmtLapTime(st.targetMs));
-            { QFont f = tm->font(); f.setBold(true); tm->setFont(f);
-              if (st.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
-            r1l->addWidget(tm);
-            if (st.hasDelta) {
-                if (std::abs(st.deltaMs) > 50) {
-                    auto* d = new QLabel(fmtDelta(st.deltaMs));
-                    QFont f = d->font(); f.setBold(true); d->setFont(f);
-                    QPalette p = d->palette(); p.setColor(QPalette::WindowText, st.deltaMs > 0 ? kRed : kGreen);
-                    d->setPalette(p);
-                    r1l->addWidget(d);
-                } else {
-                    r1l->addWidget(secLabel("on target", sec, 7));
-                }
-            }
-        }
-        v->addWidget(r1); total += M.stintHead;
-
-        // Per-lap target table for this stint. Native OS styling — only the delta
-        // cells get a colour (red slower / green faster).
-        if (!st.rows.empty()) {
-            const std::vector<LapRow>& rows = st.rows;
-            const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT", "Δ TOTAL"};
-
-            auto* tbl = new QTableWidget((int)rows.size(), (int)heads.size());
-            tbl->setHorizontalHeaderLabels(heads);
-            tbl->verticalHeader()->setVisible(false);
-            tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-            tbl->setFrameShape(QFrame::NoFrame);
-            tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-            // Alternating row tint + no grid, matching the Tyres/Standings tables.
-            tbl->setShowGrid(false);
-            tbl->setAlternatingRowColors(true);
-            tbl->setSelectionMode(QAbstractItemView::NoSelection);
-            tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);  // fill available width
-            tbl->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
-            // Enforce the measured row + header heights so the table's height equals
-            // the value we sum below — no querying this table's laid-out geometry.
-            tbl->verticalHeader()->setDefaultSectionSize(M.tableRow);
-            tbl->horizontalHeader()->setFixedHeight(M.tableHeader);
-
-            // The lap to pit on (the stint's in-lap) is tinted green across the row,
-            // mirroring the Standings fastest-lap highlight (~15% translucent fill).
-            const QColor pitTint(kGreen.red(), kGreen.green(), kGreen.blue(), 38);
-            for (int r = 0; r < (int)rows.size(); ++r) {
-                const LapRow& lr = rows[r];
-                const bool isPitRow = !st.isLast && lr.lapNum == st.endLap;
-                auto cell = [&](const QString& txt) {
-                    auto* it = new QTableWidgetItem(txt);
-                    it->setTextAlignment(Qt::AlignCenter);
-                    if (isPitRow) it->setBackground(pitTint);
-                    return it;
-                };
-                tbl->setItem(r, 0, cell(QString::number(lr.lapNum)));
-                tbl->setItem(r, 1, cell(fmtLapTime(lr.requiredMs)));
-                tbl->setItem(r, 2, cell(fmtLapTime(lr.actualRequiredMs)));
-                tbl->setItem(r, 3, cell(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
-                auto* dl = cell(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
-                auto* ds = cell(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
-                auto* dt = cell(lr.hasActual ? fmtDelta(lr.deltaTotalMs) : "—");
-                if (lr.hasActual) {
-                    dl->setForeground(QBrush(lr.deltaLapMs   > 0 ? kRed : kGreen));
-                    ds->setForeground(QBrush(lr.deltaStintMs > 0 ? kRed : kGreen));
-                    dt->setForeground(QBrush(lr.deltaTotalMs > 0 ? kRed : kGreen));
-                }
-                tbl->setItem(r, 4, dl);
-                tbl->setItem(r, 5, ds);
-                tbl->setItem(r, 6, dt);
-            }
-
-            // table header + one row per lap (from the measured metrics).
-            const int tableH = M.tableHeader + M.tableRow * (int)rows.size();
-            tbl->setFixedHeight(tableH);
-            v->addWidget(tbl); total += tableH;
-        }
-
-        if (i + 1 < stints.size()) addSep();
+    // Separator above every stint but the first (kept inside the group so it is
+    // added/removed together with the stint it precedes).
+    if (withTopSep) {
+        auto* ln = makeHLine(); ln->setFixedHeight(M.sep);
+        v->addWidget(ln);
     }
 
-    w->setFixedHeight(total);   // exact column height, known up-front
-    return w;
+    // Single header row: compound · laps · range · wear · target. The pit lap is
+    // shown by the green-highlighted row in the table below, not a text connector.
+    auto* r1 = new QWidget; r1->setFixedHeight(M.stintHead);
+    auto* r1l = new QHBoxLayout(r1);
+    r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
+    r1l->addWidget(makeChip(st.compoundName, st.color, 10));
+    auto* laps = new QLabel(QString("~%1L").arg(st.lapCount));
+    { QFont f = laps->font(); f.setBold(true); laps->setFont(f); }
+    r1l->addWidget(laps);
+    r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7), 1);
+    if (!st.wornText.isEmpty()) r1l->addWidget(secLabel(st.wornText, sec, 7));
+    if (st.targetPresent) {
+        r1l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
+        auto* tm = new QLabel(fmtLapTime(st.targetMs));
+        { QFont f = tm->font(); f.setBold(true); tm->setFont(f);
+          if (st.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
+        r1l->addWidget(tm);
+        if (st.hasDelta) {
+            if (std::abs(st.deltaMs) > 50) {
+                auto* d = new QLabel(fmtDelta(st.deltaMs));
+                QFont f = d->font(); f.setBold(true); d->setFont(f);
+                QPalette p = d->palette(); p.setColor(QPalette::WindowText, st.deltaMs > 0 ? kRed : kGreen);
+                d->setPalette(p);
+                r1l->addWidget(d);
+            } else {
+                r1l->addWidget(secLabel("on target", sec, 7));
+            }
+        }
+    }
+    v->addWidget(r1);
+
+    // Per-lap target table for this stint. Native OS styling — only the delta
+    // cells get a colour (red slower / green faster).
+    if (!st.rows.empty()) {
+        const std::vector<LapRow>& rows = st.rows;
+        const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT", "Δ TOTAL"};
+
+        auto* tbl = new QTableWidget((int)rows.size(), (int)heads.size());
+        tbl->setHorizontalHeaderLabels(heads);
+        tbl->verticalHeader()->setVisible(false);
+        tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        tbl->setFrameShape(QFrame::NoFrame);
+        tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // Alternating row tint + no grid, matching the Tyres/Standings tables.
+        tbl->setShowGrid(false);
+        tbl->setAlternatingRowColors(true);
+        tbl->setSelectionMode(QAbstractItemView::NoSelection);
+        tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);  // fill available width
+        tbl->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+        // Enforce the measured row + header heights so the table's height equals
+        // the value we sum below — no querying this table's laid-out geometry.
+        tbl->verticalHeader()->setDefaultSectionSize(M.tableRow);
+        tbl->horizontalHeader()->setFixedHeight(M.tableHeader);
+
+        // The lap to pit on (the stint's in-lap) is tinted green across the row,
+        // mirroring the Standings fastest-lap highlight (~15% translucent fill).
+        const QColor pitTint(kGreen.red(), kGreen.green(), kGreen.blue(), 38);
+        for (int r = 0; r < (int)rows.size(); ++r) {
+            const LapRow& lr = rows[r];
+            const bool isPitRow = !st.isLast && lr.lapNum == st.endLap;
+            auto cell = [&](const QString& txt) {
+                auto* it = new QTableWidgetItem(txt);
+                it->setTextAlignment(Qt::AlignCenter);
+                if (isPitRow) it->setBackground(pitTint);
+                return it;
+            };
+            tbl->setItem(r, 0, cell(QString::number(lr.lapNum)));
+            tbl->setItem(r, 1, cell(fmtLapTime(lr.requiredMs)));
+            tbl->setItem(r, 2, cell(fmtLapTime(lr.actualRequiredMs)));
+            tbl->setItem(r, 3, cell(lr.hasActual ? fmtLapTime(lr.actualMs) : "—"));
+            auto* dl = cell(lr.hasActual ? fmtDelta(lr.deltaLapMs)   : "—");
+            auto* ds = cell(lr.hasActual ? fmtDelta(lr.deltaStintMs) : "—");
+            auto* dt = cell(lr.hasActual ? fmtDelta(lr.deltaTotalMs) : "—");
+            if (lr.hasActual) {
+                dl->setForeground(QBrush(lr.deltaLapMs   > 0 ? kRed : kGreen));
+                ds->setForeground(QBrush(lr.deltaStintMs > 0 ? kRed : kGreen));
+                dt->setForeground(QBrush(lr.deltaTotalMs > 0 ? kRed : kGreen));
+            }
+            tbl->setItem(r, 4, dl);
+            tbl->setItem(r, 5, ds);
+            tbl->setItem(r, 6, dt);
+        }
+
+        // table header + one row per lap (from the measured metrics).
+        const int tableH = M.tableHeader + M.tableRow * (int)rows.size();
+        tbl->setFixedHeight(tableH);
+        v->addWidget(tbl);
+    }
+
+    g->setFixedHeight(stintGroupHeight(st, withTopSep));   // exact, sizeHint-free
+    return g;
+}
+
+// Equality over the rendered fields of a stint (and its rows). Drives the
+// reconciler: a stint whose display is unchanged keeps its existing widget rather
+// than being torn down and rebuilt. Values are recomputed deterministically from
+// the same integer-ms inputs, so identical content compares equal exactly.
+static bool sameRow(const LapRow& a, const LapRow& b) {
+    return a.lapNum == b.lapNum && a.requiredMs == b.requiredMs &&
+           a.actualRequiredMs == b.actualRequiredMs && a.actualMs == b.actualMs &&
+           a.deltaLapMs == b.deltaLapMs && a.deltaStintMs == b.deltaStintMs &&
+           a.deltaTotalMs == b.deltaTotalMs && a.hasActual == b.hasActual;
+}
+static bool sameStint(const DisplayStint& a, const DisplayStint& b) {
+    if (a.compoundName != b.compoundName || a.color != b.color ||
+        a.startLap != b.startLap || a.endLap != b.endLap || a.lapCount != b.lapCount ||
+        a.isLast != b.isLast || a.wornText != b.wornText ||
+        a.targetPresent != b.targetPresent || a.isEstimate != b.isEstimate ||
+        a.hasDelta != b.hasDelta || a.targetMs != b.targetMs || a.deltaMs != b.deltaMs ||
+        a.rows.size() != b.rows.size())
+        return false;
+    for (size_t i = 0; i < a.rows.size(); ++i)
+        if (!sameRow(a.rows[i], b.rows[i])) return false;
+    return true;
+}
+
+// Reconcile one column's stint widgets against the freshly computed stints. The
+// layout holds one group widget per stint followed by a trailing stretch; only
+// stints that actually changed are replaced, and only the tail grows/shrinks when
+// the stint count changes — so untouched stints (and the scroll position) hold,
+// and the scrollbar stops churning on every lap. Returns true if any widget was
+// added, removed or replaced.
+static bool reconcileColumn(QVBoxLayout* lay, const QColor& sec,
+                            std::vector<DisplayStint>& rendered,
+                            const std::vector<DisplayStint>& next) {
+    bool changed = false;
+    const int n = (int)next.size();
+    const int m = (int)rendered.size();
+    auto dropAt = [&](int i) {
+        QLayoutItem* it = lay->takeAt(i);
+        if (QWidget* w = it->widget()) {
+            // Taken out of the layout, the widget keeps its old geometry until the
+            // queued delete runs — hide it so it can't paint over its replacement.
+            w->hide();
+            w->deleteLater();
+        }
+        delete it;
+    };
+    // Replace stints that changed, in place (neighbours untouched).
+    for (int i = 0; i < std::min(n, m); ++i) {
+        if (sameStint(rendered[i], next[i])) continue;
+        dropAt(i);
+        lay->insertWidget(i, buildStintGroup(sec, next[i], i > 0));
+        changed = true;
+    }
+    // Append new stints just before the trailing stretch.
+    for (int i = m; i < n; ++i) {
+        lay->insertWidget(lay->count() - 1, buildStintGroup(sec, next[i], i > 0));
+        changed = true;
+    }
+    // Remove surplus stints from the tail (high index first keeps indices valid).
+    for (int i = m - 1; i >= n; --i) { dropAt(i); changed = true; }
+    rendered = next;
+    return changed;
 }
 
 // ─── update() ───────────────────────────────────────────────────────────────
@@ -1299,40 +1413,94 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     if (sd.valid) everStratValid_ = true;
 
     // Once a valid strategy has shown, keep the timeline on screen through stint
-    // changes (a fresh tyre no longer blanks it). Rebuild the heavy QTableWidget
-    // columns only when content changes — not every tick — to avoid scroll flicker.
+    // changes (a fresh tyre no longer blanks it). The stint widgets are reconciled
+    // in place — only the stints that actually changed are rebuilt — so unchanged
+    // stints, and the scroll position, hold steady from lap to lap.
     if (everStratValid_) {
         if (displayChanged || !stratShowingTimeline_) {
-            clearColumn(consHeaderLayout_);
-            consHeaderLayout_->addWidget(buildStintHeaderBar(sd.conservative.stops, sd.isMonaco,
-                                                             "Conservative", blueAccent, sec));
-            clearColumn(consLayout_);
-            consLayout_->addWidget(buildStintTimeline(sec, consDisplay_));
-            consLayout_->addStretch();
-            clearColumn(aggHeaderLayout_);
-            aggHeaderLayout_->addWidget(buildStintHeaderBar(sd.aggressive.stops, sd.isMonaco,
-                                                            "Aggressive", amberAccent, sec));
-            clearColumn(aggLayout_);
-            aggLayout_->addWidget(buildStintTimeline(sec, aggDisplay_));
-            aggLayout_->addStretch();
-            stratShowingTimeline_ = true;
+            // Header bar (outside the scroll area) only depends on the stop count and
+            // the Monaco flag — rebuild it solely when one of those changes.
+            if (sd.conservative.stops != consStopsShown_ || sd.isMonaco != monacoShown_) {
+                clearColumn(consHeaderLayout_);
+                consHeaderLayout_->addWidget(buildStintHeaderBar(sd.conservative.stops, sd.isMonaco,
+                                                                 "Conservative", blueAccent, sec));
+                consStopsShown_ = sd.conservative.stops;
+            }
+            if (sd.aggressive.stops != aggStopsShown_ || sd.isMonaco != monacoShown_) {
+                clearColumn(aggHeaderLayout_);
+                aggHeaderLayout_->addWidget(buildStintHeaderBar(sd.aggressive.stops, sd.isMonaco,
+                                                                "Aggressive", amberAccent, sec));
+                aggStopsShown_ = sd.aggressive.stops;
+            }
+            monacoShown_ = sd.isMonaco;
+
+            // First time in from the "Waiting…" placeholder: drop it and seed each
+            // column with just the trailing stretch the reconciler inserts before.
+            if (!stratShowingTimeline_) {
+                clearColumn(consLayout_); consLayout_->addStretch(); consRendered_.clear();
+                clearColumn(aggLayout_);  aggLayout_->addStretch();  aggRendered_.clear();
+                stratShowingTimeline_ = true;
+            }
             stratBuilt_ = true;
 
-            // The new fixed-height timeline changes the content's sizeHint, but a
-            // widgetResizable QScrollArea only re-sizes its inner widget (and thus
-            // recomputes the scrollbar range) on its own resizeEvent or a Resize of
-            // the content — it filters for Resize, not the LayoutRequest this rebuild
-            // posts. Without a nudge the content stays at its old (≈viewport) height,
-            // the tables get clipped, and range = contentH − viewportH = 0 (a full-
-            // height thumb that can't scroll). Resize the content to its true height
-            // ourselves: that emits the Resize the scroll area filters on, which runs
-            // updateScrollBars() and gives the correct range. Width tracks the
-            // viewport, matching what widgetResizable would set on the next resize.
-            for (QScrollArea* sc : {consScroll_, aggScroll_}) {
-                if (QWidget* w = sc->widget()) {
-                    const QSize vp = sc->viewport()->size();
-                    w->resize(vp.width(), std::max(vp.height(), w->sizeHint().height()));
+            // Where each column sat before reconciling — captured up-front so an
+            // add/remove that shifts content above the viewport doesn't move the view.
+            const int consPrevScroll = consScroll_->verticalScrollBar()->value();
+            const int aggPrevScroll  = aggScroll_->verticalScrollBar()->value();
+
+            // Reconcile both columns (always run both — they are independent).
+            const bool consChanged = reconcileColumn(consLayout_, sec, consRendered_, consDisplay_);
+            const bool aggChanged  = reconcileColumn(aggLayout_,  sec, aggRendered_,  aggDisplay_);
+            const bool changed = consChanged || aggChanged;
+
+            qDebug().nospace() << "[STRAT-RECON] lap=" << lapNum
+                << " displayChanged=" << displayChanged
+                << " consChanged=" << consChanged << " aggChanged=" << aggChanged
+                << " consStints=" << consDisplay_.size() << " aggStints=" << aggDisplay_.size()
+                << " consVpH=" << consScroll_->viewport()->height()
+                << " consContentHint=" << (consScroll_->widget() ? consScroll_->widget()->sizeHint().height() : -1);
+
+            // Nothing to do when no widget moved — the scrollbar stays exactly as it
+            // was, which is the whole point of reconciling rather than rebuilding.
+            if (changed) {
+                // Pin each column's content to its EXACT summed height. The scroll
+                // range must not depend on the content's sizeHint: a stint's table is
+                // a QTableWidget whose sizeHint ignores our setFixedHeight and reports
+                // a tiny default, so widgetResizable would size the content to the
+                // viewport height (range 0 → scrollbar hides) before the real layout
+                // lands (→ scrollbar shows) — the flicker. setMinimumHeight stops
+                // widgetResizable ever clamping below the true height; the resize
+                // applies it synchronously so the range is right this frame, not next.
+                auto columnHeight = [](const std::vector<DisplayStint>& v) {
+                    int h = 0;
+                    for (size_t i = 0; i < v.size(); ++i) h += stintGroupHeight(v[i], i > 0);
+                    return h;
+                };
+                const std::pair<QScrollArea*, int> sized[2] = {
+                    { consScroll_, columnHeight(consRendered_) },
+                    { aggScroll_,  columnHeight(aggRendered_)  } };
+                for (const auto& [sc, h] : sized) {
+                    if (QWidget* w = sc->widget()) {
+                        w->setMinimumHeight(h);
+                        w->resize(sc->viewport()->width(), std::max(sc->viewport()->height(), h));
+                    }
                 }
+
+                // Keep each column where it was, allowing only a small (≤100px) drift
+                // as the timeline grows a row; a larger change would yank the view, so
+                // reject it and stay put. Run once now and again queued, after the
+                // pending layout pass recomputes the range, so the position sticks.
+                auto restore = [this, consPrevScroll, aggPrevScroll] {
+                    const std::pair<QScrollArea*, int> cols[2] = {
+                        { consScroll_, consPrevScroll }, { aggScroll_, aggPrevScroll } };
+                    for (const auto& [sc, prev] : cols) {
+                        QScrollBar* bar = sc->verticalScrollBar();
+                        if (qAbs(bar->value() - prev) > 100)
+                            bar->setValue(qMin(prev, bar->maximum()));
+                    }
+                };
+                restore();
+                QMetaObject::invokeMethod(this, restore, Qt::QueuedConnection);
             }
         }
     } else if (!stratBuilt_) {
