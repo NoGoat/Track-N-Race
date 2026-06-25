@@ -15,6 +15,15 @@ class QStackedWidget;
 class QScrollArea;
 class QVBoxLayout;
 
+// Circuit pit-lane time loss, read from the track map (assets/maps/track_<id>.json,
+// same files used for map rendering). Falls back to 11.25s in-lap / 13.75s out-lap /
+// 25s total when no map exists for the circuit.
+struct PitLoss {
+    double inlapMs  = 11250.0;   // extra time on the in-lap (last lap before the box)
+    double outlapMs = 13750.0;   // extra time on the out-lap (first lap after the box)
+    double totalMs  = 25000.0;   // full time loss of a stop (used for pit-worth decisions)
+};
+
 // One row of a stint's per-lap target table.
 struct LapRow {
     int    lapNum = 0;
@@ -123,4 +132,8 @@ private:
     int    behindIsGaining_    = -1;
 
     std::string lastSessionKey_;
+
+    // Circuit pit-loss, loaded once per track from the map file (cached by track id).
+    PitLoss pitLoss_;
+    int     pitLossTrackId_ = -2;
 };

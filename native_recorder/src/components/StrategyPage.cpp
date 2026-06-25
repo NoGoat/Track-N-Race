@@ -15,6 +15,7 @@
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QBrush>
+#include <QFile>
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -30,10 +31,22 @@ using nlohmann::json;
 
 namespace {
 
-constexpr double CONS_PIT_COST_MS = 30000.0;
-constexpr double CALL_PIT_COST_MS = 22000.0;
-constexpr double TARGET_PIT_COST_MS = 20000.0;
-constexpr double PIT_OUTLAP_COST_MS = 25000.0;  // boxing time added to the out-lap; promote to a setting later
+// Reads the circuit's pit-lane time loss from the track map (the same files used for
+// map rendering). Returns the 11.25/13.75/25s fallback when no map exists.
+PitLoss loadPitLoss(int trackId) {
+    PitLoss pl;   // defaults already hold the fallback values
+    QFile f(QString(":/maps/track_%1.json").arg(trackId));
+    if (!f.open(QIODevice::ReadOnly)) return pl;
+    const QByteArray bytes = f.readAll();
+    f.close();
+    try {
+        const json j = json::parse(bytes.constData(), bytes.constData() + bytes.size());
+        pl.inlapMs  = j.value("inlap_pit_time",  pl.inlapMs  / 1000.0) * 1000.0;
+        pl.outlapMs = j.value("outlap_pit_time", pl.outlapMs / 1000.0) * 1000.0;
+        pl.totalMs  = j.value("pit_time",        pl.totalMs  / 1000.0) * 1000.0;
+    } catch (...) {}
+    return pl;
+}
 
 // Domain colours (match the Electron panel + the rest of the native app).
 const QColor kBlue ("#5794F2");
@@ -771,6 +784,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const int  trackId = session.is_object() ? session.value("track_id", -1) : -1;
     const int  weather = session.is_object() ? session.value("weather", 0) : 0;
 
+    // Pit-loss is circuit-specific (from the track map); reload only when it changes.
+    if (trackId != pitLossTrackId_) { pitLoss_ = loadPitLoss(trackId); pitLossTrackId_ = trackId; }
+
     const auto sets   = parseSets(tyreSets);
     const auto cars   = parseTiming(timing);
     const int  playerIdx = timing.is_object() ? timing.value("player_idx", -1) : -1;
@@ -826,8 +842,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         const double fittedDelta = fittedSet ? fittedSet->lap_delta_ms : 0.0;
         const double freshGainMs = !consPool.empty()
             ? std::max(0.0, fittedDelta - consPool.front().lap_delta_ms) : 0.0;
-        const int consFirstPit = (freshGainMs > 500 && freshGainMs * consLapsLeft > CONS_PIT_COST_MS)
-            ? std::max(lapNum + 1, lapNum + (int)std::ceil(CONS_PIT_COST_MS / freshGainMs))
+        const int consFirstPit = (freshGainMs > 500 && freshGainMs * consLapsLeft > pitLoss_.totalMs)
+            ? std::max(lapNum + 1, lapNum + (int)std::ceil(pitLoss_.totalMs / freshGainMs))
             : consCliffLap;
 
         StrategyResult conservative = buildStints(lapNum, totalLaps, consFirstPit, cur, avgWear, consPool, priCol);
@@ -991,7 +1007,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
 
             auto calc = [&](const StrategyResult& res, bool aggressive) {
                 std::vector<StintTarget> out;
-                const double perLapOffset = aggressive ? TARGET_PIT_COST_MS / totalRemaining : 0.0;
+                const double perLapOffset = aggressive ? pitLoss_.totalMs / totalRemaining : 0.0;
                 for (size_t i = 0; i < res.stints.size(); ++i) {
                     StintTarget t;
                     if (i == 0) {
@@ -1053,13 +1069,19 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     stintsChanged |= recordStint(sd.conservative, consFrozenReqMs_, consPast_, consTargets);
     stintsChanged |= recordStint(sd.aggressive,  aggFrozenReqMs_, aggPast_,  aggTargets);
 
-    auto computeRows = [&](int start, int end, double base, bool postPit, double& raceCum) {
+    auto computeRows = [&](int start, int end, double base, bool postPit, bool prePit,
+                           double& raceCum) {
         std::vector<LapRow> rows;
         double cum = 0.0;   // cumulative delta over stint, through the previous lap
         for (int n = start; n > 0 && n <= end; ++n) {
             LapRow lr;
             lr.lapNum = n;
-            lr.requiredMs = base + ((postPit && n == start) ? PIT_OUTLAP_COST_MS : 0.0);
+            // Pitting costs time on two laps: the out-lap (first lap of a post-pit
+            // stint) and the in-lap (last lap of a stint that ends in a pit). Each
+            // carries its circuit-specific penalty.
+            lr.requiredMs = base
+                + ((postPit && n == start) ? pitLoss_.outlapMs : 0.0)
+                + ((prePit  && n == end)   ? pitLoss_.inlapMs  : 0.0);
             // Adjusted required = base minus the running buffer: time banked (negative
             // cumulative delta = faster) raises the time you may run; lost time lowers it.
             lr.actualRequiredMs = lr.requiredMs - cum;
@@ -1098,7 +1120,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             d.compoundName = ps.compoundName; d.color = ps.color;
             d.startLap = start; d.endLap = end; d.lapCount = end - start + 1;
             d.targetPresent = true; d.targetMs = ps.reqBaseMs;
-            d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit, raceCum);
+            // A completed stint always ended in a pit (a later stint followed it).
+            d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit, true, raceCum);
             out.push_back(d);
         }
         // Current + future stints from the live forward plan. The card always shows;
@@ -1121,7 +1144,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 const double base = frozenMap.count(start) ? frozenMap[start] : tg.targetMs;
                 d.targetPresent = true; d.isEstimate = tg.isEstimate; d.hasDelta = tg.hasDelta;
                 d.targetMs = tg.targetMs; d.deltaMs = tg.deltaMs;
-                d.rows = computeRows(start, end, base, postPit, raceCum);
+                d.rows = computeRows(start, end, base, postPit, !st.isLast, raceCum);
             }
             out.push_back(d);
         }
@@ -1166,7 +1189,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         for (const auto* c : active) if (c->position == player->position - 1) { carAhead = c; break; }
         if (carAhead) {
             const double aheadGapMs = player->gap_ms - carAhead->gap_ms;
-            const int crossover = freshGainMs > 0 ? (int)std::ceil(CALL_PIT_COST_MS / freshGainMs) : 999;
+            const int crossover = freshGainMs > 0 ? (int)std::ceil(pitLoss_.totalMs / freshGainMs) : 999;
             if (aheadGapMs > 0 && aheadGapMs < 3000 && freshGainMs > 200 &&
                 rivalTyreAge(carAhead->idx) >= playerTyreAge + 3 && crossover <= 10) {
                 callType = Undercut; callTarget = carAhead->idx; callGap = aheadGapMs; callCross = crossover;
