@@ -549,17 +549,66 @@ static QString fmtDelta(double ms) {
     return (ms > 0 ? QString("+") : QString("−")) + fmtSecs(ms);
 }
 
+// Row heights, measured once from representative components (so they honour the OS
+// font/style — nothing hardcoded), then enforced on every row. With these known the
+// whole column height is computed up-front, removing the dependence on the tables
+// laying out (which was provisional pre-show and caused the intermittent collapse).
+namespace {
+struct ColMetrics { int heading = 0, stintHead = 0, tableRow = 0, tableHeader = 0, sep = 0; };
+
+const ColMetrics& colMetrics() {
+    static const ColMetrics m = [] {
+        ColMetrics r;
+        {   // table row + header, straight from a table configured like the live ones
+            QTableWidget t(0, 6);
+            t.verticalHeader()->setVisible(false);
+            t.ensurePolished();
+            r.tableRow    = t.verticalHeader()->defaultSectionSize();
+            r.tableHeader = t.horizontalHeader()->sizeHint().height();
+        }
+        {   // strategy heading row — the 14pt bold number drives its height
+            QWidget row; auto* l = new QHBoxLayout(&row);
+            l->setContentsMargins(12, 5, 12, 5); l->setSpacing(8);
+            auto* big = new QLabel("0"); QFont f = big->font(); f.setPointSize(14); f.setBold(true); big->setFont(f);
+            l->addWidget(big);
+            row.ensurePolished();
+            r.heading = row.sizeHint().height();
+        }
+        {   // stint header row — the compound chip drives its height
+            QWidget row; auto* l = new QHBoxLayout(&row);
+            l->setContentsMargins(12, 6, 12, 6); l->setSpacing(8);
+            l->addWidget(makeChip("C3", kRed, 10));
+            row.ensurePolished();
+            r.stintHead = row.sizeHint().height();
+        }
+        {   // separator line
+            auto* ln = makeHLine();
+            ln->ensurePolished();
+            r.sep = std::max(1, ln->sizeHint().height());
+            delete ln;
+        }
+        return r;
+    }();
+    return m;
+}
+}  // namespace
+
 // Build one strategy column (header + stint rows). Renders completed, current and
 // future stints alike — completed ones are kept on screen, not dropped after a pit.
 static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& label,
                                    const QColor& accent, const QColor& sec,
                                    const std::vector<DisplayStint>& stints) {
+    const ColMetrics& M = colMetrics();
     auto* w = new QWidget;
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(0, 0, 0, 0); v->setSpacing(0);
 
-    // Headline row
-    auto* hdr = new QWidget; auto* hl = new QHBoxLayout(hdr);
+    int total = 0;
+    auto addSep = [&] { auto* ln = makeHLine(); ln->setFixedHeight(M.sep); v->addWidget(ln); total += M.sep; };
+
+    // Headline row (strategy heading)
+    auto* hdr = new QWidget; hdr->setFixedHeight(M.heading);
+    auto* hl = new QHBoxLayout(hdr);
     hl->setContentsMargins(12, 5, 12, 5); hl->setSpacing(8);
     hl->addWidget(secLabel(label.toUpper(), sec, 7));
     if (isMonaco) hl->addWidget(makeChip("Monaco 2-stop", kAmber));
@@ -569,14 +618,15 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
       QPalette p = stopsLbl->palette(); p.setColor(QPalette::WindowText, accent); stopsLbl->setPalette(p); }
     hl->addWidget(stopsLbl, 0, Qt::AlignBottom);
     hl->addWidget(secLabel(stops == 1 ? "stop" : "stops", sec), 0, Qt::AlignBottom);
-    v->addWidget(hdr);
-    v->addWidget(makeHLine());
+    v->addWidget(hdr); total += M.heading;
+    addSep();
 
     for (size_t i = 0; i < stints.size(); ++i) {
         const DisplayStint& st = stints[i];
         // Single header row: compound · laps · range · wear · target. The pit lap is
         // shown by the green-highlighted row in the table below, not a text connector.
-        auto* r1 = new QWidget; auto* r1l = new QHBoxLayout(r1);
+        auto* r1 = new QWidget; r1->setFixedHeight(M.stintHead);
+        auto* r1l = new QHBoxLayout(r1);
         r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
         r1l->addWidget(makeChip(st.compoundName, st.color, 10));
         auto* laps = new QLabel(QString("~%1L").arg(st.lapCount));
@@ -602,7 +652,7 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
                 }
             }
         }
-        v->addWidget(r1);
+        v->addWidget(r1); total += M.stintHead;
 
         // Per-lap target table for this stint. Native OS styling — only the delta
         // cells get a colour (red slower / green faster).
@@ -614,8 +664,14 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
             tbl->setHorizontalHeaderLabels(heads);
             tbl->verticalHeader()->setVisible(false);
             tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            tbl->setFrameShape(QFrame::NoFrame);
+            tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
             tbl->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);  // fill available width
             tbl->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+            // Enforce the measured row + header heights so the table's height equals
+            // the value we sum below — no querying this table's laid-out geometry.
+            tbl->verticalHeader()->setDefaultSectionSize(M.tableRow);
+            tbl->horizontalHeader()->setFixedHeight(M.tableHeader);
 
             // The lap to pit on (the stint's in-lap) is tinted green across the row,
             // mirroring the Standings fastest-lap highlight (~15% translucent fill).
@@ -643,21 +699,16 @@ static QWidget* buildStintTimeline(int stops, bool isMonaco, const QString& labe
                 tbl->setItem(r, 5, ds);
             }
 
-            // Size to content so every lap shows inline (no inner scrollbar). Use
-            // style metrics (valid before the widget is shown) rather than laid-out
-            // geometry, which is provisional pre-show and caused height flicker.
-            tbl->ensurePolished();
-            const int rowH = tbl->verticalHeader()->defaultSectionSize();
-            const int hdrH = tbl->horizontalHeader()->sizeHint().height();
-            tbl->setFixedHeight(hdrH + (int)rows.size() * rowH + 2 * tbl->frameWidth());
-
-            v->addWidget(tbl);
+            // table header + one row per lap (from the measured metrics).
+            const int tableH = M.tableHeader + M.tableRow * (int)rows.size();
+            tbl->setFixedHeight(tableH);
+            v->addWidget(tbl); total += tableH;
         }
 
-        if (i + 1 < stints.size()) v->addWidget(makeHLine());
+        if (i + 1 < stints.size()) addSep();
     }
 
-    v->addStretch();
+    w->setFixedHeight(total);   // exact column height, known up-front
     return w;
 }
 
