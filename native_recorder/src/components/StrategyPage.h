@@ -80,6 +80,8 @@ private:
     QLabel*         cliffPlus_    = nullptr;
 
     QStackedWidget* bodyStack_    = nullptr;   // left pane: 0 = strategy columns, 1 = non-race placeholder
+    QScrollArea*    consScroll_   = nullptr;    // conservative column scroll area
+    QScrollArea*    aggScroll_    = nullptr;    // aggressive column scroll area
     QVBoxLayout*    consLayout_   = nullptr;    // conservative column content
     QVBoxLayout*    aggLayout_    = nullptr;    // aggressive column content
     QVBoxLayout*    sidebarLayout_= nullptr;    // right sidebar sections

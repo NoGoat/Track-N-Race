@@ -403,11 +403,16 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     auto* bl = new QHBoxLayout(cols);
     bl->setContentsMargins(0, 0, 0, 0); bl->setSpacing(0);
 
-    auto makeColumn = [&](QVBoxLayout*& outLayout) {
+    auto makeColumn = [&](QVBoxLayout*& outLayout, QScrollArea*& outScroll) {
         auto* scroll = new QScrollArea;
+        outScroll = scroll;
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // Keep the vertical scrollbar always present: the column's height changes as
+        // stints complete/laps advance, so an as-needed bar would toggle on/off (and
+        // flicker badly while scrubbing). Always-on reserves the gutter and is stable.
+        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         auto* content = new QWidget;
         outLayout = new QVBoxLayout(content);
         outLayout->setContentsMargins(0, 0, 0, 0);
@@ -417,9 +422,9 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
         return scroll;
     };
 
-    bl->addWidget(makeColumn(consLayout_), 1);
+    bl->addWidget(makeColumn(consLayout_, consScroll_), 1);
     bl->addWidget(vline());
-    bl->addWidget(makeColumn(aggLayout_), 1);
+    bl->addWidget(makeColumn(aggLayout_, aggScroll_), 1);
     bodyStack_->addWidget(cols);   // index 0
 
     // Page 1: non-race placeholder
@@ -1218,6 +1223,23 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             aggLayout_->addStretch();
             stratShowingTimeline_ = true;
             stratBuilt_ = true;
+
+            // The new fixed-height timeline changes the content's sizeHint, but a
+            // widgetResizable QScrollArea only re-sizes its inner widget (and thus
+            // recomputes the scrollbar range) on its own resizeEvent or a Resize of
+            // the content — it filters for Resize, not the LayoutRequest this rebuild
+            // posts. Without a nudge the content stays at its old (≈viewport) height,
+            // the tables get clipped, and range = contentH − viewportH = 0 (a full-
+            // height thumb that can't scroll). Resize the content to its true height
+            // ourselves: that emits the Resize the scroll area filters on, which runs
+            // updateScrollBars() and gives the correct range. Width tracks the
+            // viewport, matching what widgetResizable would set on the next resize.
+            for (QScrollArea* sc : {consScroll_, aggScroll_}) {
+                if (QWidget* w = sc->widget()) {
+                    const QSize vp = sc->viewport()->size();
+                    w->resize(vp.width(), std::max(vp.height(), w->sizeHint().height()));
+                }
+            }
         }
     } else if (!stratBuilt_) {
         // Only before the very first valid strategy.
