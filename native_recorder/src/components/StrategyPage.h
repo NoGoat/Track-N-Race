@@ -39,7 +39,9 @@ struct PastStint {
     double  reqBaseMs = 0;
     QString compoundName;
     QColor  color;
-    bool    postPit = false;   // its out-lap carries the boxing-time penalty
+    bool    postPit = false;     // its out-lap carries the boxing-time penalty
+    int     expectedLaps = 0;    // planned length, kept live until the stint ends then
+                                 // frozen — so a stint boxed early still shows its plan
 };
 
 // Everything needed to render one stint card + its per-lap table. Cached in members
@@ -47,7 +49,9 @@ struct PastStint {
 struct DisplayStint {
     QString compoundName;
     QColor  color;
+    int     stintNumber = 0;            // 1-based position in the race (oldest = 1)
     int     startLap = 0, endLap = 0, lapCount = 0;
+    int     actualLaps = 0;             // laps actually completed on this set so far
     bool    isLast = false;
     QString wornText;
     bool    targetPresent = false, isEstimate = false, hasDelta = false;
@@ -76,10 +80,6 @@ public:
     // Clears the cross-update tracking (pit counts, latched rivals, gap trend).
     // Called internally on a detected session change and by MainWindow on SSTA.
     void resetForNewSession();
-
-protected:
-    // DEBUG: traces scrollbar show/hide on the strategy columns.
-    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 private:
     // ── Persistent widgets (built once, refilled on update) ──────────────

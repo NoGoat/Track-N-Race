@@ -18,8 +18,6 @@
 #include <QFile>
 #include <QRegularExpression>
 #include <QStringList>
-#include <QDebug>
-#include <QEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -503,39 +501,6 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     root->addWidget(leftPane, 1);
     root->addWidget(sidebarSep_);
     root->addWidget(sidebarScroll_);
-
-    // ── DEBUG: trace the scrollbar churn ────────────────────────────────────
-    // AsNeeded shows/hides the vertical scrollbar purely off its range, so a
-    // 0↔positive range flip is exactly the toggle the user is seeing. Log every
-    // range change and every actual show/hide, with the geometry that drives it,
-    // so we can see WHAT resizes the content to make the range collapse.
-    const auto traceScroll = [this](QScrollArea* sc, const char* name) {
-        QScrollBar* bar = sc->verticalScrollBar();
-        connect(bar, &QScrollBar::rangeChanged, this, [this, sc, bar, name](int mn, int mx) {
-            QWidget* w = sc->widget();
-            qDebug().nospace() << "[STRAT-SCROLL] " << name << " rangeChanged min=" << mn
-                << " max=" << mx << " value=" << bar->value()
-                << " visible=" << bar->isVisible()
-                << " vpH=" << sc->viewport()->height()
-                << " contentH=" << (w ? w->height() : -1)
-                << " contentHint=" << (w ? w->sizeHint().height() : -1);
-        });
-        bar->installEventFilter(this);
-    };
-    traceScroll(consScroll_, "CONS");
-    traceScroll(aggScroll_, "AGG");
-}
-
-// DEBUG: catch the moment the scrollbar itself is shown/hidden.
-bool StrategyPage::eventFilter(QObject* obj, QEvent* ev) {
-    if (ev->type() == QEvent::Show || ev->type() == QEvent::Hide) {
-        const char* tag = (obj == consScroll_->verticalScrollBar()) ? "CONS"
-                        : (obj == aggScroll_->verticalScrollBar())  ? "AGG"  : nullptr;
-        if (tag)
-            qDebug().nospace() << "[STRAT-SCROLL] " << tag << " scrollbar "
-                << (ev->type() == QEvent::Show ? "SHOW" : "HIDE");
-    }
-    return QWidget::eventFilter(obj, ev);
 }
 
 void StrategyPage::resetForNewSession() {
@@ -719,35 +684,25 @@ static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool 
         v->addWidget(ln);
     }
 
-    // Single header row: compound · laps · range · wear · target. The pit lap is
-    // shown by the green-highlighted row in the table below, not a text connector.
+    // Single header row. Left: the tyre choice (compound chip) + stint number.
+    // Right: planned vs actually-run lap counts for this set.
     auto* r1 = new QWidget; r1->setFixedHeight(M.stintHead);
     auto* r1l = new QHBoxLayout(r1);
     r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
     r1l->addWidget(makeChip(st.compoundName, st.color, 10));
-    auto* laps = new QLabel(QString("~%1L").arg(st.lapCount));
-    { QFont f = laps->font(); f.setBold(true); laps->setFont(f); }
-    r1l->addWidget(laps);
-    r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7), 1);
-    if (!st.wornText.isEmpty()) r1l->addWidget(secLabel(st.wornText, sec, 7));
-    if (st.targetPresent) {
-        r1l->addWidget(secLabel(st.isEstimate ? "EST. PACE" : "TARGET", sec, 7));
-        auto* tm = new QLabel(fmtLapTime(st.targetMs));
-        { QFont f = tm->font(); f.setBold(true); tm->setFont(f);
-          if (st.isEstimate) { QPalette p = tm->palette(); p.setColor(QPalette::WindowText, sec); tm->setPalette(p); } }
-        r1l->addWidget(tm);
-        if (st.hasDelta) {
-            if (std::abs(st.deltaMs) > 50) {
-                auto* d = new QLabel(fmtDelta(st.deltaMs));
-                QFont f = d->font(); f.setBold(true); d->setFont(f);
-                QPalette p = d->palette(); p.setColor(QPalette::WindowText, st.deltaMs > 0 ? kRed : kGreen);
-                d->setPalette(p);
-                r1l->addWidget(d);
-            } else {
-                r1l->addWidget(secLabel("on target", sec, 7));
-            }
-        }
-    }
+    auto* stintLbl = new QLabel(QString("Stint %1").arg(st.stintNumber));
+    { QFont f = stintLbl->font(); f.setBold(true); stintLbl->setFont(f); }
+    r1l->addWidget(stintLbl);
+    r1l->addStretch();
+    const auto boldNum = [](int n) {
+        auto* l = new QLabel(QString::number(n));
+        QFont f = l->font(); f.setBold(true); l->setFont(f);
+        return l;
+    };
+    r1l->addWidget(secLabel("Expected Laps:", sec, 7));
+    r1l->addWidget(boldNum(st.lapCount));
+    r1l->addWidget(secLabel("Actual Laps:", sec, 7));
+    r1l->addWidget(boldNum(st.actualLaps));
     v->addWidget(r1);
 
     // Per-lap target table for this stint. Native OS styling — only the delta
@@ -824,6 +779,7 @@ static bool sameRow(const LapRow& a, const LapRow& b) {
 }
 static bool sameStint(const DisplayStint& a, const DisplayStint& b) {
     if (a.compoundName != b.compoundName || a.color != b.color ||
+        a.stintNumber != b.stintNumber || a.actualLaps != b.actualLaps ||
         a.startLap != b.startLap || a.endLap != b.endLap || a.lapCount != b.lapCount ||
         a.isLast != b.isLast || a.wornText != b.wornText ||
         a.targetPresent != b.targetPresent || a.isEstimate != b.isEstimate ||
@@ -1196,16 +1152,26 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     auto recordStint = [&](const StrategyResult& res, std::map<int, double>& frozenMap,
                            std::vector<PastStint>& past, const std::vector<StintTarget>& targets) -> bool {
         if (!sd.valid || res.stints.empty() || targets.empty() || !targets[0].present) return false;
-        if (!past.empty() && openingStart <= past.back().startLap) return false;   // same stint
-        if (!frozenMap.count(openingStart)) frozenMap[openingStart] = targets[0].targetMs;
-        PastStint ps;
-        ps.startLap     = openingStart;
-        ps.reqBaseMs    = frozenMap[openingStart];
-        ps.compoundName = res.stints[0].compoundName;
-        ps.color        = res.stints[0].color;
-        ps.postPit      = !past.empty();
-        past.push_back(ps);
-        return true;
+        bool added = false;
+        if (past.empty() || openingStart > past.back().startLap) {   // a new stint begins
+            if (!frozenMap.count(openingStart)) frozenMap[openingStart] = targets[0].targetMs;
+            PastStint ps;
+            ps.startLap     = openingStart;
+            ps.reqBaseMs    = frozenMap[openingStart];
+            ps.compoundName = res.stints[0].compoundName;
+            ps.color        = res.stints[0].color;
+            ps.postPit      = !past.empty();
+            past.push_back(ps);
+            added = true;
+        }
+        // Keep the current (still-open) stint's planned length live. Once the next
+        // stint pushes in front of it, it stops updating and keeps this value — so a
+        // stint boxed early still reports the laps it was planned for, not the fewer
+        // laps it actually ran (which is "Actual Laps").
+        const Stint& s0 = res.stints[0];
+        const int s0end = s0.isLast ? totalLaps : s0.pitLap;
+        past.back().expectedLaps = std::max(1, s0end - openingStart + 1);
+        return added;
     };
     bool stintsChanged = false;
     stintsChanged |= recordStint(sd.conservative, consFrozenReqMs_, consPast_, consTargets);
@@ -1260,7 +1226,11 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             if (end < start) continue;
             DisplayStint d;
             d.compoundName = ps.compoundName; d.color = ps.color;
-            d.startLap = start; d.endLap = end; d.lapCount = end - start + 1;
+            d.stintNumber = (int)out.size() + 1;
+            d.startLap = start; d.endLap = end;
+            // Expected = the plan frozen at the box; Actual = laps it really ran.
+            d.lapCount = ps.expectedLaps > 0 ? ps.expectedLaps : end - start + 1;
+            d.actualLaps = end - start + 1;
             d.targetPresent = true; d.targetMs = ps.reqBaseMs;
             // A completed stint always ended in a pit (a later stint followed it).
             d.rows = computeRows(start, end, ps.reqBaseMs, ps.postPit, true, raceCum);
@@ -1277,6 +1247,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             const int  end   = st.isLast ? totalLaps : st.pitLap;
             DisplayStint d;
             d.compoundName = st.compoundName; d.color = st.color;
+            d.stintNumber = (int)out.size() + 1;
             d.startLap = start; d.endLap = end;
             d.lapCount = isOpening ? std::max(1, end - start + 1) : st.lapCount;
             d.isLast = st.isLast;
@@ -1290,6 +1261,9 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
                 d.targetMs = tg.targetMs; d.deltaMs = tg.deltaMs;
                 d.rows = computeRows(start, end, base, postPit, !st.isLast, raceCum);
             }
+            // Laps actually run so far on this set: completed (timed) rows. Future
+            // stints have none yet → 0; the opening stint counts laps done to date.
+            for (const LapRow& lr : d.rows) if (lr.hasActual) ++d.actualLaps;
             out.push_back(d);
         }
         return out;
@@ -1452,13 +1426,6 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             const bool consChanged = reconcileColumn(consLayout_, sec, consRendered_, consDisplay_);
             const bool aggChanged  = reconcileColumn(aggLayout_,  sec, aggRendered_,  aggDisplay_);
             const bool changed = consChanged || aggChanged;
-
-            qDebug().nospace() << "[STRAT-RECON] lap=" << lapNum
-                << " displayChanged=" << displayChanged
-                << " consChanged=" << consChanged << " aggChanged=" << aggChanged
-                << " consStints=" << consDisplay_.size() << " aggStints=" << aggDisplay_.size()
-                << " consVpH=" << consScroll_->viewport()->height()
-                << " consContentHint=" << (consScroll_->widget() ? consScroll_->widget()->sizeHint().height() : -1);
 
             // Nothing to do when no widget moved — the scrollbar stays exactly as it
             // was, which is the whole point of reconciling rather than rebuilding.
