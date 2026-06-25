@@ -689,16 +689,17 @@ static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool 
     auto* r1 = new QWidget; r1->setFixedHeight(M.stintHead);
     auto* r1l = new QHBoxLayout(r1);
     r1l->setContentsMargins(12, 6, 12, 6); r1l->setSpacing(8);
-    r1l->addWidget(makeChip(st.compoundName, st.color, 10));
-    auto* stintLbl = new QLabel(QString("Stint %1").arg(st.stintNumber));
-    { QFont f = stintLbl->font(); f.setBold(true); stintLbl->setFont(f); }
-    r1l->addWidget(stintLbl);
-    r1l->addStretch();
     const auto boldNum = [](int n) {
         auto* l = new QLabel(QString::number(n));
         QFont f = l->font(); f.setBold(true); l->setFont(f);
         return l;
     };
+    r1l->addWidget(makeChip(st.compoundName, st.color, 10));
+    r1l->addWidget(boldNum(st.stintNumber));
+    r1l->addStretch();
+    // Middle: the lap range this set ran (start–end).
+    r1l->addWidget(secLabel(QString("%1–%2").arg(st.startLap).arg(st.endLap), sec, 7));
+    r1l->addStretch();
     r1l->addWidget(secLabel("Expected Laps:", sec, 7));
     r1l->addWidget(boldNum(st.lapCount));
     r1l->addWidget(secLabel("Actual Laps:", sec, 7));
