@@ -428,6 +428,22 @@ const StrategyCallPanel = memo(function StrategyCallPanel({
 
 // ─── RivalsPanel ─────────────────────────────────────────────────────────────
 
+// Signature of the two rival rows' displayed state (position, retired, 0.1s gap),
+// so 20Hz sub-0.1s gap jitter doesn't re-render the panel.
+function rivalsSig(rivals: { aheadIdx: number | null; behindIdx: number | null }, timing: TimingMsg): string {
+  const player = timing.cars.find(c => c.idx === timing.player_idx)
+  if (!player) return ''
+  const parts: string[] = []
+  for (const [idx, tag, ahead] of [[rivals.aheadIdx, 'a', true], [rivals.behindIdx, 'b', false]] as const) {
+    if (idx == null) continue
+    const car = timing.cars.find(c => c.idx === idx)
+    if (!car) { parts.push(`${tag}${idx}:none`); continue }
+    const rel = ahead ? player.gap_ms - car.gap_ms : car.gap_ms - player.gap_ms
+    parts.push(`${tag}${idx}:${car.position}:${car.result_status}:${Math.round(rel / 100)}`)
+  }
+  return parts.join('|')
+}
+
 const RivalsPanel = memo(function RivalsPanel({
   rivals, timing, participants,
 }: {
@@ -498,7 +514,10 @@ const RivalsPanel = memo(function RivalsPanel({
       </div>
     </div>
   )
-})
+}, (a, b) =>
+  a.rivals === b.rivals && a.participants === b.participants &&
+  rivalsSig(a.rivals, a.timing) === rivalsSig(b.rivals, b.timing),
+)
 
 // ─── PositionPanel ────────────────────────────────────────────────────────────
 // Isolated so its 20Hz gap-trend state updates don't re-render strategy columns.
@@ -506,26 +525,43 @@ const RivalsPanel = memo(function RivalsPanel({
 interface WearWarning { text: string; detail: string; color: string }
 const EMPTY_WARNINGS: WearWarning[] = []
 
+// Selects the cars shown in the Position panel: the player, up to 3 ahead and 3
+// behind, topped up to keep ~7 rows centred on the player.
+function selectPositionCars(timing: TimingMsg) {
+  const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
+  const player = active.find(c => c.idx === timing.player_idx)
+  if (!player) return null
+
+  const carsAhead  = active.filter(c => c.position < player.position).length
+  const carsBehind = active.filter(c => c.position > player.position).length
+  const baseAhead  = Math.min(3, carsAhead)
+  const baseBehind = Math.min(3, carsBehind)
+  const aheadCount  = Math.min(baseAhead  + Math.max(0, 3 - baseBehind), carsAhead)
+  const behindCount = Math.min(baseBehind + Math.max(0, 3 - baseAhead),  carsBehind)
+
+  const aheadCars  = Array.from({ length: aheadCount },  (_, i) => active.find(x => x.position === player.position - (i + 1))).filter((c): c is typeof player => !!c)
+  const behindCars = Array.from({ length: behindCount }, (_, i) => active.find(x => x.position === player.position + (i + 1))).filter((c): c is typeof player => !!c)
+
+  return { player, aheadCars, behindCars }
+}
+
+// Signature of everything the panel actually displays — positions, pit state,
+// stop counts and gaps bucketed to the shown 0.1s resolution. Equal signatures
+// mean an identical render, so the 20Hz sub-0.1s gap jitter is skipped.
+function positionSig(timing: TimingMsg, pitCounts: Map<number, number>): string {
+  const d = selectPositionCars(timing)
+  if (!d) return ''
+  const { player, aheadCars, behindCars } = d
+  const parts = [`p${player.idx}:${player.position}:${player.pit_status}`]
+  for (const c of aheadCars) parts.push(`a${c.idx}:${c.position}:${c.pit_status}:${pitCounts.get(c.idx) ?? 0}:${Math.round((player.gap_ms - c.gap_ms) / 100)}`)
+  for (const c of behindCars) parts.push(`b${c.idx}:${c.position}:${c.pit_status}:${pitCounts.get(c.idx) ?? 0}:${Math.round((c.gap_ms - player.gap_ms) / 100)}`)
+  return parts.join('|')
+}
+
 const PositionPanel = memo(function PositionPanel({
   timing, participants, pitCounts,
 }: { timing: TimingMsg; participants: ParticipantsMsg | null; pitCounts: Map<number, number> }) {
-  const positionData = useMemo(() => {
-    const active = timing.cars.filter(c => c.result_status === 2 && c.position > 0)
-    const player = active.find(c => c.idx === timing.player_idx)
-    if (!player) return null
-
-    const carsAhead  = active.filter(c => c.position < player.position).length
-    const carsBehind = active.filter(c => c.position > player.position).length
-    const baseAhead  = Math.min(3, carsAhead)
-    const baseBehind = Math.min(3, carsBehind)
-    const aheadCount  = Math.min(baseAhead  + Math.max(0, 3 - baseBehind), carsAhead)
-    const behindCount = Math.min(baseBehind + Math.max(0, 3 - baseAhead),  carsBehind)
-
-    const aheadCars  = Array.from({ length: aheadCount },  (_, i) => active.find(x => x.position === player.position - (i + 1))).filter((c): c is typeof player => !!c)
-    const behindCars = Array.from({ length: behindCount }, (_, i) => active.find(x => x.position === player.position + (i + 1))).filter((c): c is typeof player => !!c)
-
-    return { player, aheadCars, behindCars }
-  }, [timing])
+  const positionData = useMemo(() => selectPositionCars(timing), [timing])
 
   const prevBehindGapRef = useRef<number | null>(null)
   const prevAheadGapRef  = useRef<number | null>(null)
@@ -647,7 +683,12 @@ const PositionPanel = memo(function PositionPanel({
       )}
     </div>
   )
-})
+}, (a, b) =>
+  // Skip the render unless the displayed model changed (names/livery come from
+  // participants; everything else is captured by the signature).
+  a.participants === b.participants &&
+  positionSig(a.timing, a.pitCounts) === positionSig(b.timing, b.pitCounts),
+)
 
 // ─── TyreWearPanel ────────────────────────────────────────────────────────────
 // Isolated so wear data updates don't re-render strategy columns.
