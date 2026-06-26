@@ -32,12 +32,6 @@ let server: net.Server | null = null
 let pipePath = ''
 let lineBuf = ''
 let shuttingDown = false
-let onPlaybackState: ((state: unknown) => void) | null = null
-
-// Resolves the next player_load result (the bridge replies with playback_loaded).
-let pendingLoad: ((ok: boolean) => void) | null = null
-let currentFilename: string | null = null
-
 // Snapshot from the latest protocol_status row, for protocol-get-config.
 let lastStatus: { override: ProtocolOverride; detected: number | null; active: number | null } = {
   override: (store.get('udp.protocol', 'auto') as ProtocolOverride),
@@ -89,29 +83,7 @@ function handleRow(row: Record<string, unknown>): void {
     return
   }
 
-  if (type === 'playback_loaded') {
-    const ok = row.ok === true
-    if (pendingLoad) { pendingLoad(ok); pendingLoad = null }
-    return
-  }
 
-  if (type === 'playback_state') {
-    const total = (row.total_time as number) || 0
-    const cur = (row.current_time as number) || 0
-    const state = {
-      isPlaying: row.playing === true,
-      speed: (row.speed as number) ?? 1,
-      progressPct: total > 0 ? cur / total : 0,
-      currentTime: cur,
-      totalTime: total,
-      filename: currentFilename,
-      isScanning: false,
-    }
-    if (onPlaybackState) onPlaybackState(state)
-    return
-  }
-
-  if (type === 'playback_finished') return  // state already reflects the end
 
   // Everything else (telemetry/status/.../protocol_warning/playback_close) goes
   // to the renderer unchanged on the 'telemetry' channel.
@@ -215,10 +187,6 @@ export function stopBridge(): void {
 
 // --- Commands used by index.ts IPC handlers ----------------------------------
 
-export function setOnPlaybackState(cb: (state: unknown) => void): void {
-  onPlaybackState = cb
-}
-
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   sendCommand({ cmd: 'set_override', value })
@@ -241,24 +209,4 @@ export function restartUdp(): void {
     port: store.get('udp.port', 20777),
     bind: store.get('udp.bindAddress', '0.0.0.0'),
   })
-}
-
-export function playerLoad(filePath: string): Promise<boolean> {
-  currentFilename = filePath.split(/[\\/]/).pop() ?? null
-  return new Promise<boolean>((resolve) => {
-    pendingLoad = resolve
-    sendCommand({ cmd: 'player_load', path: filePath })
-    // Safety timeout so a missing reply never hangs the renderer invoke.
-    setTimeout(() => { if (pendingLoad === resolve) { pendingLoad = null; resolve(false) } }, 15000)
-  })
-}
-
-export function playerPlay():  void { sendCommand({ cmd: 'player_play' }) }
-export function playerPause(): void { sendCommand({ cmd: 'player_pause' }) }
-export function playerSeek(pct: number):   void { sendCommand({ cmd: 'player_seek', pct }) }
-export function playerSetSpeed(mult: number): void { sendCommand({ cmd: 'player_set_speed', mult }) }
-export function playerGetLapData(lapNum: number): void { sendCommand({ cmd: 'player_get_lap_data', lap_num: lapNum }) }
-export function playerClose(): void {
-  currentFilename = null
-  sendCommand({ cmd: 'player_close' })
 }

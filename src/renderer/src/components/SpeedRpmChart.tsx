@@ -18,9 +18,6 @@ interface Props {
   lapHistory: LapData[]
   fastestLap: LapData | null
   speedRpmBlocks: any[] | null
-  compBlock: LapData | null
-  compareLapNum: number | null
-  setCompareLapNum: (n: number | null) => void
   mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
   onModeChange: (mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
   isDark: boolean
@@ -128,7 +125,7 @@ function buildOverlayData(
   return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
 }
 
-export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, compBlock, compareLapNum, setCompareLapNum, mode, onModeChange, isDark }: Props) {
+export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark }: Props) {
   const activeData = mode === 'CL' ? lapData   : data
   const activeSts  = mode === 'CL' ? lapStatusHistory : statusHistory
 
@@ -137,6 +134,8 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
+
+  const [compareLapNum, setCompareLapNum] = useState<number | null>(null)
 
   useEffect(() => {
     if (mode === 'compare' && compareLapNum === null && speedRpmBlocks && speedRpmBlocks.length > 0) {
@@ -162,11 +161,12 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
 
   const uData = useMemo((): uPlot.AlignedData => {
     if (mode === 'compare') {
-      if (!compBlock) {
+      const compareBlock = speedRpmBlocks?.find(b => b.lapNum === compareLapNum) ?? null
+      if (!compareBlock) {
         return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
                 new Float64Array(), new Float64Array(), new Float64Array()]
       }
-      return buildOverlayData(compBlock as any, lapData, lapStatusHistory)
+      return buildOverlayData(compareBlock, lapData, lapStatusHistory)
     }
 
     if (mode === 'PL' || mode === 'FL') {

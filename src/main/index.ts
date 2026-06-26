@@ -6,22 +6,20 @@ import { execSync, spawn } from 'child_process'
 import Store from 'electron-store'
 import {
   setOverride,
-  setLoggingEnabled,
   restartUdp,
-  openTelemetryFile,
-  playerPlay,
-  playerPause,
-  playerSeek,
-  playerSetSpeed,
-  playerGetLapData,
-  playerClose,
   startBridge,
   stopBridge,
-  getAppRoot,
-  setOnPlaybackState,
-  getProtocolConfig,
-  playerLoad
+  getProtocolConfig
 } from './bridgeManager'
+import {
+  loadFile as playerLoad,
+  play as playerPlay,
+  pause as playerPause,
+  seek as playerSeek,
+  setSpeed as playerSetSpeed,
+  closePlayer as playerClose,
+  setOnPlayerStateChange as setOnPlaybackState
+} from './sessionPlayer'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25'
 
@@ -137,7 +135,6 @@ ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
-ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
 ipcMain.on('player:close', () => playerClose())
 
 ipcMain.on('udp-restart', (event) => {
