@@ -4,11 +4,22 @@ import * as fs from 'fs'
 import { join } from 'path'
 import { execSync, spawn } from 'child_process'
 import Store from 'electron-store'
-import { startUdpReceiver, stopUdpReceiver } from './udpReceiver'
-import { setOverride, getProtocolConfig } from './protocolDispatcher'
-import type { ProtocolOverride } from './protocolDispatcher'
-import { initSessionRecorder } from './sessionRecorder'
-import { loadFile, play, pause, seek, setSpeed, closePlayer, setOnPlayerStateChange, sweepTempDir, setWindowFocused } from './sessionPlayer'
+import {
+  startBridge,
+  stopBridge,
+  setOverride,
+  getProtocolConfig,
+  restartUdp,
+  playerLoad,
+  playerPlay,
+  playerPause,
+  playerSeek,
+  playerSetSpeed,
+  playerClose,
+  setOnPlaybackState,
+} from './bridgeManager'
+
+type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
@@ -35,15 +46,9 @@ let startupFilePath = getFilePathFromArgs(process.argv)
 let macStartupFilePath: string | null = null
 
 async function openTelemetryFile(filePath: string): Promise<boolean> {
-  stopUdpReceiver() // Suspend live UDP
-  const success = await loadFile(filePath)
-  if (!success) {
-    startUdpReceiver({
-      port: store.get('udp.port', 20777) as number,
-      bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
-    })
-  }
-  return success
+  // The bridge switches to playback mode itself (it ignores live UDP while a clip
+  // is loaded), so there's no separate live-suspend step here.
+  return playerLoad(filePath)
 }
 
 // Single Instance Lock
@@ -118,31 +123,21 @@ ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
   return filePaths[0]
 })
 
-// Player IPC
+// Player IPC — all forwarded to the bridge over stdin commands.
 ipcMain.handle('player:load', async (_event, filePath: string) => {
   return openTelemetryFile(filePath)
 })
 
-ipcMain.on('page-visibility', (_event, visible: boolean) => setWindowFocused(visible))
-ipcMain.on('player:play', () => play())
-ipcMain.on('player:pause', () => pause())
-ipcMain.on('player:seek', (_event, pct: number) => seek(pct))
-ipcMain.on('player:setSpeed', (_event, mult: number) => setSpeed(mult))
-ipcMain.on('player:close', () => {
-  closePlayer()
-  startUdpReceiver({
-    port: store.get('udp.port', 20777) as number,
-    bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
-  })
-})
+ipcMain.on('page-visibility', () => { /* bridge plays regardless of window focus */ })
+ipcMain.on('player:play', () => playerPlay())
+ipcMain.on('player:pause', () => playerPause())
+ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
+ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
+ipcMain.on('player:close', () => playerClose())
 
 ipcMain.on('udp-restart', (event) => {
   try {
-    stopUdpReceiver()
-    startUdpReceiver({
-      port:        store.get('udp.port', 20777) as number,
-      bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
-    })
+    restartUdp()
     event.reply('udp-restart-result', { ok: true })
   } catch (err) {
     event.reply('udp-restart-result', { ok: false, error: String(err) })
@@ -260,7 +255,7 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  setOnPlayerStateChange((state) => {
+  setOnPlaybackState((state) => {
     if (!win.isDestroyed()) {
       win.webContents.send('playback_state', state)
     }
@@ -288,14 +283,8 @@ app.whenReady().then(() => {
     app.setAppUserModelId(app.isPackaged ? 'com.tracknrace' : process.execPath)
   }
 
-  initSessionRecorder()
-  sweepTempDir()
-
   Menu.setApplicationMenu(null)
-  startUdpReceiver({
-    port:        store.get('udp.port', 20777) as number,
-    bindAddress: store.get('udp.bindAddress', '0.0.0.0') as string,
-  })
+  startBridge()   // spawns the native protocol_parser; owns UDP + recording
   createWindow()
 
   // Track the current icon path to prevent redundant win.setIcon calls
@@ -330,7 +319,7 @@ app.whenReady().then(() => {
   }, 1500)
 
   app.on('will-quit', () => {
-    closePlayer()
+    stopBridge()
     clearInterval(pollInterval)
   })
 
