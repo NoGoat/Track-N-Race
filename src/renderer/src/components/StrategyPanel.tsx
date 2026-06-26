@@ -1,6 +1,5 @@
 import { useMemo, memo, useEffect, useRef, useState } from 'react'
 import type { LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, SessionMsg, TyreSetsMsg, TyreSetEntry, AllStatusMsg } from '../types'
-import { sessionAccent } from './SessionPanel'
 import { TRACK_MAPS } from '../lib/trackMaps'
 
 // ─── Circuit pit-lane time loss ────────────────────────────────────────────────
@@ -505,6 +504,7 @@ const RivalsPanel = memo(function RivalsPanel({
 // Isolated so its 20Hz gap-trend state updates don't re-render strategy columns.
 
 interface WearWarning { text: string; detail: string; color: string }
+const EMPTY_WARNINGS: WearWarning[] = []
 
 const PositionPanel = memo(function PositionPanel({
   timing, participants, pitCounts,
@@ -652,9 +652,19 @@ const PositionPanel = memo(function PositionPanel({
 // ─── TyreWearPanel ────────────────────────────────────────────────────────────
 // Isolated so wear data updates don't re-render strategy columns.
 
+function warningsEqual(a: WearWarning[], b: WearWarning[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].text !== b[i].text || a[i].detail !== b[i].detail || a[i].color !== b[i].color) return false
+  }
+  return true
+}
+
+// Props are rounded ints (not the raw 20Hz damage row) + a content-compared
+// warnings list, so this only repaints when a shown wear % or a warning changes.
 const TyreWearPanel = memo(function TyreWearPanel({
-  damage, wearWarnings,
-}: { damage: DamageRow; wearWarnings: WearWarning[] }) {
+  fl, fr, rl, rr, wearWarnings,
+}: { fl: number; fr: number; rl: number; rr: number; wearWarnings: WearWarning[] }) {
   return (
     <>
       <div className="px-4 pt-3 pb-2 border-t border-[var(--border)]">
@@ -662,17 +672,17 @@ const TyreWearPanel = memo(function TyreWearPanel({
       </div>
       <div className="grid grid-cols-2 border-t border-[var(--border)]">
         {([
-          { key: 'fl', label: 'FL', value: damage.tyre_wear_fl, borderCls: 'border-r border-b' },
-          { key: 'fr', label: 'FR', value: damage.tyre_wear_fr, borderCls: 'border-b' },
-          { key: 'rl', label: 'RL', value: damage.tyre_wear_rl, borderCls: 'border-r' },
-          { key: 'rr', label: 'RR', value: damage.tyre_wear_rr, borderCls: '' },
+          { key: 'fl', label: 'FL', value: fl, borderCls: 'border-r border-b' },
+          { key: 'fr', label: 'FR', value: fr, borderCls: 'border-b' },
+          { key: 'rl', label: 'RL', value: rl, borderCls: 'border-r' },
+          { key: 'rr', label: 'RR', value: rr, borderCls: '' },
         ] as const).map(({ key, label, value, borderCls }) => {
           const c = wearColor(value)
           return (
             <div key={key} className={`flex flex-col justify-between px-4 py-3 gap-2 border-[var(--border)] ${borderCls}`}>
               <div className="flex items-baseline justify-between">
                 <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{label}</span>
-                <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{value.toFixed(0)}%</span>
+                <span className="text-sm font-black tabular-nums leading-none" style={{ color: c }}>{value}%</span>
               </div>
               <div className="h-1 bg-[var(--border)] rounded-full overflow-hidden">
                 <div className="h-full rounded-full" style={{ width: `${Math.min(100, value)}%`, backgroundColor: c }} />
@@ -693,6 +703,86 @@ const TyreWearPanel = memo(function TyreWearPanel({
       )}
     </>
   )
+}, (a, b) =>
+  a.fl === b.fl && a.fr === b.fr && a.rl === b.rl && a.rr === b.rr &&
+  warningsEqual(a.wearWarnings, b.wearWarnings),
+)
+
+// ─── Header ──────────────────────────────────────────────────────────────────
+// Memoised on the *displayed* (rounded) values, so the 20Hz wear float doesn't
+// re-render it — it only repaints when a shown number actually changes.
+
+const StrategyHeader = memo(function StrategyHeader({
+  lapNum, totalLaps, tyreName, tyreColor, wearPct, tyreAge, wearPerLapStr,
+  hasStrategy, cliffLap, lapsUntilCliff,
+}: {
+  lapNum: number | null
+  totalLaps: number
+  tyreName: string
+  tyreColor: string
+  wearPct: number
+  tyreAge: number | null
+  wearPerLapStr: string
+  hasStrategy: boolean
+  cliffLap: number
+  lapsUntilCliff: number
+}) {
+  const wearBar = wearColor(wearPct)
+  return (
+    <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+      {/* Lap counter */}
+      <div className="shrink-0 flex flex-col justify-center px-6 py-3">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Lap</span>
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-3xl font-black tabular-nums leading-none text-[var(--text-primary)]">
+            {lapNum ?? '—'}
+          </span>
+          <span className="text-base font-medium text-[var(--text-secondary)]">
+            / {totalLaps > 0 ? totalLaps : '—'}
+          </span>
+        </div>
+      </div>
+
+      {/* Compound + wear */}
+      <div className="flex-1 min-w-0 flex items-center gap-4 px-6 py-3">
+        <CompoundChip name={tyreName} color={tyreColor} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline justify-between gap-3 mb-1.5">
+            <span className="text-lg font-black tabular-nums leading-none" style={{ color: wearBar }}>
+              {wearPct}%
+            </span>
+            <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">
+              {tyreAge != null ? `${tyreAge}L · ${wearPerLapStr}%/L` : '—'}
+            </span>
+          </div>
+          <div className="h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-300"
+              style={{ width: `${Math.min(100, wearPct)}%`, backgroundColor: wearBar }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Tyre cliff */}
+      <div className="shrink-0 flex flex-col justify-center px-6 py-3">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Tyre Cliff</span>
+        {hasStrategy ? (
+          <div className="flex items-baseline gap-1.5">
+            <span
+              className="text-lg font-black tabular-nums leading-none"
+              style={{ color: lapsUntilCliff <= 5 ? '#C4162A' : lapsUntilCliff <= 10 ? '#FADE2A' : 'var(--text-primary)' }}
+            >
+              Lap {cliffLap}
+            </span>
+            <span className="text-[10px] text-[var(--text-secondary)]">+{lapsUntilCliff}</span>
+          </div>
+        ) : (
+          <span className="text-sm text-[var(--text-secondary)]">—</span>
+        )}
+      </div>
+    </div>
+  )
 })
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -700,12 +790,9 @@ const TyreWearPanel = memo(function TyreWearPanel({
 const StrategyPanel = memo(function StrategyPanel({
   lap, session, status, damage, timing, participants, tyreSets, allStatus, lapTimesByNum, isDark,
 }: Props) {
-  const accent = sessionAccent(session?.session_type ?? -1, isDark)
-
   const pitLoss = useMemo(() => pitLossForTrack(session?.track_id ?? -1), [session?.track_id])
 
   const isRaceSession = session !== null && [15, 16, 17].includes(session.session_type)
-  const hasEnoughLaps = true
   // A fitted tyre keeps the strategy valid regardless of age, so a fresh tyre on a
   // pit out-lap (age 0) doesn't blank the panel. Matches native StrategyPage.
   const hasTyreData   = !!status && status.tyre_compound > 0
@@ -749,17 +836,6 @@ const StrategyPanel = memo(function StrategyPanel({
     const basePool = (tyreSets?.sets ?? [])
       .filter(s => s.available && !s.fitted && s.usable_life > 0)
       .filter(s => isWetWeather ? WET_COMPOUNDS.has(s.actual_compound) : !WET_COMPOUNDS.has(s.actual_compound))
-
-    ;(window as any).debugBridge?.log('[STRAT pool]', {
-      weather: session.weather, isWetWeather,
-      tyreSetsNull: tyreSets === null,
-      rawSetCount: tyreSets?.sets?.length ?? 0,
-      afterFilter: basePool.length,
-      sample: (tyreSets?.sets ?? []).slice(0, 8).map(s => ({
-        ac: s.actual_compound, vc: s.visual_compound, avail: s.available,
-        fit: s.fitted, life: s.usable_life, dms: s.lap_delta_ms,
-      })),
-    })
 
     const conservativePool = [...basePool].sort((a, b) => b.usable_life - a.usable_life)
     const aggressivePool   = [...basePool].sort((a, b) => a.lap_delta_ms - b.lap_delta_ms)
@@ -810,15 +886,6 @@ const StrategyPanel = memo(function StrategyPanel({
       const usedCompounds = new Set(aggressive.stints.map(s => s.actualCompound))
       aggressive = applyMonacoRule(aggressive, aggressivePool, usedCompounds)
     }
-
-    ;(window as any).debugBridge?.log('[STRAT calc]', {
-      lapNum: lap.lap_num, totalLaps: session.total_laps, tyreAge: status.tyre_age_laps,
-      compound: status.tyre_compound, visual: status.visual_compound, cliffPct,
-      wear: { fl: flW, fr: frW, rl: rlW, rr: rrW }, avgWear: +avgWear.toFixed(1),
-      limitCorner, limitWear: +limitWear.toFixed(1), limitWearPerLap: +limitWearPerLap.toFixed(2),
-      consLapsLeft, consCliffLap, consFirstPit, freshGainMs: +freshGainMs.toFixed(0),
-      poolSize: conservativePool.length, consStops: conservative.stops, aggStops: aggressive.stops,
-    })
 
     const leftWear  = (flW + rlW) / 2
     const rightWear = (frW + rrW) / 2
@@ -1319,7 +1386,6 @@ const StrategyPanel = memo(function StrategyPanel({
   const tyreColor = strategyData ? strategyData.currentCompound.color : 'var(--text-secondary)'
   const tyreName  = strategyData ? strategyData.currentCompound.name  : '—'
   const avgWear   = strategyData?.avgWear ?? 0
-  const wearBar   = wearColor(avgWear)
 
   const blueAccent  = isDark ? '#5794F2' : '#0B57D0'
   const amberAccent = isDark ? '#FADE2A' : '#B06000'
@@ -1328,61 +1394,18 @@ const StrategyPanel = memo(function StrategyPanel({
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* ── Header ── */}
-      <div
-        className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
-      >
-        {/* Lap counter */}
-        <div className="shrink-0 flex flex-col justify-center px-6 py-3">
-          <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Lap</span>
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-3xl font-black tabular-nums leading-none text-[var(--text-primary)]">
-              {lap?.lap_num ?? '—'}
-            </span>
-            <span className="text-base font-medium text-[var(--text-secondary)]">
-              / {session?.total_laps && session.total_laps > 0 ? session.total_laps : '—'}
-            </span>
-          </div>
-        </div>
-
-        {/* Compound + wear */}
-        <div className="flex-1 min-w-0 flex items-center gap-4 px-6 py-3">
-          <CompoundChip name={tyreName} color={tyreColor} />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline justify-between gap-3 mb-1.5">
-              <span className="text-lg font-black tabular-nums leading-none" style={{ color: wearBar }}>
-                {avgWear.toFixed(0)}%
-              </span>
-              <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">
-                {status ? `${status.tyre_age_laps}L · ${strategyData?.wearPerLap.toFixed(1) ?? '—'}%/L` : '—'}
-              </span>
-            </div>
-            <div className="h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(100, avgWear)}%`, backgroundColor: wearBar }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Tyre cliff */}
-        <div className="shrink-0 flex flex-col justify-center px-6 py-3">
-          <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Tyre Cliff</span>
-          {strategyData ? (
-            <div className="flex items-baseline gap-1.5">
-              <span
-                className="text-lg font-black tabular-nums leading-none"
-                style={{ color: strategyData.lapsUntilCliff <= 5 ? '#C4162A' : strategyData.lapsUntilCliff <= 10 ? '#FADE2A' : 'var(--text-primary)' }}
-              >
-                Lap {strategyData.estimatedCliffLap}
-              </span>
-              <span className="text-[10px] text-[var(--text-secondary)]">+{strategyData.lapsUntilCliff}</span>
-            </div>
-          ) : (
-            <span className="text-sm text-[var(--text-secondary)]">—</span>
-          )}
-        </div>
-      </div>
+      <StrategyHeader
+        lapNum={lap?.lap_num ?? null}
+        totalLaps={session?.total_laps ?? 0}
+        tyreName={tyreName}
+        tyreColor={tyreColor}
+        wearPct={Math.round(avgWear)}
+        tyreAge={status?.tyre_age_laps ?? null}
+        wearPerLapStr={strategyData?.wearPerLap.toFixed(1) ?? '—'}
+        hasStrategy={!!strategyData}
+        cliffLap={strategyData?.estimatedCliffLap ?? 0}
+        lapsUntilCliff={strategyData?.lapsUntilCliff ?? 0}
+      />
 
       {/* ── Non-race session: full-area placeholder ── */}
       {!isRaceSession && (
@@ -1444,8 +1467,11 @@ const StrategyPanel = memo(function StrategyPanel({
 
             {damage && (
               <TyreWearPanel
-                damage={damage}
-                wearWarnings={strategyData?.wearWarnings ?? []}
+                fl={Math.round(damage.tyre_wear_fl)}
+                fr={Math.round(damage.tyre_wear_fr)}
+                rl={Math.round(damage.tyre_wear_rl)}
+                rr={Math.round(damage.tyre_wear_rr)}
+                wearWarnings={strategyData?.wearWarnings ?? EMPTY_WARNINGS}
               />
             )}
 

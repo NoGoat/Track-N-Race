@@ -35,6 +35,7 @@ export interface TelemetryState {
   lapTelemetry: TelemetryRow[]
   lapStatusHistory: StatusRow[]
   lapTimesByNum: Record<number, number>
+  speedRpmBlocks: any[] | null
   isConnected: boolean
   error: string | null
   protocolStatus: ProtocolStatusMsg | null
@@ -271,11 +272,6 @@ export function useTelemetry(seconds: number): TelemetryState {
           // Refresh the singular current rows the panels read directly (not the
           // buffers). lapNumRef is set above first, so setLap's transition effect
           // sees prevLapNum === lap_num and no-ops (no bogus lap-history entry).
-          ;(window as any).debugBridge?.log('[SEEK recv]', {
-            flushLapNum: flush.lapNum, flushLap_lap_num: flush.lap?.lap_num ?? null,
-            nStatus: flush.status?.length ?? 0, nDamage: flush.damage?.length ?? 0,
-            appliedStatusAge: flush.status?.length ? flush.status[flush.status.length - 1].tyre_age_laps : null,
-          })
           if (flush.status?.length) setStatus(flush.status[flush.status.length - 1])
           if (flush.damage?.length) setDamage(flush.damage[flush.damage.length - 1])
           if (flush.lap) setLap(flush.lap)

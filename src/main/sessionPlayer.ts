@@ -4,7 +4,6 @@ import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows } from './index'
-import { debugLog } from './debugLog'
 
 
 let activeFilePath: string | null = null
@@ -513,14 +512,6 @@ function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, cu
   const damage = packets.filter(p => p.type === 'damage')
 
   const flushLap = lastPackets['lap'] ?? null
-  debugLog('[SEEK flush]', {
-    targetTime: +targetTime.toFixed(1), currentLapNum,
-    nTelemetry: telemetry.length, nStatus: status.length, nDamage: damage.length,
-    flushLapNum: flushLap?.lap_num ?? null,
-    lastStatusAge: status.length ? status[status.length - 1].tyre_age_laps : null,
-    lastStatusCompound: status.length ? status[status.length - 1].tyre_compound : null,
-    lastDamageFL: damage.length ? damage[damage.length - 1].tyre_wear_fl : null,
-  })
   broadcastToWindows({
     type: 'playback_seek_flush',
     telemetry,

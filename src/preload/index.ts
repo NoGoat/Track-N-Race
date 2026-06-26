@@ -76,11 +76,6 @@ const playerBridge = {
   }
 }
 
-const debugBridge = {
-  log: (tag: string, data: unknown): void => ipcRenderer.send('debug-log', tag, data),
-}
-
-contextBridge.exposeInMainWorld('debugBridge', debugBridge)
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
