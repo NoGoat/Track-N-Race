@@ -131,6 +131,7 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 
+    rawSock_ = s;
     running_.store(true);
     // Pass the bound socket to the loop via a tiny heap handoff (int fits in the
     // bindAddress slot we already have — reuse runLoop signature for clarity).
@@ -143,10 +144,6 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
             if (n > 0 && handler) handler(buf, n);
             // n <= 0 is a timeout or transient error; loop and re-check running_.
         }
-        closeSock(s);
-#ifdef _WIN32
-        WSACleanup();
-#endif
     });
     return true;
 }
@@ -158,6 +155,30 @@ void UdpListener::runLoop(uint16_t, std::string, Handler) {
 
 void UdpListener::stop() {
     running_.store(false);
+    if (rawSock_ != -1) {
+        // To guarantee recvfrom unblocks on Linux, we send a dummy packet to ourselves.
+        // sockaddr_in we bound to might be INADDR_ANY, but 127.0.0.1 will reach it.
+        sockaddr_in name{};
+        socklen_t namelen = sizeof(name);
+        if (getsockname(rawSock_, (sockaddr*)&name, &namelen) == 0) {
+            SOCKET dummy = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (dummy != INVALID_SOCKET) {
+                sockaddr_in dest{};
+                dest.sin_family = AF_INET;
+                dest.sin_port = name.sin_port;
+                dest.sin_addr.s_addr = inet_addr("127.0.0.1");
+                const char msg = 0;
+                ::sendto(dummy, &msg, 1, 0, (sockaddr*)&dest, sizeof(dest));
+                closeSock(dummy);
+            }
+        }
+        
+        closeSock(rawSock_);
+        rawSock_ = -1;
+#ifdef _WIN32
+        WSACleanup();
+#endif
+    }
     if (thread_.joinable()) thread_.join();
 }
 

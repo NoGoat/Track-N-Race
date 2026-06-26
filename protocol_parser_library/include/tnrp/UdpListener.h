@@ -34,6 +34,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread       thread_;
     std::string       lastError_;
+    int               rawSock_{-1};
 
     void runLoop(uint16_t port, std::string bindAddress, Handler handler);
 };

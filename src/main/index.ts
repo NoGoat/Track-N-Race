@@ -154,39 +154,7 @@ ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
   setOverride(value)
 })
 
-ipcMain.on('switch-to-recorder', () => {
-  const recorderBinary =
-    process.platform === 'win32'
-      ? 'Track N Race Background Recorder.exe'
-      : 'Track N Race Background Recorder'
-  let recorderPath = ''
-  if (app.isPackaged) {
-    // In production, the executable is placed in the main installation folder next to the Electron app
-    recorderPath = path.join(path.dirname(process.execPath), recorderBinary)
-  } else {
-    // In development, the executable is in native_recorder/build/Release (Windows) or native_recorder/build (Linux)
-    const devBuildDir = process.platform === 'win32' ? 'Release' : '.'
-    recorderPath = path.join(app.getAppPath(), 'native_recorder/build', devBuildDir, recorderBinary)
-  }
 
-  if (fs.existsSync(recorderPath)) {
-    // Spawn the background recorder detached so it stays open when electron exits
-    const child = spawn(recorderPath, [], {
-      detached: true,
-      stdio: 'ignore'
-    })
-    child.unref()
-    
-    // Close the Electron app
-    app.quit()
-  } else {
-    console.error(`Recorder executable not found at: ${recorderPath}`)
-    dialog.showErrorBox(
-      'Recorder Not Found',
-      `Could not find the Background Recorder at:\n${recorderPath}\n\nPlease ensure you have built it first.`
-    )
-  }
-})
 
 function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
   if (process.platform !== 'win32') return 'dark'
@@ -334,6 +302,7 @@ app.whenReady().then(() => {
   }, 1500)
 
   app.on('will-quit', () => {
+    playerClose()
     stopBridge()
     clearInterval(pollInterval)
   })
@@ -345,5 +314,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
 })
