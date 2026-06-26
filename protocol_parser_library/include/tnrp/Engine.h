@@ -48,6 +48,7 @@ public:
     void playerPause();
     void playerSeek(float pct);            // 0..1 of the recording duration
     void playerSetSpeed(float mult);
+    void playerGetLapData(int lapNum);
     void playerClose();                    // back to live mode
 
 private:

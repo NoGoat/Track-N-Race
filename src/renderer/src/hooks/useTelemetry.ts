@@ -40,6 +40,9 @@ export interface TelemetryState {
   error: string | null
   protocolStatus: ProtocolStatusMsg | null
   protocolWarning: ProtocolWarningMsg | null
+  compBlock: LapData | null
+  compareLapNum: number | null
+  setCompareLapNum: (n: number | null) => void
 }
 
 export function useTelemetry(seconds: number): TelemetryState {
@@ -54,6 +57,13 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [timing, setTiming]     = useState<TimingMsg | null>(null)
   const [participants, setParticipants] = useState<ParticipantsMsg | null>(null)
   const [allStatus, setAllStatus]       = useState<AllStatusMsg | null>(null)
+  const [compareLapNum, setCompareLapNum] = useState<number | null>(null)
+
+  const [playbackLapCache, setPlaybackLapCache] = useState<Record<number, LapData>>({})
+  const playbackLapCacheRef = useRef<Record<number, LapData>>({})
+  useEffect(() => { playbackLapCacheRef.current = playbackLapCache }, [playbackLapCache])
+  const fetchingLapsRef = useRef<Set<number>>(new Set())
+
   const [fastestLapCarIdx, setFastestLapCarIdx] = useState<number | null>(null)
   const [raceEvent, setRaceEvent]   = useState<RaceEventMsg | null>(null)
   const [raceEvents, setRaceEvents] = useState<RaceEventMsg[]>([])
@@ -86,8 +96,9 @@ export function useTelemetry(seconds: number): TelemetryState {
     const unsub = window.telemetryBridge.on((raw) => {
       const msg = raw as GatewayMsg
       switch (msg.type) {
+        case 'playback_loaded':
         case 'playback_close': {
-          isPlaybackRef.current = false
+          isPlaybackRef.current = (msg.type === 'playback_loaded')
 
           setTelBuf([]); telBufRef.current = []
           setMotBuf([]); motBufRef.current = []
@@ -259,22 +270,46 @@ export function useTelemetry(seconds: number): TelemetryState {
           break
         case 'playback_seek_flush': {
           const flush = msg as any
-          setTelBuf(flush.telemetry)
-          telBufRef.current = flush.telemetry
-          setMotBuf(flush.motion)
-          motBufRef.current = flush.motion
-          setStsBuf(flush.status)
-          stsBufRef.current = flush.status
-          setDmgBuf(flush.damage)
-          dmgBufRef.current = flush.damage
           lapStartTimeRef.current = flush.currentLapStart
           lapNumRef.current = flush.lapNum
-          // Refresh the singular current rows the panels read directly (not the
-          // buffers). lapNumRef is set above first, so setLap's transition effect
-          // sees prevLapNum === lap_num and no-ops (no bogus lap-history entry).
-          if (flush.status?.length) setStatus(flush.status[flush.status.length - 1])
-          if (flush.damage?.length) setDamage(flush.damage[flush.damage.length - 1])
-          if (flush.lap) setLap(flush.lap)
+          // If we don't have it in cache, we fetch it immediately
+          if (!playbackLapCacheRef.current[flush.lapNum] && !fetchingLapsRef.current.has(flush.lapNum)) {
+            fetchingLapsRef.current.add(flush.lapNum)
+            window.playerBridge.getLapData(flush.lapNum)
+          } else if (playbackLapCacheRef.current[flush.lapNum]) {
+            // Already have it, inject it
+            const lapDataObj = playbackLapCacheRef.current[flush.lapNum]
+            setTelBuf(lapDataObj.telemetry)
+            telBufRef.current = lapDataObj.telemetry
+            setMotBuf(lapDataObj.motion)
+            motBufRef.current = lapDataObj.motion
+            setStsBuf(lapDataObj.statusHistory)
+            stsBufRef.current = lapDataObj.statusHistory
+          }
+          break
+        }
+        case 'playback_lap_data': {
+          const data = msg as any
+          const lapDataObj: LapData = {
+            lapNum: data.lapNum,
+            startSessionTime: data.startSessionTime,
+            endSessionTime: data.endSessionTime,
+            telemetry: data.telemetry ?? [],
+            motion: data.motionHistory ?? [],
+            statusHistory: data.statusHistory ?? [],
+          }
+          setPlaybackLapCache(prev => ({ ...prev, [data.lapNum]: lapDataObj }))
+          if (data.lapNum === lapNumRef.current) {
+            setTelBuf(lapDataObj.telemetry)
+            telBufRef.current = lapDataObj.telemetry
+            setMotBuf(lapDataObj.motion)
+            motBufRef.current = lapDataObj.motion
+            setMotExBuf(data.motionExHistory ?? [])
+            setStsBuf(lapDataObj.statusHistory)
+            stsBufRef.current = lapDataObj.statusHistory
+            setDmgBuf(data.damageHistory ?? [])
+            dmgBufRef.current = data.damageHistory ?? []
+          }
           break
         }
         case 'playback_lap_blocks': {
@@ -344,9 +379,27 @@ export function useTelemetry(seconds: number): TelemetryState {
   const lapStartSessionTime = lap && lap.current_lap_ms > 0 ? lapStartTimeRef.current : 0
   const isPlayback = speedRpmBlocks !== null
   const activeLapNum = lap ? lap.lap_num : 1
-  const curBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum) : null
-  const prevBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === activeLapNum - 1) : null
-  const fastBlock = isPlayback ? speedRpmBlocks.find(b => b.lapNum === fastestLapNum) : null
+
+  useEffect(() => {
+    if (!isPlayback) return
+    const needed = new Set<number>()
+    needed.add(activeLapNum)
+    if (activeLapNum > 1) needed.add(activeLapNum - 1)
+    if (fastestLapNum) needed.add(fastestLapNum)
+    if (compareLapNum) needed.add(compareLapNum)
+
+    needed.forEach(n => {
+      if (n && !playbackLapCache[n] && !fetchingLapsRef.current.has(n)) {
+        fetchingLapsRef.current.add(n)
+        window.playerBridge.getLapData(n)
+      }
+    })
+  }, [activeLapNum, fastestLapNum, compareLapNum, isPlayback, playbackLapCache])
+
+  const curBlock = isPlayback ? playbackLapCache[activeLapNum] : null
+  const prevBlock = isPlayback ? playbackLapCache[activeLapNum - 1] : null
+  const fastBlock = isPlayback ? playbackLapCache[fastestLapNum] : null
+  const compBlock = isPlayback && compareLapNum ? playbackLapCache[compareLapNum] : null
   // Playback uses the seek-correct pre-scan; live uses the accumulated map.
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
@@ -358,6 +411,7 @@ export function useTelemetry(seconds: number): TelemetryState {
   const latest           = useMemo(() => telBuf.length > 0 ? telBuf[telBuf.length - 1] : null, [telBuf])
   const lapHistory       = useMemo(() => isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf, [isPlayback, prevBlock, lapHistoryBuf])
   const resolvedFastLap  = useMemo(() => isPlayback && fastBlock ? fastBlock : fastestLap,      [isPlayback, fastBlock, fastestLap])
+
   const lapTelemetry     = useMemo(
     () => isPlayback && curBlock
       ? curBlock.telemetry.filter((p: any) => p.session_time <= latestSessionTime)
@@ -386,6 +440,11 @@ export function useTelemetry(seconds: number): TelemetryState {
     fastestLapCarIdx, raceEvent, raceEvents: resolvedRaceEvents, session, tyreSets,
     latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
     speedRpmBlocks, lapTimesByNum,
-    isConnected: true, error: null, protocolStatus, protocolWarning,
+    isConnected: true, error: null,
+    protocolStatus,
+    protocolWarning,
+    compBlock,
+    compareLapNum,
+    setCompareLapNum
   }
 }

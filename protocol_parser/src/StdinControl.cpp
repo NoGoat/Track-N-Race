@@ -40,6 +40,8 @@ void StdinControl::handle(const nlohmann::json& cmd) {
         engine_.playerSeek(cmd.value("pct", 0.0f));
     } else if (c == "player_set_speed") {
         engine_.playerSetSpeed(cmd.value("mult", 1.0f));
+    } else if (c == "player_get_lap_data") {
+        engine_.playerGetLapData(cmd.value("lap_num", 0));
     } else {
         std::cerr << "[bridge] unknown cmd: " << c << "\n";
     }

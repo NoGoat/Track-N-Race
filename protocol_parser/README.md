@@ -46,11 +46,16 @@ Output: one JSON row per line (the same row shapes the React renderer already
 consumes), plus control rows `protocol_status`, `protocol_warning`,
 `playback_state`, `playback_loaded`, `playback_finished`, `playback_close`.
 
-## Status / known gaps
+## Status
 
-Verified end-to-end on Linux: live UDP→parse→pipe, `.tnrd` record, and
-record→playback round-trip (see commit notes). Two playback niceties from the old
-`sessionPlayer.ts` are not yet reproduced and are follow-ups:
-`playback_seek_flush` (chart clear on seek) and `playback_lap_blocks`. Core
-telemetry playback (load/play/pause/seek/speed) works; the renderer's rewind-trim
-handles backward seeks.
+Verified end-to-end on Linux (automated): live UDP→parse→pipe, `.tnrd` record,
+record→playback round-trip, and seek-rewind (`playback_seek_flush` carries the
+dense history up to the seek point). On load the bridge emits `playback_lap_blocks`
+(per-lap Speed/RPM/ERS blocks + lap list + events) so the renderer enters true
+playback mode — without it the renderer re-filters a growing buffer every frame
+and slows down over time.
+
+Known minor gap: the old `page-visibility` playback throttle (pause streaming when
+the window is hidden) is not reproduced; playback streams regardless of focus.
+macOS note: the unix-socket path uses `os.tmpdir()`, which can exceed the AF_UNIX
+~108-char limit on macOS — fine on Linux (`/tmp`).

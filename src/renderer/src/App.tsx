@@ -752,7 +752,7 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning, compBlock, compareLapNum, setCompareLapNum } = useTelemetry(seconds)
 
   speedRpmBlocksRef.current = speedRpmBlocks
 
@@ -872,7 +872,10 @@ export default function App() {
 
   const handleSelectPlaybackFile = useCallback(async () => {
     const file = await window.fsBridge.selectTNRDFile()
-    if (file) window.playerBridge.load(file)
+    if (file) {
+      setPlaybackState((prev: any) => ({ ...(prev || {}), isScanning: true }))
+      window.playerBridge.load(file)
+    }
   }, [])
 
   const handleSelectDriver = useCallback((idx: number) => {
@@ -1439,7 +1442,7 @@ export default function App() {
               )}
               {showSpeedChartPanel && (
                 <div className={`${speedChartFlex} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
+                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} compBlock={compBlock} compareLapNum={compareLapNum} setCompareLapNum={setCompareLapNum} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
                 </div>
               )}
               {showThermalPanel && (

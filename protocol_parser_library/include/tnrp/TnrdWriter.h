@@ -5,6 +5,11 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 #include <nlohmann/json.hpp>
 #include <zlib.h>
@@ -21,7 +26,7 @@ namespace tnrp {
 // Not thread-safe; the engine serializes all calls.
 class TnrdWriter {
 public:
-    TnrdWriter() = default;
+    TnrdWriter();
     ~TnrdWriter();
 
     // Enable/disable recording and set the output directory. Disabling closes
@@ -45,8 +50,30 @@ public:
 private:
     struct BufferEntry { std::string line; float sessionTime; };
 
+    enum class EventType { SetLogging, NotePacket, Record, Close };
+
+    struct WriterEvent {
+        EventType type;
+        bool enabled;
+        std::string outputDir;
+        uint16_t format;
+        uint8_t packetId;
+        float sessionTime;
+        std::vector<uint8_t> packetData;
+        nlohmann::json row;
+    };
+
     static constexpr float BUFFER_WINDOW_S = 30.0f;
 
+    void writerLoop();
+
+    std::mutex              mu_;
+    std::condition_variable cv_;
+    std::queue<WriterEvent> queue_;
+    std::thread             diskThread_;
+    std::atomic<bool>       stop_{false};
+
+    // State accessed only by diskThread_
     bool        wantRecord_        = false;
     std::string outputDirectory_;
     gzFile      activeGzip_        = nullptr;

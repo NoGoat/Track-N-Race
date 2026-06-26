@@ -87,6 +87,8 @@ bool Engine::playerLoad(const std::string& path) {
 
     bool ok = false;
     nlohmann::json header;
+    nlohmann::json lapBlocks;
+    std::vector<nlohmann::json> initState;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         ok = reader_.load(path, header);
@@ -96,11 +98,19 @@ bool Engine::playerLoad(const std::string& path) {
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
             writer_.closeActiveStream();   // never record during playback
+            // Built once on load: per-lap Speed/RPM/ERS blocks + lap list + events.
+            // This is what flips the renderer into true playback mode (so it stops
+            // re-filtering a growing buffer every frame), plus the initial panel state.
+            lapBlocks = reader_.lapBlocksMessage();
+            lapBlocks["type"] = "playback_lap_blocks";
+            initState = reader_.stateSnapshot(reader_.startTime());
         }
     }
 
     emitRow({ {"type", "playback_loaded"}, {"ok", ok}, {"header", ok ? header : nlohmann::json(nullptr)} });
     if (ok) {
+        emitRow(lapBlocks);
+        for (const auto& s : initState) emitRow(s);
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
         emitPlaybackState();
@@ -127,17 +137,28 @@ void Engine::playerPause() {
 }
 
 void Engine::playerSeek(float pct) {
-    std::vector<nlohmann::json> snapshot;
+    std::vector<nlohmann::json> state;
+    float lapStart = 0.0f;
+    int   lapNum   = 0;
+    float target   = 0.0f;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
-        float start = reader_.startTime();
-        float dur   = std::max(0.0f, reader_.totalTime() - start);
-        float target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
+        float start  = reader_.startTime();
+        float dur    = std::max(0.0f, reader_.totalTime() - start);
+        target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
         currentTime_ = target;
-        snapshot = reader_.seekToTime(target);
+        reader_.setCursor(target);                 // play resumes forward from here
+        state    = reader_.stateSnapshot(target);  // panel-state setters
+        lapStart = target;
+        reader_.currentLapAt(target, lapStart, lapNum);
     }
-    for (const auto& row : snapshot) emitRow(row);
+
+    emitRow({
+        {"type", "playback_seek_flush"},
+        {"currentLapStart", lapStart}, {"lapNum", lapNum},
+    });
+    for (const auto& s : state) emitRow(s);
     emitPlaybackState();
 }
 
@@ -147,6 +168,19 @@ void Engine::playerSetSpeed(float mult) {
         speed_ = mult;
     }
     emitPlaybackState();
+}
+
+void Engine::playerGetLapData(int lapNum) {
+    nlohmann::json lapData;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!inPlayback_.load()) return;
+        lapData = reader_.getLapDataMessage(lapNum);
+    }
+    if (!lapData.is_null()) {
+        lapData["type"] = "playback_lap_data";
+        emitRow(lapData);
+    }
 }
 
 void Engine::playerClose() {

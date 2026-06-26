@@ -63,6 +63,7 @@ const playerBridge = {
   pause: () => ipcRenderer.send('player:pause'),
   seek: (pct: number) => ipcRenderer.send('player:seek', pct),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
+  getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
   close: () => ipcRenderer.send('player:close'),
   onStateChange: (cb: (state: any) => void) => {
     const handler = (_e: any, state: any) => cb(state)

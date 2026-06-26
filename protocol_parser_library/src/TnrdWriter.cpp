@@ -22,13 +22,24 @@ const std::unordered_set<std::string>& TnrdWriter::dedupeTypes() {
     return kTypes;
 }
 
+TnrdWriter::TnrdWriter() {
+    diskThread_ = std::thread(&TnrdWriter::writerLoop, this);
+}
+
 TnrdWriter::~TnrdWriter() {
-    closeActiveStream();
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::Close;
+        queue_.push(std::move(ev));
+        stop_.store(true);
+    }
+    cv_.notify_all();
+    if (diskThread_.joinable()) diskThread_.join();
 }
 
 gzFile TnrdWriter::gzOpenPath(const std::string& utf8Path, const char* mode) {
 #ifdef _WIN32
-    // Widen the UTF-8 path so non-ASCII output directories work on Windows.
     int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, nullptr, 0);
     if (wlen <= 0) return nullptr;
     std::wstring wpath(wlen, L'\0');
@@ -40,9 +51,80 @@ gzFile TnrdWriter::gzOpenPath(const std::string& utf8Path, const char* mode) {
 }
 
 void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
-    wantRecord_      = enabled;
-    outputDirectory_ = outputDir;
-    if (!enabled) closeActiveStream();
+    std::unique_lock<std::mutex> lk(mu_);
+    WriterEvent ev;
+    ev.type = EventType::SetLogging;
+    ev.enabled = enabled;
+    ev.outputDir = outputDir;
+    queue_.push(std::move(ev));
+    cv_.notify_one();
+}
+
+void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime,
+                            const uint8_t* data, int length) {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (!data || length <= 0) return;
+    WriterEvent ev;
+    ev.type = EventType::NotePacket;
+    ev.format = format;
+    ev.packetId = packetId;
+    ev.sessionTime = sessionTime;
+    ev.packetData.assign(data, data + length);
+    queue_.push(std::move(ev));
+    cv_.notify_one();
+}
+
+void TnrdWriter::record(const nlohmann::json& row, float sessionTime) {
+    std::unique_lock<std::mutex> lk(mu_);
+    WriterEvent ev;
+    ev.type = EventType::Record;
+    ev.row = row;
+    ev.sessionTime = sessionTime;
+    queue_.push(std::move(ev));
+    cv_.notify_one();
+}
+
+void TnrdWriter::writerLoop() {
+    while (true) {
+        WriterEvent ev;
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            cv_.wait(lk, [this] { return !queue_.empty(); });
+            ev = std::move(queue_.front());
+            queue_.pop();
+        }
+
+        if (ev.type == EventType::SetLogging) {
+            wantRecord_ = ev.enabled;
+            outputDirectory_ = ev.outputDir;
+            if (!ev.enabled) closeActiveStream();
+        } else if (ev.type == EventType::NotePacket) {
+            if (activeGzip_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
+                truncateTimeline(ev.sessionTime);
+            else if (ev.sessionTime > lastSessionTime_)
+                lastSessionTime_ = ev.sessionTime;
+
+            if (ev.packetId == PID_SESSION && ev.packetData.size() >= 708) {
+                int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
+                uint8_t sessionType = ev.packetData[35];
+                if (wantRecord_ && (trackId != currentTrackId_ ||
+                                    sessionType != currentSessionType_ || !activeGzip_))
+                    startNewStream(trackId, sessionType, ev.format);
+            }
+        } else if (ev.type == EventType::Record) {
+            if (!activeGzip_) continue;
+            std::string type = ev.row.value("type", std::string{});
+            if (isDuplicate(type, ev.row)) continue;
+            std::string line = ev.row.dump() + "\n";
+            float entryTime  = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
+            rollingBuffer_.push_back({line, entryTime});
+            if (type == "race_event" && ev.row.value("code", "") == "SEND") { closeActiveStream(); continue; }
+            flushOldBufferEntries();
+        } else if (ev.type == EventType::Close) {
+            closeActiveStream();
+            if (stop_.load() && queue_.empty()) break;
+        }
+    }
 }
 
 void TnrdWriter::closeActiveStream() {
@@ -164,35 +246,6 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
     }
     dedupeCache_.clear();
     lastSessionTime_ = newSessionTime;
-}
-
-void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime,
-                            const uint8_t* data, int length) {
-    // Flashback / rewind: a backward jump (>0.2s) truncates the timeline.
-    if (activeGzip_ && lastSessionTime_ >= 0.0f && sessionTime < lastSessionTime_ - 0.2f)
-        truncateTimeline(sessionTime);
-    else if (sessionTime > lastSessionTime_)
-        lastSessionTime_ = sessionTime;
-
-    // New track/session => rotate to a fresh file.
-    if (packetId == PID_SESSION && length >= 708) {
-        int8_t  trackId     = ReadInt8(data, 36);
-        uint8_t sessionType = data[35];
-        if (wantRecord_ && (trackId != currentTrackId_ ||
-                            sessionType != currentSessionType_ || !activeGzip_))
-            startNewStream(trackId, sessionType, format);
-    }
-}
-
-void TnrdWriter::record(const nlohmann::json& row, float sessionTime) {
-    if (!activeGzip_) return;
-    std::string type = row.value("type", std::string{});
-    if (isDuplicate(type, row)) return;
-    std::string line = row.dump() + "\n";
-    float entryTime  = (sessionTime >= 0.0f) ? sessionTime : lastSessionTime_;
-    rollingBuffer_.push_back({line, entryTime});
-    if (type == "race_event" && row.value("code", "") == "SEND") { closeActiveStream(); return; }
-    flushOldBufferEntries();
 }
 
 } // namespace tnrp

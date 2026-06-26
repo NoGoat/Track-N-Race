@@ -3,6 +3,9 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <queue>
+#include <thread>
+#include <condition_variable>
 
 #include <tnrp/Sink.h>
 
@@ -24,12 +27,17 @@ public:
     bool connected() const { return connected_.load(); }
 
 private:
-    std::mutex        mu_;
-    std::atomic<bool> connected_{false};
+    void writerLoop();
+
+    std::mutex              mu_;
+    std::condition_variable cv_;
+    std::queue<std::string> queue_;
+    std::thread             writerThread_;
+    std::atomic<bool>       stop_{false};
+    std::atomic<bool>       connected_{false};
 #ifdef _WIN32
     void* handle_ = nullptr;   // HANDLE
 #else
     int   fd_ = -1;
-    bool  writable();
 #endif
 };

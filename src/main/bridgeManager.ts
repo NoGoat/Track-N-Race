@@ -257,6 +257,7 @@ export function playerPlay():  void { sendCommand({ cmd: 'player_play' }) }
 export function playerPause(): void { sendCommand({ cmd: 'player_pause' }) }
 export function playerSeek(pct: number):   void { sendCommand({ cmd: 'player_seek', pct }) }
 export function playerSetSpeed(mult: number): void { sendCommand({ cmd: 'player_set_speed', mult }) }
+export function playerGetLapData(lapNum: number): void { sendCommand({ cmd: 'player_get_lap_data', lap_num: lapNum }) }
 export function playerClose(): void {
   currentFilename = null
   sendCommand({ cmd: 'player_close' })

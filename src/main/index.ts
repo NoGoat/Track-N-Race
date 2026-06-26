@@ -1,22 +1,26 @@
-import { app, BrowserWindow, shell, ipcMain, Menu, globalShortcut, nativeTheme, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Menu, nativeTheme, dialog } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
 import { execSync, spawn } from 'child_process'
 import Store from 'electron-store'
 import {
-  startBridge,
-  stopBridge,
   setOverride,
-  getProtocolConfig,
+  setLoggingEnabled,
   restartUdp,
-  playerLoad,
+  openTelemetryFile,
   playerPlay,
   playerPause,
   playerSeek,
   playerSetSpeed,
+  playerGetLapData,
   playerClose,
+  startBridge,
+  stopBridge,
+  getAppRoot,
   setOnPlaybackState,
+  getProtocolConfig,
+  playerLoad
 } from './bridgeManager'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25'
@@ -133,6 +137,7 @@ ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
+ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
 ipcMain.on('player:close', () => playerClose())
 
 ipcMain.on('udp-restart', (event) => {
@@ -270,6 +275,19 @@ function createWindow(): void {
     }
   })
 
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.control && input.shift && input.key === 'I') {
+        if (win.webContents.isDevToolsOpened()) {
+          win.webContents.closeDevTools()
+        } else {
+          win.webContents.openDevTools()
+        }
+        event.preventDefault()
+      }
+    })
+  }
+
   // In dev, electron-vite sets ELECTRON_RENDERER_URL
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -323,20 +341,6 @@ app.whenReady().then(() => {
     clearInterval(pollInterval)
   })
 
-
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    globalShortcut.register('Ctrl+Shift+I', () => {
-      const focusedWindow = BrowserWindow.getFocusedWindow()
-
-      if (focusedWindow) {
-        if (focusedWindow.webContents.isDevToolsOpened()) {
-          focusedWindow.webContents.closeDevTools()
-        } else {
-          focusedWindow.webContents.openDevTools()
-        }
-      }
-    })
-  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
