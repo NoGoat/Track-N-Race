@@ -9,9 +9,9 @@
 // Serialise with: std::string buf; glz::write_json(row, buf);
 //
 // Complex / low-frequency packets (session, participants, race_event,
-// session_history, tyre_sets) still use nlohmann::json in the parsers
-// because they have variable-length nested arrays that aren't worth the
-// boilerplate and fire at ≤ 2 Hz anyway.
+// session_history, tyre_sets) and the control / playback rows live in
+// tnrp/control_rows.h — also glaze, just split out to keep this file focused
+// on the 60 Hz hot path.
 
 // ── telemetry (60 Hz) ──────────────────────────────────────────────────────
 

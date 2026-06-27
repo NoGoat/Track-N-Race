@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include "tnrp/control_rows.h"
 
 namespace tnrp {
 
@@ -17,8 +17,8 @@ namespace tnrp {
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
-// (lapBlocksMessage / getLapDataMessage) still returns nlohmann::json because
-// those objects are built once at load time and passed on through Engine.
+// (lapBlocksMessage / getLapDataMessage) returns fully-serialised JSON strings,
+// built once at load time with glaze (raw rows embedded verbatim via raw_json).
 //
 // Not thread-safe; the engine serializes access from its playback thread.
 class TnrdReader {
@@ -26,7 +26,7 @@ public:
     TnrdReader() = default;
     ~TnrdReader();
 
-    bool load(const std::string& path, nlohmann::json& outHeader);
+    bool load(const std::string& path, HeaderRow& outHeader);
     void close();
     bool isLoaded() const { return tempFile_ != nullptr; }
 
@@ -44,21 +44,24 @@ public:
     std::vector<std::string> readRange(float fromTime, float toTime);
     bool currentLapAt(float t, float& startOut, int& numOut) const;
 
-    // ── Load-time payload (nlohmann still used here — called once on load) ───
-    nlohmann::json lapBlocksMessage() const;
-    nlohmann::json getLapDataMessage(int lapNum) const;
+    // ── Load-time payload (built once on load, returned as serialised JSON) ──
+    std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
+    std::string getLapDataMessage(int lapNum) const;  // "playback_lap_data" row, "" if unknown lap
 
 private:
     struct IndexEntry { long offset; float sessionTime; uint8_t type; };
+    // A stored raw JSONL row plus its session_time (for ordering). The json is
+    // emitted verbatim into the playback payload via glz::raw_json.
+    struct TimedRaw { float t; std::string json; };
     struct LapBlock {
         int   lapNum;
         float startSessionTime;
         float endSessionTime;
-        std::vector<nlohmann::json> telemetry;
-        std::vector<nlohmann::json> statusHistory;
-        std::vector<nlohmann::json> motionHistory;
-        std::vector<nlohmann::json> motionExHistory;
-        std::vector<nlohmann::json> damageHistory;
+        std::vector<TimedRaw> telemetry;
+        std::vector<TimedRaw> statusHistory;
+        std::vector<TimedRaw> motionHistory;
+        std::vector<TimedRaw> motionExHistory;
+        std::vector<TimedRaw> damageHistory;
     };
     struct ScanLap { int lapNum; float startSessionTime; float endSessionTime; int lapTimeMs; };
 
@@ -70,11 +73,11 @@ private:
     float       totalTime_   = 0.0f;
     size_t      playPos_     = 0;
 
-    std::map<int, LapBlock>     lapBlocks_;
-    std::vector<ScanLap>        scannedLaps_;
-    std::vector<nlohmann::json> scannedEvents_;
-    int                         fastestLapNum_ = 0;
-    int                         fastestLapMs_  = 0;
+    std::map<int, LapBlock>  lapBlocks_;
+    std::vector<ScanLap>     scannedLaps_;
+    std::vector<std::string> scannedEvents_;   // raw race_event JSONL lines
+    int                      fastestLapNum_ = 0;
+    int                      fastestLapMs_  = 0;
 
     size_t upperBoundTime(float t) const;
     size_t lowerBoundTime(float t) const;

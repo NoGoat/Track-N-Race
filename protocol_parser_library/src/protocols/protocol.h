@@ -1,11 +1,11 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <cmath>
-#include <nlohmann/json.hpp>
 
 struct PacketHeader {
     uint16_t packetFormat;

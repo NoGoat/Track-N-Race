@@ -10,16 +10,8 @@ option(TNRP_USE_QT "Use QUdpSocket instead of raw sockets for UDP" OFF)
 
 include(FetchContent)
 
-# Reuse json/zlib if a parent project already provides them; otherwise fetch the
-# same versions the native recorder pins, so the .tnrd format stays byte-identical.
-if(NOT TARGET nlohmann_json::nlohmann_json)
-    FetchContent_Declare(json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3
-        GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(json)
-endif()
-
+# All JSON (serialise + parse) goes through glaze; zlib is reused from a parent
+# project if present, otherwise fetched at the version the native recorder pins.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -53,8 +45,8 @@ target_include_directories(tnrp
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# json is in public headers (Sink/Parser/...); zlib is in TnrdWriter.h — both PUBLIC.
-target_link_libraries(tnrp PUBLIC nlohmann_json::nlohmann_json zlibstatic glaze::glaze)
+# glaze is in public headers (rows/control_rows/TnrdReader); zlib is in TnrdWriter.h.
+target_link_libraries(tnrp PUBLIC zlibstatic glaze::glaze)
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
 target_include_directories(tnrp PUBLIC

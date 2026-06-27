@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <string_view>
 #include <unordered_set>
 
 #include <zlib.h>
@@ -14,6 +15,17 @@
 #endif
 
 namespace tnrp {
+
+// Minimal struct for pulling just the lap fields out of a "lap" row with glaze.
+// error_on_unknown_keys=false ignores every other key; missing keys keep defaults.
+namespace {
+struct LapScanFields {
+    int lap_num{};
+    int current_lap_ms{};
+    int last_lap_ms{};
+};
+constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
+}
 
 // State types reconstructed on seek (panel-state setters, emitted individually):
 // session, lap, timing, participants, all_status, tyre_sets.
@@ -119,19 +131,18 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         totalTime_ = std::max(totalTime_, t);
 
         if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12) return;
-        nlohmann::json obj;
-        try { obj = nlohmann::json::parse(ld, ld + ll); } catch (...) { return; }
 
         if (tid == 4) {  // lap
-            int lapNum = obj.value("lap_num", 0);
+            LapScanFields lf;
+            (void)glz::read<kPartialRead>(lf, std::string_view(ld, (size_t)ll));
+            int lapNum = lf.lap_num;
             if (curLapNum < 0) {
                 curLapNum   = lapNum;
-                int curMs   = obj.value("current_lap_ms", 0);
-                curLapStart = curMs > 0 ? t - curMs / 1000.0f : t;
+                curLapStart = lf.current_lap_ms > 0 ? t - lf.current_lap_ms / 1000.0f : t;
             } else if (lapNum > curLapNum) {
                 auto it = lapBlocks_.find(curLapNum);
                 if (it != lapBlocks_.end()) it->second.endSessionTime = t;
-                int lapTimeMs = obj.value("last_lap_ms", 0);
+                int lapTimeMs = lf.last_lap_ms;
                 scannedLaps_.push_back({ curLapNum, curLapStart, t, lapTimeMs });
                 if (lapTimeMs > 0 && lapTimeMs < 300000 &&
                     (fastestLapMs_ == 0 || lapTimeMs < fastestLapMs_)) {
@@ -146,24 +157,17 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         if (curLapNum >= 0) {
             auto it = lapBlocks_.find(curLapNum);
             if (it == lapBlocks_.end())
-                it = lapBlocks_.emplace(curLapNum, LapBlock{ curLapNum, t, t, {}, {} }).first;
+                it = lapBlocks_.emplace(curLapNum, LapBlock{ curLapNum, t, t }).first;
             it->second.endSessionTime = t;
-            if (tid == 1) {
-                it->second.telemetry.push_back(obj);
-            } else if (tid == 2) {
-                it->second.statusHistory.push_back(obj);
-            } else if (tid == 3) {
-                it->second.damageHistory.push_back(obj);
-            } else if (tid == 11) {
-                it->second.motionHistory.push_back(obj);
-            } else if (tid == 12) {
-                it->second.motionExHistory.push_back(obj);
-            }
+            if (tid == 1)       it->second.telemetry.push_back({ t, std::string(ld, ll) });
+            else if (tid == 2)  it->second.statusHistory.push_back({ t, std::string(ld, ll) });
+            else if (tid == 3)  it->second.damageHistory.push_back({ t, std::string(ld, ll) });
+            else if (tid == 11) it->second.motionHistory.push_back({ t, std::string(ld, ll) });
+            else if (tid == 12) it->second.motionExHistory.push_back({ t, std::string(ld, ll) });
         }
 
         if (tid == 6) {
-            if (!obj.contains("session_time")) obj["session_time"] = t;
-            scannedEvents_.push_back(obj);
+            scannedEvents_.push_back(std::string(ld, ll));
         }
     };
 
@@ -199,16 +203,14 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         auto it = lapBlocks_.find(curLapNum);
         if (it != lapBlocks_.end()) it->second.endSessionTime = totalTime_;
     }
-    auto byT = [](const nlohmann::json& a, const nlohmann::json& b) {
-        return a.value("session_time", 0.0f) < b.value("session_time", 0.0f);
-    };
+    auto byT = [](const TimedRaw& a, const TimedRaw& b) { return a.t < b.t; };
     for (auto& kv : lapBlocks_) {
         std::sort(kv.second.telemetry.begin(), kv.second.telemetry.end(), byT);
         std::sort(kv.second.statusHistory.begin(), kv.second.statusHistory.end(), byT);
     }
 }
 
-bool TnrdReader::load(const std::string& path, nlohmann::json& outHeader) {
+bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
     close();
     namespace fs = std::filesystem;
     auto tmpName = "tracknrace_" + std::to_string(
@@ -229,10 +231,9 @@ bool TnrdReader::load(const std::string& path, nlohmann::json& outHeader) {
             if (std::strlen(hb) < sizeof(hb) - 1) break;
         }
         std::fclose(f);
-        try {
-            outHeader = nlohmann::json::parse(line);
-            if (!outHeader.contains("magic") || outHeader["magic"] != "TNRD_V1") { close(); return false; }
-        } catch (...) { close(); return false; }
+        outHeader = HeaderRow{};
+        auto ec = glz::read<kPartialRead>(outHeader, line);
+        if (ec || outHeader.magic != "TNRD_V1") { close(); return false; }
     }
 
     buildIndex(tempPath_);
@@ -356,41 +357,37 @@ bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
     return false;
 }
 
-nlohmann::json TnrdReader::lapBlocksMessage() const {
-    nlohmann::json blocks = nlohmann::json::array();
+std::string TnrdReader::lapBlocksMessage() const {
+    PlaybackLapBlocksRow msg;
     for (const auto& kv : lapBlocks_) {
         const LapBlock& b = kv.second;
-        blocks.push_back({
-            {"lapNum", b.lapNum},
-            {"startSessionTime", b.startSessionTime},
-            {"endSessionTime", b.endSessionTime},
-        });
+        msg.blocks.push_back({ b.lapNum, b.startSessionTime, b.endSessionTime });
     }
-    nlohmann::json laps = nlohmann::json::array();
-    for (const auto& l : scannedLaps_)
-        laps.push_back({ {"lapNum", l.lapNum}, {"lapTimeMs", l.lapTimeMs} });
-    return {
-        {"blocks", blocks},
-        {"fastestLapNum", fastestLapNum_},
-        {"events", scannedEvents_},
-        {"laps", laps},
-    };
+    msg.fastestLapNum = fastestLapNum_;
+    msg.events.reserve(scannedEvents_.size());
+    for (const auto& s : scannedEvents_) msg.events.push_back(glz::raw_json{ s });
+    for (const auto& l : scannedLaps_)   msg.laps.push_back({ l.lapNum, l.lapTimeMs });
+    return writeJson(msg);
 }
 
-nlohmann::json TnrdReader::getLapDataMessage(int lapNum) const {
+std::string TnrdReader::getLapDataMessage(int lapNum) const {
     auto it = lapBlocks_.find(lapNum);
-    if (it == lapBlocks_.end()) return nlohmann::json(nullptr);
+    if (it == lapBlocks_.end()) return {};
     const LapBlock& b = it->second;
-    return {
-        {"lapNum", b.lapNum},
-        {"startSessionTime", b.startSessionTime},
-        {"endSessionTime", b.endSessionTime},
-        {"telemetry", b.telemetry},
-        {"statusHistory", b.statusHistory},
-        {"motionHistory", b.motionHistory},
-        {"motionExHistory", b.motionExHistory},
-        {"damageHistory", b.damageHistory},
+    PlaybackLapDataRow msg;
+    msg.lapNum           = b.lapNum;
+    msg.startSessionTime = b.startSessionTime;
+    msg.endSessionTime   = b.endSessionTime;
+    auto fill = [](std::vector<glz::raw_json>& dst, const std::vector<TimedRaw>& src) {
+        dst.reserve(src.size());
+        for (const auto& e : src) dst.push_back(glz::raw_json{ e.json });
     };
+    fill(msg.telemetry,       b.telemetry);
+    fill(msg.statusHistory,   b.statusHistory);
+    fill(msg.motionHistory,   b.motionHistory);
+    fill(msg.motionExHistory, b.motionExHistory);
+    fill(msg.damageHistory,   b.damageHistory);
+    return writeJson(msg);
 }
 
 std::vector<std::string> TnrdReader::pullUntil(float t) {

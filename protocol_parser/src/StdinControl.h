@@ -1,6 +1,24 @@
 #pragma once
 
+#include <string>
+
 #include <tnrp/Engine.h>
+
+// One newline-delimited stdin command. Fields are read by glaze with
+// error_on_unknown_keys=false; absent keys keep these defaults (mirrors the old
+// nlohmann cmd.value(key, default) behaviour).
+struct BridgeCommand {
+    std::string cmd;
+    std::string value   = "auto";       // set_override
+    bool        enabled = false;        // set_logging
+    std::string dir;                    // set_logging
+    int         port    = 20777;        // restart_udp
+    std::string bind    = "0.0.0.0";    // restart_udp
+    std::string path;                   // player_load
+    float       pct     = 0.0f;         // player_seek
+    float       mult    = 1.0f;         // player_set_speed
+    int         lap_num = 0;            // player_get_lap_data
+};
 
 // Reads newline-delimited JSON command objects from stdin and applies them to the
 // Engine. Runs on the calling thread and blocks until stdin reaches EOF (which
@@ -22,5 +40,5 @@ public:
 
 private:
     tnrp::Engine& engine_;
-    void handle(const nlohmann::json& cmd);
+    void handle(const BridgeCommand& cmd);
 };

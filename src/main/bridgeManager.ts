@@ -66,8 +66,15 @@ export function startBridge(): void {
       bindAddress: store.get('udp.bindAddress', '0.0.0.0')
     }
     
-    engine = new addon.Engine(config, (rowJson: string) => {
-      handleRow(JSON.parse(rowJson))
+    engine = new addon.Engine(config, (batch: string) => {
+      // The addon coalesces rows into a newline-delimited JSON blob.
+      let start = 0
+      while (start < batch.length) {
+        let end = batch.indexOf('\n', start)
+        if (end === -1) end = batch.length
+        if (end > start) handleRow(JSON.parse(batch.slice(start, end)))
+        start = end + 1
+      }
     })
     
     engine.startUdp()

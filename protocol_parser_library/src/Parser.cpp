@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <nlohmann/json.hpp>
+#include "tnrp/control_rows.h"
 
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
@@ -70,19 +70,15 @@ uint16_t Parser::effectiveFormat(uint16_t incoming) const {
 std::string Parser::statusRow() const {
     int gameYear = activeFormat_ == 2025 ? 25 : (activeFormat_ == 2024 ? 24 : -1);
     bool isF125 = activeFormat_ == 2025;
-    nlohmann::json caps = {
-        {"gameYear",        gameYear < 0 ? nlohmann::json(nullptr) : nlohmann::json(gameYear)},
-        {"hasBlisters",     isF125},
-        {"hasLiveryColors", isF125},
-        {"hasLapPositions", isF125},
-    };
-    return nlohmann::json{
-        {"type",            "protocol_status"},
-        {"detected_format", detectedFormat_ ? nlohmann::json(detectedFormat_) : nlohmann::json(nullptr)},
-        {"active_format",   activeFormat_   ? nlohmann::json(activeFormat_)   : nlohmann::json(nullptr)},
-        {"override",        toString(override_v_)},
-        {"capabilities",    caps},
-    }.dump();
+    ProtocolStatusRow row;
+    if (gameYear >= 0)   row.capabilities.gameYear = gameYear;
+    row.capabilities.hasBlisters     = isF125;
+    row.capabilities.hasLiveryColors = isF125;
+    row.capabilities.hasLapPositions = isF125;
+    if (detectedFormat_) row.detected_format = detectedFormat_;
+    if (activeFormat_)   row.active_format   = activeFormat_;
+    row.override_ = toString(override_v_);
+    return writeJsonNullable(row);
 }
 
 Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts) {
@@ -121,20 +117,16 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         if (!warnActive_ || warnForced_ != eff) {
             warnActive_ = true;
             warnForced_ = eff;
-            r.control.push_back(nlohmann::json{
-                {"type", "protocol_warning"},
-                {"detected_format", incoming},
-                {"forced_format",   eff},
-            }.dump());
+            ProtocolWarningRow w;
+            w.detected_format = incoming;
+            w.forced_format   = eff;
+            r.control.push_back(writeJsonNullable(w));
         }
     } else if (warnActive_) {
         warnActive_ = false;
         warnForced_ = 0;
-        r.control.push_back(nlohmann::json{
-            {"type", "protocol_warning"},
-            {"detected_format", nullptr},
-            {"forced_format",   nullptr},
-        }.dump());
+        ProtocolWarningRow w;   // both fields nullopt → emitted as null
+        r.control.push_back(writeJsonNullable(w));
     }
 
     // ── Rate limiting ────────────────────────────────────────────────────────

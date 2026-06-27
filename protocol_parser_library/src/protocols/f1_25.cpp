@@ -1,6 +1,9 @@
 #include "f1_25.h"
 #include "tnrp/rows.h"
+#include "tnrp/control_rows.h"
 #include <cstdio>
+
+using namespace tnrp;
 
 static const int HEADER_SIZE = 29;
 
@@ -59,71 +62,49 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
 
     switch (hdr.packetId) {
 
-        // ── SESSION (complex, keep nlohmann) ──────────────────────────────
+        // ── SESSION (complex, glaze) ───────────────────────────────────────
         case PID_SESSION: {
             if (length < 708) return {};
-            uint8_t weather = data[29];
-            int8_t trackTemp = ReadInt8(data, 30);
-            int8_t airTemp = ReadInt8(data, 31);
-            uint8_t totalLaps = data[32];
-            uint16_t trackLengthM = ReadUInt16(data, 33);
-            uint8_t sessionType = data[35];
-            int8_t trackId = ReadInt8(data, 36);
-            uint16_t sessionTimeLeft = ReadUInt16(data, 38);
-            uint16_t sessionDuration = ReadUInt16(data, 40);
-            uint8_t pitSpeedLimit = data[42];
-            uint8_t numMarshalZones = data[47];
+            SessionRow sr;
+            sr.ts                         = timestamp;
+            sr.weather                    = data[29];
+            sr.track_temp                 = ReadInt8(data, 30);
+            sr.air_temp                   = ReadInt8(data, 31);
+            sr.total_laps                 = data[32];
+            sr.track_length_m             = ReadUInt16(data, 33);
+            sr.session_type               = data[35];
+            sr.track_id                   = ReadInt8(data, 36);
+            sr.session_time_left          = ReadUInt16(data, 38);
+            sr.session_duration           = ReadUInt16(data, 40);
+            sr.pit_speed_limit            = data[42];
+            sr.num_marshal_zones          = data[47];
 
-            nlohmann::json marshalZones = nlohmann::json::array();
-            for (int i = 0; i < numMarshalZones && i < 21; ++i) {
+            for (int i = 0; i < (int)data[47] && i < 21; ++i) {
                 int o = 48 + i * 5;
-                marshalZones.push_back({{"zone_start", ReadFloat(data, o)}, {"flag", ReadInt8(data, o + 4)}});
+                sr.marshal_zones.push_back({ ReadFloat(data, o), ReadInt8(data, o + 4) });
             }
 
-            uint8_t safetyCarStatus = data[153];
-            uint8_t numForecastSamples = data[155];
-
-            nlohmann::json weatherForecast = nlohmann::json::array();
-            for (int i = 0; i < numForecastSamples && i < 64; ++i) {
+            sr.safety_car_status = data[153];
+            for (int i = 0; i < (int)data[155] && i < 64; ++i) {
                 int o = 156 + i * 8;
-                weatherForecast.push_back({
-                    {"time_offset", ReadUInt8(data, o + 1)},
-                    {"weather", ReadUInt8(data, o + 2)},
-                    {"rain_percentage", ReadUInt8(data, o + 7)}
+                sr.weather_forecast_samples.push_back({
+                    ReadUInt8(data, o + 1), ReadUInt8(data, o + 2), ReadUInt8(data, o + 7)
                 });
             }
 
-            uint8_t forecastAccuracy = data[668];
-            uint8_t aiDifficulty = data[669];
-            uint8_t pitStopWindowIdealLap = data[682];
-            uint8_t pitStopWindowLatestLap = data[683];
-            uint8_t pitStopRejoinPosition = data[684];
-            uint32_t timeOfDay = ReadUInt32(data, 696);
-            uint8_t numSafetyCarPeriods = data[705];
-            uint8_t numVirtualScPeriods = data[706];
-            uint8_t numRedFlagPeriods = data[707];
+            sr.forecast_accuracy          = data[668];
+            sr.ai_difficulty              = data[669];
+            sr.pit_stop_window_ideal_lap  = data[682];
+            sr.pit_stop_window_latest_lap = data[683];
+            sr.pit_stop_rejoin_position   = data[684];
+            sr.time_of_day                = ReadUInt32(data, 696);
+            sr.num_safety_car_periods     = data[705];
+            sr.num_virtual_sc_periods     = data[706];
+            sr.num_red_flag_periods       = data[707];
 
-            nlohmann::json row = {
-                {"type", "session"}, {"ts", timestamp},
-                {"weather", weather}, {"track_temp", trackTemp}, {"air_temp", airTemp},
-                {"track_length_m", trackLengthM},
-                {"track_id", trackId}, {"session_type", sessionType},
-                {"total_laps", totalLaps}, {"session_time_left", sessionTimeLeft},
-                {"session_duration", sessionDuration}, {"pit_speed_limit", pitSpeedLimit},
-                {"pit_stop_window_ideal_lap", pitStopWindowIdealLap},
-                {"pit_stop_window_latest_lap", pitStopWindowLatestLap},
-                {"pit_stop_rejoin_position", pitStopRejoinPosition},
-                {"num_marshal_zones", numMarshalZones}, {"marshal_zones", marshalZones},
-                {"weather_forecast_samples", weatherForecast},
-                {"safety_car_status", safetyCarStatus},
-                {"forecast_accuracy", forecastAccuracy},
-                {"ai_difficulty", aiDifficulty},
-                {"time_of_day", timeOfDay},
-                {"num_safety_car_periods", numSafetyCarPeriods},
-                {"num_virtual_sc_periods", numVirtualScPeriods},
-                {"num_red_flag_periods", numRedFlagPeriods}
-            };
-            rows.push_back(row.dump());
+            buf.clear();
+            (void)glz::write_json(sr, buf);
+            rows.push_back(std::move(buf));
             break;
         }
 
@@ -378,11 +359,11 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             break;
         }
 
-        // ── PARTICIPANTS (0.2 Hz, keep nlohmann) — F1_25 has dynamic RGB color ──
+        // ── PARTICIPANTS (0.2 Hz, glaze) — F1_25 has dynamic RGB color ──────
         case PID_PARTICIPANTS: {
             int partSize = 57;
             if (length < HEADER_SIZE + 1 + 22 * partSize) return {};
-            nlohmann::json drivers = nlohmann::json::array();
+            ParticipantsRow pr;
             for (int i = 0; i < 22; ++i) {
                 int o = HEADER_SIZE + 1 + i * partSize;
                 bool ai = data[o] != 0; o += 1;
@@ -404,61 +385,59 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                 } else {
                     snprintf(hexColor, sizeof(hexColor), "#8e8e8e");
                 }
-                drivers.push_back({
-                    {"idx", i}, {"name", name}, {"team_id", teamId},
-                    {"race_number", raceNum}, {"ai", ai}, {"livery_color", hexColor}
-                });
+                pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai, hexColor });
             }
-            rows.push_back(nlohmann::json{{"type", "participants"}, {"drivers", drivers}}.dump());
+            buf.clear();
+            (void)glz::write_json(pr, buf);
+            rows.push_back(std::move(buf));
             break;
         }
 
-        // ── EVENT (rare, keep nlohmann) ────────────────────────────────────
+        // ── EVENT (rare, glaze) ────────────────────────────────────────────
         case PID_EVENT: {
             if (length < HEADER_SIZE + 4) return {};
             std::string code(reinterpret_cast<const char*>(data + HEADER_SIZE), 4);
-            nlohmann::json base = {
-                {"type", "race_event"}, {"ts", timestamp},
-                {"session_time", hdr.sessionTime}, {"code", code}
-            };
+            RaceEventRow ev;
+            ev.ts           = timestamp;
+            ev.session_time = hdr.sessionTime;
+            ev.code         = code;
             int o = HEADER_SIZE + 4;
             if (code == "FTLP") {
                 if (length < o + 5) return {};
                 uint8_t vehicleIdx = data[o];
                 float lapTimeS = Round3(ReadFloat(data, o + 1));
-                rows.push_back(nlohmann::json{{"type","fastest_lap"},{"ts",timestamp},{"car_idx",vehicleIdx},{"lap_time_s",lapTimeS}}.dump());
-                nlohmann::json ev = base;
-                ev["car_idx"] = vehicleIdx; ev["lap_time_s"] = lapTimeS;
-                rows.push_back(ev.dump());
+                FastestLapRow fl;
+                fl.ts = timestamp; fl.car_idx = vehicleIdx; fl.lap_time_s = lapTimeS;
+                buf.clear(); (void)glz::write_json(fl, buf); rows.push_back(std::move(buf));
+                ev.car_idx = vehicleIdx; ev.lap_time_s = lapTimeS;
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             } else if (code == "DRSE" || code == "DRSD" || code == "RDFL" || code == "CHQF" ||
                        code == "LGOT" || code == "SSTA" || code == "SEND") {
-                rows.push_back(base.dump());
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             } else if (code == "SCAR") {
                 if (length < o + 2) return {};
                 uint8_t scType = data[o], evType = data[o + 1];
                 if (scType == 0) return {};
-                nlohmann::json ev = base;
-                ev["safety_car_type"] = scType; ev["event_type"] = evType;
-                rows.push_back(ev.dump());
+                ev.safety_car_type = scType; ev.event_type = evType;
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             } else if (code == "RTMT" || code == "RCWN") {
                 if (length < o + 1) return {};
-                nlohmann::json ev = base; ev["car_idx"] = data[o];
-                rows.push_back(ev.dump());
+                ev.car_idx = data[o];
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             } else if (code == "PENA") {
                 if (length < o + 7) return {};
-                nlohmann::json ev = base;
-                ev["car_idx"] = data[o + 2]; ev["penalty_type"] = data[o];
-                ev["infringement_type"] = data[o + 1]; ev["penalty_time_s"] = data[o + 4];
-                rows.push_back(ev.dump());
+                ev.car_idx = data[o + 2]; ev.penalty_type = data[o];
+                ev.infringement_type = data[o + 1]; ev.penalty_time_s = data[o + 4];
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             } else if (code == "DTSV" || code == "SGSV") {
                 if (length < o + 1) return {};
-                nlohmann::json ev = base; ev["car_idx"] = data[o];
-                rows.push_back(ev.dump());
+                ev.car_idx = data[o];
+                buf.clear(); (void)glz::write_json(ev, buf); rows.push_back(std::move(buf));
             }
             break;
         }
 
-        // ── SESSION_HISTORY (rare, keep nlohmann) ──────────────────────────
+        // ── SESSION_HISTORY (rare, glaze) ──────────────────────────────────
         case PID_SESSION_HISTORY: {
             if (length < HEADER_SIZE + 7) return {};
             uint8_t carIdx     = data[HEADER_SIZE];
@@ -467,34 +446,33 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             int lapOff = HEADER_SIZE + 7 + (bestLapNum - 1) * 14;
             if (length < lapOff + 14) return {};
             if ((data[lapOff + 13] & 0x01) == 0) return {};
-            uint32_t bestLapTimeMs = ReadUInt32(data, lapOff);
-            rows.push_back(nlohmann::json{
-                {"type","session_history_fastest"},{"ts",timestamp},
-                {"car_idx",carIdx},{"best_lap_time_ms",bestLapTimeMs}
-            }.dump());
+            SessionHistoryFastestRow sh;
+            sh.ts = timestamp; sh.car_idx = carIdx;
+            sh.best_lap_time_ms = ReadUInt32(data, lapOff);
+            buf.clear();
+            (void)glz::write_json(sh, buf);
+            rows.push_back(std::move(buf));
             break;
         }
 
-        // ── TYRE_SETS (rare, keep nlohmann) ────────────────────────────────
+        // ── TYRE_SETS (rare, glaze) ────────────────────────────────────────
         case PID_TYRE_SETS: {
             if (length < 231) return {};
             uint8_t carIdx = data[HEADER_SIZE];
             if (carIdx != hdr.playerCarIndex) return {};
-            nlohmann::json sets = nlohmann::json::array();
+            TyreSetsRow tsr;
+            tsr.ts = timestamp; tsr.session_time = hdr.sessionTime;
             for (int i = 0; i < 20; ++i) {
                 int o = HEADER_SIZE + 1 + i * 10;
-                sets.push_back({
-                    {"idx", i}, {"actual_compound", data[o]}, {"visual_compound", data[o+1]},
-                    {"wear", data[o+2]}, {"available", data[o+3] == 1},
-                    {"recommended_session", data[o+4]}, {"life_span", data[o+5]},
-                    {"usable_life", data[o+6]}, {"lap_delta_ms", ReadInt16(data, o+7)},
-                    {"fitted", data[o+9] == 1}
+                tsr.sets.push_back({
+                    i, data[o], data[o+1], data[o+2], data[o+3] == 1,
+                    data[o+4], data[o+5], data[o+6], ReadInt16(data, o+7), data[o+9] == 1
                 });
             }
-            rows.push_back(nlohmann::json{
-                {"type","tyre_sets"},{"ts",timestamp},{"session_time",hdr.sessionTime},
-                {"sets",sets},{"fitted_idx",data[230]}
-            }.dump());
+            tsr.fitted_idx = data[230];
+            buf.clear();
+            (void)glz::write_json(tsr, buf);
+            rows.push_back(std::move(buf));
             break;
         }
 

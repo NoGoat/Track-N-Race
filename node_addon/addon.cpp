@@ -1,6 +1,8 @@
 #include <napi.h>
 #include <tnrp/Engine.h>
 #include <memory>
+#include <mutex>
+#include <string>
 
 using namespace Napi;
 
@@ -77,25 +79,56 @@ public:
         }
     }
 
+    // Rows arrive on the engine's UDP/playback thread at up to several hundred per
+    // second. Rather than paying a cross-thread call + JS callback + heap copy per
+    // row, we accumulate rows into a newline-delimited buffer and only schedule a
+    // flush when the buffer transitions from empty. The JS-thread callback then
+    // drains the whole buffer in one call. This naturally coalesces under load
+    // (≤1 in-flight TSFN entry) while staying ~1:1 when the main thread keeps up.
     void onRow(const std::string& json) override {
-        auto* s = new std::string(json);
+        auto fs = flush_;  // keep state alive independent of this object's lifetime
+        bool schedule = false;
+        {
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->pending += json;
+            fs->pending += '\n';
+            if (!fs->scheduled) { fs->scheduled = true; schedule = true; }
+        }
+        if (!schedule) return;
 
-        auto status = tsfn.NonBlockingCall(s, [](Napi::Env env, Napi::Function jsCallback, std::string* data) {
-            if (env != nullptr && jsCallback != nullptr) {
-                jsCallback.Call({ Napi::String::New(env, *data) });
+        auto status = tsfn.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
+            {
+                std::lock_guard<std::mutex> lk(fs->mutex);
+                fs->draining.swap(fs->pending);  // grab the batch; pending keeps reusable storage
+                fs->scheduled = false;
             }
-            delete data;
+            if (env != nullptr && cb != nullptr) {
+                cb.Call({ Napi::String::New(env, fs->draining) });
+            }
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->draining.clear();                // retain capacity for the next swap
         });
 
         if (status != napi_ok) {
-            delete s;
+            // Couldn't schedule; clear the flag so a later row retries the flush.
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->scheduled = false;
         }
     }
 
 private:
+    // Shared so queued flush callbacks remain valid even if the wrapper is torn down.
+    struct FlushState {
+        std::mutex  mutex;
+        std::string pending;    // newline-delimited JSON awaiting delivery
+        std::string draining;   // batch currently being handed to JS (reused storage)
+        bool        scheduled = false;
+    };
+
     std::unique_ptr<tnrp::Engine> engine;
     Napi::ThreadSafeFunction tsfn;
     bool destroyed_ = false;
+    std::shared_ptr<FlushState> flush_ = std::make_shared<FlushState>();
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(info.Env(), engine->startUdp());

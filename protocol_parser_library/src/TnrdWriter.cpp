@@ -1,5 +1,6 @@
 #include "tnrp/TnrdWriter.h"
 #include "tnrp/TimeUtils.h"
+#include "tnrp/control_rows.h"
 
 #include <algorithm>
 #include <chrono>
@@ -14,6 +15,14 @@
 namespace tnrp {
 
 static constexpr int PID_SESSION = 1;
+
+// Pulls just session_time out of a stored row for flashback truncation. A row
+// without the key keeps the default 0.0f, so it is always kept (matching the
+// previous "no session_time => keep" behaviour for non-negative cutoffs).
+namespace {
+struct SessionTimeOnly { float session_time{}; };
+constexpr glz::opts kPartialReadW{ .null_terminated = false, .error_on_unknown_keys = false };
+}
 
 static std::string extractType(const std::string& json) {
     static const char KEY[] = "\"type\":\"";
@@ -175,16 +184,16 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     activeGzip_     = gzOpenPath(activeGzipPath_, "wb");
 
     if (activeGzip_) {
-        nlohmann::json hdr;
-        hdr["magic"]        = "TNRD_V1";
-        hdr["protocol"]     = format;
-        hdr["track_id"]     = trackId;
-        hdr["track_name"]   = (itTrack != TRACK_NAMES.end()) ? itTrack->second : "Unknown";
-        hdr["session_type"] = sessionType;
-        hdr["session_name"] = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
-        hdr["start_time"]   = std::chrono::duration_cast<std::chrono::milliseconds>(
+        HeaderRow hdr;
+        hdr.magic        = "TNRD_V1";
+        hdr.protocol     = format;
+        hdr.track_id     = trackId;
+        hdr.track_name   = (itTrack != TRACK_NAMES.end()) ? itTrack->second : "Unknown";
+        hdr.session_type = sessionType;
+        hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
+        hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        std::string hl = hdr.dump() + "\n";
+        std::string hl = writeJson(hdr) + "\n";
         gzwrite(activeGzip_, hl.c_str(), (unsigned int)hl.size());
 
         currentTrackId_     = trackId;
@@ -213,15 +222,18 @@ void TnrdWriter::flushOldBufferEntries() {
 
 bool TnrdWriter::isDuplicate(const std::string& type, const std::string& json) {
     if (!dedupeTypes().count(type)) return false;
-    // Parse only for dedup types (≤2 Hz) to strip volatile fields before hashing
-    try {
-        nlohmann::json clone = nlohmann::json::parse(json);
-        clone.erase("ts"); clone.erase("session_time");
-        std::string hash = clone.dump();
-        auto it = dedupeCache_.find(type);
-        if (it != dedupeCache_.end() && it->second == hash) return true;
-        dedupeCache_[type] = std::move(hash);
-    } catch (...) {}
+    // Parse only for dedup types (≤2 Hz) to strip volatile fields before hashing.
+    glz::generic doc;
+    if (glz::read_json(doc, json)) return false;
+    if (doc.is_object()) {
+        doc.get_object().erase("ts");
+        doc.get_object().erase("session_time");
+    }
+    std::string hash;
+    if (glz::write_json(doc, hash)) return false;
+    auto it = dedupeCache_.find(type);
+    if (it != dedupeCache_.end() && it->second == hash) return true;
+    dedupeCache_[type] = std::move(hash);
     return false;
 }
 
@@ -244,11 +256,10 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
                 char buf[16384];
                 while (gzgets(in, buf, sizeof(buf)) != nullptr) {
                     std::string line(buf);
-                    try {
-                        nlohmann::json j = nlohmann::json::parse(line);
-                        if (!j.contains("session_time") || j["session_time"].get<float>() <= newSessionTime)
-                            kept.push_back(line);
-                    } catch (...) {}
+                    SessionTimeOnly st;
+                    (void)glz::read<kPartialReadW>(st, line);
+                    if (st.session_time <= newSessionTime)
+                        kept.push_back(line);
                 }
                 gzclose(in);
             }

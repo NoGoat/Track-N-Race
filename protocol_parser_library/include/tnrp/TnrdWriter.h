@@ -11,7 +11,6 @@
 #include <condition_variable>
 #include <atomic>
 
-#include <nlohmann/json.hpp>
 #include <zlib.h>
 
 namespace tnrp {
@@ -56,7 +55,7 @@ private:
         uint8_t               packetId;
         float                 sessionTime;
         std::vector<uint8_t>  packetData;
-        std::string           json;   // serialised row (replaces nlohmann::json row)
+        std::string           json;   // serialised JSON row
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
