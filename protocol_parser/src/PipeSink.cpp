@@ -22,17 +22,28 @@ PipeSink::~PipeSink() {
 #endif
 }
 
-void PipeSink::onRow(const nlohmann::json& row) {
+void PipeSink::onRow(const std::string& json) {
     if (!connected_.load()) return;
-    std::string type = row.value("type", "");
-    bool force = (type == "playback_loaded" || type == "playback_lap_blocks" || type == "playback_state" || type == "protocol_status");
 
-    std::string line = row.dump();
+    // Extract type for backpressure bypass (critical rows always enqueue)
+    static const char KEY[] = "\"type\":\"";
+    static constexpr int KLEN = sizeof(KEY) - 1;
+    std::string type;
+    auto pos = json.find(KEY);
+    if (pos != std::string::npos) {
+        pos += KLEN;
+        auto end = json.find('"', pos);
+        if (end != std::string::npos) type = json.substr(pos, end - pos);
+    }
+    bool force = (type == "playback_loaded" || type == "playback_lap_blocks" ||
+                  type == "playback_state"  || type == "protocol_status");
+
+    std::string line = json;
     line.push_back('\n');
 
     {
         std::unique_lock<std::mutex> lk(mu_);
-        if (!force && queue_.size() > 2000) return; // Drop non-critical if frozen
+        if (!force && queue_.size() > 2000) return;
         queue_.push(std::move(line));
     }
     cv_.notify_one();

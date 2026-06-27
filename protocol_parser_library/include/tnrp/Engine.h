@@ -70,7 +70,7 @@ private:
     std::atomic<bool> playRun_{false};
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
-    void emitRow(const nlohmann::json& row);            // forward to the sink
+    void emitRow(const std::string& json);               // forward to the sink
     void playbackLoop();                                 // playback thread body
     void stopPlaybackThread();
     void emitPlaybackState();

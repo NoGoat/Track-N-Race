@@ -29,22 +29,18 @@ public:
     TnrdWriter();
     ~TnrdWriter();
 
-    // Enable/disable recording and set the output directory. Disabling closes
-    // any active stream.
     void setLogging(bool enabled, const std::string& outputDir);
     bool loggingEnabled() const { return wantRecord_; }
 
     // Called for every accepted (non-rate-limited) packet BEFORE its rows are
     // recorded. Handles flashback truncation and starts a new file when the
-    // session packet reports a new track/session. `data`/`length` is the raw
-    // datagram (used to read trackId/sessionType from the session packet).
+    // session packet reports a new track/session.
     void notePacket(uint16_t format, uint8_t packetId, float sessionTime,
                     const uint8_t* data, int length);
 
-    // Append one parsed row to the rolling buffer (deduped, flushed lazily).
-    void record(const nlohmann::json& row, float sessionTime);
+    // Append one serialised JSON row to the rolling buffer (deduped, flushed lazily).
+    void record(const std::string& json, float sessionTime);
 
-    // Flush + close the active file (also called on session end / destruction).
     void closeActiveStream();
 
 private:
@@ -53,14 +49,14 @@ private:
     enum class EventType { SetLogging, NotePacket, Record, Close };
 
     struct WriterEvent {
-        EventType type;
-        bool enabled;
-        std::string outputDir;
-        uint16_t format;
-        uint8_t packetId;
-        float sessionTime;
-        std::vector<uint8_t> packetData;
-        nlohmann::json row;
+        EventType             type;
+        bool                  enabled;
+        std::string           outputDir;
+        uint16_t              format;
+        uint8_t               packetId;
+        float                 sessionTime;
+        std::vector<uint8_t>  packetData;
+        std::string           json;   // serialised row (replaces nlohmann::json row)
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
@@ -73,14 +69,13 @@ private:
     std::thread             diskThread_;
     std::atomic<bool>       stop_{false};
 
-    // State accessed only by diskThread_
-    bool        wantRecord_        = false;
+    bool        wantRecord_         = false;
     std::string outputDirectory_;
-    gzFile      activeGzip_        = nullptr;
+    gzFile      activeGzip_         = nullptr;
     std::string activeGzipPath_;
-    int         currentTrackId_    = -1;
-    int         currentSessionType_= -1;
-    float       lastSessionTime_   = -1.0f;
+    int         currentTrackId_     = -1;
+    int         currentSessionType_ = -1;
+    float       lastSessionTime_    = -1.0f;
 
     std::vector<BufferEntry>                     rollingBuffer_;
     std::unordered_map<std::string, std::string> dedupeCache_;
@@ -91,7 +86,7 @@ private:
     void flushBufferToDisk(const std::vector<BufferEntry>& entries);
     void flushOldBufferEntries();
     void truncateTimeline(float newSessionTime);
-    bool isDuplicate(const std::string& type, const nlohmann::json& row);
+    bool isDuplicate(const std::string& type, const std::string& json);
 
     static gzFile gzOpenPath(const std::string& utf8Path, const char* mode);
 };

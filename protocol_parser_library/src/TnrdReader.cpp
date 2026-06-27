@@ -118,8 +118,6 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         index_.push_back({ lineOffset, t, tid });
         totalTime_ = std::max(totalTime_, t);
 
-        // Build playback-mode products (laps + per-lap Speed/RPM/ERS blocks +
-        // events). Mirrors the old sessionPlayer scan exactly.
         if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12) return;
         nlohmann::json obj;
         try { obj = nlohmann::json::parse(ld, ld + ll); } catch (...) { return; }
@@ -163,7 +161,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             }
         }
 
-        if (tid == 6) {  // race_event
+        if (tid == 6) {
             if (!obj.contains("session_time")) obj["session_time"] = t;
             scannedEvents_.push_back(obj);
         }
@@ -197,7 +195,6 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     if (!partial.empty()) commitLine(partial.data(), (int)partial.size(), partialOffset);
     std::fclose(f);
 
-    // Cap the final open lap block + sort each block (UDP can arrive out of order).
     if (curLapNum >= 0) {
         auto it = lapBlocks_.find(curLapNum);
         if (it != lapBlocks_.end()) it->second.endSessionTime = totalTime_;
@@ -278,26 +275,29 @@ size_t TnrdReader::lowerBoundTime(float t) const {
     return lo;
 }
 
-nlohmann::json TnrdReader::readLineAt(long offset) {
+// Returns the raw JSONL line at the given file offset (no JSON parse).
+std::string TnrdReader::readLine(long offset) {
     if (!tempFile_) return {};
     if (std::fseek(tempFile_, offset, SEEK_SET) != 0) return {};
     std::string line;
     char buf[65536];
     while (std::fgets(buf, sizeof(buf), tempFile_)) {
         line += buf;
-        if (!line.empty() && line.back() == '\n') break;
+        if (!line.empty() && line.back() == '\n') {
+            line.pop_back();  // strip trailing newline
+            break;
+        }
         if (std::strlen(buf) < sizeof(buf) - 1) break;
     }
-    if (line.empty()) return {};
-    try { return nlohmann::json::parse(line); } catch (...) { return {}; }
+    return line;
 }
 
 void TnrdReader::setCursor(float t) {
     playPos_ = upperBoundTime(t);
 }
 
-std::vector<nlohmann::json> TnrdReader::stateSnapshot(float t) {
-    std::vector<nlohmann::json> out;
+std::vector<std::string> TnrdReader::stateSnapshot(float t) {
+    std::vector<std::string> out;
     if (index_.empty()) return out;
     size_t pos = upperBoundTime(t);
     std::unordered_set<uint8_t> wanted(std::begin(STATE_TYPE_IDS), std::end(STATE_TYPE_IDS));
@@ -306,14 +306,14 @@ std::vector<nlohmann::json> TnrdReader::stateSnapshot(float t) {
         if (wanted.erase(index_[i].type)) snapshot.push_back(i);
     std::sort(snapshot.begin(), snapshot.end());
     for (size_t idx : snapshot) {
-        nlohmann::json j = readLineAt(index_[idx].offset);
-        if (!j.is_null()) out.push_back(std::move(j));
+        std::string s = readLine(index_[idx].offset);
+        if (!s.empty()) out.push_back(std::move(s));
     }
     return out;
 }
 
-std::vector<nlohmann::json> TnrdReader::readRange(float fromTime, float toTime) {
-    std::vector<nlohmann::json> out;
+std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
+    std::vector<std::string> out;
     if (!tempFile_ || index_.empty()) return out;
     size_t lo = lowerBoundTime(fromTime);
     size_t hi = upperBoundTime(toTime);
@@ -334,13 +334,10 @@ std::vector<nlohmann::json> TnrdReader::readRange(float fromTime, float toTime) 
         const char* nl = static_cast<const char*>(std::memchr(p, '\n', end - p));
         const char* lineEnd = nl ? nl : end;
         if (lineEnd > p) {
-            try {
-                nlohmann::json j = nlohmann::json::parse(p, lineEnd);
-                if (j.contains("session_time")) {
-                    float st = j["session_time"].get<float>();
-                    if (st >= fromTime && st <= toTime) out.push_back(std::move(j));
-                }
-            } catch (...) {}
+            int ll = (int)(lineEnd - p);
+            float st = scanSessionTime(p, ll);
+            if (st >= fromTime && st <= toTime)
+                out.emplace_back(p, (size_t)ll);
         }
         if (!nl) break;
         p = nl + 1;
@@ -395,21 +392,22 @@ nlohmann::json TnrdReader::getLapDataMessage(int lapNum) const {
         {"damageHistory", b.damageHistory},
     };
 }
-std::vector<nlohmann::json> TnrdReader::pullUntil(float t) {
-    std::vector<nlohmann::json> out;
+
+std::vector<std::string> TnrdReader::pullUntil(float t) {
+    std::vector<std::string> out;
     while (playPos_ < index_.size() && index_[playPos_].sessionTime <= t) {
-        nlohmann::json j = readLineAt(index_[playPos_].offset);
-        if (!j.is_null()) out.push_back(std::move(j));
+        std::string s = readLine(index_[playPos_].offset);
+        if (!s.empty()) out.push_back(std::move(s));
         ++playPos_;
     }
     return out;
 }
 
-std::vector<nlohmann::json> TnrdReader::drainRest() {
-    std::vector<nlohmann::json> out;
+std::vector<std::string> TnrdReader::drainRest() {
+    std::vector<std::string> out;
     while (playPos_ < index_.size()) {
-        nlohmann::json j = readLineAt(index_[playPos_].offset);
-        if (!j.is_null()) out.push_back(std::move(j));
+        std::string s = readLine(index_[playPos_].offset);
+        if (!s.empty()) out.push_back(std::move(s));
         ++playPos_;
     }
     return out;

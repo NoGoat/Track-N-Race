@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(tnrp VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Dual-mode UDP backend. OFF (default) => raw winsock2/POSIX sockets, for the
@@ -15,13 +15,24 @@ include(FetchContent)
 if(NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_Declare(json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3)
+        GIT_TAG v3.11.3
+        GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(json)
 endif()
+
+if(NOT TARGET glaze::glaze)
+    FetchContent_Declare(glaze
+        GIT_REPOSITORY https://github.com/stephenberry/glaze.git
+        GIT_TAG v7.8.3
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(glaze)
+endif()
+
 if(NOT TARGET zlibstatic)
     FetchContent_Declare(zlib
         GIT_REPOSITORY https://github.com/madler/zlib.git
-        GIT_TAG v1.3.1)
+        GIT_TAG v1.3.1
+        GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(zlib)
 endif()
 
@@ -43,7 +54,7 @@ target_include_directories(tnrp
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # json is in public headers (Sink/Parser/...); zlib is in TnrdWriter.h — both PUBLIC.
-target_link_libraries(tnrp PUBLIC nlohmann_json::nlohmann_json zlibstatic)
+target_link_libraries(tnrp PUBLIC nlohmann_json::nlohmann_json zlibstatic glaze::glaze)
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
 target_include_directories(tnrp PUBLIC

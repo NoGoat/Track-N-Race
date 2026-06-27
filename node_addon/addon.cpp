@@ -1,34 +1,8 @@
 #include <napi.h>
 #include <tnrp/Engine.h>
-#include <iostream>
 #include <memory>
 
 using namespace Napi;
-
-// Convert nlohmann::json to Napi::Value directly
-Napi::Value jsonToNapi(napi_env env, const nlohmann::json& j) {
-    if (j.is_null()) return Env(env).Null();
-    if (j.is_boolean()) return Napi::Boolean::New(env, j.get<bool>());
-    if (j.is_number_integer()) return Napi::Number::New(env, j.get<int64_t>());
-    if (j.is_number_unsigned()) return Napi::Number::New(env, j.get<uint64_t>());
-    if (j.is_number_float()) return Napi::Number::New(env, j.get<double>());
-    if (j.is_string()) return Napi::String::New(env, j.get<std::string>());
-    if (j.is_array()) {
-        Napi::Array arr = Napi::Array::New(env, j.size());
-        for (size_t i = 0; i < j.size(); ++i) {
-            arr.Set(i, jsonToNapi(env, j[i]));
-        }
-        return arr;
-    }
-    if (j.is_object()) {
-        Napi::Object obj = Napi::Object::New(env);
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            obj.Set(it.key(), jsonToNapi(env, it.value()));
-        }
-        return obj;
-    }
-    return Env(env).Undefined();
-}
 
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
@@ -103,17 +77,19 @@ public:
         }
     }
 
-    void onRow(const nlohmann::json& row) override {
-        auto* rowCopy = new nlohmann::json(row);
-        
-        auto callback = [](Napi::Env env, Napi::Function jsCallback, nlohmann::json* data) {
+    void onRow(const std::string& json) override {
+        auto* s = new std::string(json);
+
+        auto status = tsfn.NonBlockingCall(s, [](Napi::Env env, Napi::Function jsCallback, std::string* data) {
             if (env != nullptr && jsCallback != nullptr) {
-                jsCallback.Call({ jsonToNapi(env, *data) });
+                jsCallback.Call({ Napi::String::New(env, *data) });
             }
             delete data;
-        };
+        });
 
-        tsfn.BlockingCall(rowCopy, callback);
+        if (status != napi_ok) {
+            delete s;
+        }
     }
 
 private:

@@ -5,13 +5,13 @@
 #include <chrono>
 #include <thread>
 
+#include <nlohmann/json.hpp>
+
 namespace tnrp {
 
 Engine::Engine(const Config& config, Sink* sink)
     : config_(config), sink_(sink), parser_(config.protocol) {
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
-    // Surface the initial protocol state so the UI reflects override/last-detected
-    // even before any packets arrive.
     emitRow(parser_.statusRow());
 }
 
@@ -21,8 +21,8 @@ Engine::~Engine() {
     writer_.closeActiveStream();
 }
 
-void Engine::emitRow(const nlohmann::json& row) {
-    if (sink_) sink_->onRow(row);
+void Engine::emitRow(const std::string& json) {
+    if (sink_) sink_->onRow(json);
 }
 
 // ── Live ─────────────────────────────────────────────────────────────────────
@@ -33,8 +33,6 @@ bool Engine::startUdp() {
 }
 
 void Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
-    // Stop the receive thread WITHOUT holding mutex_: a stop() that joined while
-    // an in-flight onDatagram waited on mutex_ would deadlock.
     udp_.stop();
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -46,7 +44,7 @@ void Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
 }
 
 void Engine::onDatagram(const uint8_t* data, int length) {
-    if (inPlayback_.load()) return;  // playback owns the output; drop live packets
+    if (inPlayback_.load()) return;
 
     std::lock_guard<std::mutex> lk(mutex_);
     std::string ts = isoTimestamp();
@@ -63,7 +61,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
 }
 
 void Engine::setOverride(Override ovr) {
-    nlohmann::json status;
+    std::string status;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         parser_.setOverride(ovr);
@@ -88,7 +86,7 @@ bool Engine::playerLoad(const std::string& path) {
     bool ok = false;
     nlohmann::json header;
     nlohmann::json lapBlocks;
-    std::vector<nlohmann::json> initState;
+    std::vector<std::string> initState;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         ok = reader_.load(path, header);
@@ -97,19 +95,19 @@ bool Engine::playerLoad(const std::string& path) {
             playing_     = false;
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
-            writer_.closeActiveStream();   // never record during playback
-            // Built once on load: per-lap Speed/RPM/ERS blocks + lap list + events.
-            // This is what flips the renderer into true playback mode (so it stops
-            // re-filtering a growing buffer every frame), plus the initial panel state.
+            writer_.closeActiveStream();
             lapBlocks = reader_.lapBlocksMessage();
             lapBlocks["type"] = "playback_lap_blocks";
             initState = reader_.stateSnapshot(reader_.startTime());
         }
     }
 
-    emitRow({ {"type", "playback_loaded"}, {"ok", ok}, {"header", ok ? header : nlohmann::json(nullptr)} });
+    emitRow(nlohmann::json{
+        {"type", "playback_loaded"}, {"ok", ok},
+        {"header", ok ? header : nlohmann::json(nullptr)}
+    }.dump());
     if (ok) {
-        emitRow(lapBlocks);
+        emitRow(lapBlocks.dump());
         for (const auto& s : initState) emitRow(s);
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
@@ -122,7 +120,7 @@ void Engine::playerPlay() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
-        if (currentTime_ >= reader_.totalTime()) currentTime_ = reader_.startTime();  // replay from start
+        if (currentTime_ >= reader_.totalTime()) currentTime_ = reader_.startTime();
         playing_ = true;
     }
     emitPlaybackState();
@@ -137,7 +135,7 @@ void Engine::playerPause() {
 }
 
 void Engine::playerSeek(float pct) {
-    std::vector<nlohmann::json> state;
+    std::vector<std::string> state;
     float lapStart = 0.0f;
     int   lapNum   = 0;
     float target   = 0.0f;
@@ -148,16 +146,16 @@ void Engine::playerSeek(float pct) {
         float dur    = std::max(0.0f, reader_.totalTime() - start);
         target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
         currentTime_ = target;
-        reader_.setCursor(target);                 // play resumes forward from here
-        state    = reader_.stateSnapshot(target);  // panel-state setters
+        reader_.setCursor(target);
+        state    = reader_.stateSnapshot(target);
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
     }
 
-    emitRow({
+    emitRow(nlohmann::json{
         {"type", "playback_seek_flush"},
         {"currentLapStart", lapStart}, {"lapNum", lapNum},
-    });
+    }.dump());
     for (const auto& s : state) emitRow(s);
     emitPlaybackState();
 }
@@ -179,7 +177,7 @@ void Engine::playerGetLapData(int lapNum) {
     }
     if (!lapData.is_null()) {
         lapData["type"] = "playback_lap_data";
-        emitRow(lapData);
+        emitRow(lapData.dump());
     }
 }
 
@@ -191,7 +189,7 @@ void Engine::playerClose() {
         inPlayback_.store(false);
         playing_ = false;
     }
-    emitRow({ {"type", "playback_close"} });
+    emitRow(nlohmann::json{ {"type", "playback_close"} }.dump());
 }
 
 void Engine::stopPlaybackThread() {
@@ -200,17 +198,17 @@ void Engine::stopPlaybackThread() {
 }
 
 void Engine::emitPlaybackState() {
-    nlohmann::json st;
+    std::string st;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         float start = reader_.startTime();
-        st = {
-            {"type",       "playback_state"},
-            {"playing",    playing_},
+        st = nlohmann::json{
+            {"type",         "playback_state"},
+            {"playing",      playing_},
             {"current_time", currentTime_ - start},
             {"total_time",   std::max(0.0f, reader_.totalTime() - start)},
-            {"speed",      speed_},
-        };
+            {"speed",        speed_},
+        }.dump();
     }
     emitRow(st);
 }
@@ -225,13 +223,13 @@ void Engine::playbackLoop() {
         double dt = std::chrono::duration<double>(now - last).count();
         last = now;
 
-        std::vector<nlohmann::json> batch;
+        std::vector<std::string> batch;
         bool finished = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            if (!playing_) continue;   // paused: idle but keep the thread alive
+            if (!playing_) continue;
             double step = dt * speed_;
-            if (step > 0.10) step = 0.10;   // cap per-tick advance (graceful under stall)
+            if (step > 0.10) step = 0.10;
             currentTime_ += (float)step;
 
             float total = reader_.totalTime();
@@ -246,7 +244,7 @@ void Engine::playbackLoop() {
         }
         for (const auto& row : batch) emitRow(row);
         emitPlaybackState();
-        if (finished) emitRow({ {"type", "playback_finished"} });
+        if (finished) emitRow(nlohmann::json{ {"type", "playback_finished"} }.dump());
     }
 }
 

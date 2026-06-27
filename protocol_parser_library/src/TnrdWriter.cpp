@@ -15,6 +15,17 @@ namespace tnrp {
 
 static constexpr int PID_SESSION = 1;
 
+static std::string extractType(const std::string& json) {
+    static const char KEY[] = "\"type\":\"";
+    static constexpr int KLEN = sizeof(KEY) - 1;
+    auto pos = json.find(KEY);
+    if (pos == std::string::npos) return {};
+    pos += KLEN;
+    auto end = json.find('"', pos);
+    if (end == std::string::npos) return {};
+    return json.substr(pos, end - pos);
+}
+
 const std::unordered_set<std::string>& TnrdWriter::dedupeTypes() {
     static const std::unordered_set<std::string> kTypes = {
         "session", "tyre_sets", "participants", "all_status", "status", "timing", "damage"
@@ -74,11 +85,11 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     cv_.notify_one();
 }
 
-void TnrdWriter::record(const nlohmann::json& row, float sessionTime) {
+void TnrdWriter::record(const std::string& json, float sessionTime) {
     std::unique_lock<std::mutex> lk(mu_);
     WriterEvent ev;
     ev.type = EventType::Record;
-    ev.row = row;
+    ev.json = json;
     ev.sessionTime = sessionTime;
     queue_.push(std::move(ev));
     cv_.notify_one();
@@ -113,12 +124,14 @@ void TnrdWriter::writerLoop() {
             }
         } else if (ev.type == EventType::Record) {
             if (!activeGzip_) continue;
-            std::string type = ev.row.value("type", std::string{});
-            if (isDuplicate(type, ev.row)) continue;
-            std::string line = ev.row.dump() + "\n";
+            std::string type = extractType(ev.json);
+            if (isDuplicate(type, ev.json)) continue;
+            std::string line = ev.json + "\n";
             float entryTime  = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
             rollingBuffer_.push_back({line, entryTime});
-            if (type == "race_event" && ev.row.value("code", "") == "SEND") { closeActiveStream(); continue; }
+            if (type == "race_event" && ev.json.find("\"code\":\"SEND\"") != std::string::npos) {
+                closeActiveStream(); continue;
+            }
             flushOldBufferEntries();
         } else if (ev.type == EventType::Close) {
             closeActiveStream();
@@ -198,14 +211,17 @@ void TnrdWriter::flushOldBufferEntries() {
     }
 }
 
-bool TnrdWriter::isDuplicate(const std::string& type, const nlohmann::json& row) {
+bool TnrdWriter::isDuplicate(const std::string& type, const std::string& json) {
     if (!dedupeTypes().count(type)) return false;
-    nlohmann::json clone = row;
-    clone.erase("ts"); clone.erase("session_time");
-    std::string hash = clone.dump();
-    auto it = dedupeCache_.find(type);
-    if (it != dedupeCache_.end() && it->second == hash) return true;
-    dedupeCache_[type] = hash;
+    // Parse only for dedup types (≤2 Hz) to strip volatile fields before hashing
+    try {
+        nlohmann::json clone = nlohmann::json::parse(json);
+        clone.erase("ts"); clone.erase("session_time");
+        std::string hash = clone.dump();
+        auto it = dedupeCache_.find(type);
+        if (it != dedupeCache_.end() && it->second == hash) return true;
+        dedupeCache_[type] = std::move(hash);
+    } catch (...) {}
     return false;
 }
 

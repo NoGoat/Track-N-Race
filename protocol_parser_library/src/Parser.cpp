@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <nlohmann/json.hpp>
+
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
 #include "protocols/f1_25.h"
@@ -51,10 +53,8 @@ void Parser::setOverride(Override ovr) {
     override_v_ = ovr;
     if (ovr == Override::F1_25)      activeFormat_ = 2025;
     else if (ovr == Override::F1_24) activeFormat_ = 2024;
-    else                             activeFormat_ = detectedFormat_;  // auto: last detected (0 if none)
+    else                             activeFormat_ = detectedFormat_;
     reset();
-    // A fresh status will be emitted by the engine via statusRow(); reset the
-    // warning latch so the next packet re-evaluates it cleanly.
     warnActive_ = false;
     warnForced_ = 0;
 }
@@ -64,10 +64,10 @@ uint16_t Parser::effectiveFormat(uint16_t incoming) const {
     if (override_v_ == Override::F1_24) return 2024;
     if (detectedFormat_) return detectedFormat_;
     if (activeFormat_)   return activeFormat_;
-    return incoming;  // auto, nothing detected yet: trust the incoming word
+    return incoming;
 }
 
-nlohmann::json Parser::statusRow() const {
+std::string Parser::statusRow() const {
     int gameYear = activeFormat_ == 2025 ? 25 : (activeFormat_ == 2024 ? 24 : -1);
     bool isF125 = activeFormat_ == 2025;
     nlohmann::json caps = {
@@ -76,13 +76,13 @@ nlohmann::json Parser::statusRow() const {
         {"hasLiveryColors", isF125},
         {"hasLapPositions", isF125},
     };
-    return {
+    return nlohmann::json{
         {"type",            "protocol_status"},
         {"detected_format", detectedFormat_ ? nlohmann::json(detectedFormat_) : nlohmann::json(nullptr)},
         {"active_format",   activeFormat_   ? nlohmann::json(activeFormat_)   : nlohmann::json(nullptr)},
         {"override",        toString(override_v_)},
         {"capabilities",    caps},
-    };
+    }.dump();
 }
 
 Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts) {
@@ -106,7 +106,7 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         if (override_v_ == Override::Auto) {
             uint16_t prevActive = activeFormat_;
             activeFormat_ = incoming;
-            if (prevActive != activeFormat_) reset();  // new format: clear rate state
+            if (prevActive != activeFormat_) reset();
         }
         if (prev != detectedFormat_) r.control.push_back(statusRow());
     }
@@ -121,20 +121,20 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         if (!warnActive_ || warnForced_ != eff) {
             warnActive_ = true;
             warnForced_ = eff;
-            r.control.push_back({
+            r.control.push_back(nlohmann::json{
                 {"type", "protocol_warning"},
                 {"detected_format", incoming},
                 {"forced_format",   eff},
-            });
+            }.dump());
         }
     } else if (warnActive_) {
         warnActive_ = false;
         warnForced_ = 0;
-        r.control.push_back({
+        r.control.push_back(nlohmann::json{
             {"type", "protocol_warning"},
             {"detected_format", nullptr},
             {"forced_format",   nullptr},
-        });
+        }.dump());
     }
 
     // ── Rate limiting ────────────────────────────────────────────────────────

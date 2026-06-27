@@ -5,8 +5,6 @@
 #include <vector>
 #include <unordered_map>
 
-#include <nlohmann/json.hpp>
-
 #include "tnrp/Config.h"
 
 namespace tnrp {
@@ -31,40 +29,36 @@ public:
     uint16_t activeFormat() const { return activeFormat_; }
 
     struct Result {
-        bool                         dropped = false;  // rate-limited / unknown format
-        uint16_t                     format  = 0;       // effective format used (2024/2025)
-        uint8_t                      packetId = 0;
-        float                        sessionTime = -1.0f;
-        std::vector<nlohmann::json>  rows;              // parsed telemetry rows
-        std::vector<nlohmann::json>  control;           // protocol_status / protocol_warning
+        bool                     dropped    = false;  // rate-limited / unknown format
+        uint16_t                 format     = 0;      // effective format used (2024/2025)
+        uint8_t                  packetId   = 0;
+        float                    sessionTime = -1.0f;
+        std::vector<std::string> rows;                // serialised telemetry JSON strings
+        std::vector<std::string> control;             // serialised protocol_status / protocol_warning
     };
 
     // Decode one raw UDP datagram. `ts` is the ISO timestamp to stamp on rows.
     Result feed(const uint8_t* data, int length, const std::string& ts);
 
-    // The current protocol_status control row (detected/active format, override,
-    // capabilities). The engine emits this on construction and after setOverride.
-    nlohmann::json statusRow() const;
+    // The current protocol_status control row as a serialised JSON string.
+    // The engine emits this on construction and after setOverride.
+    std::string statusRow() const;
 
     // Reset rate-limit / debounce state (e.g. on UDP restart).
     void reset();
 
 private:
-    Override  override_v_       = Override::Auto;
-    uint16_t  detectedFormat_   = 0;   // last debounced detection (0 == none)
-    uint16_t  activeFormat_     = 0;   // what we route with right now
-    uint16_t  debounceCandidate_= 0;
-    int       debounceCount_    = 0;
+    Override  override_v_        = Override::Auto;
+    uint16_t  detectedFormat_    = 0;
+    uint16_t  activeFormat_      = 0;
+    uint16_t  debounceCandidate_ = 0;
+    int       debounceCount_     = 0;
 
-    // Last protocol_warning state emitted, so we only surface a control row on a
-    // change (the Electron dispatcher re-emitted one per packet; over a pipe that
-    // would be wasteful).
-    bool      warnActive_       = false;
-    uint16_t  warnForced_       = 0;
+    bool      warnActive_  = false;
+    uint16_t  warnForced_  = 0;
 
-    // Rate-limit state, keyed by packetId.
-    std::unordered_map<int, uint32_t> lastFrameId_;  // frame-sampled packets
-    std::unordered_map<int, uint64_t> lastSlowMs_;   // wall-clock throttled packets
+    std::unordered_map<int, uint32_t> lastFrameId_;
+    std::unordered_map<int, uint64_t> lastSlowMs_;
 
     uint16_t effectiveFormat(uint16_t incoming) const;
 };
