@@ -16,23 +16,30 @@ let lastStatus: { override: ProtocolOverride; detected: number | null; active: n
 let engine: any = null
 let unsubLogging: Array<() => void> = []
 
-// The game streams 3 hot packet types at 60 Hz (motion, car_tel, motion_ex), so
-// the addon can hand us ~180 binary batches/sec. Forwarding each as its own IPC
-// message makes the renderer do up to 180 decode+render passes/sec and fall behind
-// (visible as bursty "every few seconds" updates). Coalesce to one frame-aligned
-// IPC message per ~16 ms so the renderer does at most ~60 updates/sec.
-const TICK_MS = 16
+// The game streams 3 hot packet types per frame (motion, car_tel, motion_ex), so
+// the addon can hand us ~3x the frame rate in binary batches/sec. Forwarding each as
+// its own IPC message makes the renderer fall behind (bursty "every few seconds"
+// updates). Coalesce + forward-fill via the smoother, flushing once per measured
+// frame. The flush re-reads the smoother's detected period each tick so the cadence
+// tracks the actual send rate (20/40/60 Hz, or an fps-capped value).
+const BOOTSTRAP_TICK_MS = 16
 let binPending: Uint8Array[] = []
 let binFlushTimer: NodeJS.Timeout | null = null
-const smoother = new HotRowSmoother(TICK_MS)
+const smoother = new HotRowSmoother()
 
 function flushBinary(): void {
   const batch = smoother.tick(binPending)
   binPending = []
-  if (!batch) return
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
+  if (batch) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
+    }
   }
+  // Re-schedule at the measured frame period. setTimeout delay is integer-ms, so the
+  // wall-clock poll rounds to 16/17 ms etc.; the sub-ms precision lives in the fill's
+  // session_time advance, not the timer.
+  const delayMs = Math.max(1, Math.round(smoother.getPeriodMs()))
+  binFlushTimer = setTimeout(flushBinary, delayMs)
 }
 
 function broadcast(row: Record<string, unknown>): void {
@@ -112,7 +119,7 @@ export function startBridge(): void {
 
     engine.startUdp()
     pushLogging()
-    if (!binFlushTimer) binFlushTimer = setInterval(flushBinary, 16)
+    if (!binFlushTimer) binFlushTimer = setTimeout(flushBinary, BOOTSTRAP_TICK_MS)
     
     // Listen for logging changes
     unsubLogging = [
@@ -128,7 +135,7 @@ export function startBridge(): void {
 export function stopBridge(): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
-  if (binFlushTimer) { clearInterval(binFlushTimer); binFlushTimer = null }
+  if (binFlushTimer) { clearTimeout(binFlushTimer); binFlushTimer = null }
   binPending = []
   smoother.reset()
   if (engine) {
