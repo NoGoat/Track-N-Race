@@ -5,6 +5,7 @@ import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows, broadcastBatchToWindows } from './index'
 import { BinaryWriter, encodeTelemetry, encodeMotion } from './binaryRows'
+import { medianRoundedPeriodS } from './binaryForwardFill'
 
 
 let activeFilePath: string | null = null
@@ -44,6 +45,16 @@ interface ColdRow { t: number; line: string }
 let coldStatus: ColdRow[] = []
 let coldDamage: ColdRow[] = []
 let coldLap: ColdRow[] = []
+
+// Measured telemetry period of the recording (seconds), so playback emits at the
+// recording's true rate with hot-row forward-fill — mirroring the live path. Set at
+// load from the indexed telemetry session_time deltas; 1/60 until then.
+let recordingPeriodS = 1 / 60
+// Last delivered hot rows (for hold-and-advance fills) + last emitted telemetry time.
+let lastTelRow: any = null
+let lastMotionRow: any = null
+let lastMotionExRow: any = null
+let lastEmitTelST = 0
 
 export interface ScanLap {
   lapNum: number
@@ -194,6 +205,9 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       coldStatus = []
       coldDamage = []
       coldLap = []
+      // Telemetry session_time deltas, to measure the recording's frame period.
+      const telDeltas: number[] = []
+      let prevTelST: number | null = null
 
       const processLine = (lineStr: string, byteOffset: number) => {
         if (!lineStr.trim()) return
@@ -226,12 +240,18 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           else if (obj.type === 'session') typeEnum = 8
           else if (obj.type === 'timing') typeEnum = 9
           else if (obj.type === 'all_status') typeEnum = 10
+          else if (obj.type === 'motion_ex') typeEnum = 11
           tempTypes.push(typeEnum)
 
           // Pre-encode the heavy hot rows to binary; stash sparse cold rows whole.
           if (obj.type === 'telemetry') {
             hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
             encodeTelemetry(hotWriter, obj)
+            if (prevTelST !== null) {
+              const d = currentST - prevTelST
+              if (d >= 0.005 && d <= 0.2) telDeltas.push(d)   // 200..5 Hz window
+            }
+            prevTelST = currentST
           } else if (obj.type === 'motion') {
             hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
             encodeMotion(hotWriter, obj)
@@ -369,7 +389,11 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       hotBin = Buffer.from(hotWriter.view())
       hotTimes = new Float32Array(hotTimesArr)
       hotStart = new Float64Array(hotStartArr)
-      
+
+      // Measured recording frame period (same estimator as the live path); keep the
+      // 1/60 default if there aren't enough telemetry rows to trust a median.
+      recordingPeriodS = telDeltas.length >= 8 ? medianRoundedPeriodS(telDeltas) : 1 / 60
+
       startSessionTime = firstTime || 0
       currentSessionTime = startSessionTime
       totalDurationS = Math.max(0.1, (lastTime || 0) - startSessionTime)
@@ -576,62 +600,68 @@ export async function loadFile(filePath: string): Promise<boolean> {
 
 function playbackLoop() {
   if (!isPlaying) return
-  
+
   const now = Date.now()
   const deltaRealSec = (now - lastUpdateRealTime) / 1000
   lastUpdateRealTime = now
-  
+
   virtualTime += deltaRealSec * speedMultiplier
-  
+  currentSessionTime = Math.min(virtualTime, startSessionTime + totalDurationS)
+
+  let outBatch = ''            // real rows + sparse dups + hot fills for this tick
+  let sawTelemetry = false
+
   if (playbackIndex < timesArray.length && activeTempFilePath) {
     let endIndex = playbackIndex
     while (endIndex < timesArray.length && timesArray[endIndex] <= virtualTime) {
       endIndex++
     }
-    
+
     if (endIndex > playbackIndex) {
       const startOffset = offsetsArray[playbackIndex]
       const endOffset = (endIndex < offsetsArray.length) ? offsetsArray[endIndex] : tempFileSize
       const length = endOffset - startOffset
-      
+
       if (length > 0) {
         try {
           const fd = fs.openSync(activeTempFilePath, 'r')
           const buffer = Buffer.alloc(length)
           fs.readSync(fd, buffer, 0, length, startOffset)
           fs.closeSync(fd)
-          
+
           const batchStr = buffer.toString('utf8')
-          
+
           const TYPE_MAP: Record<number, string> = {
             1: 'telemetry', 2: 'motion', 3: 'status', 4: 'damage', 5: 'lap', 6: 'positions',
             7: 'participants', 8: 'session', 9: 'timing', 10: 'all_status'
           }
           const typesToDup = [3, 4, 5, 6, 10, 9, 8]
           const seenTypes = new Set<number>()
-          
+
+          // Capture the last hot row of each kind so a later gap tick can hold it.
+          let lastTelLine: string | null = null
+          let lastMotLine: string | null = null
+          let lastMotExLine: string | null = null
+
           let scanOffset = 0
           for (let idx = playbackIndex; idx < endIndex; idx++) {
             const type = typesArray[idx]
             seenTypes.add(type)
+            let nl = batchStr.indexOf('\n', scanOffset)
+            if (nl === -1) nl = batchStr.length
+            const line = batchStr.slice(scanOffset, nl)
+            scanOffset = nl + 1
             if (typesToDup.includes(type)) {
-              let nl = batchStr.indexOf('\n', scanOffset)
-              if (nl === -1) nl = batchStr.length
-              try {
-                const line = batchStr.slice(scanOffset, nl)
-                const row = JSON.parse(line)
-                if (row.type) lastPackets[row.type] = row
-              } catch (e) {}
-              scanOffset = nl + 1
-            } else {
-              let nl = batchStr.indexOf('\n', scanOffset)
-              if (nl === -1) nl = batchStr.length
-              scanOffset = nl + 1
-            }
+              try { const row = JSON.parse(line); if (row.type) lastPackets[row.type] = row } catch (e) {}
+            } else if (type === 1) { sawTelemetry = true; lastTelLine = line }
+            else if (type === 2) { lastMotLine = line }
+            else if (type === 11) { lastMotExLine = line }
           }
-          
-          currentSessionTime = timesArray[endIndex - 1]
-          
+
+          if (lastTelLine) { try { lastTelRow = JSON.parse(lastTelLine); lastEmitTelST = lastTelRow.session_time } catch (e) {} }
+          if (lastMotLine) { try { lastMotionRow = JSON.parse(lastMotLine) } catch (e) {} }
+          if (lastMotExLine) { try { lastMotionExRow = JSON.parse(lastMotExLine) } catch (e) {} }
+
           // Duplicate sparse packets not seen in this chunk and bundle them into the batch!
           const dupLines: string[] = []
           for (const typeNum of typesToDup) {
@@ -645,13 +675,10 @@ function playbackLoop() {
               }
             }
           }
-          
-          if (windowFocused) {
-             const finalBatch = dupLines.length > 0 
-               ? batchStr + (batchStr.endsWith('\n') ? '' : '\n') + dupLines.join('\n') 
-               : batchStr
-             broadcastBatchToWindows(finalBatch)
-          }
+
+          outBatch = dupLines.length > 0
+            ? batchStr + (batchStr.endsWith('\n') ? '' : '\n') + dupLines.join('\n')
+            : batchStr
         } catch (err) {
           console.error('[Player] Playback block read error:', err)
         }
@@ -659,15 +686,34 @@ function playbackLoop() {
       playbackIndex = endIndex
     }
   }
-  
+
+  // Forward-fill the hot rows on a gap tick (no telemetry delivered) so the chart's
+  // leading edge keeps advancing at the recording's rate — held value, session_time
+  // nudged forward by one measured frame, capped at the playhead and never backward
+  // (mirrors the live HotRowSmoother; recording itself is untouched).
+  if (!sawTelemetry && lastTelRow) {
+    const target = Math.min(lastEmitTelST + recordingPeriodS, currentSessionTime)
+    if (target > lastEmitTelST + 1e-6) {
+      lastEmitTelST = target
+      const fills = [JSON.stringify({ ...lastTelRow, session_time: target })]
+      if (lastMotionRow) fills.push(JSON.stringify({ ...lastMotionRow, session_time: target }))
+      if (lastMotionExRow) fills.push(JSON.stringify({ ...lastMotionExRow, session_time: target }))
+      outBatch = outBatch
+        ? outBatch + (outBatch.endsWith('\n') ? '' : '\n') + fills.join('\n')
+        : fills.join('\n')
+    }
+  }
+
+  if (windowFocused && outBatch) broadcastBatchToWindows(outBatch)
+
   if (playbackIndex >= timesArray.length) {
     isPlaying = false
   }
-  
+
   emitState()
-  
+
   if (isPlaying) {
-    playbackTimer = setTimeout(playbackLoop, 1000 / 60)
+    playbackTimer = setTimeout(playbackLoop, Math.max(1, Math.round(recordingPeriodS * 1000)))
   }
 }
 
@@ -690,7 +736,12 @@ export function seek(percent: number) {
   const targetTime = startSessionTime + (totalDurationS * percent)
   virtualTime = targetTime
   currentSessionTime = targetTime
-  
+
+  // Realign the forward-fill cursor to the seek point; held rows repopulate from the
+  // next delivered telemetry (the seek flush already reset the renderer's buffers).
+  lastTelRow = lastMotionRow = lastMotionExRow = null
+  lastEmitTelST = targetTime
+
   // O(log N) lookup in TypedArray
   const newIndex = findFirstIndexTimeGte(targetTime)
   playbackIndex = newIndex !== -1 ? newIndex : offsetsArray.length
@@ -746,6 +797,9 @@ export function closePlayer() {
   coldStatus = []
   coldDamage = []
   coldLap = []
+  recordingPeriodS = 1 / 60
+  lastTelRow = lastMotionRow = lastMotionExRow = null
+  lastEmitTelST = 0
   lapBlocks.clear()
   lastPackets = {}
   broadcastToWindows({ type: 'playback_close' })

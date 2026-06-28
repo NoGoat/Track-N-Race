@@ -13,6 +13,13 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
+// Median of session_time deltas (seconds), rounded to 0.01 ms granularity — the
+// canonical frame period (e.g. 0.01667 s ⇒ 16.67 ms). Shared by the live detector
+// and playback (which measures the recorded cadence at load).
+export function medianRoundedPeriodS(deltasS: number[]): number {
+  return Math.round(median(deltasS) * 1e5) / 1e5
+}
+
 // Smooths the live hot-row stream for the renderer. The chart's x-axis is the
 // telemetry stream, so a tick with no fresh data (UDP jitter, or the flush tick
 // beating against the game's frame cadence) leaves a gap and the graph stutters.
@@ -66,7 +73,7 @@ export class HotRowSmoother {
     if (this.deltas.length >= MIN_SAMPLES) {
       // Round the median to 0.01 ms granularity; only adopt it when it moves by
       // more than rounding jitter, so the value stays a stable 2-decimal period.
-      const candidate = Math.round(median(this.deltas) * 1e5) / 1e5
+      const candidate = medianRoundedPeriodS(this.deltas)
       if (Math.abs(candidate - this.periodS) > CHANGE_EPS_S) this.periodS = candidate
     }
   }
