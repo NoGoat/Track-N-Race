@@ -3,7 +3,7 @@ import * as zlib from 'zlib'
 import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
-import { broadcastToWindows } from './index'
+import { broadcastToWindows, broadcastBatchToWindows } from './index'
 
 
 let activeFilePath: string | null = null
@@ -389,15 +389,17 @@ function tempOffsetsFindIndex(offset: number): number {
 function broadcastInitialState(upToIndex: number) {
   if (offsetsArray.length === 0 || !activeTempFilePath) return
   
-  const neededTypes = new Set([6, 7, 8, 9, 10]) // positions, participants, session, timing, all_status
   const offsetsToRead: number[] = []
+  let neededMask = (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10)
   
   const limit = Math.min(upToIndex, offsetsArray.length - 1)
-  for (let i = limit; i >= 0; i--) {
+  for (let i = limit; i >= 0 && neededMask !== 0; i--) {
     const t = typesArray[i]
-    if (neededTypes.has(t)) {
-      offsetsToRead.push(offsetsArray[i])
-      neededTypes.delete(t)
+    if (t >= 6 && t <= 10) {
+      if ((neededMask & (1 << t)) !== 0) {
+        offsetsToRead.push(offsetsArray[i])
+        neededMask &= ~(1 << t)
+      }
     }
   }
   
@@ -438,19 +440,21 @@ function broadcastInitialState(upToIndex: number) {
 }
 
 
-function readTelemetryBlock(startTime: number, endTime: number): any[] {
-  if (offsetsArray.length === 0 || !activeTempFilePath) return []
-  
+// Removed extractAndBroadcastLap since frontend uses speedRpmBlocks
+
+function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
+  if (offsetsArray.length === 0 || !activeTempFilePath) return
+  const startTime = Math.min(targetTime - 600, currentLapStart)
   const startIndex = findFirstIndexTimeGte(startTime)
-  const endIndex = findLastIndexTimeLte(endTime)
+  const endIndex = findLastIndexTimeLte(targetTime)
   
-  if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) return []
+  if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) return
   
   const startOffset = offsetsArray[startIndex]
   const endOffset = (endIndex + 1 < offsetsArray.length) ? offsetsArray[endIndex + 1] : tempFileSize
   const length = endOffset - startOffset
   
-  if (length <= 0) return []
+  if (length <= 0) return
   
   try {
     const fd = fs.openSync(activeTempFilePath, 'r')
@@ -458,67 +462,38 @@ function readTelemetryBlock(startTime: number, endTime: number): any[] {
     fs.readSync(fd, buffer, 0, length, startOffset)
     fs.closeSync(fd)
     
-    const lines = buffer.toString('utf8').split('\n')
-    const results: any[] = []
-    for (const line of lines) {
-      if (!line.trim()) return results // stop early if buffer trailing spaces
-      try {
-        const obj = JSON.parse(line)
-        if (obj.session_time !== undefined) {
-          results.push(obj)
-        }
-      } catch (e) {}
+    const batchStr = buffer.toString('utf8')
+    
+    const typesToDup = [3, 4, 5, 6, 10, 9, 8]
+    
+    let scanOffset = 0
+    for (let idx = startIndex; idx <= endIndex; idx++) {
+      const type = typesArray[idx]
+      if (typesToDup.includes(type)) {
+        let nl = batchStr.indexOf('\n', scanOffset)
+        if (nl === -1) nl = batchStr.length
+        try {
+          const line = batchStr.slice(scanOffset, nl)
+          const row = JSON.parse(line)
+          if (row.type) lastPackets[row.type] = row
+        } catch (e) {}
+        scanOffset = nl + 1
+      } else {
+        let nl = batchStr.indexOf('\n', scanOffset)
+        if (nl === -1) nl = batchStr.length
+        scanOffset = nl + 1
+      }
     }
-    return results
+    
+    broadcastToWindows({
+      type: 'playback_seek_flush_raw',
+      data: batchStr,
+      currentLapStart,
+      lapNum: currentLapNum
+    })
   } catch (err) {
-    console.error('[Player] Error reading telemetry block:', err)
-    return []
+    console.error('[Player] Error reading seek block:', err)
   }
-}
-
-function extractAndBroadcastLap(lapInfo: ScanLap, eventName: string) {
-  const packets = readTelemetryBlock(lapInfo.startSessionTime, lapInfo.endSessionTime)
-  
-  const telemetry = packets.filter(p => p.type === 'telemetry')
-  const motion = packets.filter(p => p.type === 'motion')
-  const statusHistory = packets.filter(p => p.type === 'status')
-  
-  const lapData = {
-    lapNum: lapInfo.lapNum,
-    startSessionTime: lapInfo.startSessionTime,
-    endSessionTime: lapInfo.endSessionTime,
-    telemetry,
-    motion,
-    statusHistory
-  }
-  
-  broadcastToWindows({ type: eventName, data: lapData })
-}
-
-function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
-  const startTime = Math.min(targetTime - 600, currentLapStart)
-  const packets = readTelemetryBlock(startTime, targetTime)
-  
-  for (const p of packets) {
-    if (p.type) {
-      lastPackets[p.type] = p
-    }
-  }
-  
-  const telemetry = packets.filter(p => p.type === 'telemetry')
-  const motion = packets.filter(p => p.type === 'motion')
-  const status = packets.filter(p => p.type === 'status')
-  const damage = packets.filter(p => p.type === 'damage')
-  
-  broadcastToWindows({
-    type: 'playback_seek_flush',
-    telemetry,
-    motion,
-    status,
-    damage,
-    currentLapStart,
-    lapNum: currentLapNum
-  })
 }
 
 // --------------------------------------------------------
@@ -543,11 +518,6 @@ export async function loadFile(filePath: string): Promise<boolean> {
     
     // Phase 2: Index and scan laps in a single pass
     await scanAndIndexTempFile(tempPath)
-    
-    // Phase 3: Fast-broadcast fastest lap
-    if (fastestLapInfo) {
-      extractAndBroadcastLap(fastestLapInfo, 'playback_fastest_lap')
-    }
   } catch (err) {
     console.error('[Player] Failed to load telemetry file:', err)
     isScanning = false
@@ -581,7 +551,7 @@ export async function loadFile(filePath: string): Promise<boolean> {
 function playbackLoop() {
   if (!isPlaying) return
   
-  const now = performance.now()
+  const now = Date.now()
   const deltaRealSec = (now - lastUpdateRealTime) / 1000
   lastUpdateRealTime = now
   
@@ -605,35 +575,56 @@ function playbackLoop() {
           fs.readSync(fd, buffer, 0, length, startOffset)
           fs.closeSync(fd)
           
-          const lines = buffer.toString('utf8').split('\n')
-          const seenTypes = new Set<string>()
-          for (const line of lines) {
-            if (!line.trim()) continue
-            try {
-              const row = JSON.parse(line)
-              if (row.session_time !== undefined) {
-                currentSessionTime = row.session_time
-              }
-              if (row.magic !== 'TNRD_V1') {
-                if (row.type) {
-                  lastPackets[row.type] = row
-                  seenTypes.add(row.type)
-                }
-                if (windowFocused) broadcastToWindows(row)
-              }
-            } catch (e) {}
+          const batchStr = buffer.toString('utf8')
+          
+          const TYPE_MAP: Record<number, string> = {
+            1: 'telemetry', 2: 'motion', 3: 'status', 4: 'damage', 5: 'lap', 6: 'positions',
+            7: 'participants', 8: 'session', 9: 'timing', 10: 'all_status'
+          }
+          const typesToDup = [3, 4, 5, 6, 10, 9, 8]
+          const seenTypes = new Set<number>()
+          
+          let scanOffset = 0
+          for (let idx = playbackIndex; idx < endIndex; idx++) {
+            const type = typesArray[idx]
+            seenTypes.add(type)
+            if (typesToDup.includes(type)) {
+              let nl = batchStr.indexOf('\n', scanOffset)
+              if (nl === -1) nl = batchStr.length
+              try {
+                const line = batchStr.slice(scanOffset, nl)
+                const row = JSON.parse(line)
+                if (row.type) lastPackets[row.type] = row
+              } catch (e) {}
+              scanOffset = nl + 1
+            } else {
+              let nl = batchStr.indexOf('\n', scanOffset)
+              if (nl === -1) nl = batchStr.length
+              scanOffset = nl + 1
+            }
           }
           
-          // Duplicate sparse packets not seen in this chunk
-          const typesToDuplicate = ['status', 'damage', 'lap', 'positions', 'all_status', 'timing', 'session']
-          for (const type of typesToDuplicate) {
-            if (!seenTypes.has(type) && lastPackets[type]) {
-              const duplicated = {
-                ...lastPackets[type],
-                session_time: currentSessionTime
+          currentSessionTime = timesArray[endIndex - 1]
+          
+          // Duplicate sparse packets not seen in this chunk and bundle them into the batch!
+          const dupLines: string[] = []
+          for (const typeNum of typesToDup) {
+            if (!seenTypes.has(typeNum)) {
+              const strType = TYPE_MAP[typeNum]
+              if (lastPackets[strType]) {
+                dupLines.push(JSON.stringify({
+                  ...lastPackets[strType],
+                  session_time: currentSessionTime
+                }))
               }
-              if (windowFocused) broadcastToWindows(duplicated)
             }
+          }
+          
+          if (windowFocused) {
+             const finalBatch = dupLines.length > 0 
+               ? batchStr + (batchStr.endsWith('\n') ? '' : '\n') + dupLines.join('\n') 
+               : batchStr
+             broadcastBatchToWindows(finalBatch)
           }
         } catch (err) {
           console.error('[Player] Playback block read error:', err)
@@ -657,7 +648,7 @@ function playbackLoop() {
 export function play() {
   if (!activeTempFilePath || isPlaying) return
   isPlaying = true
-  lastUpdateRealTime = performance.now()
+  lastUpdateRealTime = Date.now()
   playbackLoop()
 }
 
@@ -684,12 +675,7 @@ export function seek(percent: number) {
   emitState()
   
   // Broadcast comparisons asynchronously to keep UI seek completely fluid
-  const prevLap = scannedLaps.slice().reverse().find(l => l.endSessionTime <= targetTime)
-  if (prevLap) {
-    setImmediate(() => {
-      if (activeTempFilePath) extractAndBroadcastLap(prevLap, 'playback_previous_lap')
-    })
-  }
+  // Removed broadcast of playback_previous_lap since renderer uses speedRpmBlocks
   
   const currentLap = scannedLaps.find(l => targetTime >= l.startSessionTime && targetTime <= l.endSessionTime)
   const currentLapStart = currentLap ? currentLap.startSessionTime : targetTime
@@ -710,7 +696,7 @@ export function setWindowFocused(focused: boolean): void {
   windowFocused = focused
   if (focused && !wasFocused && isPlaying) {
     // Reset the time baseline so the loop doesn't try to replay the entire gap
-    lastUpdateRealTime = performance.now()
+    lastUpdateRealTime = Date.now()
     // Immediately push current state to the renderer
     broadcastInitialState(playbackIndex)
   }

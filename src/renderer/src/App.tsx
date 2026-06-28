@@ -541,28 +541,41 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
     ? (startSessionTime + dragProgress * totalTime)
     : currentTime
 
+  const lastSeekRef = useRef(0)
+  const dragProgressRef = useRef(0)
+
   const handleMouseDown = useCallback(() => {
     setIsDragging(true)
     setDragProgress(progressPct)
+    dragProgressRef.current = progressPct
   }, [progressPct])
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false)
+    window.playerBridge.seek(dragProgressRef.current)
   }, [])
 
   const handleTouchStart = useCallback(() => {
     setIsDragging(true)
     setDragProgress(progressPct)
+    dragProgressRef.current = progressPct
   }, [progressPct])
 
   const handleTouchEnd = useCallback(() => {
     setIsDragging(false)
+    window.playerBridge.seek(dragProgressRef.current)
   }, [])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value)
     setDragProgress(val)
-    window.playerBridge.seek(val)
+    dragProgressRef.current = val
+
+    const now = Date.now()
+    if (now - lastSeekRef.current > 100) {
+      lastSeekRef.current = now
+      window.playerBridge.seek(val)
+    }
   }, [])
 
   return (

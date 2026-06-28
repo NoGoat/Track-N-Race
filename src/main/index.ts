@@ -96,6 +96,12 @@ export function broadcastToWindows(row: Record<string, unknown>): void {
   }
 }
 
+export function broadcastBatchToWindows(batchStr: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batchStr)
+  }
+}
+
 
 ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
   event.returnValue = store.get(key, defaultValue)

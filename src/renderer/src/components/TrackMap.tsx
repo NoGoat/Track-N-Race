@@ -529,14 +529,13 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   // Subscribe to position updates directly — bypasses React state to avoid 60 Hz re-renders
   useEffect(() => {
-    return window.telemetryBridge.on((raw) => {
-      const msg = raw as { type: string; player_idx?: number; cars?: CarPosition[] }
+    const handleMsg = (msg: any) => {
       if (msg.type === 'positions' && msg.cars) {
         const now = Date.now()
         const timeoutMs = mapTimeoutRef.current * 1000
         const playerIdx = msg.player_idx ?? 0
 
-        const filteredCars = msg.cars.map(car => {
+        const filteredCars = msg.cars.map((car: any) => {
           if (car.idx === playerIdx) {
             return car
           }
@@ -565,7 +564,29 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         carsRef.current      = _cachedCars
         playerIdxRef.current = _cachedPlayerIdx
       }
+    }
+
+    const unsubBatch = window.telemetryBridge.onBatch((batchStr: string) => {
+      let start = 0
+      while (start < batchStr.length) {
+        let end = batchStr.indexOf('\n', start)
+        if (end === -1) end = batchStr.length
+        if (end > start) {
+          const raw = JSON.parse(batchStr.slice(start, end))
+          handleMsg(raw)
+        }
+        start = end + 1
+      }
     })
+
+    const unsubOn = window.telemetryBridge.on((raw) => {
+      handleMsg(raw)
+    })
+
+    return () => {
+      unsubBatch()
+      unsubOn()
+    }
   }, [])
 
   isDarkRef.current            = isDark

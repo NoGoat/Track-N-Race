@@ -13,6 +13,11 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry', listener)
     return () => ipcRenderer.removeListener('telemetry', listener)
   },
+  onBatch: (callback: (batch: string) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, batch: string) => callback(batch)
+    ipcRenderer.on('telemetry-batch', listener)
+    return () => ipcRenderer.removeListener('telemetry-batch', listener)
+  },
 }
 
 const windowControls = {

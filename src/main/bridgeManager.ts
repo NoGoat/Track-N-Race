@@ -67,13 +67,23 @@ export function startBridge(): void {
     }
     
     engine = new addon.Engine(config, (batch: string) => {
-      // The addon coalesces rows into a newline-delimited JSON blob.
-      let start = 0
-      while (start < batch.length) {
-        let end = batch.indexOf('\n', start)
-        if (end === -1) end = batch.length
-        if (end > start) handleRow(JSON.parse(batch.slice(start, end)))
-        start = end + 1
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
+      }
+
+      if (batch.includes('"type":"protocol_status"')) {
+        let start = 0
+        while (start < batch.length) {
+          let end = batch.indexOf('\n', start)
+          if (end === -1) end = batch.length
+          if (end > start) {
+            const rowStr = batch.slice(start, end)
+            if (rowStr.includes('"type":"protocol_status"')) {
+              handleRow(JSON.parse(rowStr))
+            }
+          }
+          start = end + 1
+        }
       }
     })
     

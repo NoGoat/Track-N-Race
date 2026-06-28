@@ -37,6 +37,7 @@ declare global {
   interface Window {
     telemetryBridge: {
       on: (callback: (row: unknown) => void) => (() => void)
+      onBatch: (callback: (batch: string) => void) => (() => void)
     }
   }
 }
@@ -112,8 +113,7 @@ export function useTelemetry(seconds: number): TelemetryState {
   const isPlaybackRef = useRef<boolean>(false)
 
   useEffect(() => {
-    const unsub = window.telemetryBridge.on((raw) => {
-      const msg = raw as GatewayMsg
+    const handleMsg = (msg: GatewayMsg) => {
       switch (msg.type) {
         case 'playback_close': {
           isPlaybackRef.current = false
@@ -260,31 +260,85 @@ export function useTelemetry(seconds: number): TelemetryState {
             setProtocolWarning(msg)
           }
           break
-        case 'playback_fastest_lap':
-          setFastestLap(msg.data)
-          fastestLapTimeRef.current = msg.data.lapNum > 0 ? (msg.data.endSessionTime - msg.data.startSessionTime) * 1000 : Infinity
+        case 'playback_fastest_lap_raw':
+        case 'playback_previous_lap_raw': {
+          const payload = msg as any
+          const batchStr = payload.data as string
+          const lapInfo = payload.lapInfo
+          
+          let start = 0
+          const tel: any[] = []
+          const mot: any[] = []
+          const sts: any[] = []
+          
+          while (start < batchStr.length) {
+            let end = batchStr.indexOf('\n', start)
+            if (end === -1) end = batchStr.length
+            if (end > start) {
+              try {
+                const row = JSON.parse(batchStr.slice(start, end))
+                if (row.type === 'telemetry') tel.push(row)
+                else if (row.type === 'motion') mot.push(row)
+                else if (row.type === 'status') sts.push(row)
+              } catch (e) {}
+            }
+            start = end + 1
+          }
+          
+          const lapData = {
+            lapNum: lapInfo.lapNum,
+            startSessionTime: lapInfo.startSessionTime,
+            endSessionTime: lapInfo.endSessionTime,
+            telemetry: tel,
+            motion: mot,
+            statusHistory: sts
+          }
+          
+          if (msg.type === 'playback_fastest_lap_raw') {
+            setFastestLap(lapData as any)
+            fastestLapTimeRef.current = lapData.lapNum > 0 ? (lapData.endSessionTime - lapData.startSessionTime) * 1000 : Infinity
+          } else {
+            setLapHistoryBuf(prev => [...prev.filter(l => l.lapNum !== lapData.lapNum), lapData as any].sort((a, b) => a.lapNum - b.lapNum).slice(-3))
+          }
           break
-        case 'playback_previous_lap':
-          setLapHistoryBuf(prev => [...prev.filter(l => l.lapNum !== msg.data.lapNum), msg.data].sort((a, b) => a.lapNum - b.lapNum).slice(-3))
-          break
-        case 'playback_seek_flush': {
-          const flush = msg as any
-          setTelBuf(flush.telemetry)
-          telBufRef.current = flush.telemetry
-          setMotBuf(flush.motion)
-          motBufRef.current = flush.motion
-          setStsBuf(flush.status)
-          stsBufRef.current = flush.status
-          setDmgBuf(flush.damage)
-          dmgBufRef.current = flush.damage
-          lapStartTimeRef.current = flush.currentLapStart
-          lapNumRef.current = flush.lapNum
-          // Refresh the singular current rows the panels read directly (not the
-          // buffers). lapNumRef is set above first, so setLap's transition effect
-          // sees prevLapNum === lap_num and no-ops (no bogus lap-history entry).
-          if (flush.status?.length) setStatus(flush.status[flush.status.length - 1])
-          if (flush.damage?.length) setDamage(flush.damage[flush.damage.length - 1])
-          if (flush.lap) setLap(flush.lap)
+        }
+        case 'playback_seek_flush_raw': {
+          const payload = msg as any
+          const batchStr = payload.data as string
+          lapStartTimeRef.current = payload.currentLapStart
+          lapNumRef.current = payload.lapNum
+          
+          let start = 0
+          const tel: any[] = []
+          const mot: any[] = []
+          const sts: any[] = []
+          const dmg: any[] = []
+          let lastLap: any = null
+          
+          while (start < batchStr.length) {
+            let end = batchStr.indexOf('\n', start)
+            if (end === -1) end = batchStr.length
+            if (end > start) {
+              try {
+                const row = JSON.parse(batchStr.slice(start, end))
+                if (row.type === 'telemetry') tel.push(row)
+                else if (row.type === 'motion') mot.push(row)
+                else if (row.type === 'status') sts.push(row)
+                else if (row.type === 'damage') dmg.push(row)
+                else if (row.type === 'lap') lastLap = row
+              } catch (e) {}
+            }
+            start = end + 1
+          }
+          
+          setTelBuf(tel); telBufRef.current = tel;
+          setMotBuf(mot); motBufRef.current = mot;
+          setStsBuf(sts); stsBufRef.current = sts;
+          setDmgBuf(dmg); dmgBufRef.current = dmg;
+          
+          if (sts.length) setStatus(sts[sts.length - 1])
+          if (dmg.length) setDamage(dmg[dmg.length - 1])
+          if (lastLap) setLap(lastLap)
           break
         }
         case 'playback_lap_blocks': {
@@ -303,9 +357,33 @@ export function useTelemetry(seconds: number): TelemetryState {
           break
         }
       }
+    }
+
+    const unsubBatch = window.telemetryBridge.onBatch((batchStr: string) => {
+      let start = 0
+      while (start < batchStr.length) {
+        let end = batchStr.indexOf('\n', start)
+        if (end === -1) end = batchStr.length
+        if (end > start) {
+          try {
+            const raw = JSON.parse(batchStr.slice(start, end))
+            handleMsg(raw as GatewayMsg)
+          } catch (e) {
+            console.error('Failed to parse batch JSON:', e)
+          }
+        }
+        start = end + 1
+      }
     })
 
-    return unsub
+    const unsubOn = window.telemetryBridge.on((raw) => {
+      handleMsg(raw as GatewayMsg)
+    })
+
+    return () => {
+      unsubBatch()
+      unsubOn()
+    }
   }, [])
 
   useEffect(() => {
