@@ -1,8 +1,10 @@
 #include <napi.h>
 #include <tnrp/Engine.h>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 using namespace Napi;
 
@@ -55,8 +57,8 @@ public:
         }
 
         Napi::Function cb = info[1].As<Napi::Function>();
-        
-        // Create ThreadSafeFunction
+
+        // Create ThreadSafeFunction for the JSON (cold + control) row batch.
         tsfn = Napi::ThreadSafeFunction::New(
             env,
             cb,
@@ -69,6 +71,15 @@ public:
         );
         tsfn.Unref(env); // Allow the Node event loop to exit even if tsfn is active
 
+        // Optional second callback for the hot-row binary batch (Buffer).
+        if (info.Length() >= 3 && info[2].IsFunction()) {
+            Napi::Function binCb = info[2].As<Napi::Function>();
+            tsfnBin = Napi::ThreadSafeFunction::New(
+                env, binCb, "TNRP Binary Callback", 0, 1, [](Napi::Env) {});
+            tsfnBin.Unref(env);
+            hasBinCb_ = true;
+        }
+
         engine = std::make_unique<tnrp::Engine>(config, this);
     }
 
@@ -76,6 +87,7 @@ public:
         if (!destroyed_) {
             if (engine) engine->playerClose();
             tsfn.Release();
+            if (hasBinCb_) tsfnBin.Release();
         }
     }
 
@@ -116,6 +128,38 @@ public:
         }
     }
 
+    // Hot-row binary batch. Same coalescing strategy as onRow(), but accumulates
+    // raw bytes and hands them to JS as a single Buffer per flush.
+    void onBinary(const uint8_t* data, size_t len) override {
+        if (!hasBinCb_ || len == 0) return;
+        auto fs = binFlush_;
+        bool schedule = false;
+        {
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->pending.insert(fs->pending.end(), data, data + len);
+            if (!fs->scheduled) { fs->scheduled = true; schedule = true; }
+        }
+        if (!schedule) return;
+
+        auto status = tsfnBin.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
+            {
+                std::lock_guard<std::mutex> lk(fs->mutex);
+                fs->draining.swap(fs->pending);  // grab the batch; pending keeps storage
+                fs->scheduled = false;
+            }
+            if (env != nullptr && cb != nullptr) {
+                cb.Call({ Napi::Buffer<uint8_t>::Copy(env, fs->draining.data(), fs->draining.size()) });
+            }
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->draining.clear();                // retain capacity for the next swap
+        });
+
+        if (status != napi_ok) {
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->scheduled = false;
+        }
+    }
+
 private:
     // Shared so queued flush callbacks remain valid even if the wrapper is torn down.
     struct FlushState {
@@ -125,10 +169,21 @@ private:
         bool        scheduled = false;
     };
 
+    // Shared so queued binary flush callbacks remain valid past teardown.
+    struct BinFlushState {
+        std::mutex           mutex;
+        std::vector<uint8_t> pending;    // bytes awaiting delivery
+        std::vector<uint8_t> draining;   // batch currently handed to JS (reused storage)
+        bool                 scheduled = false;
+    };
+
     std::unique_ptr<tnrp::Engine> engine;
     Napi::ThreadSafeFunction tsfn;
+    Napi::ThreadSafeFunction tsfnBin;
     bool destroyed_ = false;
-    std::shared_ptr<FlushState> flush_ = std::make_shared<FlushState>();
+    bool hasBinCb_  = false;
+    std::shared_ptr<FlushState>    flush_    = std::make_shared<FlushState>();
+    std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(info.Env(), engine->startUdp());
@@ -197,6 +252,7 @@ private:
         destroyed_ = true;
         engine.reset();
         tsfn.Release();
+        if (hasBinCb_) tsfnBin.Release();
         return info.Env().Undefined();
     }
 

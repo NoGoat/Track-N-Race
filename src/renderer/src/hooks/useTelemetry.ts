@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { flushSync } from 'react-dom'
 import type { TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg, LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
+import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 
 const MAX_ROWS = 750000
 
@@ -38,6 +39,7 @@ declare global {
     telemetryBridge: {
       on: (callback: (row: unknown) => void) => (() => void)
       onBatch: (callback: (batch: string) => void) => (() => void)
+      onBinary: (callback: (batch: Uint8Array) => void) => (() => void)
     }
   }
 }
@@ -302,40 +304,44 @@ export function useTelemetry(seconds: number): TelemetryState {
           }
           break
         }
-        case 'playback_seek_flush_raw': {
+        case 'playback_seek_flush_bin': {
           const payload = msg as any
-          const batchStr = payload.data as string
           lapStartTimeRef.current = payload.currentLapStart
           lapNumRef.current = payload.lapNum
-          
-          let start = 0
+
+          // Hot rows (telemetry/motion) arrive as binary — fast decode, no per-row
+          // JSON.parse. Sparse cold rows (status/damage/lap) come as a tiny JSON blob.
           const tel: any[] = []
           const mot: any[] = []
+          for (const row of decodeBinaryBatch(payload.binary)) {
+            if (row.type === 'telemetry') tel.push(row)
+            else if (row.type === 'motion') mot.push(row)
+          }
+
           const sts: any[] = []
           const dmg: any[] = []
           let lastLap: any = null
-          
-          while (start < batchStr.length) {
-            let end = batchStr.indexOf('\n', start)
-            if (end === -1) end = batchStr.length
+          const coldJson = (payload.coldJson as string) || ''
+          let start = 0
+          while (start < coldJson.length) {
+            let end = coldJson.indexOf('\n', start)
+            if (end === -1) end = coldJson.length
             if (end > start) {
               try {
-                const row = JSON.parse(batchStr.slice(start, end))
-                if (row.type === 'telemetry') tel.push(row)
-                else if (row.type === 'motion') mot.push(row)
-                else if (row.type === 'status') sts.push(row)
+                const row = JSON.parse(coldJson.slice(start, end))
+                if (row.type === 'status') sts.push(row)
                 else if (row.type === 'damage') dmg.push(row)
                 else if (row.type === 'lap') lastLap = row
               } catch (e) {}
             }
             start = end + 1
           }
-          
+
           setTelBuf(tel); telBufRef.current = tel;
           setMotBuf(mot); motBufRef.current = mot;
           setStsBuf(sts); stsBufRef.current = sts;
           setDmgBuf(dmg); dmgBufRef.current = dmg;
-          
+
           if (sts.length) setStatus(sts[sts.length - 1])
           if (dmg.length) setDamage(dmg[dmg.length - 1])
           if (lastLap) setLap(lastLap)
@@ -380,9 +386,21 @@ export function useTelemetry(seconds: number): TelemetryState {
       handleMsg(raw as GatewayMsg)
     })
 
+    // Live hot 60 Hz rows (telemetry/motion/motion_ex) arrive packed as binary.
+    // Playback still delivers these as JSON via onBatch, so both paths feed handleMsg.
+    const unsubBinary = window.telemetryBridge.onBinary((batch) => {
+      try {
+        const rows = decodeBinaryBatch(batch)
+        for (const row of rows) handleMsg(row as GatewayMsg)
+      } catch (e) {
+        console.error('Failed to decode binary batch:', e)
+      }
+    })
+
     return () => {
       unsubBatch()
       unsubOn()
+      unsubBinary()
     }
   }, [])
 

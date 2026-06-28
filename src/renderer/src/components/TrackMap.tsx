@@ -5,6 +5,7 @@ import { selectComponents } from '../lib/selectComponents'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
+import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import type { CarPosition, ParticipantsMsg } from '../types'
 
 type DriverOption = { value: number; label: string }
@@ -583,9 +584,21 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       handleMsg(raw)
     })
 
+    // Live positions arrive packed in the binary hot-row batch (playback still
+    // delivers them as JSON via onBatch above).
+    const unsubBinary = window.telemetryBridge.onBinary((batch) => {
+      try {
+        const rows = decodeBinaryBatch(batch)
+        for (const row of rows) handleMsg(row)
+      } catch (e) {
+        console.error('TrackMap: failed to decode binary batch:', e)
+      }
+    })
+
     return () => {
       unsubBatch()
       unsubOn()
+      unsubBinary()
     }
   }, [])
 

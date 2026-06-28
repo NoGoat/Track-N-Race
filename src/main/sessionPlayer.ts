@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows, broadcastBatchToWindows } from './index'
+import { BinaryWriter, encodeTelemetry, encodeMotion } from './binaryRows'
 
 
 let activeFilePath: string | null = null
@@ -30,6 +31,19 @@ let playbackIndex = 0
 
 // Sparse packets cache to prevent stuttering
 let lastPackets: Record<string, any> = {}
+
+// Pre-encoded binary store for the hot 60 Hz rows (telemetry + motion), built
+// once during the load scan so a seek flush is a binary slice + tiny cold parse
+// instead of the renderer re-parsing ~10 min of JSON. `hotStart` has length
+// hotTimes.length + 1 (byte offsets into hotBin, last entry = total length).
+let hotBin = Buffer.alloc(0)
+let hotTimes = new Float32Array(0)
+let hotStart = new Float64Array(0)
+// Sparse cold rows kept as raw JSONL lines + time, for the seek flush.
+interface ColdRow { t: number; line: string }
+let coldStatus: ColdRow[] = []
+let coldDamage: ColdRow[] = []
+let coldLap: ColdRow[] = []
 
 export interface ScanLap {
   lapNum: number
@@ -172,7 +186,15 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       fastestLapInfo = null
       headerData = null
       lapBlocks.clear()
-      
+
+      // Hot-row binary store + sparse cold rows, built in this same parse pass.
+      const hotWriter = new BinaryWriter()
+      const hotTimesArr: number[] = []
+      const hotStartArr: number[] = []
+      coldStatus = []
+      coldDamage = []
+      coldLap = []
+
       const processLine = (lineStr: string, byteOffset: number) => {
         if (!lineStr.trim()) return
         try {
@@ -205,7 +227,22 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           else if (obj.type === 'timing') typeEnum = 9
           else if (obj.type === 'all_status') typeEnum = 10
           tempTypes.push(typeEnum)
-          
+
+          // Pre-encode the heavy hot rows to binary; stash sparse cold rows whole.
+          if (obj.type === 'telemetry') {
+            hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
+            encodeTelemetry(hotWriter, obj)
+          } else if (obj.type === 'motion') {
+            hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
+            encodeMotion(hotWriter, obj)
+          } else if (obj.type === 'status') {
+            coldStatus.push({ t: currentST, line: lineStr })
+          } else if (obj.type === 'damage') {
+            coldDamage.push({ t: currentST, line: lineStr })
+          } else if (obj.type === 'lap') {
+            coldLap.push({ t: currentST, line: lineStr })
+          }
+
           if (obj.type === 'lap') {
             if (currentLapNum === null) {
               currentLapNum = obj.lap_num
@@ -326,6 +363,12 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       offsetsArray = new Float64Array(tempOffsets)
       timesArray = new Float32Array(tempTimes)
       typesArray = new Uint8Array(tempTypes)
+
+      // Finalize the hot-row binary store (tight copy; sentinel end offset appended).
+      hotStartArr.push(hotWriter.length)
+      hotBin = Buffer.from(hotWriter.view())
+      hotTimes = new Float32Array(hotTimesArr)
+      hotStart = new Float64Array(hotStartArr)
       
       startSessionTime = firstTime || 0
       currentSessionTime = startSessionTime
@@ -353,22 +396,6 @@ function findFirstIndexTimeGte(targetTime: number): number {
       high = mid - 1
     } else {
       low = mid + 1
-    }
-  }
-  return result
-}
-
-function findLastIndexTimeLte(targetTime: number): number {
-  let low = 0
-  let high = timesArray.length - 1
-  let result = -1
-  while (low <= high) {
-    const mid = (low + high) >> 1
-    if (timesArray[mid] <= targetTime) {
-      result = mid
-      low = mid + 1
-    } else {
-      high = mid - 1
     }
   }
   return result
@@ -442,58 +469,57 @@ function broadcastInitialState(upToIndex: number) {
 
 // Removed extractAndBroadcastLap since frontend uses speedRpmBlocks
 
-function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
-  if (offsetsArray.length === 0 || !activeTempFilePath) return
-  const startTime = Math.min(targetTime - 600, currentLapStart)
-  const startIndex = findFirstIndexTimeGte(startTime)
-  const endIndex = findLastIndexTimeLte(targetTime)
-  
-  if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) return
-  
-  const startOffset = offsetsArray[startIndex]
-  const endOffset = (endIndex + 1 < offsetsArray.length) ? offsetsArray[endIndex + 1] : tempFileSize
-  const length = endOffset - startOffset
-  
-  if (length <= 0) return
-  
-  try {
-    const fd = fs.openSync(activeTempFilePath, 'r')
-    const buffer = Buffer.alloc(length)
-    fs.readSync(fd, buffer, 0, length, startOffset)
-    fs.closeSync(fd)
-    
-    const batchStr = buffer.toString('utf8')
-    
-    const typesToDup = [3, 4, 5, 6, 10, 9, 8]
-    
-    let scanOffset = 0
-    for (let idx = startIndex; idx <= endIndex; idx++) {
-      const type = typesArray[idx]
-      if (typesToDup.includes(type)) {
-        let nl = batchStr.indexOf('\n', scanOffset)
-        if (nl === -1) nl = batchStr.length
-        try {
-          const line = batchStr.slice(scanOffset, nl)
-          const row = JSON.parse(line)
-          if (row.type) lastPackets[row.type] = row
-        } catch (e) {}
-        scanOffset = nl + 1
-      } else {
-        let nl = batchStr.indexOf('\n', scanOffset)
-        if (nl === -1) nl = batchStr.length
-        scanOffset = nl + 1
-      }
-    }
-    
-    broadcastToWindows({
-      type: 'playback_seek_flush_raw',
-      data: batchStr,
-      currentLapStart,
-      lapNum: currentLapNum
-    })
-  } catch (err) {
-    console.error('[Player] Error reading seek block:', err)
+// first index i with arr[i] >= v
+function lowerBoundF32(arr: Float32Array, v: number): number {
+  let lo = 0, hi = arr.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] < v) lo = mid + 1; else hi = mid }
+  return lo
+}
+// first index i with arr[i] > v
+function upperBoundF32(arr: Float32Array, v: number): number {
+  let lo = 0, hi = arr.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] <= v) lo = mid + 1; else hi = mid }
+  return lo
+}
+
+// Collect sparse cold rows in [fromT, toT] as joined JSONL, and refresh
+// lastPackets[type] with the most recent row at/<= toT (for playback dedup).
+function gatherCold(rows: ColdRow[], fromT: number, toT: number, type: string, out: string[]): void {
+  // Full linear scan (these arrays are small, ~2 Hz) — robust to the occasional
+  // out-of-order packet the recordings can contain.
+  let lastLine: string | null = null
+  for (const r of rows) {
+    if (r.t > toT) continue
+    lastLine = r.line
+    if (r.t >= fromT) out.push(r.line)
   }
+  if (lastLine) { try { lastPackets[type] = JSON.parse(lastLine) } catch (e) {} }
+}
+
+function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, currentLapNum: number) {
+  if (hotTimes.length === 0 && coldStatus.length === 0) return
+  const startTime = Math.min(targetTime - 600, currentLapStart)
+
+  // Hot rows (telemetry+motion): a zero-parse binary slice of the pre-built store.
+  const lo = lowerBoundF32(hotTimes, startTime)
+  const hi = upperBoundF32(hotTimes, targetTime)
+  const binary = (hi > lo)
+    ? Buffer.from(hotBin.subarray(hotStart[lo], hotStart[hi]))   // copy: detach from the big store before IPC
+    : Buffer.alloc(0)
+
+  // Cold rows (status/damage/lap): tiny, kept as JSON.
+  const coldLines: string[] = []
+  gatherCold(coldStatus, startTime, targetTime, 'status', coldLines)
+  gatherCold(coldDamage, startTime, targetTime, 'damage', coldLines)
+  gatherCold(coldLap, startTime, targetTime, 'lap', coldLines)
+
+  broadcastToWindows({
+    type: 'playback_seek_flush_bin',
+    binary,
+    coldJson: coldLines.join('\n'),
+    currentLapStart,
+    lapNum: currentLapNum
+  })
 }
 
 // --------------------------------------------------------
@@ -714,6 +740,12 @@ export function closePlayer() {
   offsetsArray = new Float64Array(0)
   timesArray = new Float32Array(0)
   typesArray = new Uint8Array(0)
+  hotBin = Buffer.alloc(0)
+  hotTimes = new Float32Array(0)
+  hotStart = new Float64Array(0)
+  coldStatus = []
+  coldDamage = []
+  coldLap = []
   lapBlocks.clear()
   lastPackets = {}
   broadcastToWindows({ type: 'playback_close' })

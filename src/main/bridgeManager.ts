@@ -15,6 +15,23 @@ let lastStatus: { override: ProtocolOverride; detected: number | null; active: n
 let engine: any = null
 let unsubLogging: Array<() => void> = []
 
+// The game streams 3 hot packet types at 60 Hz (motion, car_tel, motion_ex), so
+// the addon can hand us ~180 binary batches/sec. Forwarding each as its own IPC
+// message makes the renderer do up to 180 decode+render passes/sec and fall behind
+// (visible as bursty "every few seconds" updates). Coalesce to one frame-aligned
+// IPC message per ~16 ms so the renderer does at most ~60 updates/sec.
+let binPending: Uint8Array[] = []
+let binFlushTimer: NodeJS.Timeout | null = null
+
+function flushBinary(): void {
+  if (binPending.length === 0) return
+  const batch = binPending.length === 1 ? binPending[0] : Buffer.concat(binPending)
+  binPending = []
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
+  }
+}
+
 function broadcast(row: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('telemetry', row)
@@ -85,10 +102,14 @@ export function startBridge(): void {
           start = end + 1
         }
       }
+    }, (binBatch: Uint8Array) => {
+      // Hot rows: accumulate and flush once per frame (see flushBinary).
+      binPending.push(binBatch)
     })
-    
+
     engine.startUdp()
     pushLogging()
+    if (!binFlushTimer) binFlushTimer = setInterval(flushBinary, 16)
     
     // Listen for logging changes
     unsubLogging = [
@@ -104,6 +125,8 @@ export function startBridge(): void {
 export function stopBridge(): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
+  if (binFlushTimer) { clearInterval(binFlushTimer); binFlushTimer = null }
+  binPending = []
   if (engine) {
     engine.playerClose()
     engine.destroy()

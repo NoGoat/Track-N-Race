@@ -71,6 +71,7 @@ gzFile TnrdWriter::gzOpenPath(const std::string& utf8Path, const char* mode) {
 }
 
 void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
+    recording_.store(enabled, std::memory_order_relaxed);
     std::unique_lock<std::mutex> lk(mu_);
     WriterEvent ev;
     ev.type = EventType::SetLogging;
@@ -89,7 +90,10 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     ev.format = format;
     ev.packetId = packetId;
     ev.sessionTime = sessionTime;
-    ev.packetData.assign(data, data + length);
+    // Only PID_SESSION's bytes are read on the disk thread (track/session detection);
+    // copying every other packet's ~1.3 KB into the queue is pure waste.
+    if (packetId == PID_SESSION)
+        ev.packetData.assign(data, data + length);
     queue_.push(std::move(ev));
     cv_.notify_one();
 }

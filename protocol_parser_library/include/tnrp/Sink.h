@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace tnrp {
@@ -15,6 +17,11 @@ class Sink {
 public:
     virtual ~Sink() = default;
     virtual void onRow(const std::string& json) = 0;
+
+    // Packed binary batch for the hot 60 Hz rows (see tnrp/BinaryRows.h). Only the
+    // live UDP path emits these; playback rows arrive as JSON via onRow(). Default
+    // no-op so sinks that don't care (e.g. a JSON-only pipe) need not implement it.
+    virtual void onBinary(const uint8_t* /*data*/, size_t /*len*/) {}
 };
 
 } // namespace tnrp

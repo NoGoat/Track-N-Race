@@ -1,9 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <unordered_map>
 
 #include "tnrp/Config.h"
 
@@ -33,12 +33,17 @@ public:
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
         float                    sessionTime = -1.0f;
-        std::vector<std::string> rows;                // serialised telemetry JSON strings
+        std::vector<std::string> rows;                // cold rows: serialised JSON (record + live)
         std::vector<std::string> control;             // serialised protocol_status / protocol_warning
+        std::vector<std::string> hotJson;             // hot rows as JSON (only when wantHotJson)
+        std::vector<uint8_t>     binary;              // hot rows packed for the live binary channel
     };
 
     // Decode one raw UDP datagram. `ts` is the ISO timestamp to stamp on rows.
-    Result feed(const uint8_t* data, int length, const std::string& ts);
+    // `wantHotJson` (true == logging on) makes the hot 60 Hz rows additionally
+    // serialised to JSON in `hotJson` so they can be recorded; the binary form is
+    // always produced for the live channel.
+    Result feed(const uint8_t* data, int length, const std::string& ts, bool wantHotJson);
 
     // The current protocol_status control row as a serialised JSON string.
     // The engine emits this on construction and after setOverride.
@@ -57,8 +62,10 @@ private:
     bool      warnActive_  = false;
     uint16_t  warnForced_  = 0;
 
-    std::unordered_map<int, uint32_t> lastFrameId_;
-    std::unordered_map<int, uint64_t> lastSlowMs_;
+    // Fixed tables indexed by packetId (0..15); see Parser.cpp rate-limit logic.
+    std::array<uint32_t, 16> lastFrameId_{};
+    std::array<bool,     16> haveFrameId_{};
+    std::array<uint64_t, 16> lastSlowMs_{};
 
     uint16_t effectiveFormat(uint16_t incoming) const;
 };

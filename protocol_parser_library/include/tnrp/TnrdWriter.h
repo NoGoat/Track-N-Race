@@ -31,6 +31,13 @@ public:
     void setLogging(bool enabled, const std::string& outputDir);
     bool loggingEnabled() const { return wantRecord_; }
 
+    // Cheap atomic mirror of "logging enabled" intent, updated synchronously in
+    // setLogging(). The engine checks this before doing any per-packet recording
+    // work (datagram copy, per-row json enqueue); when logging is off it skips the
+    // whole pipeline. Mirrors intent rather than stream-open state so behaviour is
+    // identical to before whenever logging is on (no dropped packets at session start).
+    bool isRecording() const { return recording_.load(std::memory_order_relaxed); }
+
     // Called for every accepted (non-rate-limited) packet BEFORE its rows are
     // recorded. Handles flashback truncation and starts a new file when the
     // session packet reports a new track/session.
@@ -67,6 +74,7 @@ private:
     std::queue<WriterEvent> queue_;
     std::thread             diskThread_;
     std::atomic<bool>       stop_{false};
+    std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
     std::string outputDirectory_;

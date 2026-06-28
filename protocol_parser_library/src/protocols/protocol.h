@@ -15,6 +15,17 @@ struct PacketHeader {
     uint8_t playerCarIndex;
 };
 
+// Side-channel output of ParsePacket for the hot 60 Hz rows. Cold (<=2 Hz) rows
+// are still the function's return value (JSON, recorded + forwarded live). Hot
+// rows go to `binary` (forwarded live as packed bytes) and, only when
+// `wantHotJson` is set (i.e. logging is on), additionally to `hotJson` so they
+// can be recorded in the same JSONL format as before.
+struct HotOut {
+    std::vector<std::string> hotJson;
+    std::vector<uint8_t>     binary;
+    bool                     wantHotJson = false;
+};
+
 // Binary reading helper functions
 inline float ReadFloat(const uint8_t* data, int offset) {
     return *(const float*)(data + offset);

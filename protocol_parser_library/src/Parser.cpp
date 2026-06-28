@@ -1,8 +1,7 @@
 #include "tnrp/Parser.h"
 
+#include <array>
 #include <chrono>
-#include <unordered_map>
-#include <unordered_set>
 
 #include "tnrp/control_rows.h"
 
@@ -26,13 +25,29 @@ static constexpr int PID_CAR_STATUS   = 7;
 static constexpr int PID_CAR_DAMAGE   = 10;
 static constexpr int PID_MOTION_EX    = 13;
 
-static const std::unordered_set<int> FRAME_SAMPLED = {
-    PID_MOTION, PID_CAR_TEL, PID_MOTION_EX
-};
-static const std::unordered_map<int, int> SLOW_RATE_MS = {
-    { PID_SESSION, 0 }, { PID_LAP_DATA, 500 }, { PID_CAR_STATUS, 500 },
-    { PID_CAR_DAMAGE, 500 }, { PID_PARTICIPANTS, 5000 }, { PID_EVENT, 0 }
-};
+// Packet IDs are a tiny dense range (0..13); fixed arrays indexed by id avoid a
+// hash + pointer-chase per datagram. Frame-sampled packets dedupe on frameId;
+// the rest are time-rate-limited (0 == no limit, default 500 ms for unlisted).
+static constexpr int PID_TABLE_SIZE = 16;
+
+static constexpr std::array<bool, PID_TABLE_SIZE> makeFrameSampled() {
+    std::array<bool, PID_TABLE_SIZE> a{};
+    a[PID_MOTION]    = true;
+    a[PID_CAR_TEL]   = true;
+    a[PID_MOTION_EX] = true;
+    return a;
+}
+static constexpr std::array<int, PID_TABLE_SIZE> makeSlowRateMs() {
+    std::array<int, PID_TABLE_SIZE> a{};
+    for (int i = 0; i < PID_TABLE_SIZE; ++i) a[i] = 500;  // default for unlisted
+    a[PID_SESSION]      = 0;
+    a[PID_EVENT]        = 0;
+    a[PID_PARTICIPANTS] = 5000;
+    // PID_MOTION / PID_CAR_TEL / PID_MOTION_EX are frame-sampled, never read here.
+    return a;
+}
+static constexpr std::array<bool, PID_TABLE_SIZE> kFrameSampled = makeFrameSampled();
+static constexpr std::array<int,  PID_TABLE_SIZE> kSlowRateMs   = makeSlowRateMs();
 
 static uint64_t nowMs() {
     return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -45,8 +60,9 @@ Parser::Parser(Override ovr) : override_v_(ovr) {
 }
 
 void Parser::reset() {
-    lastFrameId_.clear();
-    lastSlowMs_.clear();
+    lastFrameId_.fill(0);
+    haveFrameId_.fill(false);
+    lastSlowMs_.fill(0);
 }
 
 void Parser::setOverride(Override ovr) {
@@ -81,7 +97,7 @@ std::string Parser::statusRow() const {
     return writeJsonNullable(row);
 }
 
-Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts) {
+Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts, bool wantHotJson) {
     Result r;
     if (length < HEADER_SIZE) { r.dropped = true; return r; }
 
@@ -137,23 +153,27 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     r.packetId    = packetId;
     r.sessionTime = sessionTime;
 
-    if (FRAME_SAMPLED.count(packetId)) {
-        auto it = lastFrameId_.find(packetId);
-        if (it != lastFrameId_.end() && it->second == frameId) { r.dropped = true; return r; }
-        lastFrameId_[packetId] = frameId;
-    } else {
-        int rateMs = 500;
-        auto itL = SLOW_RATE_MS.find(packetId);
-        if (itL != SLOW_RATE_MS.end()) rateMs = itL->second;
-        if (rateMs > 0) {
-            uint64_t now = nowMs();
-            auto itT = lastSlowMs_.find(packetId);
-            if (itT != lastSlowMs_.end() && (now - itT->second) < (uint64_t)rateMs) {
+    if (packetId < PID_TABLE_SIZE) {
+        if (kFrameSampled[packetId]) {
+            if (haveFrameId_[packetId] && lastFrameId_[packetId] == frameId) {
                 r.dropped = true; return r;
             }
-            lastSlowMs_[packetId] = now;
+            haveFrameId_[packetId] = true;
+            lastFrameId_[packetId] = frameId;
+        } else {
+            int rateMs = kSlowRateMs[packetId];
+            if (rateMs > 0) {
+                uint64_t now = nowMs();
+                // lastSlowMs_ starts at 0; (now - 0) always exceeds rateMs, so the
+                // first packet of each type is never spuriously dropped.
+                if (lastSlowMs_[packetId] != 0 && (now - lastSlowMs_[packetId]) < (uint64_t)rateMs) {
+                    r.dropped = true; return r;
+                }
+                lastSlowMs_[packetId] = now;
+            }
         }
     }
+    // packetId >= PID_TABLE_SIZE: unknown id; ParsePacket has no case and returns {}.
 
     // ── Dispatch to the versioned parser ─────────────────────────────────────
     PacketHeader hdr;
@@ -163,9 +183,13 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     hdr.overallFrameId = frameId;
     hdr.playerCarIndex = data[27];
 
+    HotOut hot;
+    hot.wantHotJson = wantHotJson;
     r.rows = (eff == 2024)
-        ? F1_24::ParsePacket(data, length, hdr, ts)
-        : F1_25::ParsePacket(data, length, hdr, ts);
+        ? F1_24::ParsePacket(data, length, hdr, ts, hot)
+        : F1_25::ParsePacket(data, length, hdr, ts, hot);
+    r.hotJson = std::move(hot.hotJson);
+    r.binary  = std::move(hot.binary);
     return r;
 }
 

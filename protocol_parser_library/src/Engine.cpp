@@ -47,16 +47,26 @@ void Engine::onDatagram(const uint8_t* data, int length) {
 
     std::lock_guard<std::mutex> lk(mutex_);
     std::string ts = isoTimestamp();
-    Parser::Result r = parser_.feed(data, length, ts);
+
+    // Only touch the recording pipeline when logging is enabled. When it's off
+    // this skips a full datagram copy + per-row json enqueue + disk-thread wakeup
+    // per packet, and the hot 60 Hz rows are never serialised to JSON at all
+    // (parser produces only the binary form).
+    const bool recording = writer_.isRecording();
+    Parser::Result r = parser_.feed(data, length, ts, recording);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
 
-    writer_.notePacket(r.format, r.packetId, r.sessionTime, data, length);
-    for (const auto& row : r.rows) {
-        writer_.record(row, r.sessionTime);
-        emitRow(row);
+    if (recording) {
+        writer_.notePacket(r.format, r.packetId, r.sessionTime, data, length);
+        for (const auto& row : r.rows)    writer_.record(row, r.sessionTime);
+        for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
     }
+
+    // Cold rows go to the live JSON channel; hot rows go to the live binary channel.
+    for (const auto& row : r.rows) emitRow(row);
+    if (!r.binary.empty() && sink_) sink_->onBinary(r.binary.data(), r.binary.size());
 }
 
 void Engine::setOverride(Override ovr) {

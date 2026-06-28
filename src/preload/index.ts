@@ -18,6 +18,11 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-batch', listener)
     return () => ipcRenderer.removeListener('telemetry-batch', listener)
   },
+  onBinary: (callback: (batch: Uint8Array) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, batch: Uint8Array) => callback(batch)
+    ipcRenderer.on('telemetry-binary', listener)
+    return () => ipcRenderer.removeListener('telemetry-binary', listener)
+  },
 }
 
 const windowControls = {

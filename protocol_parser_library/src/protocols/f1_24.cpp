@@ -1,6 +1,7 @@
 #include "f1_24.h"
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
+#include "tnrp/BinaryRows.h"
 
 using namespace tnrp;
 
@@ -64,7 +65,7 @@ static AllStatusCar ParseStatusF124(const uint8_t* data, int base) {
     return c;
 }
 
-std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp) {
+std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot) {
     std::vector<std::string> rows;
     std::string buf;
 
@@ -130,9 +131,10 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             mr.g_long       = Round3(ReadFloat(data, o + 4));
             mr.g_vert       = Round3(ReadFloat(data, o + 8));
 
-            buf.clear();
-            (void)glz::write_json(mr, buf);
-            rows.push_back(std::move(buf));
+            bin::encodeMotion(hot.binary, mr);
+            if (hot.wantHotJson) {
+                buf.clear(); (void)glz::write_json(mr, buf); hot.hotJson.push_back(std::move(buf));
+            }
 
             if (length >= HEADER_SIZE + 22 * motionSize) {
                 PositionsRow pr;
@@ -145,9 +147,10 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                     pr.cars[i].x   = Round2(ReadFloat(data, cBase));
                     pr.cars[i].z   = Round2(ReadFloat(data, cBase + 8));
                 }
-                buf.clear();
-                (void)glz::write_json(pr, buf);
-                rows.push_back(std::move(buf));
+                bin::encodePositions(hot.binary, pr);
+                if (hot.wantHotJson) {
+                    buf.clear(); (void)glz::write_json(pr, buf); hot.hotJson.push_back(std::move(buf));
+                }
             }
             break;
         }
@@ -281,9 +284,10 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             t.tyre_temp_inner_fl   = data[o++]; t.tyre_temp_inner_fr   = data[o++];
             t.engine_temp   = ReadUInt16(data, o);
 
-            buf.clear();
-            (void)glz::write_json(t, buf);
-            rows.push_back(std::move(buf));
+            bin::encodeTelemetry(hot.binary, t);
+            if (hot.wantHotJson) {
+                buf.clear(); (void)glz::write_json(t, buf); hot.hotJson.push_back(std::move(buf));
+            }
             break;
         }
 
@@ -483,9 +487,10 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             me.session_time        = hdr.sessionTime;
             me.front_aero_height_mm = Round2(ReadFloat(data, 217) * 1000.0);
             me.rear_aero_height_mm  = Round2(ReadFloat(data, 221) * 1000.0);
-            buf.clear();
-            (void)glz::write_json(me, buf);
-            rows.push_back(std::move(buf));
+            bin::encodeMotionEx(hot.binary, me);
+            if (hot.wantHotJson) {
+                buf.clear(); (void)glz::write_json(me, buf); hot.hotJson.push_back(std::move(buf));
+            }
             break;
         }
     }
