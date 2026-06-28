@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import * as path from 'path'
+import { HotRowSmoother } from './binaryForwardFill'
 
 const store = new Store()
 
@@ -20,13 +21,15 @@ let unsubLogging: Array<() => void> = []
 // message makes the renderer do up to 180 decode+render passes/sec and fall behind
 // (visible as bursty "every few seconds" updates). Coalesce to one frame-aligned
 // IPC message per ~16 ms so the renderer does at most ~60 updates/sec.
+const TICK_MS = 16
 let binPending: Uint8Array[] = []
 let binFlushTimer: NodeJS.Timeout | null = null
+const smoother = new HotRowSmoother(TICK_MS)
 
 function flushBinary(): void {
-  if (binPending.length === 0) return
-  const batch = binPending.length === 1 ? binPending[0] : Buffer.concat(binPending)
+  const batch = smoother.tick(binPending)
   binPending = []
+  if (!batch) return
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
   }
@@ -127,6 +130,7 @@ export function stopBridge(): void {
   unsubLogging = []
   if (binFlushTimer) { clearInterval(binFlushTimer); binFlushTimer = null }
   binPending = []
+  smoother.reset()
   if (engine) {
     engine.playerClose()
     engine.destroy()

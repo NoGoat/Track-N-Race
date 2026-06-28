@@ -53,3 +53,36 @@ export function encodeMotion(w: BinaryWriter, o: any): void {
   w.f64(o.g_long)
   w.f64(o.g_vert)
 }
+
+// ── Forward-fill support (live smoothing) ──────────────────────────────────
+// session_time is a little-endian f32 at byte offset 1 (right after the tag) for
+// telemetry/motion/motion_ex records.
+export function recSessionTime(rec: Buffer): number { return rec.readFloatLE(1) }
+
+export function recWithSessionTime(rec: Buffer, st: number): Buffer {
+  const c = Buffer.from(rec)
+  c.writeFloatLE(st, 1)
+  return c
+}
+
+// Walk a batch and return the LAST record of each fixed-size hot type, as a tight
+// copy. Used to hold-and-advance the last sample when a tick has no fresh data.
+export function lastHotRecords(batch: Buffer): { tel?: Buffer; mot?: Buffer; motEx?: Buffer } {
+  const out: { tel?: Buffer; mot?: Buffer; motEx?: Buffer } = {}
+  let o = 0
+  while (o < batch.length) {
+    const tag = batch[o]
+    let len: number
+    if (tag === 1) len = 45         // telemetry
+    else if (tag === 2) len = 29    // motion
+    else if (tag === 4) len = 21    // motion_ex
+    else if (tag === 3) len = 3 + batch[o + 2] * 16  // positions: tag + player_idx + n + n*(x,z)
+    else break                      // unknown tag — can't know length
+    if (o + len > batch.length) break
+    if (tag === 1) out.tel = Buffer.from(batch.subarray(o, o + len))
+    else if (tag === 2) out.mot = Buffer.from(batch.subarray(o, o + len))
+    else if (tag === 4) out.motEx = Buffer.from(batch.subarray(o, o + len))
+    o += len
+  }
+  return out
+}
