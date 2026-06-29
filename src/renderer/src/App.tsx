@@ -532,43 +532,47 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
   progressPct,
   totalTime
 }: PlaybackProgressTrackerProps) {
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragProgress, setDragProgress] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isDraggingRef = useRef(false)
+  const dragProgressRef = useRef(progressPct)
+  const lastSeekRef = useRef(0)
+  const [displayPct, setDisplayPct] = useState(progressPct)
 
   const startSessionTime = currentTime - (progressPct * totalTime)
-  const progressToUse = isDragging ? dragProgress : progressPct
-  const displayTime = isDragging
-    ? (startSessionTime + dragProgress * totalTime)
+  const displayTime = isDraggingRef.current
+    ? (startSessionTime + displayPct * totalTime)
     : currentTime
 
-  const lastSeekRef = useRef(0)
-  const dragProgressRef = useRef(0)
-
-  const handleMouseDown = useCallback(() => {
-    setIsDragging(true)
-    setDragProgress(progressPct)
-    dragProgressRef.current = progressPct
+  // When playback state updates from outside (seek confirmed, playback tick), sync
+  // the input imperatively — never let React control the value directly so it can't snap back.
+  useEffect(() => {
+    if (!isDraggingRef.current) {
+      setDisplayPct(progressPct)
+      if (inputRef.current) inputRef.current.value = String(progressPct)
+    }
   }, [progressPct])
 
+  const handleMouseDown = useCallback(() => {
+    isDraggingRef.current = true
+  }, [])
+
   const handleMouseUp = useCallback(() => {
-    setIsDragging(false)
+    isDraggingRef.current = false
     window.playerBridge.seek(dragProgressRef.current)
   }, [])
 
   const handleTouchStart = useCallback(() => {
-    setIsDragging(true)
-    setDragProgress(progressPct)
-    dragProgressRef.current = progressPct
-  }, [progressPct])
+    isDraggingRef.current = true
+  }, [])
 
   const handleTouchEnd = useCallback(() => {
-    setIsDragging(false)
+    isDraggingRef.current = false
     window.playerBridge.seek(dragProgressRef.current)
   }, [])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value)
-    setDragProgress(val)
+    setDisplayPct(val)
     dragProgressRef.current = val
 
     const now = Date.now()
@@ -582,11 +586,12 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
     <div className="flex-1 flex items-center gap-4">
       <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(displayTime)}</span>
       <input
+        ref={inputRef}
         type="range"
         min="0"
         max="1"
         step="0.001"
-        value={progressToUse}
+        defaultValue={progressPct}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
         onTouchStart={handleTouchStart}
@@ -594,7 +599,7 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
         onChange={handleChange}
         className="flex-1 h-1.5 bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#5794F2] [&::-webkit-slider-thumb]:cursor-pointer"
         style={{
-          background: `linear-gradient(to right, #5794F2 ${progressToUse * 100}%, var(--border) ${progressToUse * 100}%)`
+          background: `linear-gradient(to right, #5794F2 ${displayPct * 100}%, var(--border) ${displayPct * 100}%)`
         }}
       />
       <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(totalTime)}</span>
