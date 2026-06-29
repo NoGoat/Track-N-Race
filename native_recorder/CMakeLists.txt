@@ -31,13 +31,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# Fetch zlib for .tnrd gzip streaming
-FetchContent_Declare(
-    zlib
-    GIT_REPOSITORY https://github.com/madler/zlib.git
-    GIT_TAG v1.3.1
-)
-FetchContent_MakeAvailable(zlib)
+# zlib (.tnrd gzip) is no longer used directly by the app — it lives entirely in
+# libtnrp's TnrdWriter/TnrdReader now, which fetches and links zlibstatic itself.
 
 # Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
 # OpenGL/OpenGLWidgets let QCustomPlot rasterize on the GPU — software QPainter
@@ -59,7 +54,7 @@ endif()
 # parsing, .tnrd recording + playback — the single source of truth also used by the
 # Electron node_addon. TNRP_USE_QT=ON selects its QUdpSocket backend so it integrates
 # with this app's Qt build (no raw sockets). The guard lets a parent superbuild add
-# the library first. zlib (zlibstatic, fetched above) and glaze are reused/fetched by it.
+# the library first. The library fetches/links zlib (zlibstatic) and glaze itself.
 set(TNRP_USE_QT ON CACHE BOOL "" FORCE)
 if(NOT TARGET tnrp)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol_parser_library
@@ -149,7 +144,7 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Backg
 # Single source of truth for the version shown in Settings → About (read at
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
-target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic tnrp ${QT_LIBS})
+target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json tnrp ${QT_LIBS})
 
 # ── Maximum compiler optimization (applied to optimized configs only) ─────────
 # Link-time optimization (whole-program / cross-TU inlining) where the toolchain

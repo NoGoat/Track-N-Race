@@ -2,17 +2,25 @@
 
 #include <QObject>
 #include <QTimer>
-#include <QFile>
 #include <QElapsedTimer>
 #include <QString>
-#include <QVector>
 #include <atomic>
+#include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
-#include <zlib.h>
+
+#include <tnrp/TnrdReader.h>
 
 #include "SessionModel.h"
 
+// Qt playback driver on top of libtnrp's tnrp::TnrdReader. The reader owns all
+// .tnrd I/O — gzip decompression, the time/type index, per-lap blocks and the
+// snapshot/streaming reads — so this class is just the clock: it scans the whole
+// recording into a SessionData once (for the lap-aware charts), then advances a
+// QTimer-driven cursor, pulling the due rows from the reader and emitting them.
+//
+// Public interface and signals are unchanged from the old self-contained player,
+// so MainWindow's playback wiring needs no changes.
 class TnrdPlayer : public QObject {
     Q_OBJECT
 
@@ -49,15 +57,8 @@ private slots:
     void tick();
 
 private:
-    struct IndexEntry {
-        qint64  offset;
-        float   sessionTime;
-        uint8_t type;
-    };
-
-    std::vector<IndexEntry> index_;
-    SessionData             scanned_;   // built on the load thread by buildIndex()
-    float                   lastDmg_[4] = {};  // last tyre_wear_fl/fr/rl/rr seen during scan
+    tnrp::TnrdReader reader_;   // owns the decompressed temp file + index; loaded on the bg thread
+    SessionData      scanned_;  // built on the load thread from reader_.readRange()
 
     float        startTime_   = 0.0f;
     float        totalTime_   = 0.0f;
@@ -65,25 +66,19 @@ private:
     float        speed_       = 1.0f;
     bool         playing_     = false;
     bool         loading_     = false;
-    size_t       playPos_     = 0;
 
     std::atomic<bool> cancelled_{false};
 
-    QString       tempPath_;
-    QFile         tempFile_;
     QTimer*       timer_       = nullptr;
     QElapsedTimer elapsed_;
 
-    static uint8_t typeId(const std::string& s);
+    // Scans every row of the loaded recording into `scanned_` so the charts have
+    // the whole session (telemetry/status/lap/motion/motion_ex/tyre). Runs on the
+    // load thread. Mirrors the old buildIndex() second pass.
+    void scanIntoSessionData();
 
-    size_t upperBoundTime(float t) const;  // first index with sessionTime > t
-    size_t lowerBoundTime(float t) const;  // first index with sessionTime >= t
-
-    // Both called from the background thread; use local file handles, not tempFile_
-    bool decompress(const QString& srcPath, const QString& destPath);
-    void buildIndex(const QString& filePath);
-
-    nlohmann::json readLineAt(qint64 offset);
-    void           emitState();
-    void           cleanup();
+    // Parse a raw JSONL row and emit it as a packetReady() for the live panels.
+    void emitRows(const std::vector<std::string>& rows);
+    void emitState();
+    void cleanup();
 };
