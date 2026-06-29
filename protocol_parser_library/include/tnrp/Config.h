@@ -32,6 +32,13 @@ struct Config {
     Override    protocol       = Override::Auto;
     bool        loggingEnabled = false;
     std::string outputDirectory;        // where .tnrd files are written
+
+    // When true, the live UDP path emits the hot 60 Hz rows as JSON via
+    // Sink::onRow() and skips the packed binary Sink::onBinary() channel. Off by
+    // default: the Electron/node_addon clients want the binary fast-path across
+    // the process/N-API boundary. An in-process consumer (the native Qt recorder)
+    // sets this so it receives one uniform JSON stream and need not decode binary.
+    bool        hotRowsAsJson  = false;
 };
 
 } // namespace tnrp

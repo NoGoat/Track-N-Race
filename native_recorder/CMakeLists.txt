@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(NativeRecorder VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -55,10 +55,22 @@ else()
     message(STATUS "Using Qt5 (Qt6 not found; software chart rendering)")
 endif()
 
+# Shared telemetry engine (libtnrp / target `tnrp`): UDP receive, F1 24/25 packet
+# parsing, .tnrd recording + playback — the single source of truth also used by the
+# Electron node_addon. TNRP_USE_QT=ON selects its QUdpSocket backend so it integrates
+# with this app's Qt build (no raw sockets). The guard lets a parent superbuild add
+# the library first. zlib (zlibstatic, fetched above) and glaze are reused/fetched by it.
+set(TNRP_USE_QT ON CACHE BOOL "" FORCE)
+if(NOT TARGET tnrp)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol_parser_library
+                     ${CMAKE_BINARY_DIR}/tnrp_build)
+endif()
+
 set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/EngineSink.h
     src/BreezePalette.cpp
     src/BreezePalette.h
     src/TnrdPlayer.cpp
@@ -116,9 +128,6 @@ set(SOURCES
     src/components/TrackMapPage.cpp
     src/components/TrackMapWidget.cpp
     src/components/TrackMapWidget.h
-    src/protocols/protocol.cpp
-    src/protocols/f1_24.cpp
-    src/protocols/f1_25.cpp
     resources.qrc
     maps.qrc
     licenses.qrc
@@ -140,7 +149,7 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Backg
 # Single source of truth for the version shown in Settings → About (read at
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
-target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic ${QT_LIBS})
+target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json zlibstatic tnrp ${QT_LIBS})
 
 # ── Maximum compiler optimization (applied to optimized configs only) ─────────
 # Link-time optimization (whole-program / cross-TU inlining) where the toolchain

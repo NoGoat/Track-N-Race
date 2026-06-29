@@ -51,9 +51,11 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // Only touch the recording pipeline when logging is enabled. When it's off
     // this skips a full datagram copy + per-row json enqueue + disk-thread wakeup
     // per packet, and the hot 60 Hz rows are never serialised to JSON at all
-    // (parser produces only the binary form).
-    const bool recording = writer_.isRecording();
-    Parser::Result r = parser_.feed(data, length, ts, recording);
+    // (parser produces only the binary form) — unless a consumer asked for the
+    // hot rows as JSON (config_.hotRowsAsJson), in which case we also need them.
+    const bool recording   = writer_.isRecording();
+    const bool wantHotJson = recording || config_.hotRowsAsJson;
+    Parser::Result r = parser_.feed(data, length, ts, wantHotJson);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -64,9 +66,15 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
     }
 
-    // Cold rows go to the live JSON channel; hot rows go to the live binary channel.
+    // Cold rows always go to the live JSON channel. Hot rows go either to the
+    // live binary channel (default) or, for an in-process JSON-only consumer, to
+    // the JSON channel as well — mutually exclusive so a sink sees each hot row once.
     for (const auto& row : r.rows) emitRow(row);
-    if (!r.binary.empty() && sink_) sink_->onBinary(r.binary.data(), r.binary.size());
+    if (config_.hotRowsAsJson) {
+        for (const auto& hj : r.hotJson) emitRow(hj);
+    } else if (!r.binary.empty() && sink_) {
+        sink_->onBinary(r.binary.data(), r.binary.size());
+    }
 }
 
 void Engine::setOverride(Override ovr) {

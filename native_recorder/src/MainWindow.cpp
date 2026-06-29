@@ -6,6 +6,7 @@
 #include "components/PowerChart.h"
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
+#include "EngineSink.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
@@ -42,7 +43,6 @@
 #include <QSizePolicy>
 #include <QStyleHints>
 #include <QCoreApplication>
-#include <QUdpSocket>
 #include <QTimer>
 #include <QPainter>
 #include <QImage>
@@ -73,34 +73,12 @@
 #include <cctype>
 #include <map>
 
-#include "protocols/protocol.h"
-#include "protocols/f1_24.h"
-#include "protocols/f1_25.h"
+#include <tnrp/Engine.h>
+#include <tnrp/Config.h>
 
-// ── Packet IDs ─────────────────────────────────────────────────────────────
-
-static constexpr int PID_MOTION       = 0;
-static constexpr int PID_SESSION      = 1;
-static constexpr int PID_LAP_DATA     = 2;
-static constexpr int PID_EVENT        = 3;
-static constexpr int PID_PARTICIPANTS = 4;
-static constexpr int PID_CAR_TEL     = 6;
-static constexpr int PID_CAR_STATUS  = 7;
-static constexpr int PID_CAR_DAMAGE  = 10;
-static constexpr int PID_MOTION_EX   = 13;
-
-static constexpr int HEADER_SIZE = 29;
-
-static const std::unordered_set<int> FRAME_SAMPLED = {
-    PID_MOTION, PID_CAR_TEL, PID_MOTION_EX
-};
-static const std::unordered_map<int, int> SLOW_RATE_MS = {
-    { PID_SESSION, 0 }, { PID_LAP_DATA, 500 }, { PID_CAR_STATUS, 500 },
-    { PID_CAR_DAMAGE, 500 }, { PID_PARTICIPANTS, 5000 }, { PID_EVENT, 0 }
-};
-static const std::unordered_set<std::string> DEDUPE_TYPES = {
-    "session", "tyre_sets", "participants", "all_status", "status", "timing", "damage"
-};
+// Packet IDs, header layout, rate-limit/dedup tables and the F1 24/25 packet
+// parsers used to live here; they now belong to libtnrp (tnrp::Parser /
+// tnrp::TnrdWriter), which the engine drives. See onEngineRow().
 
 // Chart window-size options, shown as a segmented toolbar control.
 static const struct { const char* label; float secs; } kWindowOptions[] = {
@@ -689,7 +667,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (rideHeightChart_) { rideHeightChart_->setPlaybackMode(true); rideHeightChart_->setCurrentTime(player_->currentTime()); }
         if (ov_tyreCharts_) { ov_tyreCharts_->setPlaybackMode(true); ov_tyreCharts_->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
-        closeActiveStream();
+        applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
         pb_sep_->show();
         pb_bar_->show();
         pb_playBtn_->setIcon(playPauseIcon(false, this, palette().color(QPalette::Text)));
@@ -798,6 +776,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(closeRecBtn, &QPushButton::clicked, this, [this] {
         player_->close();
         inPlayback_ = false;
+        applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
         resetSessionTimer();
         if (model_) model_->clear();
@@ -816,15 +795,27 @@ MainWindow::MainWindow(QWidget* parent)
         setWindowTitle("Track N Race Background Recorder");
     });
 
-    udpSocket = new QUdpSocket(this);
-    bool bound = udpSocket->bind(QHostAddress::AnyIPv4, 20777,
-                                  QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint);
-    if (!bound)
+    // ── Telemetry engine (libtnrp) ────────────────────────────────────────
+    // The engine owns the UDP socket, F1 24/25 parsing and .tnrd recording. Its
+    // rows arrive as JSON on the GUI thread via EngineSink → onEngineRow(). The
+    // sink connection must exist before the engine is constructed, because the
+    // engine emits an initial protocol_status row from its constructor.
+    engineSink_ = new EngineSink(this);
+    connect(engineSink_, &EngineSink::rowReady, this, &MainWindow::onEngineRow);
+
+    tnrp::Config cfg;
+    cfg.port            = 20777;
+    cfg.bindAddress     = "0.0.0.0";
+    cfg.protocol        = tnrp::Override::Auto;
+    cfg.hotRowsAsJson   = true;   // in-process consumer: hot rows as JSON, no binary channel
+    cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty();
+    cfg.outputDirectory = outputDirectory.toStdString();
+    engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
+
+    if (!engine_->startUdp())
         QMessageBox::critical(this, "UDP Error",
             "Failed to bind to UDP port 20777.\n"
             "Is another telemetry tool or Track-N-Race already open?");
-
-    connect(udpSocket, &QUdpSocket::readyRead, this, &MainWindow::onDatagramReady);
 
     connect(this, &MainWindow::telemetryUpdated,
             this, [this](float speed, int rpm, int gear,
@@ -882,7 +873,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(this, &MainWindow::telemetryUpdated,
             chart, [](float, int, int, float, float, float, bool, int) {
-        // chart is updated directly from processPacket
+        // chart is updated directly from the SessionModel, not this signal
     });
 
     connect(this, &MainWindow::damageUpdated, this,
@@ -920,7 +911,9 @@ void MainWindow::refreshErsSub() {
 }
 
 MainWindow::~MainWindow() {
-    closeActiveStream();
+    // The engine's destructor stops the UDP thread and flushes/closes any active
+    // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
+    engine_.reset();
 }
 
 void MainWindow::resizeEvent(QResizeEvent* e) {
@@ -1020,8 +1013,8 @@ void MainWindow::setRenderingActive(bool on) {
         if (trackMap_) trackMap_->setRenderingActive(true);
         flushUiRefresh();
     } else {
-        // Pause: stop every timer-driven repaint. Data ingest (recordRow,
-        // ingestForModel) and the UDP path keep running so nothing is lost.
+        // Pause: stop every timer-driven repaint. Data ingest (ingestForModel)
+        // and the engine's UDP/recording path keep running so nothing is lost.
         if (uiRefreshTimer_) uiRefreshTimer_->stop();
         if (model_)    model_->setLiveFlushActive(false);
         if (trackMap_) trackMap_->setRenderingActive(false);
@@ -1214,12 +1207,22 @@ void MainWindow::updateToolbarColorScheme() {
 void MainWindow::setOutputDirectory(const QString& dir) {
     outputDirectory = dir;
     settings.setValue("outputDirectory", dir);
+    applyEngineLogging();
 }
 
 void MainWindow::setAutoRecord(bool checked) {
     wantRecord = checked;
     settings.setValue("autoRecord", checked);
-    if (!checked) closeActiveStream();
+    applyEngineLogging();
+}
+
+// Push the current record intent to the engine's writer. Recording is suppressed
+// while a clip is loaded for playback (matching the old "live UDP ignored during
+// playback" behaviour) and resumed when the clip is closed.
+void MainWindow::applyEngineLogging() {
+    if (!engine_) return;
+    const bool on = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
+    engine_->setLogging(on, outputDirectory.toStdString());
 }
 
 void MainWindow::setTheme(const QString& theme) {
@@ -1312,211 +1315,26 @@ void MainWindow::setTrackMapIdleTimeout(int secs) {
     if (trackMap_) trackMap_->setIdleTimeout(secs);
 }
 
-void MainWindow::onDatagramReady() {
-    if (inPlayback_) {
-        while (udpSocket->hasPendingDatagrams())
-            udpSocket->readDatagram(nullptr, 0);
+void MainWindow::onEngineRow(const QByteArray& json) {
+    // While a clip is loaded, TnrdPlayer drives the UI; drop any live rows the
+    // engine is still parsing in the background (mirrors the old datagram drain).
+    if (inPlayback_) return;
+
+    nlohmann::json row;
+    try {
+        row = nlohmann::json::parse(json.constData(), json.constData() + json.size());
+    } catch (...) {
         return;
     }
-    while (udpSocket->hasPendingDatagrams()) {
-        QByteArray dg;
-        dg.resize((int)udpSocket->pendingDatagramSize());
-        udpSocket->readDatagram(dg.data(), dg.size());
-        processPacket(reinterpret_cast<const uint8_t*>(dg.constData()), dg.size());
-    }
-}
+    if (!row.contains("type")) return;
 
-// ── Timestamps ─────────────────────────────────────────────────────────────
-
-std::string MainWindow::getISOTimestamp() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto ms  = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    time_t t = system_clock::to_time_t(now);
-    struct tm tmInfo {};
-#ifdef _WIN32
-    gmtime_s(&tmInfo, &t);
-#else
-    gmtime_r(&t, &tmInfo);
-#endif
-    char buf[64]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmInfo);
-    char result[80]; snprintf(result, sizeof(result), "%s.%03dZ", buf, (int)ms.count());
-    return std::string(result);
-}
-
-std::string MainWindow::getFilenameTimestamp() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto ms  = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-    time_t t = system_clock::to_time_t(now);
-    struct tm tmInfo {};
-#ifdef _WIN32
-    gmtime_s(&tmInfo, &t);
-#else
-    gmtime_r(&t, &tmInfo);
-#endif
-    char buf[64]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H-%M-%S", &tmInfo);
-    char result[80]; snprintf(result, sizeof(result), "%s-%03dZ", buf, (int)ms.count());
-    return std::string(result);
-}
-
-std::string MainWindow::sanitizeName(const std::string& name) {
-    std::string r;
-    for (unsigned char c : name) r += std::isalnum(c) ? (char)std::tolower(c) : '_';
-    return r;
-}
-
-// ── gzopen abstraction ─────────────────────────────────────────────────────
-
-gzFile MainWindow::gzOpenPath(const QString& path, const char* mode) {
-#ifdef _WIN32
-    return gzopen_w(path.toStdWString().c_str(), mode);
-#else
-    return gzopen(path.toUtf8().constData(), mode);
-#endif
-}
-
-// ── Stream lifecycle ───────────────────────────────────────────────────────
-
-void MainWindow::closeActiveStream() {
-    if (activeGzip) {
-        flushBufferToDisk(rollingBuffer);
-        gzclose(activeGzip);
-        activeGzip = nullptr;
-    }
-    rollingBuffer.clear();
-    currentTrackId     = -1;
-    currentSessionType = -1;
-    activeGzipPath.clear();
-    lastSessionTime = -1.0f;
-    dedupeCache.clear();
-    resetFastestLapState();
-}
-
-void MainWindow::startNewStream(int trackId, int sessionType, int format) {
-    closeActiveStream();
-    if (!wantRecord || outputDirectory.isEmpty()) return;
-
-    std::string proto = (format == 2024) ? "f1_24" : "f1_25";
-
-    auto itTrack = TRACK_NAMES.find(trackId);
-    std::string tName = (itTrack != TRACK_NAMES.end())
-        ? sanitizeName(itTrack->second) : "track_" + std::to_string(trackId);
-
-    auto itSess = SESSION_NAMES.find(sessionType);
-    std::string sName = (itSess != SESSION_NAMES.end())
-        ? sanitizeName(itSess->second) : "session_" + std::to_string(sessionType);
-
-    std::string filename = proto + "_" + std::to_string(trackId) + "_"
-                         + tName + "_" + sName + "_" + getFilenameTimestamp() + ".tnrd";
-
-    activeGzipPath = outputDirectory + "/" + QString::fromStdString(filename);
-    activeGzip     = gzOpenPath(activeGzipPath, "wb");
-
-    if (activeGzip) {
-        nlohmann::json hdr;
-        hdr["magic"]        = "TNRD_V1";
-        hdr["protocol"]     = format;
-        hdr["track_id"]     = trackId;
-        hdr["track_name"]   = (itTrack != TRACK_NAMES.end()) ? itTrack->second : "Unknown";
-        hdr["session_type"] = sessionType;
-        hdr["session_name"] = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
-        hdr["start_time"]   = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        std::string hl = hdr.dump() + "\n";
-        gzwrite(activeGzip, hl.c_str(), (unsigned int)hl.size());
-
-        currentTrackId     = trackId;
-        currentSessionType = sessionType;
-        lastSessionTime    = -1.0f;
-    }
-}
-
-// ── Buffer ─────────────────────────────────────────────────────────────────
-
-void MainWindow::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
-    if (!activeGzip || entries.empty()) return;
-    for (const auto& e : entries)
-        gzwrite(activeGzip, e.line.c_str(), (unsigned int)e.line.size());
-}
-
-void MainWindow::flushOldBufferEntries() {
-    if (lastSessionTime < 0.0f || rollingBuffer.empty()) return;
-    float cutoff = lastSessionTime - BUFFER_WINDOW_S;
-    size_t flush = 0;
-    while (flush < rollingBuffer.size() && rollingBuffer[flush].sessionTime < cutoff)
-        flush++;
-    if (flush > 0) {
-        flushBufferToDisk({rollingBuffer.begin(), rollingBuffer.begin() + (ptrdiff_t)flush});
-        rollingBuffer.erase(rollingBuffer.begin(), rollingBuffer.begin() + (ptrdiff_t)flush);
-    }
-}
-
-// ── Deduplication ──────────────────────────────────────────────────────────
-
-bool MainWindow::isDuplicate(const std::string& type, const nlohmann::json& row) {
-    if (!DEDUPE_TYPES.count(type)) return false;
-    nlohmann::json clone = row;
-    clone.erase("ts"); clone.erase("session_time");
-    std::string hash = clone.dump();
-    auto it = dedupeCache.find(type);
-    if (it != dedupeCache.end() && it->second == hash) return true;
-    dedupeCache[type] = hash;
-    return false;
-}
-
-// ── Flashback / rewind ─────────────────────────────────────────────────────
-
-void MainWindow::truncateTimeline(float newSessionTime) {
-    float bufStart = rollingBuffer.empty()
-        ? std::numeric_limits<float>::infinity() : rollingBuffer[0].sessionTime;
-
-    if (newSessionTime >= bufStart) {
-        rollingBuffer.erase(
-            std::remove_if(rollingBuffer.begin(), rollingBuffer.end(),
-                [newSessionTime](const BufferEntry& e) { return e.sessionTime > newSessionTime; }),
-            rollingBuffer.end());
-    } else {
-        rollingBuffer.clear();
-        if (!activeGzipPath.isEmpty() && activeGzip) {
-            gzclose(activeGzip); activeGzip = nullptr;
-            std::vector<std::string> kept;
-            gzFile in = gzOpenPath(activeGzipPath, "rb");
-            if (in) {
-                char buf[16384];
-                while (gzgets(in, buf, sizeof(buf)) != nullptr) {
-                    std::string line(buf);
-                    try {
-                        nlohmann::json j = nlohmann::json::parse(line);
-                        if (!j.contains("session_time") || j["session_time"].get<float>() <= newSessionTime)
-                            kept.push_back(line);
-                    } catch (...) {}
-                }
-                gzclose(in);
-            }
-            gzFile out = gzOpenPath(activeGzipPath, "wb");
-            if (out) {
-                for (const auto& l : kept) gzwrite(out, l.c_str(), (unsigned int)l.size());
-                gzclose(out);
-            }
-            activeGzip = gzOpenPath(activeGzipPath, "ab");
-        }
-    }
-    dedupeCache.clear();
-    lastSessionTime = newSessionTime;
-}
-
-// ── Record a row to the rolling buffer ─────────────────────────────────────
-
-void MainWindow::recordRow(const nlohmann::json& row, float sessionTime) {
-    if (!activeGzip) return;
-    std::string type = row["type"];
-    if (isDuplicate(type, row)) return;
-    std::string line = row.dump() + "\n";
-    float entryTime  = (sessionTime >= 0.0f) ? sessionTime : lastSessionTime;
-    rollingBuffer.push_back({line, entryTime});
-    if (type == "race_event" && row["code"] == "SEND") { closeActiveStream(); return; }
-    flushOldBufferEntries();
+    // The engine has already done format detection, rate-limiting, recording and
+    // (when enabled) state-row deduplication; we only fan the row out to the live
+    // UI panels and the lap-aware SessionModel. Header session_time rides on every
+    // hot/cold row that needs it.
+    const float sessionTime = row.value("session_time", -1.0f);
+    emitLiveData(row);
+    ingestForModel(row, sessionTime);
 }
 
 // ── Live data extraction → signals ─────────────────────────────────────────
@@ -1787,63 +1605,6 @@ void MainWindow::flushUiRefresh() {
             break;
         default:
             break;
-    }
-}
-
-// ── Central packet router ──────────────────────────────────────────────────
-
-void MainWindow::processPacket(const uint8_t* data, int length) {
-    if (length < HEADER_SIZE) return;
-
-    uint16_t format = ReadUInt16(data, 0);
-    if (format != 2024 && format != 2025) return;
-
-    PacketHeader hdr;
-    hdr.packetFormat   = format;
-    hdr.packetId       = data[6];
-    hdr.sessionTime    = ReadFloat(data, 15);
-    hdr.overallFrameId = ReadUInt32(data, 23);
-    hdr.playerCarIndex = data[27];
-
-    uint64_t nowMs = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-
-    if (FRAME_SAMPLED.count(hdr.packetId)) {
-        auto it = lastFrameId.find(hdr.packetId);
-        if (it != lastFrameId.end() && it->second == hdr.overallFrameId) return;
-        lastFrameId[hdr.packetId] = hdr.overallFrameId;
-    } else {
-        int rateMs = 500;
-        auto itL = SLOW_RATE_MS.find(hdr.packetId);
-        if (itL != SLOW_RATE_MS.end()) rateMs = itL->second;
-        if (rateMs > 0) {
-            auto itT = lastSlowMs.find(hdr.packetId);
-            if (itT != lastSlowMs.end() && (nowMs - itT->second) < (uint64_t)rateMs) return;
-            lastSlowMs[hdr.packetId] = nowMs;
-        }
-    }
-
-    if (activeGzip && lastSessionTime >= 0.0f && hdr.sessionTime < lastSessionTime - 0.2f)
-        truncateTimeline(hdr.sessionTime);
-    else if (hdr.sessionTime > lastSessionTime)
-        lastSessionTime = hdr.sessionTime;
-
-    if (hdr.packetId == PID_SESSION && length >= 708) {
-        int8_t  trackId     = ReadInt8(data, 36);
-        uint8_t sessionType = data[35];
-        if (wantRecord && (trackId != currentTrackId || sessionType != currentSessionType || !activeGzip))
-            startNewStream(trackId, sessionType, format);
-    }
-
-    std::vector<nlohmann::json> rows;
-    std::string ts = getISOTimestamp();
-    if (format == 2024) rows = F1_24::ParsePacket(data, length, hdr, ts);
-    else                rows = F1_25::ParsePacket(data, length, hdr, ts);
-
-    for (const auto& row : rows) {
-        recordRow(row, hdr.sessionTime);
-        emitLiveData(row);
-        ingestForModel(row, hdr.sessionTime);
     }
 }
 

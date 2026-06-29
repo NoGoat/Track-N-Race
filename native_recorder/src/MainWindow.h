@@ -10,17 +10,17 @@
 #include <QSlider>
 #include <QComboBox>
 #include <QFrame>
-#include <QUdpSocket>
 #include <QSettings>
+#include <QByteArray>
 
 #include <string>
 #include <vector>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <limits>
 
 #include <nlohmann/json.hpp>
-#include <zlib.h>
 
 #include "components/OverviewLayout.h"
 #include "components/InputLayout.h"
@@ -39,6 +39,8 @@ class StrategyPage;
 class TnrdPlayer;
 class TrackMapWidget;
 class SessionModel;
+class EngineSink;
+namespace tnrp { class Engine; }
 class Toast;
 class QComboBox;
 class QTimer;
@@ -122,7 +124,10 @@ signals:
     void lapUpdated(int position, int lapNum);
 
 private slots:
-    void onDatagramReady();
+    // Receives one pre-serialised JSON row from the libtnrp engine (marshalled
+    // onto the GUI thread by EngineSink). Replaces the old onDatagramReady() →
+    // processPacket() path; parsing/recording/rate-limiting now live in the engine.
+    void onEngineRow(const QByteArray& json);
 
 private:
     // ── Overview tab ──────────────────────────────────────────────
@@ -357,28 +362,22 @@ private:
     QWidget*     container_      = nullptr;
     QWidget*     loadingOverlay_ = nullptr;
 
-    // ── UDP / network ─────────────────────────────────────────────
-    QUdpSocket* udpSocket = nullptr;
+    // ── Telemetry engine (libtnrp) ────────────────────────────────
+    // Owns UDP receive, F1 24/25 parsing, .tnrd recording, and (Stage 2) playback.
+    // engineSink_ marshals its JSON rows onto the GUI thread → onEngineRow().
+    std::unique_ptr<tnrp::Engine> engine_;
+    EngineSink*                   engineSink_ = nullptr;
+    void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
 
     // ── Persistence ───────────────────────────────────────────────
     QSettings settings{ "TrackNRace", "NativeRecorder" };
 
     // ── Recording state ───────────────────────────────────────────
-    bool    wantRecord        = false;
+    // The actual write pipeline (gzip .tnrd, rolling flashback buffer, session
+    // rotation, dedup) lives in the engine's TnrdWriter; we only retain the user
+    // intent here and feed it to the engine via applyEngineLogging().
+    bool    wantRecord = false;
     QString outputDirectory;
-    gzFile  activeGzip        = nullptr;
-    int     currentTrackId    = -1;
-    int     currentSessionType = -1;
-    QString activeGzipPath;
-    float   lastSessionTime   = -1.0f;
-
-    struct BufferEntry { std::string line; float sessionTime; };
-    std::vector<BufferEntry> rollingBuffer;
-    static constexpr float BUFFER_WINDOW_S = 30.0f;
-
-    std::unordered_map<int, uint32_t>            lastFrameId;
-    std::unordered_map<int, uint64_t>            lastSlowMs;
-    std::unordered_map<std::string, std::string> dedupeCache;
 
     void resizeEvent(QResizeEvent* e) override;
     void moveEvent(QMoveEvent* e) override;     // tracks the windowed bounds
@@ -460,14 +459,7 @@ private:
     void updateRenderingState();        // recompute desired state from window flags
     void setRenderingActive(bool on);   // start/stop the rendering subsystems
 
-    // ── Recording helpers ─────────────────────────────────────────
-    void startNewStream(int trackId, int sessionType, int format);
-    void closeActiveStream();
-    void flushBufferToDisk(const std::vector<BufferEntry>& entries);
-    void flushOldBufferEntries();
-    void truncateTimeline(float newSessionTime);
-    void processPacket(const uint8_t* data, int length);
-    void recordRow(const nlohmann::json& row, float sessionTime);
+    // ── Live data routing ─────────────────────────────────────────
     void resetFastestLapState();
     void emitLiveData(const nlohmann::json& row);
 
@@ -481,11 +473,4 @@ private:
     // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
     bool scSuppressOnce_ = false;
     void ingestForModel(const nlohmann::json& row, float sessionTime);
-    bool isDuplicate(const std::string& type, const nlohmann::json& row);
-
-    gzFile gzOpenPath(const QString& path, const char* mode);
-
-    static std::string getISOTimestamp();
-    static std::string getFilenameTimestamp();
-    static std::string sanitizeName(const std::string& name);
 };
