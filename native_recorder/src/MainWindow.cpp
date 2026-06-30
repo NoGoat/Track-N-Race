@@ -667,6 +667,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (rideHeightChart_) { rideHeightChart_->setPlaybackMode(true); rideHeightChart_->setCurrentTime(player_->currentTime()); }
         if (ov_tyreCharts_) { ov_tyreCharts_->setPlaybackMode(true); ov_tyreCharts_->setCurrentTime(player_->currentTime()); }
         if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
+        hotSmoother_.reset();   // entering playback: drop live fill state
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
         pb_sep_->show();
         pb_bar_->show();
@@ -776,6 +777,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(closeRecBtn, &QPushButton::clicked, this, [this] {
         player_->close();
         inPlayback_ = false;
+        hotSmoother_.reset();   // back to live: start the fill state fresh
         applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
         resetSessionTimer();
@@ -816,6 +818,14 @@ MainWindow::MainWindow(QWidget* parent)
         QMessageBox::critical(this, "UDP Error",
             "Failed to bind to UDP port 20777.\n"
             "Is another telemetry tool or Track-N-Race already open?");
+
+    // Forward-fill timer: re-emits the last hot row during dropped/late frames so
+    // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
+    // measured frame cadence; bootstraps at 60 Hz until the real rate is detected.
+    hotFillTimer_ = new QTimer(this);
+    hotFillTimer_->setInterval(hotSmoother_.periodMs());
+    connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
+    hotFillTimer_->start();
 
     connect(this, &MainWindow::telemetryUpdated,
             this, [this](float speed, int rpm, int gear,
@@ -1332,9 +1342,36 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // (when enabled) state-row deduplication; we only fan the row out to the live
     // UI panels and the lap-aware SessionModel. Header session_time rides on every
     // hot/cold row that needs it.
+    const std::string type = row.value("type", std::string{});
     const float sessionTime = row.value("session_time", -1.0f);
     emitLiveData(row);
     ingestForModel(row, sessionTime);
+    feedHotSmoother(type, row, sessionTime);
+}
+
+// Records the latest real hot row in the forward-fill smoother (live only). The
+// fill timer (onHotFillTick) re-emits these during gaps so the charts stay smooth
+// on a lossy link. See HotRowSmoother.
+void MainWindow::feedHotSmoother(const std::string& type, const nlohmann::json& row, float sessionTime) {
+    if (type == "telemetry")      hotSmoother_.onTelemetry(row, sessionTime);
+    else if (type == "motion")    hotSmoother_.onMotion(row);
+    else if (type == "motion_ex") hotSmoother_.onMotionEx(row);
+}
+
+// Fires at the measured frame cadence. When the last interval had no fresh
+// telemetry (a dropped/late frame), the smoother yields held-forward rows which we
+// push through the same live path as real rows — display-only, never recorded.
+void MainWindow::onHotFillTick() {
+    if (inPlayback_) return;   // playback feeds the model from the file, no fills
+    std::vector<nlohmann::json> fills = hotSmoother_.tick();
+    for (const nlohmann::json& f : fills) {
+        const float st = f.value("session_time", -1.0f);
+        emitLiveData(f);
+        ingestForModel(f, st);
+    }
+    // Track the detected cadence so the timer beats with the game's send rate.
+    const int p = hotSmoother_.periodMs();
+    if (hotFillTimer_ && hotFillTimer_->interval() != p) hotFillTimer_->setInterval(p);
 }
 
 // ── Live data extraction → signals ─────────────────────────────────────────

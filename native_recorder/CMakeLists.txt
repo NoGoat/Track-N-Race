@@ -66,6 +66,7 @@ set(SOURCES
     src/MainWindow.cpp
     src/MainWindow.h
     src/EngineSink.h
+    src/HotRowSmoother.h
     src/BreezePalette.cpp
     src/BreezePalette.h
     src/TnrdPlayer.cpp

@@ -22,6 +22,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "HotRowSmoother.h"
 #include "components/OverviewLayout.h"
 #include "components/InputLayout.h"
 #include "components/PowerLayout.h"
@@ -368,6 +369,14 @@ private:
     std::unique_ptr<tnrp::Engine> engine_;
     EngineSink*                   engineSink_ = nullptr;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
+
+    // Forward-fill smoother for the live hot stream: on a dropped/late frame it
+    // re-emits the last telemetry/motion/motion_ex one frame forward so the charts
+    // don't stutter on a flaky link. Display-only; driven by hotFillTimer_.
+    HotRowSmoother hotSmoother_;
+    QTimer*        hotFillTimer_ = nullptr;
+    void feedHotSmoother(const std::string& type, const nlohmann::json& row, float sessionTime);
+    void onHotFillTick();
 
     // ── Persistence ───────────────────────────────────────────────
     QSettings settings{ "TrackNRace", "NativeRecorder" };
