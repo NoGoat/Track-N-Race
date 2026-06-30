@@ -67,11 +67,32 @@ function handleRow(row: Record<string, unknown>): void {
   broadcast(row)
 }
 
+let addonModule: any = null
 function loadAddon(): any {
   // Try to load the N-API module
   // Electron's require correctly handles ASAR unpacking for .node files automatically.
+  if (addonModule) return addonModule
   let p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
-  return require(p)
+  addonModule = require(p)
+  return addonModule
+}
+
+// The library-owned i18n catalog for a packet format (2024/2025/2026), used by
+// the TS playback path to label a recorded clip without an Engine instance.
+export function labelsForFormat(format: number): Record<string, string> {
+  try {
+    return JSON.parse(loadAddon().labelsJson(format))
+  } catch {
+    return {}
+  }
+}
+
+// The format the live engine is currently routing with (for restoring labels
+// after playback closes). Falls back to the last detected/stored format.
+export function getLiveFormat(): number {
+  return lastStatus.active
+      ?? lastStatus.detected
+      ?? (store.get('udp.lastDetectedProtocol', 2025) as number)
 }
 
 function pushLogging(): void {

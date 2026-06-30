@@ -641,8 +641,10 @@ MainWindow::MainWindow(QWidget* parent)
         inPlayback_ = true;
         // Resolve labels against the recorded clip's format (DRS vs Straight Line
         // Mode, etc.) for the duration of playback.
-        if (hdr.contains("protocol") && hdr["protocol"].is_number())
+        if (hdr.contains("protocol") && hdr["protocol"].is_number()) {
             tnr::Labels::instance().setFormat(hdr["protocol"].get<uint16_t>());
+            if (cardDrsTitle_) cardDrsTitle_->setText(tnr::L("ui.overview.drs").toUpper());
+        }
         // Clear any frozen live value; the first replayed packet sets it afresh.
         resetSessionTimer();
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
@@ -1347,8 +1349,10 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // i18n catalog (tnr::Labels). The engine emits protocol_status on connect and
     // on every format change, so labels re-theme when 2025↔2026 switches.
     if (row.value("type", std::string{}) == "protocol_status") {
-        if (row.contains("active_format") && row["active_format"].is_number())
+        if (row.contains("active_format") && row["active_format"].is_number()) {
             tnr::Labels::instance().setFormat(row["active_format"].get<uint16_t>());
+            if (cardDrsTitle_) cardDrsTitle_->setText(tnr::L("ui.overview.drs").toUpper());
+        }
         return;
     }
 

@@ -1,5 +1,6 @@
 #include <napi.h>
 #include <tnrp/Engine.h>
+#include <tnrp/Labels.h>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -195,6 +196,7 @@ private:
             if (ovr == "auto") engine->setOverride(tnrp::Override::Auto);
             else if (ovr == "f1_24") engine->setOverride(tnrp::Override::F1_24);
             else if (ovr == "f1_25") engine->setOverride(tnrp::Override::F1_25);
+            else if (ovr == "f1_26") engine->setOverride(tnrp::Override::F1_26);
         }
         return info.Env().Undefined();
     }
@@ -262,8 +264,21 @@ private:
     }
 };
 
+// Module-level: the i18n label catalog JSON for a given packet format
+// (2024/2025/2026). Lets the TS playback path emit a protocol_status with the
+// recorded clip's labels without going through an Engine instance.
+Napi::Value LabelsJson(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    uint16_t format = 2025;
+    if (info.Length() >= 1 && info[0].IsNumber())
+        format = static_cast<uint16_t>(info[0].As<Napi::Number>().Uint32Value());
+    return Napi::String::New(env, tnrp::labelsJson(format));
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
-    return TNRPAddon::Init(env, exports);
+    TNRPAddon::Init(env, exports);
+    exports.Set("labelsJson", Napi::Function::New(env, LabelsJson));
+    return exports;
 }
 
 NODE_API_MODULE(protocol_parser, InitAll)

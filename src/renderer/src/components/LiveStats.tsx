@@ -82,7 +82,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   if (!isConnected || !latest) {
     const placeholders = [
       { key: 'speed', label: 'Speed' }, { key: 'rpm', label: 'RPM' }, { key: 'gear', label: 'Gear' },
-      { key: 'throttle', label: 'Throttle' }, { key: 'brake', label: 'Brake' }, { key: 'drs', label: t('drs.label') },
+      { key: 'throttle', label: 'Throttle' }, { key: 'brake', label: 'Brake' }, { key: 'drs', label: t('ui.overview.drs') },
       { key: 'engine', label: 'Engine' }, { key: 'ers', label: 'ERS' }, { key: 'fuel', label: 'Fuel' },
       { key: 'pos', label: 'P' }, { key: 'tyre', label: 'Tyre' },
     ] as { key: keyof VisibleCards; label: string }[]
@@ -113,7 +113,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
       {visibleCards.throttle && <Card label="Throttle" value={String(Math.round(throttle * 100))} unit="%" textColor={green} />}
       {visibleCards.brake    && <Card label="Brake"    value={String(Math.round(brake * 100))} unit="%" textColor={brake > 0.05 ? red : undefined} />}
       {visibleCards.drs      && (
-        <Card label={t('drs.label')}
+        <Card label={t('ui.overview.drs')}
           value={drs ? 'ON' : 'OFF'}
           textColor={drs ? green : gray}
           sub={damage?.drs_fault === 1 ? 'FAULT' : undefined}

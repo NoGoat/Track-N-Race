@@ -143,6 +143,8 @@ private:
     QLabel*         cardFuel     = nullptr;
     QLabel*         cardPos      = nullptr;
     QLabel*         cardTyre     = nullptr;
+    // DRS card title — re-labelled per format ("DRS" / "SLM" under 2026).
+    QLabel*         cardDrsTitle_ = nullptr;
     // Top-right heading-row sub-labels (e.g. ERS mode, "+4.2 vs fin", "Lap 1").
     QLabel*         cardDrsSub   = nullptr;
     QLabel*         cardErsSub   = nullptr;

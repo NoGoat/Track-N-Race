@@ -1,4 +1,5 @@
 #include "../MainWindow.h"
+#include "../Labels.h"
 #include "../TelemetryChart.h"
 #include "../SessionModel.h"
 #include "TyreCardsWidget.h"
@@ -30,7 +31,7 @@ static QFrame* vsep() {
 // the heading row — the native home for the per-card extra info the Electron app
 // shows as a sub-row under the value (ERS mode, fuel "vs fin", lap, tyre age).
 static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut,
-                            QLabel** subOut = nullptr) {
+                            QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     QVBoxLayout* cv = new QVBoxLayout(card);
@@ -41,6 +42,7 @@ static QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& 
     QFont lf; lf.setPointSize(7);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
+    if (titleOut) *titleOut = lbl;   // expose the title so it can be re-labelled on format change
 
     // Heading row: title on the left, optional sub-info pinned to the right.
     QWidget* hdrRow = new QWidget;
@@ -135,7 +137,7 @@ QWidget* MainWindow::buildOverviewTab() {
         makeStatCard("Brake",    "%",   cardBrake));
     sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::Drs] =
-        makeStatCard("DRS",      "",    cardDrs, &cardDrsSub));
+        makeStatCard(tnr::L("ui.overview.drs"), "", cardDrs, &cardDrsSub, &cardDrsTitle_));
     sh->addWidget(vsep());
     sh->addWidget(ov_statCardFrame_[OverviewLayout::EngineTemp] =
         makeStatCard("Engine",   "°C",  cardEngine));

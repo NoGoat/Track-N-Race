@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows, broadcastBatchToWindows } from './index'
+import { labelsForFormat, getLiveFormat } from './bridgeManager'
 import { BinaryWriter, encodeTelemetry, encodeMotion } from './binaryRows'
 import { medianRoundedPeriodS } from './binaryForwardFill'
 
@@ -397,7 +398,25 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
       startSessionTime = firstTime || 0
       currentSessionTime = startSessionTime
       totalDurationS = Math.max(0.1, (lastTime || 0) - startSessionTime)
-      
+
+      // Tell the renderer which protocol this clip is, with its library i18n
+      // catalog, so playback shows the recorded format's text (e.g. Boost /
+      // Straight Line Mode under 2026) instead of the live/default labels.
+      const pbFormat = typeof headerData?.protocol === 'number' ? headerData.protocol : 2025
+      broadcastToWindows({
+        type: 'protocol_status',
+        detected_format: pbFormat,
+        active_format: pbFormat,
+        override: 'auto',
+        capabilities: {
+          gameYear: pbFormat - 2000,
+          hasBlisters: pbFormat >= 2025,
+          hasLiveryColors: pbFormat >= 2025,
+          hasLapPositions: pbFormat >= 2025,
+        },
+        labels: labelsForFormat(pbFormat),
+      })
+
       resolve()
     } catch (err) {
       reject(err)
@@ -803,6 +822,22 @@ export function closePlayer() {
   lapBlocks.clear()
   lastPackets = {}
   broadcastToWindows({ type: 'playback_close' })
+  // Restore the live format's labels (playback may have switched them, e.g. a
+  // 2026 clip showing Boost while the live game is 2025).
+  const liveFormat = getLiveFormat()
+  broadcastToWindows({
+    type: 'protocol_status',
+    detected_format: liveFormat,
+    active_format: liveFormat,
+    override: 'auto',
+    capabilities: {
+      gameYear: liveFormat - 2000,
+      hasBlisters: liveFormat >= 2025,
+      hasLiveryColors: liveFormat >= 2025,
+      hasLapPositions: liveFormat >= 2025,
+    },
+    labels: labelsForFormat(liveFormat),
+  })
   emitState()
 }
 

@@ -22,6 +22,14 @@ static const int PID_CAR_DAMAGE       = 10;
 static const int PID_SESSION_HISTORY  = 11;
 static const int PID_TYRE_SETS        = 12;
 static const int PID_MOTION_EX        = 13;
+static const int PID_CAR_TEL2         = 16;
+
+// 2026 moves the player's wing state out of Car Telemetry's m_drs (which stays 0
+// under the new regs) and into Car Telemetry 2's m_activeAeroMode (0 = Corner /
+// high-downforce, 1 = Straight / low-drag = "DRS open"). The engine parses on a
+// single thread, so the player's last-seen active-aero mode is cached here and
+// folded into the telemetry row's drs field so the existing indicator responds.
+static uint8_t s_playerActiveAero = 0;
 
 // Car Status grew by one float (m_ersHarvestedLimitPerLap, inserted between
 // m_ersHarvestedThisLapMGUH and m_ersDeployedThisLap) → 55 → 59 bytes per car.
@@ -275,7 +283,10 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             o += 1;
             t.gear          = ReadInt8(data, o);   o += 1;
             t.rpm           = ReadUInt16(data, o); o += 2;
-            t.drs           = data[o++];
+            uint8_t mDrs    = data[o++];
+            // 2026: wing-open state comes from active aero (Car Telemetry 2); fall
+            // back to legacy m_drs if no Car Telemetry 2 has been seen yet.
+            t.drs           = s_playerActiveAero ? 1 : mDrs;
             o += 1; o += 2;
             t.brake_temp_rl = ReadUInt16(data, o); o += 2;
             t.brake_temp_rr = ReadUInt16(data, o); o += 2;
@@ -504,6 +515,20 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             if (hot.wantHotJson) {
                 buf.clear(); (void)glz::write_json(me, buf); hot.hotJson.push_back(std::move(buf));
             }
+            break;
+        }
+
+        // ── CAR_TEL2 (60 Hz, state only) ───────────────────────────────────
+        // New in 2026. Per car 10 bytes; byte 0 is m_activeAeroMode. We only need
+        // the player's wing state, cached for the telemetry row above. Emits no
+        // row of its own. PID 16 sits outside the rate-limit table, so every
+        // packet reaches us each frame.
+        case PID_CAR_TEL2: {
+            int tel2Size = 10;
+            int base = HEADER_SIZE + hdr.playerCarIndex * tel2Size;
+            if (length < base + tel2Size) return {};
+            uint8_t activeAeroMode = data[base];   // 0 = Corner, 1 = Straight
+            s_playerActiveAero = (activeAeroMode == 1) ? 1 : 0;
             break;
         }
     }
