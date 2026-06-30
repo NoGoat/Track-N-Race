@@ -1,5 +1,6 @@
 import { useMemo, useRef, useCallback, memo, useLayoutEffect } from 'react'
 import type { TimingMsg, ParticipantsMsg, TimingCar, DriverInfo, AllStatusMsg } from '../types'
+import { useLabels } from '../lib/labels'
 
 interface Props {
   timing: TimingMsg | null
@@ -12,11 +13,6 @@ interface Props {
   animationsEnabled: boolean
 }
 
-const COMPOUND_NAMES: Record<number, string> = {
-  16: 'C5', 17: 'C4', 22: 'C6',
-  18: 'C3', 19: 'C2', 20: 'C1', 21: 'C0',
-   7: 'INT', 8: 'WET',
-}
 
 const VISUAL_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
@@ -258,6 +254,7 @@ const TowerRow = memo(function TowerRow({
 TowerRow.displayName = 'TowerRow'
 
 const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled }: Props) {
+  const { tn } = useLabels()
   // Per-car tracking refs for freeze + S3 computation
   const prevCarsRef     = useRef<Map<number, TimingCar>>(new Map())
   const frozenRef       = useRef<Map<number, { s1: number; s2: number; s3: number; exp: number }>>(new Map())
@@ -324,11 +321,11 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
           driver: driverMap.get(car.idx),
           isPlayer: car.idx === timing.player_idx,
           isFastest: car.idx === fastestLapCarIdx,
-          tyreLabel: carStatus ? (COMPOUND_NAMES[carStatus.tyre_compound] ?? String(carStatus.tyre_compound)) : null,
+          tyreLabel: carStatus ? tn('tyre.actual', carStatus.tyre_compound) : null,
           tyreColor: carStatus ? (VISUAL_COLORS[carStatus.visual_compound] ?? '#ffffff') : '#ffffff',
         }
       })
-  }, [timing, participants, fastestLapCarIdx])
+  }, [timing, participants, fastestLapCarIdx, tn])
 
   useLayoutEffect(() => {
     const tbody = tbodyRef.current

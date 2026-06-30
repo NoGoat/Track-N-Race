@@ -322,7 +322,7 @@ export type GatewayMsg =
   | PlaybackSeekFlushMsg
 
 export interface ProtocolCapabilities {
-  gameYear:        24 | 25 | null  // null = no packets received yet
+  gameYear:        24 | 25 | 26 | null  // null = no packets received yet
   hasBlisters:     boolean
   hasLiveryColors: boolean
   hasLapPositions: boolean
@@ -330,16 +330,17 @@ export interface ProtocolCapabilities {
 
 export interface ProtocolStatusMsg {
   type:            'protocol_status'
-  detected_format: 2024 | 2025 | null
-  active_format:   2024 | 2025 | null
-  override:        'auto' | 'f1_24' | 'f1_25'
+  detected_format: 2024 | 2025 | 2026 | null
+  active_format:   2024 | 2025 | 2026 | null
+  override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
   capabilities:    ProtocolCapabilities
+  labels?:         Record<string, string>
 }
 
 export interface ProtocolWarningMsg {
   type:            'protocol_warning'
-  detected_format: 2024 | 2025
-  forced_format:   2024 | 2025
+  detected_format: 2024 | 2025 | 2026
+  forced_format:   2024 | 2025 | 2026
 }
 
 declare global {
@@ -358,7 +359,7 @@ declare global {
     }
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
-      setOverride: (value: 'auto' | 'f1_24' | 'f1_25') => void
+      setOverride: (value: 'auto' | 'f1_24' | 'f1_25' | 'f1_26') => void
     }
     fsBridge: {
       selectDirectory: () => Promise<string | null>

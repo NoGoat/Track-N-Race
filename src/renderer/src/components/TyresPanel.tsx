@@ -1,6 +1,7 @@
 import { useState, useMemo, memo } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
+import { useLabels } from '../lib/labels'
 import TyreTrendCharts from './TyreTrendCharts'
 import { WheelCard, wearColor } from './ThermalPanel'
 import { useSize } from '../hooks/useSize'
@@ -19,11 +20,6 @@ interface Props {
 
 const WET_COMPOUNDS = new Set([7, 8])
 
-const COMPOUND_NAMES: Record<number, string> = {
-  16: 'C5', 17: 'C4', 22: 'C6',
-  18: 'C3', 19: 'C2', 20: 'C1', 21: 'C0',
-   7: 'INT',  8: 'WET',
-}
 
 const VISUAL_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
@@ -97,8 +93,9 @@ const AllocationWearBar = memo(function AllocationWearBar({ pct, isDark = true }
 })
 
 const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
+  const { tn }     = useLabels()
   const status     = getStatus(set, sessionType)
-  const compName   = COMPOUND_NAMES[set.actual_compound] ?? String(set.actual_compound)
+  const compName   = tn('tyre.actual', set.actual_compound)
   const compColor  = VISUAL_COLORS[set.visual_compound] ?? '#ffffff'
   const isReturned = status === 'RETURNED'
   const isReserved = status === 'RESERVED'
@@ -205,6 +202,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
 })
 
 export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, sessionType }: Props) {
+  const { tn } = useLabels()
   const [expanded, setExpanded] = useState(false)
   const { ref: cardsRef, height: cardsHeight } = useSize()
 
@@ -228,7 +226,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             {(() => {
               const fitted = tyreSets?.sets.find(s => s.fitted)
               if (!fitted) return null
-              const name  = COMPOUND_NAMES[fitted.actual_compound] ?? String(fitted.actual_compound)
+              const name  = tn('tyre.actual', fitted.actual_compound)
               const color = VISUAL_COLORS[fitted.visual_compound]  ?? 'var(--text-primary)'
               return <>
                 <span className="text-[11px] font-black tabular-nums" style={{ color }}>{name}</span>

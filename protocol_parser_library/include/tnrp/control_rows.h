@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -170,6 +171,10 @@ struct ProtocolStatusRow {
     std::optional<int> active_format;
     std::string        override_;   // mapped to "override" below
     Capabilities       capabilities;
+    // Library-owned i18n label catalog for the active format (see tnrp/Labels.h).
+    // The renderer caches this and resolves every UI label through it, so labels
+    // re-theme live when the format changes.
+    std::map<std::string, std::string> labels;
 };
 
 struct ProtocolWarningRow {
@@ -261,6 +266,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "detected_format", &T::detected_format,
         "active_format",   &T::active_format,
         "override",        &T::override_,
-        "capabilities",    &T::capabilities
+        "capabilities",    &T::capabilities,
+        "labels",          &T::labels
     );
 };

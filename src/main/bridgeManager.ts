@@ -5,7 +5,7 @@ import { HotRowSmoother } from './binaryForwardFill'
 
 const store = new Store()
 
-type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25'
+type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
 let lastStatus: { override: ProtocolOverride; detected: number | null; active: number | null } = {
   override: (store.get('udp.protocol', 'auto') as ProtocolOverride),

@@ -21,7 +21,7 @@ import {
   setOnPlayerStateChange as setOnPlaybackState
 } from './sessionPlayer'
 
-type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25'
+type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'

@@ -6,13 +6,14 @@
 namespace tnrp {
 
 // Manual protocol selection. Auto detects the F1 game year from the packet
-// format word (bytes 0-1) with debounce; F1_24 / F1_25 force a specific parser.
-enum class Override { Auto, F1_24, F1_25 };
+// format word (bytes 0-1) with debounce; F1_24 / F1_25 / F1_26 force a parser.
+enum class Override { Auto, F1_24, F1_25, F1_26 };
 
 inline const char* toString(Override o) {
     switch (o) {
         case Override::F1_24: return "f1_24";
         case Override::F1_25: return "f1_25";
+        case Override::F1_26: return "f1_26";
         default:              return "auto";
     }
 }
@@ -20,6 +21,7 @@ inline const char* toString(Override o) {
 inline Override overrideFromString(const std::string& s) {
     if (s == "f1_24") return Override::F1_24;
     if (s == "f1_25") return Override::F1_25;
+    if (s == "f1_26") return Override::F1_26;
     return Override::Auto;
 }
 

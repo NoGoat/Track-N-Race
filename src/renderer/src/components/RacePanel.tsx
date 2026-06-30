@@ -1,5 +1,6 @@
 import { useRef, memo } from 'react'
 import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
+import { useLabels } from '../lib/labels'
 
 interface Props {
   lap: LapRow | null
@@ -19,12 +20,6 @@ function fmtMs(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}.${String(mills).padStart(3, '0')}`
 }
 
-const COMPOUND_NAMES: Record<number, string> = {
-  16: 'C5', 17: 'C4', 22: 'C6',
-  18: 'C3', 19: 'C2', 20: 'C1', 21: 'C0',
-   7: 'INT', 8: 'WET',
-}
-
 const VISUAL_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
   17: 'var(--compound-medium)',
@@ -33,7 +28,6 @@ const VISUAL_COLORS: Record<number, string> = {
    8: 'var(--compound-wet)',
 }
 
-const ERS_MODES  = ['None', 'Auto', 'Hotlap', 'Overtake']
 const ERS_COLORS = ['text-[var(--text-secondary)]', 'text-[#5794F2]', 'text-[var(--compound-medium)]', 'text-[#C4162A]']
 const FUEL_MIX   = ['Lean', 'Standard', 'Rich', 'Max power']
 const PIT_STATUS = ['', 'Pitting', 'In pit lane']
@@ -55,6 +49,7 @@ function Panel({ children, className = '' }: { children: React.ReactNode; classN
 
 const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDriver, selectedCarStatus, playerIdx, isDark }: Props) {
   // Hooks must come before any early return
+  const { t, tn } = useLabels()
   const prevLapTsRef    = useRef<string | null>(null)
   const prevLapRef      = useRef<LapRow | null>(null)
   const frozenRef       = useRef<{ s1: number; s2: number; s3: number; exp: number } | null>(null)
@@ -112,7 +107,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
     ersPct > 30 ? (isDark ? '#d4ad04' : '#B7950B') :
     '#C4162A'
 
-  const tyreName  = activeStatus ? (COMPOUND_NAMES[activeStatus.tyre_compound] ?? String(activeStatus.tyre_compound)) : null
+  const tyreName  = activeStatus ? tn('tyre.actual', activeStatus.tyre_compound) : null
   const tyreColor = activeStatus ? (VISUAL_COLORS[activeStatus.visual_compound] ?? '#ffffff') : '#ffffff'
 
   return (
@@ -295,7 +290,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                            '#C4162A'
                   }}
                 >
-                  {ERS_MODES[activeStatus.ers_mode] ?? ''}
+                  {tn('ers.mode', activeStatus.ers_mode)}
                 </span>
               </div>
               <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
@@ -317,7 +312,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                 </div>
               </div>
               <div>
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">DRS</div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
                 <div className={`font-bold ${activeStatus.drs_allowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
                   {activeStatus.drs_allowed ? 'AVAILABLE' : 'LOCKED'}
                 </div>
@@ -340,7 +335,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                 <div className="font-bold text-[var(--text-muted)]">— MJ</div>
               </div>
               <div>
-                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">DRS</div>
+                <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
                 <div className="font-bold text-[var(--text-muted)]">—</div>
               </div>
             </div>

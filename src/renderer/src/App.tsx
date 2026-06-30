@@ -4,6 +4,7 @@ import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
+import { LabelsProvider } from './lib/labels'
 import { useAppConfig } from './hooks/useAppConfig'
 import LiveStats from './components/LiveStats'
 import SpeedRpmChart from './components/SpeedRpmChart'
@@ -906,6 +907,7 @@ export default function App() {
   const selectedCarStatus  = allStatus?.cars.find(c => c.idx === selectedIdx) ?? null
 
   return (
+    <LabelsProvider labels={protocolStatus?.labels}>
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       {/* Dynamic Floating Event Banner for Fullscreen Mode */}
       {isFullscreen && !headerVisible && activeBanner && (
@@ -1706,5 +1708,6 @@ export default function App() {
       )}
 
     </div>
+    </LabelsProvider>
   )
 }

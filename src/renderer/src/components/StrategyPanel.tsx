@@ -1,6 +1,10 @@
 import { useMemo, memo, useEffect, useRef, useState } from 'react'
 import type { LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, SessionMsg, TyreSetsMsg, TyreSetEntry, AllStatusMsg } from '../types'
 import { TRACK_MAPS } from '../lib/trackMaps'
+import { useLabels, type Labels } from '../lib/labels'
+
+// Resolves a tyre compound code to its display label (protocol-aware).
+type TyreNamer = Labels['tn']
 
 // ─── Circuit pit-lane time loss ────────────────────────────────────────────────
 // Read from the track map (assets/maps/track_<id>.json, same files as the map
@@ -20,12 +24,6 @@ function pitLossForTrack(trackId: number): PitLoss {
 }
 
 // ─── Lookup tables ────────────────────────────────────────────────────────────
-
-const COMPOUND_NAMES: Record<number, string> = {
-  16: 'C5', 17: 'C4', 22: 'C6',
-  18: 'C3', 19: 'C2', 20: 'C1', 21: 'C0',
-   7: 'INT', 8: 'WET',
-}
 
 const VISUAL_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
@@ -157,6 +155,7 @@ function buildStints(
   currentCompound: { name: string; color: string; actual: number; visual: number },
   avgWear: number,
   availableSets: TyreSetEntry[],
+  tn: TyreNamer,
 ): StrategyResult {
   const stints: StintInfo[] = []
   const clampedPit = Math.min(firstPitLap, totalLaps)
@@ -183,7 +182,7 @@ function buildStints(
     const nextPit  = pitLap + stintLen
     const isLast   = nextPit >= totalLaps
     stints.push({
-      compoundName:   COMPOUND_NAMES[set.actual_compound] ?? String(set.actual_compound),
+      compoundName:   tn('tyre.actual', set.actual_compound),
       tyreColor:      VISUAL_COLORS[set.visual_compound] ?? '#ffffff',
       actualCompound: set.actual_compound,
       visualCompound: set.visual_compound,
@@ -211,6 +210,7 @@ function forceExtraStop(
   result: StrategyResult,
   availableSets: TyreSetEntry[],
   usedActualCompounds: Set<number>,
+  tn: TyreNamer,
 ): StrategyResult {
   if (result.stints.length < 2) return result
 
@@ -236,7 +236,7 @@ function forceExtraStop(
     isLast:   false,
   }
   const part2: StintInfo = {
-    compoundName:   COMPOUND_NAMES[nextSet.actual_compound] ?? String(nextSet.actual_compound),
+    compoundName:   tn('tyre.actual', nextSet.actual_compound),
     tyreColor:      VISUAL_COLORS[nextSet.visual_compound] ?? '#ffffff',
     actualCompound: nextSet.actual_compound,
     visualCompound: nextSet.visual_compound,
@@ -255,9 +255,10 @@ function applyMonacoRule(
   result: StrategyResult,
   availableSets: TyreSetEntry[],
   usedActualCompounds: Set<number>,
+  tn: TyreNamer,
 ): StrategyResult {
   if (result.stops >= 2) return result
-  return forceExtraStop(result, availableSets, usedActualCompounds)
+  return forceExtraStop(result, availableSets, usedActualCompounds, tn)
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -831,6 +832,7 @@ const StrategyHeader = memo(function StrategyHeader({
 const StrategyPanel = memo(function StrategyPanel({
   lap, session, status, damage, timing, participants, tyreSets, allStatus, lapTimesByNum, isDark,
 }: Props) {
+  const { tn } = useLabels()
   const pitLoss = useMemo(() => pitLossForTrack(session?.track_id ?? -1), [session?.track_id])
 
   const isRaceSession = session !== null && [15, 16, 17].includes(session.session_type)
@@ -882,7 +884,7 @@ const StrategyPanel = memo(function StrategyPanel({
     const aggressivePool   = [...basePool].sort((a, b) => a.lap_delta_ms - b.lap_delta_ms)
 
     const currentCompound = {
-      name:   COMPOUND_NAMES[status.tyre_compound] ?? String(status.tyre_compound),
+      name:   tn('tyre.actual', status.tyre_compound),
       color:  VISUAL_COLORS[status.visual_compound] ?? '#ffffff',
       actual: status.tyre_compound,
       visual: status.visual_compound,
@@ -904,10 +906,10 @@ const StrategyPanel = memo(function StrategyPanel({
       ? Math.max(lap.lap_num + 1, lap.lap_num + Math.ceil(pitLoss.totalMs / freshGainMs))
       : consCliffLap
 
-    let conservative = buildStints(lap.lap_num, session.total_laps, consFirstPit, currentCompound, avgWear, conservativePool)
+    let conservative = buildStints(lap.lap_num, session.total_laps, consFirstPit, currentCompound, avgWear, conservativePool, tn)
     if (isMonaco) {
       const usedCompounds = new Set(conservative.stints.map(s => s.actualCompound))
-      conservative = applyMonacoRule(conservative, conservativePool, usedCompounds)
+      conservative = applyMonacoRule(conservative, conservativePool, usedCompounds, tn)
     }
 
     const aggWearRate    = limitWearPerLap * 1.2
@@ -918,14 +920,14 @@ const StrategyPanel = memo(function StrategyPanel({
       ? Math.max(lap.lap_num + 1, session.total_laps - bestAggSet.usable_life)
       : aggCliffLap
     const aggPitLap = Math.min(aggCliffLap, economicOptLap)
-    let aggressive = buildStints(lap.lap_num, session.total_laps, aggPitLap, currentCompound, avgWear, aggressivePool)
+    let aggressive = buildStints(lap.lap_num, session.total_laps, aggPitLap, currentCompound, avgWear, aggressivePool, tn)
     if (aggressive.stops <= conservative.stops) {
       const usedCompounds = new Set(aggressive.stints.map(s => s.actualCompound))
-      aggressive = forceExtraStop(aggressive, aggressivePool, usedCompounds)
+      aggressive = forceExtraStop(aggressive, aggressivePool, usedCompounds, tn)
     }
     if (isMonaco) {
       const usedCompounds = new Set(aggressive.stints.map(s => s.actualCompound))
-      aggressive = applyMonacoRule(aggressive, aggressivePool, usedCompounds)
+      aggressive = applyMonacoRule(aggressive, aggressivePool, usedCompounds, tn)
     }
 
     const leftWear  = (flW + rlW) / 2
@@ -1063,7 +1065,7 @@ const StrategyPanel = memo(function StrategyPanel({
       currentCompound, isMonaco, cliffPct, wearWarnings,
       tyreWears: { fl: flW, fr: frW, rl: rlW, rr: rrW },
     }
-  }, [lap, session, status, damage, tyreSets, isRaceSession, hasTyreData])
+  }, [lap, session, status, damage, tyreSets, isRaceSession, hasTyreData, tn])
 
   // ─── Pace targets ─────────────────────────────────────────────────────────
   // stableLapPace returns the SAME object reference when last_lap_ms values

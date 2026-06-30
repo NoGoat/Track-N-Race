@@ -4,20 +4,18 @@
 #include <QColor>
 #include <nlohmann/json.hpp>
 
+#include "../Labels.h"
+
 // ── Compound label (keyed on actual_compound) ─────────────────────────────
+// Names come from the library i18n catalog; unknown codes fall back to an em dash.
 
 inline QString tyreLabel(int compound) {
     switch (compound) {
-        case 22: return "C6";
-        case 16: return "C5";
-        case 17: return "C4";
-        case 18: return "C3";
-        case 19: return "C2";
-        case 20: return "C1";
-        case 21: return "C0";
-        case  7: return "INT";
-        case  8: return "WET";
-        default: return "—";
+        case 22: case 16: case 17: case 18: case 19: case 20: case 21:
+        case  7: case  8:
+            return tnr::Ln("tyre.actual", compound);
+        default:
+            return "—";
     }
 }
 

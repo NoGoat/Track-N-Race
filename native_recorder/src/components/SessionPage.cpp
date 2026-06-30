@@ -1,4 +1,5 @@
 #include "../MainWindow.h"
+#include "../Labels.h"
 #include "TrackMapWidget.h"
 
 #include <QVBoxLayout>
@@ -139,21 +140,11 @@ static const char* weatherLabel(int w) {
 }
 
 static QString eventCodeLabel(const std::string& code) {
-    if (code == "FTLP") return "Fastest Lap";
-    if (code == "DRSE") return "DRS Enabled";
-    if (code == "DRSD") return "DRS Disabled";
-    if (code == "SCAR") return "Safety Car";
-    if (code == "RTMT") return "Retirement";
-    if (code == "RCWN") return "Race Winner";
-    if (code == "PENA") return "Penalty";
-    if (code == "DTSV") return "DT Served";
-    if (code == "SGSV") return "SG Served";
-    if (code == "SSTA") return "Session Start";
-    if (code == "SEND") return "Session End";
-    if (code == "RDFL") return "Red Flag";
-    if (code == "CHQF") return "Chequered Flag";
-    if (code == "LGOT") return "Lights Out";
-    return QString::fromStdString(code);
+    // Library i18n catalog (protocol-aware: DRSE/DRSD read "Straight Line Mode
+    // …" under 2026). Unknown codes fall back to the raw code.
+    const QString key   = "event." + QString::fromStdString(code);
+    const QString label = tnr::L(key);
+    return label == key ? QString::fromStdString(code) : label;
 }
 
 static QColor eventCodeColor(const std::string& code) {

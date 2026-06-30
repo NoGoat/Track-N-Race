@@ -1,4 +1,5 @@
 #include "ToastEvents.h"
+#include "../Labels.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -65,8 +66,8 @@ std::optional<ToastSpec> buildToast(const nlohmann::json& event,
             QString("%1  ·  %2").arg(lastName(participants, carIdx),
                                      fmtLap(event.value("lap_time_s", 0.0))),
             QColor("#BF5FFF") };
-    if (code == "DRSE") return ToastSpec{ "DRS Enabled",  {}, QColor("#37872D") };
-    if (code == "DRSD") return ToastSpec{ "DRS Disabled", {}, QColor("#8e8e8e") };
+    if (code == "DRSE") return ToastSpec{ tnr::L("event.DRSE"), {}, QColor("#37872D") };
+    if (code == "DRSD") return ToastSpec{ tnr::L("event.DRSD"), {}, QColor("#8e8e8e") };
     if (code == "RDFL") return ToastSpec{ "Red Flag",     {}, QColor("#e10600") };
     if (code == "PENA") {
         const int pt = event.value("penalty_type", 0);

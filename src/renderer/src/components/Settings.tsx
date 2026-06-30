@@ -22,8 +22,8 @@ interface Props {
   mapTimeout: number
   onMapTimeoutChange: (v: number) => void
   detectedGameLabel: string
-  detectedWarningFormat: string | null
-  forcedWarningFormat: string | null
+  detectedWarningFormat: number | null
+  forcedWarningFormat: number | null
   nativeTitlebar: boolean
   onNativeTitlebarChange: (v: boolean) => void
   reduceAnimations: boolean
@@ -131,8 +131,8 @@ const Settings = memo(function Settings({
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
   const [udpStatus, setUdpStatus] = useState<RestartStatus>('idle')
   const [errorMsg, setErrorMsg]   = useState('')
-  const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25'>(
-    () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25')
+  const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25' | 'f1_26'>(
+    () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25' | 'f1_26')
   )
 
   if (!isOpen) return null
@@ -156,7 +156,7 @@ const Settings = memo(function Settings({
     setTimeout(() => setUdpStatus('idle'), 2500)
   }
 
-  function handleProtocolOverrideChange(v: 'auto' | 'f1_24' | 'f1_25') {
+  function handleProtocolOverrideChange(v: 'auto' | 'f1_24' | 'f1_25' | 'f1_26') {
     setProtocolOverride(v)
     window.protocolBridge.setOverride(v)
   }
@@ -341,6 +341,7 @@ const Settings = memo(function Settings({
             { value: 'auto'  as const, label: 'Auto'  },
             { value: 'f1_24' as const, label: '2024' },
             { value: 'f1_25' as const, label: '2025' },
+            { value: 'f1_26' as const, label: '2026' },
           ]}
           value={protocolOverride}
           onChange={handleProtocolOverrideChange}

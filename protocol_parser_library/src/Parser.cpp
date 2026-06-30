@@ -4,10 +4,12 @@
 #include <chrono>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/Labels.h"
 
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
 #include "protocols/f1_25.h"
+#include "protocols/f1_26.h"
 
 namespace tnrp {
 
@@ -55,7 +57,8 @@ static uint64_t nowMs() {
 }
 
 Parser::Parser(Override ovr) : override_v_(ovr) {
-    if (ovr == Override::F1_25) activeFormat_ = 2025;
+    if (ovr == Override::F1_26) activeFormat_ = 2026;
+    else if (ovr == Override::F1_25) activeFormat_ = 2025;
     else if (ovr == Override::F1_24) activeFormat_ = 2024;
 }
 
@@ -67,7 +70,8 @@ void Parser::reset() {
 
 void Parser::setOverride(Override ovr) {
     override_v_ = ovr;
-    if (ovr == Override::F1_25)      activeFormat_ = 2025;
+    if (ovr == Override::F1_26)      activeFormat_ = 2026;
+    else if (ovr == Override::F1_25) activeFormat_ = 2025;
     else if (ovr == Override::F1_24) activeFormat_ = 2024;
     else                             activeFormat_ = detectedFormat_;
     reset();
@@ -76,6 +80,7 @@ void Parser::setOverride(Override ovr) {
 }
 
 uint16_t Parser::effectiveFormat(uint16_t incoming) const {
+    if (override_v_ == Override::F1_26) return 2026;
     if (override_v_ == Override::F1_25) return 2025;
     if (override_v_ == Override::F1_24) return 2024;
     if (detectedFormat_) return detectedFormat_;
@@ -84,16 +89,23 @@ uint16_t Parser::effectiveFormat(uint16_t incoming) const {
 }
 
 std::string Parser::statusRow() const {
-    int gameYear = activeFormat_ == 2025 ? 25 : (activeFormat_ == 2024 ? 24 : -1);
-    bool isF125 = activeFormat_ == 2025;
+    int gameYear = activeFormat_ == 2026 ? 26
+                 : (activeFormat_ == 2025 ? 25
+                 : (activeFormat_ == 2024 ? 24 : -1));
+    // 2026 is a superset of 2025 — these capabilities hold from 2025 onward.
+    bool isF125OrLater = activeFormat_ >= 2025;
     ProtocolStatusRow row;
     if (gameYear >= 0)   row.capabilities.gameYear = gameYear;
-    row.capabilities.hasBlisters     = isF125;
-    row.capabilities.hasLiveryColors = isF125;
-    row.capabilities.hasLapPositions = isF125;
+    row.capabilities.hasBlisters     = isF125OrLater;
+    row.capabilities.hasLiveryColors = isF125OrLater;
+    row.capabilities.hasLapPositions = isF125OrLater;
     if (detectedFormat_) row.detected_format = detectedFormat_;
     if (activeFormat_)   row.active_format   = activeFormat_;
     row.override_ = toString(override_v_);
+    // Ship the i18n catalog for the active format (default to 2025 before any
+    // packet is seen) so the renderer always has labels to resolve against.
+    const auto& cat = labelsFor(activeFormat_ ? activeFormat_ : 2025);
+    row.labels.insert(cat.all().begin(), cat.all().end());
     return writeJsonNullable(row);
 }
 
@@ -102,7 +114,7 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     if (length < HEADER_SIZE) { r.dropped = true; return r; }
 
     uint16_t incoming = ReadUInt16(data, 0);
-    if (incoming != 2024 && incoming != 2025) { r.dropped = true; return r; }
+    if (incoming != 2024 && incoming != 2025 && incoming != 2026) { r.dropped = true; return r; }
 
     // ── Debounce auto-detection (3 consecutive same-format packets) ──────────
     if (incoming != debounceCandidate_) {
@@ -185,9 +197,9 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
 
     HotOut hot;
     hot.wantHotJson = wantHotJson;
-    r.rows = (eff == 2024)
-        ? F1_24::ParsePacket(data, length, hdr, ts, hot)
-        : F1_25::ParsePacket(data, length, hdr, ts, hot);
+    r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot)
+           : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot)
+                           : F1_25::ParsePacket(data, length, hdr, ts, hot);
     r.hotJson = std::move(hot.hotJson);
     r.binary  = std::move(hot.binary);
     return r;

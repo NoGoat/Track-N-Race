@@ -39,7 +39,8 @@ const std::unordered_map<int, std::string> TRACK_NAMES = {
     {32, "Qatar Grand Prix"},
     {39, "British Grand Prix"},
     {40, "Austrian Grand Prix"},
-    {41, "Dutch Grand Prix"}
+    {41, "Dutch Grand Prix"},
+    {42, "Madrid Grand Prix"}   // 2026 Season Pack
 };
 
 const std::unordered_map<int, std::string> SESSION_NAMES = {

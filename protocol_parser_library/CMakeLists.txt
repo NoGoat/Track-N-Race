@@ -32,7 +32,9 @@ add_library(tnrp STATIC
     src/protocols/protocol.cpp
     src/protocols/f1_24.cpp
     src/protocols/f1_25.cpp
+    src/protocols/f1_26.cpp
     src/TimeUtils.cpp
+    src/Labels.cpp
     src/Parser.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp

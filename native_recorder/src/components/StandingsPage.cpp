@@ -1,4 +1,5 @@
 #include "../MainWindow.h"
+#include "../Labels.h"
 #include "TyreHelpers.h"
 
 #include <QVBoxLayout>
@@ -439,8 +440,8 @@ void MainWindow::updateRacePanel() {
         rp_ersBar->setStyleSheet(
             QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor));
 
-        static const char* ersModes[] = {"None", "Auto", "Hotlap", "Overtake"};
-        rp_ersMode->setText(ersMode >= 0 && ersMode < 4 ? ersModes[ersMode] : "—");
+        // ERS deploy mode label (protocol-aware: "Overtake" → "Boost" in 2026).
+        rp_ersMode->setText(ersMode >= 0 && ersMode < 4 ? tnr::Ln("ers.mode", ersMode) : "—");
 
         rp_drs->setText(drsOk ? "AVAILABLE" : "LOCKED");
         rp_drs->setStyleSheet(drsOk ? "color: #37872D; font-weight: bold;" : "");

@@ -1,12 +1,6 @@
 import { memo } from 'react'
 import type { TelemetryRow, StatusRow, LapRow, DamageRow } from '../types'
-
-// Actual compound code → display name + color
-const COMPOUND_NAMES: Record<number, string> = {
-  16: 'C5', 17: 'C4', 22: 'C6',
-  18: 'C3', 19: 'C2', 20: 'C1', 21: 'C0',
-   7: 'INT', 8: 'WET',
-}
+import { useLabels } from '../lib/labels'
 
 // Visual compound codes: always Soft/Med/Hard regardless of which C-number this weekend
 const VISUAL_COLORS: Record<number, string> = {
@@ -17,7 +11,6 @@ const VISUAL_COLORS: Record<number, string> = {
    8: 'text-[var(--compound-wet)]',
 }
 
-const ERS_MODES = ['None', 'Auto', 'Hotlap', 'Overtake']
 const FUEL_MIX  = ['Lean', 'Std', 'Rich', 'Max']
 
 interface VisibleCards {
@@ -79,6 +72,7 @@ const Card = memo(function Card({
 })
 
 const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark }: Props) {
+  const { t, tn } = useLabels()
   const green  = isDark ? '#37872D' : '#137333'
   const red    = '#C4162A'
   const blue   = isDark ? '#5794F2' : '#0B57D0'
@@ -88,7 +82,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   if (!isConnected || !latest) {
     const placeholders = [
       { key: 'speed', label: 'Speed' }, { key: 'rpm', label: 'RPM' }, { key: 'gear', label: 'Gear' },
-      { key: 'throttle', label: 'Throttle' }, { key: 'brake', label: 'Brake' }, { key: 'drs', label: 'DRS' },
+      { key: 'throttle', label: 'Throttle' }, { key: 'brake', label: 'Brake' }, { key: 'drs', label: t('drs.label') },
       { key: 'engine', label: 'Engine' }, { key: 'ers', label: 'ERS' }, { key: 'fuel', label: 'Fuel' },
       { key: 'pos', label: 'P' }, { key: 'tyre', label: 'Tyre' },
     ] as { key: keyof VisibleCards; label: string }[]
@@ -108,7 +102,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
     gear <= 6 ? (isDark ? '#c47d0e' : '#C26400') :
     red
 
-  const tyreName  = status ? (COMPOUND_NAMES[status.tyre_compound] ?? String(status.tyre_compound)) : null
+  const tyreName  = status ? tn('tyre.actual', status.tyre_compound) : null
   const tyreColor = status ? (VISUAL_COLORS[status.visual_compound] ?? 'text-[var(--text-primary)]') : undefined
 
   return (
@@ -119,7 +113,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
       {visibleCards.throttle && <Card label="Throttle" value={String(Math.round(throttle * 100))} unit="%" textColor={green} />}
       {visibleCards.brake    && <Card label="Brake"    value={String(Math.round(brake * 100))} unit="%" textColor={brake > 0.05 ? red : undefined} />}
       {visibleCards.drs      && (
-        <Card label="DRS"
+        <Card label={t('drs.label')}
           value={drs ? 'ON' : 'OFF'}
           textColor={drs ? green : gray}
           sub={damage?.drs_fault === 1 ? 'FAULT' : undefined}
@@ -132,7 +126,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
           value={status ? `${status.ers_pct.toFixed(0)}` : '—'}
           unit={status ? '%' : undefined}
           textColor={!status ? undefined : status.ers_mode === 3 ? red : status.ers_pct < 20 ? yellow : blue}
-          sub={damage?.ers_fault === 1 ? 'FAULT' : status ? ERS_MODES[status.ers_mode] ?? '' : undefined}
+          sub={damage?.ers_fault === 1 ? 'FAULT' : status ? tn('ers.mode', status.ers_mode) : undefined}
           subTextColor={damage?.ers_fault === 1 ? red : undefined}
         />
       )}
