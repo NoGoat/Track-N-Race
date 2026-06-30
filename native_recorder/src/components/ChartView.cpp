@@ -282,9 +282,18 @@ void ChartView::setHoverReadout(bool on)
         d_->tooltip = new QLabel(p);
         d_->tooltip->setTextFormat(Qt::RichText);
         d_->tooltip->setAttribute(Qt::WA_TransparentForMouseEvents);
-        d_->tooltip->setStyleSheet(
-            "background: rgba(20,20,20,210); border: 1px solid rgba(150,150,150,90);"
-            "border-radius: 4px; padding: 5px 8px;");
+        {
+            const auto rgba = [](const QColor& c) {
+                return QString("rgba(%1,%2,%3,%4)")
+                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+            };
+            const QColor tipBg = palette().color(QPalette::Button);
+            const QColor tipFg = palette().color(QPalette::ToolTipText);
+            QColor tipBorder = tipFg; tipBorder.setAlpha(90);
+            d_->tooltip->setStyleSheet(QString(
+                "background: %1; color: %2; border: 1px solid %3; padding: 5px 8px;")
+                .arg(rgba(tipBg), rgba(tipFg), rgba(tipBorder)));
+        }
         d_->tooltip->hide();
 
         p->setMouseTracking(true);
@@ -304,7 +313,7 @@ void ChartView::setHoverReadout(bool on)
 
             // Time header (m:ss), then one coloured line per named visible series.
             const int totalSec = qMax(0, (int)(key + 0.5));
-            const QColor t = palette().color(QPalette::Text);
+            const QColor t = palette().color(QPalette::ToolTipText);
             QString html = QString("<div style='color:rgba(%1,%2,%3,0.6)'>%4:%5</div>")
                 .arg(t.red()).arg(t.green()).arg(t.blue())
                 .arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0'));
