@@ -12,6 +12,7 @@
 #include <QFrame>
 #include <QSettings>
 #include <QByteArray>
+#include <QHash>
 
 #include <string>
 #include <vector>
@@ -113,7 +114,7 @@ public:
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
-                          float throttle, float brake, float steering, bool drs, int engineTemp);
+                          float throttle, float brake, float steering, bool drs, int engineTemp, bool slm);
     void statusUpdated(float ersPct, int ersMode, float fuelKg,
                        float fuelLaps, int tyreCompound, int tyreAgeLaps,
                        int fuelMix, int visualCompound);
@@ -131,31 +132,25 @@ private slots:
     void onEngineRow(const QByteArray& json);
 
 private:
-    // ── Overview tab ──────────────────────────────────────────────
-    QLabel*         cardSpeed    = nullptr;
-    QLabel*         cardRpm      = nullptr;
-    QLabel*         cardGear     = nullptr;
-    QLabel*         cardThrottle = nullptr;
-    QLabel*         cardBrake    = nullptr;
-    QLabel*         cardDrs      = nullptr;
-    QLabel*         cardEngine   = nullptr;
-    QLabel*         cardErs      = nullptr;
-    QLabel*         cardFuel     = nullptr;
-    QLabel*         cardPos      = nullptr;
-    QLabel*         cardTyre     = nullptr;
-    // DRS card title — re-labelled per format ("DRS" / "SLM" under 2026).
-    QLabel*         cardDrsTitle_ = nullptr;
-    // Top-right heading-row sub-labels (e.g. ERS mode, "+4.2 vs fin", "Lap 1").
-    QLabel*         cardDrsSub   = nullptr;
-    QLabel*         cardErsSub   = nullptr;
-    QLabel*         cardFuelSub  = nullptr;
-    QLabel*         cardPosSub   = nullptr;
-    QLabel*         cardTyreSub  = nullptr;
-    // The ERS sub shows the deploy mode, but a fault (from the damage packet)
-    // overrides it. Both arrive on separate packets, so latch each and recompute.
-    int             ovErsMode_   = -1;
-    bool            ovErsFault_  = false;
-    void            refreshErsSub();
+    // ── Overview tab — key-driven stat cards ──────────────────────
+    // Value / sub / title QLabels keyed by card key (speed, rpm, …, drs, …).
+    // A card is a { key, label } pair: the title comes from the i18n catalog,
+    // the value from a per-key resolver over the latest data cache below.
+    QHash<QString, QLabel*> ovCardValue_;
+    QHash<QString, QLabel*> ovCardSub_;
+    QHash<QString, QLabel*> ovCardTitle_;
+    // Latest values the overview resolvers read; updated by the live/playback
+    // signals, then refreshOverviewCards() recomputes every visible card.
+    struct OvCache {
+        float speed = 0; int rpm = 0; int gear = 0; float throttle = 0; float brake = 0;
+        bool drs = false; bool slm = false; int engineTemp = 0;
+        float ersPct = 0; int ersMode = -1; bool ersFault = false; bool drsFault = false;
+        float fuelKg = 0; float fuelLaps = 0;
+        int tyreCompound = -1; int visualCompound = -1; int tyreAgeLaps = 0; int fuelMix = -1;
+        int pos = 0; int lapNum = 0;
+    } ovCache_;
+    void refreshOverviewCards();   // recompute value + colour for every built card
+    void refreshOverviewTitles();  // re-label titles from the catalog (format-aware wing)
     TelemetryChart* chart        = nullptr;
     SessionModel*   model_       = nullptr;
     QComboBox*      ov_lapCombo_ = nullptr;   // compare-lap selector (Overview)

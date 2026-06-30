@@ -8,6 +8,7 @@
 #include "SessionModel.h"
 #include "EngineSink.h"
 #include "Labels.h"
+#include "components/CardColors.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
@@ -643,7 +644,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Mode, etc.) for the duration of playback.
         if (hdr.contains("protocol") && hdr["protocol"].is_number()) {
             tnr::Labels::instance().setFormat(hdr["protocol"].get<uint16_t>());
-            if (cardDrsTitle_) cardDrsTitle_->setText(tnr::L("ui.overview.drs").toUpper());
+            refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
         }
         // Clear any frozen live value; the first replayed packet sets it afresh.
         resetSessionTimer();
@@ -834,62 +835,35 @@ MainWindow::MainWindow(QWidget* parent)
     connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
     hotFillTimer_->start();
 
+    // The live/playback signals only refresh the data cache; refreshOverviewCards()
+    // then recomputes every visible card from it via the per-key resolvers.
     connect(this, &MainWindow::telemetryUpdated,
             this, [this](float speed, int rpm, int gear,
-                         float throttle, float brake, float steering, bool drs, int engineTemp) {
-        cardSpeed->setText(QString::number((int)speed));
-        cardSpeed->setStyleSheet("color: #37872D; font-weight: bold;");
-        cardRpm->setText(QLocale().toString(rpm));
-        cardRpm->setStyleSheet("color: #C4162A; font-weight: bold;");
-        cardGear->setText(gear <= 0 ? (gear < 0 ? "R" : "N") : QString::number(gear));
-        QString gearColor = gear <= 2 ? "#5794F2" : (gear <= 4 ? "#FADE2A" : (gear <= 6 ? "#c47d0e" : "#C4162A"));
-        cardGear->setStyleSheet(QString("color: %1; font-weight: bold;").arg(gearColor));
-        cardThrottle->setText(QString::number((int)(throttle * 100)));
-        cardThrottle->setStyleSheet("color: #37872D; font-weight: bold;");
-        cardBrake->setText(QString::number((int)(brake * 100)));
-        cardBrake->setStyleSheet(brake > 0.05 ? "color: #C4162A; font-weight: bold;" : "font-weight: bold;");
-        cardDrs->setText(drs ? "ON" : "OFF");
-        cardDrs->setStyleSheet(drs ? "color: #37872D; font-weight: bold;"
-                                   : "color: gray; font-weight: bold;");
-        cardEngine->setText(QString::number(engineTemp));
-        cardEngine->setStyleSheet(engineTemp > 112 ? "color: #C4162A; font-weight: bold;"
-                                                   : "font-weight: bold;");
+                         float throttle, float brake, float steering, bool drs, int engineTemp, bool slm) {
+        ovCache_.speed = speed; ovCache_.rpm = rpm; ovCache_.gear = gear;
+        ovCache_.throttle = throttle; ovCache_.brake = brake;
+        ovCache_.drs = drs; ovCache_.slm = slm; ovCache_.engineTemp = engineTemp;
+        refreshOverviewCards();
     });
 
     connect(this, &MainWindow::statusUpdated,
             this, [this](float ersPct, int ersMode, float fuelKg, float fuelLaps,
                          int tyreCompound, int tyreAgeLaps, int fuelMix, int visualCompound) {
-        static const char* FUEL_MIX[]  = { "Lean", "Std", "Rich", "Max" };
-
-        cardErs->setText(QString::number((int)ersPct));
-        QString ersColor = ersMode == 3 ? "#C4162A" : (ersPct < 20 ? "#FADE2A" : "#5794F2");
-        cardErs->setStyleSheet(QString("color: %1; font-weight: bold;").arg(ersColor));
-        ovErsMode_ = ersMode;
-        refreshErsSub();
-
-        cardFuel->setText(QString::number(fuelKg, 'f', 1));
-        QString fuelColor = fuelLaps > 1 ? "#37872D" : (fuelLaps >= 0 ? "#FADE2A" : "#C4162A");
-        cardFuel->setStyleSheet(QString("color: %1; font-weight: bold;").arg(fuelColor));
-        cardFuelSub->setText(QString("%1%2 vs fin")
-            .arg(fuelLaps >= 0 ? "+" : "").arg(fuelLaps, 0, 'f', 1));
-
-        cardTyre->setText(tyreLabel(tyreCompound));
-        const QColor tc = tyreTextColor(visualCompound);
-        cardTyre->setStyleSheet(tc.isValid()
-            ? QString("color: %1; font-weight: bold;").arg(tc.name())
-            : "font-weight: bold;");
-        cardTyreSub->setText(QString("%1L · %2")
-            .arg(tyreAgeLaps).arg(fuelMix >= 0 && fuelMix < 4 ? FUEL_MIX[fuelMix] : ""));
+        ovCache_.ersPct = ersPct; ovCache_.ersMode = ersMode;
+        ovCache_.fuelKg = fuelKg; ovCache_.fuelLaps = fuelLaps;
+        ovCache_.tyreCompound = tyreCompound; ovCache_.tyreAgeLaps = tyreAgeLaps;
+        ovCache_.fuelMix = fuelMix; ovCache_.visualCompound = visualCompound;
+        refreshOverviewCards();
     });
 
     connect(this, &MainWindow::lapUpdated,
             this, [this](int pos, int lapNum) {
-        cardPos->setText("P" + QString::number(pos));
-        cardPosSub->setText("Lap " + QString::number(lapNum));
+        ovCache_.pos = pos; ovCache_.lapNum = lapNum;
+        refreshOverviewCards();
     });
 
     connect(this, &MainWindow::telemetryUpdated,
-            chart, [](float, int, int, float, float, float, bool, int) {
+            chart, [](float, int, int, float, float, float, bool, int, bool) {
         // chart is updated directly from the SessionModel, not this signal
     });
 
@@ -908,23 +882,76 @@ MainWindow::MainWindow(QWidget* parent)
             setDmgValue(dmgSidepod,   sp); setDmgValue(dmgDiffuser, diff);
             setDmgValue(dmgGearbox,   gb); setDmgValue(dmgEngine,   eng);
 
-            cardDrsSub->setText(drsFault == 1 ? "FAULT" : "");
-            cardDrsSub->setStyleSheet(drsFault == 1 ? "color: #C4162A;" : "");
-            ovErsFault_ = (ersFault == 1);
-            refreshErsSub();
+            ovCache_.drsFault = (drsFault == 1);
+            ovCache_.ersFault = (ersFault == 1);
+            refreshOverviewCards();
         });
 }
 
-void MainWindow::refreshErsSub() {
-    if (!cardErsSub) return;
-    if (ovErsFault_) {
-        cardErsSub->setText("FAULT");
-        cardErsSub->setStyleSheet("color: #C4162A;");
-    } else {
-        // ERS deploy mode label (protocol-aware: "Overtake" → "Boost" in 2026).
-        cardErsSub->setText(ovErsMode_ >= 0 && ovErsMode_ < 4 ? tnr::Ln("ers.mode", ovErsMode_) : "");
-        cardErsSub->setStyleSheet("");
+// Re-label the stat-card titles from the i18n catalog. Called on format change
+// so the wing card flips DRS ↔ SLM with the active game year.
+void MainWindow::refreshOverviewTitles() {
+    for (auto it = ovCardTitle_.cbegin(); it != ovCardTitle_.cend(); ++it) {
+        if (it.value()) it.value()->setText(tnr::L("ui.overview." + it.key()).toUpper());
     }
+}
+
+// Recompute every built overview card's value + colour (+ optional sub) from the
+// data cache via the per-key resolvers. Colours come from the shared library spec
+// (tnr::cardColor), so thresholds match the Electron app exactly.
+void MainWindow::refreshOverviewCards() {
+    const OvCache& c = ovCache_;
+    static const char* FUEL_MIX[] = { "Lean", "Std", "Rich", "Max" };
+
+    auto setCard = [this](const QString& key, const QString& value, const QColor& color) {
+        if (QLabel* l = ovCardValue_.value(key)) {
+            l->setText(value);
+            l->setStyleSheet(tnr::cardColorStyle(color));
+        }
+    };
+    auto setSub = [this](const QString& key, const QString& sub, const QColor& subColor = QColor()) {
+        if (QLabel* l = ovCardSub_.value(key)) {
+            l->setText(sub);
+            l->setStyleSheet(subColor.isValid() ? QString("color: %1;").arg(subColor.name()) : QString());
+        }
+    };
+
+    setCard("speed", QString::number((int)c.speed), tnr::cardColor("speed"));
+    setCard("rpm",   QLocale().toString(c.rpm),     tnr::cardColor("rpm"));
+    setCard("gear",  c.gear <= 0 ? (c.gear < 0 ? QStringLiteral("R") : QStringLiteral("N"))
+                                 : QString::number(c.gear),
+            tnr::cardColor("gear", c.gear));
+    setCard("throttle", QString::number((int)(c.throttle * 100)), tnr::cardColor("throttle"));
+    setCard("brake",    QString::number((int)(c.brake * 100)),
+            tnr::cardColor("brake", NAN, { {"brake", c.brake} }));
+
+    // Wing card: data field is format-aware (drs in 2025, slm in 2026).
+    const bool wingOpen = (tnr::Labels::instance().t("card.wing.key") == "slm") ? c.slm : c.drs;
+    setCard("drs", wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF"),
+            tnr::cardColor("wing", wingOpen ? 1 : 0));
+    setSub("drs", c.drsFault ? QStringLiteral("FAULT") : QString(),
+           c.drsFault ? QColor("#C4162A") : QColor());
+
+    setCard("engine", QString::number(c.engineTemp), tnr::cardColor("engine", c.engineTemp));
+
+    setCard("ers", QString::number((int)c.ersPct),
+            tnr::cardColor("ers", c.ersPct, { {"ers_mode", (double)c.ersMode}, {"ers_pct", c.ersPct} }));
+    if (c.ersFault)
+        setSub("ers", QStringLiteral("FAULT"), QColor("#C4162A"));
+    else
+        setSub("ers", (c.ersMode >= 0 && c.ersMode < 4) ? tnr::Ln("ers.mode", c.ersMode) : QString());
+
+    setCard("fuel", QString::number(c.fuelKg, 'f', 1),
+            tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }));
+    setSub("fuel", QString("%1%2 vs fin").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1));
+
+    setCard("pos", "P" + QString::number(c.pos), QColor());
+    setSub("pos", "Lap " + QString::number(c.lapNum));
+
+    setCard("tyre", tyreLabel(c.tyreCompound),
+            tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} }));
+    setSub("tyre", QString("%1L · %2")
+        .arg(c.tyreAgeLaps).arg(c.fuelMix >= 0 && c.fuelMix < 4 ? FUEL_MIX[c.fuelMix] : ""));
 }
 
 MainWindow::~MainWindow() {
@@ -1351,7 +1378,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     if (row.value("type", std::string{}) == "protocol_status") {
         if (row.contains("active_format") && row["active_format"].is_number()) {
             tnr::Labels::instance().setFormat(row["active_format"].get<uint16_t>());
-            if (cardDrsTitle_) cardDrsTitle_->setText(tnr::L("ui.overview.drs").toUpper());
+            refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
         }
         return;
     }
@@ -1408,7 +1435,8 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
             row["brake"].get<float>(),
             row.value("steering", 0.0f),
             row.value("drs", 0) != 0,
-            row.value("engine_temp", 0)
+            row.value("engine_temp", 0),
+            row.value("slm", 0) != 0
         );
         lastPlayerTelemetryData = row;
         dirtyTyres_ = true; scheduleUiRefresh();

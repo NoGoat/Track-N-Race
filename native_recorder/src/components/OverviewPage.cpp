@@ -121,38 +121,33 @@ QWidget* MainWindow::buildOverviewTab() {
     sh->setContentsMargins(8, 0, 8, 0);   // L/R inset; lines above/below reach edges
     sh->setSpacing(0);
 
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Speed] =
-        makeStatCard("Speed",    "kph", cardSpeed));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Rpm] =
-        makeStatCard("RPM",      "",    cardRpm));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Gear] =
-        makeStatCard("Gear",     "",    cardGear));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Throttle] =
-        makeStatCard("Throttle", "%",   cardThrottle));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Brake] =
-        makeStatCard("Brake",    "%",   cardBrake));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Drs] =
-        makeStatCard(tnr::L("ui.overview.drs"), "", cardDrs, &cardDrsSub, &cardDrsTitle_));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::EngineTemp] =
-        makeStatCard("Engine",   "°C",  cardEngine));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Ers] =
-        makeStatCard("ERS",      "%",   cardErs, &cardErsSub));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Fuel] =
-        makeStatCard("Fuel",     "kg",  cardFuel, &cardFuelSub));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Pos] =
-        makeStatCard("Pos",      "",    cardPos, &cardPosSub));
-    sh->addWidget(vsep());
-    sh->addWidget(ov_statCardFrame_[OverviewLayout::Tyre] =
-        makeStatCard("Tyre",     "",    cardTyre, &cardTyreSub));
+    // Key-driven stat cards. Each card is { key, label }: title from the i18n
+    // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
+    // data cache (see refreshOverviewCards). The wing card keeps the 'drs'
+    // visibility key while its data field is format-aware (drs ↔ slm).
+    struct CardDef { OverviewLayout::StatCard idx; const char* unit; bool sub; };
+    static const CardDef defs[] = {
+        { OverviewLayout::Speed,      "kph", false }, { OverviewLayout::Rpm,        "",    false },
+        { OverviewLayout::Gear,       "",    false }, { OverviewLayout::Throttle,   "%",   false },
+        { OverviewLayout::Brake,      "%",   false }, { OverviewLayout::Drs,        "",    true  },
+        { OverviewLayout::EngineTemp, "°C",  false }, { OverviewLayout::Ers,        "%",   true  },
+        { OverviewLayout::Fuel,       "kg",  true  }, { OverviewLayout::Pos,        "",    true  },
+        { OverviewLayout::Tyre,       "",    true  },
+    };
+    bool first = true;
+    for (const CardDef& d : defs) {
+        const QString key = OverviewLayout::statCardKey(d.idx);
+        QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
+        QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
+                                     val, d.sub ? &sub : nullptr, &title);
+        ov_statCardFrame_[d.idx] = frame;
+        ovCardValue_[key] = val;
+        ovCardTitle_[key] = title;
+        if (sub) ovCardSub_[key] = sub;
+        if (!first) sh->addWidget(vsep());
+        first = false;
+        sh->addWidget(frame);
+    }
 
     vbox->addWidget(ov_statsFrame_);
 

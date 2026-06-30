@@ -8,6 +8,8 @@
 
 #include <glaze/glaze.hpp>
 
+#include "tnrp/CardColors.h"
+
 // Typed structs for the lower-frequency / control / playback rows that used to be
 // built with nlohmann::json. Serialise with glaze, mirroring tnrp/rows.h.
 //
@@ -175,6 +177,9 @@ struct ProtocolStatusRow {
     // The renderer caches this and resolves every UI label through it, so labels
     // re-theme live when the format changes.
     std::map<std::string, std::string> labels;
+    // Library-owned declarative card-colour spec (format-independent; see
+    // tnrp/CardColors.h). Shipped here so the renderer shares one colour model.
+    std::map<std::string, ColorSpec> cardColors;
 };
 
 struct ProtocolWarningRow {
@@ -267,6 +272,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "active_format",   &T::active_format,
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
-        "labels",          &T::labels
+        "labels",          &T::labels,
+        "cardColors",      &T::cardColors
     );
 };

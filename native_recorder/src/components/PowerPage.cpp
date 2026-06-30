@@ -1,6 +1,7 @@
 #include "../MainWindow.h"
 #include "PowerChart.h"
 #include "../SessionModel.h"
+#include "CardColors.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -272,7 +273,7 @@ void MainWindow::updatePowerPage() {
 
     pp_totalPowerVal->setText(QString::number(std::round(totalKw)));
     
-    QColor cTotal = totalKw > 800 ? QColor("#C4162A") : (totalKw > 600 ? QColor("#FADE2A") : QColor("#37872D"));
+    QColor cTotal = tnr::cardColor("power.total", totalKw);
     QPalette p = pp_totalPowerVal->palette();
     p.setColor(QPalette::WindowText, cTotal);
     pp_totalPowerVal->setPalette(p);
@@ -285,7 +286,7 @@ void MainWindow::updatePowerPage() {
     pp_ersStoreVal->setText(QString::number(ersMj, 'f', 2));
     pp_ersPctVal->setText(QString::number(std::round(ersPct)));
     
-    QColor cErs = ersPct > 60 ? QColor("#5794F2") : (ersPct > 30 ? QColor("#FADE2A") : QColor("#C4162A"));
+    QColor cErs = tnr::cardColor("power.ers", ersPct);
     QPalette pErs = pp_ersPctVal->palette();
     pErs.setColor(QPalette::WindowText, cErs);
     pp_ersPctVal->setPalette(pErs);

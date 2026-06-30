@@ -44,6 +44,7 @@ export function encodeTelemetry(w: BinaryWriter, o: any): void {
   w.u8(o.tyre_temp_inner_rl); w.u8(o.tyre_temp_inner_rr); w.u8(o.tyre_temp_inner_fl); w.u8(o.tyre_temp_inner_fr)
   w.u16(o.brake_temp_rl); w.u16(o.brake_temp_rr); w.u16(o.brake_temp_fl); w.u16(o.brake_temp_fr)
   w.u16(o.engine_temp)
+  w.u8(o.slm ?? 0)
 }
 
 export function encodeMotion(w: BinaryWriter, o: any): void {
@@ -68,7 +69,7 @@ export function recWithSessionTime(rec: Buffer, st: number): Buffer {
 // Byte length of the record starting at offset `o`, or -1 for an unknown tag.
 function recordLen(batch: Buffer, o: number): number {
   switch (batch[o]) {
-    case 1: return 45                       // telemetry
+    case 1: return 46                       // telemetry
     case 2: return 29                       // motion
     case 4: return 21                       // motion_ex
     case 3: return 3 + batch[o + 2] * 16    // positions: tag + player_idx + n + n*(x,z)

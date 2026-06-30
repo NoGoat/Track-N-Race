@@ -87,6 +87,15 @@ export function labelsForFormat(format: number): Record<string, string> {
   }
 }
 
+// The library-owned declarative card-colour spec (format-independent).
+export function cardColorSpecs(): Record<string, unknown> {
+  try {
+    return JSON.parse(loadAddon().cardColorsJson())
+  } catch {
+    return {}
+  }
+}
+
 // The format the live engine is currently routing with (for restoring labels
 // after playback closes). Falls back to the last detected/stored format.
 export function getLiveFormat(): number {

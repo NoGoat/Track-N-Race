@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../Labels.h"
+#include "CardColors.h"
 
 // ── Compound label (keyed on actual_compound) ─────────────────────────────
 // Names come from the library i18n catalog; unknown codes fall back to an em dash.
@@ -34,29 +35,12 @@ inline QColor tyreTextColor(int visualCompound) {
 }
 
 // ── Temperature / wear color helpers ─────────────────────────────────────
+// Thresholds live in the shared library spec (temp.tyre / temp.brake / wear),
+// so these stay in lockstep with the Electron app and the stat cards.
 
-inline QColor tyreTempColor(int c) {
-    if (c < 60)   return QColor("#5794F2");
-    if (c < 80)   return QColor("#d4ad04");
-    if (c <= 110) return QColor("#37872D");
-    if (c <= 130) return QColor("#c47d0e");
-    return QColor("#C4162A");
-}
-
-inline QColor brakeTempColor(int c) {
-    if (c < 200) return QColor("#37872D");
-    if (c < 400) return QColor("#d4ad04");
-    if (c < 600) return QColor("#c47d0e");
-    return QColor("#C4162A");
-}
-
-inline QColor wearPctColor(int pct) {
-    if (pct < 20) return QColor("#73BF69");
-    if (pct < 40) return QColor("#A8D436");
-    if (pct < 60) return QColor("#FADE2A");
-    if (pct < 80) return QColor("#FF9830");
-    return QColor("#C4162A");
-}
+inline QColor tyreTempColor(int c)  { return tnr::cardColor("temp.tyre", c); }
+inline QColor brakeTempColor(int c) { return tnr::cardColor("temp.brake", c); }
+inline QColor wearPctColor(int pct) { return tnr::cardColor("wear", pct); }
 
 // ── Tyre set status helpers ───────────────────────────────────────────────
 

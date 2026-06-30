@@ -41,8 +41,9 @@ export function decodeBinaryBatch(batch: Uint8Array | ArrayBuffer): DecodedHotRo
         const bfl = dv.getUint16(o, true); o += 2
         const bfr = dv.getUint16(o, true); o += 2
         const engine_temp = dv.getUint16(o, true); o += 2
+        const slm = dv.getUint8(o); o += 1
         rows.push({
-          type: 'telemetry', ts: '', session_time, speed_kph, rpm, gear, throttle, brake, steering, drs,
+          type: 'telemetry', ts: '', session_time, speed_kph, rpm, gear, throttle, brake, steering, drs, slm,
           tyre_temp_surface_rl: tsrl, tyre_temp_surface_rr: tsrr, tyre_temp_surface_fl: tsfl, tyre_temp_surface_fr: tsfr,
           tyre_temp_inner_rl: tirl, tyre_temp_inner_rr: tirr, tyre_temp_inner_fl: tifl, tyre_temp_inner_fr: tifr,
           brake_temp_rl: brl, brake_temp_rr: brr, brake_temp_fl: bfl, brake_temp_fr: bfr, engine_temp,

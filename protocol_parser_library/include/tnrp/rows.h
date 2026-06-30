@@ -26,6 +26,7 @@ struct TelemetryRow {
     float       brake{};
     double      steering{};
     int         drs{};
+    int         slm{};   // 2026 active-aero / "straight line mode" wing state (kept separate from drs)
     int         tyre_temp_surface_rl{};
     int         tyre_temp_surface_rr{};
     int         tyre_temp_surface_fl{};
@@ -55,6 +56,7 @@ struct glz::meta<TelemetryRow> {
         "brake",                &T::brake,
         "steering",             &T::steering,
         "drs",                  &T::drs,
+        "slm",                  &T::slm,
         "tyre_temp_surface_rl", &T::tyre_temp_surface_rl,
         "tyre_temp_surface_rr", &T::tyre_temp_surface_rr,
         "tyre_temp_surface_fl", &T::tyre_temp_surface_fl,

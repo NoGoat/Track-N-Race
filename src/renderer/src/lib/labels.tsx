@@ -16,7 +16,12 @@ const FALLBACK_LABELS: Record<string, string> = {
   'tyre.visual.7': 'INT', 'tyre.visual.8': 'WET',
   'tyre.visual.16': 'Soft', 'tyre.visual.17': 'Medium', 'tyre.visual.18': 'Hard',
   'ers.mode.0': 'None', 'ers.mode.1': 'Auto', 'ers.mode.2': 'Hotlap', 'ers.mode.3': 'Overtake',
-  'drs.label': 'DRS',
+  'drs.label': 'DRS', 'card.wing.key': 'drs',
+  // Overview card titles (rendered before the catalog arrives / when disconnected).
+  'ui.overview.speed': 'Speed', 'ui.overview.rpm': 'RPM', 'ui.overview.gear': 'Gear',
+  'ui.overview.throttle': 'Throttle', 'ui.overview.brake': 'Brake', 'ui.overview.drs': 'DRS',
+  'ui.overview.engine': 'Engine', 'ui.overview.ers': 'ERS', 'ui.overview.fuel': 'Fuel',
+  'ui.overview.pos': 'Pos', 'ui.overview.tyre': 'Tyre',
 }
 
 const LabelsContext = createContext<Record<string, string>>(FALLBACK_LABELS)

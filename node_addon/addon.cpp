@@ -1,6 +1,7 @@
 #include <napi.h>
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
+#include <tnrp/CardColors.h>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -275,9 +276,16 @@ Napi::Value LabelsJson(const Napi::CallbackInfo& info) {
     return Napi::String::New(env, tnrp::labelsJson(format));
 }
 
+// Module-level: the declarative card-colour spec (format-independent JSON). Lets
+// both the live and playback paths hand the renderer one shared colour model.
+Napi::Value CardColorsJson(const Napi::CallbackInfo& info) {
+    return Napi::String::New(info.Env(), tnrp::cardColorsJson());
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     TNRPAddon::Init(env, exports);
     exports.Set("labelsJson", Napi::Function::New(env, LabelsJson));
+    exports.Set("cardColorsJson", Napi::Function::New(env, CardColorsJson));
     return exports;
 }
 

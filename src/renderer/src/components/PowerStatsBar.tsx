@@ -1,5 +1,7 @@
 import { memo } from 'react'
 import type { StatusRow } from '../types'
+import { useLabels } from '../lib/labels'
+import { POWER_RESOLVERS, useColorFn, type CardCtx, type CardDesc } from '../lib/cards'
 
 const Card = memo(function Card({
   label, value, unit, color, sub,
@@ -32,36 +34,26 @@ interface Props {
 }
 
 const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark }: Props) {
-  const cIce  = isDark ? '#5794F2' : '#0B57D0'
-  const cMguk = isDark ? '#FADE2A' : '#B06000'
-  const cFuel = isDark ? '#F0A500' : '#C26400'
-  const red   = '#C4162A'
-  const green = isDark ? '#37872D' : '#137333'
+  const { t, tn } = useLabels()
+  const color = useColorFn(null, status, isDark)
 
-  const ersColor = (pct: number) => {
-    if (pct > 60) return cIce
-    if (pct > 30) return cMguk
-    return red
-  }
-
-  const noData = !status
-  const iceKw   = status?.engine_power_ice_kw  ?? 0
-  const mgukKw  = status?.engine_power_mguk_kw ?? 0
-  const totalKw = iceKw + mgukKw
-  const iceSplit = totalKw > 0 ? (iceKw  / totalKw * 100) : 0
-  const ersSplit = totalKw > 0 ? (mgukKw / totalKw * 100) : 0
-  const ersMJ    = ((status?.ers_pct ?? 0) / 100) * 4
-  const ersPct   = status?.ers_pct ?? 0
+  const descs: (CardDesc & { vis: keyof VisibleCards })[] = [
+    { key: 'totalPower', label: 'Total Power', vis: 'totalPower' },
+    { key: 'ice',        label: 'ICE',         vis: 'ice' },
+    { key: 'mguk',       label: 'MGU-K',       vis: 'mguk' },
+    { key: 'split',      label: 'Split',       vis: 'split' },
+    { key: 'ersStore',   label: 'ERS Store',   vis: 'ersStore' },
+    { key: 'ersPct',     label: 'ERS %',       vis: 'ersPct' },
+    { key: 'fuel',       label: 'Fuel',        vis: 'fuel' },
+  ]
+  const ctx: CardCtx = { latest: null, status, lap: null, damage: null, session: null, isDark, t, tn, color }
 
   return (
     <div className="flex divide-x divide-[var(--border)]">
-      {visibleCards.totalPower && <Card label="Total Power" value={noData ? '—' : totalKw.toFixed(0)} unit={noData ? undefined : 'kW'} color={noData ? undefined : totalKw > 800 ? red : totalKw > 600 ? cMguk : green} />}
-      {visibleCards.ice        && <Card label="ICE"         value={noData ? '—' : iceKw.toFixed(0)}   unit={noData ? undefined : 'kW'} color={noData ? undefined : cIce}  />}
-      {visibleCards.mguk       && <Card label="MGU-K"       value={noData ? '—' : mgukKw.toFixed(0)}  unit={noData ? undefined : 'kW'} color={noData ? undefined : cMguk} />}
-      {visibleCards.split      && <Card label="Split"       value={noData ? '—' : `${iceSplit.toFixed(0)}:${ersSplit.toFixed(0)}`} sub={noData ? undefined : 'ICE : Electric'} />}
-      {visibleCards.ersStore   && <Card label="ERS Store"   value={noData ? '—' : ersMJ.toFixed(2)}   unit={noData ? undefined : 'MJ'} color={noData ? undefined : ersColor(ersPct)} />}
-      {visibleCards.ersPct     && <Card label="ERS %"       value={noData ? '—' : ersPct.toFixed(0)}  unit={noData ? undefined : '%'}  color={noData ? undefined : ersColor(ersPct)} />}
-      {visibleCards.fuel       && <Card label="Fuel"        value={noData ? '—' : (status?.fuel_kg.toFixed(1) ?? '—')} unit={noData ? undefined : 'kg'} color={noData ? undefined : cFuel} />}
+      {descs.filter(d => visibleCards[d.vis]).map(d => {
+        const v = POWER_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
+        return <Card key={d.vis} label={d.label} value={v.value} unit={v.unit} color={v.color} sub={v.sub} />
+      })}
     </div>
   )
 })

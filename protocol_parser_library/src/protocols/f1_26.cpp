@@ -26,9 +26,9 @@ static const int PID_CAR_TEL2         = 16;
 
 // 2026 moves the player's wing state out of Car Telemetry's m_drs (which stays 0
 // under the new regs) and into Car Telemetry 2's m_activeAeroMode (0 = Corner /
-// high-downforce, 1 = Straight / low-drag = "DRS open"). The engine parses on a
+// high-downforce, 1 = Straight / low-drag = "wing open"). The engine parses on a
 // single thread, so the player's last-seen active-aero mode is cached here and
-// folded into the telemetry row's drs field so the existing indicator responds.
+// surfaced on the telemetry row's dedicated `slm` field (separate from `drs`).
 static uint8_t s_playerActiveAero = 0;
 
 // Car Status grew by one float (m_ersHarvestedLimitPerLap, inserted between
@@ -283,10 +283,10 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             o += 1;
             t.gear          = ReadInt8(data, o);   o += 1;
             t.rpm           = ReadUInt16(data, o); o += 2;
-            uint8_t mDrs    = data[o++];
-            // 2026: wing-open state comes from active aero (Car Telemetry 2); fall
-            // back to legacy m_drs if no Car Telemetry 2 has been seen yet.
-            t.drs           = s_playerActiveAero ? 1 : mDrs;
+            t.drs           = data[o++];   // raw DRS (0 under 2026 regs)
+            // 2026 wing-open state lives in its own field, sourced from active aero
+            // (Car Telemetry 2, PID 16). Kept strictly separate from drs.
+            t.slm           = s_playerActiveAero ? 1 : 0;
             o += 1; o += 2;
             t.brake_temp_rl = ReadUInt16(data, o); o += 2;
             t.brake_temp_rr = ReadUInt16(data, o); o += 2;

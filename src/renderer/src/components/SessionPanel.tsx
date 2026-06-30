@@ -2,6 +2,7 @@ import { useRef, useState, memo } from 'react'
 import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type LucideIcon } from 'lucide-react'
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
 import TrackMap from './TrackMap'
+import { useColorFn } from '../lib/cards'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
 
@@ -67,20 +68,8 @@ export function sessionAccent(t: number, isDark: boolean): string {
   return isDark ? '#a0a8b8' : '#565B70'
 }
 
-function trackTempColor(t: number, isDark: boolean): string {
-  if (t < 25) return isDark ? '#5794F2' : '#0B57D0'
-  if (t < 35) return isDark ? '#73BF69' : '#137333'
-  if (t < 45) return isDark ? '#FADE2A' : '#B06000'
-  if (t < 55) return isDark ? '#FF9830' : '#C26400'
-  return '#e10600'
-}
-
-function airTempColor(t: number, isDark: boolean): string {
-  if (t < 18) return isDark ? '#5794F2' : '#0B57D0'
-  if (t < 26) return isDark ? '#73BF69' : '#137333'
-  if (t < 34) return isDark ? '#FADE2A' : '#B06000'
-  return isDark ? '#FF9830' : '#C26400'
-}
+// Track/air temp colours come from the shared library spec (session.trackTemp /
+// session.airTemp) via the card colour evaluator — see useColorFn below.
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 
@@ -322,6 +311,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
   const noData  = !session
+  const colorFn = useColorFn(null, null, isDark)
   const accent  = session ? sessionAccent(session.session_type, isDark) : (isDark ? '#a0a8b8' : '#565B70')
   const info    = session ? TRACK_INFO[session.track_id] : null
   const gpName  = info?.gp ?? (session ? `Track ${session.track_id}` : '—')
@@ -361,20 +351,20 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
       {
         label: 'Pit Speed',
         value: session ? `${session.pit_speed_limit} km/h` : '—',
-        color: noData ? undefined : (isDark ? '#5794F2' : '#0B57D0'),
+        color: noData ? undefined : colorFn('session.pitSpeed'),
         sub: 'Limit',
       }
     ] : []),
     {
       label: 'Track Temp',
       value: session ? `${session.track_temp}°C` : '—',
-      color: session ? trackTempColor(session.track_temp, isDark) : undefined as string | undefined,
+      color: session ? colorFn('session.trackTemp', session.track_temp) : undefined as string | undefined,
       sub: 'Road surface',
     },
     {
       label: 'Air Temp',
       value: session ? `${session.air_temp}°C` : '—',
-      color: session ? airTempColor(session.air_temp, isDark) : undefined as string | undefined,
+      color: session ? colorFn('session.airTemp', session.air_temp) : undefined as string | undefined,
       sub: 'Ambient',
     },
     {
@@ -471,9 +461,9 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             ? <StatCard label="Remaining" value={String(remainingLaps)} />
             : <StatCard label="Remaining" value="—" />
           }
-          <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : (isDark ? '#5794F2' : '#0B57D0')} />
-          <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : (isDark ? '#FADE2A' : '#B06000')} />
-          <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : (isDark ? '#73BF69' : '#137333')} />
+          <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} />
+          <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} />
+          <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} />
         </div>
       )}
 

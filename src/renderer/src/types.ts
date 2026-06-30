@@ -9,6 +9,7 @@ export interface TelemetryRow {
   brake: number
   steering: number
   drs: number
+  slm: number   // 2026 active-aero / straight line mode (0/1), separate from drs
   tyre_temp_surface_rl: number; tyre_temp_surface_rr: number
   tyre_temp_surface_fl: number; tyre_temp_surface_fr: number
   tyre_temp_inner_rl: number;   tyre_temp_inner_rr: number
@@ -328,6 +329,17 @@ export interface ProtocolCapabilities {
   hasLapPositions: boolean
 }
 
+export interface ColorRuleSpec {
+  on:    string
+  op:    'lt' | 'lte' | 'gt' | 'gte' | 'eq'
+  value: number
+  color: string
+}
+export interface ColorSpec {
+  default: string
+  rules:   ColorRuleSpec[]
+}
+
 export interface ProtocolStatusMsg {
   type:            'protocol_status'
   detected_format: 2024 | 2025 | 2026 | null
@@ -335,6 +347,7 @@ export interface ProtocolStatusMsg {
   override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
   capabilities:    ProtocolCapabilities
   labels?:         Record<string, string>
+  cardColors?:     Record<string, ColorSpec>
 }
 
 export interface ProtocolWarningMsg {

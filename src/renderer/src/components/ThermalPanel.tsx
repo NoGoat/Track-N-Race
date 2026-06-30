@@ -2,6 +2,7 @@ import { memo } from 'react'
 import type { TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import { useSize } from '../hooks/useSize'
+import { useColorFn } from '../lib/cards'
 
 interface Props {
   latest: TelemetryRow | null
@@ -15,28 +16,9 @@ interface Props {
   isDark: boolean
 }
 
-export function tyreColor(t: number, isDark = true) {
-  if (t < 60) return isDark ? '#5794F2' : '#0B57D0'
-  if (t < 80) return isDark ? '#d4ad04' : '#B06000'
-  if (t <= 110) return isDark ? '#37872D' : '#137333'
-  if (t <= 130) return isDark ? '#c47d0e' : '#C26400'
-  return '#C4162A'
-}
-
-export function brakeColor(t: number, isDark = true) {
-  if (t < 200) return isDark ? '#37872D' : '#137333'
-  if (t < 400) return isDark ? '#d4ad04' : '#B06000'
-  if (t < 600) return isDark ? '#c47d0e' : '#C26400'
-  return '#C4162A'
-}
-
-export function wearColor(pct: number, _isDark = true) {
-  if (pct < 20) return '#73BF69'
-  if (pct < 40) return '#A8D436'
-  if (pct < 60) return '#FADE2A'
-  if (pct < 80) return '#FF9830'
-  return '#C4162A'
-}
+// Temp/wear colours now come from the shared library spec (temp.tyre / temp.brake
+// / wear) via the card colour evaluator, so they stay in lockstep with the native
+// recorder and the stat cards.
 
 export const TempRow = memo(function TempRow({ label, value, color, noData, compact }: {
   label: string; value: number; color: string; noData?: boolean; compact?: boolean
@@ -54,7 +36,8 @@ export const TempRow = memo(function TempRow({ label, value, color, noData, comp
 export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, isDark = true }: {
   pct: number | null; blisters: number | null; noData?: boolean; compact?: boolean; isDark?: boolean
 }) {
-  const color = pct !== null ? wearColor(pct, isDark) : '#4a4a4a'
+  const ramp = useColorFn(null, null, isDark)
+  const color = pct !== null ? (ramp('wear', pct) ?? '#888') : '#4a4a4a'
   return (
     <div className={compact ? '' : 'pt-2 border-t border-[var(--border)]'}>
       {!compact && (
@@ -85,15 +68,16 @@ export const WheelCard = memo(function WheelCard({
   pos: string; surface: number; inner: number; brake: number
   wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; isDark?: boolean
 }) {
+  const ramp = useColorFn(null, null, isDark)
   return (
     <div className={`flex-1 min-w-0 overflow-hidden flex flex-col justify-between ${compact ? 'p-2' : 'p-4'}`}>
       <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${compact ? 'mb-1' : 'mb-3'}`}>
         {pos}
       </div>
-      <TempRow label="Surface" value={surface} color={tyreColor(surface, isDark)} noData={noData} compact={compact} />
-      <TempRow label="Inner"   value={inner}   color={tyreColor(inner, isDark)}   noData={noData} compact={compact} />
+      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={compact} />
+      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={compact} />
       {!compact && <div className="my-1.5 border-t border-[var(--border)]" />}
-      <TempRow label="Brake"   value={brake}   color={brakeColor(brake, isDark)}  noData={noData} compact={compact} />
+      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={compact} />
       <WearBar pct={wear} blisters={blisters} noData={noData} compact={compact} isDark={isDark} />
     </div>
   )

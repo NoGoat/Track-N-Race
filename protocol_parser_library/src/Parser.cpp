@@ -5,6 +5,7 @@
 
 #include "tnrp/control_rows.h"
 #include "tnrp/Labels.h"
+#include "tnrp/CardColors.h"
 
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
@@ -106,6 +107,7 @@ std::string Parser::statusRow() const {
     // packet is seen) so the renderer always has labels to resolve against.
     const auto& cat = labelsFor(activeFormat_ ? activeFormat_ : 2025);
     row.labels.insert(cat.all().begin(), cat.all().end());
+    row.cardColors = cardColors();   // format-independent colour model
     return writeJsonNullable(row);
 }
 

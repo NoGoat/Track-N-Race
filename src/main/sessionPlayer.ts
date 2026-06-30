@@ -4,7 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows, broadcastBatchToWindows } from './index'
-import { labelsForFormat, getLiveFormat } from './bridgeManager'
+import { labelsForFormat, getLiveFormat, cardColorSpecs } from './bridgeManager'
 import { BinaryWriter, encodeTelemetry, encodeMotion } from './binaryRows'
 import { medianRoundedPeriodS } from './binaryForwardFill'
 
@@ -415,6 +415,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           hasLapPositions: pbFormat >= 2025,
         },
         labels: labelsForFormat(pbFormat),
+        cardColors: cardColorSpecs(),
       })
 
       resolve()
@@ -837,6 +838,7 @@ export function closePlayer() {
       hasLapPositions: liveFormat >= 2025,
     },
     labels: labelsForFormat(liveFormat),
+    cardColors: cardColorSpecs(),
   })
   emitState()
 }

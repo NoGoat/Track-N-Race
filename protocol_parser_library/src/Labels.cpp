@@ -38,6 +38,10 @@ static std::unordered_map<std::string, std::string> baseLayer() {
         {"boost.label", "Overtake"},
         {"aero.mode.0", "Corner"}, {"aero.mode.1", "Straight"},
 
+        // Format-aware data key for the overview "wing" card: 2025 reads the `drs`
+        // telemetry field, 2026 reads the dedicated `slm` field (see overrides).
+        {"card.wing.key", "drs"},
+
         // Fuel mix
         {"fuel.mix.0", "Lean"}, {"fuel.mix.1", "Standard"},
         {"fuel.mix.2", "Rich"}, {"fuel.mix.3", "Max"},
@@ -181,6 +185,8 @@ static std::unordered_map<std::string, std::string> overrideLayer(uint16_t forma
             {"event.DRSE", "Straight Line Mode Enabled"},
             {"event.DRSD", "Straight Line Mode Disabled"},
             {"ui.overview.drs", "SLM"},
+            // Wing card reads the dedicated active-aero field under 2026.
+            {"card.wing.key", "slm"},
         };
     }
     return {};

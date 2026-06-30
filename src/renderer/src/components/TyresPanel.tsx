@@ -3,7 +3,8 @@ import { Maximize2, Minimize2 } from 'lucide-react'
 import type { TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
 import TyreTrendCharts from './TyreTrendCharts'
-import { WheelCard, wearColor } from './ThermalPanel'
+import { WheelCard } from './ThermalPanel'
+import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
 
 interface Props {
@@ -84,7 +85,7 @@ function getStatus(s: TyreSetEntry, sessionType: number | null): 'FITTED' | 'NEW
 }
 
 const AllocationWearBar = memo(function AllocationWearBar({ pct, isDark = true }: { pct: number; isDark?: boolean }) {
-  const color = wearColor(pct, isDark)
+  const color = useColorFn(null, null, isDark)('wear', pct) ?? '#888'
   return (
     <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
       <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
@@ -94,6 +95,7 @@ const AllocationWearBar = memo(function AllocationWearBar({ pct, isDark = true }
 
 const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: TyreSetEntry; isDark?: boolean; sessionType: number | null }) {
   const { tn }     = useLabels()
+  const colorFn    = useColorFn(null, null, isDark)
   const status     = getStatus(set, sessionType)
   const compName   = tn('tyre.actual', set.actual_compound)
   const compColor  = VISUAL_COLORS[set.visual_compound] ?? '#ffffff'
@@ -135,7 +137,7 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
         <div className="flex-1 min-w-0">
           <AllocationWearBar pct={set.wear} isDark={isDark} />
         </div>
-        <span className="text-[10px] tabular-nums w-8 text-right shrink-0" style={{ color: wearColor(set.wear, isDark) }}>
+        <span className="text-[10px] tabular-nums w-8 text-right shrink-0" style={{ color: colorFn('wear', set.wear) ?? '#888' }}>
           {set.wear}%
         </span>
       </div>
@@ -203,6 +205,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
 
 export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, sessionType }: Props) {
   const { tn } = useLabels()
+  const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
   const { ref: cardsRef, height: cardsHeight } = useSize()
 
@@ -231,7 +234,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
               return <>
                 <span className="text-[11px] font-black tabular-nums" style={{ color }}>{name}</span>
                 <span className="text-[10px] text-[var(--text-secondary)]">·</span>
-                <span className="text-[10px] tabular-nums" style={{ color: wearColor(fitted.wear) }}>{fitted.wear}% wear</span>
+                <span className="text-[10px] tabular-nums" style={{ color: colorFn('wear', fitted.wear) ?? '#888' }}>{fitted.wear}% wear</span>
                 <span className="text-[10px] text-[var(--text-secondary)]">·</span>
                 <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">{fitted.life_span}L remaining</span>
               </>

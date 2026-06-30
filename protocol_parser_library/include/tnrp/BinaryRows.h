@@ -60,6 +60,7 @@ inline void encodeTelemetry(std::vector<uint8_t>& b, const TelemetryRow& t) {
     put<uint16_t>(b, (uint16_t)t.brake_temp_fl);
     put<uint16_t>(b, (uint16_t)t.brake_temp_fr);
     put<uint16_t>(b, (uint16_t)t.engine_temp);
+    put<uint8_t>(b, (uint8_t)t.slm);
 }
 
 inline void encodeMotion(std::vector<uint8_t>& b, const MotionRow& m) {
