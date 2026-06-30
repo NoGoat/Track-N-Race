@@ -20,8 +20,10 @@ PowerChart::PowerChart(PowerChartType type, QWidget* parent)
         s1Id_ = addSeries({ "ICE",   C_ICE,  1.5, axXId_, axYId, "", 2, false, true });
         s2Id_ = addSeries({ "MGU-K", C_MGUK, 1.5, axXId_, axYId, "", 2, false, true });
     } else if (type_ == PowerChartType::Harvest) {
-        // Harvest in kJ, maybe 0-4000? Let's just auto range or 0-4000
+        // Per-lap ERS harvest limit: 4 MJ (2024/25), 8 MJ (2026). Initial range
+        // is the pre-2026 cap; applyHarvestScale() widens it once the format is known.
         axYId = addAxis({ Side::Left, 0.0, 4000.0, QColor(), true,  'f', 0 });
+        axYId_ = axYId;
         s1Id_ = addSeries({ "MGU-K Harvest", C_HARV_K, 1.5, axXId_, axYId, "", 2, false, true });
         s2Id_ = addSeries({ "MGU-H Harvest", C_HARV_H, 1.5, axXId_, axYId, "", 2, false, true });
     } else if (type_ == PowerChartType::Store) {
@@ -42,6 +44,11 @@ PowerChart::PowerChart(PowerChartType type, QWidget* parent)
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
     refreshTimer_->start();
+}
+
+void PowerChart::applyHarvestScale(uint16_t format) {
+    if (type_ != PowerChartType::Harvest || axYId_ < 0) return;
+    setXRange(axYId_, 0.0, format >= 2026 ? 8000.0 : 4000.0);
 }
 
 void PowerChart::showEvent(QShowEvent* e) {

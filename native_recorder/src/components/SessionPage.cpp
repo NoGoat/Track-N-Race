@@ -1,5 +1,6 @@
 #include "../MainWindow.h"
 #include "../Labels.h"
+#include "CardColors.h"
 #include "TrackMapWidget.h"
 
 #include <QVBoxLayout>
@@ -217,20 +218,8 @@ static QString infringementLabel(int id) {
 
 // ── Color helpers ─────────────────────────────────────────────────────────
 
-static QColor trackTempColor(int c) {
-    if (c < 25) return QColor("#5794F2");
-    if (c < 35) return QColor("#37872D");
-    if (c < 45) return QColor("#FADE2A");
-    if (c < 55) return QColor("#FF9830");
-    return QColor("#C4162A");
-}
-
-static QColor airTempColor(int c) {
-    if (c < 18) return QColor("#5794F2");
-    if (c < 25) return QColor("#37872D");
-    if (c < 31) return QColor("#FADE2A");
-    return QColor("#FF9830");
-}
+// Track/air temp colours come from the shared library spec (session.trackTemp /
+// session.airTemp) via tnr::cardColor — see updateSessionPage.
 
 // ── Session page builder ──────────────────────────────────────────────────
 
@@ -351,7 +340,12 @@ QWidget* MainWindow::buildSessionPage() {
     sh->setContentsMargins(10, 0, 0, 0);   // left inset for the first stat card
     sh->setSpacing(0);
 
-    auto makeStatCard = [&](const QString& cap, QLabel*& out, const QString& accent = "") -> QWidget* {
+    // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
+    // come from the shared library spec at build; conditional ones (temps) are
+    // applied per-update in updateSessionPage. `out` is kept as a convenience alias
+    // for this page's bespoke per-card value formatting.
+    auto makeStatCard = [&](const QString& key, const QString& cap, QLabel*& out,
+                            const QString& colorSpec = "") -> QWidget* {
         QWidget* card = new QWidget;
         QVBoxLayout* v = new QVBoxLayout(card);
         v->setContentsMargins(12, 6, 12, 6);
@@ -361,7 +355,11 @@ QWidget* MainWindow::buildSessionPage() {
         capLbl->setForegroundRole(QPalette::PlaceholderText);
         out = new QLabel("—");
         QFont valf; valf.setPointSize(16); valf.setBold(true); out->setFont(valf);
-        if (!accent.isEmpty()) out->setStyleSheet(QString("color:%1;").arg(accent));
+        if (!colorSpec.isEmpty()) {
+            const QColor c = tnr::cardColor(colorSpec.toStdString());
+            if (c.isValid()) out->setStyleSheet("color:" + c.name() + ";");
+        }
+        spCardValue_[key] = out;
         v->addWidget(capLbl); v->addWidget(out);
         return card;
     };
@@ -372,23 +370,23 @@ QWidget* MainWindow::buildSessionPage() {
         sh->addWidget(vf);
     };
 
-    sh->addWidget(makeStatCard("TOTAL LAPS", sp_statTotalLaps, ""),        1);
+    sh->addWidget(makeStatCard("totalLaps", "TOTAL LAPS", sp_statTotalLaps),                    1);
     addVSep();
-    sh->addWidget(makeStatCard("REMAINING",  sp_statRemain,    ""),        1);
+    sh->addWidget(makeStatCard("remaining", "REMAINING",  sp_statRemain),                       1);
     addVSep();
-    sh->addWidget(makeStatCard("PIT SPEED",  sp_statPitSpeed,  "#5794F2"), 1);
+    sh->addWidget(makeStatCard("pitSpeed",  "PIT SPEED",  sp_statPitSpeed, "session.pitSpeed"), 1);
     addVSep();
-    sh->addWidget(makeStatCard("PIT WINDOW", sp_statPitWin,    "#FADE2A"), 1);
+    sh->addWidget(makeStatCard("pitWindow", "PIT WINDOW", sp_statPitWin,   "session.pitWindow"),1);
     addVSep();
-    sh->addWidget(makeStatCard("REJOIN",     sp_statRejoin,    "#37872D"), 1);
+    sh->addWidget(makeStatCard("rejoin",    "REJOIN",     sp_statRejoin,   "session.rejoin"),   1);
     addVSep();
-    sh->addWidget(makeStatCard("TRACK TEMP",   sp_trackTemp,  ""), 1);
+    sh->addWidget(makeStatCard("trackTemp", "TRACK TEMP", sp_trackTemp),                        1);
     addVSep();
-    sh->addWidget(makeStatCard("AIR TEMP",     sp_airTemp,    ""), 1);
+    sh->addWidget(makeStatCard("airTemp",   "AIR TEMP",   sp_airTemp),                          1);
     addVSep();
-    sh->addWidget(makeStatCard("TRACK LENGTH", sp_trackLen,   ""), 1);
+    sh->addWidget(makeStatCard("trackLen",  "TRACK LENGTH", sp_trackLen),                       1);
     addVSep();
-    sh->addWidget(makeStatCard("TIME OF DAY",  sp_timeOfDay,  ""), 1);
+    sh->addWidget(makeStatCard("timeOfDay", "TIME OF DAY",  sp_timeOfDay),                      1);
 
     root->addWidget(statsRow);
 
@@ -592,10 +590,10 @@ void MainWindow::updateSessionPage() {
     sp_statRejoin->setText(rejoin > 0 ? QString("P%1").arg(rejoin) : "—");
 
     sp_trackTemp->setText(QString::number(trackTemp) + "°C");
-    sp_trackTemp->setStyleSheet("color:" + trackTempColor(trackTemp).name() + ";");
+    sp_trackTemp->setStyleSheet("color:" + tnr::cardColor("session.trackTemp", trackTemp).name() + ";");
 
     sp_airTemp->setText(QString::number(airTemp) + "°C");
-    sp_airTemp->setStyleSheet("color:" + airTempColor(airTemp).name() + ";");
+    sp_airTemp->setStyleSheet("color:" + tnr::cardColor("session.airTemp", airTemp).name() + ";");
 
     sp_trackLen->setText(trackLenM > 0 ? QString::number(trackLenM / 1000.0, 'f', 3) + " km" : "—");
 

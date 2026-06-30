@@ -80,23 +80,26 @@ QWidget* MainWindow::buildPowerPage() {
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
 
-    const QColor cIce("#5794F2");
-    const QColor cMguk("#FADE2A");
-    const QColor cFuel("#F0A500");
-
-    topLay->addWidget(pp_cardFrames_[0] = makeStatCard("TOTAL POWER", &pp_totalPowerVal, "kW", QColor()), 1);
-    pp_cardDivs_[0] = new QFrame; pp_cardDivs_[0]->setFrameShape(QFrame::VLine); pp_cardDivs_[0]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[0]);
-    topLay->addWidget(pp_cardFrames_[1] = makeStatCard("ICE", &pp_iceVal, "kW", cIce), 1);
-    pp_cardDivs_[1] = new QFrame; pp_cardDivs_[1]->setFrameShape(QFrame::VLine); pp_cardDivs_[1]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[1]);
-    topLay->addWidget(pp_cardFrames_[2] = makeStatCard("MGU-K", &pp_mgukVal, "kW", cMguk), 1);
-    pp_cardDivs_[2] = new QFrame; pp_cardDivs_[2]->setFrameShape(QFrame::VLine); pp_cardDivs_[2]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[2]);
-    topLay->addWidget(pp_cardFrames_[3] = makeStatCard("SPLIT", &pp_splitVal, "", QColor()), 1);
-    pp_cardDivs_[3] = new QFrame; pp_cardDivs_[3]->setFrameShape(QFrame::VLine); pp_cardDivs_[3]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[3]);
-    topLay->addWidget(pp_cardFrames_[4] = makeStatCard("ERS STORE", &pp_ersStoreVal, "MJ", QColor()), 1);
-    pp_cardDivs_[4] = new QFrame; pp_cardDivs_[4]->setFrameShape(QFrame::VLine); pp_cardDivs_[4]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[4]);
-    topLay->addWidget(pp_cardFrames_[5] = makeStatCard("ERS %", &pp_ersPctVal, "%", QColor()), 1);
-    pp_cardDivs_[5] = new QFrame; pp_cardDivs_[5]->setFrameShape(QFrame::VLine); pp_cardDivs_[5]->setFrameShadow(QFrame::Sunken); topLay->addWidget(pp_cardDivs_[5]);
-    topLay->addWidget(pp_cardFrames_[6] = makeStatCard("FUEL", &pp_fuelVal, "kg", cFuel), 1);
+    // Key-driven cards: { key, label, unit }. Colours are applied per-update from
+    // the shared library spec (updatePowerPage), so none are set here.
+    struct PCardDef { const char* key; const char* label; const char* unit; };
+    static const PCardDef defs[] = {
+        { "total",    "TOTAL POWER", "kW" }, { "ice",      "ICE",   "kW" },
+        { "mguk",     "MGU-K",       "kW" }, { "split",    "SPLIT", ""   },
+        { "ersStore", "ERS STORE",   "MJ" }, { "ersPct",   "ERS %", "%"  },
+        { "fuel",     "FUEL",        "kg" },
+    };
+    for (int i = 0; i < (int)(sizeof(defs) / sizeof(defs[0])); ++i) {
+        QLabel* val = nullptr;
+        topLay->addWidget(pp_cardFrames_[i] = makeStatCard(defs[i].label, &val, defs[i].unit, QColor()), 1);
+        ppCardValue_[defs[i].key] = val;
+        if (i < 6) {
+            pp_cardDivs_[i] = new QFrame;
+            pp_cardDivs_[i]->setFrameShape(QFrame::VLine);
+            pp_cardDivs_[i]->setFrameShadow(QFrame::Sunken);
+            topLay->addWidget(pp_cardDivs_[i]);
+        }
+    }
 
     vbox->addWidget(pp_topBar_);
     pp_hdiv_ = new QFrame; pp_hdiv_->setFrameShape(QFrame::HLine); pp_hdiv_->setFrameShadow(QFrame::Sunken); vbox->addWidget(pp_hdiv_);
@@ -271,26 +274,27 @@ void MainWindow::updatePowerPage() {
     float ersMj  = (ersPct / 100.0f) * 4.0f;
     float fuelKg = lastPlayerStatusData.value("fuel_kg", 0.0f);
 
-    pp_totalPowerVal->setText(QString::number(std::round(totalKw)));
-    
-    QColor cTotal = tnr::cardColor("power.total", totalKw);
-    QPalette p = pp_totalPowerVal->palette();
-    p.setColor(QPalette::WindowText, cTotal);
-    pp_totalPowerVal->setPalette(p);
-
-    pp_iceVal->setText(QString::number(std::round(iceKw)));
-    pp_mgukVal->setText(QString::number(std::round(mgukKw)));
-    
-    pp_splitVal->setText(QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)));
-    
-    pp_ersStoreVal->setText(QString::number(ersMj, 'f', 2));
-    pp_ersPctVal->setText(QString::number(std::round(ersPct)));
-    
-    QColor cErs = tnr::cardColor("power.ers", ersPct);
-    QPalette pErs = pp_ersPctVal->palette();
-    pErs.setColor(QPalette::WindowText, cErs);
-    pp_ersPctVal->setPalette(pErs);
-    pp_ersStoreVal->setPalette(pErs);
-
-    pp_fuelVal->setText(QString::number(fuelKg, 'f', 1));
+    // Per-key resolver: value text + colour-spec key + the value the conditional
+    // rules test against (NAN where the colour is unconditional).
+    struct PCard { const char* key; QString value; const char* colorSpec; double self; };
+    const PCard cards[] = {
+        { "total",    QString::number(std::round(totalKw)),                              "power.total", totalKw },
+        { "ice",      QString::number(std::round(iceKw)),                                "power.ice",   NAN },
+        { "mguk",     QString::number(std::round(mgukKw)),                               "power.mguk",  NAN },
+        { "split",    QString("%1:%2").arg(std::round(icePct)).arg(std::round(ersPctS)), "power.split", NAN },
+        { "ersStore", QString::number(ersMj, 'f', 2),                                    "power.ers",   ersPct },
+        { "ersPct",   QString::number(std::round(ersPct)),                               "power.ers",   ersPct },
+        { "fuel",     QString::number(fuelKg, 'f', 1),                                   "power.fuel",  NAN },
+    };
+    for (const PCard& pc : cards) {
+        QLabel* l = ppCardValue_.value(pc.key);
+        if (!l) continue;
+        l->setText(pc.value);
+        const QColor c = tnr::cardColor(pc.colorSpec, pc.self);
+        if (c.isValid()) {
+            QPalette p = l->palette();
+            p.setColor(QPalette::WindowText, c);
+            l->setPalette(p);
+        }
+    }
 }

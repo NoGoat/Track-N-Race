@@ -20,6 +20,10 @@ public:
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
 
+    // Harvest chart Y-axis caps the per-lap ERS harvest limit: 4 MJ under
+    // 2024/2025 regs, 8 MJ under 2026. No-op for the other chart types.
+    void applyHarvestScale(uint16_t format);
+
 public slots:
     void setCurrentTime(float t);
 
@@ -51,6 +55,7 @@ private:
     float     lastAddedTime_= -1.0f;
 
     int axXId_  = -1;
+    int axYId_  = -1;
     int s1Id_   = -1;
     int s2Id_   = -1;
 };

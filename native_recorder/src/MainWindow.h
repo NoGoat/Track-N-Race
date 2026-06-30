@@ -238,6 +238,8 @@ private:
     QLabel*      sp_circuitName   = nullptr;
     QLabel*      sp_sessionType   = nullptr;
     QLabel*      sp_timeLeft      = nullptr;
+    // Session stat cards registered by key (value labels also aliased below).
+    QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;
     QLabel*      sp_statRemain    = nullptr;
     QLabel*      sp_statPitSpeed  = nullptr;
@@ -282,14 +284,8 @@ private:
     GForceChart*  gforceChart_           = nullptr;
     RideHeightChart* rideHeightChart_    = nullptr;
 
-    // ── Power page ─────────────────────────────────────────────
-    QLabel* pp_totalPowerVal = nullptr;
-    QLabel* pp_iceVal        = nullptr;
-    QLabel* pp_mgukVal       = nullptr;
-    QLabel* pp_splitVal      = nullptr;
-    QLabel* pp_ersStoreVal   = nullptr;
-    QLabel* pp_ersPctVal     = nullptr;
-    QLabel* pp_fuelVal       = nullptr;
+    // ── Power page — key-driven stat cards (value labels keyed by card key) ──
+    QHash<QString, QLabel*> ppCardValue_;
     QWidget* pp_topBar_      = nullptr;
     QWidget* pp_cardFrames_[PowerLayout::CardCount] = {};
     QFrame*  pp_cardDivs_[PowerLayout::CardCount - 1] = {};

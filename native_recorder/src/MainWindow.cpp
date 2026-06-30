@@ -643,8 +643,10 @@ MainWindow::MainWindow(QWidget* parent)
         // Resolve labels against the recorded clip's format (DRS vs Straight Line
         // Mode, etc.) for the duration of playback.
         if (hdr.contains("protocol") && hdr["protocol"].is_number()) {
-            tnr::Labels::instance().setFormat(hdr["protocol"].get<uint16_t>());
+            const uint16_t fmt = hdr["protocol"].get<uint16_t>();
+            tnr::Labels::instance().setFormat(fmt);
             refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (pp_harvestChart) pp_harvestChart->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
         }
         // Clear any frozen live value; the first replayed packet sets it afresh.
         resetSessionTimer();
@@ -1377,8 +1379,10 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // on every format change, so labels re-theme when 2025↔2026 switches.
     if (row.value("type", std::string{}) == "protocol_status") {
         if (row.contains("active_format") && row["active_format"].is_number()) {
-            tnr::Labels::instance().setFormat(row["active_format"].get<uint16_t>());
+            const uint16_t fmt = row["active_format"].get<uint16_t>();
+            tnr::Labels::instance().setFormat(fmt);
             refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (pp_harvestChart) pp_harvestChart->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
         }
         return;
     }
