@@ -487,22 +487,26 @@ QWidget* SettingsDialog::buildAboutPage() {
         { "glaze",         "7.8.3",    "MIT",     "© 2019–present Stephen Berry",           "https://github.com/stephenberry/glaze", "github.com", ":/licenses/MIT.txt"      },
         { "zlib",          "1.3.1",    "zlib",    "© 1995–2022 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
 #ifdef BREEZE_BUNDLED
-        // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). Frameworks
-        // (KF6) ship at 6.27.0; the Breeze widget style is from Plasma 6.7.0. These
-        // are the exact libraries copied next to the app (the breeze6 runtime closure).
-        { "Breeze style (Plasma)", "6.7.0",  "LGPL v2.1+", "© Hugo Pereira Da Costa & KDE contributors", "https://invent.kde.org/plasma/breeze",            "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "Breeze Icons",          "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/breeze-icons",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 CoreAddons",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcoreaddons",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 Config",            "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kconfig",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 GuiAddons",         "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kguiaddons",    "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 ColorScheme",       "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcolorscheme",  "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 WindowSystem",      "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kwindowsystem", "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 IconThemes",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kiconthemes",   "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 Archive",           "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/karchive",      "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 Codecs",            "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kcodecs",       "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 ConfigWidgets",     "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kconfigwidgets","invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 I18n",              "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/ki18n",         "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
-        { "KF6 WidgetsAddons",     "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks/kwidgetsaddons","invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). "KDE
+        // Frameworks" covers every KF6 module in the breeze6 runtime closure
+        // (CoreAddons, Config, GuiAddons, ColorScheme, WindowSystem, IconThemes,
+        // Archive, Codecs, ConfigWidgets, I18n, WidgetsAddons) — one row, not
+        // eleven, because KDE's Frameworks Licensing Policy requires every module
+        // to use the same terms (LGPL 2.1, or 3, or a later KDE e.V.-approved
+        // version), so it's genuinely one license, matching KDE apps' own
+        // convention (e.g. Kate's About dialog). All ship at 6.27.0.
+        //
+        // Breeze style (Plasma) is a separate row: it tracks Plasma's own release
+        // (6.7.0, not KF6_VERSION) and has a named copyright holder.
+        //
+        // Breeze Icons is also separate: KDE's policy requires icon files
+        // specifically to be LGPL-3.0 (not 2.1-or-later like the rest of
+        // Frameworks), and the shipped icon set is a mix of LGPL-2.x/3.0/
+        // CC-BY-SA-4.0 from legacy contributions — distinct enough from the code
+        // frameworks' licensing to warrant its own line and its own license text.
+        { "Breeze style (Plasma)", "6.7.0",  "LGPL v2.1+", "© Hugo Pereira Da Costa & KDE contributors", "https://invent.kde.org/plasma/breeze",           "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "Breeze Icons",          "6.27.0", "LGPL v3",    "© KDE contributors",                         "https://invent.kde.org/frameworks/breeze-icons", "invent.kde.org", ":/licenses/LGPL-3.0.txt" },
+        { "KDE Frameworks",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://develop.kde.org/frameworks/",            "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
 #endif
     };
     const int libCount = int(std::size(libs));
