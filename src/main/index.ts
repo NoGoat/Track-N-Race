@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, Menu, nativeTheme, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImage, dialog } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
@@ -25,6 +25,7 @@ type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
+import iconPng from '../../build/icon.png?asset'
 
 const store = new Store()
 
@@ -47,6 +48,17 @@ function getFilePathFromArgs(argv: string[]): string | null {
 let startupFilePath = getFilePathFromArgs(process.argv)
 let macStartupFilePath: string | null = null
 
+// Mirrors createWindow()'s local `win` so the tray's click/menu handlers can
+// reach the window outside that function's closure.
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+
+function showWindow(): void {
+  if (!mainWindow) return
+  mainWindow.show()
+  mainWindow.focus()
+}
+
 async function openTelemetryFile(filePath: string): Promise<boolean> {
   // The bridge switches to playback mode itself (it ignores live UDP while a clip
   // is loaded), so there's no separate live-suspend step here.
@@ -63,8 +75,9 @@ if (!gotSingleInstanceLock) {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
       if (win.isMinimized()) win.restore()
+      if (!win.isVisible()) win.show()
       win.focus()
-      
+
       const filePath = getFilePathFromArgs(commandLine)
       if (filePath) {
         win.webContents.send('player:request-open-confirm', filePath)
@@ -198,6 +211,7 @@ function createWindow(): void {
       sandbox: false,
     },
   })
+  mainWindow = win
 
   win.on('ready-to-show', () => win.show())
 
@@ -220,6 +234,7 @@ function createWindow(): void {
   })
   ipcMain.on('window-close',       () => win.close())
   ipcMain.on('window-fullscreen',  () => win.setFullScreen(!win.isFullScreen()))
+  ipcMain.on('window-minimize-to-tray', () => win.hide())
 
   win.on('maximize',          () => win.webContents.send('window-maximized', true))
   win.on('unmaximize',        () => win.webContents.send('window-maximized', false))
@@ -276,13 +291,24 @@ app.whenReady().then(() => {
   startBridge()   // spawns the native protocol_parser; owns UDP + recording
   createWindow()
 
+  // Tray icons are decoded by a different, more restrictive loader than
+  // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.
+  const trayImage = nativeImage.createFromPath(iconPng).resize({ width: 32, height: 32 })
+  tray = new Tray(trayImage)
+  tray.setToolTip('Track N Race')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show', click: showWindow },
+    { label: 'Quit', click: () => app.quit() }
+  ]))
+  tray.on('click', showWindow)
+
   // Track the current icon path to prevent redundant win.setIcon calls
   let lastIconPath = ''
 
   function updateTaskbarIconIfNeeded(): void {
     const taskbarTheme = getWindowsTaskbarThemeSync()
     const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
-    
+
     if (currentIconPath !== lastIconPath) {
       lastIconPath = currentIconPath
       for (const win of BrowserWindow.getAllWindows()) {

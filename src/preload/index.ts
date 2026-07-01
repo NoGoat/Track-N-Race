@@ -30,7 +30,7 @@ const windowControls = {
   maximize:   (): void => ipcRenderer.send('window-maximize'),
   close:      (): void => ipcRenderer.send('window-close'),
   fullscreen: (): void => ipcRenderer.send('window-fullscreen'),
-  switchToRecorder: (): void => ipcRenderer.send('switch-to-recorder'),
+  minimizeToTray: (): void => ipcRenderer.send('window-minimize-to-tray'),
   onMaximizeChange: (callback: (isMaximized: boolean) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, value: boolean) => callback(value)
     ipcRenderer.on('window-maximized', listener)

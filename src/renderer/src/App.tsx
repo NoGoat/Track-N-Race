@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from '
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, Radio } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2 } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { LabelsProvider } from './lib/labels'
 import { CardColorsProvider } from './lib/cards'
@@ -398,14 +398,14 @@ const HeaderButtons = memo(
           <Pencil size={13} />
         </button>
 
-        {/* Switch to Recorder button */}
+        {/* Background Mode button */}
         <button
-          onClick={() => window.windowControls.switchToRecorder()}
-          title="Switch to Background Recorder"
+          onClick={() => window.windowControls.minimizeToTray()}
+          title="Background Mode"
           style={{ WebkitAppRegion: 'no-drag' }}
           className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"
         >
-          <Radio size={13} />
+          <PictureInPicture2 size={13} />
         </button>
       </>
     )
