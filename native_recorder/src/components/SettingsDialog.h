@@ -25,6 +25,7 @@ public:
 
 private:
     // Each builds and returns a self-contained settings tab page.
+    QWidget* buildProtocolPage();
     QWidget* buildRecordingPage();
     QWidget* buildAppearancePage();
     QWidget* buildNotificationsPage();
@@ -44,6 +45,8 @@ private:
     void showLicenseText(const QString& title, const QString& resourcePath);
 
     MainWindow*   mainWindow_;
+    QComboBox*    protocolCombo_         = nullptr;
+    QLabel*       detectedProtocolLabel_ = nullptr;
     QLabel*       dirLabel_           = nullptr;
     QCheckBox*    recordCheck_        = nullptr;
     QRadioButton* themeSystem_        = nullptr;

@@ -818,7 +818,7 @@ MainWindow::MainWindow(QWidget* parent)
     tnrp::Config cfg;
     cfg.port            = 20777;
     cfg.bindAddress     = "0.0.0.0";
-    cfg.protocol        = tnrp::Override::Auto;
+    cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
     cfg.hotRowsAsJson   = true;   // in-process consumer: hot rows as JSON, no binary channel
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty();
     cfg.outputDirectory = outputDirectory.toStdString();
@@ -1361,6 +1361,11 @@ void MainWindow::setTrackMapIdleTimeout(int secs) {
     if (trackMap_) trackMap_->setIdleTimeout(secs);
 }
 
+void MainWindow::setProtocolOverride(const QString& ovr) {
+    settings.setValue("protocolOverride", ovr);
+    if (engine_) engine_->setOverride(tnrp::overrideFromString(ovr.toStdString()));
+}
+
 void MainWindow::onEngineRow(const QByteArray& json) {
     // While a clip is loaded, TnrdPlayer drives the UI; drop any live rows the
     // engine is still parsing in the background (mirrors the old datagram drain).
@@ -1378,6 +1383,9 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // i18n catalog (tnr::Labels). The engine emits protocol_status on connect and
     // on every format change, so labels re-theme when 2025↔2026 switches.
     if (row.value("type", std::string{}) == "protocol_status") {
+        if (row.contains("detected_format") && row["detected_format"].is_number()) {
+            lastDetectedProtocolFormat_ = row["detected_format"].get<int>();
+        }
         if (row.contains("active_format") && row["active_format"].is_number()) {
             const uint16_t fmt = row["active_format"].get<uint16_t>();
             tnr::Labels::instance().setFormat(fmt);

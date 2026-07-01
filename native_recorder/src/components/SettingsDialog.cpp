@@ -77,6 +77,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
 
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
+        { "Protocol",      buildProtocolPage()      },
         { "Recording",     buildRecordingPage()     },
         { "Appearance",    buildAppearancePage()    },
         { "Notifications", buildNotificationsPage() },
@@ -183,6 +184,32 @@ QWidget* SettingsDialog::makePage(QFormLayout*& formOut) {
     v->addStretch(1);
 
     formOut = form;
+    return page;
+}
+
+QWidget* SettingsDialog::buildProtocolPage() {
+    QFormLayout* form;
+    QWidget* page = makePage(form);
+
+    // Read-only: the format most recently detected from incoming UDP packets,
+    // cached by MainWindow::onEngineRow() from protocol_status rows. Shows
+    // "—" until the first packet after the engine starts.
+    const int detected = mainWindow_->lastDetectedProtocolFormat();
+    detectedProtocolLabel_ = new QLabel(detected > 0 ? QString::number(detected) : QStringLiteral("—"));
+    form->addRow("Detected Protocol:", detectedProtocolLabel_);
+
+    protocolCombo_ = new QComboBox;
+    protocolCombo_->addItem("Auto", "auto");
+    protocolCombo_->addItem("2024", "f1_24");
+    protocolCombo_->addItem("2025", "f1_25");
+    protocolCombo_->addItem("2026", "f1_26");
+    const int idx = protocolCombo_->findData(mainWindow_->currentProtocolOverride());
+    protocolCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
+    connect(protocolCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        mainWindow_->setProtocolOverride(protocolCombo_->currentData().toString());
+    });
+    form->addRow("Protocol Version Override:", protocolCombo_);
+
     return page;
 }
 

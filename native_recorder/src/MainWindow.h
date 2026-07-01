@@ -111,6 +111,9 @@ public:
     void    setToastsEnabled(bool on) { settings.setValue("ui/toastsEnabled", on); }
     int     toastDurationSecs() const { return settings.value("ui/bannerDuration", 3).toInt(); }
     void    setToastDurationSecs(int s) { settings.setValue("ui/bannerDuration", s); }
+    QString currentProtocolOverride() const { return settings.value("protocolOverride", "auto").toString(); }
+    void    setProtocolOverride(const QString& ovr);
+    int     lastDetectedProtocolFormat() const { return lastDetectedProtocolFormat_; }
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,
@@ -362,6 +365,11 @@ private:
     std::unique_ptr<tnrp::Engine> engine_;
     EngineSink*                   engineSink_ = nullptr;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
+
+    // Cached from the most recent protocol_status row (see onEngineRow()) so the
+    // on-demand Settings dialog can show "Detected Protocol" without a push
+    // channel into a dialog that may not be open. 0 = not yet known.
+    int lastDetectedProtocolFormat_ = 0;
 
     // Forward-fill smoother for the live hot stream: on a dropped/late frame it
     // re-emits the last telemetry/motion/motion_ex one frame forward so the charts
