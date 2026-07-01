@@ -71,6 +71,11 @@ set(COMMON_CMAKE_ARGS
     -DCMAKE_INSTALL_PREFIX=${PREFIX}
     -DCMAKE_PREFIX_PATH=${STACK_PREFIX_PATH}
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    # Pin the plain "lib" layout the app's CMakeLists.txt expects
+    # (${PREFIX}/lib/plugins/styles/breeze6.so, ${PREFIX}/lib/libKF6*.so). Without
+    # this, GNUInstallDirs picks up Debian/Ubuntu's multiarch convention and
+    # installs to lib/x86_64-linux-gnu/ instead, which the app's copy step can't find.
+    -DCMAKE_INSTALL_LIBDIR=lib
     -DBUILD_SHARED_LIBS=ON
     -DBUILD_TESTING=OFF
     -DBUILD_EXAMPLES=OFF

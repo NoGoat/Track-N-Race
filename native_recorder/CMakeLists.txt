@@ -147,6 +147,19 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Backg
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json tnrp ${QT_LIBS})
 
+# Keep every directly-linked Qt module in DT_NEEDED even if whole-program LTO
+# proves none of its symbols are reachable (e.g. QSvgRenderer/QPrinter/
+# QOpenGLWidget calls fully inlined away). Some toolchains' --as-needed default
+# is aggressive enough, combined with IPO, to drop libQt6Svg/PrintSupport/
+# OpenGLWidgets from NEEDED entirely — which then makes linuxdeploy-plugin-qt
+# (which decides what Qt plugins to bundle by scanning NEEDED) skip the SVG
+# icon engine and print-support plugins, silently breaking Breeze's SVG icons
+# and GPU chart rendering in the packaged AppImage despite an identical build
+# on another machine/toolchain working fine.
+if(UNIX AND NOT APPLE)
+    target_link_options(native_recorder PRIVATE LINKER:--no-as-needed)
+endif()
+
 # ── Maximum compiler optimization (applied to optimized configs only) ─────────
 # Link-time optimization (whole-program / cross-TU inlining) where the toolchain
 # supports it. Enabled per-config so Debug builds stay fast and debuggable.
