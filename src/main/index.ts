@@ -25,7 +25,8 @@ type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
 import iconTransparent from '../../build/icon_transparent.ico?asset'
 import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
-import iconPng from '../../build/icon.png?asset'
+import iconTransparentPng from '../../build/icon_transparent.png?asset'
+import iconTransparentLightPng from '../../build/icon_transparent_light.png?asset'
 
 const store = new Store()
 
@@ -293,8 +294,12 @@ app.whenReady().then(() => {
 
   // Tray icons are decoded by a different, more restrictive loader than
   // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.
-  const trayImage = nativeImage.createFromPath(iconPng).resize({ width: 32, height: 32 })
-  tray = new Tray(trayImage)
+  function trayPngForTheme(theme: 'light' | 'dark'): Electron.NativeImage {
+    const path = theme === 'light' ? iconTransparentLightPng : iconTransparentPng
+    return nativeImage.createFromPath(path).resize({ width: 32, height: 32 })
+  }
+
+  tray = new Tray(trayPngForTheme(getWindowsTaskbarThemeSync()))
   tray.setToolTip('Track N Race')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: showWindow },
@@ -316,6 +321,7 @@ app.whenReady().then(() => {
           win.setIcon(currentIconPath)
         }
       }
+      tray?.setImage(trayPngForTheme(taskbarTheme))
     }
   }
 

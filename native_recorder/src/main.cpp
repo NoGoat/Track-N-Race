@@ -8,6 +8,10 @@
 #include <QImageReader>
 #include <QPixmap>
 #include <QFont>
+#include <QStandardPaths>
+#include <QDir>
+#include <cstdio>
+#include <array>
 #include "MainWindow.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
@@ -16,6 +20,54 @@
 // alone only takes the first frame (16x16 here), which the window manager then
 // upscales into a pixelated mess for the (HiDPI) titlebar. Adding all frames lets
 // Qt pick the right size and downscale the large ones smoothly.
+#ifdef Q_OS_LINUX
+// In the AppImage, qt.conf restricts Qt's plugin search to the bundled
+// AppDir/usr/plugins/, so when "System Default" style is resolved (see
+// below), QStyleFactory can't see whatever style is actually installed on
+// the host (Breeze, Kvantum, adwaita-qt, ...) and silently falls back to
+// Qt's built-in Fusion. Ask the host's own qtpaths for its real Qt plugins
+// directory and add it to the search path so "System Default" reflects the
+// real system, not just this app's bundled (portable, explicit-choice-only)
+// copy of Breeze. No-op in non-bundled builds (Qt already searches the
+// system path there) and if qtpaths isn't found on the host.
+static void addHostQtPluginPath() {
+    QString qtpaths = QStandardPaths::findExecutable("qtpaths6");
+    if (qtpaths.isEmpty()) qtpaths = QStandardPaths::findExecutable("qtpaths");
+    if (qtpaths.isEmpty()) return;
+
+    // This runs before QApplication is constructed (required — see call site),
+    // so there's no event dispatcher yet and QProcess isn't usable. Shell out
+    // directly with popen() instead, which has no such dependency.
+    QString escaped = qtpaths;
+    escaped.replace(QLatin1String("'"), QLatin1String("'\\''"));
+    const QString cmd = QLatin1Char('\'') + escaped + QLatin1String("' -query QT_INSTALL_PLUGINS 2>/dev/null");
+
+    FILE* pipe = popen(cmd.toLocal8Bit().constData(), "r");
+    if (!pipe) return;
+    std::array<char, 512> buf{};
+    QString output;
+    while (fgets(buf.data(), int(buf.size()), pipe))
+        output += QString::fromLocal8Bit(buf.data());
+    pclose(pipe);
+
+    const QString hostPlugins = output.trimmed();
+    if (hostPlugins.isEmpty() || !QDir(hostPlugins).exists()) return;
+
+    // QApplication::addLibraryPath() here would be a no-op: it's discarded
+    // once qt.conf processing runs during QApplication's own construction
+    // (confirmed empirically — the path silently vanished from
+    // QApplication::libraryPaths() after construction). QT_PLUGIN_PATH is
+    // read *during* construction and merges additively with qt.conf's
+    // Plugins path, so it survives — same mechanism already used for
+    // QT_QPA_PLATFORMTHEME just above.
+    QByteArray existing = qgetenv("QT_PLUGIN_PATH");
+    QByteArray combined = existing.isEmpty()
+        ? hostPlugins.toLocal8Bit()
+        : hostPlugins.toLocal8Bit() + ":" + existing;
+    qputenv("QT_PLUGIN_PATH", combined);
+}
+#endif
+
 static QIcon loadAppIcon(const QString& resource) {
     QIcon icon;
     QImageReader reader(resource);
@@ -37,6 +89,15 @@ int main(int argc, char* argv[]) {
     // D-Bus service is not available Qt falls back to the built-in file dialog automatically.
     if (qgetenv("QT_QPA_PLATFORMTHEME").isEmpty())
         qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+
+    // Must run before QApplication is constructed: the platform theme plugin
+    // (QT_QPA_PLATFORMTHEME, set above) that detects "this is a KDE session,
+    // use Breeze" is loaded *during* QApplication's own construction. In the
+    // AppImage, qt.conf restricts that construction-time plugin search to the
+    // bundle only, so without this the theme plugin can never see the host's
+    // real desktop integration and QApplication::style() ends up as "fusion"
+    // regardless of what's added to the search path afterwards.
+    addHostQtPluginPath();
 #endif
     QApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");

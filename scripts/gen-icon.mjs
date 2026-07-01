@@ -31,8 +31,8 @@ mkdirSync(join(root, 'build'), { recursive: true })
 
 const variants = [
   { src: 'icon_solid.png',             dst: 'icon.ico',               preview: 'icon.png' },
-  { src: 'icon_transparent.png',       dst: 'icon_transparent.ico',   preview: null },
-  { src: 'icon_transparent_light.png', dst: 'icon_transparent_light.ico', preview: null },
+  { src: 'icon_transparent.png',       dst: 'icon_transparent.ico',   preview: 'icon_transparent.png' },
+  { src: 'icon_transparent_light.png', dst: 'icon_transparent_light.ico', preview: 'icon_transparent_light.png' },
 ]
 
 for (const { src, dst, preview } of variants) {
