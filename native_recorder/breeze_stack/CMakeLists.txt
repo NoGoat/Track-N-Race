@@ -130,7 +130,7 @@ add_kf(ki18n         ki18n         DEPENDS ecm)
 if(WIN32)
     ExternalProject_Add(zlib
         GIT_REPOSITORY https://github.com/madler/zlib.git
-        GIT_TAG        v1.3.1
+        GIT_TAG        v1.3.2
         GIT_SHALLOW    ON
         LIST_SEPARATOR "|"
         CMAKE_ARGS     -DCMAKE_INSTALL_PREFIX=${PREFIX}

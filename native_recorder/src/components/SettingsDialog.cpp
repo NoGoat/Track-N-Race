@@ -483,9 +483,9 @@ QWidget* SettingsDialog::buildAboutPage() {
     const Lib libs[] = {
         { "Qt",            qVersion(), "LGPL v3", "© The Qt Company Ltd.",                       "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
         { "QCustomPlot",   "2.1.1",    "GPL v3",  "© 2011–2022 Emanuel Eichhammer",         "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt"  },
-        { "nlohmann/json", "3.11.3",   "MIT",     "© 2013–2022 Niels Lohmann",              "https://github.com/nlohmann/json", "github.com",      ":/licenses/MIT.txt"      },
-        { "glaze",         "7.8.3",    "MIT",     "© 2019–present Stephen Berry",           "https://github.com/stephenberry/glaze", "github.com", ":/licenses/MIT.txt"      },
-        { "zlib",          "1.3.1",    "zlib",    "© 1995–2024 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
+        { "nlohmann/json", "3.11.3",   "MIT",     "© 2013–2022 Niels Lohmann",              "https://github.com/nlohmann/json", "github.com",      ":/licenses/MIT-nlohmann.txt" },
+        { "glaze",         "7.8.3",    "MIT",     "© 2019–present Stephen Berry",           "https://github.com/stephenberry/glaze", "github.com", ":/licenses/MIT-glaze.txt" },
+        { "zlib",          "1.3.2",    "zlib",    "© 1995–2026 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
 #ifdef BREEZE_BUNDLED
         // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). "KDE
         // Frameworks" covers every KF6 module in the breeze6 runtime closure
@@ -509,7 +509,7 @@ QWidget* SettingsDialog::buildAboutPage() {
         // frameworks' licensing to warrant its own line and its own license text.
         { "Breeze style (Plasma)", "6.7.0",  "GPL v2+",    "© 2014 Hugo Pereira Da Costa, The Qt Company Ltd., and KDE contributors", "https://invent.kde.org/plasma/breeze", "invent.kde.org", ":/licenses/GPL-2.0.txt" },
         { "Breeze Icons",          "6.27.0", "LGPL v3",    "© KDE contributors",                         "https://invent.kde.org/frameworks/breeze-icons", "invent.kde.org", ":/licenses/LGPL-3.0.txt" },
-        { "KDE Frameworks",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://invent.kde.org/frameworks",              "invent.kde.org", ":/licenses/LGPL-2.1.txt" },
+        { "KDE Frameworks",        "6.27.0", "LGPL v2.1+", "© KDE contributors",                         "https://develop.kde.org/products/frameworks/",   "develop.kde.org", ":/licenses/LGPL-2.1.txt" },
 #endif
     };
     const int libCount = int(std::size(libs));

@@ -23,7 +23,7 @@ endif()
 if(NOT TARGET zlibstatic)
     FetchContent_Declare(zlib
         GIT_REPOSITORY https://github.com/madler/zlib.git
-        GIT_TAG v1.3.1
+        GIT_TAG v1.3.2
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(zlib)
 endif()
