@@ -27,7 +27,7 @@ function colors(isDark: boolean) {
 
 function xAxis(ac: string, gc: string, bc: string): uPlot.Axis {
   return {
-    stroke: ac, font: '11px ui-monospace, monospace',
+    stroke: ac, font: '11px "Cascadia Code", ui-monospace, monospace',
     ticks: { show: false }, grid: { stroke: gc, width: 1 },
     gap: 2, size: 22, values: (_u, s) => s.map(fmtTime), space: 80,
     border: { stroke: bc, width: 1 },
@@ -36,7 +36,7 @@ function xAxis(ac: string, gc: string, bc: string): uPlot.Axis {
 
 function yAxis(ac: string, fmt: (v: number) => string): uPlot.Axis {
   return {
-    stroke: ac, font: '11px ui-monospace, monospace',
+    stroke: ac, font: '11px "Cascadia Code", ui-monospace, monospace',
     ticks: { show: false }, grid: { show: false }, gap: 4, size: 52,
     values: (_u, s) => s.map(fmt),
   }

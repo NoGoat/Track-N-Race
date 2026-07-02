@@ -85,7 +85,7 @@ function makeOpts(unit: string, w: number, h: number, ttPlugin: uPlot.Plugin, is
     axes: [
       {
         stroke: axisColor,
-        font: '9px ui-monospace, monospace',
+        font: '9px "Cascadia Code", ui-monospace, monospace',
         ticks: { stroke: tickColor, size: 3 },
         grid:  { stroke: gridColor, width: 1, dash: [3, 3] },
         gap: 2,
@@ -95,7 +95,7 @@ function makeOpts(unit: string, w: number, h: number, ttPlugin: uPlot.Plugin, is
       },
       {
         stroke: axisColor,
-        font: '9px ui-monospace, monospace',
+        font: '9px "Cascadia Code", ui-monospace, monospace',
         size: 42,
         ticks: { show: false },
         grid:  { stroke: gridColor, width: 1, dash: [3, 3] },

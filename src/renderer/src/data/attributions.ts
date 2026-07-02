@@ -1,0 +1,138 @@
+// Third-party attributions for the Attribution page in Settings.
+// License texts are imported verbatim via Vite's `?raw` so they are inlined at
+// build time (no runtime fs access, survives packaging). All texts live under
+// src/renderer/src/assets/ so the Electron app is self-contained.
+
+import reactLicense from '../assets/licenses/react.txt?raw'
+import reactDomLicense from '../assets/licenses/react-dom.txt?raw'
+import electronLicense from '../assets/licenses/electron.txt?raw'
+import electronStoreLicense from '../assets/licenses/electron-store.txt?raw'
+import lucideReactLicense from '../assets/licenses/lucide-react.txt?raw'
+import reactSelectLicense from '../assets/licenses/react-select.txt?raw'
+import uplotLicense from '../assets/licenses/uplot.txt?raw'
+import uplotReactLicense from '../assets/licenses/uplot-react.txt?raw'
+import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
+import zlibLicense from '../assets/licenses/zlib.txt?raw'
+import glazeLicense from '../assets/licenses/glaze.txt?raw'
+import nodeAddonApiLicense from '../assets/licenses/node-addon-api.txt?raw'
+
+export type AttributionCategory = 'app' | 'font' | 'node-addon'
+
+export interface Attribution {
+  name: string
+  version: string
+  license: string
+  homepage: string
+  licenseText: string
+  category: AttributionCategory
+}
+
+export const ATTRIBUTIONS: Attribution[] = [
+  // Application libraries
+  {
+    name: 'Electron',
+    version: '42.2.0',
+    license: 'MIT',
+    homepage: 'https://electronjs.org',
+    licenseText: electronLicense,
+    category: 'app',
+  },
+  {
+    name: 'React',
+    version: '18.3.1',
+    license: 'MIT',
+    homepage: 'https://react.dev',
+    licenseText: reactLicense,
+    category: 'app',
+  },
+  {
+    name: 'React DOM',
+    version: '18.3.1',
+    license: 'MIT',
+    homepage: 'https://react.dev',
+    licenseText: reactDomLicense,
+    category: 'app',
+  },
+  {
+    name: 'electron-store',
+    version: '8.2.0',
+    license: 'MIT',
+    homepage: 'https://github.com/sindresorhus/electron-store',
+    licenseText: electronStoreLicense,
+    category: 'app',
+  },
+  {
+    name: 'lucide-react',
+    version: '1.16.0',
+    license: 'ISC',
+    homepage: 'https://lucide.dev',
+    licenseText: lucideReactLicense,
+    category: 'app',
+  },
+  {
+    name: 'react-select',
+    version: '5.10.2',
+    license: 'MIT',
+    homepage: 'https://react-select.com',
+    licenseText: reactSelectLicense,
+    category: 'app',
+  },
+  {
+    name: 'uPlot',
+    version: '1.6.32',
+    license: 'MIT',
+    homepage: 'https://github.com/leeoniya/uPlot',
+    licenseText: uplotLicense,
+    category: 'app',
+  },
+  {
+    name: 'uplot-react',
+    version: '1.2.4',
+    license: 'MIT',
+    homepage: 'https://github.com/skalinichev/uplot-react',
+    licenseText: uplotReactLicense,
+    category: 'app',
+  },
+
+  // Font
+  {
+    name: 'Cascadia Code',
+    version: '',
+    license: 'OFL-1.1',
+    homepage: 'https://github.com/microsoft/cascadia-code',
+    licenseText: cascadiaLicense,
+    category: 'font',
+  },
+
+  // Node addon native libraries
+  {
+    name: 'zlib',
+    version: '',
+    license: 'Zlib',
+    homepage: 'https://zlib.net',
+    licenseText: zlibLicense,
+    category: 'node-addon',
+  },
+  {
+    name: 'Glaze',
+    version: '',
+    license: 'MIT',
+    homepage: 'https://github.com/stephenberry/glaze',
+    licenseText: glazeLicense,
+    category: 'node-addon',
+  },
+  {
+    name: 'node-addon-api',
+    version: '',
+    license: 'MIT',
+    homepage: 'https://github.com/nodejs/node-addon-api',
+    licenseText: nodeAddonApiLicense,
+    category: 'node-addon',
+  },
+]
+
+export const ATTRIBUTION_SECTIONS: { category: AttributionCategory; label: string }[] = [
+  { category: 'app', label: 'Application Libraries' },
+  { category: 'font', label: 'Font' },
+  { category: 'node-addon', label: 'Node Addon' },
+]

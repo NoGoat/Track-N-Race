@@ -1,8 +1,9 @@
 import { useState, memo } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
+import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 
 interface Props {
   isOpen: boolean
@@ -122,7 +123,8 @@ const Settings = memo(function Settings({
   onMapDimmedChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
-  const [showAbout, setShowAbout] = useState(false)
+  const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
+  const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
@@ -437,6 +439,77 @@ const Settings = memo(function Settings({
     </div>
   )
 
+  const renderAttributions = () => (
+    <div className="w-full animate-[eventFadeIn_0.2s_ease-out] select-none">
+      <h2 className="text-xs font-bold font-mono uppercase tracking-widest text-[var(--text-primary)]">
+        Attribution
+      </h2>
+      <p className="text-[10px] font-mono text-[var(--text-secondary)] mt-1 leading-relaxed">
+        Track N Race is built with these open-source components. Thank you to their authors.
+      </p>
+
+      {ATTRIBUTION_SECTIONS.map(section => {
+        const items = ATTRIBUTIONS.filter(a => a.category === section.category)
+        if (items.length === 0) return null
+        return (
+          <div key={section.category} className="mt-6">
+            <div className="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-[0.25em] mb-2">
+              {section.label}
+            </div>
+            <div className="flex flex-col gap-2">
+              {items.map(item => {
+                const expanded = expandedLicense === item.name
+                return (
+                  <div
+                    key={item.name}
+                    className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)]/40 overflow-hidden"
+                  >
+                    <button
+                      onClick={() => setExpandedLicense(expanded ? null : item.name)}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+                    >
+                      <ChevronDown
+                        size={13}
+                        className={`shrink-0 text-[var(--text-muted)] transition-transform ${expanded ? 'rotate-180' : ''}`}
+                      />
+                      <span className="text-xs font-semibold font-mono text-[var(--text-primary)]">
+                        {item.name}
+                      </span>
+                      {item.version && (
+                        <span className="text-[9px] font-mono text-[var(--text-secondary)] font-bold bg-[var(--bg-input)] border border-[var(--border-muted)] px-1.5 py-0.5 rounded-full tabular-nums">
+                          {item.version}
+                        </span>
+                      )}
+                      <span className="text-[9px] font-mono text-[var(--text-secondary)] font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-1.5 py-0.5 rounded">
+                        {item.license}
+                      </span>
+                      <span className="flex-1" />
+                      <a
+                        href={item.homepage}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                        title={item.homepage}
+                      >
+                        <ExternalLink size={13} />
+                      </a>
+                    </button>
+                    {expanded && (
+                      <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words bg-[var(--bg-input)] border-t border-[var(--border)] p-3 text-[10px] leading-relaxed font-mono text-[var(--text-secondary)]">
+                        {item.licenseText.trim()}
+                      </pre>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+
   function renderCategoryContent() {
     switch (activeCategory) {
       case 'appearance':
@@ -492,10 +565,10 @@ const Settings = memo(function Settings({
                   key={cat.id}
                   onClick={() => {
                     setActiveCategory(cat.id)
-                    setShowAbout(false)
+                    setView('category')
                   }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
-                    active && !showAbout
+                    active && view === 'category'
                       ? 'bg-[var(--border-focus)] text-white shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
                   }`}
@@ -506,14 +579,27 @@ const Settings = memo(function Settings({
               )
             })}
 
-            {/* Flex spacer to push About button to bottom */}
+            {/* Flex spacer to push About/Attribution buttons to bottom */}
             <div className="flex-1" />
+
+            {/* Attribution Button */}
+            <button
+              onClick={() => setView('attributions')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
+                view === 'attributions'
+                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+              }`}
+            >
+              <ScrollText size={14} style={{ color: '#a0a8b8' }} />
+              <span>Attribution</span>
+            </button>
 
             {/* About Button */}
             <button
-              onClick={() => setShowAbout(true)}
+              onClick={() => setView('about')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
-                showAbout
+                view === 'about'
                   ? 'bg-[var(--border-focus)] text-white shadow-sm'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
               }`}
@@ -525,12 +611,16 @@ const Settings = memo(function Settings({
 
           {/* Content Area */}
           <div className={`flex-1 overflow-y-auto p-8 bg-[var(--bg-panel)] flex flex-col ${
-            showAbout
+            view === 'about'
               ? 'items-center justify-center'
               : 'items-start justify-start'
           }`}>
             <div className="w-full max-w-[640px]">
-              {showAbout ? renderAbout() : renderCategoryContent()}
+              {view === 'about'
+                ? renderAbout()
+                : view === 'attributions'
+                  ? renderAttributions()
+                  : renderCategoryContent()}
             </div>
           </div>
         </div>

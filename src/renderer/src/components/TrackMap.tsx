@@ -312,7 +312,7 @@ function drawLabel(
   ctx.fill()
 
   // Text
-  ctx.font         = 'bold 9px ui-monospace, monospace'
+  ctx.font         = 'bold 9px "Cascadia Code", ui-monospace, monospace'
   ctx.textAlign    = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillStyle    = isDark ? '#ffffff' : '#111827'

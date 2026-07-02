@@ -101,7 +101,7 @@ export default function GearChart({ data, isDark }: Props) {
       axes: [
         {
           stroke: axisColor,
-          font: '11px ui-monospace, monospace',
+          font: '11px "Cascadia Code", ui-monospace, monospace',
           ticks: { show: false },
           grid:  { stroke: gridColor, width: 1 },
           gap: 2,
@@ -112,7 +112,7 @@ export default function GearChart({ data, isDark }: Props) {
         },
         {
           stroke: axisColor,
-          font: '11px ui-monospace, monospace',
+          font: '11px "Cascadia Code", ui-monospace, monospace',
           size: 28,
           ticks: { show: false },
           grid:  { show: false },

@@ -58,40 +58,40 @@ export default function ControllerVisualizer({ buttonStatus }: Props) {
           <rect x="68" y="38" width="72" height="28" rx="10" fill="var(--bg-input)" />
           {/* LT fill when pressed */}
           {lt && <rect x="68" y="38" width="72" height="28" rx="10" fill="#5794F2" opacity="0.85" />}
-          <text x="104" y="57" textAnchor="middle" fill={lt ? '#fff' : 'var(--text-secondary)'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="600">LT</text>
+          <text x="104" y="57" textAnchor="middle" fill={lt ? '#fff' : 'var(--text-secondary)'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="600">LT</text>
 
           {/* RT background */}
           <rect x="300" y="38" width="72" height="28" rx="10" fill="var(--bg-input)" />
           {lt && <rect x="300" y="38" width="72" height="28" rx="10" fill="#5794F2" opacity="0" />}
           {rt && <rect x="300" y="38" width="72" height="28" rx="10" fill="#5794F2" opacity="0.85" />}
-          <text x="336" y="57" textAnchor="middle" fill={rt ? '#fff' : 'var(--text-secondary)'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="600">RT</text>
+          <text x="336" y="57" textAnchor="middle" fill={rt ? '#fff' : 'var(--text-secondary)'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="600">RT</text>
 
           {/* ── Bumpers ── */}
           {/* LB */}
           <rect x="72" y="70" width="76" height="22" rx="8" fill={p(BTN_LB) ? '#5794F2' : 'var(--border)'} />
-          <text x="110" y="85" textAnchor="middle" fill={p(BTN_LB) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="600">LB</text>
+          <text x="110" y="85" textAnchor="middle" fill={p(BTN_LB) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="600">LB</text>
 
           {/* RB */}
           <rect x="292" y="70" width="76" height="22" rx="8" fill={p(BTN_RB) ? '#5794F2' : 'var(--border)'} />
-          <text x="330" y="85" textAnchor="middle" fill={p(BTN_RB) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="600">RB</text>
+          <text x="330" y="85" textAnchor="middle" fill={p(BTN_RB) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="600">RB</text>
 
           {/* ── Xbox button (center top) ── */}
           <circle cx="220" cy="102" r="14" fill={p(BTN_MENU) || p(BTN_VIEW) ? '#fff' : 'var(--border)'} />
           <circle cx="220" cy="102" r="10" fill="var(--bg-input)" />
-          <text x="220" y="106" textAnchor="middle" fill="var(--text-secondary)" fontSize="10" fontFamily="ui-monospace,monospace">⊙</text>
+          <text x="220" y="106" textAnchor="middle" fill="var(--text-secondary)" fontSize="10" fontFamily="'Cascadia Code',ui-monospace,monospace">⊙</text>
 
           {/* ── View button (small, left of center) ── */}
           <rect x="172" y="130" width="22" height="14" rx="4" fill={p(BTN_VIEW) ? '#5794F2' : 'var(--border)'} />
-          <text x="183" y="141" textAnchor="middle" fill={p(BTN_VIEW) ? '#fff' : 'var(--text-secondary)'} fontSize="8" fontFamily="ui-monospace,monospace">≡</text>
+          <text x="183" y="141" textAnchor="middle" fill={p(BTN_VIEW) ? '#fff' : 'var(--text-secondary)'} fontSize="8" fontFamily="'Cascadia Code',ui-monospace,monospace">≡</text>
 
           {/* ── Menu button (small, right of center) ── */}
           <rect x="246" y="130" width="22" height="14" rx="4" fill={p(BTN_MENU) ? '#5794F2' : 'var(--border)'} />
-          <text x="257" y="141" textAnchor="middle" fill={p(BTN_MENU) ? '#fff' : 'var(--text-secondary)'} fontSize="8" fontFamily="ui-monospace,monospace">☰</text>
+          <text x="257" y="141" textAnchor="middle" fill={p(BTN_MENU) ? '#fff' : 'var(--text-secondary)'} fontSize="8" fontFamily="'Cascadia Code',ui-monospace,monospace">☰</text>
 
           {/* ── Left stick (top-left area) ── */}
           <circle cx="148" cy="162" r="24" fill={p(BTN_LS) ? '#5794F2' : 'var(--border)'} />
           <circle cx="148" cy="162" r="18" fill={p(BTN_LS) ? '#3a5fd4' : '#111417'} />
-          <text x="148" y="167" textAnchor="middle" fill={p(BTN_LS) ? '#fff' : 'var(--text-secondary)'} fontSize="9" fontFamily="ui-monospace,monospace">LS</text>
+          <text x="148" y="167" textAnchor="middle" fill={p(BTN_LS) ? '#fff' : 'var(--text-secondary)'} fontSize="9" fontFamily="'Cascadia Code',ui-monospace,monospace">LS</text>
 
           {/* ── D-pad (bottom-left area) ── */}
           {/* Up */}
@@ -108,24 +108,24 @@ export default function ControllerVisualizer({ buttonStatus }: Props) {
           {/* ── Right stick (bottom-right area) ── */}
           <circle cx="276" cy="200" r="24" fill={p(BTN_RS) ? '#5794F2' : 'var(--border)'} />
           <circle cx="276" cy="200" r="18" fill={p(BTN_RS) ? '#3a5fd4' : '#111417'} />
-          <text x="276" y="205" textAnchor="middle" fill={p(BTN_RS) ? '#fff' : 'var(--text-secondary)'} fontSize="9" fontFamily="ui-monospace,monospace">RS</text>
+          <text x="276" y="205" textAnchor="middle" fill={p(BTN_RS) ? '#fff' : 'var(--text-secondary)'} fontSize="9" fontFamily="'Cascadia Code',ui-monospace,monospace">RS</text>
 
           {/* ── Face buttons ── */}
           {/* Y — top (yellow) */}
           <circle cx="318" cy="138" r="14" fill={p(BTN_Y) ? '#F0A500' : 'var(--border)'} />
-          <text x="318" y="143" textAnchor="middle" fill={p(BTN_Y) ? '#000' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="700">Y</text>
+          <text x="318" y="143" textAnchor="middle" fill={p(BTN_Y) ? '#000' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="700">Y</text>
 
           {/* X — left (blue) */}
           <circle cx="298" cy="158" r="14" fill={p(BTN_X) ? '#5794F2' : 'var(--border)'} />
-          <text x="298" y="163" textAnchor="middle" fill={p(BTN_X) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="700">X</text>
+          <text x="298" y="163" textAnchor="middle" fill={p(BTN_X) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="700">X</text>
 
           {/* B — right (red) */}
           <circle cx="338" cy="158" r="14" fill={p(BTN_B) ? '#C4162A' : 'var(--border)'} />
-          <text x="338" y="163" textAnchor="middle" fill={p(BTN_B) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="700">B</text>
+          <text x="338" y="163" textAnchor="middle" fill={p(BTN_B) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="700">B</text>
 
           {/* A — bottom (green) */}
           <circle cx="318" cy="178" r="14" fill={p(BTN_A) ? '#37872D' : 'var(--border)'} />
-          <text x="318" y="183" textAnchor="middle" fill={p(BTN_A) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="ui-monospace,monospace" fontWeight="700">A</text>
+          <text x="318" y="183" textAnchor="middle" fill={p(BTN_A) ? '#fff' : '#8e8e8e'} fontSize="11" fontFamily="'Cascadia Code',ui-monospace,monospace" fontWeight="700">A</text>
         </svg>
       </div>
     </div>
