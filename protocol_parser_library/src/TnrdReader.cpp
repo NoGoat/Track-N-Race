@@ -18,12 +18,15 @@ namespace tnrp {
 
 // Minimal struct for pulling just the lap fields out of a "lap" row with glaze.
 // error_on_unknown_keys=false ignores every other key; missing keys keep defaults.
-namespace {
+// Must have external linkage (not in an anonymous namespace): glaze's
+// compile-time reflection takes the type's mangled name, which MSVC refuses
+// to do for internal-linkage types (error C7631). GCC/Clang allow it.
 struct LapScanFields {
     int lap_num{};
     int current_lap_ms{};
     int last_lap_ms{};
 };
+namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
 }
 

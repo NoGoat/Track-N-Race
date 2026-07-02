@@ -28,7 +28,17 @@ string(REPLACE "\"" "" NODE_ADDON_API_DIR "${NODE_ADDON_API_DIR}")
 
 file(GLOB SOURCE_FILES "addon.cpp")
 
-add_library(protocol_parser MODULE ${SOURCE_FILES})
+# Must be SHARED (not MODULE): cmake-js injects the Windows delay-load flag via
+# CMAKE_SHARED_LINKER_FLAGS (/DELAYLOAD:NODE.EXE), which CMake applies ONLY to
+# SHARED libraries — MODULE libraries read CMAKE_MODULE_LINKER_FLAGS instead, so
+# with MODULE the flag is silently dropped and the delay-load hook never engages.
+#
+# CMAKE_JS_SRC (win_delay_load_hook.cc on Windows) must be compiled into the
+# addon itself: N-API symbols are delay-loaded against "NODE.EXE" by name, and
+# this hook redirects that resolution to whatever process actually loaded the
+# addon (electron.exe, node.exe, ...). Without it, the first real N-API call
+# hard-crashes trying to delay-load a literal node.exe that doesn't exist.
+add_library(protocol_parser SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC})
 
 # Link node-addon-api and Node itself
 target_include_directories(protocol_parser PRIVATE ${CMAKE_JS_INC} ${NODE_ADDON_API_DIR})

@@ -28,6 +28,15 @@ import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
 import iconTransparentPng from '../../build/icon_transparent.png?asset'
 import iconTransparentLightPng from '../../build/icon_transparent_light.png?asset'
 
+console.log('[main] module loading, pid=', process.pid)
+
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason)
+})
+
 const store = new Store()
 
 // Helper to extract .tnrd or .trnd file paths from command-line arguments
@@ -68,7 +77,9 @@ async function openTelemetryFile(filePath: string): Promise<boolean> {
 
 // Single Instance Lock
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
+console.log('[main] gotSingleInstanceLock =', gotSingleInstanceLock)
 if (!gotSingleInstanceLock) {
+  console.log('[main] another instance holds the lock — quitting')
   app.quit()
   process.exit(0) // Instantly kill the secondary process to prevent the second window flash!
 } else {
@@ -195,6 +206,7 @@ function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
 }
 
 function createWindow(): void {
+  console.log('[main] createWindow() start')
   const taskbarTheme = getWindowsTaskbarThemeSync()
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
@@ -247,6 +259,19 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main] render-process-gone:', details)
+  })
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('[main] did-fail-load:', errorCode, errorDescription, validatedURL)
+  })
+  win.on('unresponsive', () => {
+    console.error('[main] window unresponsive')
+  })
+  win.on('closed', () => {
+    console.log('[main] window closed')
+  })
+
   setOnPlaybackState((state) => {
     if (!win.isDestroyed()) {
       win.webContents.send('playback_state', state)
@@ -277,19 +302,25 @@ function createWindow(): void {
 
   // In dev, electron-vite sets ELECTRON_RENDERER_URL
   if (process.env['ELECTRON_RENDERER_URL']) {
+    console.log('[main] loadURL', process.env['ELECTRON_RENDERER_URL'])
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  console.log('[main] createWindow() end')
 }
 
+console.log('[main] awaiting app.whenReady()')
 app.whenReady().then(() => {
+  console.log('[main] app.whenReady() resolved')
   if (process.platform === 'win32') {
     app.setAppUserModelId(app.isPackaged ? 'com.tracknrace' : process.execPath)
   }
 
   Menu.setApplicationMenu(null)
+  console.log('[main] calling startBridge()')
   startBridge()   // spawns the native protocol_parser; owns UDP + recording
+  console.log('[main] calling createWindow()')
   createWindow()
 
   // Tray icons are decoded by a different, more restrictive loader than
@@ -340,6 +371,7 @@ app.whenReady().then(() => {
   }, 1500)
 
   app.on('will-quit', () => {
+    console.log('[main] will-quit')
     playerClose()
     stopBridge()
     clearInterval(pollInterval)
@@ -349,10 +381,25 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((err) => {
+  console.error('[main] app.whenReady() rejected:', err)
 })
 
 app.on('window-all-closed', () => {
+  console.log('[main] window-all-closed')
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('quit', (_event, exitCode) => {
+  console.log('[main] app quit, exitCode =', exitCode)
+})
+
+app.on('render-process-gone', (_event, _webContents, details) => {
+  console.error('[main] app-level render-process-gone:', details)
+})
+
+app.on('child-process-gone', (_event, details) => {
+  console.error('[main] child-process-gone:', details)
 })

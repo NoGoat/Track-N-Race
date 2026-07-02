@@ -19,8 +19,11 @@ static constexpr int PID_SESSION = 1;
 // Pulls just session_time out of a stored row for flashback truncation. A row
 // without the key keeps the default 0.0f, so it is always kept (matching the
 // previous "no session_time => keep" behaviour for non-negative cutoffs).
-namespace {
+// Must have external linkage (not in an anonymous namespace): glaze's
+// compile-time reflection takes the type's mangled name, which MSVC refuses
+// to do for internal-linkage types (error C7631). GCC/Clang allow it.
 struct SessionTimeOnly { float session_time{}; };
+namespace {
 constexpr glz::opts kPartialReadW{ .null_terminated = false, .error_on_unknown_keys = false };
 }
 
