@@ -5,7 +5,7 @@ import * as path from 'path'
 import { app } from 'electron'
 import { broadcastToWindows, broadcastBatchToWindows } from './index'
 import { labelsForFormat, getLiveFormat, cardColorSpecs } from './bridgeManager'
-import { BinaryWriter, encodeTelemetry, encodeMotion } from './binaryRows'
+import { BinaryWriter, encodeTelemetry, encodeMotion, encodeMotionEx } from './binaryRows'
 import { medianRoundedPeriodS } from './binaryForwardFill'
 
 
@@ -256,6 +256,9 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
           } else if (obj.type === 'motion') {
             hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
             encodeMotion(hotWriter, obj)
+          } else if (obj.type === 'motion_ex') {
+            hotStartArr.push(hotWriter.length); hotTimesArr.push(currentST)
+            encodeMotionEx(hotWriter, obj)
           } else if (obj.type === 'status') {
             coldStatus.push({ t: currentST, line: lineStr })
           } else if (obj.type === 'damage') {

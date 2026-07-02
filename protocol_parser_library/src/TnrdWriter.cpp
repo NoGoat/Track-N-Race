@@ -167,6 +167,7 @@ void TnrdWriter::closeActiveStream() {
     currentSessionType_ = -1;
     activeGzipPath_.clear();
     lastSessionTime_    = -1.0f;
+    rowsSinceFlush_     = 0;
     dedupeCache_.clear();
 }
 
@@ -206,6 +207,7 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
         currentTrackId_     = trackId;
         currentSessionType_ = sessionType;
         lastSessionTime_    = -1.0f;
+        rowsSinceFlush_     = 0;
     }
 }
 
@@ -213,6 +215,16 @@ void TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
     if (!activeGzip_ || entries.empty()) return;
     for (const auto& e : entries)
         gzwrite(activeGzip_, e.line.c_str(), (unsigned int)e.line.size());
+
+    // Periodically emit a zlib sync point. Z_SYNC_FLUSH aligns output to a byte
+    // boundary and pushes all pending input to disk, so the on-disk prefix stays
+    // a decodable gzip member: a later truncation only costs rows written after
+    // the last flush, instead of making the whole recording unreadable.
+    rowsSinceFlush_ += (int)entries.size();
+    if (rowsSinceFlush_ >= FLUSH_EVERY_ROWS) {
+        gzflush(activeGzip_, Z_SYNC_FLUSH);
+        rowsSinceFlush_ = 0;
+    }
 }
 
 void TnrdWriter::flushOldBufferEntries() {

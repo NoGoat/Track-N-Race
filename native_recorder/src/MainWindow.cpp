@@ -46,6 +46,7 @@
 #include <QStyleHints>
 #include <QCoreApplication>
 #include <QTimer>
+#include <functional>
 #include <QPainter>
 #include <QImage>
 #include <QPixmap>
@@ -192,6 +193,9 @@ static QIcon overflowIcon(QWidget* w) {
 class ScrubSlider : public QSlider {
 public:
     using QSlider::QSlider;
+    // Fired when a drag ends, so the owner can apply the exact final position
+    // immediately (the live drag path only seeks at a throttled cadence).
+    std::function<void()> onScrubEnd;
 protected:
     // Handled entirely ourselves rather than delegating to QSlider's built-in
     // press/move handling, whose drag-tracking only engages for clicks that
@@ -212,6 +216,7 @@ protected:
         if (!dragging_) { QSlider::mouseReleaseEvent(e); return; }
         dragging_ = false;
         e->accept();
+        if (onScrubEnd) onScrubEnd();
     }
     void wheelEvent(QWheelEvent* e) override { e->ignore(); }
 private:
@@ -523,6 +528,24 @@ MainWindow::MainWindow(QWidget* parent)
     pb_slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     pbLayout->addWidget(pb_slider_);
 
+    // Trailing edge of the scrub throttle: after a burst of drag events settles,
+    // apply the most recent pending position so the seek always lands where the
+    // handle ended up, even if the last move was throttled out.
+    pbSeekPending_ = new QTimer(this);
+    pbSeekPending_->setSingleShot(true);
+    connect(pbSeekPending_, &QTimer::timeout, this, [this] {
+        pbSeekThrottle_.restart();
+        if (!seekerUpdating_) player_->seek(pbPendingSeekPct_);
+    });
+
+    // Drag release: cancel any pending throttled seek and jump to the exact final
+    // position immediately (no trailing-timer latency at the end of a scrub).
+    static_cast<ScrubSlider*>(pb_slider_)->onScrubEnd = [this] {
+        pbSeekPending_->stop();
+        pbSeekThrottle_.restart();
+        if (!seekerUpdating_) player_->seek(pb_slider_->value() / 1000.0f);
+    };
+
     pb_timeLabel_ = new QLabel("0:00 / 0:00", pb_bar_);
     pbLayout->addWidget(pb_timeLabel_);
 
@@ -767,8 +790,18 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(pb_slider_, &QSlider::valueChanged, this, [this](int val) {
-        if (!seekerUpdating_)
-            player_->seek(val / 1000.0f);
+        if (seekerUpdating_) return;   // programmatic slider sync (playback tick), not a user seek
+        const float pct = val / 1000.0f;
+        pbPendingSeekPct_ = pct;
+        // Throttle live scrubbing to ~10 Hz: a full seek reconstructs panel state
+        // and is GUI-thread-bound, so seeking on every drag event backs up the
+        // event queue. The pending timer guarantees the final position still lands.
+        if (!pbSeekThrottle_.isValid() || pbSeekThrottle_.elapsed() >= 100) {
+            pbSeekThrottle_.restart();
+            player_->seek(pct);
+        } else {
+            pbSeekPending_->start(100);
+        }
     });
 
     connect(pb_speedCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {

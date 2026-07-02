@@ -62,6 +62,7 @@ static uint8_t scanType(const char* d, int len) {
             if (r >= 9  && std::memcmp(v, "tyre_sets",    9)  == 0) return 10;
             if (r >= 7  && std::memcmp(v, "motion\"",     7)  == 0) return 11;
             if (r >= 10 && std::memcmp(v, "motion_ex\"", 10)  == 0) return 12;
+            if (r >= 9  && std::memcmp(v, "positions",    9)  == 0) return 13;
             return 0;
         }
     }
@@ -90,9 +91,19 @@ bool TnrdReader::decompress(const std::string& srcPath, const std::string& destP
     char buf[131072];
     int n;
     bool ok = true;
-    while ((n = gzread(gz, buf, sizeof(buf))) > 0)
-        if (std::fwrite(buf, 1, (size_t)n, out) != (size_t)n) { ok = false; break; }
-    if (n < 0) ok = false;
+    bool writeFailed = false;
+    unsigned long long written = 0;
+    while ((n = gzread(gz, buf, sizeof(buf))) > 0) {
+        if (std::fwrite(buf, 1, (size_t)n, out) != (size_t)n) { ok = false; writeFailed = true; break; }
+        written += (unsigned long long)n;
+    }
+    // A crash mid-recording leaves an unterminated gzip stream; gzread then
+    // returns -1 at the truncated tail. Keep everything decompressed so far
+    // instead of discarding the whole recording — buildIndex() drops the final
+    // partial line. Only a genuine fwrite failure, or a file that yielded no
+    // usable bytes at all, counts as a hard failure.
+    if (writeFailed) ok = false;
+    else if (n < 0)  ok = (written > 0);
     gzclose(gz);
     std::fclose(out);
     return ok;
@@ -199,7 +210,10 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             p = nl + 1;
         }
     }
-    if (!partial.empty()) commitLine(partial.data(), (int)partial.size(), partialOffset);
+    // A leftover partial here means the file ended without a trailing newline.
+    // The writer always terminates every row (and the header) with '\n', so a
+    // cleanly closed stream leaves nothing pending — a non-empty partial marks a
+    // truncated tail (crash mid-write). Drop it rather than index a corrupt row.
     std::fclose(f);
 
     if (curLapNum >= 0) {
@@ -300,11 +314,14 @@ void TnrdReader::setCursor(float t) {
     playPos_ = upperBoundTime(t);
 }
 
-std::vector<std::string> TnrdReader::stateSnapshot(float t) {
+// Latest row of each requested type at or before t. Walks the index backward and
+// reads only the matched lines (never the whole window), returning them ordered by
+// file position. Stops as soon as every requested type has been found.
+std::vector<std::string> TnrdReader::latestOfTypes(float t, const std::vector<uint8_t>& types) {
     std::vector<std::string> out;
-    if (index_.empty()) return out;
+    if (index_.empty() || types.empty()) return out;
     size_t pos = upperBoundTime(t);
-    std::unordered_set<uint8_t> wanted(std::begin(STATE_TYPE_IDS), std::end(STATE_TYPE_IDS));
+    std::unordered_set<uint8_t> wanted(types.begin(), types.end());
     std::vector<size_t> snapshot;
     for (size_t i = pos; i-- > 0 && !wanted.empty(); )
         if (wanted.erase(index_[i].type)) snapshot.push_back(i);
@@ -314,6 +331,10 @@ std::vector<std::string> TnrdReader::stateSnapshot(float t) {
         if (!s.empty()) out.push_back(std::move(s));
     }
     return out;
+}
+
+std::vector<std::string> TnrdReader::stateSnapshot(float t) {
+    return latestOfTypes(t, { std::begin(STATE_TYPE_IDS), std::end(STATE_TYPE_IDS) });
 }
 
 std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {

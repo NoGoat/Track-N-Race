@@ -41,6 +41,9 @@ public:
 
     // ── Seek support ─────────────────────────────────────────────────────────
     std::vector<std::string> stateSnapshot(float t);
+    // Latest row of each requested type at/before t (backward index walk; reads
+    // only matched lines). Used to restore status/damage/positions panels on seek.
+    std::vector<std::string> latestOfTypes(float t, const std::vector<uint8_t>& types);
     std::vector<std::string> readRange(float fromTime, float toTime);
     bool currentLapAt(float t, float& startOut, int& numOut) const;
 

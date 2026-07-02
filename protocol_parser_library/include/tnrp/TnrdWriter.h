@@ -84,6 +84,11 @@ private:
     int         currentSessionType_ = -1;
     float       lastSessionTime_    = -1.0f;
 
+    // Durability: force a zlib sync point on a cadence so a crash/power-loss
+    // mid-session leaves a stream that is still decodable up to the last flush.
+    int         rowsSinceFlush_     = 0;
+    static constexpr int FLUSH_EVERY_ROWS = 300;  // ~5 s at buffered cadence
+
     std::vector<BufferEntry>                     rollingBuffer_;
     std::unordered_map<std::string, std::string> dedupeCache_;
 

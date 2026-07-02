@@ -313,9 +313,11 @@ export function useTelemetry(seconds: number): TelemetryState {
           // JSON.parse. Sparse cold rows (status/damage/lap) come as a tiny JSON blob.
           const tel: any[] = []
           const mot: any[] = []
+          const motEx: any[] = []
           for (const row of decodeBinaryBatch(payload.binary)) {
             if (row.type === 'telemetry') tel.push(row)
             else if (row.type === 'motion') mot.push(row)
+            else if (row.type === 'motion_ex') motEx.push(row)
           }
 
           const sts: any[] = []
@@ -339,6 +341,7 @@ export function useTelemetry(seconds: number): TelemetryState {
 
           setTelBuf(tel); telBufRef.current = tel;
           setMotBuf(mot); motBufRef.current = mot;
+          setMotExBuf(motEx);
           setStsBuf(sts); stsBufRef.current = sts;
           setDmgBuf(dmg); dmgBufRef.current = dmg;
 

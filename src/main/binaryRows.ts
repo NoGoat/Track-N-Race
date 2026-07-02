@@ -29,6 +29,7 @@ export class BinaryWriter {
 
 const TAG_TELEMETRY = 1
 const TAG_MOTION = 2
+const TAG_MOTION_EX = 4
 
 export function encodeTelemetry(w: BinaryWriter, o: any): void {
   w.u8(TAG_TELEMETRY)
@@ -53,6 +54,13 @@ export function encodeMotion(w: BinaryWriter, o: any): void {
   w.f64(o.g_lat)
   w.f64(o.g_long)
   w.f64(o.g_vert)
+}
+
+export function encodeMotionEx(w: BinaryWriter, o: any): void {
+  w.u8(TAG_MOTION_EX)               // 4
+  w.f32(o.session_time)
+  w.f64(o.front_aero_height_mm)
+  w.f64(o.rear_aero_height_mm)
 }
 
 // ── Forward-fill support (live smoothing) ──────────────────────────────────

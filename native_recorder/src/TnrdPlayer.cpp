@@ -137,30 +137,18 @@ void TnrdPlayer::seek(float pct) {
     emit seeked();
 
     // Cold state snapshot (lap/session/timing/participants/all_status/tyre_sets).
-    // The reader's snapshot omits status/damage/positions, so grab the latest of
-    // those from a short backward window and replay them too, so the race panel,
-    // damage rows and track map reflect the seek target. The chart itself needs no
-    // window — the whole session lives in SessionModel and keys off currentTime_.
+    // The reader's snapshot omits status/damage/positions, so replay the latest of
+    // those too, so the race panel, damage rows and track map reflect the seek
+    // target. The chart itself needs no window — the whole session lives in
+    // SessionModel and keys off currentTime_.
     emitRows(reader_.stateSnapshot(targetTime));
 
-    const float windowStart = std::max(startTime_, targetTime - 30.0f);
-    std::vector<std::string> window = reader_.readRange(windowStart, targetTime);
-    std::string lastStatus, lastDamage, lastPositions;
-    for (auto& s : window) {
-        switch (scanType(s.data(), (int)s.size())) {
-            case 2: lastStatus = s; break;
-            case 3: lastDamage = s; break;
-            default:
-                // positions rows aren't chart-scanned; cheap substring check.
-                if (s.find("\"type\":\"positions\"") != std::string::npos) lastPositions = s;
-                break;
-        }
-    }
-    std::vector<std::string> latest;
-    if (!lastStatus.empty())    latest.push_back(std::move(lastStatus));
-    if (!lastDamage.empty())    latest.push_back(std::move(lastDamage));
-    if (!lastPositions.empty()) latest.push_back(std::move(lastPositions));
-    emitRows(latest);
+    // Latest status / damage / positions at the seek point via a backward index
+    // walk that reads only those rows. The previous approach read the whole 30 s
+    // window (~5k string allocations per seek on a dense race), which dominated
+    // scrub cost. Type IDs: 2=status, 3=damage, 13=positions.
+    static const std::vector<uint8_t> kSeekStateTypes = { 2, 3, 13 };
+    emitRows(reader_.latestOfTypes(targetTime, kSeekStateTypes));
 
     if (wasPlaying) { playing_ = true; elapsed_.start(); timer_->start(); }
     emitState();

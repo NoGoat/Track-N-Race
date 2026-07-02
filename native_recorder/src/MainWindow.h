@@ -13,6 +13,7 @@
 #include <QSettings>
 #include <QByteArray>
 #include <QHash>
+#include <QElapsedTimer>
 
 #include <string>
 #include <vector>
@@ -347,6 +348,12 @@ private:
     bool         inPlayback_     = false;
     bool         seekerUpdating_ = false;
     bool         pbLastPlaying_  = false;   // only swap the play/pause icon on change
+    // Scrub throttle: live drag fires seeks at ~10 Hz (a full seek is heavy and
+    // GUI-thread-bound); a trailing timer + seek-on-release land the exact final
+    // position. Mirrors the Electron renderer's scrub handler.
+    QElapsedTimer pbSeekThrottle_;
+    QTimer*      pbSeekPending_    = nullptr;
+    float        pbPendingSeekPct_ = 0.0f;
     QWidget*     pb_bar_         = nullptr;
     QFrame*      pb_sep_         = nullptr;
     QPushButton* pb_seekBackBtn_ = nullptr;
