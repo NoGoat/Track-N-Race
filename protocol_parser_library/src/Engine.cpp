@@ -4,14 +4,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <thread>
+
+#define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
 namespace tnrp {
 
 Engine::Engine(const Config& config, Sink* sink)
     : config_(config), sink_(sink), parser_(config.protocol) {
+    TRACE("Engine ctor: start");
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
+    TRACE("Engine ctor: writer_.setLogging done");
     emitRow(parser_.statusRow());
+    TRACE("Engine ctor: emitRow(statusRow) done");
 }
 
 Engine::~Engine() {
@@ -27,8 +33,11 @@ void Engine::emitRow(const std::string& json) {
 // ── Live ─────────────────────────────────────────────────────────────────────
 
 bool Engine::startUdp() {
-    return udp_.start(config_.port, config_.bindAddress,
+    TRACE("Engine::startUdp: start");
+    bool ok = udp_.start(config_.port, config_.bindAddress,
                       [this](const uint8_t* d, int n) { onDatagram(d, n); });
+    TRACE("Engine::startUdp: udp_.start returned");
+    return ok;
 }
 
 void Engine::restartUdp(uint16_t port, const std::string& bindAddress) {

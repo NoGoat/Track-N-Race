@@ -1,6 +1,9 @@
 #include "tnrp/UdpListener.h"
 
+#include <cstdio>
 #include <vector>
+
+#define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
 #ifdef TNRP_USE_QT
 // ── Qt path (for linking into the native Qt app) ─────────────────────────────
@@ -85,13 +88,16 @@ static void closeSock(int s) { ::close(s); }
 UdpListener::~UdpListener() { stop(); }
 
 bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler) {
+    TRACE("UdpListener::start: entry");
     stop();
+    TRACE("UdpListener::start: stop() done");
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         lastError_ = "WSAStartup failed";
         return false;
     }
+    TRACE("UdpListener::start: WSAStartup done");
 #endif
     SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) {
@@ -101,6 +107,7 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
 #endif
         return false;
     }
+    TRACE("UdpListener::start: socket() created");
 
     int reuse = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
@@ -121,6 +128,7 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
 #endif
         return false;
     }
+    TRACE("UdpListener::start: bind() done");
 
     // Receive timeout so the loop can poll running_ and exit promptly on stop().
 #ifdef _WIN32
@@ -133,6 +141,7 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
 
     rawSock_ = s;
     running_.store(true);
+    TRACE("UdpListener::start: spawning receive thread");
     // Pass the bound socket to the loop via a tiny heap handoff (int fits in the
     // bindAddress slot we already have — reuse runLoop signature for clarity).
     thread_ = std::thread([this, s, handler]() {
@@ -145,6 +154,7 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
             // n <= 0 is a timeout or transient error; loop and re-check running_.
         }
     });
+    TRACE("UdpListener::start: thread spawned, returning true");
     return true;
 }
 

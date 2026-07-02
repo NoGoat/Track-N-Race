@@ -3,6 +3,7 @@
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,9 +11,12 @@
 
 using namespace Napi;
 
+#define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+        TRACE("Init: before DefineClass");
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
@@ -26,18 +30,23 @@ public:
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
+        TRACE("Init: after DefineClass");
 
         Napi::FunctionReference* constructor = new Napi::FunctionReference();
         *constructor = Napi::Persistent(func);
+        TRACE("Init: after Persistent");
         env.SetInstanceData(constructor);
+        TRACE("Init: after SetInstanceData");
 
         exports.Set("Engine", func);
+        TRACE("Init: after exports.Set");
         return exports;
     }
 
     TNRPAddon(const Napi::CallbackInfo& info) : Napi::ObjectWrap<TNRPAddon>(info) {
+        TRACE("TNRPAddon ctor: start");
         Napi::Env env = info.Env();
-        
+
         // Expected args: (configObj, callback)
         if (info.Length() < 2 || !info[0].IsObject() || !info[1].IsFunction()) {
             Napi::TypeError::New(env, "Expected (configObj, callback)").ThrowAsJavaScriptException();
@@ -46,7 +55,7 @@ public:
 
         Napi::Object configObj = info[0].As<Napi::Object>();
         tnrp::Config config;
-        
+
         if (configObj.Has("format") && configObj.Get("format").IsString()) {
             std::string fmt = configObj.Get("format").As<Napi::String>().Utf8Value();
             config.protocol = tnrp::overrideFromString(fmt);
@@ -57,6 +66,7 @@ public:
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();
         }
+        TRACE("TNRPAddon ctor: config parsed");
 
         Napi::Function cb = info[1].As<Napi::Function>();
 
@@ -72,6 +82,7 @@ public:
             }
         );
         tsfn.Unref(env); // Allow the Node event loop to exit even if tsfn is active
+        TRACE("TNRPAddon ctor: tsfn created");
 
         // Optional second callback for the hot-row binary batch (Buffer).
         if (info.Length() >= 3 && info[2].IsFunction()) {
@@ -81,8 +92,10 @@ public:
             tsfnBin.Unref(env);
             hasBinCb_ = true;
         }
+        TRACE("TNRPAddon ctor: about to construct Engine");
 
         engine = std::make_unique<tnrp::Engine>(config, this);
+        TRACE("TNRPAddon ctor: Engine constructed, done");
     }
 
     ~TNRPAddon() {
@@ -188,7 +201,10 @@ private:
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
-        return Napi::Boolean::New(info.Env(), engine->startUdp());
+        TRACE("StartUdp: calling engine->startUdp()");
+        bool ok = engine->startUdp();
+        TRACE("StartUdp: returned");
+        return Napi::Boolean::New(info.Env(), ok);
     }
 
     Napi::Value SetOverride(const Napi::CallbackInfo& info) {
@@ -283,7 +299,9 @@ Napi::Value CardColorsJson(const Napi::CallbackInfo& info) {
 }
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
+    TRACE("InitAll: module loading");
     TNRPAddon::Init(env, exports);
+    TRACE("InitAll: module loaded");
     exports.Set("labelsJson", Napi::Function::New(env, LabelsJson));
     exports.Set("cardColorsJson", Napi::Function::New(env, CardColorsJson));
     return exports;
