@@ -176,6 +176,10 @@ private:
     TyreCardsWidget*  ov_tyreCards_  = nullptr;
     TyreChartsWidget* ov_tyreCharts_ = nullptr;
     QFrame*         ov_statCardFrame_[OverviewLayout::StatCardCount] = {};
+    // Separator preceding each stat card (index 0 has none). Tracked so a hidden
+    // card's flanking separators can be hidden too — otherwise they stack into a
+    // double line between the surrounding visible cards.
+    QFrame*         ov_statCardSep_[OverviewLayout::StatCardCount]   = {};
     QFrame*         ov_dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
     QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;

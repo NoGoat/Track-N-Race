@@ -52,6 +52,13 @@ function advance<T extends { session_time: number }>(arr: T[], idx: number, targ
   return idx
 }
 
+// Hold-last-value advance for the sparse 2 Hz status rows: the value switches when
+// the next sample arrives (step-left), not at the midpoint between samples.
+function advanceHold<T extends { session_time: number }>(arr: T[], idx: number, target: number): number {
+  while (idx + 1 < arr.length && arr[idx + 1].session_time <= target) idx++
+  return idx
+}
+
 function buildOverlayData(
   prevLap: { telemetry: any[]; statusHistory: any[]; startSessionTime: number; lapNum?: number },
   lapData: TelemetryRow[],
@@ -98,13 +105,13 @@ function buildOverlayData(
     x[i] = t
     prevSpd[i] = d.speed_kph
     prevRpm[i] = d.rpm
-    siP = advance(prevSts, siP, d.session_time)
+    siP = advanceHold(prevSts, siP, d.session_time)
     prevErs[i] = prevSts[siP]?.ers_pct ?? 0
     const target = curStart + t
     ci = advance(lapData, ci, target)
     curSpd[i] = target <= curEnd ? lapData[ci].speed_kph : NaN
     curRpm[i] = target <= curEnd ? lapData[ci].rpm        : NaN
-    siC = advance(lapStatusHistory, siC, target)
+    siC = advanceHold(lapStatusHistory, siC, target)
     curErs[i] = target <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
   })
 
@@ -117,7 +124,7 @@ function buildOverlayData(
     prevErs[i] = NaN
     curSpd[i]  = d.speed_kph
     curRpm[i]  = d.rpm
-    siC = advance(lapStatusHistory, siC, d.session_time)
+    siC = advanceHold(lapStatusHistory, siC, d.session_time)
     curErs[i]  = d.session_time <= stsEnd ? lapStatusHistory[siC].ers_pct : NaN
   }
 
@@ -189,11 +196,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       spd[i] = d.speed_kph
       rpm[i] = d.rpm
       if (activeSts.length > 0) {
-        while (si + 1 < activeSts.length) {
-          const cur = Math.abs(activeSts[si].session_time - d.session_time)
-          const nxt = Math.abs(activeSts[si + 1].session_time - d.session_time)
-          if (nxt <= cur) si++; else break
-        }
+        si = advanceHold(activeSts, si, d.session_time)
         ers[i] = activeSts[si].ers_pct
       }
     })

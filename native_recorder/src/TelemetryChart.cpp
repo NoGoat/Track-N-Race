@@ -43,10 +43,12 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     setAxisNumberSuffix(axErs, 1.0, "%");           // 80    -> "80%"
 
     // Reference series first (drawn behind), then the current-lap series on top.
-    rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs   });
+    // ERS comes from the 2 Hz CAR_STATUS packet — draw it stepped (hold-last-value)
+    // rather than interpolating across the half-second gaps between samples.
+    rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs,   "",    0, false, false, QColor(), true });
     rRpId_ = addSeries({ "",      muted(C_RPM),   2.0, axXId_, axRpm   });
     rSpId_ = addSeries({ "",      muted(C_SPEED), 2.0, axXId_, axSpeed });
-    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs,   "%",   1, false });
+    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs,   "%",   1, false, false, QColor(), true });
     rpId_  = addSeries({ "RPM",   C_RPM,   2.5, axXId_, axRpm,   "",    0, true  });
     spId_  = addSeries({ "Speed", C_SPEED, 2.5, axXId_, axSpeed, "kph", 0, false });
 

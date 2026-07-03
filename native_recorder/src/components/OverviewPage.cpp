@@ -144,7 +144,11 @@ QWidget* MainWindow::buildOverviewTab() {
         ovCardValue_[key] = val;
         ovCardTitle_[key] = title;
         if (sub) ovCardSub_[key] = sub;
-        if (!first) sh->addWidget(vsep());
+        if (!first) {
+            QFrame* sep = vsep();
+            ov_statCardSep_[d.idx] = sep;   // tracked so applyOverviewLayout can hide it with its card
+            sh->addWidget(sep);
+        }
         first = false;
         sh->addWidget(frame);
     }
@@ -395,6 +399,12 @@ void MainWindow::applyOverviewLayout(const OverviewLayout& L)
     bool anyStat = false;
     for (int i = 0; i < OverviewLayout::StatCardCount; ++i) {
         if (ov_statCardFrame_[i]) ov_statCardFrame_[i]->setVisible(L.statCards[i]);
+        // Show the separator preceding this card only when the card is visible AND
+        // an earlier card is too (anyStat still reflects cards before i here). That
+        // yields exactly one separator between consecutive visible cards, no leading
+        // separator, and no doubled line where a hidden card sat between two visible
+        // ones. Index 0 has no separator (nullptr), so it's skipped.
+        if (ov_statCardSep_[i]) ov_statCardSep_[i]->setVisible(L.statCards[i] && anyStat);
         anyStat = anyStat || L.statCards[i];
     }
     if (ov_statsFrame_) ov_statsFrame_->setVisible(anyStat);
