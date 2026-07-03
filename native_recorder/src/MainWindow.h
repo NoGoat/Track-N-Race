@@ -114,6 +114,10 @@ public:
     QString currentProtocolOverride() const { return settings.value("protocolOverride", "auto").toString(); }
     void    setProtocolOverride(const QString& ovr);
     int     lastDetectedProtocolFormat() const { return lastDetectedProtocolFormat_; }
+    int     udpPort() const { return settings.value("udp/port", 20777).toInt(); }
+    void    setUdpPort(int port);
+    QString udpBindAddress() const { return settings.value("udp/bindAddress", "0.0.0.0").toString(); }
+    void    setUdpBindAddress(const QString& addr);
 
 signals:
     void telemetryUpdated(float speed, int rpm, int gear,

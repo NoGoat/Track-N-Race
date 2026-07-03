@@ -838,8 +838,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(engineSink_, &EngineSink::rowReady, this, &MainWindow::onEngineRow);
 
     tnrp::Config cfg;
-    cfg.port            = 20777;
-    cfg.bindAddress     = "0.0.0.0";
+    cfg.port            = static_cast<uint16_t>(udpPort());
+    cfg.bindAddress     = udpBindAddress().toStdString();
     cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
     cfg.hotRowsAsJson   = true;   // in-process consumer: hot rows as JSON, no binary channel
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty();
@@ -848,8 +848,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     if (!engine_->startUdp())
         QMessageBox::critical(this, "UDP Error",
-            "Failed to bind to UDP port 20777.\n"
-            "Is another telemetry tool or Track-N-Race already open?");
+            QString("Failed to bind to UDP port %1.\n"
+            "Is another telemetry tool or Track-N-Race already open?").arg(udpPort()));
 
     // Forward-fill timer: re-emits the last hot row during dropped/late frames so
     // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
@@ -1386,6 +1386,22 @@ void MainWindow::setTrackMapIdleTimeout(int secs) {
 void MainWindow::setProtocolOverride(const QString& ovr) {
     settings.setValue("protocolOverride", ovr);
     if (engine_) engine_->setOverride(tnrp::overrideFromString(ovr.toStdString()));
+}
+
+// Port / bind-address changes rebind the live UDP socket without recreating the
+// engine (Engine::restartUdp stops the listener, re-binds and resets the parser).
+// Both guard against no-op re-applies so the socket isn't churned when the field
+// loses focus unchanged.
+void MainWindow::setUdpPort(int port) {
+    if (port == udpPort()) return;
+    settings.setValue("udp/port", port);
+    if (engine_) engine_->restartUdp(static_cast<uint16_t>(port), udpBindAddress().toStdString());
+}
+
+void MainWindow::setUdpBindAddress(const QString& addr) {
+    if (addr == udpBindAddress()) return;
+    settings.setValue("udp/bindAddress", addr);
+    if (engine_) engine_->restartUdp(static_cast<uint16_t>(udpPort()), addr.toStdString());
 }
 
 void MainWindow::onEngineRow(const QByteArray& json) {

@@ -9,6 +9,8 @@ class QCheckBox;
 class QRadioButton;
 class QComboBox;
 class QSlider;
+class QSpinBox;
+class QLineEdit;
 class QFormLayout;
 class QWidget;
 
@@ -47,6 +49,8 @@ private:
     MainWindow*   mainWindow_;
     QComboBox*    protocolCombo_         = nullptr;
     QLabel*       detectedProtocolLabel_ = nullptr;
+    QSpinBox*     udpPortSpin_           = nullptr;
+    QLineEdit*    udpBindAddressEdit_    = nullptr;
     QLabel*       dirLabel_           = nullptr;
     QCheckBox*    recordCheck_        = nullptr;
     QRadioButton* themeSystem_        = nullptr;

@@ -11,6 +11,8 @@
 #include <QRadioButton>
 #include <QComboBox>
 #include <QSlider>
+#include <QSpinBox>
+#include <QLineEdit>
 #include <QStyleFactory>
 #include <QPushButton>
 #include <QFileDialog>
@@ -77,12 +79,12 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
 
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
-        { "Protocol",      buildProtocolPage()      },
-        { "Recording",     buildRecordingPage()     },
         { "Appearance",    buildAppearancePage()    },
-        { "Notifications", buildNotificationsPage() },
+        { "Recording",     buildRecordingPage()     },
         { "Overview",      buildOverviewPage()      },
         { "Track Map",     buildTrackMapPage()      },
+        { "Notifications", buildNotificationsPage() },
+        { "Protocol",      buildProtocolPage()      },
     };
 
     QWidget*     tabBar = new QWidget;
@@ -209,6 +211,33 @@ QWidget* SettingsDialog::buildProtocolPage() {
         mainWindow_->setProtocolOverride(protocolCombo_->currentData().toString());
     });
     form->addRow("Protocol Version Override:", protocolCombo_);
+
+    form->addRow(horizontalSeparator());
+    form->addRow(subHeading("Network"));
+
+    // Port + bind address rebind the live UDP socket on edit (see
+    // MainWindow::setUdpPort / setUdpBindAddress). editingFinished (focus-out or
+    // Enter), not valueChanged, so the socket isn't restarted on every keystroke.
+    udpPortSpin_ = new QSpinBox;
+    udpPortSpin_->setRange(1, 65535);
+    udpPortSpin_->setGroupSeparatorShown(false);   // a port is not a thousands-grouped number
+    udpPortSpin_->setValue(mainWindow_->udpPort());
+    connect(udpPortSpin_, &QSpinBox::editingFinished, this, [this] {
+        mainWindow_->setUdpPort(udpPortSpin_->value());
+    });
+    form->addRow("UDP Port:", udpPortSpin_);
+
+    udpBindAddressEdit_ = new QLineEdit(mainWindow_->udpBindAddress());
+    udpBindAddressEdit_->setPlaceholderText(QStringLiteral("0.0.0.0"));
+    udpBindAddressEdit_->setToolTip(
+        "Which local network interface to receive telemetry on. "
+        "0.0.0.0 listens on all interfaces.");
+    connect(udpBindAddressEdit_, &QLineEdit::editingFinished, this, [this] {
+        const QString addr = udpBindAddressEdit_->text().trimmed();
+        udpBindAddressEdit_->setText(addr);
+        mainWindow_->setUdpBindAddress(addr.isEmpty() ? QStringLiteral("0.0.0.0") : addr);
+    });
+    form->addRow("Bind Address:", udpBindAddressEdit_);
 
     return page;
 }
