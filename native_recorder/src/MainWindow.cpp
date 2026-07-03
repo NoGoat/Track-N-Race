@@ -1253,21 +1253,22 @@ void MainWindow::changeEvent(QEvent* e) {
 
 void MainWindow::updateToolbarColorScheme() {
     if (!toolbar_) return;
-    // The dark-bar problem is specific to Breeze's "tools area", which colours the
-    // toolbar from the *OS* scheme (same source as the titlebar). So only override
-    // when (a) the user explicitly picked the Breeze style, AND (b) the app is
-    // forced to the opposite mode from the OS — there the native colour clashes.
-    // For System Default / any other style, or when the app matches the OS (incl.
-    // "system" theme), leave the toolbar to the style/OS.
-    const bool breezeStyle = currentStyleName().compare("breeze", Qt::CaseInsensitive) == 0;
-    const QString theme = currentTheme();
-    const auto os = Qt::ColorScheme(qApp->property("osColorScheme").toInt());
-    const bool osDark = (os == Qt::ColorScheme::Dark);
-    const bool mismatch = breezeStyle &&
-        ((theme == "light" && osDark) || (theme == "dark" && !osDark));
-    toolbar_->setStyleSheet(mismatch
-        ? "QToolBar { border: none; margin: 0px; padding: 0px; background: palette(button); }"
-        : "QToolBar { border: none; margin: 0px; padding: 0px; }");
+    // The toolbar sits on the palette's Button shade (a touch lighter than the
+    // window) with a hairline bottom border separating it from the page content
+    // below — the same divider style as the tab-bar/pane seam in the Settings
+    // window. The border colour is ~30% of the way from the window colour toward
+    // the text colour so it stays visible in both light and dark themes; it's
+    // recomputed here so it re-themes when the colour scheme changes.
+    // (background: palette(button) already neutralises Breeze's OS-scheme "tools
+    // area" tint unconditionally, so no style/mode-specific branch is needed.)
+    const QColor win = QApplication::palette().color(QPalette::Window);
+    const QColor txt = QApplication::palette().color(QPalette::WindowText);
+    const QColor borderCol((win.red()   * 7 + txt.red()   * 3) / 10,
+                           (win.green() * 7 + txt.green() * 3) / 10,
+                           (win.blue()  * 7 + txt.blue()  * 3) / 10);
+    toolbar_->setStyleSheet(QString(
+        "QToolBar { border: none; border-bottom: 1px solid %1;"
+        " margin: 0px; padding: 0px; background: palette(button); }").arg(borderCol.name()));
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────
