@@ -6,7 +6,7 @@
 GForceChart::GForceChart(QWidget* parent) : ChartView(parent) {
     refreshTimer_ = new QTimer(this);
     refreshTimer_->setSingleShot(true);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setInterval(0);   // coalesce to one refresh per event-loop pass (per packet, 20..60 Hz)
     connect(refreshTimer_, &QTimer::timeout, this, &GForceChart::refresh);
 
     ChartView::AxisSpec xAx;

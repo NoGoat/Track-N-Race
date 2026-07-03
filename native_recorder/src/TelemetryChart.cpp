@@ -54,14 +54,17 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     setHoverReadout(true);
     setLegendVisible(false);   // legend lives in the toolbar (see OverviewPage)
 
+    // Coalesces rebuilds to one per event-loop pass (i.e. one per arriving packet,
+    // 20..60 Hz) via a zero-delay single-shot armed from requestRefresh() — no fixed
+    // rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);   // ~30 Hz, coalesces rebuilds
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         // Only rebuild while shown; the model keeps accumulating either way, and
         // showEvent re-pulls when the Overview tab comes back into view.
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void TelemetryChart::showEvent(QShowEvent* e)
@@ -92,7 +95,10 @@ void TelemetryChart::setWindowSeconds(float seconds)
     requestRefresh();
 }
 
-void TelemetryChart::requestRefresh() { dirty_ = true; }
+void TelemetryChart::requestRefresh() {
+    dirty_ = true;
+    if (!refreshTimer_->isActive()) refreshTimer_->start();
+}
 
 float TelemetryChart::currentTime() const
 {

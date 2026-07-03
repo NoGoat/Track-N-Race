@@ -101,12 +101,14 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
 
     outer->addWidget(row, 1);
 
+    // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
+    // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void TyreChartsWidget::showEvent(QShowEvent* e) {
@@ -125,7 +127,7 @@ void TyreChartsWidget::setModel(SessionModel* m) {
 void TyreChartsWidget::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void TyreChartsWidget::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void TyreChartsWidget::setWindowSeconds(float s) { windowS_ = s; prevEndTime_ = -9999.0f; requestRefresh(); }
-void TyreChartsWidget::requestRefresh() { dirty_ = true; }
+void TyreChartsWidget::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
 
 void TyreChartsWidget::setTyreLifeMode(bool life) {
     if (lifeMode_ == life) return;

@@ -169,48 +169,59 @@ const LapBlock* SessionData::lapAtTime(float t) const {
     return nullptr;
 }
 
-// ── SessionModel: QObject wrapper + ~30 Hz coalescing ───────────────────────
+// ── SessionModel: QObject wrapper + per-frame coalescing ────────────────────
 
-SessionModel::SessionModel(QObject* parent) : QObject(parent) {
-    flush_ = new QTimer(this);
-    flush_->setInterval(33);   // ~30 Hz
-    connect(flush_, &QTimer::timeout, this, [this] {
+SessionModel::SessionModel(QObject* parent) : QObject(parent) {}
+
+// Emits telemetryAppended()/tyreAppended() at most once per event-loop pass. On the
+// GUI thread that is once per arriving packet, so charts refresh at the true data
+// rate (20..60 Hz) instead of a fixed clock, while the several ingest setters fired
+// by one composite packet still collapse into a single emission.
+void SessionModel::scheduleFlush() {
+    if (!flushActive_ || flushScheduled_) return;
+    flushScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+        flushScheduled_ = false;
         if (telemetryDirty_) { telemetryDirty_ = false; emit telemetryAppended(); }
         if (tyreDirty_)      { tyreDirty_      = false; emit tyreAppended(); }
     });
-    flush_->start();
 }
 
 void SessionModel::setLiveFlushActive(bool on) {
-    if (!flush_) return;
     if (on) {
-        if (!flush_->isActive()) {
+        if (!flushActive_) {
+            flushActive_    = true;
             telemetryDirty_ = true;   // force one flush so charts catch up on the data ingested while paused
-            flush_->start();
+            tyreDirty_      = true;
+            scheduleFlush();
         }
     } else {
-        flush_->stop();               // ingest keeps running; samples accumulate until resumed
+        flushActive_ = false;         // ingest keeps running; samples accumulate until resumed
     }
 }
 
 void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering) {
     d_.onTelemetry(t, speed, rpm, gear, throttle, brake, steering);
     telemetryDirty_ = true;
+    scheduleFlush();
 }
 
 void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
     d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j);
     telemetryDirty_ = true;
+    scheduleFlush();
 }
 
 void SessionModel::onMotion(float t, float g_lat, float g_long) {
     d_.onMotion(t, g_lat, g_long);
     telemetryDirty_ = true;
+    scheduleFlush();
 }
 
 void SessionModel::onMotionEx(float t, float front_aero, float rear_aero) {
     d_.onMotionEx(t, front_aero, rear_aero);
     telemetryDirty_ = true;
+    scheduleFlush();
 }
 
 void SessionModel::onTyre(float t,
@@ -224,6 +235,7 @@ void SessionModel::onTyre(float t,
               brakeFl, brakeFr, brakeRl, brakeRr,
               wearFl, wearFr, wearRl, wearRr);
     tyreDirty_ = true;
+    scheduleFlush();
 }
 
 void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {

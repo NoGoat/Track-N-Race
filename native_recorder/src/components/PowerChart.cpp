@@ -38,12 +38,14 @@ PowerChart::PowerChart(PowerChartType type, QWidget* parent)
     setHoverReadout(true);
     setLegendVisible(false);
 
+    // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
+    // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void PowerChart::applyHarvestScale(uint16_t format) {
@@ -67,7 +69,7 @@ void PowerChart::setModel(SessionModel* m) {
 void PowerChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void PowerChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void PowerChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
-void PowerChart::requestRefresh() { dirty_ = true; }
+void PowerChart::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
 
 float PowerChart::currentTime() const {
     if (playback_) return currentTime_;

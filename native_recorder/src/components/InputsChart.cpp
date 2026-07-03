@@ -23,12 +23,14 @@ InputsChart::InputsChart(QWidget* parent)
     setHoverReadout(true);
     setLegendVisible(false);
 
+    // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
+    // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void InputsChart::showEvent(QShowEvent* e) {
@@ -47,7 +49,7 @@ void InputsChart::setModel(SessionModel* m) {
 void InputsChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void InputsChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void InputsChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
-void InputsChart::requestRefresh() { dirty_ = true; }
+void InputsChart::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
 
 float InputsChart::currentTime() const {
     if (playback_) return currentTime_;

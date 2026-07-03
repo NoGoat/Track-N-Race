@@ -40,7 +40,7 @@ protected:
     void showEvent(QShowEvent* e) override;
 
 private:
-    void requestRefresh();                  // ~30 Hz coalesced
+    void requestRefresh();                  // coalesced: one refresh per event-loop pass
     void refresh();
 
     void buildDefault(float endTime);

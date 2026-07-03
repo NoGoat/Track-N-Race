@@ -27,12 +27,14 @@ GearChart::GearChart(QWidget* parent)
     setHoverReadout(true);
     setLegendVisible(false);
 
+    // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
+    // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void GearChart::showEvent(QShowEvent* e) {
@@ -51,7 +53,7 @@ void GearChart::setModel(SessionModel* m) {
 void GearChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void GearChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void GearChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
-void GearChart::requestRefresh() { dirty_ = true; }
+void GearChart::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
 
 float GearChart::currentTime() const {
     if (playback_) return currentTime_;

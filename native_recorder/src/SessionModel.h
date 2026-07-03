@@ -115,7 +115,7 @@ public:
     // Playback: replace everything with a pre-scanned session in one shot.
     void load(SessionData&& data);
 
-    // Pause/resume the ~30 Hz signal flush without affecting ingest. When paused
+    // Pause/resume the per-frame signal flush without affecting ingest. When paused
     // (window hidden/minimized), onTelemetry() etc. keep accumulating samples but
     // no telemetryAppended() is emitted, so charts don't repaint. Resuming forces
     // one flush so charts rebuild from the full retained history (no gap).
@@ -124,14 +124,20 @@ public:
     const SessionData& data() const { return d_; }
 
 signals:
-    void telemetryAppended();   // throttled — default/current-lap views refresh
-    void tyreAppended();        // throttled — tyre chart views refresh
+    void telemetryAppended();   // coalesced per event-loop pass — default/current-lap views refresh
+    void tyreAppended();        // coalesced per event-loop pass — tyre chart views refresh
     void lapsChanged();         // a lap completed or a session loaded — selectors refresh
     void wasReset();
 
 private:
+    // Coalesces the several per-packet ingest setters into a single
+    // telemetryAppended()/tyreAppended() emission per event-loop pass (once per
+    // arriving packet — 20..60 Hz — with no fixed cap). See scheduleFlush().
+    void scheduleFlush();
+
     SessionData d_;
-    QTimer*     flush_ = nullptr;
     bool        telemetryDirty_ = false;
     bool        tyreDirty_      = false;
+    bool        flushScheduled_ = false;   // a singleShot(0) flush is already queued
+    bool        flushActive_    = true;    // emission enabled (paused when hidden)
 };

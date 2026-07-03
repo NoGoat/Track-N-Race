@@ -25,12 +25,14 @@ SteeringChart::SteeringChart(QWidget* parent)
     setHoverReadout(true);
     setLegendVisible(false);
 
+    // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
+    // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
     refreshTimer_ = new QTimer(this);
-    refreshTimer_->setInterval(33);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
     connect(refreshTimer_, &QTimer::timeout, this, [this] {
         if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
     });
-    refreshTimer_->start();
 }
 
 void SteeringChart::showEvent(QShowEvent* e) {
@@ -49,7 +51,7 @@ void SteeringChart::setModel(SessionModel* m) {
 void SteeringChart::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void SteeringChart::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void SteeringChart::setWindowSeconds(float seconds) { windowS_ = seconds; prevEndTime_ = -9999.0f; requestRefresh(); }
-void SteeringChart::requestRefresh() { dirty_ = true; }
+void SteeringChart::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
 
 float SteeringChart::currentTime() const {
     if (playback_) return currentTime_;
