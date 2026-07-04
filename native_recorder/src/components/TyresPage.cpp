@@ -1,7 +1,9 @@
 #include "TyresPage.h"
 #include "PageUiHelpers.h"
 #include "TyreCardsWidget.h"
+#include "TyreChartsWidget.h"
 #include "TyreHelpers.h"
+#include "../IconUtils.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,16 +16,23 @@
 #include <QHeaderView>
 #include <QProgressBar>
 #include <QTableWidgetItem>
+#include <QStackedWidget>
+#include <QToolButton>
+#include <QStyle>
+#include <QSettings>
 
 #include <algorithm>
 #include <vector>
 
 // ── Tyres page builder ────────────────────────────────────────────────────
 
-TyresPage::TyresPage(QWidget* parent)
+TyresPage::TyresPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
-    QHBoxLayout* hbox = new QHBoxLayout(this);
+    // Allocation view (tyre-set tables + wheel cards) lives in its own widget so
+    // the whole thing can be swapped for the graphs view via the stack below.
+    QWidget* allocWidget = new QWidget;
+    QHBoxLayout* hbox = new QHBoxLayout(allocWidget);
     hbox->setContentsMargins(0, 0, 0, 0);
     hbox->setSpacing(0);
 
@@ -69,11 +78,96 @@ TyresPage::TyresPage(QWidget* parent)
     // Vertical divider
     hbox->addWidget(tnrui::vline());
 
-    // ── Right panel: WheelCards (1×4 vertical, fills height) ────────
-    tyreCards_ = new TyreCardsWidget(Qt::Vertical);
-    tyreCards_->setFixedWidth(240);
+    // Small uppercase section caption, matching the app's other panel headers.
+    auto capLabel = [](const QString& t) {
+        auto* l = new QLabel(t);
+        QFont f; f.setPointSize(8); f.setBold(true);
+        l->setFont(f);
+        l->setForegroundRole(QPalette::PlaceholderText);
+        return l;
+    };
+    // A plain (OS-styled) icon+text toggle button; toGraphs picks the target view.
+    auto toggleBtn = [this](const QString& text, const char* iconName,
+                            QStyle::StandardPixmap fallback, bool toGraphs) {
+        auto* b = new QToolButton;
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setText(text);
+        b->setIcon(adaptThemeIcon(QIcon::fromTheme(iconName),
+                   palette().color(QPalette::WindowText), style()->standardIcon(fallback)));
+        connect(b, &QToolButton::clicked, this, [this, toGraphs]{ setGraphsShown(toGraphs); });
+        return b;
+    };
 
-    hbox->addWidget(tyreCards_);
+    // ── Right panel: wheel cards under a slim header carrying the Graphs toggle ─
+    tyreCards_ = new TyreCardsWidget(Qt::Vertical);
+    QWidget* cardsCol = new QWidget;
+    cardsCol->setFixedWidth(240);
+    QVBoxLayout* cc = new QVBoxLayout(cardsCol);
+    cc->setContentsMargins(0, 0, 0, 0);
+    cc->setSpacing(0);
+    {
+        QWidget* hdr = new QWidget;
+        QHBoxLayout* hh = new QHBoxLayout(hdr);
+        hh->setContentsMargins(8, 4, 8, 4);
+        hh->addWidget(capLabel("CONDITIONS"));
+        hh->addStretch();
+        hh->addWidget(toggleBtn("Graphs", "window-maximize-symbolic",
+                                QStyle::SP_TitleBarMaxButton, /*toGraphs=*/true));
+        cc->addWidget(hdr);
+        cc->addWidget(tnrui::hline());
+    }
+    cc->addWidget(tyreCards_, 1);
+    hbox->addWidget(cardsCol);
+
+    // ── Graphs view: the Overview's tyre charts (2×2 here) under their own header ─
+    tyreCharts_ = new TyreChartsWidget(/*grid=*/true);
+    tyreCharts_->setModel(model);
+    {
+        QSettings s{ "TrackNRace", "NativeRecorder" };
+        tyreCharts_->setTyreLifeMode(s.value("ui/tyreWearMode", "life").toString() != "wear");
+    }
+    QWidget* graphsView = new QWidget;
+    QVBoxLayout* gv = new QVBoxLayout(graphsView);
+    gv->setContentsMargins(0, 0, 0, 0);
+    gv->setSpacing(0);
+    {
+        QWidget* hdr = new QWidget;
+        QHBoxLayout* hh = new QHBoxLayout(hdr);
+        hh->setContentsMargins(8, 4, 8, 4);
+        hh->addWidget(capLabel("TYRE GRAPHS"));
+        hh->addStretch();
+        hh->addWidget(toggleBtn("Allocation", "window-restore-symbolic",
+                                QStyle::SP_TitleBarNormalButton, /*toGraphs=*/false));
+        gv->addWidget(hdr);
+        gv->addWidget(tnrui::hline());
+    }
+    gv->addWidget(tyreCharts_, 1);
+
+    stack_ = new QStackedWidget;
+    stack_->addWidget(allocWidget);   // page 0 — allocation
+    stack_->addWidget(graphsView);    // page 1 — graphs
+
+    QVBoxLayout* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(stack_, 1);
+
+    setGraphsShown(false);   // start on allocation
+}
+
+void TyresPage::setGraphsShown(bool on) {
+    graphsShown_ = on;
+    if (stack_) stack_->setCurrentIndex(on ? 1 : 0);
+}
+
+void TyresPage::setPlaybackMode(bool on, float currentTime) {
+    if (!tyreCharts_) return;
+    tyreCharts_->setPlaybackMode(on);
+    if (on) tyreCharts_->setCurrentTime(currentTime);
+}
+
+void TyresPage::setCurrentTime(float t) {
+    if (tyreCharts_) tyreCharts_->setCurrentTime(t);
 }
 
 // ── Tyres page updater ────────────────────────────────────────────────────

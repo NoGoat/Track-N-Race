@@ -22,30 +22,17 @@ const QColor kWheelColors[4] = { C_FL, C_FR, C_RL, C_RR };
 const char*  kWheelNames[4]  = { "FL", "FR", "RL", "RR" };
 }
 
-TyreChartsWidget::TyreChartsWidget(QWidget* parent)
-    : QWidget(parent)
+TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
+    : QWidget(parent), grid_(grid)
 {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
 
-    // 4 charts side by side
-    auto* row = new QWidget;
-    auto* hbox = new QHBoxLayout(row);
-    hbox->setContentsMargins(0, 0, 0, 0);
-    hbox->setSpacing(0);
-
     int sectionIdx = 0;
     auto addSection = [&](const QString& title, double yMin, double yMax,
                           const QString& unit, ChartView*& outChart, int* outIds, int& outXId,
                           QLabel** outTitle) {
-        if (sectionIdx > 0) {
-            auto* line = new QFrame;
-            line->setFrameShape(QFrame::VLine);
-            line->setFrameShadow(QFrame::Sunken);
-            dividers_[sectionIdx - 1] = line;
-            hbox->addWidget(line);
-        }
         auto* section = new QWidget;
         auto* sl = new QVBoxLayout(section);
         sl->setContentsMargins(0, 0, 0, 0);
@@ -89,7 +76,6 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
         outChart->setLegendVisible(false);
         sl->addWidget(outChart, 1);
         sections_[sectionIdx] = section;
-        hbox->addWidget(section, 1);
         ++sectionIdx;
     };
 
@@ -99,7 +85,32 @@ TyreChartsWidget::TyreChartsWidget(QWidget* parent)
     addSection(lifeMode_ ? "TYRE LIFE" : "TYRE WEAR",
                0, 100, "%", wearChart_, wearIds_, wearXId_, &wearTitle_);
 
-    outer->addWidget(row, 1);
+    auto vdiv = [] { auto* l = new QFrame; l->setFrameShape(QFrame::VLine); l->setFrameShadow(QFrame::Sunken); return l; };
+
+    if (grid_) {
+        // 2×2 grid: [surface | inner] over [brake | life], with a cross of dividers.
+        auto hdiv = [] { auto* l = new QFrame; l->setFrameShape(QFrame::HLine); l->setFrameShadow(QFrame::Sunken); return l; };
+        auto makeRow = [&](QWidget* a, QWidget* b) {
+            auto* w = new QWidget;
+            auto* h = new QHBoxLayout(w);
+            h->setContentsMargins(0, 0, 0, 0); h->setSpacing(0);
+            h->addWidget(a, 1); h->addWidget(vdiv()); h->addWidget(b, 1);
+            return w;
+        };
+        outer->addWidget(makeRow(sections_[0], sections_[1]), 1);
+        outer->addWidget(hdiv());
+        outer->addWidget(makeRow(sections_[2], sections_[3]), 1);
+    } else {
+        // 1×4 row (dividers_ managed by updateDividers() as sections show/hide).
+        auto* row = new QWidget;
+        auto* hbox = new QHBoxLayout(row);
+        hbox->setContentsMargins(0, 0, 0, 0); hbox->setSpacing(0);
+        for (int i = 0; i < 4; ++i) {
+            if (i > 0) { auto* d = vdiv(); dividers_[i - 1] = d; hbox->addWidget(d); }
+            hbox->addWidget(sections_[i], 1);
+        }
+        outer->addWidget(row, 1);
+    }
 
     // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
     // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.

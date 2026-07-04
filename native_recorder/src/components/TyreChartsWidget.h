@@ -12,7 +12,9 @@ class QLabel;
 class TyreChartsWidget : public QWidget {
     Q_OBJECT
 public:
-    explicit TyreChartsWidget(QWidget* parent = nullptr);
+    // grid = true lays the 4 charts out 2×2 (for the fullscreen Tyres view);
+    // false (default) keeps them in a 1×4 row (the Overview strip).
+    explicit TyreChartsWidget(bool grid = false, QWidget* parent = nullptr);
 
     void setModel(SessionModel* m);
     void setPlaybackMode(bool on);
@@ -34,6 +36,7 @@ private:
 
     QPointer<SessionModel> model_;
     QTimer*   refreshTimer_ = nullptr;
+    bool      grid_         = false;    // 2×2 layout vs 1×4 row
     bool      dirty_        = false;
     bool      playback_     = false;
     bool      lifeMode_     = true;     // default to remaining-life, matching Electron

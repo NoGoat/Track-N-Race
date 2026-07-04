@@ -168,7 +168,7 @@ MainWindow::MainWindow(QWidget* parent)
                                         lastPlayerLapData, lastPlayerStatusData, lastAllStatusData);
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
-    stack->addWidget(tyresPage_ = new TyresPage);   // Tyres
+    stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
     stack->addWidget(buildStrategyPage());  // Strategy
     stack->addWidget(inputPage_ = new InputPage(model_));   // Input
     stack->addWidget(powerPage_ = new PowerPage(model_));   // Power
@@ -276,6 +276,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Clear any frozen live value; the first replayed packet sets it afresh.
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(true, currentTime);
+        if (tyresPage_) tyresPage_->setPlaybackMode(true, currentTime);
         if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
         if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
         if (miscPage_) miscPage_->setPlaybackMode(true, currentTime);
@@ -297,6 +298,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::timeChanged, this, [this](float t) {
         if (overviewPage_) overviewPage_->setCurrentTime(t);
+        if (tyresPage_) tyresPage_->setCurrentTime(t);
         if (inputPage_) inputPage_->setCurrentTime(t);
         if (powerPage_) powerPage_->setCurrentTime(t);
         if (miscPage_) miscPage_->setCurrentTime(t);
@@ -309,6 +311,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Drop the playback timer value; live packets (if any) repopulate it.
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(false);
+        if (tyresPage_) tyresPage_->setPlaybackMode(false);
         if (inputPage_) inputPage_->setPlaybackMode(false);
         if (powerPage_) powerPage_->setPlaybackMode(false);
         if (miscPage_) miscPage_->setPlaybackMode(false);
