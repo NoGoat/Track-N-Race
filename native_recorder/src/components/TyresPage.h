@@ -27,9 +27,10 @@ public:
     // Rebuild the dry/wet set tables from the latest tyre_sets row.
     void updateTyreSets(const nlohmann::json& tyreSets);
 
-    // Playback pass-through for the tyre graphs (mirrors OverviewPage).
+    // Playback + chart-window pass-through for the tyre graphs (mirrors OverviewPage).
     void setPlaybackMode(bool on, float currentTime = 0.0f);
     void setCurrentTime(float t);
+    void setWindowSeconds(float secs);
 
 private:
     void setGraphsShown(bool on);   // swap allocation ⇄ graphs views

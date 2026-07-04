@@ -123,6 +123,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(toolbar_, &AppToolbar::chartWindowChanged, this, [this](float secs) {
         if (overviewPage_) overviewPage_->setWindowSeconds(secs);
+        if (tyresPage_) tyresPage_->setWindowSeconds(secs);
         if (inputPage_) inputPage_->setWindowSeconds(secs);
         if (powerPage_) powerPage_->setWindowSeconds(secs);
         if (miscPage_) miscPage_->setWindowSeconds(secs);

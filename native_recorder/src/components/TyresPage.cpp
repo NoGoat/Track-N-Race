@@ -179,6 +179,10 @@ void TyresPage::setCurrentTime(float t) {
     if (tyreCharts_) tyreCharts_->setCurrentTime(t);
 }
 
+void TyresPage::setWindowSeconds(float secs) {
+    if (tyreCharts_) tyreCharts_->setWindowSeconds(secs);
+}
+
 // ── Tyres page updater ────────────────────────────────────────────────────
 
 void TyresPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage) {
