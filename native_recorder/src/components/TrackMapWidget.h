@@ -43,8 +43,12 @@ public:
     void setRenderingActive(bool on);
 
     // Reflects the host's fullscreen state on the overlay toggle button (swaps the
-    // maximise ↔ restore icon). The actual layout change is the host's job.
+    // maximise ↔ restore icon + label). The actual layout change is the host's job.
     void setFullscreenState(bool on);
+
+    // Show/hide the fullscreen button's text label, mirroring the app's global
+    // "Show button labels in toolbar" setting (icon-only vs text-beside-icon).
+    void setShowLabels(bool on);
 
 signals:
     // The overlay fullscreen button was clicked; the host (SessionPage) maximises

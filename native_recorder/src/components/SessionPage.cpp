@@ -434,6 +434,8 @@ SessionPage::SessionPage(QWidget* parent)
     lv->addWidget(trackMap_, 1);
     connect(trackMap_, &TrackMapWidget::fullscreenToggled, this,
             [this]{ setMapFullscreen(!mapFullscreen_); });
+    // Enlarge/Restore Map button label follows the global toolbar-labels setting.
+    trackMap_->setShowLabels(settings_.value("ui/toolbarShowLabels", false).toBool());
 
     // Weather strip pinned to bottom
     { QWidget* hl = tnrui::hline(); lv->addWidget(hl); mapFsHide_.push_back(hl); }

@@ -577,6 +577,9 @@ void MainWindow::setStyleName(const QString& name) {
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
     if (toolbar_) toolbar_->setShowLabels(checked);
+    // The map's Enlarge/Restore button follows the same toggle.
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
+        map->setShowLabels(checked);
 }
 
 void MainWindow::setContrastThreshold(float val) {

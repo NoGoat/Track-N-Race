@@ -246,11 +246,19 @@ void TrackMapWidget::setFullscreenState(bool on) {
     const QColor tint = palette().color(QPalette::WindowText);
     // Prefer the bundled Breeze glyphs, falling back to the style's title-bar icons.
     fsButton_->setIcon(on
-        ? adaptThemeIcon(QIcon::fromTheme("view-restore"),
+        ? adaptThemeIcon(QIcon::fromTheme("window-restore-symbolic"),
                          tint, style()->standardIcon(QStyle::SP_TitleBarNormalButton))
-        : adaptThemeIcon(QIcon::fromTheme("view-fullscreen"),
+        : adaptThemeIcon(QIcon::fromTheme("window-maximize-symbolic"),
                          tint, style()->standardIcon(QStyle::SP_TitleBarMaxButton)));
-    fsButton_->setToolTip(on ? "Exit Fullscreen" : "Fullscreen");
+    fsButton_->setText(on ? "Restore Map" : "Enlarge Map");
+    fsButton_->setToolTip(on ? "Restore Map" : "Enlarge Map");
+    positionControls();   // the label change alters the button width
+}
+
+void TrackMapWidget::setShowLabels(bool on) {
+    if (!fsButton_) return;
+    fsButton_->setToolButtonStyle(on ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    positionControls();   // icon-only vs text-beside-icon changes the button width
 }
 
 // ── Track loading ──────────────────────────────────────────────────────────
@@ -815,10 +823,14 @@ void TrackMapWidget::positionControls() {
     const int ctrlH = driverCombo_->sizeHint().height();
     int currentX = width() - margin;
 
-    // Fullscreen toggle: rightmost, square, aligned with the combos.
+    // Fullscreen toggle: rightmost, aligned with the combos. Square when icon-only,
+    // wide enough for the label when it's shown.
     if (fsButton_) {
-        fsButton_->setFixedSize(ctrlH, ctrlH);
-        currentX -= ctrlH;
+        const int fw = (fsButton_->toolButtonStyle() == Qt::ToolButtonIconOnly)
+            ? ctrlH
+            : std::max(ctrlH, fsButton_->sizeHint().width());
+        fsButton_->resize(fw, ctrlH);
+        currentX -= fw;
         fsButton_->move(currentX, margin);
         fsButton_->raise();
         currentX -= gap;
