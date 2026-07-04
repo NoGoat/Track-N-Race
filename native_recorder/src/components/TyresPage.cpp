@@ -86,10 +86,13 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
         l->setForegroundRole(QPalette::PlaceholderText);
         return l;
     };
-    // A plain (OS-styled) icon+text toggle button; toGraphs picks the target view.
+    // An icon+text toggle button styled like the toolbar's action buttons:
+    // auto-raise gives the flat/transparent background with a hover highlight
+    // (same as Open Recording / Edit Layout / Settings). toGraphs picks the view.
     auto toggleBtn = [this](const QString& text, const char* iconName,
                             QStyle::StandardPixmap fallback, bool toGraphs) {
         auto* b = new QToolButton;
+        b->setAutoRaise(true);
         b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         b->setText(text);
         b->setIcon(adaptThemeIcon(QIcon::fromTheme(iconName),
@@ -136,6 +139,12 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
         hh->setContentsMargins(8, 4, 8, 4);
         hh->addWidget(capLabel("TYRE GRAPHS"));
         hh->addStretch();
+        // Centred fitted-tyre summary (compound · wear · life), like Electron's
+        // expanded graph header. Updated from tyre_sets in updateTyreSets().
+        graphsFitted_ = new QLabel;
+        graphsFitted_->setTextFormat(Qt::RichText);
+        hh->addWidget(graphsFitted_);
+        hh->addStretch();
         hh->addWidget(toggleBtn("Allocation", "window-restore-symbolic",
                                 QStyle::SP_TitleBarNormalButton, /*toGraphs=*/false));
         gv->addWidget(hdr);
@@ -180,6 +189,28 @@ void TyresPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann:
 
 void TyresPage::updateTyreSets(const nlohmann::json& tyreSets) {
     if (!drySetsTable_ || !wetSetsTable_ || tyreSets.empty() || !tyreSets.contains("sets")) return;
+
+    // Fitted-tyre summary for the graphs header: compound · wear · life remaining.
+    if (graphsFitted_) {
+        QString txt;
+        for (const auto& s : tyreSets["sets"]) {
+            if (!s.value("fitted", false)) continue;
+            const int compound = s.value("actual_compound", 0);
+            const int visual   = s.value("visual_compound", 0);
+            const int wear     = s.value("wear",      0);
+            const int life     = s.value("life_span", 0);
+            const QColor cmp   = tyreTextColor(visual);
+            const QString cmpCol  = (cmp.isValid() ? cmp : palette().color(QPalette::WindowText)).name();
+            const QString wearCol = wearPctColor(wear).name();
+            const QString secCol  = palette().color(QPalette::PlaceholderText).name();
+            txt = "<span style='color:" + cmpCol + ";font-weight:bold;'>" + tyreLabel(compound) + "</span>"
+                + " <span style='color:" + secCol + ";'>&middot;</span> "
+                + "<span style='color:" + wearCol + ";'>" + QString::number(wear) + "% wear</span>"
+                + " <span style='color:" + secCol + ";'>&middot; " + QString::number(life) + "L remaining</span>";
+            break;
+        }
+        graphsFitted_->setText(txt);
+    }
 
     std::vector<nlohmann::json> drySets;
     std::vector<nlohmann::json> wetSets;

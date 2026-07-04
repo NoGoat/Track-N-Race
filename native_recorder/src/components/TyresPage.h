@@ -6,6 +6,7 @@
 
 class QTableWidget;
 class QStackedWidget;
+class QLabel;
 class TyreCardsWidget;
 class TyreChartsWidget;
 class SessionModel;
@@ -38,5 +39,6 @@ private:
     QTableWidget*     wetSetsTable_ = nullptr;
     TyreChartsWidget* tyreCharts_   = nullptr;
     QStackedWidget*   stack_        = nullptr;
+    QLabel*           graphsFitted_ = nullptr;   // fitted-tyre summary in the graphs header
     bool              graphsShown_  = false;
 };
