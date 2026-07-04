@@ -56,6 +56,8 @@ const protocolBridge = {
     ipcRenderer.invoke('protocol-get-config'),
   setOverride: (value: 'auto' | 'f1_24' | 'f1_25' | 'f1_26'): void =>
     ipcRenderer.send('protocol-set-override', value),
+  requestStatus: (): void =>
+    ipcRenderer.send('protocol-request-status'),
 }
 
 const fsBridge = {

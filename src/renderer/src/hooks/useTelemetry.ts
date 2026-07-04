@@ -95,6 +95,16 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [fastestLap, setFastestLap]       = useState<LapData | null>(null)
   const [protocolStatus, setProtocolStatus] = useState<ProtocolStatusMsg | null>(null)
   const [protocolWarning, setProtocolWarning] = useState<ProtocolWarningMsg | null>(null)
+
+  // The engine emits protocol_status (labels/cardColors/format/aero_mode) only
+  // once per detection change, so a renderer that mounts or reloads after the
+  // format has already settled would never receive it and would fall back to
+  // default labels with no card colours. Whenever we're in that catalog-less
+  // state, pull the last status from main. Live format *changes* are still pushed
+  // by the engine automatically, so this only fires on the fallback/initial case.
+  useEffect(() => {
+    if (!protocolStatus) window.protocolBridge.requestStatus()
+  }, [protocolStatus])
   const [speedRpmBlocks, setSpeedRpmBlocks] = useState<any[] | null>(null)
   const [fastestLapNum, setFastestLapNum] = useState<number>(0)
   const [playbackEvents, setPlaybackEvents] = useState<RaceEventMsg[]>([])

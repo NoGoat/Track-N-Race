@@ -375,6 +375,7 @@ declare global {
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
       setOverride: (value: 'auto' | 'f1_24' | 'f1_25' | 'f1_26') => void
+      requestStatus: () => void
     }
     fsBridge: {
       selectDirectory: () => Promise<string | null>

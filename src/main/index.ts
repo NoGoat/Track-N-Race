@@ -9,7 +9,8 @@ import {
   restartUdp,
   startBridge,
   stopBridge,
-  getProtocolConfig
+  getProtocolConfig,
+  requestStatus
 } from './bridgeManager'
 import {
   loadFile as playerLoad,
@@ -183,6 +184,10 @@ ipcMain.handle('protocol-get-config', () => {
 
 ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
   setOverride(value)
+})
+
+ipcMain.on('protocol-request-status', () => {
+  requestStatus()
 })
 
 

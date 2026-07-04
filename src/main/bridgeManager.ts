@@ -13,6 +13,12 @@ let lastStatus: { override: ProtocolOverride; detected: number | null; active: n
   active: null,
 }
 
+// The full last protocol_status row (labels/cardColors/format/aero_mode), cached
+// so a renderer that missed the one-shot emission can pull it on demand (e.g. on
+// mount, or when it notices it's running on default/fallback labels). See
+// requestStatus() below.
+let lastStatusRow: Record<string, unknown> | null = null
+
 let engine: any = null
 let unsubLogging: Array<() => void> = []
 
@@ -57,6 +63,7 @@ function handleRow(row: Record<string, unknown>): void {
       detected: (row.detected_format as number) ?? null,
       active: (row.active_format as number) ?? null,
     }
+    lastStatusRow = row
     if (lastStatus.override === 'auto' && lastStatus.detected != null) {
       store.set('udp.lastDetectedProtocol', lastStatus.detected)
     }
@@ -178,6 +185,13 @@ export function stopBridge(): void {
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
+}
+
+// Renderer-initiated pull: re-broadcast the last known full protocol_status so a
+// window that missed the one-shot emission (or fell back to default labels) can
+// recover the catalog. No-op until the engine has emitted at least one status.
+export function requestStatus(): void {
+  if (lastStatusRow) broadcast(lastStatusRow)
 }
 
 export function getProtocolConfig(): {
