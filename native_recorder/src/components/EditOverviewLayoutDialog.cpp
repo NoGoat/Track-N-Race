@@ -1,5 +1,5 @@
 #include "EditOverviewLayoutDialog.h"
-#include "../MainWindow.h"
+#include "OverviewPage.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -38,8 +38,8 @@ protected:
 
 } // namespace
 
-EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidget* parent)
-    : QDialog(parent), mainWindow_(mainWindow)
+EditOverviewLayoutDialog::EditOverviewLayoutDialog(OverviewPage* page, QWidget* parent)
+    : QDialog(parent), page_(page)
 {
     setWindowTitle("Edit Overview Layout");
     // Qt::Dialog gives the plain dialog frame (no minimize/maximize buttons).
@@ -48,7 +48,7 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
     // above MainWindow and blocks it now that it's shown via show() rather
     // than exec() — the window-type flag alone doesn't do either.
     setWindowModality(Qt::ApplicationModal);
-    layout_ = mainWindow_->loadOverviewLayout();
+    layout_ = page_->loadLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);
     // A fixed-size top-level layout makes Qt drop the resize handles and the
@@ -141,30 +141,30 @@ EditOverviewLayoutDialog::EditOverviewLayoutDialog(MainWindow* mainWindow, QWidg
 void EditOverviewLayoutDialog::toggleChart(bool on)
 {
     layout_.showChart = on;
-    mainWindow_->applyAndSaveOverviewLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditOverviewLayoutDialog::toggleStat(int idx, bool on)
 {
     layout_.statCards[idx] = on;
-    mainWindow_->applyAndSaveOverviewLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditOverviewLayoutDialog::toggleDmg(int idx, bool on)
 {
     layout_.dmgCards[idx] = on;
-    mainWindow_->applyAndSaveOverviewLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditOverviewLayoutDialog::toggleTyreCard(int i, bool on)
 {
     layout_.tyreCardVisible[i] = on;
-    mainWindow_->applyAndSaveOverviewLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditOverviewLayoutDialog::toggleTyreChart(int i, bool on)
 {
     layout_.tyreChartVisible[i] = on;
-    mainWindow_->applyAndSaveOverviewLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 

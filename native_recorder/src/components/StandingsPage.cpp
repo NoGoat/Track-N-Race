@@ -1,5 +1,6 @@
-#include "../MainWindow.h"
+#include "StandingsPage.h"
 #include "../Labels.h"
+#include "PageUiHelpers.h"
 #include "TyreHelpers.h"
 
 #include <QVBoxLayout>
@@ -21,6 +22,7 @@
 #include <QEvent>
 
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -28,7 +30,9 @@
 
 // ── Standings helpers ─────────────────────────────────────────────────────
 
-static float relativeLuminance(const QColor& c) {
+namespace {
+
+float relativeLuminance(const QColor& c) {
     auto toLinear = [](float v) {
         return v <= 0.03928f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
     };
@@ -38,20 +42,20 @@ static float relativeLuminance(const QColor& c) {
     return 0.2126f * r + 0.7152f * g + 0.0722f * b;
 }
 
-static float contrastRatio(const QColor& c1, const QColor& c2) {
+float contrastRatio(const QColor& c1, const QColor& c2) {
     float l1 = relativeLuminance(c1);
     float l2 = relativeLuminance(c2);
     if (l1 < l2) std::swap(l1, l2);
     return (l1 + 0.05f) / (l2 + 0.05f);
 }
 
-static QColor ensureContrast(const QColor& fg, const QColor& bg, const QColor& fallback, float threshold) {
+QColor ensureContrast(const QColor& fg, const QColor& bg, const QColor& fallback, float threshold) {
     if (!fg.isValid()) return fallback;
     if (contrastRatio(fg, bg) < threshold) return fallback;
     return fg;
 }
 
-static QString formatLapTime(int ms) {
+QString formatLapTime(int ms) {
     if (ms <= 0) return "—";
     int min  = ms / 60000;
     int sec  = (ms % 60000) / 1000;
@@ -60,14 +64,14 @@ static QString formatLapTime(int ms) {
         .arg(min).arg(sec, 2, 10, QChar('0')).arg(msec, 3, 10, QChar('0'));
 }
 
-static QString formatSector(int ms) {
+QString formatSector(int ms) {
     if (ms <= 0) return "—";
     int sec  = ms / 1000;
     int msec = ms % 1000;
     return QString("%1.%2").arg(sec).arg(msec, 3, 10, QChar('0'));
 }
 
-static QString formatGap(int ms, bool isLeader) {
+QString formatGap(int ms, bool isLeader) {
     if (isLeader) return "LEADER";
     if (ms <= 0)  return "—";
     if (ms < 60000)
@@ -164,71 +168,69 @@ private:
     QTableWidget* t_;
 };
 
+} // namespace
+
 // ── Standings page builder ────────────────────────────────────────────────
 
-QWidget* MainWindow::buildStandingsPage() {
-    QWidget* w = new QWidget;
-    QHBoxLayout* hbox = new QHBoxLayout(w);
+StandingsPage::StandingsPage(QWidget* parent)
+    : QWidget(parent)
+{
+    QHBoxLayout* hbox = new QHBoxLayout(this);
     hbox->setContentsMargins(0, 0, 0, 0);
     hbox->setSpacing(0);
 
-    timingTable = new QTableWidget;
-    timingTable->setColumnCount(12);
-    timingTable->setHorizontalHeaderLabels(
+    timingTable_ = new QTableWidget;
+    timingTable_->setColumnCount(12);
+    timingTable_->setHorizontalHeaderLabels(
         {"POS", "#", "DRIVER", "LAP", "LAST LAP", "GAP", "S1", "S2", "S3", "TYRE", "PENALTIES", "STATUS"});
-    timingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    timingTable->setSelectionMode(QAbstractItemView::NoSelection);
-    timingTable->setShowGrid(false);
-    timingTable->setAlternatingRowColors(true);
+    timingTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    timingTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    timingTable_->setShowGrid(false);
+    timingTable_->setAlternatingRowColors(true);
     // Pixel-based scrolling — the default ScrollPerItem snaps a whole row per
     // wheel notch / scrollbar step, which feels chunky and "laggy"; per-pixel is
     // smooth.
-    timingTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    timingTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    timingTable->verticalHeader()->setVisible(false);
+    timingTable_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    timingTable_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    timingTable_->verticalHeader()->setVisible(false);
     // Fixed/interactive widths — NOT ResizeToContents, which re-measures every
     // cell on every setItem and tanks the UI when the table rebuilds rapidly.
-    timingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    timingTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     {
         const int colW[12] = { 44, 36, 150, 46, 84, 80, 60, 60, 60, 52, 74, 72 };
         for (int c = 0; c < 12; ++c)
-            timingTable->setColumnWidth(c, colW[c]);
+            timingTable_->setColumnWidth(c, colW[c]);
     }
     // Driver column fills spare width but stays >= 150px (see DriverColumnSizer);
     // on narrow windows the table scrolls instead of crushing the names.
     {
-        auto* sizer = new DriverColumnSizer(timingTable);
-        timingTable->viewport()->installEventFilter(sizer);
+        auto* sizer = new DriverColumnSizer(timingTable_);
+        timingTable_->viewport()->installEventFilter(sizer);
         sizer->apply();
     }
 
     QFont hf; hf.setPointSize(7);
-    timingTable->horizontalHeader()->setFont(hf);
+    timingTable_->horizontalHeader()->setFont(hf);
 
-    timingTable->setItemDelegateForColumn(2, new DriverDelegate(timingTable));
+    timingTable_->setItemDelegateForColumn(2, new DriverDelegate(timingTable_));
 
-    connect(timingTable, &QTableWidget::cellClicked, this, [this](int row, int) {
-        int clicked = (row >= 0 && row < (int)tableRowCarIdx.size())
-                      ? tableRowCarIdx[row] : -1;
-        selectedCarIdx = (clicked == selectedCarIdx) ? -1 : clicked;
-        updateTimingTable();
-        updateRacePanel();
+    connect(timingTable_, &QTableWidget::cellClicked, this, [this](int row, int) {
+        int clicked = (row >= 0 && row < (int)tableRowCarIdx_.size())
+                      ? tableRowCarIdx_[row] : -1;
+        selectedCarIdx_ = (clicked == selectedCarIdx_) ? -1 : clicked;
+        emit refreshRequested();
     });
 
-    hbox->addWidget(timingTable, 1);
+    hbox->addWidget(timingTable_, 1);
 
-    QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine);
-    vdiv->setFrameShadow(QFrame::Sunken);
-    hbox->addWidget(vdiv);
+    hbox->addWidget(tnrui::vline());
 
     hbox->addWidget(buildRacePanel());
-    return w;
 }
 
 // ── Race panel builder ────────────────────────────────────────────────────
 
-QWidget* MainWindow::buildRacePanel() {
+QWidget* StandingsPage::buildRacePanel() {
     QScrollArea* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFixedWidth(240);
@@ -257,19 +259,11 @@ QWidget* MainWindow::buildRacePanel() {
 
     // Helper: flat section title (matches WheelCard corner label style)
     auto makeSection = [&](const QString& title) {
-        QLabel* lbl = new QLabel(title);
-        QFont f; f.setPointSize(8); f.setBold(true);
-        lbl->setFont(f);
-        lbl->setForegroundRole(QPalette::PlaceholderText);
-        lbl->setContentsMargins(14, 0, 14, 0);
-        vbox->addWidget(lbl);
+        vbox->addWidget(tnrui::makeSectionLabel(title));
     };
 
     auto addDivider = [&]() {
-        QFrame* div = new QFrame;
-        div->setFrameShape(QFrame::HLine);
-        div->setFrameShadow(QFrame::Sunken);
-        vbox->addWidget(div);
+        vbox->addWidget(tnrui::hline());
     };
 
     // ── Driver header ────────────────────────────────────────────
@@ -354,20 +348,50 @@ QWidget* MainWindow::buildRacePanel() {
     return scroll;
 }
 
+// ── Fastest-lap tracking ──────────────────────────────────────────────────
+
+void StandingsPage::noteFastestLap(int carIdx) {
+    fastestLapCarIdx_ = carIdx;
+    fastestLapSet_ = true;
+}
+
+bool StandingsPage::noteSessionHistoryFastest(int carIdx, int bestMs) {
+    if (fastestLapSet_) return false;
+    sessionHistoryBest_[carIdx] = bestMs;
+    int minMs = std::numeric_limits<int>::max();
+    int minIdx = -1;
+    for (const auto& kv : sessionHistoryBest_) {
+        if (kv.second < minMs) { minMs = kv.second; minIdx = kv.first; }
+    }
+    if (fastestLapCarIdx_ == minIdx) return false;
+    fastestLapCarIdx_ = minIdx;
+    return true;
+}
+
+void StandingsPage::resetForNewSession() {
+    fastestLapCarIdx_ = -1;
+    fastestLapSet_ = false;
+    sessionHistoryBest_.clear();
+}
+
 // ── Race panel updater ────────────────────────────────────────────────────
 
-void MainWindow::updateRacePanel() {
+void StandingsPage::updateRacePanel(const nlohmann::json& timing,
+                                    const nlohmann::json& participants,
+                                    const nlohmann::json& playerLap,
+                                    const nlohmann::json& playerStatus,
+                                    const nlohmann::json& allStatus) {
     if (!rp_lapNum) return;
 
-    int playerIdx    = lastTimingData.empty() ? -1 : lastTimingData.value("player_idx", -1);
-    bool viewingOther = (selectedCarIdx != -1 && selectedCarIdx != playerIdx);
+    int playerIdx    = timing.empty() ? -1 : timing.value("player_idx", -1);
+    bool viewingOther = (selectedCarIdx_ != -1 && selectedCarIdx_ != playerIdx);
 
     {
-        const int targetIdx = viewingOther ? selectedCarIdx : playerIdx;
+        const int targetIdx = viewingOther ? selectedCarIdx_ : playerIdx;
         QString name;
         QColor liveryColor;
-        if (targetIdx >= 0 && !lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
-            for (const auto& d : lastParticipantsData["drivers"]) {
+        if (targetIdx >= 0 && !participants.empty() && participants.contains("drivers")) {
+            for (const auto& d : participants["drivers"]) {
                 if (d.value("idx", -1) == targetIdx) {
                     name = QString("#%1 %2")
                         .arg(d.value("race_number", 0))
@@ -414,12 +438,12 @@ void MainWindow::updateRacePanel() {
         rp_s2->setText(formatSector(s2Ms));
     };
 
-    if (viewingOther && !lastTimingData.empty() && lastTimingData.contains("cars")) {
-        for (const auto& car : lastTimingData["cars"]) {
-            if (car.value("idx", -1) == selectedCarIdx) { applyTiming(car); break; }
+    if (viewingOther && !timing.empty() && timing.contains("cars")) {
+        for (const auto& car : timing["cars"]) {
+            if (car.value("idx", -1) == selectedCarIdx_) { applyTiming(car); break; }
         }
-    } else if (!lastPlayerLapData.empty()) {
-        applyTiming(lastPlayerLapData);
+    } else if (!playerLap.empty()) {
+        applyTiming(playerLap);
     }
 
     auto applyStatus = [&](const nlohmann::json& st) {
@@ -463,24 +487,26 @@ void MainWindow::updateRacePanel() {
         rp_brakeBias->setText(brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
     };
 
-    if (viewingOther && !lastAllStatusData.empty() && lastAllStatusData.contains("cars")) {
-        for (const auto& car : lastAllStatusData["cars"]) {
-            if (car.value("idx", -1) == selectedCarIdx) { applyStatus(car); break; }
+    if (viewingOther && !allStatus.empty() && allStatus.contains("cars")) {
+        for (const auto& car : allStatus["cars"]) {
+            if (car.value("idx", -1) == selectedCarIdx_) { applyStatus(car); break; }
         }
-    } else if (!lastPlayerStatusData.empty()) {
-        applyStatus(lastPlayerStatusData);
+    } else if (!playerStatus.empty()) {
+        applyStatus(playerStatus);
     }
 }
 
 // ── Standings table updater ───────────────────────────────────────────────
 
-void MainWindow::updateTimingTable() {
-    if (!timingTable || lastTimingData.empty()) return;
+void StandingsPage::updateTimingTable(const nlohmann::json& timing,
+                                      const nlohmann::json& participants,
+                                      const nlohmann::json& allStatus) {
+    if (!timingTable_ || timing.empty()) return;
 
     struct DriverInfo { QString name; int raceNum; QColor color; };
     std::unordered_map<int, DriverInfo> driverMap;
-    if (!lastParticipantsData.empty() && lastParticipantsData.contains("drivers")) {
-        for (const auto& d : lastParticipantsData["drivers"]) {
+    if (!participants.empty() && participants.contains("drivers")) {
+        for (const auto& d : participants["drivers"]) {
             int idx = d.value("idx", -1);
             if (idx < 0) continue;
             driverMap[idx] = {
@@ -493,16 +519,16 @@ void MainWindow::updateTimingTable() {
 
     struct TyreInfo { int compound; int visual; };
     std::unordered_map<int, TyreInfo> tyreMap;
-    if (!lastAllStatusData.empty() && lastAllStatusData.contains("cars")) {
-        for (const auto& c : lastAllStatusData["cars"]) {
+    if (!allStatus.empty() && allStatus.contains("cars")) {
+        for (const auto& c : allStatus["cars"]) {
             int idx = c.value("idx", -1);
             if (idx >= 0)
                 tyreMap[idx] = { c.value("tyre_compound", -1), c.value("visual_compound", -1) };
         }
     }
 
-    int playerIdx = lastTimingData.value("player_idx", -1);
-    const auto& cars = lastTimingData["cars"];
+    int playerIdx = timing.value("player_idx", -1);
+    const auto& cars = timing["cars"];
 
     std::vector<nlohmann::json> active;
     for (const auto& car : cars) {
@@ -517,19 +543,19 @@ void MainWindow::updateTimingTable() {
 
     bool orderOrSettingChanged = false;
     float currentThreshold = contrastThreshold();
-    if (active.size() != tableRowCarIdx.size() || lastContrastThreshold != currentThreshold) {
+    if (active.size() != tableRowCarIdx_.size() || lastContrastThreshold_ != currentThreshold) {
         orderOrSettingChanged = true;
     } else {
         for (int i = 0; i < (int)active.size(); ++i) {
-            if (active[i].value("idx", -1) != tableRowCarIdx[i]) {
+            if (active[i].value("idx", -1) != tableRowCarIdx_[i]) {
                 orderOrSettingChanged = true; break;
             }
         }
     }
-    lastContrastThreshold = currentThreshold;
+    lastContrastThreshold_ = currentThreshold;
 
     if (orderOrSettingChanged) {
-        rowSafeColors.resize(active.size());
+        rowSafeColors_.resize(active.size());
         auto blend = [](const QColor& fg, const QColor& bg) {
             float alpha = fg.alphaF();
             return QColor::fromRgbF(
@@ -542,26 +568,26 @@ void MainWindow::updateTimingTable() {
             int idx = active[row].value("idx", -1);
             auto di = driverMap.find(idx);
             QColor rawColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
-            QColor bgNormal = timingTable->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
-            QColor fallback = timingTable->palette().color(QPalette::Text);
+            QColor bgNormal = timingTable_->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
+            QColor fallback = timingTable_->palette().color(QPalette::Text);
 
-            QColor accentColor = timingTable->palette().color(QPalette::Highlight);
+            QColor accentColor = timingTable_->palette().color(QPalette::Highlight);
             accentColor.setAlpha(38);
             QColor bgHighlight = blend(accentColor, bgNormal);
 
             QColor fastestColor(191, 95, 255, 38);
             QColor bgFastest = blend(fastestColor, bgNormal);
 
-            rowSafeColors[row].normal = ensureContrast(rawColor, bgNormal, fallback, currentThreshold);
-            rowSafeColors[row].highlighted = ensureContrast(rawColor, bgHighlight, fallback, currentThreshold);
-            rowSafeColors[row].fastestLap = ensureContrast(rawColor, bgFastest, fallback, currentThreshold);
+            rowSafeColors_[row].normal = ensureContrast(rawColor, bgNormal, fallback, currentThreshold);
+            rowSafeColors_[row].highlighted = ensureContrast(rawColor, bgHighlight, fallback, currentThreshold);
+            rowSafeColors_[row].fastestLap = ensureContrast(rawColor, bgFastest, fallback, currentThreshold);
         }
     }
 
-    timingTable->setRowCount((int)active.size());
-    tableRowCarIdx.resize(active.size());
+    timingTable_->setRowCount((int)active.size());
+    tableRowCarIdx_.resize(active.size());
     for (int i = 0; i < (int)active.size(); ++i)
-        tableRowCarIdx[i] = active[i].value("idx", -1);
+        tableRowCarIdx_[i] = active[i].value("idx", -1);
 
     for (int row = 0; row < (int)active.size(); ++row) {
         const auto& car = active[row];
@@ -611,8 +637,8 @@ void MainWindow::updateTimingTable() {
 
         // Highlight when this driver's data is shown in the race panel:
         // — explicit selection, or player when nothing is selected
-        bool showingThisDriver = (idx == selectedCarIdx) ||
-                                 (isPlayer && selectedCarIdx == -1);
+        bool showingThisDriver = (idx == selectedCarIdx_) ||
+                                 (isPlayer && selectedCarIdx_ == -1);
         QFont cellFont;
 
         bool isFastest = (idx == fastestLapCarIdx_);
@@ -620,7 +646,7 @@ void MainWindow::updateTimingTable() {
         bool hasCustomBg = false;
 
         if (showingThisDriver) {
-            QColor accentColor = timingTable->palette().color(QPalette::Highlight);
+            QColor accentColor = timingTable_->palette().color(QPalette::Highlight);
             accentColor.setAlpha(38); // ~15% opacity
             bgBrush = QBrush(accentColor);
             hasCustomBg = true;
@@ -640,45 +666,45 @@ void MainWindow::updateTimingTable() {
         // Col 0: POS
         auto* posItem = makeItem(QString("P%1").arg(pos), true);
         if (posColor.isValid()) posItem->setForeground(posColor);
-        timingTable->setItem(row, 0, posItem);
+        timingTable_->setItem(row, 0, posItem);
 
         QColor safeDriverColor;
-        if (showingThisDriver) safeDriverColor = rowSafeColors[row].highlighted;
-        else if (isFastest)    safeDriverColor = rowSafeColors[row].fastestLap;
-        else                   safeDriverColor = rowSafeColors[row].normal;
+        if (showingThisDriver) safeDriverColor = rowSafeColors_[row].highlighted;
+        else if (isFastest)    safeDriverColor = rowSafeColors_[row].fastestLap;
+        else                   safeDriverColor = rowSafeColors_[row].normal;
 
         // Col 1: #
         auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—", true);
         numItem->setForeground(safeDriverColor);
-        timingTable->setItem(row, 1, numItem);
+        timingTable_->setItem(row, 1, numItem);
 
         // Col 2: DRIVER
         auto* drvItem = makeItem(driverName);
         drvItem->setForeground(safeDriverColor);
         if (isPlayer) drvItem->setData(Qt::UserRole, true);
-        timingTable->setItem(row, 2, drvItem);
+        timingTable_->setItem(row, 2, drvItem);
 
-        timingTable->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
-        timingTable->setItem(row, 4, makeItem(formatLapTime(lastLapMs), true));
-        timingTable->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1), true));
-        timingTable->setItem(row, 6, makeItem(formatSector(s1Ms), true));
-        timingTable->setItem(row, 7, makeItem(formatSector(s2Ms), true));
-        timingTable->setItem(row, 8, makeItem(formatSector(s3Ms), true));
+        timingTable_->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
+        timingTable_->setItem(row, 4, makeItem(formatLapTime(lastLapMs), true));
+        timingTable_->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1), true));
+        timingTable_->setItem(row, 6, makeItem(formatSector(s1Ms), true));
+        timingTable_->setItem(row, 7, makeItem(formatSector(s2Ms), true));
+        timingTable_->setItem(row, 8, makeItem(formatSector(s3Ms), true));
 
         // Col 9: TYRE
         auto* tyreItem = makeItem(tyreLabel(compound), true);
         QColor tyreFg = tyreTextColor(visual);
         if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
-        timingTable->setItem(row, 9, tyreItem);
+        timingTable_->setItem(row, 9, tyreItem);
 
         // Col 10: PENALTIES
         auto* penItem = makeItem(penText);
         if (!penText.isEmpty()) penItem->setForeground(QColor("#C4162A"));
-        timingTable->setItem(row, 10, penItem);
+        timingTable_->setItem(row, 10, penItem);
 
         // Col 11: STATUS
-        timingTable->setItem(row, 11, makeItem(statusText));
+        timingTable_->setItem(row, 11, makeItem(statusText));
 
-        timingTable->setRowHeight(row, 22);
+        timingTable_->setRowHeight(row, 22);
     }
 }

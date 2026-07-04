@@ -1,5 +1,5 @@
 #include "EditInputLayoutDialog.h"
-#include "../MainWindow.h"
+#include "InputPage.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,13 +23,13 @@ protected:
 };
 }
 
-EditInputLayoutDialog::EditInputLayoutDialog(MainWindow* mainWindow, QWidget* parent)
-    : QDialog(parent), mainWindow_(mainWindow)
+EditInputLayoutDialog::EditInputLayoutDialog(InputPage* page, QWidget* parent)
+    : QDialog(parent), page_(page)
 {
     setWindowTitle("Edit Input Layout");
     setWindowFlags(Qt::Dialog);
     setWindowModality(Qt::ApplicationModal);
-    layout_ = mainWindow_->loadInputLayout();
+    layout_ = page_->loadLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);
     main->setSizeConstraint(QLayout::SetFixedSize);
@@ -68,15 +68,15 @@ EditInputLayoutDialog::EditInputLayoutDialog(MainWindow* mainWindow, QWidget* pa
 
 void EditInputLayoutDialog::toggleGear(bool on) {
     layout_.showGear = on;
-    mainWindow_->applyAndSaveInputLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditInputLayoutDialog::toggleInputs(bool on) {
     layout_.showInputs = on;
-    mainWindow_->applyAndSaveInputLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditInputLayoutDialog::toggleSteering(bool on) {
     layout_.showSteering = on;
-    mainWindow_->applyAndSaveInputLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }

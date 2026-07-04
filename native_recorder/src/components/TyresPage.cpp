@@ -1,4 +1,5 @@
-#include "../MainWindow.h"
+#include "TyresPage.h"
+#include "PageUiHelpers.h"
 #include "TyreCardsWidget.h"
 #include "TyreHelpers.h"
 
@@ -19,9 +20,10 @@
 
 // ── Tyres page builder ────────────────────────────────────────────────────
 
-QWidget* MainWindow::buildTyresPage() {
-    QWidget* w = new QWidget;
-    QHBoxLayout* hbox = new QHBoxLayout(w);
+TyresPage::TyresPage(QWidget* parent)
+    : QWidget(parent)
+{
+    QHBoxLayout* hbox = new QHBoxLayout(this);
     hbox->setContentsMargins(0, 0, 0, 0);
     hbox->setSpacing(0);
 
@@ -49,50 +51,45 @@ QWidget* MainWindow::buildTyresPage() {
             if (c != 3) outTable->setColumnWidth(c, colW[c]);
         QFont hf; hf.setPointSize(7);
         outTable->horizontalHeader()->setFont(hf);
-        
+
         leftLayout->addWidget(outTable, stretch);
     };
 
-    createSetsTable(tp_drySetsTable, 0);
-    createSetsTable(tp_wetSetsTable, 1);
+    createSetsTable(drySetsTable_, 0);
+    createSetsTable(wetSetsTable_, 1);
 
-    tp_drySetsTable->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
-    tp_drySetsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    tp_drySetsTable->setMinimumHeight(0);
-    
-    tp_wetSetsTable->setMinimumHeight(0);
+    drySetsTable_->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    drySetsTable_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    drySetsTable_->setMinimumHeight(0);
+
+    wetSetsTable_->setMinimumHeight(0);
 
     hbox->addWidget(leftWidget, 1);
 
     // Vertical divider
-    QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine);
-    vdiv->setFrameShadow(QFrame::Sunken);
-    hbox->addWidget(vdiv);
+    hbox->addWidget(tnrui::vline());
 
     // ── Right panel: WheelCards (1×4 vertical, fills height) ────────
-    tp_tyreCards_ = new TyreCardsWidget(Qt::Vertical);
-    tp_tyreCards_->setFixedWidth(240);
+    tyreCards_ = new TyreCardsWidget(Qt::Vertical);
+    tyreCards_->setFixedWidth(240);
 
-    hbox->addWidget(tp_tyreCards_);
-    return w;
+    hbox->addWidget(tyreCards_);
 }
 
 // ── Tyres page updater ────────────────────────────────────────────────────
 
-void MainWindow::updateTyresPage() {
-    if (tp_tyreCards_) tp_tyreCards_->update(lastPlayerTelemetryData, lastPlayerDamageData);
-    if (ov_tyreCards_) ov_tyreCards_->update(lastPlayerTelemetryData, lastPlayerDamageData);
+void TyresPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage) {
+    if (tyreCards_) tyreCards_->update(telemetry, damage);
 }
 
 // ── Tyre sets table updater ───────────────────────────────────────────────
 
-void MainWindow::updateTyreSetsTable() {
-    if (!tp_drySetsTable || !tp_wetSetsTable || lastTyreSetsData.empty() || !lastTyreSetsData.contains("sets")) return;
+void TyresPage::updateTyreSets(const nlohmann::json& tyreSets) {
+    if (!drySetsTable_ || !wetSetsTable_ || tyreSets.empty() || !tyreSets.contains("sets")) return;
 
     std::vector<nlohmann::json> drySets;
     std::vector<nlohmann::json> wetSets;
-    for (const auto& s : lastTyreSetsData["sets"]) {
+    for (const auto& s : tyreSets["sets"]) {
         int compound = s.value("actual_compound", 0);
         if (compound != 0) {
             if (compound == 7 || compound == 8) {
@@ -117,19 +114,19 @@ void MainWindow::updateTyreSetsTable() {
             int vcA = a.value("visual_compound", 99);
             int vcB = b.value("visual_compound", 99);
             if (vcA != vcB) return vcA < vcB;
-            
+
             int spA = statusPriority(a);
             int spB = statusPriority(b);
             if (spA != spB) return spA < spB;
-            
+
             return a.value("idx", 99) < b.value("idx", 99);
         });
     };
     sortSets(drySets);
     sortSets(wetSets);
 
-    tp_drySetsTable->setRowCount(drySets.size());
-    tp_wetSetsTable->setRowCount(wetSets.size());
+    drySetsTable_->setRowCount(drySets.size());
+    wetSetsTable_->setRowCount(wetSets.size());
 
     static const char* sessionLabels[] = {
         "—", "FP1", "FP2", "FP3", "Short P",
@@ -218,16 +215,16 @@ void MainWindow::updateTyreSetsTable() {
         }
     };
 
-    populateTable(tp_drySetsTable, drySets);
-    populateTable(tp_wetSetsTable, wetSets);
+    populateTable(drySetsTable_, drySets);
+    populateTable(wetSetsTable_, wetSets);
 
-    int hh = tp_drySetsTable->horizontalHeader()->height();
-    if (hh <= 0) hh = tp_drySetsTable->horizontalHeader()->sizeHint().height();
+    int hh = drySetsTable_->horizontalHeader()->height();
+    if (hh <= 0) hh = drySetsTable_->horizontalHeader()->sizeHint().height();
     if (hh <= 0) hh = 30; // Better fallback for Breeze
 
-    int totalH = hh + (tp_drySetsTable->frameWidth() * 2);
-    for (int r = 0; r < tp_drySetsTable->rowCount(); ++r) {
-        totalH += tp_drySetsTable->rowHeight(r);
+    int totalH = hh + (drySetsTable_->frameWidth() * 2);
+    for (int r = 0; r < drySetsTable_->rowCount(); ++r) {
+        totalH += drySetsTable_->rowHeight(r);
     }
-    tp_drySetsTable->setMaximumHeight(totalH);
+    drySetsTable_->setMaximumHeight(totalH);
 }

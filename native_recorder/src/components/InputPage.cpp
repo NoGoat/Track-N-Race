@@ -1,149 +1,132 @@
-#include "../MainWindow.h"
+#include "InputPage.h"
+#include "PageUiHelpers.h"
 #include "GearChart.h"
 #include "InputsChart.h"
 #include "SteeringChart.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QFrame>
-#include <QLabel>
-#include <QFont>
-#include <QPalette>
 
-QWidget* MainWindow::buildInputPage() {
-    QWidget* w = new QWidget;
-    QVBoxLayout* vbox = new QVBoxLayout(w);
+InputPage::InputPage(SessionModel* model, QWidget* parent)
+    : QWidget(parent)
+{
+    QVBoxLayout* vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
 
-    auto makeHeader = [](const QString& titleText, const QList<QPair<QString, QColor>>& legend = {}) -> QWidget* {
-        QWidget* header = new QWidget;
-        header->setFixedHeight(24);
-        QHBoxLayout* hl = new QHBoxLayout(header);
-        hl->setContentsMargins(8, 0, 8, 0);
-        QLabel* label = new QLabel(titleText);
-        QFont f; f.setPointSize(8); f.setBold(true);
-        label->setFont(f);
-        label->setForegroundRole(QPalette::PlaceholderText);
-        hl->addWidget(label);
-        hl->addStretch();
-        
-        for (const auto& item : legend) {
-            if (item.second.isValid() && item.second != Qt::transparent) {
-                QWidget* colorBox = new QWidget;
-                colorBox->setFixedSize(12, 12);
-                colorBox->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(item.second.name()));
-                hl->addWidget(colorBox);
-            }
-            QLabel* legLabel = new QLabel(item.first);
-            QFont lf; lf.setPointSize(8);
-            legLabel->setFont(lf);
-            legLabel->setForegroundRole(QPalette::PlaceholderText);
-            
-            hl->addWidget(legLabel);
-            hl->addSpacing(8);
-        }
-        
-        return header;
-    };
-
     // ── Top Row: Gear and Inputs ──────────────────────────────────
-    ip_topRow_ = new QWidget;
-    QHBoxLayout* topLay = new QHBoxLayout(ip_topRow_);
+    topRow_ = new QWidget;
+    QHBoxLayout* topLay = new QHBoxLayout(topRow_);
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
 
     // Gear Chart
-    ip_gearContainer_ = new QWidget;
-    QVBoxLayout* gearLay = new QVBoxLayout(ip_gearContainer_);
+    gearContainer_ = new QWidget;
+    QVBoxLayout* gearLay = new QVBoxLayout(gearContainer_);
     gearLay->setContentsMargins(0, 0, 0, 0);
     gearLay->setSpacing(0);
-    gearLay->addWidget(makeHeader("GEAR INDICATOR"));
+    gearLay->addWidget(tnrui::makeChartHeader("GEAR INDICATOR"));
     gearChart_ = new GearChart;
-    gearChart_->setModel(model_); // Pass the session model to the chart
+    gearChart_->setModel(model);
     gearLay->addWidget(gearChart_, 1);
 
     // Inputs Chart (Throttle/Brake)
-    ip_inputsContainer_ = new QWidget;
-    QVBoxLayout* inputsLay = new QVBoxLayout(ip_inputsContainer_);
+    inputsContainer_ = new QWidget;
+    QVBoxLayout* inputsLay = new QVBoxLayout(inputsContainer_);
     inputsLay->setContentsMargins(0, 0, 0, 0);
     inputsLay->setSpacing(0);
-    inputsLay->addWidget(makeHeader("THROTTLE / BRAKE CHART", {
+    inputsLay->addWidget(tnrui::makeChartHeader("THROTTLE / BRAKE CHART", {
         {"Throttle", QColor("#2FC584")},
         {"Brake", QColor("#FF4040")}
     }));
     inputsChart_ = new InputsChart;
-    inputsChart_->setModel(model_);
+    inputsChart_->setModel(model);
     inputsLay->addWidget(inputsChart_, 1);
 
     // Add to top row with a vertical divider
-    topLay->addWidget(ip_gearContainer_, 1);
-    ip_vdiv_ = new QFrame;
-    ip_vdiv_->setFrameShape(QFrame::VLine);
-    ip_vdiv_->setFrameShadow(QFrame::Sunken);
-    topLay->addWidget(ip_vdiv_);
-    topLay->addWidget(ip_inputsContainer_, 1);
+    topLay->addWidget(gearContainer_, 1);
+    vdiv_ = tnrui::vline();
+    topLay->addWidget(vdiv_);
+    topLay->addWidget(inputsContainer_, 1);
 
     // ── Bottom Row: Steering ──────────────────────────────────────
-    ip_steeringContainer_ = new QWidget;
-    QVBoxLayout* steeringLay = new QVBoxLayout(ip_steeringContainer_);
+    steeringContainer_ = new QWidget;
+    QVBoxLayout* steeringLay = new QVBoxLayout(steeringContainer_);
     steeringLay->setContentsMargins(0, 0, 0, 0);
     steeringLay->setSpacing(0);
-    steeringLay->addWidget(makeHeader("STEERING TELEMETRY", {
+    steeringLay->addWidget(tnrui::makeChartHeader("STEERING TELEMETRY", {
         {"Steering", QColor("#BF5FFF")},
         {"(- Left / + Right)", QColor()}
     }));
     steeringChart_ = new SteeringChart;
-    steeringChart_->setModel(model_);
+    steeringChart_->setModel(model);
     steeringLay->addWidget(steeringChart_, 1);
 
     // ── Assemble Page ─────────────────────────────────────────────
-    vbox->addWidget(ip_topRow_, 1);
-    ip_hdiv_ = new QFrame;
-    ip_hdiv_->setFrameShape(QFrame::HLine);
-    ip_hdiv_->setFrameShadow(QFrame::Sunken);
-    vbox->addWidget(ip_hdiv_);
-    vbox->addWidget(ip_steeringContainer_, 1);
+    vbox->addWidget(topRow_, 1);
+    hdiv_ = tnrui::hline();
+    vbox->addWidget(hdiv_);
+    vbox->addWidget(steeringContainer_, 1);
 
-    applyInputLayout(loadInputLayout());
-
-    return w;
+    applyLayout(loadLayout());
 }
 
-InputLayout MainWindow::loadInputLayout()
+InputLayout InputPage::loadLayout()
 {
     InputLayout L;
-    settings.beginGroup("inputLayout");
-    L.showGear = settings.value("showGear", true).toBool();
-    L.showInputs = settings.value("showInputs", true).toBool();
-    L.showSteering = settings.value("showSteering", true).toBool();
-    settings.endGroup();
+    settings_.beginGroup("inputLayout");
+    L.showGear = settings_.value("showGear", true).toBool();
+    L.showInputs = settings_.value("showInputs", true).toBool();
+    L.showSteering = settings_.value("showSteering", true).toBool();
+    settings_.endGroup();
     return L;
 }
 
-void MainWindow::saveInputLayout(const InputLayout& L)
+void InputPage::saveLayout(const InputLayout& L)
 {
-    settings.beginGroup("inputLayout");
-    settings.setValue("showGear", L.showGear);
-    settings.setValue("showInputs", L.showInputs);
-    settings.setValue("showSteering", L.showSteering);
-    settings.endGroup();
+    settings_.beginGroup("inputLayout");
+    settings_.setValue("showGear", L.showGear);
+    settings_.setValue("showInputs", L.showInputs);
+    settings_.setValue("showSteering", L.showSteering);
+    settings_.endGroup();
 }
 
-void MainWindow::applyInputLayout(const InputLayout& L)
+void InputPage::applyLayout(const InputLayout& L)
 {
-    if (ip_gearContainer_) ip_gearContainer_->setVisible(L.showGear);
-    if (ip_inputsContainer_) ip_inputsContainer_->setVisible(L.showInputs);
-    if (ip_steeringContainer_) ip_steeringContainer_->setVisible(L.showSteering);
+    if (gearContainer_) gearContainer_->setVisible(L.showGear);
+    if (inputsContainer_) inputsContainer_->setVisible(L.showInputs);
+    if (steeringContainer_) steeringContainer_->setVisible(L.showSteering);
 
     bool topVisible = L.showGear || L.showInputs;
-    if (ip_topRow_) ip_topRow_->setVisible(topVisible);
-    if (ip_vdiv_) ip_vdiv_->setVisible(L.showGear && L.showInputs);
-    if (ip_hdiv_) ip_hdiv_->setVisible(topVisible && L.showSteering);
+    if (topRow_) topRow_->setVisible(topVisible);
+    if (vdiv_) vdiv_->setVisible(L.showGear && L.showInputs);
+    if (hdiv_) hdiv_->setVisible(topVisible && L.showSteering);
 }
 
-void MainWindow::applyAndSaveInputLayout(const InputLayout& L)
+void InputPage::applyAndSaveLayout(const InputLayout& L)
 {
-    applyInputLayout(L);
-    saveInputLayout(L);
+    applyLayout(L);
+    saveLayout(L);
+}
+
+void InputPage::setPlaybackMode(bool on, float currentTime)
+{
+    if (gearChart_) gearChart_->setPlaybackMode(on);
+    if (inputsChart_) inputsChart_->setPlaybackMode(on);
+    if (steeringChart_) steeringChart_->setPlaybackMode(on);
+    if (on) setCurrentTime(currentTime);
+}
+
+void InputPage::setCurrentTime(float t)
+{
+    if (gearChart_) gearChart_->setCurrentTime(t);
+    if (inputsChart_) inputsChart_->setCurrentTime(t);
+    if (steeringChart_) steeringChart_->setCurrentTime(t);
+}
+
+void InputPage::setWindowSeconds(float secs)
+{
+    if (gearChart_) gearChart_->setWindowSeconds(secs);
+    if (inputsChart_) inputsChart_->setWindowSeconds(secs);
+    if (steeringChart_) steeringChart_->setWindowSeconds(secs);
 }

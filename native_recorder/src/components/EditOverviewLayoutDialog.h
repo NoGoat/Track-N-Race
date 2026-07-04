@@ -4,18 +4,18 @@
 
 #include "OverviewLayout.h"
 
-class MainWindow;
+class OverviewPage;
 class QPushButton;
 class QWidget;
 
 // Modal "Edit Layout" dialog for the Overview page. Immediate-apply: every
-// toggle click updates MainWindow's live card visibility and persists it
+// toggle click updates the Overview page's live card visibility and persists it
 // right away — there's no separate Save/Cancel.
 class EditOverviewLayoutDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit EditOverviewLayoutDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
+    explicit EditOverviewLayoutDialog(OverviewPage* page, QWidget* parent = nullptr);
 
 private:
     void toggleChart(bool on);
@@ -24,7 +24,7 @@ private:
     void toggleTyreCard(int i, bool on);
     void toggleTyreChart(int i, bool on);
 
-    MainWindow*    mainWindow_;
+    OverviewPage*  page_;
     OverviewLayout layout_;
     QPushButton*   statBtns_[OverviewLayout::StatCardCount]    = {};
     QPushButton*   dmgBtns_[OverviewLayout::DmgCardCount]      = {};

@@ -1,5 +1,5 @@
 #include "EditMiscLayoutDialog.h"
-#include "../MainWindow.h"
+#include "MiscPage.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,13 +23,13 @@ protected:
 };
 }
 
-EditMiscLayoutDialog::EditMiscLayoutDialog(MainWindow* mainWindow, QWidget* parent)
-    : QDialog(parent), mainWindow_(mainWindow)
+EditMiscLayoutDialog::EditMiscLayoutDialog(MiscPage* page, QWidget* parent)
+    : QDialog(parent), page_(page)
 {
     setWindowTitle("Edit Misc Layout");
     setWindowFlags(Qt::Dialog);
     setWindowModality(Qt::ApplicationModal);
-    layout_ = mainWindow_->loadMiscLayout();
+    layout_ = page_->loadLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);
     main->setSizeConstraint(QLayout::SetFixedSize);
@@ -62,10 +62,10 @@ EditMiscLayoutDialog::EditMiscLayoutDialog(MainWindow* mainWindow, QWidget* pare
 
 void EditMiscLayoutDialog::toggleGForce(bool on) {
     layout_.showGForce = on;
-    mainWindow_->applyAndSaveMiscLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditMiscLayoutDialog::toggleRideHeight(bool on) {
     layout_.showRideHeight = on;
-    mainWindow_->applyAndSaveMiscLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }

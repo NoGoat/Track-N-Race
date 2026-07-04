@@ -3,14 +3,14 @@
 #include <QDialog>
 #include "PowerLayout.h"
 
-class MainWindow;
+class PowerPage;
 class QPushButton;
 
 class EditPowerLayoutDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* parent = nullptr);
+    explicit EditPowerLayoutDialog(PowerPage* page, QWidget* parent = nullptr);
 
 private:
     void toggleCard(int idx, bool on);
@@ -19,7 +19,7 @@ private:
     void toggleStore(bool on);
     void toggleFuel(bool on);
 
-    MainWindow*    mainWindow_;
+    PowerPage*     page_;
     PowerLayout    layout_;
     QPushButton*   cardBtns_[PowerLayout::CardCount] = {};
     QPushButton*   splitBtn_ = nullptr;

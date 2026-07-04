@@ -1,8 +1,10 @@
-#include "../MainWindow.h"
+#include "SessionPage.h"
 #include "../Labels.h"
 #include "CardColors.h"
+#include "PageUiHelpers.h"
 #include "TrackMapWidget.h"
 
+#include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
@@ -17,6 +19,8 @@
 
 #include <algorithm>
 #include <unordered_map>
+
+namespace {
 
 // ── Marshal zones strip widget ────────────────────────────────────────────
 
@@ -34,7 +38,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const int w = width(), h = height();
-        
+
         if (zones.empty()) {
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(255, 255, 255, 18));
@@ -81,7 +85,7 @@ protected:
 // Electron app's TRACK_INFO (SessionPanel.tsx) so the displayed strings match
 // exactly. F1 track ids are sparse, so this is a keyed map — NOT a positional
 // array (the old array was abbreviated and mis-indexed for ids ≥ 25).
-static const std::unordered_map<int, std::pair<const char*, const char*>>& trackInfo() {
+const std::unordered_map<int, std::pair<const char*, const char*>>& trackInfo() {
     static const std::unordered_map<int, std::pair<const char*, const char*>> m = {
         { 0,  { "Australian Grand Prix",     "Albert Park Circuit" } },
         { 2,  { "Chinese Grand Prix",        "Shanghai International Circuit" } },
@@ -114,17 +118,17 @@ static const std::unordered_map<int, std::pair<const char*, const char*>>& track
     return m;
 }
 
-static const char* trackGpName(int id) {
+const char* trackGpName(int id) {
     auto it = trackInfo().find(id);
     return it != trackInfo().end() ? it->second.first : "Grand Prix";
 }
 
-static const char* trackCircuitName(int id) {
+const char* trackCircuitName(int id) {
     auto it = trackInfo().find(id);
     return it != trackInfo().end() ? it->second.second : "—";
 }
 
-static const char* sessionTypeName(int t) {
+const char* sessionTypeName(int t) {
     static const char* names[] = {
         "Unknown", "Practice 1", "Practice 2", "Practice 3", "Short Practice",
         "Q1", "Q2", "Q3", "Short Qualifying", "One-Shot Qualifying",
@@ -134,13 +138,13 @@ static const char* sessionTypeName(int t) {
     return "—";
 }
 
-static const char* weatherLabel(int w) {
+const char* weatherLabel(int w) {
     static const char* l[] = { "Clear", "Light Cloud", "Overcast", "Light Rain", "Heavy Rain", "Storm" };
     if (w >= 0 && w < 6) return l[w];
     return "—";
 }
 
-static QString eventCodeLabel(const std::string& code) {
+QString eventCodeLabel(const std::string& code) {
     // Library i18n catalog (protocol-aware: DRSE/DRSD read "Straight Line Mode
     // …" under 2026). Unknown codes fall back to the raw code.
     const QString key   = "event." + QString::fromStdString(code);
@@ -148,7 +152,7 @@ static QString eventCodeLabel(const std::string& code) {
     return label == key ? QString::fromStdString(code) : label;
 }
 
-static QColor eventCodeColor(const std::string& code) {
+QColor eventCodeColor(const std::string& code) {
     if (code == "FTLP")                                      return QColor("#BF5FFF");
     if (code == "RCWN")                                      return QColor("#FFD700");
     if (code == "SCAR")                                      return QColor("#ffd700");
@@ -163,7 +167,7 @@ static QColor eventCodeColor(const std::string& code) {
 
 // Maps F1 penalty_type → display label. Returns nullptr for unknown types
 // (which are hidden, matching the Electron reference's null return).
-static const char* penaltyTypeLabel(int pt) {
+const char* penaltyTypeLabel(int pt) {
     switch (pt) {
         case 0: return "Drive Through";
         case 1: return "Stop-Go";
@@ -175,16 +179,8 @@ static const char* penaltyTypeLabel(int pt) {
     }
 }
 
-static QColor penaltyTypeColor(int pt) {
-    switch (pt) {
-        case 2: case 4: return QColor("#c47d0e"); // Grid / Time — orange
-        case 5:         return QColor("#ffd700"); // Warning — gold
-        default:        return QColor("#e10600"); // Drive Through / Stop-Go / DSQ — red
-    }
-}
-
 // F1 infringement_type → human-readable reason (ported from the Electron App.tsx table).
-static QString infringementLabel(int id) {
+QString infringementLabel(int id) {
     static const std::unordered_map<int, const char*> labels = {
         {0,  "Blocking by slowing"},        {1,  "Blocking wrong way"},
         {2,  "Reversing off start line"},   {3,  "Big collision"},
@@ -216,16 +212,19 @@ static QString infringementLabel(int id) {
     return it != labels.end() ? QString::fromUtf8(it->second) : QString();
 }
 
+} // namespace
+
 // ── Color helpers ─────────────────────────────────────────────────────────
 
 // Track/air temp colours come from the shared library spec (session.trackTemp /
-// session.airTemp) via tnr::cardColor — see updateSessionPage.
+// session.airTemp) via tnr::cardColor — see updateSession.
 
 // ── Session page builder ──────────────────────────────────────────────────
 
-QWidget* MainWindow::buildSessionPage() {
-    QWidget* w = new QWidget;
-    QVBoxLayout* root = new QVBoxLayout(w);
+SessionPage::SessionPage(QWidget* parent)
+    : QWidget(parent)
+{
+    QVBoxLayout* root = new QVBoxLayout(this);
     // No left padding here so the full-width separator lines reach the left edge;
     // the left inset is re-added to the inner text rows below instead.
     root->setContentsMargins(0, 8, 0, 0);
@@ -255,8 +254,7 @@ QWidget* MainWindow::buildSessionPage() {
     hh->addWidget(gpBlock);
 
     // Separator: Heading | Marshal Strip
-    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken);
-        hh->addWidget(f); }
+    hh->addWidget(tnrui::vline());
 
     QWidget* zoneWrap = new QWidget;
     QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
@@ -266,18 +264,18 @@ QWidget* MainWindow::buildSessionPage() {
     // block). Without this the default-policy headerWrap expands to fill the 58px
     // header and pushes the 4px strip far below the label, leaving a big gap.
     zv->setAlignment(Qt::AlignVCenter);
-    
+
     QWidget* headerWrap = new QWidget;
     QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
     headerL->setContentsMargins(0, 0, 0, 0);
-    
+
     QLabel* zonesLbl = new QLabel("ZONES");
     QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
     zonesLbl->setFont(zlf);
     zonesLbl->setForegroundRole(QPalette::PlaceholderText);
     headerL->addWidget(zonesLbl);
     headerL->addStretch();
-    
+
     QWidget* legend = new QWidget;
     QHBoxLayout* lh = new QHBoxLayout(legend);
     lh->setContentsMargins(0, 0, 0, 0);
@@ -290,7 +288,7 @@ QWidget* MainWindow::buildSessionPage() {
         QLabel* txt = new QLabel(li.name);
         QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
         txt->setForegroundRole(QPalette::PlaceholderText);
-        
+
         QWidget* wrap = new QWidget;
         QHBoxLayout* wh = new QHBoxLayout(wrap);
         wh->setContentsMargins(0,0,0,0);
@@ -307,8 +305,7 @@ QWidget* MainWindow::buildSessionPage() {
     hh->addWidget(zoneWrap, 1);
 
     // Separator: Marshal Strip | Timer
-    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken);
-        hh->addWidget(f); }
+    hh->addWidget(tnrui::vline());
 
     QWidget* tmBlock = new QWidget;
     QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
@@ -330,8 +327,7 @@ QWidget* MainWindow::buildSessionPage() {
 
     root->addWidget(hdr);
 
-    {   QFrame* f = new QFrame; f->setFrameShape(QFrame::HLine); f->setFrameShadow(QFrame::Sunken);
-        root->addWidget(f); }
+    root->addWidget(tnrui::hline());
 
     // ── Stat cards ───────────────────────────────────────────────
     QWidget* statsRow = new QWidget;
@@ -342,7 +338,7 @@ QWidget* MainWindow::buildSessionPage() {
 
     // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
     // come from the shared library spec at build; conditional ones (temps) are
-    // applied per-update in updateSessionPage. `out` is kept as a convenience alias
+    // applied per-update in updateSession. `out` is kept as a convenience alias
     // for this page's bespoke per-card value formatting.
     auto makeStatCard = [&](const QString& key, const QString& cap, QLabel*& out,
                             const QString& colorSpec = "") -> QWidget* {
@@ -365,9 +361,7 @@ QWidget* MainWindow::buildSessionPage() {
     };
 
     auto addVSep = [&]() {
-        QFrame* vf = new QFrame;
-        vf->setFrameShape(QFrame::VLine); vf->setFrameShadow(QFrame::Sunken);
-        sh->addWidget(vf);
+        sh->addWidget(tnrui::vline());
     };
 
     sh->addWidget(makeStatCard("totalLaps", "TOTAL LAPS", sp_statTotalLaps),                    1);
@@ -390,9 +384,7 @@ QWidget* MainWindow::buildSessionPage() {
 
     root->addWidget(statsRow);
 
-    QFrame* sep1 = new QFrame;
-    sep1->setFrameShape(QFrame::HLine); sep1->setFrameShadow(QFrame::Sunken);
-    root->addWidget(sep1);
+    root->addWidget(tnrui::hline());
 
     // ── Content ──────────────────────────────────────────────────
     QWidget* content = new QWidget;
@@ -411,9 +403,7 @@ QWidget* MainWindow::buildSessionPage() {
     lv->addWidget(trackMap_, 1);
 
     // Weather strip pinned to bottom
-    QFrame* wSep = new QFrame;
-    wSep->setFrameShape(QFrame::HLine); wSep->setFrameShadow(QFrame::Sunken);
-    lv->addWidget(wSep);
+    lv->addWidget(tnrui::hline());
 
     QWidget* weatherStrip = new QWidget;
     weatherStrip->setFixedHeight(72);
@@ -439,9 +429,7 @@ QWidget* MainWindow::buildSessionPage() {
     nv->addStretch();
     wh->addWidget(nowCard);
 
-    QFrame* wvl = new QFrame;
-    wvl->setFrameShape(QFrame::VLine); wvl->setFrameShadow(QFrame::Sunken);
-    wh->addWidget(wvl);
+    wh->addWidget(tnrui::vline());
 
     for (int i = 0; i < 5; ++i) {
         QWidget* fcCard = new QWidget;
@@ -475,9 +463,7 @@ QWidget* MainWindow::buildSessionPage() {
     ch->addWidget(leftArea, 1);
 
     // VLine between map and right panel
-    QFrame* vdiv = new QFrame;
-    vdiv->setFrameShape(QFrame::VLine); vdiv->setFrameShadow(QFrame::Sunken);
-    ch->addWidget(vdiv);
+    ch->addWidget(tnrui::vline());
 
     // ── Right panel: Proximity + Events ──────────────────────────
     QWidget* rightPanel = new QWidget;
@@ -487,18 +473,11 @@ QWidget* MainWindow::buildSessionPage() {
     rv->setSpacing(6);
 
     auto makeSection = [&](const QString& title, int topPad = 0) {
-        QLabel* lbl = new QLabel(title);
-        QFont f; f.setPointSize(8); f.setBold(true);
-        lbl->setFont(f);
-        lbl->setForegroundRole(QPalette::PlaceholderText);
-        lbl->setContentsMargins(14, topPad, 14, 0);
-        rv->addWidget(lbl);
+        rv->addWidget(tnrui::makeSectionLabel(title, 14, topPad));
     };
 
     auto rpDivider = [&]() {
-        QFrame* div = new QFrame;
-        div->setFrameShape(QFrame::HLine); div->setFrameShadow(QFrame::Sunken);
-        rv->addWidget(div);
+        rv->addWidget(tnrui::hline());
     };
 
     // PROXIMITY
@@ -549,27 +528,40 @@ QWidget* MainWindow::buildSessionPage() {
     rv->addWidget(sp_eventsList, 1);
     ch->addWidget(rightPanel);
     root->addWidget(content, 1);
-    return w;
+}
+
+// ── Event log maintenance ─────────────────────────────────────────────────
+
+void SessionPage::addEvent(const nlohmann::json& eventRow) {
+    eventLog_.push_back(eventRow);
+}
+
+void SessionPage::clearEvents() {
+    eventLog_.clear();
+}
+
+void SessionPage::setRenderingActive(bool on) {
+    if (trackMap_) trackMap_->setRenderingActive(on);
 }
 
 // ── Session page updater ──────────────────────────────────────────────────
 
-void MainWindow::updateSessionPage() {
-    if (!sp_gpName || lastSessionData.empty()) return;
+void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::json& timing) {
+    if (!sp_gpName || session.empty()) return;
 
-    int trackId   = lastSessionData.value("track_id",        -1);
-    int sessType  = lastSessionData.value("session_type",     0);
-    int timeLeft  = lastSessionData.value("session_time_left", 0);
-    int totalLaps = lastSessionData.value("total_laps",       0);
-    int pitSpeed  = lastSessionData.value("pit_speed_limit",  0);
-    int idealLap  = lastSessionData.value("pit_stop_window_ideal_lap",  0);
-    int latestLap = lastSessionData.value("pit_stop_window_latest_lap", 0);
-    int rejoin    = lastSessionData.value("pit_stop_rejoin_position",   0);
-    int weather   = lastSessionData.value("weather",           0);
-    int trackTemp = lastSessionData.value("track_temp",        0);
-    int airTemp   = lastSessionData.value("air_temp",          0);
-    int trackLenM = lastSessionData.value("track_length_m",    0);
-    uint32_t todS = lastSessionData.value("time_of_day",       0u);
+    int trackId   = session.value("track_id",        -1);
+    int sessType  = session.value("session_type",     0);
+    int timeLeft  = session.value("session_time_left", 0);
+    int totalLaps = session.value("total_laps",       0);
+    int pitSpeed  = session.value("pit_speed_limit",  0);
+    int idealLap  = session.value("pit_stop_window_ideal_lap",  0);
+    int latestLap = session.value("pit_stop_window_latest_lap", 0);
+    int rejoin    = session.value("pit_stop_rejoin_position",   0);
+    int weather   = session.value("weather",           0);
+    int trackTemp = session.value("track_temp",        0);
+    int airTemp   = session.value("air_temp",          0);
+    int trackLenM = session.value("track_length_m",    0);
+    uint32_t todS = session.value("time_of_day",       0u);
 
     sp_gpName->setText(trackGpName(trackId));
     sp_circuitName->setText(trackCircuitName(trackId));
@@ -609,8 +601,8 @@ void MainWindow::updateSessionPage() {
 
     sp_weatherNow->setText(weatherLabel(weather));
 
-    if (lastSessionData.contains("weather_forecast_samples")) {
-        const auto& fc = lastSessionData["weather_forecast_samples"];
+    if (session.contains("weather_forecast_samples")) {
+        const auto& fc = session["weather_forecast_samples"];
         int count = std::min((int)fc.size(), 5);
         for (int i = 0; i < 5; ++i) {
             if (i < count) {
@@ -626,10 +618,10 @@ void MainWindow::updateSessionPage() {
         }
     }
 
-    if (lastSessionData.contains("marshal_zones")) {
+    if (session.contains("marshal_zones")) {
         auto* ms = static_cast<MarshalStripWidget*>(sp_marshalStrip);
         ms->zones.clear();
-        for (const auto& z : lastSessionData["marshal_zones"]) {
+        for (const auto& z : session["marshal_zones"]) {
             int flag = z.value("flag", -1);
             if (flag != -1) {
                 ms->zones.push_back({z.value("zone_start", 0.0f), flag});
@@ -638,9 +630,9 @@ void MainWindow::updateSessionPage() {
         ms->update();
     }
 
-    if (!lastTimingData.empty() && lastTimingData.contains("cars")) {
-        int playerIdx = lastTimingData.value("player_idx", -1);
-        for (const auto& car : lastTimingData["cars"]) {
+    if (!timing.empty() && timing.contains("cars")) {
+        int playerIdx = timing.value("player_idx", -1);
+        for (const auto& car : timing["cars"]) {
             if (car.value("idx", -1) == playerIdx) {
                 int lap = car.value("lap_num", 0);
                 sp_statRemain->setText((totalLaps > 0 && lap > 0)
@@ -653,14 +645,14 @@ void MainWindow::updateSessionPage() {
 
 // ── Session events updater ────────────────────────────────────────────────
 
-void MainWindow::updateSessionEvents() {
-    if (!sp_eventsList || sessionEventLog.empty()) return;
+void SessionPage::updateEvents(const nlohmann::json& participants) {
+    if (!sp_eventsList || eventLog_.empty()) return;
 
     sp_eventsList->clear();
 
     auto get3LetterCode = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !lastParticipantsData.contains("drivers")) return "—";
-        for (const auto& d : lastParticipantsData["drivers"]) {
+        if (carIdx < 0 || !participants.contains("drivers")) return "—";
+        for (const auto& d : participants["drivers"]) {
             if (d.value("idx", -1) == carIdx) {
                 QString qn = QString::fromStdString(d.value("name", ""));
                 QStringList parts = qn.split(' ');
@@ -671,8 +663,8 @@ void MainWindow::updateSessionEvents() {
         return "—";
     };
 
-    for (int i = (int)sessionEventLog.size() - 1; i >= 0; --i) {
-        const auto& ev = sessionEventLog[i];
+    for (int i = (int)eventLog_.size() - 1; i >= 0; --i) {
+        const auto& ev = eventLog_[i];
         std::string code = ev.value("code", "");
 
         int totalSecs = (int)ev.value("session_time", 0.0f);
@@ -740,7 +732,7 @@ void MainWindow::updateSessionEvents() {
         int avail = sp_eventsList->viewport()->width();
         if (avail <= 0) avail = sp_eventsList->width() - 4;
         if (avail <= 0) avail = 240;
-        
+
         QWidget* rowW = new QWidget;
         rowW->setObjectName("eventRow");
         rowW->setStyleSheet(QString(
@@ -782,7 +774,7 @@ void MainWindow::updateSessionEvents() {
             textLbl->setWordWrap(true);
             textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
             vl->addWidget(textLbl);
-            
+
             textH = QFontMetrics(lf).boundingRect(
                 QRect(0, 0, avail - (2 * hPad), 10000), Qt::TextWordWrap, text).height();
         }
@@ -799,18 +791,18 @@ void MainWindow::updateSessionEvents() {
 
 // ── Proximity widget updater ──────────────────────────────────────────────
 
-void MainWindow::updateProximityWidget() {
-    if (!sp_proxPos[0] || lastTimingData.empty()) return;
+void SessionPage::updateProximity(const nlohmann::json& timing, const nlohmann::json& participants) {
+    if (!sp_proxPos[0] || timing.empty()) return;
 
-    int playerIdx = lastTimingData.value("player_idx", -1);
-    if (playerIdx < 0 || !lastTimingData.contains("cars")) {
+    int playerIdx = timing.value("player_idx", -1);
+    if (playerIdx < 0 || !timing.contains("cars")) {
         for (int i = 0; i < 3; ++i) sp_proxRow[i]->setVisible(false);
         return;
     }
 
     struct CarEntry { int idx; int pos; int gapMs; };
     std::vector<CarEntry> cars;
-    for (const auto& car : lastTimingData["cars"]) {
+    for (const auto& car : timing["cars"]) {
         int rs = car.value("result_status", 0);
         if (rs == 0 || rs == 3) continue;
         cars.push_back({car.value("idx",-1), car.value("position",0), car.value("gap_ms",0)});
@@ -840,8 +832,8 @@ void MainWindow::updateProximityWidget() {
     }
 
     auto driverName = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !lastParticipantsData.contains("drivers")) return "—";
-        for (const auto& d : lastParticipantsData["drivers"]) {
+        if (carIdx < 0 || !participants.contains("drivers")) return "—";
+        for (const auto& d : participants["drivers"]) {
             if (d.value("idx", -1) == carIdx) {
                 QString qn = QString::fromStdString(d.value("name", ""));
                 QStringList parts = qn.split(' ');
@@ -877,4 +869,37 @@ void MainWindow::updateProximityWidget() {
                 sp_proxGap[i]->setText("—");
         }
     }
+}
+
+// ── Track map updater ─────────────────────────────────────────────────────
+// The map widget lives in the central area of this page; this pushes live
+// data into it and re-reads the map display settings.
+
+void SessionPage::updateTrackMap(const nlohmann::json& session,
+                                 const nlohmann::json& participants,
+                                 const nlohmann::json& positions) {
+    if (!trackMap_) return;
+
+    // Load the circuit geometry when the track changes.
+    if (!session.empty()) {
+        int tid = session.value("track_id", -1);
+        if (tid >= 0 && tid != mapTrackId_) {
+            trackMap_->setTrack(tid);
+            mapTrackId_ = tid;
+        }
+    }
+
+    // Theme: derive light/dark from the active palette.
+    const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
+    trackMap_->setDark(dark);
+    trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(
+        settings_.value("ui/trackMapLabelMode", 0).toInt()));
+    trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", true).toBool());
+    trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
+    trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
+
+    if (!participants.empty())
+        trackMap_->setParticipants(participants);
+    if (!positions.empty())
+        trackMap_->setPositions(positions);
 }

@@ -65,6 +65,10 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/AppToolbar.cpp
+    src/AppToolbar.h
+    src/PlaybackController.cpp
+    src/PlaybackController.h
     src/EngineSink.h
     src/HotRowSmoother.h
     src/BreezePalette.cpp
@@ -77,6 +81,7 @@ set(SOURCES
     src/TelemetryChart.h
     src/components/ChartView.cpp
     src/components/ChartView.h
+    src/components/PageUiHelpers.h
     src/third_party/qcustomplot/qcustomplot.cpp
     src/third_party/qcustomplot/qcustomplot.h
     src/components/Toast.cpp
@@ -84,6 +89,8 @@ set(SOURCES
     src/components/ToastEnums.h
     src/components/ToastEvents.cpp
     src/components/ToastEvents.h
+    src/components/ToastHost.h
+    src/components/ToastHost.cpp
     src/components/OverviewLayout.h
     src/components/OverviewLayout.cpp
     src/components/EditOverviewLayoutDialog.h
@@ -92,9 +99,11 @@ set(SOURCES
     src/components/EditInputLayoutDialog.cpp
     src/components/EditPowerLayoutDialog.h
     src/components/EditPowerLayoutDialog.cpp
+    src/components/OverviewPage.h
     src/components/OverviewPage.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
+    src/components/TyresPage.h
     src/components/TyresPage.cpp
     src/components/TyreCardsWidget.h
     src/components/TyreCardsWidget.cpp
@@ -102,10 +111,15 @@ set(SOURCES
     src/components/TyreChartsWidget.cpp
     src/components/StrategyPage.h
     src/components/StrategyPage.cpp
+    src/components/StandingsPage.h
     src/components/StandingsPage.cpp
+    src/components/SessionPage.h
     src/components/SessionPage.cpp
+    src/components/InputPage.h
     src/components/InputPage.cpp
+    src/components/PowerPage.h
     src/components/PowerPage.cpp
+    src/components/MiscPage.h
     src/components/MiscPage.cpp
     src/components/EditMiscLayoutDialog.h
     src/components/EditMiscLayoutDialog.cpp
@@ -121,7 +135,6 @@ set(SOURCES
     src/components/GForceChart.h
     src/components/RideHeightChart.cpp
     src/components/RideHeightChart.h
-    src/components/TrackMapPage.cpp
     src/components/TrackMapWidget.cpp
     src/components/TrackMapWidget.h
     resources.qrc

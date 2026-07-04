@@ -1,5 +1,5 @@
 #include "EditPowerLayoutDialog.h"
-#include "../MainWindow.h"
+#include "PowerPage.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,13 +23,13 @@ protected:
 };
 }
 
-EditPowerLayoutDialog::EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* parent)
-    : QDialog(parent), mainWindow_(mainWindow)
+EditPowerLayoutDialog::EditPowerLayoutDialog(PowerPage* page, QWidget* parent)
+    : QDialog(parent), page_(page)
 {
     setWindowTitle("Edit Power Layout");
     setWindowFlags(Qt::Dialog);
     setWindowModality(Qt::ApplicationModal);
-    layout_ = mainWindow_->loadPowerLayout();
+    layout_ = page_->loadLayout();
 
     QVBoxLayout* main = new QVBoxLayout(this);
     main->setSizeConstraint(QLayout::SetFixedSize);
@@ -87,25 +87,25 @@ EditPowerLayoutDialog::EditPowerLayoutDialog(MainWindow* mainWindow, QWidget* pa
 
 void EditPowerLayoutDialog::toggleCard(int idx, bool on) {
     layout_.cards[idx] = on;
-    mainWindow_->applyAndSavePowerLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditPowerLayoutDialog::toggleSplit(bool on) {
     layout_.showSplit = on;
-    mainWindow_->applyAndSavePowerLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditPowerLayoutDialog::toggleHarvest(bool on) {
     layout_.showHarvest = on;
-    mainWindow_->applyAndSavePowerLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditPowerLayoutDialog::toggleStore(bool on) {
     layout_.showStore = on;
-    mainWindow_->applyAndSavePowerLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }
 
 void EditPowerLayoutDialog::toggleFuel(bool on) {
     layout_.showFuel = on;
-    mainWindow_->applyAndSavePowerLayout(layout_);
+    page_->applyAndSaveLayout(layout_);
 }

@@ -1,44 +1,35 @@
 #include "MainWindow.h"
-#include "TelemetryChart.h"
-#include "components/GearChart.h"
-#include "components/InputsChart.h"
-#include "components/SteeringChart.h"
-#include "components/PowerChart.h"
-#include "TnrdPlayer.h"
+#include "AppToolbar.h"
+#include "PlaybackController.h"
 #include "SessionModel.h"
 #include "EngineSink.h"
 #include "Labels.h"
-#include "components/CardColors.h"
 #include "components/EditOverviewLayoutDialog.h"
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
-#include "components/GForceChart.h"
-#include "components/RideHeightChart.h"
-#include "components/TyreCardsWidget.h"
-#include "components/TyreChartsWidget.h"
+#include "components/OverviewPage.h"
+#include "components/StandingsPage.h"
+#include "components/SessionPage.h"
+#include "components/TyresPage.h"
+#include "components/InputPage.h"
+#include "components/PowerPage.h"
+#include "components/MiscPage.h"
 #include "components/StrategyPage.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
-#include "components/TyreHelpers.h"
 #include "components/ToastEvents.h"
 #include "components/Toast.h"
+#include "components/ToastHost.h"
 #include "BreezePalette.h"
-#include "IconUtils.h"
+#include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
 
 #include <QApplication>
-#include <QToolBar>
-#include <QMenu>
 #include <QStackedWidget>
-#include <QComboBox>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QFrame>
 #include <QWidget>
-#include <QHBoxLayout>
-#include <QFont>
-#include <QSlider>
-#include <QMouseEvent>
-#include <QWheelEvent>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QFileInfo>
@@ -46,11 +37,6 @@
 #include <QStyleHints>
 #include <QCoreApplication>
 #include <QTimer>
-#include <QDateTime>
-#include <QPainter>
-#include <QImage>
-#include <QPixmap>
-#include <QIconEngine>
 #include <QResizeEvent>
 #include <QCloseEvent>
 #include <QMoveEvent>
@@ -59,21 +45,9 @@
 #include <QScreen>
 #include <QWindow>
 #include <QProgressBar>
-#include <QStyle>
-#include <QAction>
-#include <QTabBar>
-#include <QToolButton>
-#include <QButtonGroup>
 #include <QStyleFactory>
-#include <QStyleOptionButton>
-#include <QStylePainter>
-#include <QLocale>
 
-#include <chrono>
-#include <ctime>
-#include <cstdio>
 #include <algorithm>
-#include <cctype>
 #include <map>
 
 #include <tnrp/Engine.h>
@@ -82,156 +56,6 @@
 // Packet IDs, header layout, rate-limit/dedup tables and the F1 24/25 packet
 // parsers used to live here; they now belong to libtnrp (tnrp::Parser /
 // tnrp::TnrdWriter), which the engine drives. See onEngineRow().
-
-// Chart window-size options, shown as a segmented toolbar control.
-static const struct { const char* label; float secs; } kWindowOptions[] = {
-    {"15s", 15}, {"30s", 30}, {"1m", 60},
-    {"2m", 120}, {"5m", 300}, {"10m", 600}
-};
-static constexpr int kWindowOptionCount = 6;
-
-namespace {
-
-// Segmented-control button for the toolbar's window-size picker. When checked it
-// paints itself as the active QStyle's *default button* — the same blue outline
-// the Edit-Layout dialog's on-toggles wear (see ToggleButton in
-// EditOverviewLayoutDialog.cpp). QToolButton can't reuse that trick directly:
-// the DefaultButton look lives on QStyleOptionButton, which only QPushButton
-// feeds the style, so for the checked state we draw a default QPushButton bevel
-// + label ourselves (same CE_PushButton + DefaultButton code path the dialog
-// hits). Unchecked segments fall through to the normal flat auto-raised look.
-class SegmentButton : public QToolButton {
-public:
-    using QToolButton::QToolButton;
-
-protected:
-    void paintEvent(QPaintEvent* e) override {
-        if (!isChecked()) { QToolButton::paintEvent(e); return; }
-        QStylePainter p(this);
-        QStyleOptionButton opt;
-        opt.initFrom(this);
-        opt.rect = rect();
-        opt.text = text();
-        opt.features = QStyleOptionButton::DefaultButton;
-        opt.state |= QStyle::State_Raised;
-        opt.state &= ~(QStyle::State_On | QStyle::State_Sunken);
-        p.drawControl(QStyle::CE_PushButton, opt);
-    }
-};
-
-} // namespace
-
-// Removed TintedIconEngine and adaptThemeIcon, now in IconUtils.h
-
-static QIcon playPauseIcon(bool playing, QWidget* w, const QColor& tint) {
-    return adaptThemeIcon(
-        QIcon::fromTheme(playing ? QIcon::ThemeIcon::MediaPlaybackPause
-                                 : QIcon::ThemeIcon::MediaPlaybackStart),
-        tint,
-        w->style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
-}
-
-// No bundled SVG for these two — prefer the OS/desktop theme icon (tinted to the
-// toolbar foreground on Windows so the monochrome Breeze icons stay visible in
-// dark mode), and fall back to Qt's own built-in standard-pixmap icon.
-static QIcon openRecordingIcon(QWidget* w) {
-    return adaptThemeIcon(QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen),
-        w->palette().color(QPalette::WindowText),
-        w->style()->standardIcon(QStyle::SP_DialogOpenButton));
-}
-
-static QIcon editLayoutIcon(QWidget* w) {
-    return adaptThemeIcon(QIcon::fromTheme("document-edit"),
-        w->palette().color(QPalette::WindowText),
-        w->style()->standardIcon(QStyle::SP_FileDialogDetailedView));
-}
-
-static QIcon settingsIcon(QWidget* w) {
-    return adaptThemeIcon(
-        QIcon::fromTheme("configure", QIcon::fromTheme("preferences-system")),
-        w->palette().color(QPalette::WindowText),
-        w->style()->standardIcon(QStyle::SP_FileDialogListView));
-}
-
-static QIcon closeRecordingIcon(QWidget* w) {
-    return adaptThemeIcon(
-        QIcon::fromTheme("window-close", QIcon::fromTheme("process-stop")),
-        w->palette().color(QPalette::WindowText),
-        w->style()->standardIcon(QStyle::SP_DialogCloseButton));
-}
-
-static QIcon seekBackwardIcon(QWidget* w, const QColor& tint) {
-    return adaptThemeIcon(
-        QIcon::fromTheme("media-seek-backward", QIcon::fromTheme("go-previous")),
-        tint,
-        w->style()->standardIcon(QStyle::SP_MediaSeekBackward));
-}
-
-static QIcon seekForwardIcon(QWidget* w, const QColor& tint) {
-    return adaptThemeIcon(
-        QIcon::fromTheme("media-seek-forward", QIcon::fromTheme("go-next")),
-        tint,
-        w->style()->standardIcon(QStyle::SP_MediaSeekForward));
-}
-
-// "⋯" overflow button — same theme-icon-with-fallback pattern as the toolbar icons
-// above, ending at the style's horizontal-extension glyph (what Qt's own overflow
-// button would use) so it always renders even when the theme lacks an overflow icon.
-static QIcon overflowIcon(QWidget* w) {
-    return adaptThemeIcon(
-        QIcon::fromTheme("overflow-menu-symbolic"),
-        w->palette().color(QPalette::WindowText),
-        w->style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton));
-}
-
-// QSlider's click behaviour is style-dependent: Windows' native style jumps the
-// handle straight to the clicked position, but Linux styles (Breeze, Fusion,
-// GTK) treat a groove click as a page step in that direction instead — hence
-// the playback bar "jumping by a few seconds" instead of seeking to the click.
-// Override to always seek to the clicked position, and ignore the wheel so
-// scrolling over the bar doesn't nudge playback either.
-class ScrubSlider : public QSlider {
-public:
-    using QSlider::QSlider;
-protected:
-    // Handled entirely ourselves rather than delegating to QSlider's built-in
-    // press/move handling, whose drag-tracking only engages for clicks that
-    // land exactly on the handle — clicking the groove wouldn't let a drag
-    // that started there continue to track the cursor.
-    void mousePressEvent(QMouseEvent* e) override {
-        if (e->button() != Qt::LeftButton) { QSlider::mousePressEvent(e); return; }
-        dragging_ = true;
-        seekToPos(e->pos().x());
-        e->accept();
-    }
-    void mouseMoveEvent(QMouseEvent* e) override {
-        if (!dragging_) { QSlider::mouseMoveEvent(e); return; }
-        seekToPos(e->pos().x());
-        e->accept();
-    }
-    void mouseReleaseEvent(QMouseEvent* e) override {
-        if (!dragging_) { QSlider::mouseReleaseEvent(e); return; }
-        dragging_ = false;
-        // The drag's seeks are throttled, so the final position may fall inside a
-        // throttle window; signal release so the handler can commit an
-        // authoritative seek to the exact drop point.
-        emit sliderReleased();
-        e->accept();
-    }
-    void wheelEvent(QWheelEvent* e) override { e->ignore(); }
-private:
-    void seekToPos(int x) {
-        const double ratio = qBound(0.0, double(x) / qMax(1, width()), 1.0);
-        setValue(minimum() + qRound(ratio * (maximum() - minimum())));
-    }
-    bool dragging_ = false;
-};
-
-static void setDmgValue(QLabel* lbl, int val) {
-    if (val < 0) { lbl->setText("—"); lbl->setStyleSheet(""); return; }
-    lbl->setText(QString::number(val));
-    lbl->setStyleSheet(val == 0 ? "color: #37872D;" : "color: #C4162A;");
-}
 
 // A geometry "looks maximized" if it (nearly) fills the screen's available area.
 // Such a value must never be treated as the windowed/normal size: an earlier bug
@@ -284,198 +108,70 @@ MainWindow::MainWindow(QWidget* parent)
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
 
-    QToolBar* toolbar = new QToolBar(this);
-    toolbar->setMovable(false);
-    toolbar->setFloatable(false);
-    toolbar->setToolButtonStyle(settings.value("ui/toolbarShowLabels", false).toBool()
-        ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
-    toolbar->setContentsMargins(0, 0, 0, 0);
-    if (toolbar->layout()) toolbar->layout()->setContentsMargins(0, 0, 0, 0);
-    if (toolbar->layout()) toolbar->layout()->setSpacing(4);
-    // Breeze (and other styles) draw the QToolBar's own 1px bottom border across
-    // its full width regardless of what the tab bar does — left alone, it shows
-    // up as a second line stacked right under our accent underline. QToolBar also
-    // reserves its own internal padding/margin around every item regardless of
-    // a widget's own size policy — zeroing it here too, since that inset (not
-    // anything in the page buttons themselves) was the source of the remaining
-    // gap between the active-page underline and the toolbar's true bottom edge.
-    static constexpr int kToolbarHeight = 44;
-    toolbar->setFixedHeight(kToolbarHeight);
-    addToolBar(Qt::TopToolBarArea, toolbar);
-    toolbar_ = toolbar;
-    // Sets the toolbar stylesheet (border/margins, + a window-colour background
-    // when the app's mode differs from the OS — see the method).
-    updateToolbarColorScheme();
+    // Self-contained toolbar: page tabs, session timer, chart-window segment,
+    // Open/Edit Layout/Settings actions, ⋯ overflow. Page names must match the
+    // Page enum and the stack->addWidget() order below.
+    toolbar_ = new AppToolbar(
+        { "Overview", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" },
+        settings.value("ui/toolbarShowLabels", false).toBool(), this);
+    addToolBar(Qt::TopToolBarArea, toolbar_);
     // QMainWindow draws its own separator line between the toolbar area and the
-    // central widget — a different element again from QToolBar's/QTabBar's own
-    // borders, and the most likely source of the line that's survived every fix
-    // to those two so far.
+    // central widget — a different element from QToolBar's own borders; keep it
+    // suppressed so no stray line shows under the toolbar.
     setStyleSheet("QMainWindow::separator { width: 0px; height: 0px; background: transparent; }");
 
-    // Page switcher: plain checkable QToolButtons in an exclusive group, same
-    // approach as the window-size segmented control below. QTabBar was tried
-    // first, but it has a hardcoded internal paint call (PE_FrameTabBarBase)
-    // for the base line under inactive tabs that's supposed to be suppressed by
-    // documentMode(true) and isn't, in this style/Qt-version combination — and
-    // that line isn't reachable through any stylesheet rule. Plain QToolButtons
-    // have no such native "tab base" painting path, so there's nothing for an
-    // unselected button to draw beyond what its own (empty) stylesheet says.
-    // Indexed by Page — keep in the same order as the enum and the stack adds below.
-    static const char* kPageNames[] = { "Overview", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" };
-    QWidget* pageTabsWidget = new QWidget;
-    pageTabsWidget->setFixedHeight(kToolbarHeight);
-    QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
-    pageTabsLay->setContentsMargins(0, 0, 0, 0);
-    pageTabsLay->setSpacing(4);
-    tb_pageGroup_ = new QButtonGroup(this);
-    QButtonGroup* pageGroup = tb_pageGroup_;
-    pageGroup->setExclusive(true);
-    static constexpr int kPageCount = PageCount;
-    static constexpr int kUnderlineWidth = 2;
-    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
-    // Every button — checked or not — reserves the same border-bottom width
-    // (transparent unless checked), so switching pages only changes its color,
-    // never shifts the text within the button's fixed height.
-    const QString pageBtnStyle = QString(
-        "QToolButton { padding: 0px 14px; border: none; background: transparent;"
-        " border-bottom: %1px solid transparent; }"
-        "QToolButton:checked { border-bottom: %1px solid %2; }"
-    ).arg(kUnderlineWidth).arg(accent);
-    for (int i = 0; i < kPageCount; ++i) {
-        QToolButton* b = new QToolButton;
-        b->setText(kPageNames[i]);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        b->setFixedHeight(kToolbarHeight - 2);
-        b->setStyleSheet(pageBtnStyle);
-        // Pin each tab to its natural width so it can't compress: when space runs
-        // out the only way the strip shrinks is by *hiding* a whole tab (handled by
-        // relayoutToolbar). Otherwise the buttons and the toolbar both try to shrink
-        // at once and the overflow measurement never settles — that was the flicker.
-        b->ensurePolished();
-        b->setFixedWidth(b->sizeHint().width());
-        pageGroup->addButton(b, i);
-        pageTabsLay->addWidget(b);
-        tb_pageButtons_.push_back(b);
-    }
-    static_cast<QToolButton*>(pageGroup->button(0))->setChecked(true);   // default: Overview
-    toolbar->addWidget(pageTabsWidget);
-
-    // Expanding spacer that pushes the right-hand group over. The session timer
-    // rides at the right edge of this spacer (just left of the window segment) so
-    // it stays clear of the overflow logic — it's not a standalone toolbar item, so
-    // the relayout arithmetic below is untouched and the timer is always visible.
-    QWidget* spacer = new QWidget;
-    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    QHBoxLayout* spacerLay = new QHBoxLayout(spacer);
-    spacerLay->setContentsMargins(0, 0, 0, 0);
-    spacerLay->setSpacing(0);
-    spacerLay->addStretch(1);
-    tb_timerLabel_ = new QLabel;
-    tb_timerLabel_->setObjectName("sessionTimer");
-    tb_timerLabel_->setContentsMargins(8, 0, 8, 0);
-    tb_timerLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
-    QFont timerFont = tb_timerLabel_->font();
-    timerFont.setBold(true);
-    tb_timerLabel_->setFont(timerFont);
-    tb_timerLabel_->setToolTip("Session time");
-    tb_timerLabel_->hide();   // shown once the first session_time arrives
-    spacerLay->addWidget(tb_timerLabel_);
-    toolbar->addWidget(spacer);
-
-    // Window-size segmented control: an exclusive row of checkable QToolButtons
-    // drawn edge-to-edge, styled by the active QStyle (so it renders native to
-    // whatever platform/theme is running, not a fixed look).
-    QWidget* windowSeg = new QWidget;
-    tb_windowSeg_ = windowSeg;
-    QHBoxLayout* segLay = new QHBoxLayout(windowSeg);
-    segLay->setContentsMargins(0, 0, 0, 0);
-    segLay->setSpacing(0);
-    tb_windowGroup_ = new QButtonGroup(this);
-    QButtonGroup* windowGroup = tb_windowGroup_;
-    windowGroup->setExclusive(true);
-    for (int i = 0; i < kWindowOptionCount; ++i) {
-        SegmentButton* b = new SegmentButton;
-        b->setText(kWindowOptions[i].label);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        windowGroup->addButton(b, i);
-        segLay->addWidget(b);
-    }
-    static_cast<QToolButton*>(windowGroup->button(1))->setChecked(true);   // default 30s
-    tb_windowAct_ = toolbar->addWidget(windowSeg);
-    connect(windowGroup, &QButtonGroup::idClicked, this, [this](int idx) { applyChartWindow(idx); });
-
-    openAct_ = toolbar->addAction(openRecordingIcon(this), "Open Recording");
-    editLayoutAct_ = toolbar->addAction(editLayoutIcon(this), "Edit Layout");
-    editLayoutAct_->setEnabled(true); // Default is Overview page (0)
-    connect(editLayoutAct_, &QAction::triggered, this, [this] {
+    connect(toolbar_, &AppToolbar::chartWindowChanged, this, [this](float secs) {
+        if (overviewPage_) overviewPage_->setWindowSeconds(secs);
+        if (inputPage_) inputPage_->setWindowSeconds(secs);
+        if (powerPage_) powerPage_->setWindowSeconds(secs);
+        if (miscPage_) miscPage_->setWindowSeconds(secs);
+    });
+    connect(toolbar_, &AppToolbar::editLayoutRequested, this, [this] {
         if (currentPage_ == Overview) {
-            EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(this, this);
+            EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(overviewPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
         } else if (currentPage_ == Input) {
-            EditInputLayoutDialog* dlg = new EditInputLayoutDialog(this, this);
+            EditInputLayoutDialog* dlg = new EditInputLayoutDialog(inputPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
         } else if (currentPage_ == Power) {
-            EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(this, this);
+            EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(powerPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
         } else if (currentPage_ == Misc) {
-            EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(this, this);
+            EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(miscPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
         }
     });
-    settingsAct_ = toolbar->addAction(settingsIcon(this), "Settings");
-    connect(settingsAct_, &QAction::triggered, this, [this] {
+    connect(toolbar_, &AppToolbar::settingsRequested, this, [this] {
         SettingsDialog* dlg = new SettingsDialog(this, this);
         connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
         dlg->show();
     });
 
-    // Custom overflow: the toolbar is built from composite custom widgets (page
-    // tabs, window-size segment), which Qt's native QToolBarExtension can't reparent
-    // into its popup. Instead we manage it ourselves — relayoutToolbar() collapses
-    // low-priority items into this "⋯" button's menu when the window is too narrow,
-    // so the broken native extension never appears.
-    tb_overflowMenu_ = new QMenu(this);
-    tb_overflowBtn_  = new QToolButton;
-    tb_overflowBtn_->setAutoRaise(true);
-    tb_overflowBtn_->setIcon(overflowIcon(this));
-    tb_overflowBtn_->setPopupMode(QToolButton::InstantPopup);
-    tb_overflowBtn_->setMenu(tb_overflowMenu_);
-    tb_overflowBtn_->setToolTip("More");
-    // Control visibility via the toolbar action so its slot is fully removed when
-    // hidden (toggling just the widget leaves a reserved empty slot).
-    tb_overflowAct_ = toolbar->addWidget(tb_overflowBtn_);
-    tb_overflowAct_->setVisible(false);
-    // Disable Qt's own overflow: its extension button (objectName "qt_toolbar_ext_button")
-    // would otherwise flash in/out as items reflow, fighting our ⋯ menu. Keep it
-    // permanently hidden via the event filter below.
-    tb_extButton_ = toolbar->findChild<QWidget*>("qt_toolbar_ext_button");
-    if (tb_extButton_) {
-        tb_extButton_->hide();
-        tb_extButton_->installEventFilter(this);
-    }
-    // Initial pass once the toolbar has a real width (after the window is shown).
-    QTimer::singleShot(0, this, [this] { relayoutToolbar(); });
-
     // Lap-aware session model — the chart's single source of truth, fed by both
     // live UDP and playback. Created before the Overview tab so the chart can bind it.
     model_ = new SessionModel(this);
 
-    // Order must match the Page enum and kPageNames[] above.
+    // Order must match the Page enum and the AppToolbar page-name list above.
     QStackedWidget* stack = new QStackedWidget(this);
-    stack->addWidget(buildOverviewTab());   // Overview
-    stack->addWidget(buildStandingsPage()); // Standings
-    stack->addWidget(buildSessionPage());   // Session
-    stack->addWidget(buildTyresPage());     // Tyres
+    stack->addWidget(overviewPage_ = new OverviewPage(model_));   // Overview
+    stack->addWidget(standingsPage_ = new StandingsPage);   // Standings
+    // A row click changed the selection; re-feed the cached rows immediately
+    // (same synchronous rebuild as the old in-page click handler).
+    connect(standingsPage_, &StandingsPage::refreshRequested, this, [this] {
+        standingsPage_->updateTimingTable(lastTimingData, lastParticipantsData, lastAllStatusData);
+        standingsPage_->updateRacePanel(lastTimingData, lastParticipantsData,
+                                        lastPlayerLapData, lastPlayerStatusData, lastAllStatusData);
+    });
+    stack->addWidget(sessionPage_ = new SessionPage);   // Session
+    stack->addWidget(tyresPage_ = new TyresPage);   // Tyres
     stack->addWidget(buildStrategyPage());  // Strategy
-    stack->addWidget(buildInputPage());     // Input
-    stack->addWidget(buildPowerPage());     // Power
-    stack->addWidget(buildMiscPage());      // Misc
+    stack->addWidget(inputPage_ = new InputPage(model_));   // Input
+    stack->addWidget(powerPage_ = new PowerPage(model_));   // Power
+    stack->addWidget(miscPage_ = new MiscPage(model_));   // Misc
 
     // Coalesces panel rebuilds to one per event-loop pass (one per arriving packet,
     // 20..60 Hz) so bursts can't stack redundant rebuilds, without a fixed rate cap.
@@ -485,80 +181,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(uiRefreshTimer_, &QTimer::timeout, this, &MainWindow::flushUiRefresh);
 
     // ── Bottom playback bar ────────────────────────────────────────────────────
-    player_ = new TnrdPlayer(this);
-
-    pb_bar_ = new QWidget(this);
-    pb_bar_->setAutoFillBackground(true);
-    {
-        QPalette pal = pb_bar_->palette();
-        pal.setColor(QPalette::Window, palette().color(QPalette::Window));
-        pb_bar_->setPalette(pal);
-    }
-    pb_bar_->setFixedHeight(48);
-    auto* pbLayout = new QHBoxLayout(pb_bar_);
-    pbLayout->setContentsMargins(12, 0, 12, 0);
-    pbLayout->setSpacing(10);
-
-    const QColor iconTint = palette().color(QPalette::Text);
-
-    pb_seekBackBtn_ = new QPushButton(pb_bar_);
-    pb_seekBackBtn_->setIcon(seekBackwardIcon(this, iconTint));
-    pb_seekBackBtn_->setIconSize(QSize(20, 20));
-    pb_seekBackBtn_->setFixedSize(34, 34);
-    pb_seekBackBtn_->setFlat(true);
-    pb_seekBackBtn_->setToolTip("Skip Backward 5s");
-    pbLayout->addWidget(pb_seekBackBtn_);
-
-    pb_playBtn_ = new QPushButton(pb_bar_);
-    pb_playBtn_->setIcon(playPauseIcon(false, this, iconTint));
-    pb_playBtn_->setIconSize(QSize(20, 20));
-    pb_playBtn_->setFixedSize(34, 34);
-    pb_playBtn_->setFlat(true);
-    pbLayout->addWidget(pb_playBtn_);
-
-    pb_seekFwdBtn_ = new QPushButton(pb_bar_);
-    pb_seekFwdBtn_->setIcon(seekForwardIcon(this, iconTint));
-    pb_seekFwdBtn_->setIconSize(QSize(20, 20));
-    pb_seekFwdBtn_->setFixedSize(34, 34);
-    pb_seekFwdBtn_->setFlat(true);
-    pb_seekFwdBtn_->setToolTip("Skip Forward 5s");
-    pbLayout->addWidget(pb_seekFwdBtn_);
-
-    pb_slider_ = new ScrubSlider(Qt::Horizontal, pb_bar_);
-    pb_slider_->setRange(0, 1000);
-    pb_slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    pbLayout->addWidget(pb_slider_);
-
-    pb_timeLabel_ = new QLabel("0:00 / 0:00", pb_bar_);
-    pbLayout->addWidget(pb_timeLabel_);
-
-    pb_lapCombo_ = new QComboBox(pb_bar_);
-    pb_lapCombo_->addItem("Select Lap...", -1.0f);
-    pbLayout->addWidget(pb_lapCombo_);
-
-    pb_speedCombo_ = new QComboBox(pb_bar_);
-    pb_speedCombo_->addItem("0.25×", 0.25f);
-    pb_speedCombo_->addItem("0.5×",  0.5f);
-    pb_speedCombo_->addItem("1×",    1.0f);
-    pb_speedCombo_->addItem("2×",    2.0f);
-    pb_speedCombo_->addItem("4×",    4.0f);
-    pb_speedCombo_->setCurrentIndex(2);
-    pbLayout->addWidget(pb_speedCombo_);
-
-    auto* closeRecBtn = new QPushButton(pb_bar_);
-    closeRecBtn->setIcon(closeRecordingIcon(this));
-    closeRecBtn->setIconSize(QSize(20, 20));
-    closeRecBtn->setFixedSize(34, 34);
-    closeRecBtn->setFlat(true);
-    closeRecBtn->setToolTip("Close Recording");
-    pbLayout->addWidget(closeRecBtn);
-
-    pb_bar_->hide();
-
-    pb_sep_ = new QFrame(this);
-    pb_sep_->setFrameShape(QFrame::HLine);
-    pb_sep_->setFrameShadow(QFrame::Sunken);
-    pb_sep_->hide();
+    // Owns the TnrdPlayer and the transport bar; MainWindow reacts to its
+    // entered/exited/rowReady/timeChanged signals below.
+    playback_ = new PlaybackController(model_, this);
 
     // Stack + separator + playback bar stacked vertically as the central widget
     container_ = new QWidget(this);
@@ -566,16 +191,12 @@ MainWindow::MainWindow(QWidget* parent)
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
     vbox->addWidget(stack);
-    vbox->addWidget(pb_sep_);
-    vbox->addWidget(pb_bar_);
+    vbox->addWidget(playback_->separator());
+    vbox->addWidget(playback_->bar());
     setCentralWidget(container_);
 
-    // Event toasts: top-right of the screen, stacked, max a few at once (rest queue).
-    // These are process-wide statics on the vendored Toast class, set once.
-    Toast::setPosition(ToastPosition::TOP_RIGHT);
-    Toast::setMaximumOnScreen(4);
-    Toast::setSpacing(10);
-    Toast::setOffset(20, 20);
+    // Event toast notifications, rendered inside the central content widget.
+    toasts_ = new ToastHost(container_);
 
     // Loading overlay (shown over the entire central area while decompressing/indexing)
     loadingOverlay_ = new QWidget(container_);
@@ -598,23 +219,15 @@ MainWindow::MainWindow(QWidget* parent)
     ol->addWidget(spinner);
     loadingOverlay_->hide();
 
-    connect(pageGroup, &QButtonGroup::idClicked, stack, &QStackedWidget::setCurrentIndex);
-    connect(pageGroup, &QButtonGroup::idClicked, this, [this](int i) {
+    connect(toolbar_, &AppToolbar::pageSelected, stack, &QStackedWidget::setCurrentIndex);
+    connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
-        editLayoutAct_->setEnabled(currentPage_ == Overview || currentPage_ == Input ||
-                                   currentPage_ == Power || currentPage_ == Misc);
+        toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
+                                       currentPage_ == Power || currentPage_ == Misc);
         flushUiRefresh();
-        relayoutToolbar();      // the active tab is kept inline — re-evaluate overflow
     });
 
-    // Helper for formatting session time as M:SS
-    auto fmtTime = [](float s) -> QString {
-        int m   = (int)s / 60;
-        int sec = (int)s % 60;
-        return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
-    };
-
-    connect(openAct_, &QAction::triggered, this, [this] {
+    connect(toolbar_, &AppToolbar::openRecordingRequested, this, [this] {
         QString path = QFileDialog::getOpenFileName(
             this, "Open Recording", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
@@ -627,23 +240,24 @@ MainWindow::MainWindow(QWidget* parent)
             msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
             msgBox.setDefaultButton(QMessageBox::No);
             if (msgBox.exec() == QMessageBox::Yes) {
-                player_->load(path);
+                playback_->load(path);
             }
         }
     });
 
-    connect(player_, &TnrdPlayer::loadingStarted, this, [this] {
+    connect(playback_, &PlaybackController::loadingStarted, this, [this] {
         loadingOverlay_->setGeometry(container_->rect());
         loadingOverlay_->raise();
         loadingOverlay_->show();
     });
 
-    connect(player_, &TnrdPlayer::loadFailed, this, [this] {
+    connect(playback_, &PlaybackController::loadFailed, this, [this] {
         loadingOverlay_->hide();
         QMessageBox::warning(this, "Load Failed", "Could not open the recording file.");
     });
 
-    connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
+    connect(playback_, &PlaybackController::entered, this,
+            [this](const nlohmann::json& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
         // Resolve labels against the recorded clip's format (DRS vs Straight Line
@@ -651,181 +265,47 @@ MainWindow::MainWindow(QWidget* parent)
         if (hdr.contains("protocol") && hdr["protocol"].is_number()) {
             const uint16_t fmt = hdr["protocol"].get<uint16_t>();
             tnr::Labels::instance().setFormat(fmt);
-            refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
-            if (pp_harvestChart) pp_harvestChart->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
+            if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
         }
         // Clear any frozen live value; the first replayed packet sets it afresh.
-        resetSessionTimer();
-        // Hand the chart the whole pre-scanned session; it now drives off currentTime.
-        if (model_) model_->load(player_->takeScannedData());
-        
-        if (pb_lapCombo_) {
-            pb_lapCombo_->blockSignals(true);
-            pb_lapCombo_->clear();
-            pb_lapCombo_->addItem("Select Lap...", -1.0f);
-            if (model_) {
-                for (const auto& lap : model_->data().laps) {
-                    pb_lapCombo_->addItem(QString("Lap %1").arg(lap.lapNum), lap.startSessionTime);
-                }
-            }
-            pb_lapCombo_->setCurrentIndex(0);
-            pb_lapCombo_->blockSignals(false);
-        }
-        if (chart) { chart->setPlaybackMode(true); chart->setCurrentTime(player_->currentTime()); }
-        if (gearChart_) { gearChart_->setPlaybackMode(true); gearChart_->setCurrentTime(player_->currentTime()); }
-        if (inputsChart_) { inputsChart_->setPlaybackMode(true); inputsChart_->setCurrentTime(player_->currentTime()); }
-        if (steeringChart_) { steeringChart_->setPlaybackMode(true); steeringChart_->setCurrentTime(player_->currentTime()); }
-        if (pp_splitChart) { pp_splitChart->setPlaybackMode(true); pp_splitChart->setCurrentTime(player_->currentTime()); }
-        if (pp_harvestChart) { pp_harvestChart->setPlaybackMode(true); pp_harvestChart->setCurrentTime(player_->currentTime()); }
-        if (pp_storeChart) { pp_storeChart->setPlaybackMode(true); pp_storeChart->setCurrentTime(player_->currentTime()); }
-        if (pp_fuelChart) { pp_fuelChart->setPlaybackMode(true); pp_fuelChart->setCurrentTime(player_->currentTime()); }
-        if (gforceChart_) { gforceChart_->setPlaybackMode(true); gforceChart_->setCurrentTime(player_->currentTime()); }
-        if (rideHeightChart_) { rideHeightChart_->setPlaybackMode(true); rideHeightChart_->setCurrentTime(player_->currentTime()); }
-        if (ov_tyreCharts_) { ov_tyreCharts_->setPlaybackMode(true); ov_tyreCharts_->setCurrentTime(player_->currentTime()); }
-        if (ov_compareBtn_) ov_compareBtn_->setEnabled(true);
+        if (toolbar_) toolbar_->resetSessionTimer();
+        if (overviewPage_) overviewPage_->setPlaybackMode(true, currentTime);
+        if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
+        if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
+        if (miscPage_) miscPage_->setPlaybackMode(true, currentTime);
         hotSmoother_.reset();   // entering playback: drop live fill state
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
-        pb_sep_->show();
-        pb_bar_->show();
-        pb_playBtn_->setIcon(playPauseIcon(false, this, palette().color(QPalette::Text)));
-        pbLastPlaying_ = false;
-        pb_slider_->setValue(0);
-        pb_speedCombo_->setCurrentIndex(2); // reset to 1×
-        player_->setSpeed(1.0f);
         QString trackName = QString::fromStdString(hdr.value("track_name", "Unknown"));
         QString sessName  = QString::fromStdString(hdr.value("session_name", "Unknown"));
         setWindowTitle(QString("Track N Race — %1 %2 [Playback]").arg(trackName, sessName));
     });
 
-    connect(player_, &TnrdPlayer::packetReady, this, [this](const nlohmann::json& j) {
-        emitLiveData(j);   // panels only — the chart reads the pre-scanned model
+    connect(playback_, &PlaybackController::rowReady, this, [this](const nlohmann::json& j) {
+        emitLiveData(j);   // panels only — the charts read the pre-scanned model
     });
 
     // A seek replays a state snapshot (incl. the session packet); swallow the one
     // safety-car toast that snapshot would otherwise raise — race_events aren't
     // replayed on seek, so those need no special handling.
-    connect(player_, &TnrdPlayer::seeked, this, [this] { scSuppressOnce_ = true; });
+    connect(playback_, &PlaybackController::seeked, this, [this] { scSuppressOnce_ = true; });
 
-    connect(player_, &TnrdPlayer::stateChanged, this,
-            [this, fmtTime](bool playing, float cur, float total, float /*speed*/) {
-        // `cur` is session-relative (for the slider); the model is keyed on absolute
-        // session_time, so hand the chart the absolute playhead.
-        if (chart) chart->setCurrentTime(player_->currentTime());
-        if (gearChart_) gearChart_->setCurrentTime(player_->currentTime());
-        if (inputsChart_) inputsChart_->setCurrentTime(player_->currentTime());
-        if (steeringChart_) steeringChart_->setCurrentTime(player_->currentTime());
-        if (pp_splitChart) pp_splitChart->setCurrentTime(player_->currentTime());
-        if (pp_harvestChart) pp_harvestChart->setCurrentTime(player_->currentTime());
-        if (pp_storeChart) pp_storeChart->setCurrentTime(player_->currentTime());
-        if (pp_fuelChart) pp_fuelChart->setCurrentTime(player_->currentTime());
-        if (gforceChart_) gforceChart_->setCurrentTime(player_->currentTime());
-        if (rideHeightChart_) rideHeightChart_->setCurrentTime(player_->currentTime());
-        if (ov_tyreCharts_) ov_tyreCharts_->setCurrentTime(player_->currentTime());
-        if (playing != pbLastPlaying_) {
-            pb_playBtn_->setIcon(playPauseIcon(playing, this, palette().color(QPalette::Text)));
-            pbLastPlaying_ = playing;
-        }
-        if (total > 0.0f) {
-            seekerUpdating_ = true;
-            pb_slider_->setValue((int)(cur / total * 1000.0f));
-            seekerUpdating_ = false;
-        }
-        pb_timeLabel_->setText(fmtTime(cur) + " / " + fmtTime(total));
-        if (model_ && pb_lapCombo_) {
-            const LapBlock* currentLap = model_->data().lapAtTime(player_->currentTime());
-            if (currentLap) {
-                for (int i = 1; i < pb_lapCombo_->count(); ++i) {
-                    if (pb_lapCombo_->itemData(i).toFloat() == currentLap->startSessionTime) {
-                        if (pb_lapCombo_->currentIndex() != i) {
-                            pb_lapCombo_->blockSignals(true);
-                            pb_lapCombo_->setCurrentIndex(i);
-                            pb_lapCombo_->blockSignals(false);
-                        }
-                        break;
-                    }
-                }
-            } else {
-                if (pb_lapCombo_->currentIndex() != 0) {
-                    pb_lapCombo_->blockSignals(true);
-                    pb_lapCombo_->setCurrentIndex(0);
-                    pb_lapCombo_->blockSignals(false);
-                }
-            }
-        }
+    connect(playback_, &PlaybackController::timeChanged, this, [this](float t) {
+        if (overviewPage_) overviewPage_->setCurrentTime(t);
+        if (inputPage_) inputPage_->setCurrentTime(t);
+        if (powerPage_) powerPage_->setCurrentTime(t);
+        if (miscPage_) miscPage_->setCurrentTime(t);
     });
 
-    connect(player_, &TnrdPlayer::finished, this, [this] {
-        pb_playBtn_->setIcon(playPauseIcon(false, this, palette().color(QPalette::Text)));
-        pbLastPlaying_ = false;
-    });
-
-    connect(pb_seekBackBtn_, &QPushButton::clicked, this, [this] {
-        player_->seekToTime(player_->currentTime() - 5.0f);
-    });
-
-    connect(pb_playBtn_, &QPushButton::clicked, this, [this] {
-        if (player_->isPlaying()) player_->pause();
-        else player_->play();
-    });
-
-    connect(pb_seekFwdBtn_, &QPushButton::clicked, this, [this] {
-        player_->seekToTime(player_->currentTime() + 5.0f);
-    });
-
-    connect(pb_slider_, &QSlider::valueChanged, this, [this](int val) {
-        if (seekerUpdating_) return;
-        // Leading-edge throttle: the handle already tracks the cursor via setValue
-        // on every drag event, but the seek itself is heavy (per-row disk reads in
-        // the reader snapshot + JSON parse of the big 20-car rows). Running it on
-        // every mouse-move floods the UI thread and makes scrubbing lag, so cap it
-        // to ~10 Hz. The exact drop point is committed on sliderReleased. Mirrors
-        // the Electron scrub bar's 100 ms throttle + final seek on release.
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - lastSeekMs_ < 100) return;
-        lastSeekMs_ = now;
-        player_->seek(val / 1000.0f);
-    });
-
-    connect(pb_slider_, &QSlider::sliderReleased, this, [this] {
-        // Authoritative final seek: lands the playhead exactly where the drag ended,
-        // even if the last move fell inside a throttle window.
-        lastSeekMs_ = QDateTime::currentMSecsSinceEpoch();
-        player_->seek(pb_slider_->value() / 1000.0f);
-    });
-
-    connect(pb_speedCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
-        player_->setSpeed(pb_speedCombo_->itemData(idx).toFloat());
-    });
-
-    connect(pb_lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
-        if (idx > 0) {
-            float targetTime = pb_lapCombo_->itemData(idx).toFloat();
-            if (targetTime >= 0) {
-                player_->seekToTime(targetTime);
-            }
-        }
-    });
-
-    connect(closeRecBtn, &QPushButton::clicked, this, [this] {
-        player_->close();
+    connect(playback_, &PlaybackController::exited, this, [this] {
         inPlayback_ = false;
         hotSmoother_.reset();   // back to live: start the fill state fresh
         applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
-        resetSessionTimer();
-        if (model_) model_->clear();
-        if (chart) { chart->setPlaybackMode(false); chart->setMode(ChartMode::Default); }
-        if (gearChart_) gearChart_->setPlaybackMode(false);
-        if (inputsChart_) inputsChart_->setPlaybackMode(false);
-        if (steeringChart_) steeringChart_->setPlaybackMode(false);
-        if (gforceChart_) gforceChart_->setPlaybackMode(false);
-        if (rideHeightChart_) rideHeightChart_->setPlaybackMode(false);
-        if (ov_tyreCharts_) ov_tyreCharts_->setPlaybackMode(false);
-        if (ov_compareBtn_) ov_compareBtn_->setEnabled(false);
-        if (ov_defaultBtn_) ov_defaultBtn_->setChecked(true);
-        if (ov_lapCombo_) ov_lapCombo_->setVisible(false);
-        pb_sep_->hide();
-        pb_bar_->hide();
+        if (toolbar_) toolbar_->resetSessionTimer();
+        if (overviewPage_) overviewPage_->setPlaybackMode(false);
+        if (inputPage_) inputPage_->setPlaybackMode(false);
+        if (miscPage_) miscPage_->setPlaybackMode(false);
         setWindowTitle("Track N Race Background Recorder");
     });
 
@@ -858,124 +338,24 @@ MainWindow::MainWindow(QWidget* parent)
     hotFillTimer_->setInterval(hotSmoother_.periodMs());
     connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
     hotFillTimer_->start();
-
-    // The live/playback signals only refresh the data cache; refreshOverviewCards()
-    // then recomputes every visible card from it via the per-key resolvers.
-    connect(this, &MainWindow::telemetryUpdated,
-            this, [this](float speed, int rpm, int gear,
-                         float throttle, float brake, float steering, bool drs, int engineTemp, bool slm) {
-        ovCache_.speed = speed; ovCache_.rpm = rpm; ovCache_.gear = gear;
-        ovCache_.throttle = throttle; ovCache_.brake = brake;
-        ovCache_.drs = drs; ovCache_.slm = slm; ovCache_.engineTemp = engineTemp;
-        refreshOverviewCards();
-    });
-
-    connect(this, &MainWindow::statusUpdated,
-            this, [this](float ersPct, int ersMode, float fuelKg, float fuelLaps,
-                         int tyreCompound, int tyreAgeLaps, int fuelMix, int visualCompound) {
-        ovCache_.ersPct = ersPct; ovCache_.ersMode = ersMode;
-        ovCache_.fuelKg = fuelKg; ovCache_.fuelLaps = fuelLaps;
-        ovCache_.tyreCompound = tyreCompound; ovCache_.tyreAgeLaps = tyreAgeLaps;
-        ovCache_.fuelMix = fuelMix; ovCache_.visualCompound = visualCompound;
-        refreshOverviewCards();
-    });
-
-    connect(this, &MainWindow::lapUpdated,
-            this, [this](int pos, int lapNum) {
-        ovCache_.pos = pos; ovCache_.lapNum = lapNum;
-        refreshOverviewCards();
-    });
-
-    connect(this, &MainWindow::telemetryUpdated,
-            chart, [](float, int, int, float, float, float, bool, int, bool) {
-        // chart is updated directly from the SessionModel, not this signal
-    });
-
-    connect(this, &MainWindow::damageUpdated, this,
-        [this](int tfl, int tfr, int trl, int trr,
-               int bfl, int bfr, int brl, int brr,
-               int wfl, int wfr, int wr,
-               int fl, int sp, int diff, int gb, int eng,
-               int drsFault, int ersFault) {
-            setDmgValue(dmgTyreFl,   tfl); setDmgValue(dmgTyreFr,   tfr);
-            setDmgValue(dmgTyreRl,   trl); setDmgValue(dmgTyreRr,   trr);
-            setDmgValue(dmgBrakeFl,  bfl); setDmgValue(dmgBrakeFr,  bfr);
-            setDmgValue(dmgBrakeRl,  brl); setDmgValue(dmgBrakeRr,  brr);
-            setDmgValue(dmgWingFl,   wfl); setDmgValue(dmgWingFr,   wfr);
-            setDmgValue(dmgWingRear,  wr); setDmgValue(dmgFloor,     fl);
-            setDmgValue(dmgSidepod,   sp); setDmgValue(dmgDiffuser, diff);
-            setDmgValue(dmgGearbox,   gb); setDmgValue(dmgEngine,   eng);
-
-            ovCache_.drsFault = (drsFault == 1);
-            ovCache_.ersFault = (ersFault == 1);
-            refreshOverviewCards();
-        });
 }
 
-// Re-label the stat-card titles from the i18n catalog. Called on format change
-// so the wing card flips DRS ↔ SLM with the active game year.
-void MainWindow::refreshOverviewTitles() {
-    for (auto it = ovCardTitle_.cbegin(); it != ovCardTitle_.cend(); ++it) {
-        if (it.value()) it.value()->setText(tnr::L("ui.overview." + it.key()).toUpper());
-    }
+// Tyre view/graph settings used by the Settings dialog — the Overview page owns
+// the widgets and persistence.
+OverviewLayout::TyreView MainWindow::currentTyreView() {
+    return overviewPage_ ? overviewPage_->currentTyreView() : OverviewLayout::TyreCards;
 }
 
-// Recompute every built overview card's value + colour (+ optional sub) from the
-// data cache via the per-key resolvers. Colours come from the shared library spec
-// (tnr::cardColor), so thresholds match the Electron app exactly.
-void MainWindow::refreshOverviewCards() {
-    const OvCache& c = ovCache_;
-    static const char* FUEL_MIX[] = { "Lean", "Std", "Rich", "Max" };
+void MainWindow::setTyreView(OverviewLayout::TyreView v) {
+    if (overviewPage_) overviewPage_->setTyreView(v);
+}
 
-    auto setCard = [this](const QString& key, const QString& value, const QColor& color) {
-        if (QLabel* l = ovCardValue_.value(key)) {
-            l->setText(value);
-            l->setStyleSheet(tnr::cardColorStyle(color));
-        }
-    };
-    auto setSub = [this](const QString& key, const QString& sub, const QColor& subColor = QColor()) {
-        if (QLabel* l = ovCardSub_.value(key)) {
-            l->setText(sub);
-            l->setStyleSheet(subColor.isValid() ? QString("color: %1;").arg(subColor.name()) : QString());
-        }
-    };
+bool MainWindow::tyreGraphLifeMode() const {
+    return overviewPage_ ? overviewPage_->tyreGraphLifeMode() : true;
+}
 
-    setCard("speed", QString::number((int)c.speed), tnr::cardColor("speed"));
-    setCard("rpm",   QLocale().toString(c.rpm),     tnr::cardColor("rpm"));
-    setCard("gear",  c.gear <= 0 ? (c.gear < 0 ? QStringLiteral("R") : QStringLiteral("N"))
-                                 : QString::number(c.gear),
-            tnr::cardColor("gear", c.gear));
-    setCard("throttle", QString::number((int)(c.throttle * 100)), tnr::cardColor("throttle"));
-    setCard("brake",    QString::number((int)(c.brake * 100)),
-            tnr::cardColor("brake", NAN, { {"brake", c.brake} }));
-
-    // Wing card: data field is format-aware (drs in 2025, slm in 2026).
-    const bool wingOpen = (tnr::Labels::instance().t("card.wing.key") == "slm") ? c.slm : c.drs;
-    setCard("drs", wingOpen ? QStringLiteral("ON") : QStringLiteral("OFF"),
-            tnr::cardColor("wing", wingOpen ? 1 : 0));
-    setSub("drs", c.drsFault ? QStringLiteral("FAULT") : QString(),
-           c.drsFault ? QColor("#C4162A") : QColor());
-
-    setCard("engine", QString::number(c.engineTemp), tnr::cardColor("engine", c.engineTemp));
-
-    setCard("ers", QString::number((int)c.ersPct),
-            tnr::cardColor("ers", c.ersPct, { {"ers_mode", (double)c.ersMode}, {"ers_pct", c.ersPct} }));
-    if (c.ersFault)
-        setSub("ers", QStringLiteral("FAULT"), QColor("#C4162A"));
-    else
-        setSub("ers", (c.ersMode >= 0 && c.ersMode < 4) ? tnr::Ln("ers.mode", c.ersMode) : QString());
-
-    setCard("fuel", QString::number(c.fuelKg, 'f', 1),
-            tnr::cardColor("fuel", NAN, { {"fuel_laps", c.fuelLaps} }));
-    setSub("fuel", QString("%1%2 vs fin").arg(c.fuelLaps >= 0 ? "+" : "").arg(c.fuelLaps, 0, 'f', 1));
-
-    setCard("pos", "P" + QString::number(c.pos), QColor());
-    setSub("pos", "Lap " + QString::number(c.lapNum));
-
-    setCard("tyre", tyreLabel(c.tyreCompound),
-            tnr::cardColor("tyre", NAN, { {"visual_compound", (double)c.visualCompound} }));
-    setSub("tyre", QString("%1L · %2")
-        .arg(c.tyreAgeLaps).arg(c.fuelMix >= 0 && c.fuelMix < 4 ? FUEL_MIX[c.fuelMix] : ""));
+void MainWindow::setTyreGraphLifeMode(bool life) {
+    if (overviewPage_) overviewPage_->setTyreGraphLifeMode(life);
 }
 
 MainWindow::~MainWindow() {
@@ -991,7 +371,6 @@ void MainWindow::resizeEvent(QResizeEvent* e) {
         loadingOverlay_->setGeometry(container_->rect());
     // Keep any visible toasts pinned to the content area's top-right corner.
     Toast::updateAllPositions();
-    relayoutToolbar();   // collapse/expand toolbar items for the new width
 }
 
 void MainWindow::moveEvent(QMoveEvent* e) {
@@ -1024,11 +403,6 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
     // so this just no-ops there (minimize/hide still handled via changeEvent).
     if (obj == windowHandle() && e->type() == QEvent::Expose)
         updateRenderingState();
-    // Qt's QToolBarLayout re-shows its extension button whenever it thinks items
-    // overflow; hide it again every time so only our ⋯ overflow is ever seen.
-    if (obj == tb_extButton_ &&
-        (e->type() == QEvent::Show || e->type() == QEvent::ShowToParent))
-        tb_extButton_->hide();
     return QMainWindow::eventFilter(obj, e);
 }
 
@@ -1078,156 +452,20 @@ void MainWindow::setRenderingActive(bool on) {
         // emit rebuilds the charts from full history), wake the track map, and
         // rebuild the visible page from the dirty flags accumulated while paused.
         if (model_)    model_->setLiveFlushActive(true);
-        if (trackMap_) trackMap_->setRenderingActive(true);
+        if (sessionPage_) sessionPage_->setRenderingActive(true);
         flushUiRefresh();
     } else {
         // Pause: stop every timer-driven repaint. Data ingest (ingestForModel)
         // and the engine's UDP/recording path keep running so nothing is lost.
         if (uiRefreshTimer_) uiRefreshTimer_->stop();
         if (model_)    model_->setLiveFlushActive(false);
-        if (trackMap_) trackMap_->setRenderingActive(false);
-    }
-}
-
-void MainWindow::refreshThemedIcons() {
-    // The toolbar theme icons are tinted to the palette foreground (on Windows),
-    // so rebuild them whenever the palette changes to re-tint for the new mode.
-    if (openAct_)        openAct_->setIcon(openRecordingIcon(this));
-    if (editLayoutAct_)  editLayoutAct_->setIcon(editLayoutIcon(this));
-    if (settingsAct_)    settingsAct_->setIcon(settingsIcon(this));
-    if (tb_overflowBtn_) tb_overflowBtn_->setIcon(overflowIcon(this));
-}
-
-void MainWindow::applyChartWindow(int idx) {
-    if (idx < 0 || idx >= kWindowOptionCount) return;
-    tb_windowIdx_ = idx;
-    const float secs = kWindowOptions[idx].secs;
-    if (chart) chart->setWindowSeconds(secs);
-    if (gearChart_) gearChart_->setWindowSeconds(secs);
-    if (inputsChart_) inputsChart_->setWindowSeconds(secs);
-    if (steeringChart_) steeringChart_->setWindowSeconds(secs);
-    if (pp_splitChart) pp_splitChart->setWindowSeconds(secs);
-    if (pp_harvestChart) pp_harvestChart->setWindowSeconds(secs);
-    if (pp_storeChart) pp_storeChart->setWindowSeconds(secs);
-    if (pp_fuelChart) pp_fuelChart->setWindowSeconds(secs);
-    if (gforceChart_) gforceChart_->setWindowSeconds(secs);
-    if (rideHeightChart_) rideHeightChart_->setWindowSeconds(secs);
-    if (ov_tyreCharts_) ov_tyreCharts_->setWindowSeconds(secs);
-    // Keep the inline segment in sync when the choice came from the overflow menu
-    // (a programmatic setChecked emits idToggled, not idClicked, so no recursion).
-    if (tb_windowGroup_)
-        if (auto* b = tb_windowGroup_->button(idx))
-            if (!b->isChecked()) b->setChecked(true);
-}
-
-// Collapse low-priority toolbar items into the "⋯" menu when the window is too
-// narrow to fit everything, expanding them back as it widens. Order of collapse:
-// icon actions → window-size segment → page tabs (right-to-left, active tab kept).
-void MainWindow::relayoutToolbar() {
-    if (!toolbar_ || !tb_overflowAct_ || tb_pageButtons_.empty()) return;
-    const int avail = toolbar_->width();
-    if (avail <= 0) return;
-    const int spacing = toolbar_->layout() ? toolbar_->layout()->spacing() : 4;
-    const int n = (int)tb_pageButtons_.size();
-    // Deliberate slack so we always collapse a little EARLY rather than ever let the
-    // toolbar genuinely overflow. A real overflow makes Qt's (suppressed) extension
-    // button fight our event filter — show/hide/show — which is the flicker. Showing
-    // the ⋯ a few px sooner is harmless; oscillation is not.
-    constexpr int kSlack = 40;
-
-    auto actW = [&](QAction* a) -> int {
-        QWidget* w = a ? toolbar_->widgetForAction(a) : nullptr;
-        return w ? w->sizeHint().width() : 0;
-    };
-    auto setIconsVisible = [&](bool v) {
-        if (openAct_)        openAct_->setVisible(v);
-        if (editLayoutAct_)  editLayoutAct_->setVisible(v);
-        if (settingsAct_)    settingsAct_->setVisible(v);
-    };
-
-    // Pure arithmetic from stable sizeHints (tabs are fixed-width; the rest are
-    // content-sized and don't depend on the live layout), so the decision is
-    // deterministic — identical for a given width every call, no oscillation.
-    std::vector<int> tabW(n);
-    int sumTabs = 0;
-    for (int i = 0; i < n; ++i) { tabW[i] = tb_pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
-    const int wSeg   = tb_windowSeg_->sizeHint().width();
-    const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
-    const int wOver  = tb_overflowBtn_->sizeHint().width();
-    // The session timer lives inside the (otherwise collapsible) spacer, so the
-    // spacer can no longer shrink to 0 — it must always reserve the timer's width.
-    // The timer is persistent: it never collapses into the overflow menu, so this
-    // width stays in the inline budget throughout and is never subtracted off.
-    const int wTimer = (tb_timerLabel_ && tb_timerLabel_->isVisible())
-                           ? tb_timerLabel_->sizeHint().width() : 0;
-    // Inter-item gaps: 6 toolbar items (tab strip, spacer, seg, 3 icons) → 5 gaps,
-    // plus the tab strip's own gaps between its n buttons. The timer adds no gap of
-    // its own (it rides inside the spacer).
-    const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 5 + spacing * (n - 1);
-
-    if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
-        if (tb_windowAct_) tb_windowAct_->setVisible(true);
-        setIconsVisible(true);
-        for (auto* b : tb_pageButtons_) b->setVisible(true);
-        tb_overflowAct_->setVisible(false);
-        return;
-    }
-
-    // Need overflow. Collapse units (icons → window segment → tabs R→L, active tab
-    // kept) until inline content + ⋯ leaves at least kSlack of headroom.
-    tb_overflowAct_->setVisible(true);
-    const int budget = avail - wOver - spacing - kSlack;
-    int inlineW = needAll;
-    bool segIn = true, iconsIn = true;
-    std::vector<bool> tabIn(n, true);
-    if (inlineW > budget && iconsIn) { iconsIn = false; inlineW -= wIcons + spacing; }
-    if (inlineW > budget && segIn)   { segIn   = false; inlineW -= wSeg + spacing; }
-    for (int i = n - 1; i >= 0 && inlineW > budget; --i) {
-        if (i == currentPage_) continue;          // always keep the active tab inline
-        tabIn[i] = false;
-        inlineW -= tabW[i] + spacing;
-    }
-
-    if (tb_windowAct_) tb_windowAct_->setVisible(segIn);
-    setIconsVisible(iconsIn);
-    for (int i = 0; i < n; ++i) tb_pageButtons_[i]->setVisible(tabIn[i]);
-
-    // Rebuild the overflow menu from whatever collapsed.
-    tb_overflowMenu_->clear();
-    for (int i = 0; i < n; ++i) {
-        if (tabIn[i]) continue;
-        // Tabs are navigation, not state — render as plain buttons (no checkbox).
-        QAction* a = tb_overflowMenu_->addAction(tb_pageButtons_[i]->text());
-        connect(a, &QAction::triggered, this, [this, i] {
-            if (tb_pageGroup_) if (auto* b = tb_pageGroup_->button(i)) b->click();
-        });
-    }
-    if (!segIn) {
-        tb_overflowMenu_->addSection("Chart Window");
-        for (int i = 0; i < kWindowOptionCount; ++i) {
-            QAction* a = tb_overflowMenu_->addAction(kWindowOptions[i].label);
-            a->setCheckable(true);
-            a->setChecked(i == tb_windowIdx_);
-            connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
-        }
-    }
-    if (!iconsIn) {
-        tb_overflowMenu_->addSeparator();
-        QAction* mo = tb_overflowMenu_->addAction(openRecordingIcon(this), "Open Recording");
-        connect(mo, &QAction::triggered, openAct_, &QAction::trigger);
-        QAction* me = tb_overflowMenu_->addAction(editLayoutIcon(this), "Edit Layout");
-        me->setEnabled(editLayoutAct_ && editLayoutAct_->isEnabled());
-        connect(me, &QAction::triggered, editLayoutAct_, &QAction::trigger);
-        QAction* ms = tb_overflowMenu_->addAction(settingsIcon(this), "Settings");
-        connect(ms, &QAction::triggered, settingsAct_, &QAction::trigger);
+        if (sessionPage_) sessionPage_->setRenderingActive(false);
     }
 }
 
 void MainWindow::changeEvent(QEvent* e) {
     QMainWindow::changeEvent(e);
-    if (e->type() == QEvent::ApplicationPaletteChange || e->type() == QEvent::PaletteChange)
-        refreshThemedIcons();
-    else if (e->type() == QEvent::WindowStateChange) {
+    if (e->type() == QEvent::WindowStateChange) {
         auto* se = static_cast<QWindowStateChangeEvent*>(e);
         const bool wasMaximized = se->oldState() & Qt::WindowMaximized;
         const bool nowMaximized = isMaximized();
@@ -1249,26 +487,6 @@ void MainWindow::changeEvent(QEvent* e) {
         }
         updateRenderingState();            // minimize/restore toggles rendering
     }
-}
-
-void MainWindow::updateToolbarColorScheme() {
-    if (!toolbar_) return;
-    // The toolbar sits on the palette's Button shade (a touch lighter than the
-    // window) with a hairline bottom border separating it from the page content
-    // below — the same divider style as the tab-bar/pane seam in the Settings
-    // window. The border colour is ~30% of the way from the window colour toward
-    // the text colour so it stays visible in both light and dark themes; it's
-    // recomputed here so it re-themes when the colour scheme changes.
-    // (background: palette(button) already neutralises Breeze's OS-scheme "tools
-    // area" tint unconditionally, so no style/mode-specific branch is needed.)
-    const QColor win = QApplication::palette().color(QPalette::Window);
-    const QColor txt = QApplication::palette().color(QPalette::WindowText);
-    const QColor borderCol((win.red()   * 7 + txt.red()   * 3) / 10,
-                           (win.green() * 7 + txt.green() * 3) / 10,
-                           (win.blue()  * 7 + txt.blue()  * 3) / 10);
-    toolbar_->setStyleSheet(QString(
-        "QToolBar { border: none; border-bottom: 1px solid %1;"
-        " margin: 0px; padding: 0px; background: palette(button); }").arg(borderCol.name()));
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────
@@ -1310,7 +528,7 @@ void MainWindow::setTheme(const QString& theme) {
         applyBreezePalette(theme);
     // Re-evaluate whether the toolbar needs the window-colour override for the new
     // mode (forced light/dark over an opposite OS scheme).
-    updateToolbarColorScheme();
+    if (toolbar_) toolbar_->updateColorScheme();
 }
 
 void MainWindow::setStyleName(const QString& name) {
@@ -1347,13 +565,12 @@ void MainWindow::setStyleName(const QString& name) {
         applyBreezeIconTheme();
     }
     // The toolbar override only applies under Breeze, so re-evaluate on style change.
-    updateToolbarColorScheme();
+    if (toolbar_) toolbar_->updateColorScheme();
 }
 
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
-    if (toolbar_) toolbar_->setToolButtonStyle(checked ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
-    relayoutToolbar();   // text-beside-icon changes the icon-action widths
+    if (toolbar_) toolbar_->setShowLabels(checked);
 }
 
 void MainWindow::setContrastThreshold(float val) {
@@ -1364,24 +581,27 @@ void MainWindow::setContrastThreshold(float val) {
 
 void MainWindow::setTrackMapLabelMode(int mode) {
     settings.setValue("ui/trackMapLabelMode", mode);
-    if (trackMap_) {
-        trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(mode));
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr) {
+        map->setLabelMode(static_cast<TrackMapWidget::LabelMode>(mode));
     }
 }
 
 void MainWindow::setTrackMapSectorColors(bool on) {
     settings.setValue("ui/trackMapSectorColors", on);
-    if (trackMap_) trackMap_->setSectorColors(on);
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
+        map->setSectorColors(on);
 }
 
 void MainWindow::setTrackMapOpacity(int pct) {
     settings.setValue("ui/trackMapOpacity", pct);
-    if (trackMap_) trackMap_->setMapOpacity(pct / 100.0);
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
+        map->setMapOpacity(pct / 100.0);
 }
 
 void MainWindow::setTrackMapIdleTimeout(int secs) {
     settings.setValue("ui/trackMapIdleTimeout", secs);
-    if (trackMap_) trackMap_->setIdleTimeout(secs);
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
+        map->setIdleTimeout(secs);
 }
 
 void MainWindow::setProtocolOverride(const QString& ovr) {
@@ -1428,8 +648,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         if (row.contains("active_format") && row["active_format"].is_number()) {
             const uint16_t fmt = row["active_format"].get<uint16_t>();
             tnr::Labels::instance().setFormat(fmt);
-            refreshOverviewTitles();   // re-label all stat cards (wing flips DRS↔SLM)
-            if (pp_harvestChart) pp_harvestChart->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
+            if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
         }
         return;
     }
@@ -1476,53 +696,24 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
     const std::string type = row["type"].get<std::string>();
     // Every packet carries the header session_time; drive the toolbar timer from it.
     if (row.contains("session_time"))
-        updateSessionTimer(row["session_time"].get<float>());
+        if (toolbar_) toolbar_->updateSessionTimer(row["session_time"].get<float>());
     if (type == "telemetry") {
-        emit telemetryUpdated(
-            row["speed_kph"].get<float>(),
-            row["rpm"].get<int>(),
-            row["gear"].get<int>(),
-            row["throttle"].get<float>(),
-            row["brake"].get<float>(),
-            row.value("steering", 0.0f),
-            row.value("drs", 0) != 0,
-            row.value("engine_temp", 0),
-            row.value("slm", 0) != 0
-        );
+        if (overviewPage_) overviewPage_->onTelemetry(row);
         lastPlayerTelemetryData = row;
         dirtyTyres_ = true; scheduleUiRefresh();
     } else if (type == "status") {
-        emit statusUpdated(
-            row["ers_pct"].get<float>(),
-            row["ers_mode"].get<int>(),
-            row["fuel_kg"].get<float>(),
-            row["fuel_laps"].get<float>(),
-            row["tyre_compound"].get<int>(),
-            row["tyre_age_laps"].get<int>(),
-            row.value("fuel_mix", 0),
-            row.value("visual_compound", 0)
-        );
+        if (overviewPage_) overviewPage_->onStatus(row);
         lastPlayerStatusData = row;
         dirtyRacePanel_ = true; dirtyPower_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "damage") {
-        emit damageUpdated(
-            row.value("tyre_dmg_fl",   0), row.value("tyre_dmg_fr",   0),
-            row.value("tyre_dmg_rl",   0), row.value("tyre_dmg_rr",   0),
-            row.value("brake_dmg_fl",  0), row.value("brake_dmg_fr",  0),
-            row.value("brake_dmg_rl",  0), row.value("brake_dmg_rr",  0),
-            row.value("wing_fl",           0), row.value("wing_fr",           0),
-            row.value("wing_rear",         0), row.value("floor_damage",      0),
-            row.value("sidepod_damage",    0), row.value("diffuser_damage",   0),
-            row.value("gearbox_damage",    0), row.value("engine_damage",     0),
-            row.value("drs_fault",         0), row.value("ers_fault",         0)
-        );
+        if (overviewPage_) overviewPage_->onDamage(row);
         lastPlayerDamageData = row;
         dirtyTyres_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "tyre_sets") {
         lastTyreSetsData = row;
         dirtyTyreSets_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "lap") {
-        emit lapUpdated(row["position"].get<int>(), row["lap_num"].get<int>());
+        if (overviewPage_) overviewPage_->onLap(row);
         lastPlayerLapData = row;
         dirtyRacePanel_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "positions") {
@@ -1539,25 +730,24 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         scSuppressOnce_ = false;
         if (!suppress && sc != lastSafetyCarStatus_) {
             if (auto spec = safetyCarToast(lastSafetyCarStatus_, sc)) {
-                showToast(*spec);
-            } else if (sc == 0 && m_persistentToast_) {
-                m_persistentToast_->hide();
-                m_persistentToast_ = nullptr;
+                toasts_->show(*spec);
+            } else if (sc == 0) {
+                toasts_->dismissPersistent();
             }
         }
         lastSafetyCarStatus_ = sc;
         dirtySession_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "race_event") {
         if (row.value("code", "") == "SSTA") {
-            sessionEventLog.clear();
-            resetFastestLapState();
+            if (sessionPage_) sessionPage_->clearEvents();
+            if (standingsPage_) standingsPage_->resetForNewSession();
             if (strategyPage_) strategyPage_->resetForNewSession();
             lastSafetyCarStatus_ = 0;
         }
-        sessionEventLog.push_back(row);
+        if (sessionPage_) sessionPage_->addEvent(row);
         // Transient notification for the event, both live and during playback.
         // race_events are never replayed on seek, so scrubbing won't re-fire them.
-        if (auto spec = buildToast(row, lastParticipantsData)) showToast(*spec);
+        if (auto spec = buildToast(row, lastParticipantsData)) toasts_->show(*spec);
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (type == "timing") {
         lastTimingData = row;
@@ -1569,31 +759,14 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         lastAllStatusData = row;
         dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (type == "fastest_lap") {
-        fastestLapCarIdx_ = row.value("car_idx", -1);
-        fastestLapSet_ = true;
+        if (standingsPage_) standingsPage_->noteFastestLap(row.value("car_idx", -1));
         dirtyTiming_ = true; scheduleUiRefresh();
     } else if (type == "session_history_fastest") {
-        if (!fastestLapSet_) {
-            int carIdx = row.value("car_idx", -1);
-            int ms = row.value("best_lap_time_ms", 0);
-            sessionHistoryBest_[carIdx] = ms;
-            int minMs = std::numeric_limits<int>::max();
-            int minIdx = -1;
-            for (const auto& kv : sessionHistoryBest_) {
-                if (kv.second < minMs) { minMs = kv.second; minIdx = kv.first; }
-            }
-            if (fastestLapCarIdx_ != minIdx) {
-                fastestLapCarIdx_ = minIdx;
-                dirtyTiming_ = true; scheduleUiRefresh();
-            }
+        if (standingsPage_ && standingsPage_->noteSessionHistoryFastest(
+                row.value("car_idx", -1), row.value("best_lap_time_ms", 0))) {
+            dirtyTiming_ = true; scheduleUiRefresh();
         }
     }
-}
-
-void MainWindow::resetFastestLapState() {
-    fastestLapCarIdx_ = -1;
-    fastestLapSet_ = false;
-    sessionHistoryBest_.clear();
 }
 
 QWidget* MainWindow::buildStrategyPage() {
@@ -1615,89 +788,11 @@ void MainWindow::updateStrategyPage() {
                           lastTyreSetsData, lastAllStatusData, lapTimesByNum);
 }
 
-void MainWindow::showToast(const ToastSpec& spec) {
-    if (!settings.value("ui/toastsEnabled", true).toBool()) return;
-
-    // Evict the current persistent toast (SC/VSC/FL) when the incoming event
-    // takes over that slot — either by replacing it with a new persistent toast,
-    // or by an ending event (Track Clear, Red Flag) that occupies then auto-dismisses.
-    if ((spec.persistent || spec.dismissesPersistent) && m_persistentToast_) {
-        m_persistentToast_->hide();
-        m_persistentToast_ = nullptr;
-    }
-
-    // ToolTipBase reads as a raised card distinct from the page background; the
-    // per-event accent drives the title, secondary text for the sub line.
-    const QColor bg  = palette().color(QPalette::ToolTipBase);
-    const QColor sub = palette().color(QPalette::PlaceholderText);
-
-    // Parented to the central content widget so the toast renders inline (a child
-    // overlay), not as its own window — required for correct positioning on Wayland.
-    Toast* t = new Toast(container_);
-    t->setShowIcon(false);
-    t->setShowIconSeparator(false);
-    t->setShowCloseButton(spec.persistent); // persistent toasts need manual dismissal
-    t->setShowDurationBar(false);   // no countdown bar
-    t->setFixedWidth(250);          // uniform width across all toasts (long text wraps)
-    t->setBorderRadius(3);
-    t->setDuration(spec.persistent ? 0 : settings.value("ui/bannerDuration", 3).toInt() * 1000);
-    if (spec.persistent) {
-        // The vendor's icon assets aren't bundled, so draw the × inline.
-        // recolorImage() preserves alpha, so white-on-transparent gets tinted correctly.
-        QPixmap closePix(10, 10);
-        closePix.fill(Qt::transparent);
-        QPainter painter(&closePix);
-        painter.setPen(QPen(Qt::white, 1.5, Qt::SolidLine, Qt::RoundCap));
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.drawLine(2, 2, 8, 8);
-        painter.drawLine(8, 2, 2, 8);
-        painter.end();
-        t->setCloseButtonIcon(closePix);
-        t->setCloseButtonIconColor(sub);
-
-        m_persistentToast_ = t;
-        connect(t, &Toast::closed, this, [this, t]() {
-            if (m_persistentToast_ == t) m_persistentToast_ = nullptr;
-        });
-    }
-    t->setBackgroundColor(bg);
-    t->setTitle(spec.label);
-    t->setTitleColor(spec.color);
-    if (!spec.sub.isEmpty()) {
-        t->setText(spec.sub);
-        t->setTextColor(sub);
-    }
-    t->show();
-}
-
-// Toolbar session timer. `sessionTime` is the header session_time carried on
-// every packet (live UDP and playback): elapsed seconds since session start.
-// Formatted M:SS to mirror the Electron titlebar timer. Guarded on the whole
-// second so a burst of same-frame packets doesn't re-set the label needlessly.
-void MainWindow::updateSessionTimer(float sessionTime) {
-    if (!tb_timerLabel_ || sessionTime < 0.0f) return;
-    const int total = (int)sessionTime;
-    if (total == tb_timerSec_ && tb_timerLabel_->isVisible()) return;
-    tb_timerSec_ = total;
-    tb_timerLabel_->setText(QString("%1:%2")
-                                .arg(total / 60)
-                                .arg(total % 60, 2, 10, QLatin1Char('0')));
-    if (!tb_timerLabel_->isVisible()) tb_timerLabel_->show();
-    // The label's footprint changed if it just appeared or grew a digit
-    // (e.g. 9:59 → 10:00). Re-run the responsive layout so the reserved timer
-    // width stays correct and the toolbar never overflows.
-    const int w = tb_timerLabel_->sizeHint().width();
-    if (w != tb_timerW_) { tb_timerW_ = w; relayoutToolbar(); }
-}
-
-void MainWindow::resetSessionTimer() {
-    tb_timerSec_ = -1;
-    tb_timerW_   = 0;
-    if (tb_timerLabel_) {
-        tb_timerLabel_->clear();
-        tb_timerLabel_->hide();
-        relayoutToolbar();   // reclaim the freed width for the inline items
-    }
+// The Overview and Tyres pages show the same per-corner tyre cards, refreshed
+// together off the single dirtyTyres_ flag so neither goes stale while hidden.
+void MainWindow::updateTyreCards() {
+    if (tyresPage_) tyresPage_->updateTyreCards(lastPlayerTelemetryData, lastPlayerDamageData);
+    if (overviewPage_) overviewPage_->updateTyreCards(lastPlayerTelemetryData, lastPlayerDamageData);
 }
 
 void MainWindow::scheduleUiRefresh() {
@@ -1715,27 +810,27 @@ void MainWindow::flushUiRefresh() {
     // animations on the shared UI thread.
     switch (currentPage_) {
         case Overview:
-            if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
+            if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
             break;
         case Standings:
-            if (dirtyTiming_)    { updateTimingTable();     dirtyTiming_    = false; }
-            if (dirtyRacePanel_) { updateRacePanel();       dirtyRacePanel_ = false; }
+            if (dirtyTiming_)    { standingsPage_->updateTimingTable(lastTimingData, lastParticipantsData, lastAllStatusData); dirtyTiming_ = false; }
+            if (dirtyRacePanel_) { standingsPage_->updateRacePanel(lastTimingData, lastParticipantsData, lastPlayerLapData, lastPlayerStatusData, lastAllStatusData); dirtyRacePanel_ = false; }
             break;
         case Session:
-            if (dirtyProximity_) { updateProximityWidget(); dirtyProximity_ = false; }
-            if (dirtySession_)   { updateSessionPage();      dirtySession_   = false; }
-            if (dirtyEvents_)    { updateSessionEvents();    dirtyEvents_    = false; }
-            if (dirtyTrackMap_)  { updateTrackMapPage();     dirtyTrackMap_  = false; }
+            if (dirtyProximity_) { sessionPage_->updateProximity(lastTimingData, lastParticipantsData); dirtyProximity_ = false; }
+            if (dirtySession_)   { sessionPage_->updateSession(lastSessionData, lastTimingData);        dirtySession_   = false; }
+            if (dirtyEvents_)    { sessionPage_->updateEvents(lastParticipantsData);                    dirtyEvents_    = false; }
+            if (dirtyTrackMap_)  { sessionPage_->updateTrackMap(lastSessionData, lastParticipantsData, lastPositionsData); dirtyTrackMap_ = false; }
             break;
         case Tyres:
-            if (dirtyTyres_)     { updateTyresPage();        dirtyTyres_     = false; }
-            if (dirtyTyreSets_)  { updateTyreSetsTable();    dirtyTyreSets_  = false; }
+            if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
+            if (dirtyTyreSets_)  { if (tyresPage_) tyresPage_->updateTyreSets(lastTyreSetsData); dirtyTyreSets_ = false; }
             break;
         case Strategy:
             if (dirtyStrategy_)  { updateStrategyPage();     dirtyStrategy_  = false; }
             break;
         case Power:
-            if (dirtyPower_)     { updatePowerPage();        dirtyPower_     = false; }
+            if (dirtyPower_)     { if (powerPage_) powerPage_->update(lastPlayerStatusData); dirtyPower_ = false; }
             break;
         default:
             break;
