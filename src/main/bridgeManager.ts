@@ -19,6 +19,14 @@ let lastStatus: { override: ProtocolOverride; detected: number | null; active: n
 // requestStatus() below.
 let lastStatusRow: Record<string, unknown> | null = null
 
+// Whether the renderer is currently visible (driven by the renderer's
+// document.visibilityState via the page-visibility IPC). When it's
+// hidden/minimized/occluded, Chromium background-throttles it, so continuing to
+// push 60Hz telemetry just buffers in the IPC channel and janks hard on refocus.
+// We pause forwarding the hot channels while hidden; the engine/recording keep
+// running unaffected.
+let rendererVisible = true
+
 let engine: any = null
 let unsubLogging: Array<() => void> = []
 
@@ -34,9 +42,11 @@ let binFlushTimer: NodeJS.Timeout | null = null
 const smoother = new HotRowSmoother()
 
 function flushBinary(): void {
+  // Always drain the smoother (so binPending can't grow unbounded while hidden),
+  // but only forward to a visible renderer.
   const batch = smoother.tick(binPending)
   binPending = []
-  if (batch) {
+  if (batch && rendererVisible) {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
     }
@@ -131,8 +141,14 @@ export function startBridge(): void {
     }
     
     engine = new addon.Engine(config, (batch: string) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
+      // Skip forwarding to a hidden renderer; playback delivers hot rows through
+      // this channel too, so it's a high-volume path worth gating. The
+      // protocol_status handling below still runs so the cache stays current and
+      // is re-pushed on refocus (see setRendererVisible).
+      if (rendererVisible) {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
+        }
       }
 
       if (batch.includes('"type":"protocol_status"')) {
@@ -193,6 +209,19 @@ export function setOverride(value: ProtocolOverride): void {
 export function requestStatus(): void {
   if (lastStatusRow) broadcast(lastStatusRow)
 }
+
+// Renderer visibility gate: pause the hot telemetry channels while the window is
+// hidden/minimized/occluded so a background-throttled renderer doesn't buffer a
+// backlog that janks on refocus. On becoming visible again, re-push the cached
+// protocol_status so labels/colours are current even if the format changed while
+// paused (the hot rows resume on their own from the next packet).
+export function setRendererVisible(visible: boolean): void {
+  const wasVisible = rendererVisible
+  rendererVisible = visible
+  if (visible && !wasVisible && lastStatusRow) broadcast(lastStatusRow)
+}
+
+export function isRendererVisible(): boolean { return rendererVisible }
 
 export function getProtocolConfig(): {
   override: ProtocolOverride; detected: number | null; lastDetected: number | null; active: number | null

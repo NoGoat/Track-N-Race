@@ -10,7 +10,9 @@ import {
   startBridge,
   stopBridge,
   getProtocolConfig,
-  requestStatus
+  requestStatus,
+  setRendererVisible,
+  isRendererVisible
 } from './bridgeManager'
 import {
   loadFile as playerLoad,
@@ -123,6 +125,11 @@ export function broadcastToWindows(row: Record<string, unknown>): void {
 }
 
 export function broadcastBatchToWindows(batchStr: string): void {
+  // Playback's high-volume hot-row batch: skip while the renderer is hidden so it
+  // doesn't buffer a backlog (playback keeps advancing; it resumes at the current
+  // position on refocus). Control/state rows go via broadcastToWindows and are
+  // never gated.
+  if (!isRendererVisible()) return
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batchStr)
   }
@@ -162,7 +169,11 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
   return openTelemetryFile(filePath)
 })
 
-ipcMain.on('page-visibility', () => { /* bridge plays regardless of window focus */ })
+// Pause forwarding the hot telemetry channels while the renderer is
+// hidden/minimized/occluded (playback/recording keep running); resume on
+// refocus. Prevents a background-throttled renderer from buffering an IPC
+// backlog that janks badly when brought back to focus.
+ipcMain.on('page-visibility', (_e, visible: boolean) => setRendererVisible(visible))
 ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
