@@ -72,5 +72,13 @@ private:
     TrackMapWidget* trackMap_   = nullptr;
     int             mapTrackId_ = -1;   // last track loaded into the map widget
 
+    // Fullscreen map: hide every sibling of the map so it fills the session view,
+    // mirroring the Electron app's maximised map. Toggled from the map's overlay
+    // button; mapFsHide_ holds the widgets (header, stats, weather, sidebar and
+    // their separators) that are hidden while fullscreen.
+    void setMapFullscreen(bool on);
+    std::vector<QWidget*> mapFsHide_;
+    bool                  mapFullscreen_ = false;
+
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

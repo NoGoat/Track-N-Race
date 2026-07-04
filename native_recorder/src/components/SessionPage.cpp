@@ -355,8 +355,9 @@ SessionPage::SessionPage(QWidget* parent)
     hh->addWidget(tmBlock);
 
     root->addWidget(hdr);
+    mapFsHide_.push_back(hdr);
 
-    root->addWidget(tnrui::hline());
+    { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
 
     // ── Stat cards ───────────────────────────────────────────────
     QWidget* statsRow = new QWidget;
@@ -412,8 +413,9 @@ SessionPage::SessionPage(QWidget* parent)
     sh->addWidget(makeStatCard("timeOfDay", "TIME OF DAY",  sp_timeOfDay),                      1);
 
     root->addWidget(statsRow);
+    mapFsHide_.push_back(statsRow);
 
-    root->addWidget(tnrui::hline());
+    { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
 
     // ── Content ──────────────────────────────────────────────────
     QWidget* content = new QWidget;
@@ -430,12 +432,15 @@ SessionPage::SessionPage(QWidget* parent)
     // Live track map fills the central area.
     trackMap_ = new TrackMapWidget;
     lv->addWidget(trackMap_, 1);
+    connect(trackMap_, &TrackMapWidget::fullscreenToggled, this,
+            [this]{ setMapFullscreen(!mapFullscreen_); });
 
     // Weather strip pinned to bottom
-    lv->addWidget(tnrui::hline());
+    { QWidget* hl = tnrui::hline(); lv->addWidget(hl); mapFsHide_.push_back(hl); }
 
     QWidget* weatherStrip = new QWidget;
     weatherStrip->setFixedHeight(92);
+    mapFsHide_.push_back(weatherStrip);
     QHBoxLayout* wh = new QHBoxLayout(weatherStrip);
     // No outer padding: the inter-card vlines are children of this layout, so any
     // top/bottom margin here would inset them and leave a gap to the strip's
@@ -531,11 +536,12 @@ SessionPage::SessionPage(QWidget* parent)
     ch->addWidget(leftArea, 1);
 
     // VLine between map and right panel
-    ch->addWidget(tnrui::vline());
+    { QWidget* vl = tnrui::vline(); ch->addWidget(vl); mapFsHide_.push_back(vl); }
 
     // ── Right panel: Proximity + Events ──────────────────────────
     QWidget* rightPanel = new QWidget;
     rightPanel->setFixedWidth(240);
+    mapFsHide_.push_back(rightPanel);
     QVBoxLayout* rv = new QVBoxLayout(rightPanel);
     rv->setContentsMargins(0, 0, 0, 0);
     rv->setSpacing(6);
@@ -977,4 +983,14 @@ void SessionPage::updateTrackMap(const nlohmann::json& session,
         trackMap_->setParticipants(participants);
     if (!positions.empty())
         trackMap_->setPositions(positions);
+}
+
+void SessionPage::setMapFullscreen(bool on) {
+    if (mapFullscreen_ == on) return;
+    mapFullscreen_ = on;
+    // Hide every sibling so the map's left area (and the map within it) expands to
+    // fill the whole session view; restore them on exit.
+    for (QWidget* w : mapFsHide_)
+        if (w) w->setVisible(!on);
+    if (trackMap_) trackMap_->setFullscreenState(on);
 }

@@ -229,7 +229,28 @@ TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
         positionControls();
     });
 
+    // Fullscreen toggle (rightmost overlay control). The host maximises/restores
+    // the map; we just relay the click and reflect the state on the icon. Left
+    // unstyled so it takes the native OS/Breeze tool-button appearance — only the
+    // icon is set.
+    fsButton_ = new QToolButton(this);
+    connect(fsButton_, &QToolButton::clicked, this, [this]{ emit fullscreenToggled(); });
+    setFullscreenState(false);   // initial (maximise) icon
+
     positionControls();
+}
+
+void TrackMapWidget::setFullscreenState(bool on) {
+    isFullscreen_ = on;
+    if (!fsButton_) return;
+    const QColor tint = palette().color(QPalette::WindowText);
+    // Prefer the bundled Breeze glyphs, falling back to the style's title-bar icons.
+    fsButton_->setIcon(on
+        ? adaptThemeIcon(QIcon::fromTheme("view-restore"),
+                         tint, style()->standardIcon(QStyle::SP_TitleBarNormalButton))
+        : adaptThemeIcon(QIcon::fromTheme("view-fullscreen"),
+                         tint, style()->standardIcon(QStyle::SP_TitleBarMaxButton)));
+    fsButton_->setToolTip(on ? "Exit Fullscreen" : "Fullscreen");
 }
 
 // ── Track loading ──────────────────────────────────────────────────────────
@@ -786,13 +807,23 @@ void TrackMapWidget::positionControls() {
         maxNameWidth = std::max(maxNameWidth, fm.horizontalAdvance(driverCombo_->itemText(i)));
     }
     
-    // As requested: the widest name + 32px for the clear icon 
+    // As requested: the widest name + 32px for the clear icon
     // (+ 32px for the native dropdown arrow and borders)
     const int dw = std::max(120, maxNameWidth + 32 + 32);
     driverCombo_->setFixedWidth(dw);
-    
+
+    const int ctrlH = driverCombo_->sizeHint().height();
     int currentX = width() - margin;
-    
+
+    // Fullscreen toggle: rightmost, square, aligned with the combos.
+    if (fsButton_) {
+        fsButton_->setFixedSize(ctrlH, ctrlH);
+        currentX -= ctrlH;
+        fsButton_->move(currentX, margin);
+        fsButton_->raise();
+        currentX -= gap;
+    }
+
     currentX -= dw;
     driverCombo_->move(currentX, margin);
     driverCombo_->raise();

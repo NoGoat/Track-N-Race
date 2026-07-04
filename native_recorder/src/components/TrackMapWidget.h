@@ -10,6 +10,7 @@
 
 class QTimer;
 class QComboBox;
+class QToolButton;
 
 // Live track map: renders a circuit outline (sector-colored) with live car dots
 // + driver labels. Mirrors the Electron TrackMap. The static circuit geometry is
@@ -40,6 +41,15 @@ public:
     // hidden/minimized/occluded). The 60fps animation timer runs only when the
     // widget is both shown and rendering is active.
     void setRenderingActive(bool on);
+
+    // Reflects the host's fullscreen state on the overlay toggle button (swaps the
+    // maximise ↔ restore icon). The actual layout change is the host's job.
+    void setFullscreenState(bool on);
+
+signals:
+    // The overlay fullscreen button was clicked; the host (SessionPage) maximises
+    // the map to fill the session view, or restores it.
+    void fullscreenToggled();
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -122,8 +132,10 @@ private:
     bool          renderingActive_ = true;  // false when the app window is hidden/minimized/occluded
 
     // ── Follow-driver camera + zoom + labels ──────────────────────────────
-    QComboBox* driverCombo_ = nullptr;   // "Follow driver…"
-    QComboBox* zoomCombo_   = nullptr;   // 2x / 4x / 8x / 16x
+    QComboBox*   driverCombo_ = nullptr;   // "Follow driver…"
+    QComboBox*   zoomCombo_   = nullptr;   // 2x / 4x / 8x / 16x
+    QToolButton* fsButton_    = nullptr;   // maximise / restore the map
+    bool         isFullscreen_ = false;    // host fullscreen state (drives the icon)
     int        selectedDriverIdx_ = -1;  // -1 = no follow
     double     zoomLevel_ = 4.0;
     LabelMode  labelMode_ = LabelMode::DotsAndLabels;
