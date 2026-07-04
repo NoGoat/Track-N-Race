@@ -86,7 +86,7 @@ struct StintTarget {
 
 struct WearWarning { QString text, detail; QColor color; int priority = 3; };
 
-// LapRow / PastStint / DisplayStint live in the header (cached as members).
+// StrategyLapRow / PastStint / DisplayStint live in the header (cached as members).
 
 struct TimingCar {
     int idx = -1, position = 0, driver_status = 0, result_status = 0, pit_status = 0;
@@ -709,7 +709,7 @@ static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool 
     // Per-lap target table for this stint. Native OS styling — only the delta
     // cells get a colour (red slower / green faster).
     if (!st.rows.empty()) {
-        const std::vector<LapRow>& rows = st.rows;
+        const std::vector<StrategyLapRow>& rows = st.rows;
         const QStringList heads{"LAP", "REQ", "ADJ REQ", "ACTUAL", "Δ LAP", "Δ STINT", "Δ TOTAL"};
 
         auto* tbl = new QTableWidget((int)rows.size(), (int)heads.size());
@@ -733,7 +733,7 @@ static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool 
         // mirroring the Standings fastest-lap highlight (~15% translucent fill).
         const QColor pitTint(kGreen.red(), kGreen.green(), kGreen.blue(), 38);
         for (int r = 0; r < (int)rows.size(); ++r) {
-            const LapRow& lr = rows[r];
+            const StrategyLapRow& lr = rows[r];
             const bool isPitRow = !st.isLast && lr.lapNum == st.endLap;
             auto cell = [&](const QString& txt) {
                 auto* it = new QTableWidgetItem(txt);
@@ -772,7 +772,7 @@ static QWidget* buildStintGroup(const QColor& sec, const DisplayStint& st, bool 
 // reconciler: a stint whose display is unchanged keeps its existing widget rather
 // than being torn down and rebuilt. Values are recomputed deterministically from
 // the same integer-ms inputs, so identical content compares equal exactly.
-static bool sameRow(const LapRow& a, const LapRow& b) {
+static bool sameRow(const StrategyLapRow& a, const StrategyLapRow& b) {
     return a.lapNum == b.lapNum && a.requiredMs == b.requiredMs &&
            a.actualRequiredMs == b.actualRequiredMs && a.actualMs == b.actualMs &&
            a.deltaLapMs == b.deltaLapMs && a.deltaStintMs == b.deltaStintMs &&
@@ -1180,10 +1180,10 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
 
     auto computeRows = [&](int start, int end, double base, bool postPit, bool prePit,
                            double& raceCum) {
-        std::vector<LapRow> rows;
+        std::vector<StrategyLapRow> rows;
         double cum = 0.0;   // cumulative delta over stint, through the previous lap
         for (int n = start; n > 0 && n <= end; ++n) {
-            LapRow lr;
+            StrategyLapRow lr;
             lr.lapNum = n;
             // Pitting costs time on two laps: the out-lap (first lap of a post-pit
             // stint) and the in-lap (last lap of a stint that ends in a pit). Each
@@ -1264,7 +1264,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             }
             // Laps actually run so far on this set: completed (timed) rows. Future
             // stints have none yet → 0; the opening stint counts laps done to date.
-            for (const LapRow& lr : d.rows) if (lr.hasActual) ++d.actualLaps;
+            for (const StrategyLapRow& lr : d.rows) if (lr.hasActual) ++d.actualLaps;
             out.push_back(d);
         }
         return out;

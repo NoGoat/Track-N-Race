@@ -77,6 +77,119 @@ function rawToViewBox(x: number, z: number, t: TrackMapData['transform']): [numb
   ]
 }
 
+// ── DRS zone reconstruction ─────────────────────────────────────────────────────
+// DRS zones store only their start/end points; the polyline is re-derived as the
+// slice of the track centerline between them (following driving direction, wrapping
+// past the start/finish line when needed).
+
+/** Concatenate the sector polylines into one closed loop, dropping consecutive
+ *  duplicate vertices (including the shared start/finish closing vertex). */
+function buildCenterline(map: TrackMapData): [number, number][] {
+  const ordered = [...map.sectors].sort((a, b) => a.index - b.index)
+  const pts: [number, number][] = []
+  for (const s of ordered) {
+    for (const p of s.points as [number, number][]) {
+      const last = pts[pts.length - 1]
+      if (!last || last[0] !== p[0] || last[1] !== p[1]) pts.push([p[0], p[1]])
+    }
+  }
+  if (pts.length > 1) {
+    const first = pts[0]
+    const last  = pts[pts.length - 1]
+    if (first[0] === last[0] && first[1] === last[1]) pts.pop()
+  }
+  return pts
+}
+
+function nearestIdx(pts: [number, number][], p: [number, number]): number {
+  let best = 0, bestD = Infinity
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i][0] - p[0]
+    const dy = pts[i][1] - p[1]
+    const d = dx * dx + dy * dy
+    if (d < bestD) { bestD = d; best = i }
+  }
+  return best
+}
+
+/** The DRS polyline: centerline slice from `start` to `end`, forward with wraparound. */
+function sliceZone(
+  centerline: [number, number][],
+  start: [number, number],
+  end: [number, number],
+): [number, number][] {
+  const N = centerline.length
+  if (N === 0) return []
+  const si = nearestIdx(centerline, start)
+  const ei = nearestIdx(centerline, end)
+  const out: [number, number][] = []
+  let i = si
+  for (let n = 0; n < N; n++) {
+    out.push(centerline[i])
+    if (i === ei) break
+    i = (i + 1) % N
+  }
+  return out
+}
+
+// Where a DRS zone wraps the start/finish line, the last-sector→first-sector
+// seam introduces a tiny lateral drift that kinks the local tangent by tens of
+// degrees. Drawn as a perpendicular offset, that kink becomes a visible chevron.
+// Real corners never turn more than ~2° per (densely-sampled) vertex, so an
+// isolated high-angle vertex is unambiguously the seam and is safe to relax.
+const SEAM_ANGLE_DEG     = 6    // turn angle that flags the seam kink
+const SEAM_SMOOTH_SPAN   = 6    // neighbours each side of a flagged vertex to relax
+const SEAM_SMOOTH_PASSES = 20
+
+function turnAngleDeg(a: [number, number], b: [number, number], c: [number, number]): number {
+  const d1x = b[0] - a[0], d1y = b[1] - a[1]
+  const d2x = c[0] - b[0], d2y = c[1] - b[1]
+  const l1 = Math.hypot(d1x, d1y) || 1
+  const l2 = Math.hypot(d2x, d2y) || 1
+  const dot = (d1x * d2x + d1y * d2y) / (l1 * l2)
+  return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI
+}
+
+/** Relax the isolated tangent kink at the start/finish seam. Each flagged spike
+ *  vertex and its neighbours are pulled toward their local midpoint, but with a
+ *  cosine taper — full strength at the spike, fading to zero at the window edge.
+ *  That relaxes the kink while blending smoothly into the untouched track (a
+ *  uniform window would just push the kink to its boundary). Endpoints, and any
+ *  vertex outside a flagged window, never move — so the zone keeps its exact
+ *  start/end and real corners are untouched. */
+function smoothSeam(pts: [number, number][]): [number, number][] {
+  const n = pts.length
+  if (n < 5) return pts
+  const weight = new Array<number>(n).fill(0)
+  let any = false
+  for (let i = 1; i < n - 1; i++) {
+    if (turnAngleDeg(pts[i - 1], pts[i], pts[i + 1]) > SEAM_ANGLE_DEG) {
+      for (let j = i - SEAM_SMOOTH_SPAN; j <= i + SEAM_SMOOTH_SPAN; j++) {
+        if (j > 0 && j < n - 1) {
+          const taper = 0.5 * (1 + Math.cos((Math.PI * Math.abs(j - i)) / (SEAM_SMOOTH_SPAN + 1)))
+          if (taper > weight[j]) { weight[j] = taper; any = true }
+        }
+      }
+    }
+  }
+  if (!any) return pts
+  let out: [number, number][] = pts.map(p => [p[0], p[1]])
+  for (let pass = 0; pass < SEAM_SMOOTH_PASSES; pass++) {
+    const next: [number, number][] = out.map(p => [p[0], p[1]])
+    for (let i = 1; i < n - 1; i++) {
+      const w = weight[i]
+      if (w > 0) {
+        const mx = (out[i - 1][0] + out[i + 1][0]) / 2
+        const my = (out[i - 1][1] + out[i + 1][1]) / 2
+        next[i][0] = out[i][0] + w * (mx - out[i][0])
+        next[i][1] = out[i][1] + w * (my - out[i][1])
+      }
+    }
+    out = next
+  }
+  return out
+}
+
 // ── PreparedMap — precomputed once per map+rotation ───────────────────────────
 
 interface SectorJunction {
@@ -123,7 +236,10 @@ function prepareMap(map: TrackMapData): PreparedMap {
     return { index: sector.index, points: pts }
   })
 
-  const drsZones   = map.drs_zones.map(z => ({ track_points: (z.track_points as [number, number][]).map(rot) }))
+  const centerline = buildCenterline(map)
+  const drsZones   = map.drs_zones.map(z => ({
+    track_points: smoothSeam(sliceZone(centerline, z.start as [number, number], z.end as [number, number])).map(rot),
+  }))
   const speedTraps = (map.speed_traps as [number, number][]).map(rot)
   const startFinish = map.start_finish ? rot(map.start_finish as [number, number]) : null
 

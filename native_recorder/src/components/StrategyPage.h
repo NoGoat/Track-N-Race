@@ -25,7 +25,7 @@ struct PitLoss {
 };
 
 // One row of a stint's per-lap target table.
-struct LapRow {
+struct StrategyLapRow {
     int    lapNum = 0;
     double requiredMs = 0, actualRequiredMs = 0, actualMs = 0;
     double deltaLapMs = 0, deltaStintMs = 0, deltaTotalMs = 0;
@@ -56,7 +56,7 @@ struct DisplayStint {
     QString wornText;
     bool    targetPresent = false, isEstimate = false, hasDelta = false;
     double  targetMs = 0, deltaMs = 0;
-    std::vector<LapRow> rows;
+    std::vector<StrategyLapRow> rows;
 };
 
 // Race-strategy screen ported from the Electron StrategyPanel. Self-contained:

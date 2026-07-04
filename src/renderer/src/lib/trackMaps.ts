@@ -47,7 +47,6 @@ export interface TrackMapData {
   drs_zones:      Array<{
     start:        [number, number]
     end:          [number, number]
-    track_points: [number, number][]
   }>
   speed_traps:    [number, number][]
   start_finish:   [number, number] | null

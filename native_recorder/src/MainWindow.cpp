@@ -305,6 +305,7 @@ MainWindow::MainWindow(QWidget* parent)
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(false);
         if (inputPage_) inputPage_->setPlaybackMode(false);
+        if (powerPage_) powerPage_->setPlaybackMode(false);
         if (miscPage_) miscPage_->setPlaybackMode(false);
         setWindowTitle("Track N Race Background Recorder");
     });
