@@ -269,6 +269,7 @@ export interface SessionMsg {
   num_safety_car_periods: number
   num_virtual_sc_periods: number
   num_red_flag_periods: number
+  active_aero_track_status?: number   // 2026 SLM: 0 = Full, 1 = Partial, -1 = n/a
 }
 
 export interface LapData {
@@ -348,6 +349,7 @@ export interface ProtocolStatusMsg {
   capabilities:    ProtocolCapabilities
   labels?:         Record<string, string>
   cardColors?:     Record<string, ColorSpec>
+  aero_mode?:      'drs' | 'slm'   // overtaking-aid mode for the active format
 }
 
 export interface ProtocolWarningMsg {

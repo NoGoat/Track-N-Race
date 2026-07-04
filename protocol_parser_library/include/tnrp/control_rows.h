@@ -85,6 +85,9 @@ struct SessionRow {
     int num_safety_car_periods{};
     int num_virtual_sc_periods{};
     int num_red_flag_periods{};
+    // 2026 active-aero (SLM) track status: 0 = Full, 1 = Partial, -1 = n/a
+    // (F1 24/25). Selects which SLM zone set the map draws (dry vs wet).
+    int active_aero_track_status{-1};
 };
 
 // ── participants (rare) ────────────────────────────────────────────────────
@@ -180,6 +183,9 @@ struct ProtocolStatusRow {
     // Library-owned declarative card-colour spec (format-independent; see
     // tnrp/CardColors.h). Shipped here so the renderer shares one colour model.
     std::map<std::string, ColorSpec> cardColors;
+    // Overtaking-aid mode for the active format: "drs" (F1 24/25) or "slm"
+    // (F1 26). Selects the track-map overlay (see tnrp/AeroMode.h).
+    std::string aero_mode;
 };
 
 struct ProtocolWarningRow {
@@ -273,6 +279,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
         "labels",          &T::labels,
-        "cardColors",      &T::cardColors
+        "cardColors",      &T::cardColors,
+        "aero_mode",       &T::aero_mode
     );
 };

@@ -1512,7 +1512,7 @@ export default function App() {
         )}
         {tab === 'session' && (
           <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} />
+            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} />
           </div>
         )}
         {tab === 'input' && (

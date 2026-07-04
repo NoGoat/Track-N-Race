@@ -304,9 +304,10 @@ interface Props {
   mapTimeout: number
   reduceAnimations: boolean
   mapDimmed?: boolean
+  aeroMode: 'drs' | 'slm'
 }
 
-const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
@@ -396,6 +397,8 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             mapTimeout={mapTimeout}
             reduceAnimations={reduceAnimations}
             mapDimmed={mapDimmed}
+            aeroMode={aeroMode}
+            slmTrackStatus={session?.active_aero_track_status ?? -1}
             isFullscreen
             onToggleFullscreen={() => setMapFullscreen(false)}
           />
@@ -476,7 +479,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           {/* Track map */}
           <div className="flex-1 min-h-0">
             <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
+            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
           </div>
 
           {/* Now + forecast strip — pinned to bottom */}

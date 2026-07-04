@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImage, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImage, dialog, screen } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
@@ -211,9 +211,15 @@ function createWindow(): void {
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
 
+  // Size the window to 60% of the primary display's work area. workAreaSize is
+  // in DIPs, so this already accounts for the display's scale factor.
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const width = Math.max(1200, Math.round(workAreaSize.width * 0.6))
+  const height = Math.max(700, Math.round(workAreaSize.height * 0.6))
+
   const win = new BrowserWindow({
-    width: 1600,
-    height: 900,
+    width,
+    height,
     minWidth: 1200,
     minHeight: 700,
     backgroundColor: '#0f172a',

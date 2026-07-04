@@ -48,6 +48,10 @@ export interface TrackMapData {
     start:        [number, number]
     end:          [number, number]
   }>
+  // Straight Line Mode (2026) zones — dry- and wet-weather variants. Same
+  // {start,end} shape as DRS; the polyline is re-derived from the centerline.
+  slm_dry?:       Array<{ start: [number, number]; end: [number, number] }>
+  slm_wet?:       Array<{ start: [number, number]; end: [number, number] }>
   speed_traps:    [number, number][]
   start_finish:   [number, number] | null
 }

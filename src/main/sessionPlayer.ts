@@ -419,6 +419,7 @@ async function scanAndIndexTempFile(tempPath: string): Promise<void> {
         },
         labels: labelsForFormat(pbFormat),
         cardColors: cardColorSpecs(),
+        aero_mode: pbFormat >= 2026 ? 'slm' : 'drs',
       })
 
       resolve()
@@ -842,6 +843,7 @@ export function closePlayer() {
     },
     labels: labelsForFormat(liveFormat),
     cardColors: cardColorSpecs(),
+    aero_mode: liveFormat >= 2026 ? 'slm' : 'drs',
   })
   emitState()
 }

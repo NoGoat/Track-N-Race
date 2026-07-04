@@ -23,6 +23,8 @@ const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
 const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']
 const SECTOR_COLORS       = SECTOR_COLORS_DARK
 const DRS_COLOR     = '#39B54A'
+const SLM_DRY_COLOR = '#FF9500'   // SLM Normal grip  (slm_dry / Full status)   — orange
+const SLM_WET_COLOR = '#22D3EE'   // SLM Reduced grip (slm_wet / Partial status) — cyan
 const TRAP_COLOR    = '#C77DFF'
 const SF_COLOR      = '#E8002D'
 
@@ -112,24 +114,33 @@ function nearestIdx(pts: [number, number][], p: [number, number]): number {
   return best
 }
 
+/** Centerline indices from nearest(`start`) to nearest(`end`), forward with wraparound. */
+function sliceZoneIdx(
+  centerline: [number, number][],
+  start: [number, number],
+  end: [number, number],
+): number[] {
+  const N = centerline.length
+  if (N === 0) return []
+  const si = nearestIdx(centerline, start)
+  const ei = nearestIdx(centerline, end)
+  const out: number[] = []
+  let i = si
+  for (let n = 0; n < N; n++) {
+    out.push(i)
+    if (i === ei) break
+    i = (i + 1) % N
+  }
+  return out
+}
+
 /** The DRS polyline: centerline slice from `start` to `end`, forward with wraparound. */
 function sliceZone(
   centerline: [number, number][],
   start: [number, number],
   end: [number, number],
 ): [number, number][] {
-  const N = centerline.length
-  if (N === 0) return []
-  const si = nearestIdx(centerline, start)
-  const ei = nearestIdx(centerline, end)
-  const out: [number, number][] = []
-  let i = si
-  for (let n = 0; n < N; n++) {
-    out.push(centerline[i])
-    if (i === ei) break
-    i = (i + 1) % N
-  }
-  return out
+  return sliceZoneIdx(centerline, start, end).map(i => centerline[i])
 }
 
 // Where a DRS zone wraps the start/finish line, the last-sector→first-sector
@@ -202,6 +213,8 @@ interface SectorJunction {
 interface PreparedMap {
   sectors:     Array<{ index: number; points: [number, number][] }>
   drsZones:    Array<{ track_points: [number, number][] }>
+  slmDry:      Array<{ track_points: [number, number][] }>   // 2026 SLM — Full-status zones
+  slmWet:      Array<{ track_points: [number, number][] }>   // 2026 SLM — Partial-status zones
   speedTraps:  [number, number][]
   startFinish: [number, number] | null
   s1pts:       [number, number][]
@@ -237,9 +250,12 @@ function prepareMap(map: TrackMapData): PreparedMap {
   })
 
   const centerline = buildCenterline(map)
-  const drsZones   = map.drs_zones.map(z => ({
-    track_points: smoothSeam(sliceZone(centerline, z.start as [number, number], z.end as [number, number])).map(rot),
-  }))
+  const reconstruct = (zones: Array<{ start: [number, number]; end: [number, number] }>) =>
+    zones.map(z => ({ track_points: smoothSeam(sliceZone(centerline, z.start, z.end)).map(rot) }))
+
+  const drsZones = reconstruct(map.drs_zones as Array<{ start: [number, number]; end: [number, number] }>)
+  const slmDry   = reconstruct(map.slm_dry ?? [])
+  const slmWet   = reconstruct(map.slm_wet ?? [])
   const speedTraps = (map.speed_traps as [number, number][]).map(rot)
   const startFinish = map.start_finish ? rot(map.start_finish as [number, number]) : null
 
@@ -264,7 +280,7 @@ function prepareMap(map: TrackMapData): PreparedMap {
   }
 
   return {
-    sectors, drsZones, speedTraps, startFinish, s1pts, sfIdx, junctions,
+    sectors, drsZones, slmDry, slmWet, speedTraps, startFinish, s1pts, sfIdx, junctions,
     bounds: { minX, minY, w: maxX - minX, h: maxY - minY },
     rotCos: cos, rotSin: sin, rotCx: cx, rotCy: cy,
   }
@@ -302,26 +318,32 @@ function drawPolyline(
   ctx.stroke()
 }
 
-function drawDrsZone(
+/** A line running alongside the track, offset perpendicular toward the *outside*
+ *  of the circuit from each point (the inward normal points at the enclosed
+ *  interior for a consistently-wound loop, so we negate it). Used for both the
+ *  DRS zone (green, dashed) and the SLM overlay (purple; solid where wet applies,
+ *  dashed where dry-only). */
+function drawOffsetLine(
   ctx: CanvasRenderingContext2D,
   pts: [number, number][],
   scale: number, ox: number, oy: number,
+  color: string, dashed: boolean,
   zoomFactor: number = 1,
   trackZoomFactor: number = 1,
 ) {
   if (pts.length < 2) return
   ctx.beginPath()
-  ctx.strokeStyle = DRS_COLOR
+  ctx.strokeStyle = color
   ctx.lineWidth   = DRS_PX * zoomFactor
-  ctx.lineCap     = 'butt'
-  ctx.lineJoin    = 'miter'
-  ctx.setLineDash([3 * zoomFactor, 3 * zoomFactor])
+  ctx.lineCap     = dashed ? 'butt' : 'round'
+  ctx.lineJoin    = dashed ? 'miter' : 'round'
+  ctx.setLineDash(dashed ? [3 * zoomFactor, 3 * zoomFactor] : [])
   for (let i = 0; i < pts.length; i++) {
     const [nx, ny] = perp(pts, i)
     const [cx2, cy2] = toCanvas(pts[i], scale, ox, oy)
     const offset = Math.max(DRS_OFFSET * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 8 * zoomFactor)
-    const px = cx2 + nx * offset
-    const py = cy2 + ny * offset
+    const px = cx2 - nx * offset
+    const py = cy2 - ny * offset
     if (i === 0) ctx.moveTo(px, py)
     else         ctx.lineTo(px, py)
   }
@@ -493,6 +515,8 @@ function renderFrame(
   layout: { scale: number; ox: number; oy: number },
   effectiveZoom: number = 1,
   mapDimmed: boolean = false,
+  aeroMode: 'drs' | 'slm' = 'drs',
+  slmTrackStatus: number = -1,   // 0 = Full, 1 = Partial, -1 = unknown
 ) {
   ctx.clearRect(0, 0, cw, ch)
   const { scale, ox, oy } = layout
@@ -518,8 +542,20 @@ function renderFrame(
     drawSectorJunction(ctx, j, scale, ox, oy, color, zoomFactor, trackZoomFactor)
   }
 
-  for (const zone of prep.drsZones) {
-    drawDrsZone(ctx, zone.track_points, scale, ox, oy, zoomFactor, trackZoomFactor)
+  // Overtaking-aid overlay: DRS zones (F1 24/25) or the SLM overlay (F1 26).
+  // In SLM, a Partial track status (1) draws the wet zone set, otherwise (Full
+  // or unknown) the dry set. Both are dashed, like DRS.
+  if (aeroMode === 'slm') {
+    const partial = slmTrackStatus === 1
+    const zones = partial ? prep.slmWet : prep.slmDry
+    const color = partial ? SLM_WET_COLOR : SLM_DRY_COLOR
+    for (const zone of zones) {
+      drawOffsetLine(ctx, zone.track_points, scale, ox, oy, color, true, zoomFactor, trackZoomFactor)
+    }
+  } else {
+    for (const zone of prep.drsZones) {
+      drawOffsetLine(ctx, zone.track_points, scale, ox, oy, DRS_COLOR, true, zoomFactor, trackZoomFactor)
+    }
   }
 
   for (const trap of prep.speedTraps) {
@@ -607,9 +643,11 @@ interface Props {
   onToggleFullscreen?: () => void
   reduceAnimations?:   boolean
   mapDimmed?:          boolean
+  aeroMode?:           'drs' | 'slm'
+  slmTrackStatus?:     number   // 2026 SLM track status: 0 = Full, 1 = Partial
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1 }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const canvasRef       = useRef<HTMLCanvasElement>(null)
   const prepRef         = useRef<PreparedMap | null>(null)
@@ -621,6 +659,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const sectorColorsRef   = useRef<boolean>(sectorColors)
   const driversModeRef    = useRef<'dots' | 'both' | 'labels'>(driversMode)
   const mapDimmedRef      = useRef<boolean>(mapDimmed)
+  const aeroModeRef       = useRef<'drs' | 'slm'>(aeroMode)
+  const slmTrackStatusRef = useRef<number>(slmTrackStatus)
 
   const [selectedDriverIdx, setSelectedDriverIdx] = useState<number | null>(null)
   const selectedDriverIdxRef = useRef<number | null>(null)
@@ -722,6 +762,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   sectorColorsRef.current      = sectorColors
   driversModeRef.current       = driversMode
   mapDimmedRef.current         = mapDimmed
+  aeroModeRef.current          = aeroMode
+  slmTrackStatusRef.current    = slmTrackStatus
   mapTimeoutRef.current        = mapTimeout
   const reduceAnimationsRef    = useRef(reduceAnimations)
   reduceAnimationsRef.current  = reduceAnimations
@@ -794,7 +836,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           }
 
           const effectiveZoom = layout.scale / baseLayout.scale
-          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom, mapDimmedRef.current)
+          renderFrame(ctx, width, height, prep, map, carsRef.current, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current)
         }
       }
       rafRef.current = requestAnimationFrame(loop)

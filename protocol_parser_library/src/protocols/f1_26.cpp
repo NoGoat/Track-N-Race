@@ -119,6 +119,10 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             sr.num_safety_car_periods     = data[705];
             sr.num_virtual_sc_periods     = data[706];
             sr.num_red_flag_periods       = data[707];
+            // Active-aero (SLM) track status: 0 = Full, 1 = Partial. Sits after
+            // the config flags, m_weekendStructure[12] and the two sectorN lap
+            // distances (bytes 733..752), at byte 753.
+            if (length >= 754) sr.active_aero_track_status = data[753];
 
             buf.clear();
             (void)glz::write_json(sr, buf);
