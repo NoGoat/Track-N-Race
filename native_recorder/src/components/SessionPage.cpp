@@ -437,14 +437,17 @@ SessionPage::SessionPage(QWidget* parent)
     QWidget* weatherStrip = new QWidget;
     weatherStrip->setFixedHeight(92);
     QHBoxLayout* wh = new QHBoxLayout(weatherStrip);
-    wh->setContentsMargins(10, 8, 10, 8);
+    // No outer padding: the inter-card vlines are children of this layout, so any
+    // top/bottom margin here would inset them and leave a gap to the strip's
+    // horizontal border. The padding lives on each card instead (below).
+    wh->setContentsMargins(0, 0, 0, 0);
     wh->setSpacing(0);
 
     // NOW card — same horizontal layout + width as the forecast cards, minus the
     // rain-% row (a current reading has no forecast percentage).
     QWidget* nowCard = new QWidget;
     QHBoxLayout* nh = new QHBoxLayout(nowCard);
-    nh->setContentsMargins(12, 4, 12, 4);
+    nh->setContentsMargins(12, 12, 12, 12);
     nh->setSpacing(10);
 
     sp_weatherNowIcon = new QLabel;
@@ -483,7 +486,7 @@ SessionPage::SessionPage(QWidget* parent)
 
         QWidget* fcCard = new QWidget;
         QHBoxLayout* fh = new QHBoxLayout(fcCard);
-        fh->setContentsMargins(12, 4, 12, 4);
+        fh->setContentsMargins(12, 12, 12, 12);
         fh->setSpacing(10);
 
         // Left: large weather icon.

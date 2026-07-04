@@ -481,14 +481,14 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     sidebar->setFrameShape(QFrame::NoFrame);
     sidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     sidebar->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    // Reserve the vertical scrollbar's gutter once, up-front: the outer width
-    // includes it but the content is capped to the base width, so the scrollbar
-    // appears within the reserved space — no layout shift when it shows/hides.
+    // Fixed outer width keeps the strategy columns from shifting, but the content
+    // fills the whole width (no reserved gutter) and — because widgetResizable
+    // sizes it to the viewport — reflows a scrollbar-width narrower only when the
+    // vertical scrollbar actually appears, instead of leaving a permanent empty
+    // strip on the right.
     {
-        const int sbw = sidebar->verticalScrollBar()->sizeHint().width();
-        sidebar->setFixedWidth(230 + sbw);
+        sidebar->setFixedWidth(230);
         auto* content = new QWidget;
-        content->setMaximumWidth(230);
         sidebarLayout_ = new QVBoxLayout(content);
         sidebarLayout_->setContentsMargins(0, 0, 0, 0);
         sidebarLayout_->setSpacing(0);
@@ -1662,6 +1662,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             auto* bar = new QProgressBar; bar->setRange(0, 100);
             bar->setValue((int)std::min(100.0, corners[i].value));
             bar->setTextVisible(false); bar->setFixedHeight(4);
+            // A QProgressBar's default minimum width (~90px) would make the 2-col
+            // grid ~230px wide — as wide as the sidebar — so it couldn't shrink
+            // when the scrollbar appears, overflowing into a horizontal scroll.
+            // Ignore the width hint so the bar fills its cell and shrinks with it.
+            bar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            bar->setMinimumWidth(0);
             bar->setStyleSheet(QString(
                 "QProgressBar{ background:%1; border:none; border-radius:2px; }"
                 "QProgressBar::chunk{ background:%2; border-radius:2px; }")
