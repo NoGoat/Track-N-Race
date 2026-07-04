@@ -887,6 +887,9 @@ void SessionPage::updateTrackMap(const nlohmann::json& session,
             trackMap_->setTrack(tid);
             mapTrackId_ = tid;
         }
+        // 2026 SLM track status (0 = Full, 1 = Partial, -1 = n/a) selects which
+        // SLM zone set the overlay draws. Absent on F1 24/25 sessions.
+        trackMap_->setSlmTrackStatus(session.value("active_aero_track_status", -1));
     }
 
     // Theme: derive light/dark from the active palette.

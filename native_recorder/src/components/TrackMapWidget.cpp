@@ -30,7 +30,9 @@ constexpr double DRS_PX    = 6.0;
 constexpr double DRS_OFFSET= 18.0;
 constexpr double SF_HALF   = 14.0;
 constexpr double JUNC_HALF = 10.0;
-const char* DRS_COLOR = "#39B54A";
+const char* DRS_COLOR     = "#39B54A";
+const char* SLM_DRY_COLOR = "#FF9500";   // SLM Normal grip  (slm_dry / Full status)   — orange
+const char* SLM_WET_COLOR = "#22D3EE";   // SLM Reduced grip (slm_wet / Partial status) — cyan
 constexpr int    LABEL_W   = 38;
 constexpr int    LABEL_H   = 16;
 constexpr int    LABEL_GAP = 5;
@@ -49,6 +51,103 @@ QPointF perpAt(const QPointF* pts, int n, int i) {
     double len = std::hypot(dx, dy);
     if (len == 0.0) len = 1.0;
     return QPointF(-dy / len, dx / len);
+}
+
+// ── Overtaking-aid zone reconstruction (ported from the Electron TrackMap) ──
+// DRS/SLM zones persist only their {start,end} endpoints; the polyline is the
+// slice of the track centerline between them, following the driving direction
+// and wrapping past the start/finish line when needed.
+
+// Concatenate the sector polylines into one closed loop, dropping consecutive
+// duplicate vertices (including the shared start/finish closing vertex).
+std::vector<QPointF> buildCenterline(const std::vector<std::vector<QPointF>>& sectors) {
+    std::vector<QPointF> pts;
+    for (const auto& s : sectors)
+        for (const QPointF& p : s)
+            if (pts.empty() || pts.back().x() != p.x() || pts.back().y() != p.y())
+                pts.push_back(p);
+    if (pts.size() > 1 &&
+        pts.front().x() == pts.back().x() && pts.front().y() == pts.back().y())
+        pts.pop_back();
+    return pts;
+}
+
+int nearestIdx(const std::vector<QPointF>& pts, const QPointF& p) {
+    int best = 0; double bestD = 1e300;
+    for (int i = 0; i < (int)pts.size(); ++i) {
+        const double dx = pts[i].x() - p.x(), dy = pts[i].y() - p.y();
+        const double d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+// Centerline slice from nearest(start) to nearest(end), forward with wraparound.
+std::vector<QPointF> sliceZone(const std::vector<QPointF>& cl,
+                               const QPointF& start, const QPointF& end) {
+    const int N = (int)cl.size();
+    if (N == 0) return {};
+    const int si = nearestIdx(cl, start), ei = nearestIdx(cl, end);
+    std::vector<QPointF> out;
+    int i = si;
+    for (int n = 0; n < N; ++n) {
+        out.push_back(cl[i]);
+        if (i == ei) break;
+        i = (i + 1) % N;
+    }
+    return out;
+}
+
+constexpr double SEAM_ANGLE_DEG   = 6.0;   // turn angle that flags the start/finish seam kink
+constexpr int    SEAM_SMOOTH_SPAN = 6;     // neighbours each side of a flagged vertex to relax
+constexpr int    SEAM_SMOOTH_PASSES = 20;
+
+double turnAngleDeg(const QPointF& a, const QPointF& b, const QPointF& c) {
+    const double d1x = b.x() - a.x(), d1y = b.y() - a.y();
+    const double d2x = c.x() - b.x(), d2y = c.y() - b.y();
+    double l1 = std::hypot(d1x, d1y); if (l1 == 0.0) l1 = 1.0;
+    double l2 = std::hypot(d2x, d2y); if (l2 == 0.0) l2 = 1.0;
+    double dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
+    dot = std::max(-1.0, std::min(1.0, dot));
+    return std::acos(dot) * 180.0 / M_PI;
+}
+
+// Relax the isolated tangent kink where a zone crosses the start/finish seam.
+// A cosine taper (full strength at the flagged spike vertex, fading to zero at
+// the window edge) relaxes the kink while blending smoothly into the untouched
+// track. Endpoints, and any vertex outside a flagged window, never move.
+std::vector<QPointF> smoothSeam(const std::vector<QPointF>& pts) {
+    const int n = (int)pts.size();
+    if (n < 5) return pts;
+    std::vector<double> weight(n, 0.0);
+    bool any = false;
+    for (int i = 1; i < n - 1; ++i) {
+        if (turnAngleDeg(pts[i - 1], pts[i], pts[i + 1]) > SEAM_ANGLE_DEG) {
+            for (int j = i - SEAM_SMOOTH_SPAN; j <= i + SEAM_SMOOTH_SPAN; ++j) {
+                if (j > 0 && j < n - 1) {
+                    const double taper = 0.5 * (1 + std::cos(
+                        M_PI * std::abs(j - i) / (SEAM_SMOOTH_SPAN + 1)));
+                    if (taper > weight[j]) { weight[j] = taper; any = true; }
+                }
+            }
+        }
+    }
+    if (!any) return pts;
+    std::vector<QPointF> out = pts;
+    for (int pass = 0; pass < SEAM_SMOOTH_PASSES; ++pass) {
+        std::vector<QPointF> next = out;
+        for (int i = 1; i < n - 1; ++i) {
+            const double w = weight[i];
+            if (w > 0.0) {
+                const double mx = (out[i - 1].x() + out[i + 1].x()) / 2.0;
+                const double my = (out[i - 1].y() + out[i + 1].y()) / 2.0;
+                next[i].setX(out[i].x() + w * (mx - out[i].x()));
+                next[i].setY(out[i].y() + w * (my - out[i].y()));
+            }
+        }
+        out = std::move(next);
+    }
+    return out;
 }
 
 // 3-letter abbreviation: last name token, upper-cased, first 3 chars.
@@ -178,18 +277,28 @@ bool TrackMapWidget::setTrack(int trackId) {
         else                      rawSectors_.push_back(std::move(pts));
     }
 
-    rawDrs_.clear();
-    if (j.contains("drs_zones")) {
-        for (const auto& z : j["drs_zones"]) {
-            if (!z.contains("track_points")) continue;
-            std::vector<QPointF> pts;
-            pts.reserve(z["track_points"].size());
-            for (const auto& p : z["track_points"])
-                if (p.is_array() && p.size() >= 2)
-                    pts.emplace_back(p[0].get<double>(), p[1].get<double>());
-            if (pts.size() >= 2) rawDrs_.push_back(std::move(pts));
+    // Overtaking-aid zones store only {start,end}; the polyline is re-derived from
+    // the centerline in rebuildPrepared(). DRS (F1 24/25) plus the 2026 SLM dry-
+    // and wet-weather zone sets.
+    const auto parseZones = [](const nlohmann::json& arr) {
+        std::vector<std::pair<QPointF, QPointF>> zones;
+        for (const auto& z : arr) {
+            if (z.contains("start") && z.contains("end") &&
+                z["start"].is_array() && z["end"].is_array() &&
+                z["start"].size() >= 2 && z["end"].size() >= 2) {
+                zones.emplace_back(
+                    QPointF(z["start"][0].get<double>(), z["start"][1].get<double>()),
+                    QPointF(z["end"][0].get<double>(),   z["end"][1].get<double>()));
+            }
         }
-    }
+        return zones;
+    };
+    rawDrs_.clear();
+    rawSlmDry_.clear();
+    rawSlmWet_.clear();
+    if (j.contains("drs_zones")) rawDrs_    = parseZones(j["drs_zones"]);
+    if (j.contains("slm_dry"))   rawSlmDry_ = parseZones(j["slm_dry"]);
+    if (j.contains("slm_wet"))   rawSlmWet_ = parseZones(j["slm_wet"]);
 
     rawHasSF_ = false;
     if (j.contains("start_finish") && j["start_finish"].is_array() &&
@@ -236,13 +345,24 @@ void TrackMapWidget::rebuildPrepared() {
         return QPointF(cos * dx - sin * dy + cx, sin * dx + cos * dy + cy);
     };
 
-    // DRS zones (rotated; bounds intentionally exclude these, as in the reference).
-    prep_.drsZones.clear();
-    for (const auto& raw : rawDrs_) {
-        std::vector<QPointF> z; z.reserve(raw.size());
-        for (const QPointF& p : raw) z.push_back(rot(p));
-        prep_.drsZones.push_back(std::move(z));
-    }
+    // Overtaking-aid overlays: re-derive each zone's polyline as the centerline
+    // slice between its {start,end}, relax the start/finish seam, then rotate.
+    // Bounds intentionally exclude these, as in the reference.
+    const std::vector<QPointF> centerline = buildCenterline(rawSectors_);
+    const auto reconstruct = [&](const std::vector<std::pair<QPointF, QPointF>>& zones) {
+        std::vector<std::vector<QPointF>> out;
+        out.reserve(zones.size());
+        for (const auto& z : zones) {
+            std::vector<QPointF> slice = smoothSeam(sliceZone(centerline, z.first, z.second));
+            std::vector<QPointF> rotated; rotated.reserve(slice.size());
+            for (const QPointF& p : slice) rotated.push_back(rot(p));
+            if (rotated.size() >= 2) out.push_back(std::move(rotated));
+        }
+        return out;
+    };
+    prep_.drsZones = reconstruct(rawDrs_);
+    prep_.slmDry   = reconstruct(rawSlmDry_);
+    prep_.slmWet   = reconstruct(rawSlmWet_);
 
     // Junctions: perpendicular tick at the end of each sector except the last
     // (= start of sectors 2 and 3).
@@ -338,26 +458,39 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
                    QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
     }
 
-    // DRS zones: dashed green line offset perpendicular-outward from the track.
-    for (const std::vector<QPointF>& zone : prep_.drsZones) {
-        if (zone.size() < 2) continue;
-        QPolygonF poly;
-        poly.reserve((int)zone.size());
+    // Overtaking-aid overlay: a dashed line running alongside the track, offset
+    // perpendicular toward the *outside* of the circuit (the inward normal points
+    // at the enclosed interior for a consistently-wound loop, so we negate it).
+    // DRS zones (F1 24/25, green) or the 2026 SLM overlay: slm_wet on a Partial
+    // track status (cyan), otherwise slm_dry (orange).
+    const auto drawOffsetZones = [&](const std::vector<std::vector<QPointF>>& zones,
+                                     const QColor& color) {
         const double offset = std::max(DRS_OFFSET * zf, (TRACK_PX * tzf) / 2 + 8 * zf);
-        for (int i = 0; i < (int)zone.size(); ++i) {
-            const QPointF n = perpAt(zone.data(), (int)zone.size(), i);
-            const QPointF c = tc(zone[i]);
-            poly << QPointF(c.x() + n.x() * offset, c.y() + n.y() * offset);
-        }
-        QColor drsCol(DRS_COLOR);
-        QPen pen(drsCol);
+        QPen pen(color);
         pen.setWidthF(DRS_PX * zf);
         pen.setCapStyle(Qt::FlatCap);
         pen.setJoinStyle(Qt::MiterJoin);
         pen.setDashPattern({ 3.0 / DRS_PX, 3.0 / DRS_PX });  // 3px dash / 3px gap
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        p.drawPolyline(poly);
+        for (const std::vector<QPointF>& zone : zones) {
+            if (zone.size() < 2) continue;
+            QPolygonF poly;
+            poly.reserve((int)zone.size());
+            for (int i = 0; i < (int)zone.size(); ++i) {
+                const QPointF n = perpAt(zone.data(), (int)zone.size(), i);
+                const QPointF c = tc(zone[i]);
+                poly << QPointF(c.x() - n.x() * offset, c.y() - n.y() * offset);
+            }
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(poly);
+        }
+    };
+    if (aeroSlm_) {
+        const bool partial = (slmTrackStatus_ == 1);
+        drawOffsetZones(partial ? prep_.slmWet : prep_.slmDry,
+                        QColor(partial ? SLM_WET_COLOR : SLM_DRY_COLOR));
+    } else {
+        drawOffsetZones(prep_.drsZones, QColor(DRS_COLOR));
     }
 
     // … and the start/finish line (start of sector 1).
@@ -457,6 +590,22 @@ void TrackMapWidget::setSectorColors(bool on) {
     sectorColors_ = on;
     rebuildStaticLayer();   // colors are baked into the cached circuit
     update();
+}
+
+void TrackMapWidget::setAeroMode(bool slm) {
+    if (aeroSlm_ == slm) return;
+    aeroSlm_ = slm;
+    rebuildStaticLayer();   // the overlay is baked into the cached circuit
+    update();
+}
+
+void TrackMapWidget::setSlmTrackStatus(int status) {
+    if (slmTrackStatus_ == status) return;
+    slmTrackStatus_ = status;
+    if (aeroSlm_) {         // only the SLM overlay depends on the track status
+        rebuildStaticLayer();
+        update();
+    }
 }
 
 void TrackMapWidget::setMapOpacity(double a) {

@@ -30,6 +30,8 @@ public:
     void setDark(bool dark);
     void setLabelMode(LabelMode mode);
     void setSectorColors(bool on);   // rebuilds the static layer on change
+    void setAeroMode(bool slm);      // false = DRS (F1 24/25), true = SLM (F1 26)
+    void setSlmTrackStatus(int status);  // 0 = Full (dry), 1 = Partial (wet), -1 = n/a
     void setMapOpacity(double a);     // 0.0–1.0, track outline only
     void setIdleTimeout(int secs);    // 0 = disabled (never hide for inactivity)
     bool hasTrack() const { return loaded_; }
@@ -53,7 +55,9 @@ private:
     struct Junction { QPointF pt; double nx, ny; };  // boundary point + unit perpendicular
     struct Prepared {
         std::vector<QPolygonF> sectors;          // rotated sector polylines (index 0..2)
-        std::vector<std::vector<QPointF>> drsZones;  // rotated DRS track points
+        std::vector<std::vector<QPointF>> drsZones;  // rotated DRS overlay polylines
+        std::vector<std::vector<QPointF>> slmDry;    // 2026 SLM overlay — Full-status zones
+        std::vector<std::vector<QPointF>> slmWet;    // 2026 SLM overlay — Partial-status zones
         std::vector<Junction> junctions;         // starts of sectors 2 & 3
         bool    hasSF = false;                   // start/finish (start of sector 1)
         QPointF sfPt;
@@ -86,7 +90,9 @@ private:
     double      viewBoxH_     = 1000.0;
     double      rotationDeg_  = 0.0;
     std::vector<std::vector<QPointF>> rawSectors_;  // viewBox-space (pre-rotation)
-    std::vector<std::vector<QPointF>> rawDrs_;       // viewBox-space DRS track points
+    // Overtaking-aid zones as {start,end} endpoints (viewBox-space); the polyline
+    // is re-derived from the centerline at prepare time (see rebuildPrepared).
+    std::vector<std::pair<QPointF, QPointF>> rawDrs_, rawSlmDry_, rawSlmWet_;
     bool        rawHasSF_ = false;
     QPointF     rawSF_;
     Prepared    prep_{};
@@ -97,6 +103,8 @@ private:
     nlohmann::json participants_;    // {drivers:[{idx,name,livery_color,race_number}]}
     bool        dark_ = true;
     bool        sectorColors_ = true;   // colored sectors vs plain white/black lines
+    bool        aeroSlm_       = false; // false = DRS overlay, true = SLM overlay (2026)
+    int         slmTrackStatus_ = -1;   // 0 = Full (draw slm_dry), 1 = Partial (draw slm_wet)
     double      mapOpacity_   = 1.0;    // track-outline opacity (drivers stay full)
 
     // ── Idle-driver hiding ─────────────────────────────────────────────────

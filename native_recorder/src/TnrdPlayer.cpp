@@ -93,6 +93,16 @@ void TnrdPlayer::load(const QString& path) {
             loading_ = false;
             emitState();
             emit loaded(hdr);
+
+            // Emit the reconstructed frame at the start so panels — and the track
+            // map, which needs the one-shot participants row to draw car dots at
+            // all — show the initial state immediately, instead of only after the
+            // first seek. Mirrors seek(): the cold state snapshot (which includes
+            // participants) plus the latest status/damage/positions (which the
+            // snapshot omits). Type IDs: 2=status, 3=damage, 13=positions.
+            emitRows(reader_.stateSnapshot(startTime_));
+            static const std::vector<uint8_t> kInitStateTypes = { 2, 3, 13 };
+            emitRows(reader_.latestOfTypes(startTime_, kInitStateTypes));
         }, Qt::QueuedConnection);
     }).detach();
 }
