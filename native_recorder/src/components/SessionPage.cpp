@@ -3,8 +3,11 @@
 #include "CardColors.h"
 #include "PageUiHelpers.h"
 #include "TrackMapWidget.h"
+#include "../IconUtils.h"
 
 #include <QApplication>
+#include <QIcon>
+#include <QPixmap>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
@@ -142,6 +145,32 @@ const char* weatherLabel(int w) {
     static const char* l[] = { "Clear", "Light Cloud", "Overcast", "Light Rain", "Heavy Rain", "Storm" };
     if (w >= 0 && w < 6) return l[w];
     return "—";
+}
+
+// Bundled Breeze icon name + tint (dark / light theme) per F1 weather code
+// (0..5), matching the Electron weather panel's icon + colour choices.
+struct WeatherVis { const char* icon; const char* dark; const char* light; };
+const WeatherVis kWeatherVis[] = {
+    { "weather-clear-symbolic",             "#fde047", "#ca8a04" },  // 0 Clear
+    { "weather-clouds-symbolic",            "#fb923c", "#c2410c" },  // 1 Light Cloud
+    { "weather-overcast-symbolic",          "#94a3b8", "#475569" },  // 2 Overcast
+    { "weather-showers-scattered-symbolic", "#7dd3fc", "#0284c7" },  // 3 Light Rain
+    { "weather-showers-symbolic",           "#2563eb", "#1d4ed8" },  // 4 Heavy Rain
+    { "weather-storm-symbolic",             "#c084fc", "#7c3aed" },  // 5 Storm
+};
+
+// Sets a tinted Breeze weather icon on `lbl` for weather code `w` at `px` logical
+// px, device-pixel-ratio aware for crisp HiDPI output. Clears the label if the
+// icon can't be resolved (e.g. Breeze not bundled), so text-only builds degrade.
+void applyWeatherIcon(QLabel* lbl, int w, int px) {
+    if (!lbl) return;
+    if (w < 0 || w > 5) w = 2;
+    const WeatherVis& v = kWeatherVis[w];
+    const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
+    QIcon ic = breezeIcon(v.icon, QColor(dark ? v.dark : v.light));
+    QPixmap pm = ic.isNull() ? QPixmap() : ic.pixmap(QSize(px, px), lbl->devicePixelRatioF());
+    if (pm.isNull()) lbl->clear();
+    else             lbl->setPixmap(pm);
 }
 
 QString eventCodeLabel(const std::string& code) {
@@ -406,36 +435,67 @@ SessionPage::SessionPage(QWidget* parent)
     lv->addWidget(tnrui::hline());
 
     QWidget* weatherStrip = new QWidget;
-    weatherStrip->setFixedHeight(72);
+    weatherStrip->setFixedHeight(92);
     QHBoxLayout* wh = new QHBoxLayout(weatherStrip);
     wh->setContentsMargins(10, 8, 10, 8);
     wh->setSpacing(0);
 
-    // NOW card
+    // NOW card — same horizontal layout + width as the forecast cards, minus the
+    // rain-% row (a current reading has no forecast percentage).
     QWidget* nowCard = new QWidget;
-    nowCard->setMinimumWidth(80);
-    QVBoxLayout* nv = new QVBoxLayout(nowCard);
-    nv->setContentsMargins(0, 0, 14, 0);
-    nv->setSpacing(3);
+    QHBoxLayout* nh = new QHBoxLayout(nowCard);
+    nh->setContentsMargins(12, 4, 12, 4);
+    nh->setSpacing(10);
+
+    sp_weatherNowIcon = new QLabel;
+    sp_weatherNowIcon->setFixedSize(44, 44);
+    sp_weatherNowIcon->setAlignment(Qt::AlignCenter);
+
+    QWidget* nowInfo = new QWidget;
+    QVBoxLayout* niv = new QVBoxLayout(nowInfo);
+    niv->setContentsMargins(0, 0, 0, 0);
+    niv->setSpacing(1);
+
     QLabel* nowCap = new QLabel("NOW");
     QFont nowCapF; nowCapF.setPointSize(7); nowCapF.setBold(true);
     nowCap->setFont(nowCapF);
     nowCap->setForegroundRole(QPalette::PlaceholderText);
+
     sp_weatherNow = new QLabel("—");
-    QFont wnf; wnf.setPointSize(11); wnf.setBold(true);
+    QFont wnf; wnf.setPointSize(9); wnf.setBold(true);
     sp_weatherNow->setFont(wnf);
-    nv->addWidget(nowCap);
-    nv->addWidget(sp_weatherNow);
-    nv->addStretch();
-    wh->addWidget(nowCard);
+
+    niv->addStretch();
+    niv->addWidget(nowCap);
+    niv->addWidget(sp_weatherNow);
+    niv->addStretch();
+
+    nh->addStretch();
+    nh->addWidget(sp_weatherNowIcon);
+    nh->addWidget(nowInfo);
+    nh->addStretch();
+    wh->addWidget(nowCard, 1);
 
     wh->addWidget(tnrui::vline());
 
     for (int i = 0; i < 5; ++i) {
+        if (i > 0) wh->addWidget(tnrui::vline());   // separator between forecast cards
+
         QWidget* fcCard = new QWidget;
-        QVBoxLayout* fv = new QVBoxLayout(fcCard);
-        fv->setContentsMargins(10, 0, 10, 0);
-        fv->setSpacing(2);
+        QHBoxLayout* fh = new QHBoxLayout(fcCard);
+        fh->setContentsMargins(12, 4, 12, 4);
+        fh->setSpacing(10);
+
+        // Left: large weather icon.
+        sp_fcIcon[i] = new QLabel;
+        sp_fcIcon[i]->setFixedSize(44, 44);
+        sp_fcIcon[i]->setAlignment(Qt::AlignCenter);
+
+        // Right: three stacked rows — time offset, weather name, rain %.
+        QWidget* info = new QWidget;
+        QVBoxLayout* iv = new QVBoxLayout(info);
+        iv->setContentsMargins(0, 0, 0, 0);
+        iv->setSpacing(1);
 
         sp_fcTime[i] = new QLabel("");
         QFont ftf; ftf.setPointSize(7);
@@ -451,11 +511,16 @@ SessionPage::SessionPage(QWidget* parent)
         sp_fcRain[i]->setFont(frf);
         sp_fcRain[i]->setStyleSheet("color:#5794F2;");
 
-        fv->addStretch();
-        fv->addWidget(sp_fcTime[i]);
-        fv->addWidget(sp_fcWeather[i]);
-        fv->addWidget(sp_fcRain[i]);
-        fv->addStretch();
+        iv->addStretch();
+        iv->addWidget(sp_fcTime[i]);
+        iv->addWidget(sp_fcWeather[i]);
+        iv->addWidget(sp_fcRain[i]);
+        iv->addStretch();
+
+        fh->addStretch();
+        fh->addWidget(sp_fcIcon[i]);
+        fh->addWidget(info);
+        fh->addStretch();
         wh->addWidget(fcCard, 1);
     }
 
@@ -600,19 +665,23 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
         .arg(h24 >= 12 ? "PM" : "AM"));
 
     sp_weatherNow->setText(weatherLabel(weather));
+    applyWeatherIcon(sp_weatherNowIcon, weather, 40);
 
     if (session.contains("weather_forecast_samples")) {
         const auto& fc = session["weather_forecast_samples"];
         int count = std::min((int)fc.size(), 5);
         for (int i = 0; i < 5; ++i) {
             if (i < count) {
+                const int fw = fc[i].value("weather", 0);
                 sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].value("time_offset", 0)));
-                sp_fcWeather[i]->setText(weatherLabel(fc[i].value("weather", 0)));
+                sp_fcWeather[i]->setText(weatherLabel(fw));
+                applyWeatherIcon(sp_fcIcon[i], fw, 40);
                 int rain = fc[i].value("rain_percentage", 0);
                 sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");
             } else {
                 sp_fcTime[i]->setText("");
                 sp_fcWeather[i]->setText("");
+                if (sp_fcIcon[i]) sp_fcIcon[i]->clear();
                 sp_fcRain[i]->setText("");
             }
         }

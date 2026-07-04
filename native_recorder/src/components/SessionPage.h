@@ -57,7 +57,9 @@ private:
     QLabel*      sp_trackLen      = nullptr;
     QLabel*      sp_timeOfDay     = nullptr;
     QLabel*      sp_weatherNow    = nullptr;
+    QLabel*      sp_weatherNowIcon = nullptr;
     QLabel*      sp_fcTime[5]     = {};
+    QLabel*      sp_fcIcon[5]     = {};
     QLabel*      sp_fcWeather[5]  = {};
     QLabel*      sp_fcRain[5]     = {};
     QLabel*      sp_proxPos[3]    = {};

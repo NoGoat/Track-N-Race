@@ -74,6 +74,26 @@ inline QIcon adaptThemeIcon(const QIcon& themed, const QColor& tint, const QIcon
     return themed;
 }
 
+// Loads a bundled Breeze icon *directly* from the embedded icon resource
+// (:/icons/breeze/<subpath>/<name>.svg) rather than through QIcon::fromTheme, so
+// it returns the Breeze glyph regardless of the platform's active icon theme
+// (on Linux the OS theme is primary, with Breeze only a fallback). The Breeze
+// symbolic icons are monochrome SVGs, so tint to `tint` ourselves, exactly as
+// adaptThemeIcon() does for themed icons. `subpath` is the theme-relative folder
+// (e.g. "applets/48"). Returns a null icon when Breeze isn't bundled (resource
+// absent) or the named icon doesn't exist, so callers can fall back gracefully.
+inline QIcon breezeIcon(const QString& name, const QColor& tint,
+                        const QString& subpath = QStringLiteral("applets/48")) {
+    QIcon raw(QStringLiteral(":/icons/breeze/%1/%2.svg").arg(subpath, name));
+    if (raw.isNull()) return QIcon();
+#if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
+    return QIcon(new TintedIconEngine(raw, tint));
+#else
+    Q_UNUSED(tint);
+    return raw;
+#endif
+}
+
 #if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
 // QMessageBox / QDialogButtonBox don't build their button icons through
 // adaptThemeIcon — they ask the active QStyle for them via standardIcon(). Under
