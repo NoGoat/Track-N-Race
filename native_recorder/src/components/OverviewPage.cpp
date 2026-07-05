@@ -265,22 +265,33 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     });
 
     // ── Tyre section ─────────────────────────────────────────────
+    // Wrapped in a 0-spacing container so the separators sit flush against the
+    // charts. The page vbox's 6px spacing would otherwise leave a gap between the
+    // charts and the separators, so the charts' vertical dividers (which run to the
+    // widget edge) wouldn't meet the horizontal separators above/below.
+    QWidget* tyreSection = new QWidget;
+    QVBoxLayout* tyreLay = new QVBoxLayout(tyreSection);
+    tyreLay->setContentsMargins(0, 0, 0, 0);
+    tyreLay->setSpacing(0);
+
     tyreSep_ = tnrui::hline();
-    vbox->addWidget(tyreSep_);
+    tyreLay->addWidget(tyreSep_);
 
     tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
     tyreCards_->setFixedHeight(160);
-    vbox->addWidget(tyreCards_);
+    tyreLay->addWidget(tyreCards_);
 
     tyreCharts_ = new TyreChartsWidget;
     tyreCharts_->setFixedHeight(200);
     tyreCharts_->setModel(model);
     tyreCharts_->setTyreLifeMode(tyreGraphLifeMode());
     tyreCharts_->setVisible(false);
-    vbox->addWidget(tyreCharts_);
+    tyreLay->addWidget(tyreCharts_);
 
     sep2_ = tnrui::hline();
-    vbox->addWidget(sep2_);
+    tyreLay->addWidget(sep2_);
+
+    vbox->addWidget(tyreSection);
 
     // ── Damage rows ──────────────────────────────────────────────
     dmgFrame_ = new QFrame;
