@@ -523,11 +523,11 @@ void ChartView::ensurePanelHeader(int panelId)
     // panel rather than spilling into the divider gap next to it.
     pn.rect->setMinimumMargins(QMargins(0, 0, PANEL_LABEL_CLEAR, 0));
 
-    // Container: header on top, the axis rect below (which takes the slack). A small
-    // row gap keeps the title off the plot's top tick label.
+    // Container: header on top, the axis rect below (which takes the slack). A row
+    // gap keeps the title clear of the plot's top tick label.
     QCPLayoutGrid* container = new QCPLayoutGrid;
     container->setMargins(QMargins(0, 0, 0, 0));
-    container->setRowSpacing(5);
+    container->setRowSpacing(10);
     p->plotLayout()->take(pn.rect);   // pull the rect out of the top grid if it's there
     p->plotLayout()->simplify();
     container->addElement(0, 0, header);
