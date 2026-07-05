@@ -5,9 +5,7 @@
 
 #include "MiscLayout.h"
 
-class QFrame;
-class GForceChart;
-class RideHeightChart;
+class MiscChartsWidget;
 class SessionModel;
 
 // Misc tab — G-force and ride-height charts bound to the SessionModel.
@@ -32,11 +30,7 @@ private:
     void saveLayout(const MiscLayout& layout);
     void applyLayout(const MiscLayout& layout);
 
-    QWidget*         gforceContainer_     = nullptr;
-    QWidget*         rideHeightContainer_ = nullptr;
-    QFrame*          hdiv_                = nullptr;
-    GForceChart*     gforceChart_         = nullptr;
-    RideHeightChart* rideHeightChart_     = nullptr;
+    MiscChartsWidget* charts_ = nullptr;   // G-force / ride-height, one plot
 
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

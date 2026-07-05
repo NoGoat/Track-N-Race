@@ -123,14 +123,12 @@ set(SOURCES
     src/components/MiscPage.cpp
     src/components/EditMiscLayoutDialog.h
     src/components/EditMiscLayoutDialog.cpp
-    src/components/PowerChart.cpp
-    src/components/PowerChart.h
+    src/components/PowerChartsWidget.cpp
+    src/components/PowerChartsWidget.h
     src/components/InputChartsWidget.cpp
     src/components/InputChartsWidget.h
-    src/components/GForceChart.cpp
-    src/components/GForceChart.h
-    src/components/RideHeightChart.cpp
-    src/components/RideHeightChart.h
+    src/components/MiscChartsWidget.cpp
+    src/components/MiscChartsWidget.h
     src/components/TrackMapWidget.cpp
     src/components/TrackMapWidget.h
     resources.qrc

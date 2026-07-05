@@ -10,7 +10,7 @@
 
 class QFrame;
 class QLabel;
-class PowerChart;
+class PowerChartsWidget;
 class SessionModel;
 
 // Power tab — key-driven stat cards over four PowerCharts bound to the
@@ -47,19 +47,8 @@ private:
     QWidget* cardFrames_[PowerLayout::CardCount] = {};
     QFrame*  cardDivs_[PowerLayout::CardCount - 1] = {};
     QFrame*  hdiv_        = nullptr;
-    QWidget* splitContainer_ = nullptr;
-    QWidget* harvContainer_ = nullptr;
-    QWidget* storeContainer_ = nullptr;
-    QWidget* fuelContainer_ = nullptr;
-    QWidget* topChartsRow_ = nullptr;
-    QWidget* bottomChartsRow_ = nullptr;
-    QFrame*  vline_ = nullptr;
-    QFrame*  hline1_ = nullptr;
-    QFrame*  hline2_ = nullptr;
-    PowerChart* splitChart_   = nullptr;
-    PowerChart* harvestChart_ = nullptr;
-    PowerChart* storeChart_   = nullptr;
-    PowerChart* fuelChart_    = nullptr;
+
+    PowerChartsWidget* charts_ = nullptr;   // split / harvest / store / fuel, one plot
 
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

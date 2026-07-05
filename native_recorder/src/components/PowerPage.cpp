@@ -1,6 +1,6 @@
 #include "PowerPage.h"
 #include "PageUiHelpers.h"
-#include "PowerChart.h"
+#include "PowerChartsWidget.h"
 #include "CardColors.h"
 
 #include <QVBoxLayout>
@@ -91,79 +91,11 @@ PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     vbox->addWidget(hdiv_);
 
     // ── Charts ───────────────────────────────────────────────
-    QWidget* chartsWidget = new QWidget;
-    QVBoxLayout* chartsLay = new QVBoxLayout(chartsWidget);
-    chartsLay->setContentsMargins(0, 0, 0, 0);
-    chartsLay->setSpacing(0);
-
-    // Top Row: Split & Harvest
-    topChartsRow_ = new QWidget;
-    QHBoxLayout* topChartsLay = new QHBoxLayout(topChartsRow_);
-    topChartsLay->setContentsMargins(0, 0, 0, 0);
-    topChartsLay->setSpacing(0);
-
-    splitContainer_ = new QWidget;
-    QVBoxLayout* splitLay = new QVBoxLayout(splitContainer_);
-    splitLay->setContentsMargins(0, 0, 0, 0);
-    splitLay->setSpacing(0);
-    splitLay->addWidget(tnrui::makeChartHeader("POWER SPLIT"));
-    splitChart_ = new PowerChart(PowerChartType::Split);
-    splitChart_->setModel(model);
-    splitLay->addWidget(splitChart_, 1);
-
-    harvContainer_ = new QWidget;
-    QVBoxLayout* harvLay = new QVBoxLayout(harvContainer_);
-    harvLay->setContentsMargins(0, 0, 0, 0);
-    harvLay->setSpacing(0);
-    harvLay->addWidget(tnrui::makeChartHeader("ERS HARVEST THIS LAP"));
-    harvestChart_ = new PowerChart(PowerChartType::Harvest);
-    harvestChart_->setModel(model);
-    harvLay->addWidget(harvestChart_, 1);
-
-    topChartsLay->addWidget(splitContainer_, 1);
-    QFrame* topVline = tnrui::vline();
-    topChartsLay->addWidget(topVline, 0);
-    topChartsLay->addWidget(harvContainer_, 1);
-
-    // Bottom Row: Store & Fuel
-    bottomChartsRow_ = new QWidget;
-    QHBoxLayout* bottomChartsLay = new QHBoxLayout(bottomChartsRow_);
-    bottomChartsLay->setContentsMargins(0, 0, 0, 0);
-    bottomChartsLay->setSpacing(0);
-
-    storeContainer_ = new QWidget;
-    QVBoxLayout* storeLay = new QVBoxLayout(storeContainer_);
-    storeLay->setContentsMargins(0, 0, 0, 0);
-    storeLay->setSpacing(0);
-    storeLay->addWidget(tnrui::makeChartHeader("ERS STORE HISTORY"));
-    storeChart_ = new PowerChart(PowerChartType::Store);
-    storeChart_->setModel(model);
-    storeLay->addWidget(storeChart_, 1);
-
-    fuelContainer_ = new QWidget;
-    QVBoxLayout* fuelLay = new QVBoxLayout(fuelContainer_);
-    fuelLay->setContentsMargins(0, 0, 0, 0);
-    fuelLay->setSpacing(0);
-    fuelLay->addWidget(tnrui::makeChartHeader("FUEL HISTORY"));
-    fuelChart_ = new PowerChart(PowerChartType::Fuel);
-    fuelChart_->setModel(model);
-    fuelLay->addWidget(fuelChart_, 1);
-
-    bottomChartsLay->addWidget(storeContainer_, 1);
-    QFrame* bottomVline = tnrui::vline();
-    bottomChartsLay->addWidget(bottomVline, 0);
-    bottomChartsLay->addWidget(fuelContainer_, 1);
-
-    chartsLay->addWidget(topChartsRow_, 1);
-    hline1_ = tnrui::hline();
-    chartsLay->addWidget(hline1_, 0);
-    chartsLay->addWidget(bottomChartsRow_, 1);
-
-    // Store references for layout toggling
-    vline_ = topVline;
-    hline2_ = bottomVline;
-
-    vbox->addWidget(chartsWidget, 1);
+    // Split / harvest / store / fuel are now panels of one ChartView (a single
+    // QCustomPlot / OpenGL context / replot), laid out 2×2 — see PowerChartsWidget.
+    charts_ = new PowerChartsWidget;
+    charts_->setModel(model);
+    vbox->addWidget(charts_, 1);
 
     applyLayout(loadLayout());
 }
@@ -221,21 +153,16 @@ void PowerPage::applyLayout(const PowerLayout& L)
 
     if (topBar_) topBar_->setVisible(anyCard);
 
-    if (splitContainer_) splitContainer_->setVisible(L.showSplit);
-    if (harvContainer_) harvContainer_->setVisible(L.showHarvest);
-    if (storeContainer_) storeContainer_->setVisible(L.showStore);
-    if (fuelContainer_) fuelContainer_->setVisible(L.showFuel);
+    // Chart sections are panels of the combined widget; it reflows internally.
+    if (charts_) {
+        charts_->setSectionVisible(0, L.showSplit);     // SPLIT
+        charts_->setSectionVisible(1, L.showHarvest);   // HARVEST
+        charts_->setSectionVisible(2, L.showStore);     // STORE
+        charts_->setSectionVisible(3, L.showFuel);      // FUEL
+    }
 
-    bool topVisible = L.showSplit || L.showHarvest;
-    bool bottomVisible = L.showStore || L.showFuel;
-
-    if (topChartsRow_) topChartsRow_->setVisible(topVisible);
-    if (bottomChartsRow_) bottomChartsRow_->setVisible(bottomVisible);
-
-    if (vline_) vline_->setVisible(L.showSplit && L.showHarvest); // Top VLine
-    if (hline2_) hline2_->setVisible(L.showStore && L.showFuel);  // Bottom VLine
-    if (hline1_) hline1_->setVisible(topVisible && bottomVisible); // Horizontal Line between rows
-    if (hdiv_) hdiv_->setVisible(anyCard && (topVisible || bottomVisible)); // Line below cards
+    const bool anyChart = L.showSplit || L.showHarvest || L.showStore || L.showFuel;
+    if (hdiv_) hdiv_->setVisible(anyCard && anyChart);   // divider below the cards
 }
 
 void PowerPage::applyAndSaveLayout(const PowerLayout& L)
@@ -285,30 +212,21 @@ void PowerPage::update(const nlohmann::json& status) {
 
 void PowerPage::applyHarvestScale(uint16_t format)
 {
-    if (harvestChart_) harvestChart_->applyHarvestScale(format);
+    if (charts_) charts_->applyHarvestScale(format);
 }
 
 void PowerPage::setPlaybackMode(bool on, float currentTime)
 {
-    if (splitChart_) splitChart_->setPlaybackMode(on);
-    if (harvestChart_) harvestChart_->setPlaybackMode(on);
-    if (storeChart_) storeChart_->setPlaybackMode(on);
-    if (fuelChart_) fuelChart_->setPlaybackMode(on);
+    if (charts_) charts_->setPlaybackMode(on);
     if (on) setCurrentTime(currentTime);
 }
 
 void PowerPage::setCurrentTime(float t)
 {
-    if (splitChart_) splitChart_->setCurrentTime(t);
-    if (harvestChart_) harvestChart_->setCurrentTime(t);
-    if (storeChart_) storeChart_->setCurrentTime(t);
-    if (fuelChart_) fuelChart_->setCurrentTime(t);
+    if (charts_) charts_->setCurrentTime(t);
 }
 
 void PowerPage::setWindowSeconds(float secs)
 {
-    if (splitChart_) splitChart_->setWindowSeconds(secs);
-    if (harvestChart_) harvestChart_->setWindowSeconds(secs);
-    if (storeChart_) storeChart_->setWindowSeconds(secs);
-    if (fuelChart_) fuelChart_->setWindowSeconds(secs);
+    if (charts_) charts_->setWindowSeconds(secs);
 }
