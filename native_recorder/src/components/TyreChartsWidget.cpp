@@ -3,11 +3,6 @@
 #include "../SessionModel.h"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QFrame>
-#include <QLabel>
-#include <QFont>
-#include <QPalette>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
@@ -29,88 +24,41 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
 
-    int sectionIdx = 0;
-    auto addSection = [&](const QString& title, double yMin, double yMax,
-                          const QString& unit, ChartView*& outChart, int* outIds, int& outXId,
-                          QLabel** outTitle) {
-        auto* section = new QWidget;
-        auto* sl = new QVBoxLayout(section);
-        sl->setContentsMargins(0, 0, 0, 0);
-        sl->setSpacing(0);
+    // All four sections are panels of ONE ChartView, so they render in a single
+    // QCustomPlot / OpenGL context / replot rather than four separate widgets. Each
+    // panel carries its own in-plot title and FL/FR/RL/RR colour-key legend.
+    chart_ = new ChartView;
+    outer->addWidget(chart_, 1);
 
-        auto* header = new QWidget;
-        header->setFixedHeight(24);
-        auto* hl = new QHBoxLayout(header);
-        hl->setContentsMargins(6, 0, 6, 0);
-        auto* titleLabel = new QLabel(title);
-        QFont f; f.setPointSize(8); f.setBold(true);
-        titleLabel->setFont(f);
-        titleLabel->setForegroundRole(QPalette::PlaceholderText);
-        hl->addWidget(titleLabel);
-        if (outTitle) *outTitle = titleLabel;
-        hl->addStretch();
-        for (int i = 0; i < 4; ++i) {
-            auto* sw = new QWidget;
-            sw->setFixedSize(10, 10);
-            sw->setStyleSheet(QString("background-color: %1; border-radius: 2px;").arg(kWheelColors[i].name()));
-            hl->addWidget(sw);
-            auto* lbl = new QLabel(kWheelNames[i]);
-            QFont lf; lf.setPointSize(8);
-            lbl->setFont(lf);
-            lbl->setForegroundRole(QPalette::PlaceholderText);
-            hl->addWidget(lbl);
-            hl->addSpacing(4);
-        }
-        sl->addWidget(header);
-
-        outChart = new ChartView;
-        outXId = outChart->addAxis({ ChartView::Side::Bottom, 0.0, windowS_, QColor(), true, 'f', 0, true });
-        int yId = outChart->addAxis({ ChartView::Side::Left, yMin, yMax, QColor(), true, 'f', 0 });
-        outChart->setAxisTimeTicker(outXId, "%m:%s");
+    auto addSection = [&](int sec, const QString& title, double yMin, double yMax,
+                          const QString& unit) {
+        if (sec > 0) chart_->addPanel();   // panel 0 already exists in the ChartView
+        xId_[sec] = chart_->addAxis(
+            { ChartView::Side::Bottom, 0.0, windowS_, QColor(), true, 'f', 0, true }, sec);
+        const int yId = chart_->addAxis(
+            { ChartView::Side::Left, yMin, yMax, QColor(), true, 'f', 0 }, sec);
+        chart_->setAxisTimeTicker(xId_[sec], "%m:%s");
+        // Build the header (title + colour key) before the series, so the series
+        // register in this panel's key legend rather than the default one.
+        chart_->setPanelTitle(sec, title);
+        chart_->setPanelLegendVisible(sec, true);
         for (int w = 0; w < 4; ++w) {
-            outIds[w] = outChart->addSeries({
-                kWheelNames[w], kWheelColors[w], 1.5, outXId, yId, unit, 0
+            seriesIds_[sec][w] = chart_->addSeries({
+                kWheelNames[w], kWheelColors[w], 1.5, xId_[sec], yId, unit, 0
             });
         }
-        outChart->setHoverReadout(true);
-        outChart->setLegendVisible(false);
-        sl->addWidget(outChart, 1);
-        sections_[sectionIdx] = section;
-        ++sectionIdx;
     };
 
-    addSection("SURFACE TEMP", 0, 200,  "°C", surfChart_,  surfIds_,  surfXId_,  nullptr);
-    addSection("INNER TEMP",   0, 200,  "°C", innerChart_, innerIds_, innerXId_, nullptr);
-    addSection("BRAKE TEMP",   0, 1200, "°C", brakeChart_, brakeIds_, brakeXId_, nullptr);
-    addSection(lifeMode_ ? "TYRE LIFE" : "TYRE WEAR",
-               0, 100, "%", wearChart_, wearIds_, wearXId_, &wearTitle_);
+    addSection(SURF,  "SURFACE TEMP", 0, 200,  "°C");
+    addSection(INNER, "INNER TEMP",   0, 200,  "°C");
+    addSection(BRAKE, "BRAKE TEMP",   0, 1200, "°C");
+    addSection(WEAR,  lifeMode_ ? "TYRE LIFE" : "TYRE WEAR", 0, 100, "%");
 
-    auto vdiv = [] { auto* l = new QFrame; l->setFrameShape(QFrame::VLine); l->setFrameShadow(QFrame::Sunken); return l; };
+    // 2×2 grid for the fullscreen Tyres view, 1×4 row for the Overview strip.
+    chart_->layoutPanels(grid_ ? 2 : 4);
 
-    if (grid_) {
-        // 2×2 grid: [surface | inner] over [brake | life], with a cross of dividers.
-        auto hdiv = [] { auto* l = new QFrame; l->setFrameShape(QFrame::HLine); l->setFrameShadow(QFrame::Sunken); return l; };
-        auto makeRow = [&](QWidget* a, QWidget* b) {
-            auto* w = new QWidget;
-            auto* h = new QHBoxLayout(w);
-            h->setContentsMargins(0, 0, 0, 0); h->setSpacing(0);
-            h->addWidget(a, 1); h->addWidget(vdiv()); h->addWidget(b, 1);
-            return w;
-        };
-        outer->addWidget(makeRow(sections_[0], sections_[1]), 1);
-        outer->addWidget(hdiv());
-        outer->addWidget(makeRow(sections_[2], sections_[3]), 1);
-    } else {
-        // 1×4 row (dividers_ managed by updateDividers() as sections show/hide).
-        auto* row = new QWidget;
-        auto* hbox = new QHBoxLayout(row);
-        hbox->setContentsMargins(0, 0, 0, 0); hbox->setSpacing(0);
-        for (int i = 0; i < 4; ++i) {
-            if (i > 0) { auto* d = vdiv(); dividers_[i - 1] = d; hbox->addWidget(d); }
-            hbox->addWidget(sections_[i], 1);
-        }
-        outer->addWidget(row, 1);
-    }
+    // Enable hover once every panel/axis exists (crosshairs are created per panel).
+    chart_->setHoverReadout(true);
 
     // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
     // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
@@ -143,26 +91,15 @@ void TyreChartsWidget::requestRefresh() { dirty_ = true; if (!refreshTimer_->isA
 void TyreChartsWidget::setTyreLifeMode(bool life) {
     if (lifeMode_ == life) return;
     lifeMode_ = life;
-    if (wearTitle_) wearTitle_->setText(life ? "TYRE LIFE" : "TYRE WEAR");
+    if (chart_) chart_->setPanelTitle(WEAR, life ? "TYRE LIFE" : "TYRE WEAR");
     prevEndTime_ = -9999.0f;   // force a full clear + re-append with the new mapping
     requestRefresh();
 }
 
 void TyreChartsWidget::setChartSectionVisible(int i, bool on)
 {
-    if (i < 0 || i >= 4) return;
-    if (sections_[i]) sections_[i]->setVisible(on);
-    updateDividers();
-}
-
-void TyreChartsWidget::updateDividers()
-{
-    for (int d = 0; d < 3; ++d) {
-        if (dividers_[d])
-            dividers_[d]->setVisible(
-                sections_[d]   && sections_[d]->isVisible() &&
-                sections_[d+1] && sections_[d+1]->isVisible());
-    }
+    if (i < 0 || i >= SECTIONS || !chart_) return;
+    chart_->setPanelVisible(i, on);
 }
 
 float TyreChartsWidget::currentTime() const {
@@ -171,19 +108,16 @@ float TyreChartsWidget::currentTime() const {
 }
 
 void TyreChartsWidget::refresh() {
-    if (!model_) return;
+    if (!model_ || !chart_) return;
 
     const SessionData& d = model_->data();
     const float endTime = currentTime();
     const float left    = endTime - windowS_;
 
     if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
-        for (int w = 0; w < 4; ++w) {
-            surfChart_->clear(surfIds_[w]);
-            innerChart_->clear(innerIds_[w]);
-            brakeChart_->clear(brakeIds_[w]);
-            wearChart_->clear(wearIds_[w]);
-        }
+        for (int s = 0; s < SECTIONS; ++s)
+            for (int w = 0; w < 4; ++w)
+                chart_->clear(seriesIds_[s][w]);
         lastAddedTime_ = left;
     }
 
@@ -197,51 +131,42 @@ void TyreChartsWidget::refresh() {
         const auto& s = d.tyreBuf[i];
         if (s.t > endTime) break;
 
-        surfChart_->appendPoint(surfIds_[0], s.t, s.surfFl);
-        surfChart_->appendPoint(surfIds_[1], s.t, s.surfFr);
-        surfChart_->appendPoint(surfIds_[2], s.t, s.surfRl);
-        surfChart_->appendPoint(surfIds_[3], s.t, s.surfRr);
+        chart_->appendPoint(seriesIds_[SURF][0], s.t, s.surfFl);
+        chart_->appendPoint(seriesIds_[SURF][1], s.t, s.surfFr);
+        chart_->appendPoint(seriesIds_[SURF][2], s.t, s.surfRl);
+        chart_->appendPoint(seriesIds_[SURF][3], s.t, s.surfRr);
 
-        innerChart_->appendPoint(innerIds_[0], s.t, s.innerFl);
-        innerChart_->appendPoint(innerIds_[1], s.t, s.innerFr);
-        innerChart_->appendPoint(innerIds_[2], s.t, s.innerRl);
-        innerChart_->appendPoint(innerIds_[3], s.t, s.innerRr);
+        chart_->appendPoint(seriesIds_[INNER][0], s.t, s.innerFl);
+        chart_->appendPoint(seriesIds_[INNER][1], s.t, s.innerFr);
+        chart_->appendPoint(seriesIds_[INNER][2], s.t, s.innerRl);
+        chart_->appendPoint(seriesIds_[INNER][3], s.t, s.innerRr);
 
-        brakeChart_->appendPoint(brakeIds_[0], s.t, s.brakeFl);
-        brakeChart_->appendPoint(brakeIds_[1], s.t, s.brakeFr);
-        brakeChart_->appendPoint(brakeIds_[2], s.t, s.brakeRl);
-        brakeChart_->appendPoint(brakeIds_[3], s.t, s.brakeRr);
+        chart_->appendPoint(seriesIds_[BRAKE][0], s.t, s.brakeFl);
+        chart_->appendPoint(seriesIds_[BRAKE][1], s.t, s.brakeFr);
+        chart_->appendPoint(seriesIds_[BRAKE][2], s.t, s.brakeRl);
+        chart_->appendPoint(seriesIds_[BRAKE][3], s.t, s.brakeRr);
 
         // Life mode plots remaining tyre life (100 - wear); wear mode plots the
         // accumulated wear directly. Matches the Electron tyreWearMode toggle.
         const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
-        wearChart_->appendPoint(wearIds_[0], s.t, wv(s.wearFl));
-        wearChart_->appendPoint(wearIds_[1], s.t, wv(s.wearFr));
-        wearChart_->appendPoint(wearIds_[2], s.t, wv(s.wearRl));
-        wearChart_->appendPoint(wearIds_[3], s.t, wv(s.wearRr));
+        chart_->appendPoint(seriesIds_[WEAR][0], s.t, wv(s.wearFl));
+        chart_->appendPoint(seriesIds_[WEAR][1], s.t, wv(s.wearFr));
+        chart_->appendPoint(seriesIds_[WEAR][2], s.t, wv(s.wearRl));
+        chart_->appendPoint(seriesIds_[WEAR][3], s.t, wv(s.wearRr));
 
         lastAddedTime_ = s.t;
     }
 
-    for (int w = 0; w < 4; ++w) {
-        surfChart_->trimBefore(surfIds_[w],  left);
-        innerChart_->trimBefore(innerIds_[w], left);
-        brakeChart_->trimBefore(brakeIds_[w], left);
-        wearChart_->trimBefore(wearIds_[w],  left);
-    }
+    for (int s = 0; s < SECTIONS; ++s)
+        for (int w = 0; w < 4; ++w)
+            chart_->trimBefore(seriesIds_[s][w], left);
 
     const double lo = (double)std::max(0.0f, left);
     const double hi = (double)std::max(windowS_, endTime);
     const double hiClamped = hi > lo ? hi : lo + 1.0;
-    surfChart_->setXRange(surfXId_,   lo, hiClamped);
-    innerChart_->setXRange(innerXId_, lo, hiClamped);
-    brakeChart_->setXRange(brakeXId_, lo, hiClamped);
-    wearChart_->setXRange(wearXId_,  lo, hiClamped);
+    for (int s = 0; s < SECTIONS; ++s)
+        chart_->setXRange(xId_[s], lo, hiClamped);
 
-    surfChart_->requestReplot();
-    innerChart_->requestReplot();
-    brakeChart_->requestReplot();
-    wearChart_->requestReplot();
-
+    chart_->requestReplot();   // ONE replot renders all four panels
     prevEndTime_ = endTime;
 }

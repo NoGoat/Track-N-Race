@@ -6,8 +6,6 @@
 class ChartView;
 class SessionModel;
 class QTimer;
-class QFrame;
-class QLabel;
 
 class TyreChartsWidget : public QWidget {
     Q_OBJECT
@@ -40,7 +38,6 @@ private:
     bool      dirty_        = false;
     bool      playback_     = false;
     bool      lifeMode_     = true;     // default to remaining-life, matching Electron
-    QLabel*   wearTitle_    = nullptr;  // 4th chart header (retitled on mode change)
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;    // default view window (matches toolbar default tb_windowIdx_=1 = 30s)
 
@@ -49,26 +46,10 @@ private:
     float prevEndTime_  = -9999.0f;
     float lastAddedTime_= -9999.0f;
 
-    void updateDividers();
-
-    QWidget* sections_[4]  = {};
-    QFrame*  dividers_[3]  = {};
-
-    // Four chart panels: surface temp / inner temp / brake temp / tyre wear
-    ChartView* surfChart_  = nullptr;
-    ChartView* innerChart_ = nullptr;
-    ChartView* brakeChart_ = nullptr;
-    ChartView* wearChart_  = nullptr;
-
-    // Series IDs for FL/FR/RL/RR per chart
-    int surfIds_[4]  = {};
-    int innerIds_[4] = {};
-    int brakeIds_[4] = {};
-    int wearIds_[4]  = {};
-
-    // Shared time axis IDs per chart
-    int surfXId_  = -1;
-    int innerXId_ = -1;
-    int brakeXId_ = -1;
-    int wearXId_  = -1;
+    // The four sections (surface / inner / brake / wear) are panels of ONE ChartView
+    // — a single QCustomPlot / GL context / replot instead of four separate widgets.
+    enum Section { SURF = 0, INNER = 1, BRAKE = 2, WEAR = 3, SECTIONS = 4 };
+    ChartView* chart_ = nullptr;
+    int xId_[SECTIONS]              = {};   // bottom (time) axis id per panel
+    int seriesIds_[SECTIONS][4]     = {};   // [section][FL/FR/RL/RR]
 };

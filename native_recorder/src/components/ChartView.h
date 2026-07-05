@@ -64,9 +64,23 @@ public:
 
     // Declare the chart. addAxis/addSeries return opaque ids used by the data
     // calls below. Series are drawn in creation order (later draws on top).
-    int  addAxis(const AxisSpec& spec);
+    // addAxis targets a panel (default panel 0 — see the multi-panel section).
+    int  addAxis(const AxisSpec& spec, int panelId = 0);
     int  addSeries(const SeriesSpec& spec);
     void addBand(const BandSpec& spec);
+
+    // --- Multi-panel: several charts sharing one QCustomPlot (one GL context) ---
+    // A ChartView is a single panel (id 0) by default, and every existing chart
+    // uses only that. addPanel() adds another axis rect to the same backend, so
+    // N charts render in one GL context / FBO / replot instead of N widgets.
+    // addAxis(spec, panelId) targets a panel; layoutPanels() arranges them in a
+    // row-major grid; setPanelVisible() hides/shows one (reflowing the grid). The
+    // per-panel title and colour-key legend live inside the plot.
+    int  addPanel();
+    void layoutPanels(int columns);
+    void setPanelVisible(int panelId, bool on);
+    void setPanelTitle(int panelId, const QString& title);
+    void setPanelLegendVisible(int panelId, bool on);
 
     // Data.
     void appendPoint(int seriesId, double x, double y);
@@ -106,6 +120,8 @@ protected:
 
 private:
     void applyPaletteText();
+    void applyPanelLayout();      // (re)place visible panels into the plot's layout grid
+    void ensurePanelHeader(int panelId);   // build a panel's title+legend header row
 
     struct Impl;
     std::unique_ptr<Impl> d_;

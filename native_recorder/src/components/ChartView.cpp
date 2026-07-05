@@ -4,6 +4,7 @@
 
 #include <QEvent>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include <QLabel>
 #include <QLocale>
 #include <QMouseEvent>
@@ -60,16 +61,47 @@ struct ChartView::Impl {
     // Per-series tooltip metadata, parallel to graphs.
     struct SeriesMeta { QString unit; int precision = 0; bool group = false; };
 
+    // One chart within the shared plot. Panel 0 wraps QCustomPlot's default axis
+    // rect/legend so single-panel charts behave exactly as before; addPanel() adds
+    // more. Each panel owns its key (x) axis, colour-key legend, title and hover
+    // crosshair; the value tooltip (below) is shared across panels. When it gets a
+    // header (title+legend row), the rect is wrapped in a 2-row container grid so
+    // the header sits *above* the plot area rather than overlaying it.
+    struct Panel {
+        QCPAxisRect*    rect      = nullptr;
+        QCPLayoutGrid*  container = nullptr;   // header row + rect (nullptr if no header)
+        QCPAxis*        key       = nullptr;   // this panel's Bottom (shared x) axis
+        QCPLegend*      legend    = nullptr;
+        QCPTextElement* title     = nullptr;   // created by setPanelTitle/ensurePanelHeader
+        QCPItemLine*    crosshair = nullptr;   // lazily created by setHoverReadout
+        bool            visible   = true;
+
+        // Top-level layout element for this panel: the header container if built,
+        // else the bare axis rect.
+        QCPLayoutElement* element() const {
+            return container ? static_cast<QCPLayoutElement*>(container)
+                             : static_cast<QCPLayoutElement*>(rect);
+        }
+    };
+
     QCustomPlot*         plot = nullptr;
     QVector<QCPAxis*>    axes;            // by axis id
     QVector<bool>        axisInheritColor;
     QVector<QCPGraph*>   graphs;          // by series id
     QVector<SeriesMeta>  meta;            // by series id
 
-    QCPAxis*      keyAxis   = nullptr;    // first Bottom axis — the shared x
+    QVector<Panel>       panels;          // panels[0] == default rect/legend
+    int                  panelCols = 1;   // grid columns (see layoutPanels)
+
+    QCPAxis*      keyAxis   = nullptr;    // panel 0's Bottom axis (alias for addBand)
     bool          hoverOn   = false;
-    QCPItemLine*  crosshair = nullptr;
     QLabel*       tooltip   = nullptr;    // floating, cursor-following value readout
+
+    // Panel index owning a given rect/axis (falls back to 0 — the default panel).
+    int panelOf(QCPAxisRect* r) const {
+        for (int i = 0; i < panels.size(); ++i) if (panels[i].rect == r) return i;
+        return 0;
+    }
 
     // FPS / replot-timing diagnostics (opt-in, see constructor).
     QElapsedTimer fpsFrameTimer;          // spans one beforeReplot→afterReplot
@@ -101,6 +133,25 @@ int readMsaaSamples() {
     QSettings s("TrackNRace", "NativeRecorder");
     const int n = s.value("ui/chartMsaaSamples", 4).toInt();
     return (n == 0 || n == 2 || n == 4 || n == 8 || n == 16) ? n : 4;   // clamp to offered set
+}
+
+// Style a legend as a compact single-row colour key (FL FR RL RR …): no frame,
+// transparent, small font — matching the old per-section header swatches.
+void styleKeyLegend(QCPLegend* leg) {
+    leg->setLayer("legend");
+    leg->setBrush(QBrush(Qt::transparent));
+    leg->setBorderPen(Qt::NoPen);
+    leg->setFillOrder(QCPLegend::foColumnsFirst);
+    leg->setWrap(4);                       // fill columns first, wrap after 4 → one row
+    leg->setRowSpacing(0);
+    leg->setColumnSpacing(6);
+    QFont f = leg->font(); f.setPointSize(8); leg->setFont(f);
+    // Match the icon height to the text line height: QCustomPlot top-aligns an icon
+    // shorter than the text, so a short icon reads as floating above the label. The
+    // colour sample is drawn centered within the icon rect, so equal heights center
+    // it against the text (and item height was already the text height, so no growth).
+    leg->setIconSize(14, QFontMetrics(f).height());
+    leg->setMargins(QMargins(0, 0, 0, 0));
 }
 
 // Apply the render settings to one plot. setOpenGl() recreates the paint buffers
@@ -198,6 +249,11 @@ ChartView::ChartView(QWidget* parent)
     p->legend->setBorderPen(Qt::NoPen);
     p->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignHCenter);
 
+    // Panel 0 wraps the plot's built-in axis rect + legend, so single-panel charts
+    // are unchanged; addPanel() appends more rects to this same backend/GL context.
+    // Fields: rect, container, key, legend, title, crosshair, visible.
+    d_->panels.append(Impl::Panel{ p->axisRect(), nullptr, nullptr, p->legend, nullptr, nullptr, true });
+
     applyPaletteText();
 }
 
@@ -211,9 +267,10 @@ void ChartView::reapplyRenderSettings()
     }
 }
 
-int ChartView::addAxis(const AxisSpec& spec)
+int ChartView::addAxis(const AxisSpec& spec, int panelId)
 {
-    QCPAxis* ax = d_->plot->axisRect()->addAxis(Impl::toQcp(spec.side));
+    if (panelId < 0 || panelId >= d_->panels.size()) panelId = 0;
+    QCPAxis* ax = d_->panels[panelId].rect->addAxis(Impl::toQcp(spec.side));
     ax->setRange(spec.min, spec.max);
     ax->setVisible(spec.visible);
     ax->setNumberFormat(QString(QChar(spec.numberFormat)));
@@ -236,7 +293,10 @@ int ChartView::addAxis(const AxisSpec& spec)
     const int id = d_->axes.size();
     d_->axes.append(ax);
     d_->axisInheritColor.append(inherit);
-    if (spec.side == Side::Bottom && !d_->keyAxis) d_->keyAxis = ax;
+    if (spec.side == Side::Bottom) {
+        if (!d_->panels[panelId].key) d_->panels[panelId].key = ax;   // this panel's x
+        if (panelId == 0 && !d_->keyAxis) d_->keyAxis = ax;           // addBand alias
+    }
     applyPaletteText();
     return id;
 }
@@ -251,9 +311,18 @@ int ChartView::addSeries(const SeriesSpec& spec)
     QCPGraph* g = d_->plot->addGraph(kax, vax);
     g->setName(spec.name);
     g->setPen(QPen(spec.color, spec.width));
-    // Decimation is gated on the current window width (see setXRange); a new
-    // series inherits whatever the shared key axis already implies.
-    const double window = d_->keyAxis ? d_->keyAxis->range().size() : 0.0;
+
+    // Route the graph to its owning panel's colour-key legend (addGraph auto-joins
+    // the default one). Unnamed series (e.g. muted reference traces) stay out of it.
+    const int panel = d_->panelOf(vax->axisRect());
+    g->removeFromLegend();
+    if (!spec.name.isEmpty() && d_->panels[panel].legend)
+        g->addToLegend(d_->panels[panel].legend);
+
+    // Decimation is gated on the current window width (see setXRange); a new series
+    // inherits whatever its panel's key axis already implies.
+    QCPAxis* pkey = d_->panels[panel].key;
+    const double window = pkey ? pkey->range().size() : 0.0;
     g->setAdaptiveSampling(window >= DECIMATE_MIN_WINDOW_S);
     if (spec.step) g->setLineStyle(QCPGraph::lsStepLeft);
 
@@ -338,6 +407,110 @@ void ChartView::setLegendVisible(bool on)
     d_->plot->legend->setVisible(on);
 }
 
+int ChartView::addPanel()
+{
+    QCPAxisRect* rect = new QCPAxisRect(d_->plot, /*setupDefaultAxes=*/false);
+    rect->setAutoMargins(QCP::msAll);
+
+    Impl::Panel panel;
+    panel.rect = rect;
+    const int id = d_->panels.size();
+    d_->panels.append(panel);
+    // Not placed until layoutPanels() (or a header is built); see applyPanelLayout.
+    return id;
+}
+
+void ChartView::ensurePanelHeader(int panelId)
+{
+    Impl::Panel& pn = d_->panels[panelId];
+    if (pn.container) return;   // header already built
+
+    QCustomPlot* p = d_->plot;
+
+    // A dedicated compact colour key for this panel. Panel 0 starts out pointing at
+    // the plot's built-in centred legend; retire it in favour of our own.
+    if (pn.legend == p->legend) p->legend->setVisible(false);
+    pn.legend = new QCPLegend;
+    styleKeyLegend(pn.legend);
+
+    pn.title = new QCPTextElement(p, QString());
+    pn.title->setLayer("legend");
+    { QFont f = pn.title->font(); f.setPointSize(8); f.setBold(true); pn.title->setFont(f); }
+    pn.title->setTextColor(palette().color(QPalette::PlaceholderText));
+    pn.title->setTextFlags(Qt::AlignLeft | Qt::AlignVCenter);
+    pn.title->setMargins(QMargins(0, 0, 0, 0));
+
+    // Header row: title (left, absorbs slack) | colour key (right).
+    QCPLayoutGrid* header = new QCPLayoutGrid;
+    header->setMargins(QMargins(8, 3, 8, 1));
+    header->setColumnSpacing(6);
+    header->addElement(0, 0, pn.title);
+    header->addElement(0, 1, pn.legend);
+    header->setColumnStretchFactor(0, 1);
+    header->setColumnStretchFactor(1, 0.001);
+    header->setMaximumSize(QWIDGETSIZE_MAX, 22);   // keep the bar thin, like the header strip
+
+    // Container: header on top, the axis rect below (which takes the slack).
+    QCPLayoutGrid* container = new QCPLayoutGrid;
+    container->setMargins(QMargins(0, 0, 0, 0));
+    container->setRowSpacing(0);
+    p->plotLayout()->take(pn.rect);   // pull the rect out of the top grid if it's there
+    p->plotLayout()->simplify();
+    container->addElement(0, 0, header);
+    container->addElement(1, 0, pn.rect);
+    container->setRowStretchFactor(0, 0.001);
+    container->setRowStretchFactor(1, 1);
+    pn.container = container;
+
+    applyPanelLayout();
+}
+
+void ChartView::layoutPanels(int columns)
+{
+    d_->panelCols = qMax(1, columns);
+    applyPanelLayout();
+}
+
+void ChartView::applyPanelLayout()
+{
+    QCPLayoutGrid* grid = d_->plot->plotLayout();
+    // Pull every panel (its header container or bare rect) out without deleting,
+    // then re-place the visible ones row-major. simplify() collapses empty cells.
+    for (const Impl::Panel& pn : d_->panels) grid->take(pn.element());
+    grid->simplify();
+    int idx = 0;
+    for (const Impl::Panel& pn : d_->panels) {
+        if (!pn.visible) continue;
+        grid->addElement(idx / d_->panelCols, idx % d_->panelCols, pn.element());
+        ++idx;
+    }
+    grid->simplify();
+    d_->plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void ChartView::setPanelVisible(int panelId, bool on)
+{
+    if (panelId < 0 || panelId >= d_->panels.size()) return;
+    if (d_->panels[panelId].visible == on) return;
+    d_->panels[panelId].visible = on;
+    applyPanelLayout();
+}
+
+void ChartView::setPanelTitle(int panelId, const QString& title)
+{
+    if (panelId < 0 || panelId >= d_->panels.size()) return;
+    ensurePanelHeader(panelId);
+    d_->panels[panelId].title->setText(title);
+    d_->plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void ChartView::setPanelLegendVisible(int panelId, bool on)
+{
+    if (panelId < 0 || panelId >= d_->panels.size()) return;
+    ensurePanelHeader(panelId);
+    d_->panels[panelId].legend->setVisible(on);
+}
+
 void ChartView::setAxisTimeTicker(int axisId, const QString& /*format*/)
 {
     if (axisId < 0 || axisId >= d_->axes.size()) return;
@@ -353,19 +526,31 @@ void ChartView::setAxisNumberSuffix(int axisId, double scale, const QString& suf
 void ChartView::setHoverReadout(bool on)
 {
     d_->hoverOn = on;
-    if (on && !d_->crosshair && d_->keyAxis) {
+
+    // First-time setup: a crosshair per panel (confined to that panel's rect) plus
+    // one shared floating value readout. Enable hover *after* panels/axes exist.
+    if (on && !d_->tooltip) {
         QCustomPlot* p = d_->plot;
-        d_->crosshair = new QCPItemLine(p);
-        QPen cp(QColor(150, 150, 150, 160)); cp.setWidth(1);
-        d_->crosshair->setPen(cp);
-        d_->crosshair->start->setTypeX(QCPItemPosition::ptPlotCoords);
-        d_->crosshair->end->setTypeX(QCPItemPosition::ptPlotCoords);
-        d_->crosshair->start->setTypeY(QCPItemPosition::ptAxisRectRatio);
-        d_->crosshair->end->setTypeY(QCPItemPosition::ptAxisRectRatio);
-        d_->crosshair->start->setAxes(d_->keyAxis, nullptr);
-        d_->crosshair->end->setAxes(d_->keyAxis, nullptr);
-        d_->crosshair->setVisible(false);
-        d_->crosshair->setLayer("overlay");
+
+        for (Impl::Panel& panel : d_->panels) {
+            if (panel.crosshair || !panel.key) continue;
+            QCPItemLine* ch = new QCPItemLine(p);
+            QPen cp(QColor(150, 150, 150, 160)); cp.setWidth(1);
+            ch->setPen(cp);
+            ch->start->setTypeX(QCPItemPosition::ptPlotCoords);
+            ch->end->setTypeX(QCPItemPosition::ptPlotCoords);
+            ch->start->setTypeY(QCPItemPosition::ptAxisRectRatio);
+            ch->end->setTypeY(QCPItemPosition::ptAxisRectRatio);
+            ch->start->setAxes(panel.key, nullptr);
+            ch->end->setAxes(panel.key, nullptr);
+            ch->start->setAxisRect(panel.rect);   // ratio-Y spans only this panel
+            ch->end->setAxisRect(panel.rect);
+            ch->setClipAxisRect(panel.rect);
+            ch->setClipToAxisRect(true);
+            ch->setVisible(false);
+            ch->setLayer("overlay");
+            panel.crosshair = ch;
+        }
 
         // Floating readout: a rich-text QLabel child of the plot so it can show
         // per-series colours and a rounded, semi-transparent box, then follows the
@@ -389,20 +574,26 @@ void ChartView::setHoverReadout(bool on)
 
         p->setMouseTracking(true);
         connect(p, &QCustomPlot::mouseMove, this, [this](QMouseEvent* e) {
-            if (!d_->hoverOn || !d_->keyAxis) return;
-            const QRect rect = d_->plot->axisRect()->rect();
-            if (!rect.contains(e->pos())) {
-                d_->crosshair->setVisible(false);
-                d_->tooltip->hide();
-                requestReplot();
-                return;
-            }
-            const double key = d_->keyAxis->pixelToCoord(e->pos().x());
-            d_->crosshair->start->setCoords(key, 0);
-            d_->crosshair->end->setCoords(key, 1);
-            d_->crosshair->setVisible(true);
+            if (!d_->hoverOn) return;
 
-            // Time header (m:ss), then one coloured line per named visible series.
+            // Which panel is the cursor over? (Each panel is a separate axis rect.)
+            int hp = -1;
+            for (int i = 0; i < d_->panels.size(); ++i) {
+                const Impl::Panel& pn = d_->panels[i];
+                if (pn.visible && pn.key && pn.rect->rect().contains(e->pos())) { hp = i; break; }
+            }
+            for (Impl::Panel& pn : d_->panels)
+                if (pn.crosshair) pn.crosshair->setVisible(false);
+            if (hp < 0) { d_->tooltip->hide(); requestReplot(); return; }
+
+            Impl::Panel& panel = d_->panels[hp];
+            const double key = panel.key->pixelToCoord(e->pos().x());
+            panel.crosshair->start->setCoords(key, 0);
+            panel.crosshair->end->setCoords(key, 1);
+            panel.crosshair->setVisible(true);
+
+            // Time header (m:ss), then one coloured line per named visible series in
+            // the hovered panel.
             const int totalSec = qMax(0, (int)(key + 0.5));
             const QColor t = palette().color(QPalette::ToolTipText);
             QString html = QString("<div style='color:rgba(%1,%2,%3,0.6)'>%4:%5</div>")
@@ -411,6 +602,7 @@ void ChartView::setHoverReadout(bool on)
             const QLocale loc;
             for (int i = 0; i < d_->graphs.size(); ++i) {
                 QCPGraph* g = d_->graphs[i];
+                if (!g->keyAxis() || g->keyAxis()->axisRect() != panel.rect) continue;
                 if (!g->visible() || g->name().isEmpty() || g->data()->isEmpty()) continue;
                 auto it = g->data()->findBegin(key);
                 if (it == g->data()->constEnd()) --it;
@@ -437,8 +629,9 @@ void ChartView::setHoverReadout(bool on)
             requestReplot();
         });
     }
-    if (d_->crosshair) d_->crosshair->setVisible(false);
-    if (d_->tooltip)   d_->tooltip->hide();
+    for (Impl::Panel& panel : d_->panels)
+        if (panel.crosshair) panel.crosshair->setVisible(false);
+    if (d_->tooltip) d_->tooltip->hide();
 }
 
 bool ChartView::seriesKeyRange(int seriesId, double& lo, double& hi) const
@@ -461,12 +654,15 @@ void ChartView::setXRange(int axisId, double min, double max)
     ax->setRange(min, max);
 
     // Only decimate when the visible window is wide enough to warrant it. Gating
-    // on the shared key (x) axis keeps every series in lock-step; below 2 minutes
-    // we keep all points, at/above we let QCustomPlot collapse to ~per-pixel.
-    if (ax == d_->keyAxis) {
+    // on a panel's key (x) axis keeps that panel's series in lock-step; below 2
+    // minutes we keep all points, at/above we let QCustomPlot collapse to ~per-pixel.
+    for (const Impl::Panel& pn : d_->panels) {
+        if (ax != pn.key) continue;
         const bool decimate = (max - min) >= DECIMATE_MIN_WINDOW_S;
         for (QCPGraph* g : d_->graphs)
-            g->setAdaptiveSampling(decimate);
+            if (g->keyAxis() && g->keyAxis()->axisRect() == pn.rect)
+                g->setAdaptiveSampling(decimate);
+        break;
     }
 }
 
@@ -489,7 +685,13 @@ void ChartView::applyPaletteText()
             d_->axes[i]->setLabelColor(text);
         }
     }
-    d_->plot->legend->setTextColor(text);
+    // Per-panel colour-key legends follow Text; titles use the dimmer placeholder
+    // colour (matching the old section headers). Panel 0's legend is plot->legend.
+    const QColor titleColor = palette().color(QPalette::PlaceholderText);
+    for (const Impl::Panel& pn : d_->panels) {
+        if (pn.legend) pn.legend->setTextColor(text);
+        if (pn.title)  pn.title->setTextColor(titleColor);
+    }
 }
 
 void ChartView::changeEvent(QEvent* e)
