@@ -187,6 +187,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Owns the TnrdPlayer and the transport bar; MainWindow reacts to its
     // entered/exited/rowReady/timeChanged signals below.
     playback_ = new PlaybackController(model_, this);
+    playback_->setShowLabels(toolbarLabelsEnabled());   // match the toolbar labels option
 
     // Stack + separator + playback bar stacked vertically as the central widget
     container_ = new QWidget(this);
@@ -232,7 +233,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(toolbar_, &AppToolbar::openRecordingRequested, this, [this] {
         QString path = QFileDialog::getOpenFileName(
-            this, "Open Recording", outputDirectory,
+            this, "Open File", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
         if (!path.isEmpty()) {
             QMessageBox msgBox(this);
@@ -587,6 +588,7 @@ void MainWindow::setStyleName(const QString& name) {
 void MainWindow::setToolbarLabels(bool checked) {
     settings.setValue("ui/toolbarShowLabels", checked);
     if (toolbar_) toolbar_->setShowLabels(checked);
+    if (playback_) playback_->setShowLabels(checked);   // playback bar's Close File button
     // The map's Enlarge/Restore button follows the same toggle.
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
         map->setShowLabels(checked);

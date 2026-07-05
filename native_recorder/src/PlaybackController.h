@@ -31,6 +31,10 @@ public:
     void load(const QString& path);               // open a recording (async scan)
     float currentTime() const;                    // absolute session_time playhead
 
+    // Follows the toolbar's "Show button labels" option: icon-only vs a labelled
+    // "Close File" button (kept in sync from MainWindow::setToolbarLabels).
+    void setShowLabels(bool on);
+
 signals:
     void loadingStarted();                         // show the loading overlay
     void loadFailed();                             // hide overlay + warn
@@ -59,4 +63,5 @@ private:
     QLabel*      timeLabel_   = nullptr;
     QComboBox*   speedCombo_  = nullptr;
     QComboBox*   lapCombo_    = nullptr;
+    QPushButton* closeRecBtn_ = nullptr;
 };

@@ -164,13 +164,15 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
     speedCombo_->setCurrentIndex(2);
     pbLayout->addWidget(speedCombo_);
 
-    auto* closeRecBtn = new QPushButton(bar_);
-    closeRecBtn->setIcon(closeRecordingIcon(bar_));
-    closeRecBtn->setIconSize(QSize(20, 20));
-    closeRecBtn->setFixedSize(34, 34);
-    closeRecBtn->setFlat(true);
-    closeRecBtn->setToolTip("Close Recording");
-    pbLayout->addWidget(closeRecBtn);
+    // A normal (non-flat) button so it reads as a real "Close" action; icon-only by
+    // default, gaining a "Close File" label when the toolbar's labels option is on
+    // (see setShowLabels). setShowLabels(false) below sets the compact square size.
+    closeRecBtn_ = new QPushButton(bar_);
+    closeRecBtn_->setIcon(closeRecordingIcon(bar_));
+    closeRecBtn_->setIconSize(QSize(20, 20));
+    closeRecBtn_->setToolTip("Close File");
+    pbLayout->addWidget(closeRecBtn_);
+    setShowLabels(false);
 
     bar_->hide();
 
@@ -302,13 +304,26 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
         }
     });
 
-    connect(closeRecBtn, &QPushButton::clicked, this, [this] {
+    connect(closeRecBtn_, &QPushButton::clicked, this, [this] {
         player_->close();
         if (model_) model_->clear();
         sep_->hide();
         bar_->hide();
         emit exited();
     });
+}
+
+void PlaybackController::setShowLabels(bool on) {
+    if (!closeRecBtn_) return;
+    closeRecBtn_->setText(on ? "Close File" : QString());
+    if (on) {
+        // Let the button size to icon + label.
+        closeRecBtn_->setMinimumSize(0, 34);
+        closeRecBtn_->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    } else {
+        // Compact square, icon-only.
+        closeRecBtn_->setFixedSize(34, 34);
+    }
 }
 
 void PlaybackController::load(const QString& path) {

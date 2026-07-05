@@ -202,7 +202,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     windowBtn_->setToolTip("Chart window");
     windowAct_ = addWidget(windowBtn_);
 
-    openAct_ = addAction(openRecordingIcon(this), "Open Recording");
+    openAct_ = addAction(openRecordingIcon(this), "Open File");
     connect(openAct_, &QAction::triggered, this, &AppToolbar::openRecordingRequested);
     editLayoutAct_ = addAction(editLayoutIcon(this), "Edit Layout");
     editLayoutAct_->setEnabled(true); // Default is the Overview page (0)
@@ -432,7 +432,7 @@ void AppToolbar::relayout() {
     }
     if (!iconsIn) {
         overflowMenu_->addSeparator();
-        QAction* mo = overflowMenu_->addAction(openRecordingIcon(this), "Open Recording");
+        QAction* mo = overflowMenu_->addAction(openRecordingIcon(this), "Open File");
         connect(mo, &QAction::triggered, openAct_, &QAction::trigger);
         QAction* me = overflowMenu_->addAction(editLayoutIcon(this), "Edit Layout");
         me->setEnabled(editLayoutAct_ && editLayoutAct_->isEnabled());
