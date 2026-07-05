@@ -486,6 +486,12 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
     d_->rowGrids.clear();
     top->simplify();
 
+    // Hide every panel up front; the ones we place below are re-shown. A panel
+    // dropped from the layout keeps its frozen geometry and would keep drawing
+    // (layerables render via layers, not the layout tree) unless made invisible —
+    // setVisible cascades to the panel's header, axes, graphs and items.
+    for (const Impl::Panel& pn : d_->panels) pn.element()->setVisible(false);
+
     // Top grid is a single column, so a row holding one element spans the full
     // width; a row with several panels gets a nested horizontal sub-grid.
     int r = 0;
@@ -494,6 +500,7 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
         for (int id : row) if (id >= 0 && id < d_->panels.size()) valid.append(id);
         if (valid.isEmpty()) continue;
 
+        for (int id : valid) d_->panels[id].element()->setVisible(true);
         if (valid.size() == 1) {
             top->addElement(r, 0, d_->panels[valid[0]].element());
         } else {
@@ -520,6 +527,11 @@ void ChartView::applyPanelLayout()
     grid->simplify();
     int idx = 0;
     for (const Impl::Panel& pn : d_->panels) {
+        // A taken-out element keeps its last geometry and would keep drawing
+        // (layerables render via the layer system, not the layout tree), so hidden
+        // panels must be made invisible too. setVisible cascades to the panel's
+        // header, axes, graphs and items through realVisibility().
+        pn.element()->setVisible(pn.visible);
         if (!pn.visible) continue;
         grid->addElement(idx / d_->panelCols, idx % d_->panelCols, pn.element());
         ++idx;
