@@ -7,11 +7,13 @@
     <file alias="LGPL-3.0.txt">licenses/LGPL-3.0.txt</file>
     <file alias="LGPL-2.1.txt">licenses/LGPL-2.1.txt</file>
     <file alias="GPL-2.0.txt">licenses/GPL-2.0.txt</file>
-    <!-- MIT is used by two libraries with different copyright holders; each gets
-         its own file so the displayed notice matches the library (MIT requires the
-         copyright notice to be reproduced verbatim). -->
+    <!-- MIT is used by several components with different copyright holders; each
+         gets its own file so the displayed notice matches (MIT requires the
+         copyright notice to be reproduced verbatim). qt-toast is a fork; its file
+         notes that and reproduces the upstream notice. -->
     <file alias="MIT-nlohmann.txt">licenses/MIT-nlohmann.txt</file>
     <file alias="MIT-glaze.txt">licenses/MIT-glaze.txt</file>
+    <file alias="MIT-qt-toast.txt">licenses/MIT-qt-toast.txt</file>
     <file alias="Zlib.txt">licenses/Zlib.txt</file>
 </qresource>
 </RCC>

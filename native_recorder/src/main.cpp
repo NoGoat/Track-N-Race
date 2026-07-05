@@ -20,6 +20,8 @@
 #include "BreezePalette.h"
 #include "IconUtils.h"
 
+#include <tnrp/TnrdReader.h>   // startup sweep of stale playback temp files
+
 // Build a multi-resolution app icon from every frame in the .ico. QIcon(".ico")
 // alone only takes the first frame (16x16 here), which the window manager then
 // upscales into a pixelated mess for the (HiDPI) titlebar. Adding all frames lets
@@ -216,6 +218,10 @@ int main(int argc, char* argv[]) {
         applyBreezeFont();
         applyBreezeIconTheme();
     }
+
+    // Reclaim decompression temp files leaked by earlier runs (or the Electron
+    // app) that exited abnormally — before this session creates its own.
+    tnrp::TnrdReader::sweepStaleTempFiles();
 
     MainWindow w;
     w.show();

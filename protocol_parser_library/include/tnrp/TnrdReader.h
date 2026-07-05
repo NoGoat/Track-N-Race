@@ -30,6 +30,13 @@ public:
     void close();
     bool isLoaded() const { return tempFile_ != nullptr; }
 
+    // Delete stale decompression temp files ("tracknrace_*.tmp") left in the OS
+    // temp dir by earlier runs (or the Electron app) that exited abnormally, so
+    // they can't accumulate and fill /tmp. Call once at startup — a running
+    // session's own temp is created afterwards, so it is never a target. Files an
+    // active instance still holds open are skipped (their unlink simply fails).
+    static void sweepStaleTempFiles();
+
     float startTime() const { return startTime_; }
     float totalTime() const { return totalTime_; }
 

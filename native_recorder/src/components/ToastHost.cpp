@@ -36,9 +36,9 @@ void ToastHost::show(const ToastSpec& spec) {
         persistent_ = nullptr;
     }
 
-    // ToolTipBase reads as a raised card distinct from the page background; the
+    // Button reads as a raised card distinct from the page background; the
     // per-event accent drives the title, secondary text for the sub line.
-    const QColor bg  = container_->palette().color(QPalette::ToolTipBase);
+    const QColor bg  = container_->palette().color(QPalette::Button);
     const QColor sub = container_->palette().color(QPalette::PlaceholderText);
 
     // Parented to the central content widget so the toast renders inline (a child

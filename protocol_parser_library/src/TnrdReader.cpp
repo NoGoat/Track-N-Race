@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
@@ -83,11 +84,40 @@ static gzFile gzOpenRead(const std::string& utf8Path) {
 
 TnrdReader::~TnrdReader() { close(); }
 
+void TnrdReader::sweepStaleTempFiles() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec);
+    if (ec) return;
+
+    int removed = 0;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::path& p = it->path();
+        const std::string name = p.filename().string();
+        // Match both apps' decompression temps: "tracknrace_*.tmp" (covers the
+        // current "tracknrace_temp_*" and any legacy "tracknrace_<ts>.tmp").
+        if (name.rfind("tracknrace_", 0) != 0) continue;
+        if (name.size() < 4 || name.substr(name.size() - 4) != ".tmp") continue;
+        std::error_code rmEc;
+        if (fs::remove(p, rmEc)) ++removed;   // a file held open elsewhere just fails; skip it
+    }
+    if (removed > 0)
+        std::fprintf(stderr, "[tnrd] startup sweep: removed %d stale temp file(s)\n", removed);
+}
+
 bool TnrdReader::decompress(const std::string& srcPath, const std::string& destPath) {
     gzFile gz = gzOpenRead(srcPath);
-    if (!gz) return false;
+    if (!gz) {
+        std::fprintf(stderr, "[tnrd] decompress: gzopen failed for '%s' (missing/unreadable/not-gzip)\n",
+                     srcPath.c_str());
+        return false;
+    }
     std::FILE* out = std::fopen(destPath.c_str(), "wb");
-    if (!out) { gzclose(gz); return false; }
+    if (!out) {
+        std::fprintf(stderr, "[tnrd] decompress: cannot create temp file '%s'\n", destPath.c_str());
+        gzclose(gz);
+        return false;
+    }
     char buf[131072];
     int n;
     bool ok = true;
@@ -102,10 +132,18 @@ bool TnrdReader::decompress(const std::string& srcPath, const std::string& destP
     // instead of discarding the whole recording — buildIndex() drops the final
     // partial line. Only a genuine fwrite failure, or a file that yielded no
     // usable bytes at all, counts as a hard failure.
-    if (writeFailed) ok = false;
-    else if (n < 0)  ok = (written > 0);
+    if (writeFailed) {
+        std::fprintf(stderr, "[tnrd] decompress: write failed to '%s' (disk full?)\n", destPath.c_str());
+        ok = false;
+    } else if (n < 0) {
+        ok = (written > 0);   // truncated tail (crash mid-record) is OK if we got some data
+        if (!ok)
+            std::fprintf(stderr, "[tnrd] decompress: gzread error and 0 bytes recovered from '%s'\n",
+                         srcPath.c_str());
+    }
     gzclose(gz);
     std::fclose(out);
+    if (ok) std::fprintf(stderr, "[tnrd] decompress: OK, %llu bytes\n", written);
     return ok;
 }
 
@@ -121,7 +159,10 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     playPos_   = 0;
 
     std::FILE* f = std::fopen(filePath.c_str(), "rb");
-    if (!f) return;
+    if (!f) {
+        std::fprintf(stderr, "[tnrd] buildIndex: cannot open '%s'\n", filePath.c_str());
+        return;
+    }
     { int c; while ((c = std::fgetc(f)) != EOF && c != '\n') {} }  // skip header
 
     constexpr long CHUNK = 2 * 1024 * 1024;
@@ -229,17 +270,29 @@ void TnrdReader::buildIndex(const std::string& filePath) {
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
     close();
+    std::fprintf(stderr, "[tnrd] load: '%s'\n", path.c_str());
     namespace fs = std::filesystem;
-    auto tmpName = "tracknrace_" + std::to_string(
+    // Prefix shared with the Electron app ("tracknrace_temp_") so either app's
+    // startup sweep reclaims the other's leftovers (see sweepStaleTempFiles).
+    auto tmpName = "tracknrace_temp_" + std::to_string(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count()) + ".tmp";
     tempPath_ = (fs::temp_directory_path() / tmpName).string();
 
-    if (!decompress(path, tempPath_)) { close(); return false; }
+    if (!decompress(path, tempPath_)) {
+        std::fprintf(stderr, "[tnrd] load FAILED: decompress step for '%s'\n", path.c_str());
+        close();
+        return false;
+    }
 
     {
         std::FILE* f = std::fopen(tempPath_.c_str(), "rb");
-        if (!f) { close(); return false; }
+        if (!f) {
+            std::fprintf(stderr, "[tnrd] load FAILED: cannot reopen decompressed temp '%s'\n",
+                         tempPath_.c_str());
+            close();
+            return false;
+        }
         std::string line;
         char hb[8192];
         while (std::fgets(hb, sizeof(hb), f)) {
@@ -250,16 +303,38 @@ bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
         std::fclose(f);
         outHeader = HeaderRow{};
         auto ec = glz::read<kPartialRead>(outHeader, line);
-        if (ec || outHeader.magic != "TNRD_V1") { close(); return false; }
+        if (ec) {
+            std::fprintf(stderr, "[tnrd] load FAILED: header JSON parse error (first line, %zu bytes)\n",
+                         line.size());
+            close();
+            return false;
+        }
+        if (outHeader.magic != "TNRD_V1") {
+            std::fprintf(stderr, "[tnrd] load FAILED: bad magic '%s' (expected 'TNRD_V1') — not a TNRD recording?\n",
+                         outHeader.magic.c_str());
+            close();
+            return false;
+        }
     }
 
     buildIndex(tempPath_);
-    if (index_.empty()) { close(); return false; }
+    if (index_.empty()) {
+        std::fprintf(stderr, "[tnrd] load FAILED: index empty (no indexable rows) for '%s'\n", path.c_str());
+        close();
+        return false;
+    }
 
     tempFile_ = std::fopen(tempPath_.c_str(), "rb");
-    if (!tempFile_) { close(); return false; }
+    if (!tempFile_) {
+        std::fprintf(stderr, "[tnrd] load FAILED: final reopen of temp '%s' failed\n", tempPath_.c_str());
+        close();
+        return false;
+    }
     std::fseek(tempFile_, 0, SEEK_END);
     tempFileSize_ = std::ftell(tempFile_);
+    std::fprintf(stderr, "[tnrd] load OK: rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
+                 index_.size(), startTime_, totalTime_,
+                 outHeader.track_name.c_str(), outHeader.session_name.c_str());
     return true;
 }
 

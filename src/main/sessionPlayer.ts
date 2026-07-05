@@ -121,7 +121,10 @@ export function sweepTempDir() {
     const tempDir = os.tmpdir()
     const files = fs.readdirSync(tempDir)
     for (const file of files) {
-      if (file.startsWith('tracknrace_temp_') && file.endsWith('.tmp')) {
+      // Broad "tracknrace_*.tmp" match so this also reclaims the native app's
+      // decompression temps (and any legacy "tracknrace_<ts>.tmp" names), not just
+      // this app's "tracknrace_temp_*". Both apps share this prefix convention.
+      if (file.startsWith('tracknrace_') && file.endsWith('.tmp')) {
         try {
           fs.unlinkSync(path.join(tempDir, file))
         } catch (e) {
@@ -142,11 +145,16 @@ function cleanupTempFile() {
     const pathToDelete = activeTempFilePath
     activeTempFilePath = null
     tempFileSize = 0
-    fs.unlink(pathToDelete, (err) => {
-      if (err && (err as any).code !== 'ENOENT') {
-        console.error('[Player] Failed to delete temp file:', err.message)
+    // Synchronous: this runs from the app 'will-quit' handler, which does not wait
+    // for async work — an async fs.unlink can be cut off by process exit, leaking
+    // the temp. unlinkSync completes before we return.
+    try {
+      fs.unlinkSync(pathToDelete)
+    } catch (err) {
+      if ((err as any).code !== 'ENOENT') {
+        console.error('[Player] Failed to delete temp file:', (err as Error).message)
       }
-    })
+    }
   }
 }
 

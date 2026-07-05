@@ -21,6 +21,7 @@ import {
   seek as playerSeek,
   setSpeed as playerSetSpeed,
   closePlayer as playerClose,
+  sweepTempDir,
   setOnPlayerStateChange as setOnPlaybackState
 } from './sessionPlayer'
 
@@ -340,6 +341,12 @@ app.whenReady().then(() => {
   }
 
   Menu.setApplicationMenu(null)
+
+  // Reclaim decompression temp files leaked by prior runs (or the native app) that
+  // exited abnormally. Safe here: secondary instances already exited above, so we
+  // hold the single-instance lock and no other session's temp is at risk.
+  sweepTempDir()
+
   console.log('[main] calling startBridge()')
   startBridge()   // spawns the native protocol_parser; owns UDP + recording
   console.log('[main] calling createWindow()')

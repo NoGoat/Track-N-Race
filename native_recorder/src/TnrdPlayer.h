@@ -6,6 +6,7 @@
 #include <QString>
 #include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 #include <nlohmann/json.hpp>
 
@@ -68,6 +69,8 @@ private:
     bool         loading_     = false;
 
     std::atomic<bool> cancelled_{false};
+    std::thread       loadThread_;   // background load/scan; joined (not detached) so
+                                     // the reader (and its temp file) outlive it
 
     QTimer*       timer_       = nullptr;
     QElapsedTimer elapsed_;

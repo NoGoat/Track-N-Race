@@ -34,7 +34,7 @@ TnrdPlayer::TnrdPlayer(QObject* parent) : QObject(parent) {
 }
 
 TnrdPlayer::~TnrdPlayer() {
-    cancelled_ = true;
+    cancelled_ = true;   // cleanup() joins the load thread (see below)
     cleanup();
 }
 
@@ -42,7 +42,7 @@ TnrdPlayer::~TnrdPlayer() {
 
 void TnrdPlayer::load(const QString& path) {
     if (loading_) return;
-    cleanup();
+    cleanup();               // reaps the previous (finished) load thread, closes the reader
     cancelled_ = false;
     loading_   = true;
 
@@ -52,7 +52,9 @@ void TnrdPlayer::load(const QString& path) {
 
     // The reader decompresses + indexes the whole file and we walk it once to
     // build the chart session — all on a background thread so the UI stays live.
-    std::thread([this, src] {
+    // Joined (not detached) in the destructor / next load, so the reader can't be
+    // torn down while this thread is still using it.
+    loadThread_ = std::thread([this, src] {
         auto fail = [this] {
             QMetaObject::invokeMethod(this, [this] {
                 loading_ = false;
@@ -60,10 +62,13 @@ void TnrdPlayer::load(const QString& path) {
             }, Qt::QueuedConnection);
         };
 
-        if (cancelled_) { fail(); return; }
+        qInfo("[player] load requested: %s", src.c_str());
+        if (cancelled_) { qInfo("[player] load cancelled before start"); fail(); return; }
 
         tnrp::HeaderRow header;
         if (!reader_.load(src, header) || cancelled_) {
+            qWarning("[player] reader load failed%s for: %s (see [tnrd] logs above for the reason)",
+                     cancelled_ ? " (cancelled)" : "", src.c_str());
             reader_.close();
             fail();
             return;
@@ -72,6 +77,8 @@ void TnrdPlayer::load(const QString& path) {
         startTime_   = reader_.startTime();
         totalTime_   = reader_.totalTime();
         currentTime_ = startTime_;
+        qInfo("[player] reader loaded: start=%.2f total=%.2f duration=%.2f",
+              startTime_, totalTime_, totalTime_ - startTime_);
 
         scanIntoSessionData();
         if (cancelled_) { reader_.close(); fail(); return; }
@@ -104,7 +111,7 @@ void TnrdPlayer::load(const QString& path) {
             static const std::vector<uint8_t> kInitStateTypes = { 2, 3, 13 };
             emitRows(reader_.latestOfTypes(startTime_, kInitStateTypes));
         }, Qt::QueuedConnection);
-    }).detach();
+    });
 }
 
 void TnrdPlayer::play() {
@@ -212,13 +219,15 @@ void TnrdPlayer::scanIntoSessionData() {
     // Every row in the recording, in time order. The reader returns raw JSONL; we
     // only fully parse the row types the charts consume.
     std::vector<std::string> rows = reader_.readRange(startTime_, totalTime_);
+    qInfo("[player] scan: %zu raw rows in [%.2f, %.2f]", rows.size(), startTime_, totalTime_);
+    int parseFails = 0;
     for (const std::string& s : rows) {
-        if (cancelled_) return;
+        if (cancelled_) { qInfo("[player] scan cancelled"); return; }
         int tid = scanType(s.data(), (int)s.size());
         if (tid != 1 && tid != 2 && tid != 3 && tid != 4 && tid != 11 && tid != 12)
             continue;
         nlohmann::json j;
-        try { j = nlohmann::json::parse(s); } catch (...) { continue; }
+        try { j = nlohmann::json::parse(s); } catch (...) { ++parseFails; continue; }
         const float t = j.value("session_time", lastT);
         lastT = t;
         if (tid == 1) {
@@ -278,6 +287,11 @@ void TnrdPlayer::scanIntoSessionData() {
         std::sort(l.tel.begin(), l.tel.end(), byT);
         std::sort(l.sts.begin(), l.sts.end(), byT);
     }
+
+    qInfo("[player] scan done: tel=%d sts=%d tyre=%d motion=%d motionEx=%d laps=%d parseFails=%d",
+          (int)scanned_.telBuf.size(),  (int)scanned_.stsBuf.size(),
+          (int)scanned_.tyreBuf.size(), (int)scanned_.motionBuf.size(),
+          (int)scanned_.motionExBuf.size(), (int)scanned_.laps.size(), parseFails);
 }
 
 void TnrdPlayer::emitRows(const std::vector<std::string>& rows) {
@@ -295,6 +309,12 @@ void TnrdPlayer::emitState() {
 }
 
 void TnrdPlayer::cleanup() {
+    // Join any background load first so we never close the reader (deleting its
+    // temp file) while that thread is still using it. On cancellation the thread
+    // closes the reader itself before returning, so the temp is never leaked.
+    // Safe from deadlock: the load thread only ever posts to the UI thread via
+    // QueuedConnection (non-blocking) and never calls cleanup() itself.
+    if (loadThread_.joinable()) loadThread_.join();
     reader_.close();
     startTime_   = 0.0f;
     totalTime_   = 0.0f;

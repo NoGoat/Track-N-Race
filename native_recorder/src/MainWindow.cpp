@@ -243,6 +243,10 @@ MainWindow::MainWindow(QWidget* parent)
             msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
             msgBox.setDefaultButton(QMessageBox::No);
             if (msgBox.exec() == QMessageBox::Yes) {
+                const QFileInfo fi(path);
+                qInfo("[open] recording requested: '%s' exists=%d readable=%d size=%lld bytes",
+                      qUtf8Printable(path), fi.exists(), fi.isReadable(),
+                      static_cast<long long>(fi.size()));
                 playback_->load(path);
             }
         }
@@ -255,6 +259,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(playback_, &PlaybackController::loadFailed, this, [this] {
+        qWarning("[open] load failed — surfacing 'Load Failed' dialog (see [player]/[tnrd] logs above)");
         loadingOverlay_->hide();
         QMessageBox::warning(this, "Load Failed", "Could not open the recording file.");
     });
