@@ -183,26 +183,24 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     spacerLay->addWidget(timerLabel_);
     addWidget(spacer);
 
-    // Window-size segmented control: an exclusive row of checkable QToolButtons
-    // drawn edge-to-edge, styled by the active QStyle (so it renders native to
-    // whatever platform/theme is running, not a fixed look).
-    windowSeg_ = new QWidget;
-    QHBoxLayout* segLay = new QHBoxLayout(windowSeg_);
-    segLay->setContentsMargins(0, 0, 0, 0);
-    segLay->setSpacing(0);
-    windowGroup_ = new QButtonGroup(this);
-    windowGroup_->setExclusive(true);
+    // Window-size selector: a flat (auto-raised) dropdown button showing the
+    // current window; the options live in its popup menu. Same auto-raise look as
+    // the overflow button, and far narrower than the old segmented row.
+    windowMenu_ = new QMenu(this);
     for (int i = 0; i < kWindowOptionCount; ++i) {
-        SegmentButton* b = new SegmentButton;
-        b->setText(kWindowOptions[i].label);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        windowGroup_->addButton(b, i);
-        segLay->addWidget(b);
+        QAction* a = windowMenu_->addAction(kWindowOptions[i].label);
+        a->setCheckable(true);
+        a->setChecked(i == windowIdx_);
+        connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
     }
-    static_cast<QToolButton*>(windowGroup_->button(1))->setChecked(true);   // default 30s
-    windowAct_ = addWidget(windowSeg_);
-    connect(windowGroup_, &QButtonGroup::idClicked, this, [this](int idx) { applyChartWindow(idx); });
+    windowBtn_ = new QToolButton;
+    windowBtn_->setAutoRaise(true);
+    windowBtn_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);   // text + menu arrow
+    windowBtn_->setPopupMode(QToolButton::InstantPopup);
+    windowBtn_->setMenu(windowMenu_);
+    windowBtn_->setText(kWindowOptions[windowIdx_].label);          // default 30s
+    windowBtn_->setToolTip("Chart window");
+    windowAct_ = addWidget(windowBtn_);
 
     openAct_ = addAction(openRecordingIcon(this), "Open Recording");
     connect(openAct_, &QAction::triggered, this, &AppToolbar::openRecordingRequested);
@@ -331,11 +329,14 @@ void AppToolbar::applyChartWindow(int idx) {
     if (idx < 0 || idx >= kWindowOptionCount) return;
     windowIdx_ = idx;
     emit chartWindowChanged(kWindowOptions[idx].secs);
-    // Keep the inline segment in sync when the choice came from the overflow menu
-    // (a programmatic setChecked emits idToggled, not idClicked, so no recursion).
-    if (windowGroup_)
-        if (auto* b = windowGroup_->button(idx))
-            if (!b->isChecked()) b->setChecked(true);
+    // Reflect the choice on the dropdown button + its menu (the choice may have
+    // come from the button's menu or the overflow menu).
+    if (windowBtn_) windowBtn_->setText(kWindowOptions[idx].label);
+    if (windowMenu_) {
+        const auto acts = windowMenu_->actions();
+        for (int i = 0; i < (int)acts.size() && i < kWindowOptionCount; ++i)
+            acts[i]->setChecked(i == idx);
+    }
 }
 
 // Collapse low-priority toolbar items into the "⋯" menu when the window is too
@@ -369,7 +370,7 @@ void AppToolbar::relayout() {
     std::vector<int> tabW(n);
     int sumTabs = 0;
     for (int i = 0; i < n; ++i) { tabW[i] = pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
-    const int wSeg   = windowSeg_->sizeHint().width();
+    const int wSeg   = windowBtn_->sizeHint().width();
     const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = overflowBtn_->sizeHint().width();
     // The session timer lives inside the (otherwise collapsible) spacer, so the

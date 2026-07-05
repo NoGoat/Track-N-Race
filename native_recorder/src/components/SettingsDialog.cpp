@@ -324,6 +324,25 @@ QWidget* SettingsDialog::buildAppearancePage() {
     form->addRow("Toolbar:", toolbarLabelsCheck_);
 
     form->addRow(horizontalSeparator());
+    form->addRow(subHeading("Graphs"));
+
+    // OpenGL multisampling (MSAA) for the charts: higher = smoother lines but more
+    // GPU fill cost. userData is the sample count passed to QCustomPlot::setOpenGl;
+    // "Off" (0) disables anti-aliasing entirely (fastest, aliased lines).
+    chartMsaaCombo_ = new QComboBox;
+    chartMsaaCombo_->addItem("Off", 0);
+    for (int s : { 2, 4, 8, 16 })
+        chartMsaaCombo_->addItem(QString("%1x").arg(s), s);
+    const int curMsaa = mainWindow_->chartMsaaSamples();
+    const int msaaIdx = chartMsaaCombo_->findData(curMsaa);
+    chartMsaaCombo_->setCurrentIndex(msaaIdx >= 0 ? msaaIdx : chartMsaaCombo_->findData(4));
+    // Connect after selecting so the initial index set above doesn't apply.
+    connect(chartMsaaCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartMsaaSamples(chartMsaaCombo_->currentData().toInt());
+    });
+    form->addRow("Anti-aliasing:", chartMsaaCombo_);
+
+    form->addRow(horizontalSeparator());
     form->addRow(subHeading("Accessibility"));
 
     QWidget* contrastRow = new QWidget;

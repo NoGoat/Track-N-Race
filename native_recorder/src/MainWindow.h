@@ -63,6 +63,8 @@ public:
     void    setToolbarLabels(bool checked);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
+    int     chartMsaaSamples() const { return settings.value("ui/chartMsaaSamples", 4).toInt(); }
+    void    setChartMsaaSamples(int samples);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
     bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", true).toBool(); }

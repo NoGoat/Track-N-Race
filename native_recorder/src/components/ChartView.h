@@ -56,6 +56,12 @@ public:
     explicit ChartView(QWidget* parent = nullptr);
     ~ChartView() override;
 
+    // GPU render settings — OpenGL multisampling (MSAA) and the fast-polyline
+    // plotting hint — are read from QSettings and shared by every chart. Each
+    // ChartView applies them on construction; call this after changing either
+    // setting to re-apply to all live charts and repaint, no restart needed.
+    static void reapplyRenderSettings();
+
     // Declare the chart. addAxis/addSeries return opaque ids used by the data
     // calls below. Series are drawn in creation order (later draws on top).
     int  addAxis(const AxisSpec& spec);

@@ -56,8 +56,8 @@ private:
     void refreshThemedIcons();
 
     QButtonGroup* pageGroup_    = nullptr;   // exclusive page tabs
-    QButtonGroup* windowGroup_  = nullptr;   // exclusive window-size segment
-    QWidget*      windowSeg_    = nullptr;   // window-size segmented control widget
+    QToolButton*  windowBtn_    = nullptr;   // window-size dropdown button
+    QMenu*        windowMenu_   = nullptr;   // its popup menu (window-size options)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
     QToolButton*  overflowBtn_  = nullptr;   // "⋯" menu button (hidden until needed)
     QAction*      overflowAct_  = nullptr;   // its toolbar action (toggle visibility)

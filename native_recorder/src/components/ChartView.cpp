@@ -3,9 +3,12 @@
 #include "../third_party/qcustomplot/qcustomplot.h"
 
 #include <QEvent>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QLocale>
 #include <QMouseEvent>
+#include <QSet>
+#include <QSettings>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -68,6 +71,13 @@ struct ChartView::Impl {
     QCPItemLine*  crosshair = nullptr;
     QLabel*       tooltip   = nullptr;    // floating, cursor-following value readout
 
+    // FPS / replot-timing diagnostics (opt-in, see constructor).
+    QElapsedTimer fpsFrameTimer;          // spans one beforeReplot→afterReplot
+    QElapsedTimer fpsWindow;              // the current ~1s reporting window
+    int           fpsCount   = 0;         // replots completed this window
+    double        fpsAccumMs = 0.0;       // summed render time this window
+    double        fpsLastMs  = 0.0;       // most recent replot's render time
+
     static QCPAxis::AxisType toQcp(Side s) {
         switch (s) {
             case Side::Bottom: return QCPAxis::atBottom;
@@ -77,6 +87,36 @@ struct ChartView::Impl {
         return QCPAxis::atLeft;
     }
 };
+
+namespace {
+// Every live ChartView, so a settings change can be pushed to all of them at
+// once (see ChartView::reapplyRenderSettings). Charts add/remove themselves in
+// their constructor/destructor.
+QSet<ChartView*>& liveCharts() { static QSet<ChartView*> set; return set; }
+
+// Chart GPU-render settings live in the shared app QSettings so ChartView needn't
+// depend on MainWindow. Default: 4x MSAA — smooth thin lines at a fraction of the
+// 16x fill cost. 0 means anti-aliasing off entirely (fastest, aliased lines).
+int readMsaaSamples() {
+    QSettings s("TrackNRace", "NativeRecorder");
+    const int n = s.value("ui/chartMsaaSamples", 4).toInt();
+    return (n == 0 || n == 2 || n == 4 || n == 8 || n == 16) ? n : 4;   // clamp to offered set
+}
+
+// Apply the render settings to one plot. setOpenGl() recreates the paint buffers
+// with the new sample count, so this is safe to call at runtime for a live change.
+void applyRenderSettings(QCustomPlot* p) {
+    const int samples = readMsaaSamples();
+#ifdef QCUSTOMPLOT_USE_OPENGL
+    p->setOpenGl(true, samples);   // sets the aeAll antialiasing override on success
+#endif
+    // "Off" (0 samples): also drop QCustomPlot's antialiasing override so lines
+    // render aliased (cheapest). Any >0 count restores full AA — setOpenGl re-applies
+    // aeAll above, and for non-GL builds we set it explicitly so an off→on switch
+    // isn't sticky.
+    p->setAntialiasedElements(samples == 0 ? QCP::aeNone : QCP::aeAll);
+}
+}  // namespace
 
 ChartView::ChartView(QWidget* parent)
     : QWidget(parent), d_(std::make_unique<Impl>())
@@ -91,15 +131,58 @@ ChartView::ChartView(QWidget* parent)
 
     QCustomPlot* p = d_->plot;
 
+    // GPU rasterization (OpenGL), with the MSAA level read from the user's
+    // settings (Appearance tab). The software QPainter path costs ~90 ms/frame
+    // here, and seconds/frame at a 10-min window; OpenGL renders the same content
+    // in single-digit ms. MSAA trades fill cost for line smoothness.
+    applyRenderSettings(p);
+    liveCharts().insert(this);
+
 #ifdef QCUSTOMPLOT_USE_OPENGL
-    // GPU rasterization. The software QPainter path costs ~90 ms/frame even with
-    // little data here, and seconds/frame at a 10-min window; OpenGL renders the
-    // same content in single-digit ms (measured). 4x multisampling keeps lines
-    // smooth without the cost/compat risk of the 16x default.
-    p->setOpenGl(true, 16);
+    // openGl() reflects whether QCustomPlot *kept* the GL path on: setOpenGl()
+    // quietly leaves it disabled if the GL context/extensions aren't usable, so
+    // this is the per-chart ground truth (vs. the compile-time request above).
+    qInfo("[opengl] ChartView %p: OpenGL requested (%dx MSAA); QCustomPlot openGl()=%s",
+          static_cast<void*>(this), readMsaaSamples(),
+          p->openGl() ? "true (GPU)" : "false (software fallback)");
+#else
+    qInfo("[opengl] ChartView %p: built without OpenGL - software QPainter rendering",
+          static_cast<void*>(this));
 #endif
-    p->setBackground(Qt::NoBrush);
-    p->setBackground(QBrush(Qt::transparent));
+
+    // FPS / replot-timing diagnostics. A Qt Widgets app has no fixed render loop;
+    // charts repaint on demand, so "FPS" here is the chart's replot rate — exactly
+    // what the OpenGL path accelerates. Opt-in via TNR_FPS=1 so normal runs stay
+    // quiet. We time each replot (beforeReplot→afterReplot) and, once per second,
+    // log this chart's replot count and mean/last render time. Labelled by the
+    // concrete subclass (GForceChart, PowerChart, …) so charts are told apart.
+    if (qEnvironmentVariableIntValue("TNR_FPS") > 0) {
+        connect(p, &QCustomPlot::beforeReplot, this, [this]() {
+            d_->fpsFrameTimer.restart();
+        });
+        connect(p, &QCustomPlot::afterReplot, this, [this]() {
+            const double ms = d_->fpsFrameTimer.nsecsElapsed() / 1.0e6;
+            d_->fpsAccumMs += ms;
+            d_->fpsLastMs = ms;
+            ++d_->fpsCount;
+            const qint64 winMs = d_->fpsWindow.elapsed();
+            if (winMs >= 1000) {
+                qInfo("[fps] %-14s %.1f replots/s  avg %.2f ms  last %.2f ms",
+                      metaObject()->className(),
+                      d_->fpsCount * 1000.0 / winMs,
+                      d_->fpsAccumMs / d_->fpsCount,
+                      d_->fpsLastMs);
+                d_->fpsCount = 0;
+                d_->fpsAccumMs = 0.0;
+                d_->fpsWindow.restart();
+            }
+        });
+        d_->fpsWindow.start();
+    }
+
+    // Opaque background (theme's Window colour, set in applyPaletteText) rather
+    // than transparent: a transparent chart forces the GPU to alpha-composite the
+    // whole rect against what's behind it every replot; an opaque fill skips that.
     // Auto margins so the value/time tick labels have room to draw (with zero
     // margins QCustomPlot renders them off-widget and they vanish).
     p->axisRect()->setAutoMargins(QCP::msAll);
@@ -118,7 +201,15 @@ ChartView::ChartView(QWidget* parent)
     applyPaletteText();
 }
 
-ChartView::~ChartView() = default;
+ChartView::~ChartView() { liveCharts().remove(this); }
+
+void ChartView::reapplyRenderSettings()
+{
+    for (ChartView* v : liveCharts()) {
+        applyRenderSettings(v->d_->plot);
+        v->d_->plot->replot(QCustomPlot::rpQueuedReplot);
+    }
+}
 
 int ChartView::addAxis(const AxisSpec& spec)
 {
@@ -387,6 +478,10 @@ void ChartView::requestReplot()
 
 void ChartView::applyPaletteText()
 {
+    // Opaque background in the theme's Window colour (see constructor) — kept here
+    // so it re-applies on theme/palette changes alongside the text colours.
+    d_->plot->setBackground(QBrush(palette().color(QPalette::Window)));
+
     const QColor text = palette().color(QPalette::Text);
     for (int i = 0; i < d_->axes.size(); ++i) {
         if (d_->axisInheritColor[i]) {

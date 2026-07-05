@@ -18,6 +18,7 @@
 #include "components/StrategyPage.h"
 #include "components/SettingsDialog.h"
 #include "components/TrackMapWidget.h"
+#include "components/ChartView.h"   // ChartView::reapplyRenderSettings (chart GPU settings)
 #include "components/ToastEvents.h"
 #include "components/Toast.h"
 #include "components/ToastHost.h"
@@ -590,6 +591,11 @@ void MainWindow::setContrastThreshold(float val) {
     settings.setValue("ui/contrastThreshold", val);
     dirtyTiming_ = true;
     scheduleUiRefresh();
+}
+
+void MainWindow::setChartMsaaSamples(int samples) {
+    settings.setValue("ui/chartMsaaSamples", samples);
+    ChartView::reapplyRenderSettings();   // live re-apply to every chart, no restart
 }
 
 void MainWindow::setTrackMapLabelMode(int mode) {
