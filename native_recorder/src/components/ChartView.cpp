@@ -92,6 +92,7 @@ struct ChartView::Impl {
 
     QVector<Panel>       panels;          // panels[0] == default rect/legend
     int                  panelCols = 1;   // grid columns (see layoutPanels)
+    QVector<QCPLayoutGrid*> rowGrids;     // nested per-row grids from layoutPanelsRows
 
     QCPAxis*      keyAxis   = nullptr;    // panel 0's Bottom axis (alias for addBand)
     bool          hoverOn   = false;
@@ -469,6 +470,45 @@ void ChartView::layoutPanels(int columns)
 {
     d_->panelCols = qMax(1, columns);
     applyPanelLayout();
+}
+
+void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
+{
+    QCPLayoutGrid* top = d_->plot->plotLayout();
+
+    // Detach every panel element from whatever grid currently holds it (the top
+    // grid, or a row sub-grid from a previous call), so we can freely re-place.
+    for (const Impl::Panel& pn : d_->panels)
+        if (QCPLayout* parent = pn.element()->layout()) parent->take(pn.element());
+
+    // Drop the (now-empty) row sub-grids from the previous call.
+    for (QCPLayoutGrid* g : d_->rowGrids) { top->take(g); delete g; }
+    d_->rowGrids.clear();
+    top->simplify();
+
+    // Top grid is a single column, so a row holding one element spans the full
+    // width; a row with several panels gets a nested horizontal sub-grid.
+    int r = 0;
+    for (const QVector<int>& row : rows) {
+        QVector<int> valid;
+        for (int id : row) if (id >= 0 && id < d_->panels.size()) valid.append(id);
+        if (valid.isEmpty()) continue;
+
+        if (valid.size() == 1) {
+            top->addElement(r, 0, d_->panels[valid[0]].element());
+        } else {
+            QCPLayoutGrid* rg = new QCPLayoutGrid;
+            rg->setMargins(QMargins(0, 0, 0, 0));
+            for (int c = 0; c < valid.size(); ++c)
+                rg->addElement(0, c, d_->panels[valid[c]].element());
+            d_->rowGrids.append(rg);
+            top->addElement(r, 0, rg);
+        }
+        ++r;
+    }
+
+    top->simplify();
+    d_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ChartView::applyPanelLayout()

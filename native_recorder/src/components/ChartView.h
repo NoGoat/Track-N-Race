@@ -78,6 +78,12 @@ public:
     // per-panel title and colour-key legend live inside the plot.
     int  addPanel();
     void layoutPanels(int columns);
+    // Arrange panels into explicit rows (each inner list is the panel ids placed
+    // left-to-right in that row). A row with a single panel spans the full width,
+    // so this supports asymmetric layouts (e.g. two panels over one wide one).
+    // Panels not listed are hidden. Supersedes layoutPanels/setPanelVisible for
+    // callers that manage their own arrangement.
+    void layoutPanelsRows(const QVector<QVector<int>>& rows);
     void setPanelVisible(int panelId, bool on);
     void setPanelTitle(int panelId, const QString& title);
     void setPanelLegendVisible(int panelId, bool on);

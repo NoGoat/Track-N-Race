@@ -125,12 +125,8 @@ set(SOURCES
     src/components/EditMiscLayoutDialog.cpp
     src/components/PowerChart.cpp
     src/components/PowerChart.h
-    src/components/GearChart.cpp
-    src/components/GearChart.h
-    src/components/InputsChart.cpp
-    src/components/InputsChart.h
-    src/components/SteeringChart.cpp
-    src/components/SteeringChart.h
+    src/components/InputChartsWidget.cpp
+    src/components/InputChartsWidget.h
     src/components/GForceChart.cpp
     src/components/GForceChart.h
     src/components/RideHeightChart.cpp

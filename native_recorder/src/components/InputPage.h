@@ -5,10 +5,7 @@
 
 #include "InputLayout.h"
 
-class QFrame;
-class GearChart;
-class InputsChart;
-class SteeringChart;
+class InputChartsWidget;
 class SessionModel;
 
 // Input tab — gear / throttle-brake / steering charts bound to the
@@ -33,15 +30,7 @@ private:
     void saveLayout(const InputLayout& layout);
     void applyLayout(const InputLayout& layout);
 
-    QWidget*       topRow_            = nullptr;
-    QWidget*       gearContainer_     = nullptr;
-    QWidget*       inputsContainer_   = nullptr;
-    QFrame*        vdiv_              = nullptr;
-    QWidget*       steeringContainer_ = nullptr;
-    QFrame*        hdiv_              = nullptr;
-    GearChart*     gearChart_         = nullptr;
-    InputsChart*   inputsChart_       = nullptr;
-    SteeringChart* steeringChart_     = nullptr;
+    InputChartsWidget* charts_ = nullptr;   // gear / throttle-brake / steering, one plot
 
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };
