@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 // Subtle grey shared by every axis line, tick and grid, so the dark chart reads
@@ -54,6 +55,30 @@ protected:
             .arg(whole / 60).arg(whole % 60, 2, 10, QChar('0')).arg(tenths % 10);
     }
 };
+
+// Gap left between panels (see layoutPanelsRows); dividers are drawn down its
+// centre so they never crowd a panel's axis labels.
+constexpr int PANEL_GAP = 12;
+
+// Minimum right margin reserved on each multi-panel axis rect so the last x-axis
+// tick label (centred on the right edge) stays inside the panel instead of
+// spilling into the gap where the divider sits.
+constexpr int PANEL_LABEL_CLEAR = 24;
+
+// A whole-plot overlay that draws the divider lines between panels. Drawing them
+// as one overlay (rather than per-cell layout elements) keeps every line the same
+// crisp width, centres them in the inter-panel gaps, and lets horizontals and
+// verticals cross and meet cleanly. The geometry lives in ChartView (which owns
+// the panels), so the actual drawing is injected as a callback.
+class DividerOverlay : public QCPLayerable {
+public:
+    DividerOverlay(QCustomPlot* plot, std::function<void(QCPPainter*)> fn)
+        : QCPLayerable(plot, QStringLiteral("axes")), fn_(std::move(fn)) {}
+protected:
+    void applyDefaultAntialiasingHint(QCPPainter*) const override {}
+    void draw(QCPPainter* painter) override { if (fn_) fn_(painter); }
+    std::function<void(QCPPainter*)> fn_;
+};
 }
 
 // All QCustomPlot specifics live here, behind ChartView's backend-agnostic API.
@@ -92,7 +117,10 @@ struct ChartView::Impl {
 
     QVector<Panel>       panels;          // panels[0] == default rect/legend
     int                  panelCols = 1;   // grid columns (see layoutPanels)
-    QVector<QCPLayoutGrid*> rowGrids;     // nested per-row grids from layoutPanelsRows
+    QVector<QCPLayoutGrid*>  rowGrids;    // nested per-row grids from layoutPanelsRows
+    QVector<QVector<int>>    layoutRows;   // panel ids per row, as placed (for dividers)
+    DividerOverlay*      dividerOverlay = nullptr;              // draws lines between panels
+    QColor               dividerColor{ 128, 128, 128, 120 };   // theme-updated in applyPaletteText
 
     QCPAxis*      keyAxis   = nullptr;    // panel 0's Bottom axis (alias for addBand)
     bool          hoverOn   = false;
@@ -254,6 +282,46 @@ ChartView::ChartView(QWidget* parent)
     // are unchanged; addPanel() appends more rects to this same backend/GL context.
     // Fields: rect, container, key, legend, title, crosshair, visible.
     d_->panels.append(Impl::Panel{ p->axisRect(), nullptr, nullptr, p->legend, nullptr, nullptr, true });
+
+    // Overlay that draws divider lines between panels (multi-panel charts only; it
+    // draws nothing until layoutPanelsRows records a layout). Owned by the plot.
+    d_->dividerOverlay = new DividerOverlay(p, [d = d_.get()](QCPPainter* painter) {
+        const int N = d->layoutRows.size();
+        if (N == 0) return;
+        painter->setAntialiasing(false);
+        QPen pen(d->dividerColor); pen.setCosmetic(true);
+        painter->setPen(pen);
+        const int half = PANEL_GAP / 2;
+        // Panel bounds use the container rect, so a row splits its width evenly and
+        // dividers line up across rows; the gap between containers is PANEL_GAP.
+        auto rectOf = [d](int id) { return d->panels[id].element()->rect(); };
+
+        // Vertical dividers between adjacent panels in a row. Extend into the gaps
+        // above/below (half a gap each) so they meet the horizontal dividers.
+        for (int ri = 0; ri < N; ++ri) {
+            const QVector<int>& row = d->layoutRows[ri];
+            if (row.size() < 2) continue;
+            int top = rectOf(row[0]).top(), bot = rectOf(row[0]).bottom();
+            for (int id : row) { const QRect r = rectOf(id); top = qMin(top, r.top()); bot = qMax(bot, r.bottom()); }
+            if (ri > 0)     top -= half;
+            if (ri < N - 1) bot += half;
+            for (int k = 1; k < row.size(); ++k) {
+                const int x = (rectOf(row[k - 1]).right() + rectOf(row[k]).left()) / 2;
+                painter->drawLine(QPointF(x, top), QPointF(x, bot));
+            }
+        }
+        // Horizontal dividers between consecutive rows, spanning their combined width.
+        for (int ri = 1; ri < N; ++ri) {
+            const QVector<int>& a = d->layoutRows[ri - 1];
+            const QVector<int>& b = d->layoutRows[ri];
+            int aboveBot = rectOf(a[0]).bottom(), belowTop = rectOf(b[0]).top();
+            int left = rectOf(a[0]).left(), right = rectOf(a[0]).right();
+            for (int id : a) { const QRect r = rectOf(id); aboveBot = qMax(aboveBot, r.bottom()); left = qMin(left, r.left()); right = qMax(right, r.right()); }
+            for (int id : b) { const QRect r = rectOf(id); belowTop = qMin(belowTop, r.top());   left = qMin(left, r.left()); right = qMax(right, r.right()); }
+            const int y = (aboveBot + belowTop) / 2;
+            painter->drawLine(QPointF(left, y), QPointF(right, y));
+        }
+    });
 
     applyPaletteText();
 }
@@ -443,18 +511,23 @@ void ChartView::ensurePanelHeader(int panelId)
 
     // Header row: title (left, absorbs slack) | colour key (right).
     QCPLayoutGrid* header = new QCPLayoutGrid;
-    header->setMargins(QMargins(8, 3, 8, 1));
+    header->setMargins(QMargins(8, 4, 8, 3));
     header->setColumnSpacing(6);
     header->addElement(0, 0, pn.title);
     header->addElement(0, 1, pn.legend);
     header->setColumnStretchFactor(0, 1);
     header->setColumnStretchFactor(1, 0.001);
-    header->setMaximumSize(QWIDGETSIZE_MAX, 22);   // keep the bar thin, like the header strip
+    header->setMaximumSize(QWIDGETSIZE_MAX, 26);   // keep the bar thin, like the header strip
 
-    // Container: header on top, the axis rect below (which takes the slack).
+    // Reserve enough right margin that the last x-axis tick label stays inside the
+    // panel rather than spilling into the divider gap next to it.
+    pn.rect->setMinimumMargins(QMargins(0, 0, PANEL_LABEL_CLEAR, 0));
+
+    // Container: header on top, the axis rect below (which takes the slack). A small
+    // row gap keeps the title off the plot's top tick label.
     QCPLayoutGrid* container = new QCPLayoutGrid;
     container->setMargins(QMargins(0, 0, 0, 0));
-    container->setRowSpacing(0);
+    container->setRowSpacing(5);
     p->plotLayout()->take(pn.rect);   // pull the rect out of the top grid if it's there
     p->plotLayout()->simplify();
     container->addElement(0, 0, header);
@@ -485,6 +558,11 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
     for (QCPLayoutGrid* g : d_->rowGrids) { top->take(g); delete g; }
     d_->rowGrids.clear();
     top->simplify();
+    top->setRowSpacing(PANEL_GAP);   // gaps between rows; dividers drawn down the centre
+    // No outer margin, so panels (and the dividers spanning them) reach the widget
+    // edges — where a page's own horizontal separators sit (e.g. the Overview tyre
+    // strip), so the vertical dividers meet them.
+    top->setMargins(QMargins(0, 0, 0, 0));
 
     // Hide every panel up front; the ones we place below are re-shown. A panel
     // dropped from the layout keeps its frozen geometry and would keep drawing
@@ -493,25 +571,28 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
     for (const Impl::Panel& pn : d_->panels) pn.element()->setVisible(false);
 
     // Top grid is a single column, so a row holding one element spans the full
-    // width; a row with several panels gets a nested horizontal sub-grid.
-    int r = 0;
+    // width; a row with several panels gets a nested horizontal sub-grid. The
+    // DividerOverlay draws the lines between them, in the gaps left by the spacing.
+    d_->layoutRows.clear();
+    int topRow = 0;
     for (const QVector<int>& row : rows) {
         QVector<int> valid;
         for (int id : row) if (id >= 0 && id < d_->panels.size()) valid.append(id);
         if (valid.isEmpty()) continue;
-
         for (int id : valid) d_->panels[id].element()->setVisible(true);
+
         if (valid.size() == 1) {
-            top->addElement(r, 0, d_->panels[valid[0]].element());
+            top->addElement(topRow++, 0, d_->panels[valid[0]].element());
         } else {
             QCPLayoutGrid* rg = new QCPLayoutGrid;
             rg->setMargins(QMargins(0, 0, 0, 0));
+            rg->setColumnSpacing(PANEL_GAP);
             for (int c = 0; c < valid.size(); ++c)
                 rg->addElement(0, c, d_->panels[valid[c]].element());
             d_->rowGrids.append(rg);
-            top->addElement(r, 0, rg);
+            top->addElement(topRow++, 0, rg);
         }
-        ++r;
+        d_->layoutRows.append(valid);
     }
 
     top->simplify();
@@ -744,6 +825,14 @@ void ChartView::applyPaletteText()
         if (pn.legend) pn.legend->setTextColor(text);
         if (pn.title)  pn.title->setTextColor(titleColor);
     }
+
+    // Panel divider lines (drawn by DividerOverlay): ~28% from the window colour
+    // toward text, the app's divider style, so they read in both light and dark.
+    const QColor win = palette().color(QPalette::Window);
+    d_->dividerColor = QColor(
+        win.red()   + int((text.red()   - win.red())   * 0.28),
+        win.green() + int((text.green() - win.green()) * 0.28),
+        win.blue()  + int((text.blue()  - win.blue())  * 0.28));
 }
 
 void ChartView::changeEvent(QEvent* e)

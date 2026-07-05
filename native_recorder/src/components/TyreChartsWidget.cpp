@@ -55,7 +55,7 @@ TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
     addSection(WEAR,  lifeMode_ ? "TYRE LIFE" : "TYRE WEAR", 0, 100, "%");
 
     // 2×2 grid for the fullscreen Tyres view, 1×4 row for the Overview strip.
-    chart_->layoutPanels(grid_ ? 2 : 4);
+    rebuildLayout();
 
     // Enable hover once every panel/axis exists (crosshairs are created per panel).
     chart_->setHoverReadout(true);
@@ -99,7 +99,24 @@ void TyreChartsWidget::setTyreLifeMode(bool life) {
 void TyreChartsWidget::setChartSectionVisible(int i, bool on)
 {
     if (i < 0 || i >= SECTIONS || !chart_) return;
-    chart_->setPanelVisible(i, on);
+    if (visible_[i] == on) return;
+    visible_[i] = on;
+    rebuildLayout();
+}
+
+void TyreChartsWidget::rebuildLayout()
+{
+    if (!chart_) return;
+    // 2×2 grid (fullscreen) packs visible panels two-per-row; 1×4 (Overview strip)
+    // is a single row. Hidden sections drop out and the rest reflow.
+    QVector<int> vis;
+    for (int s = 0; s < SECTIONS; ++s) if (visible_[s]) vis.append(s);
+
+    const int perRow = grid_ ? 2 : 4;
+    QVector<QVector<int>> rows;
+    for (int i = 0; i < vis.size(); i += perRow)
+        rows.append(vis.mid(i, perRow));
+    chart_->layoutPanelsRows(rows);
 }
 
 float TyreChartsWidget::currentTime() const {

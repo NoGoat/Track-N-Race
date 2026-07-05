@@ -31,6 +31,7 @@ protected:
 private:
     void requestRefresh();
     void refresh();
+    void rebuildLayout();   // (re)arrange visible panels + dividers
 
     QPointer<SessionModel> model_;
     QTimer*   refreshTimer_ = nullptr;
@@ -50,6 +51,7 @@ private:
     // — a single QCustomPlot / GL context / replot instead of four separate widgets.
     enum Section { SURF = 0, INNER = 1, BRAKE = 2, WEAR = 3, SECTIONS = 4 };
     ChartView* chart_ = nullptr;
-    int xId_[SECTIONS]              = {};   // bottom (time) axis id per panel
-    int seriesIds_[SECTIONS][4]     = {};   // [section][FL/FR/RL/RR]
+    int  xId_[SECTIONS]             = {};   // bottom (time) axis id per panel
+    int  seriesIds_[SECTIONS][4]    = {};   // [section][FL/FR/RL/RR]
+    bool visible_[SECTIONS]         = { true, true, true, true };
 };
