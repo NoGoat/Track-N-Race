@@ -28,6 +28,7 @@ private:
 
     Qt::Orientation orientation_ = Qt::Horizontal;
     bool            compact_     = false;
+    bool            cornerVisible_[4] = { true, true, true, true };   // logical (not realized) visibility
     QWidget*      cards_[4]     = {};
     QFrame*       dividers_[3]  = {};
     QLabel*       surfaceTemp_[4] = {};

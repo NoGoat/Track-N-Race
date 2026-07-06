@@ -63,19 +63,31 @@ void TyreCardsWidget::buildCards() {
         title->setForegroundRole(QPalette::PlaceholderText);
 
         if (compact_) {
-            cv->setContentsMargins(10, 4, 10, 4);
+            // No L/R card margin so the under-title rule reaches the card edges and
+            // meets the between-card dividers, forming one continuous grid line.
+            cv->setContentsMargins(0, 4, 0, 4);
             cv->setSpacing(3);
             title->setAlignment(Qt::AlignHCenter);
             cv->addWidget(title);
 
-            // Surface/Inner/Brake/Wear as a 4-column header row over a value row.
+            // Horizontal rule between the title and the columns.
+            QFrame* titleRule = new QFrame;
+            titleRule->setFrameShape(QFrame::HLine);
+            titleRule->setFrameShadow(QFrame::Sunken);
+            cv->addWidget(titleRule);
+
+            // Surface/Inner/Brake/Wear as a 4-column header row over a value row,
+            // with a vertical separator between each column (spanning both rows).
+            // Data columns live at grid columns 0/2/4/6; separators at 1/3/5. The
+            // grid keeps the L/R padding the card margin no longer provides.
             QGridLayout* grid = new QGridLayout;
-            grid->setContentsMargins(0, 0, 0, 0);
+            grid->setContentsMargins(10, 2, 10, 0);
             grid->setHorizontalSpacing(8);
             grid->setVerticalSpacing(1);
             const char* subLabels[4] = { "Surface", "Inner", "Brake", "Wear" };
             QLabel** vals[4] = { &surfaceTemp_[i], &innerTemp_[i], &brakeTemp_[i], &wearLabel_[i] };
             for (int c = 0; c < 4; ++c) {
+                const int gc = c * 2;
                 QLabel* lbl = new QLabel(subLabels[c]);
                 QFont lf; lf.setPointSize(7); lbl->setFont(lf);
                 lbl->setForegroundRole(QPalette::PlaceholderText);
@@ -84,9 +96,15 @@ void TyreCardsWidget::buildCards() {
                 QFont vf; vf.setPointSize(9); vf.setBold(true); val->setFont(vf);
                 val->setAlignment(Qt::AlignCenter);
                 *vals[c] = val;
-                grid->addWidget(lbl, 0, c);
-                grid->addWidget(val, 1, c);
-                grid->setColumnStretch(c, 1);
+                grid->addWidget(lbl, 0, gc);
+                grid->addWidget(val, 1, gc);
+                grid->setColumnStretch(gc, 1);
+                if (c < 3) {
+                    QFrame* sep = new QFrame;
+                    sep->setFrameShape(QFrame::VLine);
+                    sep->setFrameShadow(QFrame::Sunken);
+                    grid->addWidget(sep, 0, gc + 1, 2, 1);   // span the label + value rows
+                }
             }
             cv->addLayout(grid);
             // wear_ / blisters_ intentionally left null: no bar, no blister row.
@@ -138,6 +156,7 @@ void TyreCardsWidget::buildCards() {
         }
 
         cards_[i] = card;
+        card->setVisible(cornerVisible_[i]);
         outer->addWidget(card, 1);
 
         if (i < 3) {
@@ -148,6 +167,7 @@ void TyreCardsWidget::buildCards() {
             outer->addWidget(div);
         }
     }
+    updateDividers();
 }
 
 // Live compact-mode toggle (Overview page only). Rebuilds the cards at the new
@@ -161,17 +181,20 @@ void TyreCardsWidget::setCompactMode(bool on) {
 void TyreCardsWidget::setCornerVisible(int i, bool on)
 {
     if (i < 0 || i >= 4) return;
+    cornerVisible_[i] = on;
     if (cards_[i]) cards_[i]->setVisible(on);
     updateDividers();
 }
 
 void TyreCardsWidget::updateDividers()
 {
+    // Use the logical visibility we track, NOT cards_[]->isVisible(): this runs from
+    // applyLayout during construction (before the page is ever shown), when every
+    // card's realized isVisible() is false — which would otherwise hide every
+    // divider permanently.
     for (int d = 0; d < 3; ++d) {
         if (dividers_[d])
-            dividers_[d]->setVisible(
-                cards_[d]   && cards_[d]->isVisible() &&
-                cards_[d+1] && cards_[d+1]->isVisible());
+            dividers_[d]->setVisible(cornerVisible_[d] && cornerVisible_[d + 1]);
     }
 }
 
