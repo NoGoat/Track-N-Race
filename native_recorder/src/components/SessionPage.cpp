@@ -479,10 +479,12 @@ void SessionPage::buildHeader() {
     sp_marshalStrip = strip;
 
     if (compact) {
-        // One line: ZONES · [marshal strip] · legend.
+        // One line: ZONES · [marshal strip] · legend. No L/R inset — the header's
+        // own spacing already separates this row from the flanking separators, so
+        // an extra margin here just wastes width.
         QWidget* zoneRow = new QWidget;
         QHBoxLayout* zl = new QHBoxLayout(zoneRow);
-        zl->setContentsMargins(16, 0, 16, 0);
+        zl->setContentsMargins(0, 0, 0, 0);
         zl->setSpacing(12);
         zl->setAlignment(Qt::AlignVCenter);
         zl->addWidget(zonesLbl);
