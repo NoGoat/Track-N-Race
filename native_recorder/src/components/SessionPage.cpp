@@ -184,6 +184,15 @@ void applyWeatherIcon(QLabel* lbl, int w, int px) {
     else             lbl->setPixmap(pm);
 }
 
+// The theme-aware tint used for weather code `w` — the same colour applyWeatherIcon
+// gives the icon, reused to colour the weather-name text in the compact strip.
+QColor weatherColor(int w) {
+    if (w < 0 || w > 5) w = 2;
+    const WeatherVis& v = kWeatherVis[w];
+    const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
+    return QColor(dark ? v.dark : v.light);
+}
+
 QString eventCodeLabel(const std::string& code) {
     // Library i18n catalog (protocol-aware: DRSE/DRSD read "Straight Line Mode
     // …" under 2026). Unknown codes fall back to the raw code.
@@ -408,101 +417,17 @@ SessionPage::SessionPage(QWidget* parent)
     // Weather strip pinned to bottom
     { QWidget* hl = tnrui::hline(); lv->addWidget(hl); mapFsHide_.push_back(hl); }
 
-    QWidget* weatherStrip = new QWidget;
-    weatherStrip->setFixedHeight(92);
-    mapFsHide_.push_back(weatherStrip);
-    QHBoxLayout* wh = new QHBoxLayout(weatherStrip);
+    sp_weatherStrip_ = new QWidget;
+    mapFsHide_.push_back(sp_weatherStrip_);
+    QHBoxLayout* wh = new QHBoxLayout(sp_weatherStrip_);
     // No outer padding: the inter-card vlines are children of this layout, so any
     // top/bottom margin here would inset them and leave a gap to the strip's
-    // horizontal border. The padding lives on each card instead (below).
+    // horizontal border. The padding lives on each card instead (see buildWeatherStrip).
     wh->setContentsMargins(0, 0, 0, 0);
     wh->setSpacing(0);
+    buildWeatherStrip();   // populates the strip (rebuilt on compact toggle)
 
-    // NOW card — same horizontal layout + width as the forecast cards, minus the
-    // rain-% row (a current reading has no forecast percentage).
-    QWidget* nowCard = new QWidget;
-    QHBoxLayout* nh = new QHBoxLayout(nowCard);
-    nh->setContentsMargins(12, 12, 12, 12);
-    nh->setSpacing(10);
-
-    sp_weatherNowIcon = new QLabel;
-    sp_weatherNowIcon->setFixedSize(44, 44);
-    sp_weatherNowIcon->setAlignment(Qt::AlignCenter);
-
-    QWidget* nowInfo = new QWidget;
-    QVBoxLayout* niv = new QVBoxLayout(nowInfo);
-    niv->setContentsMargins(0, 0, 0, 0);
-    niv->setSpacing(1);
-
-    QLabel* nowCap = new QLabel("NOW");
-    QFont nowCapF; nowCapF.setPointSize(7); nowCapF.setBold(true);
-    nowCap->setFont(nowCapF);
-    nowCap->setForegroundRole(QPalette::PlaceholderText);
-
-    sp_weatherNow = new QLabel("—");
-    QFont wnf; wnf.setPointSize(9); wnf.setBold(true);
-    sp_weatherNow->setFont(wnf);
-
-    niv->addStretch();
-    niv->addWidget(nowCap);
-    niv->addWidget(sp_weatherNow);
-    niv->addStretch();
-
-    nh->addStretch();
-    nh->addWidget(sp_weatherNowIcon);
-    nh->addWidget(nowInfo);
-    nh->addStretch();
-    wh->addWidget(nowCard, 1);
-
-    wh->addWidget(tnrui::vline());
-
-    for (int i = 0; i < 5; ++i) {
-        if (i > 0) wh->addWidget(tnrui::vline());   // separator between forecast cards
-
-        QWidget* fcCard = new QWidget;
-        QHBoxLayout* fh = new QHBoxLayout(fcCard);
-        fh->setContentsMargins(12, 12, 12, 12);
-        fh->setSpacing(10);
-
-        // Left: large weather icon.
-        sp_fcIcon[i] = new QLabel;
-        sp_fcIcon[i]->setFixedSize(44, 44);
-        sp_fcIcon[i]->setAlignment(Qt::AlignCenter);
-
-        // Right: three stacked rows — time offset, weather name, rain %.
-        QWidget* info = new QWidget;
-        QVBoxLayout* iv = new QVBoxLayout(info);
-        iv->setContentsMargins(0, 0, 0, 0);
-        iv->setSpacing(1);
-
-        sp_fcTime[i] = new QLabel("");
-        QFont ftf; ftf.setPointSize(7);
-        sp_fcTime[i]->setFont(ftf);
-        sp_fcTime[i]->setForegroundRole(QPalette::PlaceholderText);
-
-        sp_fcWeather[i] = new QLabel("");
-        QFont fwf; fwf.setPointSize(9); fwf.setBold(true);
-        sp_fcWeather[i]->setFont(fwf);
-
-        sp_fcRain[i] = new QLabel("");
-        QFont frf; frf.setPointSize(8);
-        sp_fcRain[i]->setFont(frf);
-        sp_fcRain[i]->setStyleSheet("color:#5794F2;");
-
-        iv->addStretch();
-        iv->addWidget(sp_fcTime[i]);
-        iv->addWidget(sp_fcWeather[i]);
-        iv->addWidget(sp_fcRain[i]);
-        iv->addStretch();
-
-        fh->addStretch();
-        fh->addWidget(sp_fcIcon[i]);
-        fh->addWidget(info);
-        fh->addStretch();
-        wh->addWidget(fcCard, 1);
-    }
-
-    lv->addWidget(weatherStrip);
+    lv->addWidget(sp_weatherStrip_);
     ch->addWidget(leftArea, 1);
 
     // VLine between map and right panel
@@ -661,13 +586,131 @@ void SessionPage::buildSessionCards() {
     sh->addWidget(makeStatCard("timeOfDay", compact ? "TIME" : "TIME OF DAY", sp_timeOfDay),    1);
 }
 
-// Live compact-mode toggle. Rebuilds the cards at the new density; MainWindow
-// re-feeds the latest session row so the fresh labels repaint (see
+// Build (or rebuild in place) the bottom weather strip: a NOW card plus five
+// forecast cards. Compact mode drops the icon and collapses each card to a single
+// row — time (left) · weather name in the icon's colour (centre) · rain % (right) —
+// with minimal padding and a short strip. The leaf labels are recreated, so
+// updateSession repaints them (and tints the weather name via weatherColor).
+void SessionPage::buildWeatherStrip() {
+    QHBoxLayout* wh = qobject_cast<QHBoxLayout*>(sp_weatherStrip_->layout());
+    clearLayout(wh);
+    // Icons are dropped in compact mode — null the members so updateSession skips
+    // them and they aren't left dangling after clearLayout freed the old labels.
+    sp_weatherNowIcon = nullptr;
+    for (int i = 0; i < 5; ++i) sp_fcIcon[i] = nullptr;
+
+    const bool compact = compact_;
+    sp_weatherStrip_->setFixedHeight(compact ? 30 : 92);
+    const int padX   = compact ? 8 : 12;
+    const int padY   = compact ? 3 : 12;
+    const int gap    = compact ? 8 : 10;
+    const int iconSz = 44;
+
+    // NOW card — current reading, so no forecast rain %.
+    QWidget* nowCard = new QWidget;
+    QHBoxLayout* nh = new QHBoxLayout(nowCard);
+    nh->setContentsMargins(padX, padY, padX, padY);
+    nh->setSpacing(gap);
+
+    QLabel* nowCap = new QLabel("NOW");
+    QFont nowCapF; nowCapF.setPointSize(7); nowCapF.setBold(true);
+    nowCap->setFont(nowCapF);
+    nowCap->setForegroundRole(QPalette::PlaceholderText);
+
+    sp_weatherNow = new QLabel("—");
+    QFont wnf; wnf.setPointSize(9); wnf.setBold(true);
+    sp_weatherNow->setFont(wnf);
+
+    if (compact) {
+        // Single row: caption (left) · status (centre). No icon, no percentage.
+        nh->addWidget(nowCap);
+        nh->addStretch();
+        nh->addWidget(sp_weatherNow);
+        nh->addStretch();
+    } else {
+        sp_weatherNowIcon = new QLabel;
+        sp_weatherNowIcon->setFixedSize(iconSz, iconSz);
+        sp_weatherNowIcon->setAlignment(Qt::AlignCenter);
+
+        QWidget* nowInfo = new QWidget;
+        QVBoxLayout* niv = new QVBoxLayout(nowInfo);
+        niv->setContentsMargins(0, 0, 0, 0);
+        niv->setSpacing(1);
+        niv->addStretch();
+        niv->addWidget(nowCap);
+        niv->addWidget(sp_weatherNow);
+        niv->addStretch();
+
+        nh->addStretch();
+        nh->addWidget(sp_weatherNowIcon);
+        nh->addWidget(nowInfo);
+        nh->addStretch();
+    }
+    wh->addWidget(nowCard, 1);
+    wh->addWidget(tnrui::vline());
+
+    for (int i = 0; i < 5; ++i) {
+        if (i > 0) wh->addWidget(tnrui::vline());   // separator between forecast cards
+
+        QWidget* fcCard = new QWidget;
+        QHBoxLayout* fh = new QHBoxLayout(fcCard);
+        fh->setContentsMargins(padX, padY, padX, padY);
+        fh->setSpacing(gap);
+
+        sp_fcTime[i] = new QLabel("");
+        QFont ftf; ftf.setPointSize(7);
+        sp_fcTime[i]->setFont(ftf);
+        sp_fcTime[i]->setForegroundRole(QPalette::PlaceholderText);
+
+        sp_fcWeather[i] = new QLabel("");
+        QFont fwf; fwf.setPointSize(9); fwf.setBold(true);
+        sp_fcWeather[i]->setFont(fwf);
+
+        sp_fcRain[i] = new QLabel("");
+        QFont frf; frf.setPointSize(8);
+        sp_fcRain[i]->setFont(frf);
+        sp_fcRain[i]->setStyleSheet("color:#5794F2;");
+
+        if (compact) {
+            // Single row: time (left) · weather in icon colour (centre) · rain % (right).
+            fh->addWidget(sp_fcTime[i]);
+            fh->addStretch();
+            fh->addWidget(sp_fcWeather[i]);
+            fh->addStretch();
+            fh->addWidget(sp_fcRain[i]);
+        } else {
+            sp_fcIcon[i] = new QLabel;
+            sp_fcIcon[i]->setFixedSize(iconSz, iconSz);
+            sp_fcIcon[i]->setAlignment(Qt::AlignCenter);
+
+            // Three stacked rows — time offset, weather name, rain %.
+            QWidget* info = new QWidget;
+            QVBoxLayout* iv = new QVBoxLayout(info);
+            iv->setContentsMargins(0, 0, 0, 0);
+            iv->setSpacing(1);
+            iv->addStretch();
+            iv->addWidget(sp_fcTime[i]);
+            iv->addWidget(sp_fcWeather[i]);
+            iv->addWidget(sp_fcRain[i]);
+            iv->addStretch();
+
+            fh->addStretch();
+            fh->addWidget(sp_fcIcon[i]);
+            fh->addWidget(info);
+            fh->addStretch();
+        }
+        wh->addWidget(fcCard, 1);
+    }
+}
+
+// Live compact-mode toggle. Rebuilds the cards + weather strip at the new density;
+// MainWindow re-feeds the latest session row so the fresh labels repaint (see
 // MainWindow::setCompactMode).
 void SessionPage::setCompactMode(bool on) {
     if (compact_ == on) return;
     compact_ = on;
     buildSessionCards();
+    buildWeatherStrip();
 }
 
 // ── Session page updater ──────────────────────────────────────────────────
@@ -726,6 +769,8 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
         .arg(h24 >= 12 ? "PM" : "AM"));
 
     sp_weatherNow->setText(weatherLabel(weather));
+    // Compact strip drops the icon, so the weather name carries the icon's colour.
+    if (compact_) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
     applyWeatherIcon(sp_weatherNowIcon, weather, 40);
 
     if (session.contains("weather_forecast_samples")) {
@@ -736,6 +781,7 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
                 const int fw = fc[i].value("weather", 0);
                 sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].value("time_offset", 0)));
                 sp_fcWeather[i]->setText(weatherLabel(fw));
+                if (compact_) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
                 applyWeatherIcon(sp_fcIcon[i], fw, 40);
                 int rain = fc[i].value("rain_percentage", 0);
                 sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");

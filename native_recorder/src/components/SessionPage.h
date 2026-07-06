@@ -45,6 +45,7 @@ public:
 
 private:
     void buildSessionCards();   // (re)populate the stat-card row at the current density
+    void buildWeatherStrip();   // (re)populate the bottom weather strip at the current density
 
     QWidget*     sp_marshalStrip  = nullptr;
     QLabel*      sp_gpName        = nullptr;
@@ -53,6 +54,7 @@ private:
     QLabel*      sp_timeLeft      = nullptr;
     // Session stat cards registered by key (value labels also aliased below).
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
+    QWidget*     sp_weatherStrip_ = nullptr;   // weather strip container, repopulated on compact toggle
     bool         compact_         = false;     // one-line cards when true (ui/compactMode)
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;
