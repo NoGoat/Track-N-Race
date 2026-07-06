@@ -142,16 +142,6 @@ const char* trackCircuitName(int id) {
     return it != trackInfo().end() ? it->second.second : "—";
 }
 
-const char* sessionTypeName(int t) {
-    static const char* names[] = {
-        "Unknown", "Practice 1", "Practice 2", "Practice 3", "Short Practice",
-        "Q1", "Q2", "Q3", "Short Qualifying", "One-Shot Qualifying",
-        "Race", "Race 2", "Race 3", "Time Trial",
-    };
-    if (t >= 0 && t < 14) return names[t];
-    return "—";
-}
-
 const char* weatherLabel(int w) {
     static const char* l[] = { "Clear", "Light Cloud", "Overcast", "Light Rain", "Heavy Rain", "Storm" };
     if (w >= 0 && w < 6) return l[w];
@@ -283,102 +273,13 @@ SessionPage::SessionPage(QWidget* parent)
     root->setSpacing(0);
 
     // ── Header ───────────────────────────────────────────────────
-    QWidget* hdr = new QWidget;
-    hdr->setFixedHeight(58);
-    QHBoxLayout* hh = new QHBoxLayout(hdr);
+    sp_header_ = new QWidget;
+    QHBoxLayout* hh = new QHBoxLayout(sp_header_);
     hh->setContentsMargins(10, 0, 0, 0);   // left inset for the header text
-    hh->setSpacing(16);
+    buildHeader();   // populates the header (rebuilt on compact toggle)
 
-    QWidget* gpBlock = new QWidget;
-    QVBoxLayout* gpv = new QVBoxLayout(gpBlock);
-    gpv->setContentsMargins(0, 0, 0, 0);
-    gpv->setSpacing(3);
-    gpv->setAlignment(Qt::AlignVCenter);
-    sp_gpName = new QLabel("—");
-    QFont gnf; gnf.setPointSize(13); gnf.setBold(true);
-    sp_gpName->setFont(gnf);
-    sp_circuitName = new QLabel("—");
-    QFont cnf; cnf.setPointSize(9);
-    sp_circuitName->setFont(cnf);
-    sp_circuitName->setForegroundRole(QPalette::PlaceholderText);
-    gpv->addWidget(sp_gpName);
-    gpv->addWidget(sp_circuitName);
-    hh->addWidget(gpBlock);
-
-    // Separator: Heading | Marshal Strip
-    hh->addWidget(tnrui::vline());
-
-    QWidget* zoneWrap = new QWidget;
-    QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
-    zv->setContentsMargins(16, 6, 16, 6);
-    zv->setSpacing(8);
-    // Keep the ZONES label + strip a tight, vertically-centred group (like the GP
-    // block). Without this the default-policy headerWrap expands to fill the 58px
-    // header and pushes the 4px strip far below the label, leaving a big gap.
-    zv->setAlignment(Qt::AlignVCenter);
-
-    QWidget* headerWrap = new QWidget;
-    QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
-    headerL->setContentsMargins(0, 0, 0, 0);
-
-    QLabel* zonesLbl = new QLabel("ZONES");
-    QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
-    zonesLbl->setFont(zlf);
-    zonesLbl->setForegroundRole(QPalette::PlaceholderText);
-    headerL->addWidget(zonesLbl);
-    headerL->addStretch();
-
-    QWidget* legend = new QWidget;
-    QHBoxLayout* lh = new QHBoxLayout(legend);
-    lh->setContentsMargins(0, 0, 0, 0);
-    lh->setSpacing(12);
-    struct LegItem { const char* col; const char* name; };
-    LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"rgba(255,255,255,0.07)","Clear"}};
-    for (auto& li : legItems) {
-        QLabel* dot = new QLabel; dot->setFixedSize(12, 12);
-        dot->setStyleSheet(QString("background:%1; border: 1px solid rgba(255,255,255,0.1); border-radius:2px;").arg(li.col));
-        QLabel* txt = new QLabel(li.name);
-        QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
-        txt->setForegroundRole(QPalette::PlaceholderText);
-
-        QWidget* wrap = new QWidget;
-        QHBoxLayout* wh = new QHBoxLayout(wrap);
-        wh->setContentsMargins(0,0,0,0);
-        wh->setSpacing(4);
-        wh->addWidget(dot); wh->addWidget(txt);
-        lh->addWidget(wrap);
-    }
-    headerL->addWidget(legend);
-    zv->addWidget(headerWrap);
-
-    auto* strip = new MarshalStripWidget;
-    sp_marshalStrip = strip;
-    zv->addWidget(strip);
-    hh->addWidget(zoneWrap, 1);
-
-    // Separator: Marshal Strip | Timer
-    hh->addWidget(tnrui::vline());
-
-    QWidget* tmBlock = new QWidget;
-    QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
-    tmv->setContentsMargins(0, 0, 16, 0);   // right padding so the timer isn't flush to the edge
-    tmv->setSpacing(3);
-    tmv->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    sp_timeLeft = new QLabel("—:——");
-    QFont tlf; tlf.setPointSize(22); tlf.setBold(true);
-    sp_timeLeft->setFont(tlf);
-    sp_timeLeft->setAlignment(Qt::AlignRight);
-    sp_sessionType = new QLabel("—");
-    QFont stf; stf.setPointSize(8);
-    sp_sessionType->setFont(stf);
-    sp_sessionType->setForegroundRole(QPalette::PlaceholderText);
-    sp_sessionType->setAlignment(Qt::AlignRight);
-    tmv->addWidget(sp_timeLeft);
-    tmv->addWidget(sp_sessionType);
-    hh->addWidget(tmBlock);
-
-    root->addWidget(hdr);
-    mapFsHide_.push_back(hdr);
+    root->addWidget(sp_header_);
+    mapFsHide_.push_back(sp_header_);
 
     { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
 
@@ -511,6 +412,119 @@ void SessionPage::clearEvents() {
 
 void SessionPage::setRenderingActive(bool on) {
     if (trackMap_) trackMap_->setRenderingActive(on);
+}
+
+// Build (or rebuild in place) the top header: GP block, ZONES + marshal strip +
+// legend, and the session clock. Compact mode drops the circuit name, folds the
+// zones label, strip and legend onto a single row, and shrinks the clock. The full
+// layout stacks the label+legend over the strip and shows the circuit name.
+void SessionPage::buildHeader() {
+    QHBoxLayout* hh = qobject_cast<QHBoxLayout*>(sp_header_->layout());
+    clearLayout(hh);
+    const bool compact = compact_;
+    sp_header_->setFixedHeight(compact ? 40 : 58);
+    hh->setSpacing(compact ? 12 : 16);
+
+    // GP block — name always; the circuit name only in the full layout.
+    QWidget* gpBlock = new QWidget;
+    QVBoxLayout* gpv = new QVBoxLayout(gpBlock);
+    gpv->setContentsMargins(0, 0, 0, 0);
+    gpv->setSpacing(3);
+    gpv->setAlignment(Qt::AlignVCenter);
+    sp_gpName = new QLabel("—");
+    QFont gnf; gnf.setPointSize(compact ? 11 : 13); gnf.setBold(true);
+    sp_gpName->setFont(gnf);
+    gpv->addWidget(sp_gpName);
+    if (compact) {
+        sp_circuitName = nullptr;   // dropped in compact; updateSession guards on it
+    } else {
+        sp_circuitName = new QLabel("—");
+        QFont cnf; cnf.setPointSize(9);
+        sp_circuitName->setFont(cnf);
+        sp_circuitName->setForegroundRole(QPalette::PlaceholderText);
+        gpv->addWidget(sp_circuitName);
+    }
+    hh->addWidget(gpBlock);
+
+    hh->addWidget(tnrui::vline());   // Heading | Marshal Strip
+
+    // Shared pieces: the ZONES label, the marshal strip, and the colour legend.
+    QLabel* zonesLbl = new QLabel("ZONES");
+    QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
+    zonesLbl->setFont(zlf);
+    zonesLbl->setForegroundRole(QPalette::PlaceholderText);
+
+    QWidget* legend = new QWidget;
+    QHBoxLayout* lh = new QHBoxLayout(legend);
+    lh->setContentsMargins(0, 0, 0, 0);
+    lh->setSpacing(12);
+    struct LegItem { const char* col; const char* name; };
+    LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"rgba(255,255,255,0.07)","Clear"}};
+    for (auto& li : legItems) {
+        QLabel* dot = new QLabel; dot->setFixedSize(12, 12);
+        dot->setStyleSheet(QString("background:%1; border: 1px solid rgba(255,255,255,0.1); border-radius:2px;").arg(li.col));
+        QLabel* txt = new QLabel(li.name);
+        QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
+        txt->setForegroundRole(QPalette::PlaceholderText);
+
+        QWidget* wrap = new QWidget;
+        QHBoxLayout* wl = new QHBoxLayout(wrap);
+        wl->setContentsMargins(0, 0, 0, 0);
+        wl->setSpacing(4);
+        wl->addWidget(dot); wl->addWidget(txt);
+        lh->addWidget(wrap);
+    }
+
+    auto* strip = new MarshalStripWidget;
+    sp_marshalStrip = strip;
+
+    if (compact) {
+        // One line: ZONES · [marshal strip] · legend.
+        QWidget* zoneRow = new QWidget;
+        QHBoxLayout* zl = new QHBoxLayout(zoneRow);
+        zl->setContentsMargins(16, 0, 16, 0);
+        zl->setSpacing(12);
+        zl->setAlignment(Qt::AlignVCenter);
+        zl->addWidget(zonesLbl);
+        zl->addWidget(strip, 1);   // strip stretches to fill the middle
+        zl->addWidget(legend);
+        hh->addWidget(zoneRow, 1);
+    } else {
+        // ZONES + legend on one row, the marshal strip below it. Kept a tight,
+        // vertically-centred group so the 4px strip sits just under the label
+        // instead of being pushed to the bottom of the 58px header.
+        QWidget* zoneWrap = new QWidget;
+        QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
+        zv->setContentsMargins(16, 6, 16, 6);
+        zv->setSpacing(8);
+        zv->setAlignment(Qt::AlignVCenter);
+
+        QWidget* headerWrap = new QWidget;
+        QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
+        headerL->setContentsMargins(0, 0, 0, 0);
+        headerL->addWidget(zonesLbl);
+        headerL->addStretch();
+        headerL->addWidget(legend);
+
+        zv->addWidget(headerWrap);
+        zv->addWidget(strip);
+        hh->addWidget(zoneWrap, 1);
+    }
+
+    hh->addWidget(tnrui::vline());   // Marshal Strip | Timer
+
+    // Clock — no session-type sub-line, so it centres on its own.
+    QWidget* tmBlock = new QWidget;
+    QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
+    tmv->setContentsMargins(0, 0, 16, 0);   // right padding so the timer isn't flush to the edge
+    tmv->setSpacing(0);
+    tmv->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    sp_timeLeft = new QLabel("—:——");
+    QFont tlf; tlf.setPointSize(compact ? 15 : 22); tlf.setBold(true);
+    sp_timeLeft->setFont(tlf);
+    sp_timeLeft->setAlignment(Qt::AlignRight);
+    tmv->addWidget(sp_timeLeft);
+    hh->addWidget(tmBlock);
 }
 
 // Build (or rebuild in place) the key-driven stat cards into spStatsRow_. Called
@@ -709,6 +723,7 @@ void SessionPage::buildWeatherStrip() {
 void SessionPage::setCompactMode(bool on) {
     if (compact_ == on) return;
     compact_ = on;
+    buildHeader();
     buildSessionCards();
     buildWeatherStrip();
 }
@@ -719,7 +734,6 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
     if (!sp_gpName || session.empty()) return;
 
     int trackId   = session.value("track_id",        -1);
-    int sessType  = session.value("session_type",     0);
     int timeLeft  = session.value("session_time_left", 0);
     int totalLaps = session.value("total_laps",       0);
     int pitSpeed  = session.value("pit_speed_limit",  0);
@@ -733,8 +747,7 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
     uint32_t todS = session.value("time_of_day",       0u);
 
     sp_gpName->setText(trackGpName(trackId));
-    sp_circuitName->setText(trackCircuitName(trackId));
-    sp_sessionType->setText(sessionTypeName(sessType));
+    if (sp_circuitName) sp_circuitName->setText(trackCircuitName(trackId));   // dropped in compact
 
     sp_timeLeft->setText(QString("%1:%2")
         .arg(timeLeft / 60, 2, 10, QChar('0'))

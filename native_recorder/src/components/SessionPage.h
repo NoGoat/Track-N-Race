@@ -44,13 +44,14 @@ public:
     void setCompactMode(bool on);
 
 private:
+    void buildHeader();         // (re)populate the top header at the current density
     void buildSessionCards();   // (re)populate the stat-card row at the current density
     void buildWeatherStrip();   // (re)populate the bottom weather strip at the current density
 
+    QWidget*     sp_header_       = nullptr;   // header container, repopulated on compact toggle
     QWidget*     sp_marshalStrip  = nullptr;
     QLabel*      sp_gpName        = nullptr;
-    QLabel*      sp_circuitName   = nullptr;
-    QLabel*      sp_sessionType   = nullptr;
+    QLabel*      sp_circuitName   = nullptr;   // null in compact mode (circuit name dropped)
     QLabel*      sp_timeLeft      = nullptr;
     // Session stat cards registered by key (value labels also aliased below).
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
