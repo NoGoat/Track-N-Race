@@ -150,16 +150,21 @@ void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer) {
     auto vline = [] {
         QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken); return f;
     };
+    // One-line cell: uppercase label on the left, value pinned right (matching the
+    // other compact cards).
     auto subCol = [](const char* text, QLabel*& out) {
         QWidget* w = new QWidget;
-        QVBoxLayout* v = new QVBoxLayout(w);
-        v->setContentsMargins(0, 0, 0, 0); v->setSpacing(1);
-        QLabel* l = new QLabel(text);
+        QHBoxLayout* h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0); h->setSpacing(4);
+        QLabel* l = new QLabel(QString(text).toUpper());
         QFont lf; lf.setPointSize(7); l->setFont(lf);
-        l->setForegroundRole(QPalette::PlaceholderText); l->setAlignment(Qt::AlignCenter);
+        l->setForegroundRole(QPalette::PlaceholderText);
         out = new QLabel("—");
-        QFont vf; vf.setPointSize(9); vf.setBold(true); out->setFont(vf); out->setAlignment(Qt::AlignCenter);
-        v->addStretch(); v->addWidget(l); v->addWidget(out); v->addStretch();
+        QFont vf; vf.setPointSize(9); vf.setBold(true); out->setFont(vf);
+        out->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        h->addWidget(l);
+        h->addStretch();
+        h->addWidget(out);
         return w;
     };
     // A half-column widget: two sub-columns split by their own (non-aligning) line.
