@@ -54,7 +54,9 @@ void TyreCardsWidget::buildCards() {
     for (int d = 0; d < 3; ++d) dividers_[d] = nullptr;
     compactGrid_ = nullptr;
 
-    if (compact_) { buildCompactGrid(outer); return; }
+    if (level_ == Compact)        { buildCompactGrid(outer, /*showHeading*/ true);  return; }
+    if (level_ == UltraCompact1)  { buildCompactGrid(outer, /*showHeading*/ false); return; }
+    if (level_ == UltraCompact2)  { buildUltraCompact2(outer);                      return; }
 
     for (int i = 0; i < 4; ++i) {
         QWidget* card = new QWidget;
@@ -137,14 +139,18 @@ void TyreCardsWidget::buildCards() {
 // = a damage boundary). The divider column after a corner is the between-corner
 // separator (full height). The Surface/Inner and Brake/Wear splits live nested
 // inside a half-column, so they don't shift the shared column boundaries.
-void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer) {
+//
+// showHeading draws the corner-name title + rule above the value cells (Compact);
+// UltraCompact1 passes false to drop that heading row, leaving just the value row.
+void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer, bool showHeading) {
     QWidget* host = new QWidget;
     QGridLayout* g = new QGridLayout(host);
     compactGrid_ = g;
     g->setContentsMargins(0, 0, 0, 0);
     g->setHorizontalSpacing(0);
     g->setVerticalSpacing(0);
-    g->setRowStretch(2, 1);                          // body row fills the height
+    const int cellRow = showHeading ? 2 : 0;         // value cells sit below the heading, or at the top
+    g->setRowStretch(cellRow, 1);                    // body row fills the height
     for (int c = 0; c <= 14; c += 2) g->setColumnStretch(c, 1);   // 8 half-width columns
 
     auto vline = [] {
@@ -182,31 +188,35 @@ void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer) {
         const int c0 = 4 * k;        // left half-column
         const int c1 = 4 * k + 2;    // right half-column
 
-        QLabel* title = new QLabel(kCornerNames[k]);
-        QFont tf; tf.setPointSize(7); tf.setBold(true); title->setFont(tf);
-        title->setForegroundRole(QPalette::PlaceholderText);
-        title->setAlignment(Qt::AlignHCenter);
-        title->setContentsMargins(0, 4, 0, 3);
-        g->addWidget(title, 0, c0, 1, 3);            // spans the corner's 2 halves + mid divider
+        QLabel* title = nullptr;
+        QFrame* rule  = nullptr;
+        if (showHeading) {
+            title = new QLabel(kCornerNames[k]);
+            QFont tf; tf.setPointSize(7); tf.setBold(true); title->setFont(tf);
+            title->setForegroundRole(QPalette::PlaceholderText);
+            title->setAlignment(Qt::AlignHCenter);
+            title->setContentsMargins(0, 4, 0, 3);
+            g->addWidget(title, 0, c0, 1, 3);        // spans the corner's 2 halves + mid divider
 
-        QFrame* rule = new QFrame; rule->setFrameShape(QFrame::HLine); rule->setFrameShadow(QFrame::Sunken);
-        g->addWidget(rule, 1, c0, 1, 3);
+            rule = new QFrame; rule->setFrameShape(QFrame::HLine); rule->setFrameShadow(QFrame::Sunken);
+            g->addWidget(rule, 1, c0, 1, 3);
+        }
 
         QWidget* left  = halfCell("Surface", surfaceTemp_[k], "Inner", innerTemp_[k]);
         QWidget* right = halfCell("Brake",   brakeTemp_[k],   "Wear",  wearLabel_[k]);
-        g->addWidget(left,  2, c0);
-        g->addWidget(right, 2, c1);
+        g->addWidget(left,  cellRow, c0);
+        g->addWidget(right, cellRow, c1);
 
         // Inner/Brake separator: divider column between the halves, body row only
         // (starts at the rule, runs to the bottom edge).
         QFrame* mid = vline();
-        g->addWidget(mid, 2, c0 + 1);
+        g->addWidget(mid, cellRow, c0 + 1);
 
         compactCorner_[k] = { title, rule, left, right, mid };
 
         if (k < 3) {
-            QFrame* bc = vline();                    // between-corner separator, full height
-            g->addWidget(bc, 0, c1 + 1, 3, 1);
+            QFrame* bc = vline();                    // between-corner separator, spans all built rows
+            g->addWidget(bc, 0, c1 + 1, cellRow + 1, 1);
             dividers_[k] = bc;
         }
     }
@@ -221,11 +231,53 @@ void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer) {
     updateDividers();
 }
 
-// Live compact-mode toggle (Overview page only). Rebuilds the cards at the new
-// density; the Overview page re-applies corner visibility and re-feeds update().
-void TyreCardsWidget::setCompactMode(bool on) {
-    if (compact_ == on) return;
-    compact_ = on;
+// One line per corner: the corner name on the left, then the four bare values
+// (Surface / Inner / Brake / Wear) pinned to the right. No labels, no dividers
+// inside a corner — just the between-corner separators (as in the other layouts).
+void TyreCardsWidget::buildUltraCompact2(QBoxLayout* outer) {
+    for (int k = 0; k < 4; ++k) {
+        QWidget* cell = new QWidget;
+        QHBoxLayout* h = new QHBoxLayout(cell);
+        h->setContentsMargins(10, 0, 10, 0);
+        h->setSpacing(10);
+
+        QLabel* name = new QLabel(kCornerNames[k]);
+        QFont tf; tf.setPointSize(7); tf.setBold(true); name->setFont(tf);
+        name->setForegroundRole(QPalette::PlaceholderText);
+        h->addWidget(name);
+        h->addStretch();
+
+        auto valueLabel = [&](QLabel*& out) {
+            out = new QLabel("—");
+            QFont vf; vf.setPointSize(9); vf.setBold(true); out->setFont(vf);
+            out->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            h->addWidget(out);
+        };
+        valueLabel(surfaceTemp_[k]);
+        valueLabel(innerTemp_[k]);
+        valueLabel(brakeTemp_[k]);
+        valueLabel(wearLabel_[k]);
+
+        compactCorner_[k] = { cell };
+        cell->setVisible(cornerVisible_[k]);
+        outer->addWidget(cell, 1);
+
+        if (k < 3) {
+            QFrame* div = new QFrame;
+            div->setFrameShape(orientation_ == Qt::Horizontal ? QFrame::VLine : QFrame::HLine);
+            div->setFrameShadow(QFrame::Sunken);
+            dividers_[k] = div;
+            outer->addWidget(div);
+        }
+    }
+    updateDividers();
+}
+
+// Live density switch (Overview page only). Rebuilds the cards at the new level;
+// the Overview page re-applies corner visibility and re-feeds update().
+void TyreCardsWidget::setLevel(Level level) {
+    if (level_ == level) return;
+    level_ = level;
     buildCards();
 }
 

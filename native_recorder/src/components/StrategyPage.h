@@ -159,6 +159,6 @@ private:
     PitLoss pitLoss_;
     int     pitLossTrackId_ = -2;
 
-    bool      compact_ = false;   // single-line header cells when true (ui/compactMode)
+    bool      compact_ = false;   // single-line header cells when true (ui/compact/strategySummary)
     QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

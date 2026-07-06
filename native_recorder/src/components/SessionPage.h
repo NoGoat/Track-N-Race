@@ -39,9 +39,11 @@ public:
     // The Settings dialog's map setters push live values through this.
     TrackMapWidget* trackMap() const { return trackMap_; }
 
-    // Collapse the info cards to a single line (label · value). Rebuilds the card
-    // row in place; MainWindow re-feeds the latest session row to repaint it.
-    void setCompactMode(bool on);
+    // Per-section compact density (each rebuilds its part in place; MainWindow
+    // re-feeds the latest session row to repaint). Driven independently by Settings.
+    void setCardsCompact(bool on);
+    void setWeatherCompact(bool on);
+    void setHeaderCompact(bool on);
 
 private:
     void buildHeader();         // (re)populate the top header at the current density
@@ -56,7 +58,9 @@ private:
     // Session stat cards registered by key (value labels also aliased below).
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
     QWidget*     sp_weatherStrip_ = nullptr;   // weather strip container, repopulated on compact toggle
-    bool         compact_         = false;     // one-line cards when true (ui/compactMode)
+    bool         cardsCompact_    = false;     // per-section compact density (ui/compact/session*)
+    bool         weatherCompact_  = false;
+    bool         headerCompact_   = false;
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;
     QLabel*      sp_statRemain    = nullptr;

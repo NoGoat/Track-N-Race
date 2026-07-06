@@ -71,6 +71,7 @@ set(SOURCES
     src/PlaybackController.h
     src/EngineSink.h
     src/HotRowSmoother.h
+    src/CompactSettings.h
     src/BreezePalette.cpp
     src/BreezePalette.h
     src/TnrdPlayer.cpp

@@ -22,18 +22,28 @@ public:
     void update(const nlohmann::json& telemetry, const nlohmann::json& damage);
     void setCornerVisible(int i, bool on);
 
-    // Compact single-line-ish redesign — corner name centred over a Surface/Inner/
-    // Brake/Wear header + value row, no wear bar. Only the Overview page enables it;
-    // the Tyres page keeps the full stacked layout.
-    void setCompactMode(bool on);
+    // Density levels for the Overview tyre cards (the Tyres page always uses Full):
+    //   Full          — stacked Surface/Inner/Brake/Wear rows + wear bar (default)
+    //   Compact        — corner name centred over a Surface/Inner/Brake/Wear header
+    //                    + value row, aligned to the damage row, no wear bar
+    //   UltraCompact1  — Compact without the corner-name heading row
+    //   UltraCompact2  — one line per corner: name + the four bare values
+    enum Level { Full = 0, Compact = 1, UltraCompact1 = 2, UltraCompact2 = 3 };
+
+    // Live density switch (Overview page only). Rebuilds the cards at the new level;
+    // the Overview page re-applies corner visibility and re-feeds update().
+    void setLevel(Level level);
 
 private:
     void updateDividers();
-    void buildCards();                       // (re)build the four corners at the current density
-    void buildCompactGrid(QBoxLayout* outer);   // compact 8-column grid aligned to the damage row
+    void buildCards();                          // (re)build the four corners at the current level
+    // Compact/UltraCompact1 8-column grid aligned to the damage row. showHeading
+    // draws the corner-name title + rule row (Compact); UltraCompact1 drops it.
+    void buildCompactGrid(QBoxLayout* outer, bool showHeading);
+    void buildUltraCompact2(QBoxLayout* outer); // one line per corner: name + 4 values
 
     Qt::Orientation orientation_ = Qt::Horizontal;
-    bool            compact_     = false;
+    Level           level_       = Full;
     bool            cornerVisible_[4] = { true, true, true, true };   // logical (not realized) visibility
     std::vector<QWidget*> compactCorner_[4];   // per-corner grid widgets, toggled by setCornerVisible
     QGridLayout*  compactGrid_ = nullptr;      // the compact grid, so hidden corners' columns can collapse

@@ -594,20 +594,31 @@ void MainWindow::setToolbarLabels(bool checked) {
         map->setShowLabels(checked);
 }
 
-void MainWindow::setCompactMode(bool on) {
-    settings.setValue("ui/compactMode", on);
-    // Rebuild each page's card rows at the new density. Overview repaints itself
-    // (its cards refresh per-packet, not on the dirty tick); Session and Power are
-    // repopulated via the coalesced refresh below (only the visible page runs now,
-    // the rest refresh when shown).
-    if (overviewPage_) overviewPage_->setCompactMode(on);
-    if (sessionPage_)  sessionPage_->setCompactMode(on);
-    if (powerPage_)    powerPage_->setCompactMode(on);
-    if (strategyPage_) strategyPage_->setCompactMode(on);
-    dirtySession_  = true;
-    dirtyPower_    = true;
-    dirtyStrategy_ = true;
-    dirtyTyres_    = true;   // Overview tyre cards were rebuilt at the new density
+void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
+    settings.setValue(tnr::compactKey(s), on);
+    // Rebuild only the affected section, then repaint. Overview stats/damage repaint
+    // themselves in their setters (their cards refresh per-packet, not on the dirty
+    // tick); the rest are repopulated via the coalesced refresh below (only the
+    // visible page runs now, the others refresh when next shown).
+    using CS = tnr::CompactSection;
+    switch (s) {
+        case CS::OverviewStats:   if (overviewPage_) overviewPage_->setStatsCompact(on);  break;
+        case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageCompact(on); break;
+        case CS::OverviewTyres:   setTyresCompactLevel(on ? 1 : 0); return;   // tyres use the int-level path
+        case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsCompact(on);   dirtySession_  = true; break;
+        case CS::SessionWeather:  if (sessionPage_)  sessionPage_->setWeatherCompact(on); dirtySession_  = true; break;
+        case CS::SessionHeader:   if (sessionPage_)  sessionPage_->setHeaderCompact(on);  dirtySession_  = true; break;
+        case CS::PowerCards:      if (powerPage_)    powerPage_->setCompactMode(on);      dirtyPower_    = true; break;
+        case CS::StrategySummary: if (strategyPage_) strategyPage_->setCompactMode(on);   dirtyStrategy_ = true; break;
+        default: break;
+    }
+    scheduleUiRefresh();
+}
+
+void MainWindow::setTyresCompactLevel(int level) {
+    settings.setValue(tnr::compactKey(tnr::CompactSection::OverviewTyres), level);
+    if (overviewPage_) overviewPage_->setTyresLevel(level);
+    dirtyTyres_ = true;
     scheduleUiRefresh();
 }
 

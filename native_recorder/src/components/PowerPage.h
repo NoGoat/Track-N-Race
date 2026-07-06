@@ -47,7 +47,7 @@ private:
     void saveLayout(const PowerLayout& layout);
     void applyLayout(const PowerLayout& layout);
 
-    bool compact_ = false;   // one-line cards when true (ui/compactMode)
+    bool compact_ = false;   // one-line cards when true (ui/compact/powerCards)
     QHash<QString, QLabel*> cardValue_;
     QWidget* topBar_      = nullptr;
     QWidget* cardFrames_[PowerLayout::CardCount] = {};

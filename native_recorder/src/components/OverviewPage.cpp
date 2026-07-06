@@ -1,4 +1,5 @@
 #include "OverviewPage.h"
+#include "../CompactSettings.h"
 #include "../Labels.h"
 #include "../TelemetryChart.h"
 #include "../SessionModel.h"
@@ -28,6 +29,18 @@
 // ── UI helpers ────────────────────────────────────────────────────────────
 
 namespace {
+
+// Fixed height for the tyre-cards widget at each density level (see
+// TyreCardsWidget::Level): Full keeps the tall stacked cards; the compact levels
+// shrink as rows are dropped (Ultra Compact 1/2 are a single value row).
+int tyreCardsHeight(int level) {
+    switch (level) {
+        case TyreCardsWidget::Compact:       return 44;
+        case TyreCardsWidget::UltraCompact1: return 30;
+        case TyreCardsWidget::UltraCompact2: return 30;
+        default:                             return 160;   // Full
+    }
+}
 
 // Remove and delete every item in a layout so a card row can be rebuilt in place
 // (used when compact mode toggles at runtime). The child widgets are deleted, not
@@ -167,7 +180,9 @@ void setDmgValue(QLabel* lbl, int val) {
 OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
-    compact_ = settings_.value("ui/compactMode", false).toBool();
+    statsCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewStats),  false).toBool();
+    damageCompact_ = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewDamage), false).toBool();
+    tyresLevel_    = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewTyres),  0).toInt();
 
     QVBoxLayout* vbox = new QVBoxLayout(this);
     // No outer padding so the separator lines reach every edge; the inset is
@@ -297,8 +312,9 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     tyreLay->addWidget(tyreSep_);
 
     tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
-    tyreCards_->setFixedHeight(compact_ ? 44 : 160);
-    if (compact_) tyreCards_->setCompactMode(true);
+    tyreCards_->setFixedHeight(tyreCardsHeight(tyresLevel_));
+    if (tyresLevel_ != TyreCardsWidget::Full)
+        tyreCards_->setLevel(static_cast<TyreCardsWidget::Level>(tyresLevel_));
     tyreLay->addWidget(tyreCards_);
 
     tyreCharts_ = new TyreChartsWidget;
@@ -358,7 +374,7 @@ void OverviewPage::buildStatCards() {
     // Compact cards carry their own left margin, so the row's L/R inset would
     // over-indent the first card ("SPEED") relative to the rest — drop it in
     // compact mode; the full two-line layout keeps its original inset.
-    sh->setContentsMargins(compact_ ? 0 : 8, 0, compact_ ? 0 : 8, 0);
+    sh->setContentsMargins(statsCompact_ ? 0 : 8, 0, statsCompact_ ? 0 : 8, 0);
 
     // Key-driven stat cards. Each card is { key, label }: title from the i18n
     // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
@@ -378,7 +394,7 @@ void OverviewPage::buildStatCards() {
         const QString key = OverviewLayout::statCardKey(d.idx);
         QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
         QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
-                                     val, compact_, d.sub ? &sub : nullptr, &title);
+                                     val, statsCompact_, d.sub ? &sub : nullptr, &title);
         statCardFrame_[d.idx] = frame;
         cardValue_[key] = val;
         cardTitle_[key] = title;
@@ -403,13 +419,13 @@ void OverviewPage::buildDamageCards() {
         dmgCardSep_[i]   = nullptr;
     }
 
-    const int rowH = compact_ ? 34 : 60;
+    const int rowH = damageCompact_ ? 34 : 60;
     dmgRowA_->setFixedHeight(rowH);
     dmgRowB_->setFixedHeight(rowH);
 
     // Drop the rows' L/R inset in compact mode so the first card ("WING FL") lines
     // up with the rest; the full two-line layout keeps its original inset.
-    const int dmgSide = compact_ ? 0 : 8;
+    const int dmgSide = damageCompact_ ? 0 : 8;
 
     struct DmgDef { int idx; const char* label; QLabel** val; };
     const DmgDef rowA[] = {
@@ -432,7 +448,7 @@ void OverviewPage::buildDamageCards() {
         rl->setContentsMargins(dmgSide, 0, dmgSide, 0);
         for (int j = 0; j < n; ++j) {
             if (j > 0) rl->addWidget(dmgCardSep_[defs[j].idx] = tnrui::vline());
-            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, compact_);
+            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, damageCompact_);
             dmgCardFrame_[defs[j].idx] = card;
             rl->addWidget(card, 1);
         }
@@ -441,21 +457,33 @@ void OverviewPage::buildDamageCards() {
     buildRow(qobject_cast<QHBoxLayout*>(dmgRowB_->layout()), rowB, 8);
 }
 
-// Live compact-mode toggle: rebuild every card with the new density, re-apply the
-// layout visibility (the rebuild recreated the frames applyLayout hides), then
-// repopulate values from the cache so nothing shows a stale "—" while paused.
-void OverviewPage::setCompactMode(bool on) {
-    if (compact_ == on) return;
-    compact_ = on;
+// Live per-section compact toggles. Each rebuilds only its own row/cards, re-applies
+// the layout visibility (the rebuild recreated the frames applyLayout hides), then
+// repopulates from the cache so nothing shows a stale "—" while paused.
+void OverviewPage::setStatsCompact(bool on) {
+    if (statsCompact_ == on) return;
+    statsCompact_ = on;
     buildStatCards();
-    buildDamageCards();
-    if (tyreCards_) {
-        tyreCards_->setFixedHeight(on ? 44 : 160);
-        tyreCards_->setCompactMode(on);   // rebuilds the corner cards; applyLayout re-applies visibility
-    }
     applyLayout(loadLayout());
     refreshCards();
+}
+
+void OverviewPage::setDamageCompact(bool on) {
+    if (damageCompact_ == on) return;
+    damageCompact_ = on;
+    buildDamageCards();
+    applyLayout(loadLayout());
     if (!lastDamage_.is_null()) { const nlohmann::json d = lastDamage_; onDamage(d); }
+}
+
+void OverviewPage::setTyresLevel(int level) {
+    if (tyresLevel_ == level) return;
+    tyresLevel_ = level;
+    if (tyreCards_) {
+        tyreCards_->setFixedHeight(tyreCardsHeight(level));
+        tyreCards_->setLevel(static_cast<TyreCardsWidget::Level>(level));   // rebuilds the corner cards; applyLayout re-applies visibility
+    }
+    applyLayout(loadLayout());
 }
 
 // ── Per-row updates (were the MainWindow live/playback signals) ───────────

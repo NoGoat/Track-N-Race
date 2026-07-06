@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "HotRowSmoother.h"
+#include "CompactSettings.h"
 #include "components/OverviewLayout.h"
 
 class OverviewPage;
@@ -61,8 +62,12 @@ public:
     void    setStyleName(const QString& name);
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
-    bool    compactModeEnabled() const { return settings.value("ui/compactMode", false).toBool(); }
-    void    setCompactMode(bool on);
+    bool    compactSection(tnr::CompactSection s) const { return settings.value(tnr::compactKey(s), false).toBool(); }
+    void    setCompactSection(tnr::CompactSection s, bool on);
+    // Overview tyre cards have four density levels (0 Full … 3 Ultra Compact 2),
+    // so they use an int level rather than the on/off compactSection() path.
+    int     tyresCompactLevel() const { return settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(); }
+    void    setTyresCompactLevel(int level);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
     int     chartMsaaSamples() const { return settings.value("ui/chartMsaaSamples", 4).toInt(); }

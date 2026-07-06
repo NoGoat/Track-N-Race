@@ -1,4 +1,5 @@
 #include "PowerPage.h"
+#include "../CompactSettings.h"
 #include "PageUiHelpers.h"
 #include "PowerChartsWidget.h"
 #include "CardColors.h"
@@ -83,7 +84,7 @@ namespace {
 PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
-    compact_ = settings_.value("ui/compactMode", false).toBool();
+    compact_ = settings_.value(tnr::compactKey(tnr::CompactSection::PowerCards), false).toBool();
 
     QVBoxLayout* vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);

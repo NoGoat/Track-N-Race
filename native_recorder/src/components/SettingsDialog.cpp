@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "../MainWindow.h"
+#include "../CompactSettings.h"
 #include "../IconUtils.h"
 
 #include <QVBoxLayout>
@@ -80,6 +81,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     struct Page { const char* title; QWidget* widget; };
     const Page pages[] = {
         { "Appearance",    buildAppearancePage()    },
+        { "Compact",       buildCompactPage()       },
         { "Recording",     buildRecordingPage()     },
         { "Overview",      buildOverviewPage()      },
         { "Track Map",     buildTrackMapPage()      },
@@ -323,10 +325,6 @@ QWidget* SettingsDialog::buildAppearancePage() {
     toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
     form->addRow("Toolbar:", toolbarLabelsCheck_);
 
-    compactModeCheck_ = new QCheckBox("Compact cards (single-line stat/damage cards)");
-    compactModeCheck_->setChecked(mainWindow_->compactModeEnabled());
-    form->addRow("Cards:", compactModeCheck_);
-
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Graphs"));
 
@@ -373,14 +371,83 @@ QWidget* SettingsDialog::buildAppearancePage() {
     connect(toolbarLabelsCheck_, &QCheckBox::toggled, this, [this](bool on) {
         mainWindow_->setToolbarLabels(on);
     });
-    connect(compactModeCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        mainWindow_->setCompactMode(on);
-    });
     connect(contrastSlider, &QSlider::valueChanged, this, [this, contrastVal](int val) {
         float f = val / 100.0f;
         contrastVal->setText(QString::number(f, 'f', 2));
         mainWindow_->setContrastThreshold(f);
     });
+    return page;
+}
+
+QWidget* SettingsDialog::buildCompactPage() {
+    QWidget* page = new QWidget;
+    QVBoxLayout* v = new QVBoxLayout(page);
+    v->setContentsMargins(8, 12, 8, 8);
+    v->setSpacing(10);
+
+    // One control = a muted caption over a Normal/Compact dropdown. (A dropdown, not
+    // a checkbox, so a planned "Ultra Compact" option can be added to select sections
+    // later without a redesign.) Each page's controls sit side by side in one row.
+    auto makeControl = [this](const char* label, tnr::CompactSection s) -> QWidget* {
+        QWidget* w = new QWidget;
+        QVBoxLayout* cv = new QVBoxLayout(w);
+        cv->setContentsMargins(0, 0, 0, 0);
+        cv->setSpacing(3);
+        QLabel* cap = new QLabel(label);
+        cap->setForegroundRole(QPalette::PlaceholderText);
+        QComboBox* combo = new QComboBox;
+        // The Overview tyre cards have two extra density levels (Ultra Compact 1/2),
+        // so that one control gets a 4-way int level; every other section is on/off.
+        if (s == tnr::CompactSection::OverviewTyres) {
+            combo->addItem("Normal");
+            combo->addItem("Compact");
+            combo->addItem("Ultra Compact 1");
+            combo->addItem("Ultra Compact 2");
+            combo->setCurrentIndex(mainWindow_->tyresCompactLevel());
+            connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                    [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
+        } else {
+            combo->addItem("Normal");
+            combo->addItem("Compact");
+            combo->setCurrentIndex(mainWindow_->compactSection(s) ? 1 : 0);
+            connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                    [this, s](int idx) { mainWindow_->setCompactSection(s, idx == 1); });
+        }
+        cv->addWidget(cap);
+        cv->addWidget(combo);
+        return w;
+    };
+
+    struct Row { tnr::CompactSection s; const char* group; const char* label; };
+    static const Row rows[] = {
+        { tnr::CompactSection::OverviewStats,   "Overview", "Stats row" },
+        { tnr::CompactSection::OverviewDamage,  "Overview", "Damage cards" },
+        { tnr::CompactSection::OverviewTyres,   "Overview", "Tyre cards" },
+        { tnr::CompactSection::SessionCards,    "Session",  "Info cards" },
+        { tnr::CompactSection::SessionWeather,  "Session",  "Weather strip" },
+        { tnr::CompactSection::SessionHeader,   "Session",  "Header" },
+        { tnr::CompactSection::PowerCards,      "Power",    "Cards" },
+        { tnr::CompactSection::StrategySummary, "Strategy", "Summary" },
+    };
+
+    QString lastGroup;
+    QHBoxLayout* rowLay = nullptr;
+    for (const Row& r : rows) {
+        if (r.group != lastGroup) {
+            if (rowLay) rowLay->addStretch(1);
+            if (!lastGroup.isEmpty()) v->addWidget(horizontalSeparator());
+            v->addWidget(subHeading(r.group));
+            QWidget* rowW = new QWidget;
+            rowLay = new QHBoxLayout(rowW);
+            rowLay->setContentsMargins(0, 0, 0, 0);
+            rowLay->setSpacing(20);
+            v->addWidget(rowW);
+            lastGroup = r.group;
+        }
+        rowLay->addWidget(makeControl(r.label, r.s));
+    }
+    if (rowLay) rowLay->addStretch(1);
+    v->addStretch(1);
     return page;
 }
 

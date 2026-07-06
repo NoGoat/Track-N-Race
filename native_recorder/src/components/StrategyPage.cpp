@@ -1,4 +1,5 @@
 #include "StrategyPage.h"
+#include "../CompactSettings.h"
 #include "TyreHelpers.h"
 
 #include <QHBoxLayout>
@@ -440,7 +441,7 @@ void StrategyPage::setCompactMode(bool on) {
 }
 
 StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
-    compact_ = settings_.value("ui/compactMode", false).toBool();
+    compact_ = settings_.value(tnr::compactKey(tnr::CompactSection::StrategySummary), false).toBool();
 
     // Top level is horizontal: a left pane (header + strategy columns) beside a
     // full-height sidebar. The header therefore spans only the columns, and the

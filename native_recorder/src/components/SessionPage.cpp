@@ -1,4 +1,5 @@
 #include "SessionPage.h"
+#include "../CompactSettings.h"
 #include "../Labels.h"
 #include "CardColors.h"
 #include "PageUiHelpers.h"
@@ -263,7 +264,9 @@ QString infringementLabel(int id) {
 SessionPage::SessionPage(QWidget* parent)
     : QWidget(parent)
 {
-    compact_ = settings_.value("ui/compactMode", false).toBool();
+    cardsCompact_   = settings_.value(tnr::compactKey(tnr::CompactSection::SessionCards),   false).toBool();
+    weatherCompact_ = settings_.value(tnr::compactKey(tnr::CompactSection::SessionWeather), false).toBool();
+    headerCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::SessionHeader),  false).toBool();
 
     QVBoxLayout* root = new QVBoxLayout(this);
     // No left/top padding here so the full-width separator lines reach the left edge
@@ -421,7 +424,7 @@ void SessionPage::setRenderingActive(bool on) {
 void SessionPage::buildHeader() {
     QHBoxLayout* hh = qobject_cast<QHBoxLayout*>(sp_header_->layout());
     clearLayout(hh);
-    const bool compact = compact_;
+    const bool compact = headerCompact_;
     sp_header_->setFixedHeight(compact ? 40 : 58);
     hh->setSpacing(compact ? 12 : 16);
 
@@ -537,13 +540,13 @@ void SessionPage::buildSessionCards() {
     QHBoxLayout* sh = qobject_cast<QHBoxLayout*>(spStatsRow_->layout());
     clearLayout(sh);
     spCardValue_.clear();
-    spStatsRow_->setFixedHeight(compact_ ? 34 : 58);
+    spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : 58);
     // Compact cards carry their own 12px left margin, so the row's extra left inset
     // would over-indent the first card ("TOTAL LAPS") relative to the rest — drop it
     // in compact mode; the full two-line layout keeps its original inset.
-    sh->setContentsMargins(compact_ ? 0 : 10, 0, 0, 0);
+    sh->setContentsMargins(cardsCompact_ ? 0 : 10, 0, 0, 0);
 
-    const bool compact = compact_;
+    const bool compact = cardsCompact_;
     // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
     // come from the shared library spec at build; conditional ones (temps) are
     // applied per-update in updateSession. `out` is kept as a convenience alias
@@ -615,7 +618,7 @@ void SessionPage::buildWeatherStrip() {
     sp_weatherNowIcon = nullptr;
     for (int i = 0; i < 5; ++i) sp_fcIcon[i] = nullptr;
 
-    const bool compact = compact_;
+    const bool compact = weatherCompact_;
     sp_weatherStrip_->setFixedHeight(compact ? 30 : 92);
     const int padX   = compact ? 8 : 12;
     const int padY   = compact ? 3 : 12;
@@ -719,15 +722,24 @@ void SessionPage::buildWeatherStrip() {
     }
 }
 
-// Live compact-mode toggle. Rebuilds the cards + weather strip at the new density;
-// MainWindow re-feeds the latest session row so the fresh labels repaint (see
-// MainWindow::setCompactMode).
-void SessionPage::setCompactMode(bool on) {
-    if (compact_ == on) return;
-    compact_ = on;
-    buildHeader();
+// Live per-section compact toggles. Each rebuilds only its part; MainWindow re-feeds
+// the latest session row so the fresh labels repaint (see MainWindow::setCompactSection).
+void SessionPage::setCardsCompact(bool on) {
+    if (cardsCompact_ == on) return;
+    cardsCompact_ = on;
     buildSessionCards();
+}
+
+void SessionPage::setWeatherCompact(bool on) {
+    if (weatherCompact_ == on) return;
+    weatherCompact_ = on;
     buildWeatherStrip();
+}
+
+void SessionPage::setHeaderCompact(bool on) {
+    if (headerCompact_ == on) return;
+    headerCompact_ = on;
+    buildHeader();
 }
 
 // ── Session page updater ──────────────────────────────────────────────────
@@ -785,7 +797,7 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
 
     sp_weatherNow->setText(weatherLabel(weather));
     // Compact strip drops the icon, so the weather name carries the icon's colour.
-    if (compact_) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
+    if (weatherCompact_) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
     applyWeatherIcon(sp_weatherNowIcon, weather, 40);
 
     if (session.contains("weather_forecast_samples")) {
@@ -796,7 +808,7 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
                 const int fw = fc[i].value("weather", 0);
                 sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].value("time_offset", 0)));
                 sp_fcWeather[i]->setText(weatherLabel(fw));
-                if (compact_) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
+                if (weatherCompact_) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
                 applyWeatherIcon(sp_fcIcon[i], fw, 40);
                 int rain = fc[i].value("rain_percentage", 0);
                 sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");
