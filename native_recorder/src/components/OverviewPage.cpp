@@ -123,7 +123,7 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     // No outer padding so the separator lines reach every edge; the inset is
     // re-added to the inner rows below (the chart keeps its own 8px L/R inset).
     vbox->setContentsMargins(0, 0, 0, 0);
-    vbox->setSpacing(6);
+    vbox->setSpacing(0);
 
     // ── Stats row ────────────────────────────────────────────────
     statsFrame_ = new QFrame;
