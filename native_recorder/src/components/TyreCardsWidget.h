@@ -28,7 +28,8 @@ public:
     //                    + value row, aligned to the damage row, no wear bar
     //   UltraCompact1  — Compact without the corner-name heading row
     //   UltraCompact2  — one line per corner: name + the four bare values
-    enum Level { Full = 0, Compact = 1, UltraCompact1 = 2, UltraCompact2 = 3 };
+    //   UltraCompact3  — one line per corner: short name + labelled values
+    enum Level { Full = 0, Compact = 1, UltraCompact1 = 2, UltraCompact2 = 3, UltraCompact3 = 4 };
 
     // Live density switch (Overview page only). Rebuilds the cards at the new level;
     // the Overview page re-applies corner visibility and re-feeds update().
@@ -40,7 +41,9 @@ private:
     // Compact/UltraCompact1 8-column grid aligned to the damage row. showHeading
     // draws the corner-name title + rule row (Compact); UltraCompact1 drops it.
     void buildCompactGrid(QBoxLayout* outer, bool showHeading);
-    void buildUltraCompact2(QBoxLayout* outer); // one line per corner: name + 4 values
+    // One line per corner (UltraCompact2/3): name + 4 values. abbrev shortens the
+    // corner name; showLabels prefixes each value with its metric.
+    void buildOneLine(QBoxLayout* outer, bool abbrev, bool showLabels);
 
     Qt::Orientation orientation_ = Qt::Horizontal;
     Level           level_       = Full;

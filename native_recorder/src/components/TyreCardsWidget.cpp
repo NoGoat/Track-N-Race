@@ -12,7 +12,8 @@
 #include <QSizePolicy>
 #include <algorithm>
 
-static const char* kCornerNames[] = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
+static const char* kCornerNames[]  = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
+static const char* kCornerAbbrev[] = { "FL", "FR", "RL", "RR" };
 
 // Remove and delete every item in a layout so the cards can be rebuilt in place
 // when compact mode toggles at runtime.
@@ -56,7 +57,8 @@ void TyreCardsWidget::buildCards() {
 
     if (level_ == Compact)        { buildCompactGrid(outer, /*showHeading*/ true);  return; }
     if (level_ == UltraCompact1)  { buildCompactGrid(outer, /*showHeading*/ false); return; }
-    if (level_ == UltraCompact2)  { buildUltraCompact2(outer);                      return; }
+    if (level_ == UltraCompact2)  { buildOneLine(outer, /*abbrev*/ false, /*showLabels*/ false); return; }
+    if (level_ == UltraCompact3)  { buildOneLine(outer, /*abbrev*/ true,  /*showLabels*/ true);  return; }
 
     for (int i = 0; i < 4; ++i) {
         QWidget* card = new QWidget;
@@ -231,32 +233,44 @@ void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer, bool showHeading) {
     updateDividers();
 }
 
-// One line per corner: the corner name on the left, then the four bare values
-// (Surface / Inner / Brake / Wear) pinned to the right. No labels, no dividers
-// inside a corner — just the between-corner separators (as in the other layouts).
-void TyreCardsWidget::buildUltraCompact2(QBoxLayout* outer) {
+// One line per corner: the corner name on the left, then the four values pinned to
+// the right. No dividers inside a corner — just the between-corner separators (as in
+// the other layouts). abbrev shortens the name (FL/FR/…); showLabels prefixes each
+// value with its metric (Surface/Inner/Brake/Wear).
+//   UltraCompact2 — full name, bare values
+//   UltraCompact3 — abbreviated name, labelled values
+void TyreCardsWidget::buildOneLine(QBoxLayout* outer, bool abbrev, bool showLabels) {
     for (int k = 0; k < 4; ++k) {
         QWidget* cell = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(cell);
         h->setContentsMargins(10, 0, 10, 0);
-        h->setSpacing(10);
+        h->setSpacing(showLabels ? 6 : 10);
 
-        QLabel* name = new QLabel(kCornerNames[k]);
+        QLabel* name = new QLabel(abbrev ? kCornerAbbrev[k] : kCornerNames[k]);
         QFont tf; tf.setPointSize(7); tf.setBold(true); name->setFont(tf);
         name->setForegroundRole(QPalette::PlaceholderText);
         h->addWidget(name);
         h->addStretch();
 
-        auto valueLabel = [&](QLabel*& out) {
+        // Optional metric label + value; labelled values get extra left padding so
+        // the four groups read as Surface 80°C  Inner 89°C  … rather than running on.
+        auto valueLabel = [&](const char* metric, QLabel*& out) {
+            if (showLabels) {
+                QLabel* l = new QLabel(metric);
+                QFont lf; lf.setPointSize(8); l->setFont(lf);
+                l->setForegroundRole(QPalette::PlaceholderText);
+                l->setContentsMargins(8, 0, 0, 0);
+                h->addWidget(l);
+            }
             out = new QLabel("—");
             QFont vf; vf.setPointSize(9); vf.setBold(true); out->setFont(vf);
             out->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             h->addWidget(out);
         };
-        valueLabel(surfaceTemp_[k]);
-        valueLabel(innerTemp_[k]);
-        valueLabel(brakeTemp_[k]);
-        valueLabel(wearLabel_[k]);
+        valueLabel("Surface", surfaceTemp_[k]);
+        valueLabel("Inner",   innerTemp_[k]);
+        valueLabel("Brake",   brakeTemp_[k]);
+        valueLabel("Wear",    wearLabel_[k]);
 
         compactCorner_[k] = { cell };
         cell->setVisible(cornerVisible_[k]);

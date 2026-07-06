@@ -38,6 +38,7 @@ int tyreCardsHeight(int level) {
         case TyreCardsWidget::Compact:       return 44;
         case TyreCardsWidget::UltraCompact1: return 30;
         case TyreCardsWidget::UltraCompact2: return 30;
+        case TyreCardsWidget::UltraCompact3: return 30;
         default:                             return 160;   // Full
     }
 }

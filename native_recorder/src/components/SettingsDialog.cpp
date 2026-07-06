@@ -403,6 +403,7 @@ QWidget* SettingsDialog::buildCompactPage() {
             combo->addItem("Compact");
             combo->addItem("Ultra Compact 1");
             combo->addItem("Ultra Compact 2");
+            combo->addItem("Ultra Compact 3");
             combo->setCurrentIndex(mainWindow_->tyresCompactLevel());
             connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                     [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
