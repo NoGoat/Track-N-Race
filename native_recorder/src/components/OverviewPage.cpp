@@ -445,6 +445,16 @@ void OverviewPage::buildDamageCards() {
         makeDmgCard("Gearbox",   dmgGearbox, compact_));  bh->addWidget(tnrui::vline());
     bh->addWidget(dmgCardFrame_[OverviewLayout::Engine] =
         makeDmgCard("Engine",    dmgEngine, compact_));
+
+    // Give every damage card equal stretch so all eight are exactly the same width.
+    // The four tyre cards above use stretch 1 too, so each tyre boundary lands on
+    // every other damage boundary — they line up. Without this the Expanding cards
+    // size to their differing label widths ("Wing Rear" vs "Floor") and drift out
+    // of alignment with the tyre row.
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        if (!dmgCardFrame_[i]) continue;
+        (i < OverviewLayout::WingFl ? ah : bh)->setStretchFactor(dmgCardFrame_[i], 1);
+    }
 }
 
 // Live compact-mode toggle: rebuild every card with the new density, re-apply the

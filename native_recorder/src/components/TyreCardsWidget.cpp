@@ -63,11 +63,13 @@ void TyreCardsWidget::buildCards() {
         title->setForegroundRole(QPalette::PlaceholderText);
 
         if (compact_) {
-            // No L/R card margin so the under-title rule reaches the card edges and
-            // meets the between-card dividers, forming one continuous grid line.
-            cv->setContentsMargins(0, 4, 0, 4);
-            cv->setSpacing(3);
+            // No card margin/spacing so the under-title rule reaches the card edges
+            // (meeting the between-card dividers) and the grid runs flush to the
+            // card's top rule and bottom edge.
+            cv->setContentsMargins(0, 0, 0, 0);
+            cv->setSpacing(0);
             title->setAlignment(Qt::AlignHCenter);
+            title->setContentsMargins(0, 4, 0, 3);   // padding lives on the title, not the grid
             cv->addWidget(title);
 
             // Horizontal rule between the title and the columns.
@@ -76,14 +78,18 @@ void TyreCardsWidget::buildCards() {
             titleRule->setFrameShadow(QFrame::Sunken);
             cv->addWidget(titleRule);
 
-            // Surface/Inner/Brake/Wear as a 4-column header row over a value row,
-            // with a vertical separator between each column (spanning both rows).
-            // Data columns live at grid columns 0/2/4/6; separators at 1/3/5. The
-            // grid keeps the L/R padding the card margin no longer provides.
+            // Surface/Inner/Brake/Wear columns with a vertical separator between
+            // each. Data columns live at grid columns 0/2/4/6, separators at 1/3/5.
+            // The grid has NO top/bottom margin and rows 0 & 3 are stretch spacers
+            // that centre the label/value pair; the separators span all four rows so
+            // they run edge-to-edge — touching the rule above and the section line
+            // below — with no gap from container padding.
             QGridLayout* grid = new QGridLayout;
-            grid->setContentsMargins(10, 2, 10, 0);
+            grid->setContentsMargins(10, 0, 10, 0);
             grid->setHorizontalSpacing(8);
             grid->setVerticalSpacing(1);
+            grid->setRowStretch(0, 1);   // top spacer
+            grid->setRowStretch(3, 1);   // bottom spacer
             const char* subLabels[4] = { "Surface", "Inner", "Brake", "Wear" };
             QLabel** vals[4] = { &surfaceTemp_[i], &innerTemp_[i], &brakeTemp_[i], &wearLabel_[i] };
             for (int c = 0; c < 4; ++c) {
@@ -96,17 +102,17 @@ void TyreCardsWidget::buildCards() {
                 QFont vf; vf.setPointSize(9); vf.setBold(true); val->setFont(vf);
                 val->setAlignment(Qt::AlignCenter);
                 *vals[c] = val;
-                grid->addWidget(lbl, 0, gc);
-                grid->addWidget(val, 1, gc);
+                grid->addWidget(lbl, 1, gc);
+                grid->addWidget(val, 2, gc);
                 grid->setColumnStretch(gc, 1);
                 if (c < 3) {
                     QFrame* sep = new QFrame;
                     sep->setFrameShape(QFrame::VLine);
                     sep->setFrameShadow(QFrame::Sunken);
-                    grid->addWidget(sep, 0, gc + 1, 2, 1);   // span the label + value rows
+                    grid->addWidget(sep, 0, gc + 1, 4, 1);   // span all rows: rule above → line below
                 }
             }
-            cv->addLayout(grid);
+            cv->addLayout(grid, 1);   // grid fills the card so the separators reach the bottom edge
             // wear_ / blisters_ intentionally left null: no bar, no blister row.
         } else {
             cv->setContentsMargins(10, 8, 10, 8);
