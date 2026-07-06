@@ -49,8 +49,12 @@ void TyreCardsWidget::buildCards() {
         surfaceTemp_[i] = innerTemp_[i] = brakeTemp_[i] = wearLabel_[i] = nullptr;
         wear_[i] = nullptr;
         blisters_[i] = nullptr;
+        compactCorner_[i].clear();
     }
     for (int d = 0; d < 3; ++d) dividers_[d] = nullptr;
+    compactGrid_ = nullptr;
+
+    if (compact_) { buildCompactGrid(outer); return; }
 
     for (int i = 0; i < 4; ++i) {
         QWidget* card = new QWidget;
@@ -62,104 +66,50 @@ void TyreCardsWidget::buildCards() {
         title->setFont(tf);
         title->setForegroundRole(QPalette::PlaceholderText);
 
-        if (compact_) {
-            // No card margin/spacing so the under-title rule reaches the card edges
-            // (meeting the between-card dividers) and the grid runs flush to the
-            // card's top rule and bottom edge.
-            cv->setContentsMargins(0, 0, 0, 0);
-            cv->setSpacing(0);
-            title->setAlignment(Qt::AlignHCenter);
-            title->setContentsMargins(0, 4, 0, 3);   // padding lives on the title, not the grid
-            cv->addWidget(title);
+        cv->setContentsMargins(10, 8, 10, 8);
+        cv->setSpacing(2);
+        cv->addWidget(title);
 
-            // Horizontal rule between the title and the columns.
-            QFrame* titleRule = new QFrame;
-            titleRule->setFrameShape(QFrame::HLine);
-            titleRule->setFrameShadow(QFrame::Sunken);
-            cv->addWidget(titleRule);
+        auto makeRow = [&](const QString& label, QLabel*& valueOut) {
+            QWidget* row = new QWidget;
+            QHBoxLayout* h = new QHBoxLayout(row);
+            h->setContentsMargins(0, 0, 0, 0);
+            QLabel* lbl = new QLabel(label);
+            QFont lf; lf.setPointSize(8); lbl->setFont(lf);
+            lbl->setForegroundRole(QPalette::PlaceholderText);
+            valueOut = new QLabel("—");
+            QFont vf; vf.setPointSize(8); vf.setBold(true);
+            valueOut->setFont(vf);
+            valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            h->addWidget(lbl);
+            h->addStretch();
+            h->addWidget(valueOut);
+            return row;
+        };
 
-            // Surface/Inner/Brake/Wear columns with a vertical separator between
-            // each. Data columns live at grid columns 0/2/4/6, separators at 1/3/5.
-            // The grid has NO top/bottom margin and rows 0 & 3 are stretch spacers
-            // that centre the label/value pair; the separators span all four rows so
-            // they run edge-to-edge — touching the rule above and the section line
-            // below — with no gap from container padding.
-            QGridLayout* grid = new QGridLayout;
-            grid->setContentsMargins(10, 0, 10, 0);
-            grid->setHorizontalSpacing(8);
-            grid->setVerticalSpacing(1);
-            grid->setRowStretch(0, 1);   // top spacer
-            grid->setRowStretch(3, 1);   // bottom spacer
-            const char* subLabels[4] = { "Surface", "Inner", "Brake", "Wear" };
-            QLabel** vals[4] = { &surfaceTemp_[i], &innerTemp_[i], &brakeTemp_[i], &wearLabel_[i] };
-            for (int c = 0; c < 4; ++c) {
-                const int gc = c * 2;
-                QLabel* lbl = new QLabel(subLabels[c]);
-                QFont lf; lf.setPointSize(7); lbl->setFont(lf);
-                lbl->setForegroundRole(QPalette::PlaceholderText);
-                lbl->setAlignment(Qt::AlignCenter);
-                QLabel* val = new QLabel("—");
-                QFont vf; vf.setPointSize(9); vf.setBold(true); val->setFont(vf);
-                val->setAlignment(Qt::AlignCenter);
-                *vals[c] = val;
-                grid->addWidget(lbl, 1, gc);
-                grid->addWidget(val, 2, gc);
-                grid->setColumnStretch(gc, 1);
-                if (c < 3) {
-                    QFrame* sep = new QFrame;
-                    sep->setFrameShape(QFrame::VLine);
-                    sep->setFrameShadow(QFrame::Sunken);
-                    grid->addWidget(sep, 0, gc + 1, 4, 1);   // span all rows: rule above → line below
-                }
-            }
-            cv->addLayout(grid, 1);   // grid fills the card so the separators reach the bottom edge
-            // wear_ / blisters_ intentionally left null: no bar, no blister row.
-        } else {
-            cv->setContentsMargins(10, 8, 10, 8);
-            cv->setSpacing(2);
-            cv->addWidget(title);
+        cv->addWidget(makeRow("Surface", surfaceTemp_[i]));
+        cv->addWidget(makeRow("Inner",   innerTemp_[i]));
+        cv->addWidget(makeRow("Brake",   brakeTemp_[i]));
+        cv->addWidget(makeRow("Wear",    wearLabel_[i]));
 
-            auto makeRow = [&](const QString& label, QLabel*& valueOut) {
-                QWidget* row = new QWidget;
-                QHBoxLayout* h = new QHBoxLayout(row);
-                h->setContentsMargins(0, 0, 0, 0);
-                QLabel* lbl = new QLabel(label);
-                QFont lf; lf.setPointSize(8); lbl->setFont(lf);
-                lbl->setForegroundRole(QPalette::PlaceholderText);
-                valueOut = new QLabel("—");
-                QFont vf; vf.setPointSize(8); vf.setBold(true);
-                valueOut->setFont(vf);
-                valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                h->addWidget(lbl);
-                h->addStretch();
-                h->addWidget(valueOut);
-                return row;
-            };
+        auto* wearBar = new QProgressBar;
+        wearBar->setRange(0, 100);
+        wearBar->setValue(0);
+        wearBar->setTextVisible(false);
+        wearBar->setFixedHeight(6);
+        wearBar->setStyleSheet(
+            "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+            "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
+        );
+        wear_[i] = wearBar;
+        cv->addWidget(wearBar);
 
-            cv->addWidget(makeRow("Surface", surfaceTemp_[i]));
-            cv->addWidget(makeRow("Inner",   innerTemp_[i]));
-            cv->addWidget(makeRow("Brake",   brakeTemp_[i]));
-            cv->addWidget(makeRow("Wear",    wearLabel_[i]));
-
-            auto* wearBar = new QProgressBar;
-            wearBar->setRange(0, 100);
-            wearBar->setValue(0);
-            wearBar->setTextVisible(false);
-            wearBar->setFixedHeight(6);
-            wearBar->setStyleSheet(
-                "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
-                "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
-            );
-            wear_[i] = wearBar;
-            cv->addWidget(wearBar);
-
-            blisters_[i] = new QLabel;
-            blisters_[i]->setVisible(false);
-            QFont bf; bf.setPointSize(7);
-            blisters_[i]->setFont(bf);
-            blisters_[i]->setForegroundRole(QPalette::PlaceholderText);
-            cv->addWidget(blisters_[i]);
-        }
+        blisters_[i] = new QLabel;
+        blisters_[i]->setVisible(false);
+        QFont bf; bf.setPointSize(7);
+        blisters_[i]->setFont(bf);
+        blisters_[i]->setForegroundRole(QPalette::PlaceholderText);
+        cv->addWidget(blisters_[i]);
 
         cards_[i] = card;
         card->setVisible(cornerVisible_[i]);
@@ -176,6 +126,96 @@ void TyreCardsWidget::buildCards() {
     updateDividers();
 }
 
+// Compact (Overview) layout. Built as ONE grid of 8 half-width columns (0,2,…,14,
+// stretch 1) + 7 divider columns (1,3,…,13, a vline each) — structurally identical
+// to the damage row's 8 cards + 7 dividers. Because both are 8 equal stretch units
+// separated by 7 same-width dividers, Qt computes the exact same column boundaries
+// for each, so every tyre separator lands pixel-perfect on a damage-card boundary.
+//
+// Each corner owns 2 half-columns (left = Surface/Inner, right = Brake/Wear); the
+// divider column between them is the Inner/Brake separator (= the corner's midpoint
+// = a damage boundary). The divider column after a corner is the between-corner
+// separator (full height). The Surface/Inner and Brake/Wear splits live nested
+// inside a half-column, so they don't shift the shared column boundaries.
+void TyreCardsWidget::buildCompactGrid(QBoxLayout* outer) {
+    QWidget* host = new QWidget;
+    QGridLayout* g = new QGridLayout(host);
+    compactGrid_ = g;
+    g->setContentsMargins(0, 0, 0, 0);
+    g->setHorizontalSpacing(0);
+    g->setVerticalSpacing(0);
+    g->setRowStretch(2, 1);                          // body row fills the height
+    for (int c = 0; c <= 14; c += 2) g->setColumnStretch(c, 1);   // 8 half-width columns
+
+    auto vline = [] {
+        QFrame* f = new QFrame; f->setFrameShape(QFrame::VLine); f->setFrameShadow(QFrame::Sunken); return f;
+    };
+    auto subCol = [](const char* text, QLabel*& out) {
+        QWidget* w = new QWidget;
+        QVBoxLayout* v = new QVBoxLayout(w);
+        v->setContentsMargins(0, 0, 0, 0); v->setSpacing(1);
+        QLabel* l = new QLabel(text);
+        QFont lf; lf.setPointSize(7); l->setFont(lf);
+        l->setForegroundRole(QPalette::PlaceholderText); l->setAlignment(Qt::AlignCenter);
+        out = new QLabel("—");
+        QFont vf; vf.setPointSize(9); vf.setBold(true); out->setFont(vf); out->setAlignment(Qt::AlignCenter);
+        v->addStretch(); v->addWidget(l); v->addWidget(out); v->addStretch();
+        return w;
+    };
+    // A half-column widget: two sub-columns split by their own (non-aligning) line.
+    auto halfCell = [&](const char* t0, QLabel*& v0, const char* t1, QLabel*& v1) {
+        QWidget* w = new QWidget;
+        QHBoxLayout* h = new QHBoxLayout(w);
+        h->setContentsMargins(8, 0, 8, 0); h->setSpacing(8);
+        h->addWidget(subCol(t0, v0), 1);
+        h->addWidget(vline());
+        h->addWidget(subCol(t1, v1), 1);
+        return w;
+    };
+
+    for (int k = 0; k < 4; ++k) {
+        const int c0 = 4 * k;        // left half-column
+        const int c1 = 4 * k + 2;    // right half-column
+
+        QLabel* title = new QLabel(kCornerNames[k]);
+        QFont tf; tf.setPointSize(7); tf.setBold(true); title->setFont(tf);
+        title->setForegroundRole(QPalette::PlaceholderText);
+        title->setAlignment(Qt::AlignHCenter);
+        title->setContentsMargins(0, 4, 0, 3);
+        g->addWidget(title, 0, c0, 1, 3);            // spans the corner's 2 halves + mid divider
+
+        QFrame* rule = new QFrame; rule->setFrameShape(QFrame::HLine); rule->setFrameShadow(QFrame::Sunken);
+        g->addWidget(rule, 1, c0, 1, 3);
+
+        QWidget* left  = halfCell("Surface", surfaceTemp_[k], "Inner", innerTemp_[k]);
+        QWidget* right = halfCell("Brake",   brakeTemp_[k],   "Wear",  wearLabel_[k]);
+        g->addWidget(left,  2, c0);
+        g->addWidget(right, 2, c1);
+
+        // Inner/Brake separator: divider column between the halves, body row only
+        // (starts at the rule, runs to the bottom edge).
+        QFrame* mid = vline();
+        g->addWidget(mid, 2, c0 + 1);
+
+        compactCorner_[k] = { title, rule, left, right, mid };
+
+        if (k < 3) {
+            QFrame* bc = vline();                    // between-corner separator, full height
+            g->addWidget(bc, 0, c1 + 1, 3, 1);
+            dividers_[k] = bc;
+        }
+    }
+
+    outer->addWidget(host, 1);
+    for (int k = 0; k < 4; ++k) {
+        for (QWidget* w : compactCorner_[k]) if (w) w->setVisible(cornerVisible_[k]);
+        // Collapse a hidden corner's two half-columns so the visible corners grow.
+        g->setColumnStretch(4 * k,     cornerVisible_[k] ? 1 : 0);
+        g->setColumnStretch(4 * k + 2, cornerVisible_[k] ? 1 : 0);
+    }
+    updateDividers();
+}
+
 // Live compact-mode toggle (Overview page only). Rebuilds the cards at the new
 // density; the Overview page re-applies corner visibility and re-feeds update().
 void TyreCardsWidget::setCompactMode(bool on) {
@@ -188,7 +228,13 @@ void TyreCardsWidget::setCornerVisible(int i, bool on)
 {
     if (i < 0 || i >= 4) return;
     cornerVisible_[i] = on;
-    if (cards_[i]) cards_[i]->setVisible(on);
+    if (cards_[i]) cards_[i]->setVisible(on);                 // non-compact: single card widget
+    for (QWidget* w : compactCorner_[i]) if (w) w->setVisible(on);   // compact grid: the corner's cells
+    if (compactGrid_) {
+        // Collapse the hidden corner's half-columns so the visible corners expand.
+        compactGrid_->setColumnStretch(4 * i,     on ? 1 : 0);
+        compactGrid_->setColumnStretch(4 * i + 2, on ? 1 : 0);
+    }
     updateDividers();
 }
 
@@ -198,9 +244,16 @@ void TyreCardsWidget::updateDividers()
     // applyLayout during construction (before the page is ever shown), when every
     // card's realized isVisible() is false — which would otherwise hide every
     // divider permanently.
-    for (int d = 0; d < 3; ++d) {
-        if (dividers_[d])
-            dividers_[d]->setVisible(cornerVisible_[d] && cornerVisible_[d + 1]);
+    //
+    // dividers_[d] sits between corner d and d+1, i.e. it precedes corner d+1. Show
+    // it only when corner d+1 is visible AND some earlier corner is visible — so
+    // there's exactly one separator between consecutive visible corners (no leading
+    // separator, and none stranded next to a hidden corner).
+    bool anyEarlier = false;
+    for (int k = 0; k < 4; ++k) {
+        if (k > 0 && dividers_[k - 1])
+            dividers_[k - 1]->setVisible(cornerVisible_[k] && anyEarlier);
+        anyEarlier = anyEarlier || cornerVisible_[k];
     }
 }
 

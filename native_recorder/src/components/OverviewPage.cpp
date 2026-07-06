@@ -398,7 +398,10 @@ void OverviewPage::buildStatCards() {
 void OverviewPage::buildDamageCards() {
     clearLayout(dmgRowA_->layout());
     clearLayout(dmgRowB_->layout());
-    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) dmgCardFrame_[i] = nullptr;
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
+        dmgCardFrame_[i] = nullptr;
+        dmgCardSep_[i]   = nullptr;
+    }
 
     const int rowH = compact_ ? 34 : 60;
     dmgRowA_->setFixedHeight(rowH);
@@ -408,53 +411,34 @@ void OverviewPage::buildDamageCards() {
     // up with the rest; the full two-line layout keeps its original inset.
     const int dmgSide = compact_ ? 0 : 8;
 
-    QHBoxLayout* ah = qobject_cast<QHBoxLayout*>(dmgRowA_->layout());
-    ah->setContentsMargins(dmgSide, 0, dmgSide, 0);
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFl] =
-        makeDmgCard("Tyre FL",  dmgTyreFl, compact_));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFr] =
-        makeDmgCard("Tyre FR",  dmgTyreFr, compact_));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRl] =
-        makeDmgCard("Tyre RL",  dmgTyreRl, compact_));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRr] =
-        makeDmgCard("Tyre RR",  dmgTyreRr, compact_));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFl] =
-        makeDmgCard("Brake FL", dmgBrakeFl, compact_));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFr] =
-        makeDmgCard("Brake FR", dmgBrakeFr, compact_));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRl] =
-        makeDmgCard("Brake RL", dmgBrakeRl, compact_));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRr] =
-        makeDmgCard("Brake RR", dmgBrakeRr, compact_));
+    struct DmgDef { int idx; const char* label; QLabel** val; };
+    const DmgDef rowA[] = {
+        { OverviewLayout::TyreFl,  "Tyre FL",  &dmgTyreFl },  { OverviewLayout::TyreFr,  "Tyre FR",  &dmgTyreFr },
+        { OverviewLayout::TyreRl,  "Tyre RL",  &dmgTyreRl },  { OverviewLayout::TyreRr,  "Tyre RR",  &dmgTyreRr },
+        { OverviewLayout::BrakeFl, "Brake FL", &dmgBrakeFl }, { OverviewLayout::BrakeFr, "Brake FR", &dmgBrakeFr },
+        { OverviewLayout::BrakeRl, "Brake RL", &dmgBrakeRl }, { OverviewLayout::BrakeRr, "Brake RR", &dmgBrakeRr },
+    };
+    const DmgDef rowB[] = {
+        { OverviewLayout::WingFl,   "Wing FL",   &dmgWingFl },   { OverviewLayout::WingFr,  "Wing FR",  &dmgWingFr },
+        { OverviewLayout::WingRear, "Wing Rear", &dmgWingRear }, { OverviewLayout::Floor,   "Floor",    &dmgFloor },
+        { OverviewLayout::Sidepod,  "Sidepod",   &dmgSidepod },  { OverviewLayout::Diffuser,"Diffuser", &dmgDiffuser },
+        { OverviewLayout::Gearbox,  "Gearbox",   &dmgGearbox },  { OverviewLayout::Engine,  "Engine",   &dmgEngine },
+    };
 
-    QHBoxLayout* bh = qobject_cast<QHBoxLayout*>(dmgRowB_->layout());
-    bh->setContentsMargins(dmgSide, 0, dmgSide, 0);
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFl] =
-        makeDmgCard("Wing FL",   dmgWingFl, compact_));   bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFr] =
-        makeDmgCard("Wing FR",   dmgWingFr, compact_));   bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingRear] =
-        makeDmgCard("Wing Rear", dmgWingRear, compact_)); bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Floor] =
-        makeDmgCard("Floor",     dmgFloor, compact_));    bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Sidepod] =
-        makeDmgCard("Sidepod",   dmgSidepod, compact_));  bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Diffuser] =
-        makeDmgCard("Diffuser",  dmgDiffuser, compact_)); bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Gearbox] =
-        makeDmgCard("Gearbox",   dmgGearbox, compact_));  bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Engine] =
-        makeDmgCard("Engine",    dmgEngine, compact_));
-
-    // Give every damage card equal stretch so all eight are exactly the same width.
-    // The four tyre cards above use stretch 1 too, so each tyre boundary lands on
-    // every other damage boundary — they line up. Without this the Expanding cards
-    // size to their differing label widths ("Wing Rear" vs "Floor") and drift out
-    // of alignment with the tyre row.
-    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
-        if (!dmgCardFrame_[i]) continue;
-        (i < OverviewLayout::WingFl ? ah : bh)->setStretchFactor(dmgCardFrame_[i], 1);
-    }
+    // Cards get equal stretch (all eight the same width, so they line up with the
+    // four equal tyre cards above). The separator preceding a card is tracked in
+    // dmgCardSep_ so applyLayout can hide it together with a hidden card.
+    auto buildRow = [&](QHBoxLayout* rl, const DmgDef* defs, int n) {
+        rl->setContentsMargins(dmgSide, 0, dmgSide, 0);
+        for (int j = 0; j < n; ++j) {
+            if (j > 0) rl->addWidget(dmgCardSep_[defs[j].idx] = tnrui::vline());
+            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, compact_);
+            dmgCardFrame_[defs[j].idx] = card;
+            rl->addWidget(card, 1);
+        }
+    };
+    buildRow(qobject_cast<QHBoxLayout*>(dmgRowA_->layout()), rowA, 8);
+    buildRow(qobject_cast<QHBoxLayout*>(dmgRowB_->layout()), rowB, 8);
 }
 
 // Live compact-mode toggle: rebuild every card with the new density, re-apply the
@@ -696,10 +680,18 @@ void OverviewPage::applyLayout(const OverviewLayout& L)
     if (sep1_)       sep1_->setVisible(anyStat);
 
     bool rowAVisible = false, rowBVisible = false;
+    bool anyEarlierA = false, anyEarlierB = false;
     for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) {
-        if (dmgCardFrame_[i]) dmgCardFrame_[i]->setVisible(L.dmgCards[i]);
-        if (i < OverviewLayout::WingFl) rowAVisible = rowAVisible || L.dmgCards[i];
-        else                            rowBVisible = rowBVisible || L.dmgCards[i];
+        const bool vis = L.dmgCards[i];
+        if (dmgCardFrame_[i]) dmgCardFrame_[i]->setVisible(vis);
+        // Show a card's preceding separator only when it AND an earlier card in the
+        // same row are visible — one line between consecutive visible cards, none
+        // stranded beside a hidden one (mirrors the stat-card separator logic).
+        bool& anyEarlier = (i < OverviewLayout::WingFl) ? anyEarlierA : anyEarlierB;
+        if (dmgCardSep_[i]) dmgCardSep_[i]->setVisible(vis && anyEarlier);
+        anyEarlier = anyEarlier || vis;
+        if (i < OverviewLayout::WingFl) rowAVisible = rowAVisible || vis;
+        else                            rowBVisible = rowBVisible || vis;
     }
     // A row whose cards are all hidden collapses entirely (rather than leaving
     // an empty 60px bar) so the chart's stretch factor can expand into the space.

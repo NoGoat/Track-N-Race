@@ -108,6 +108,9 @@ private:
     // double line between the surrounding visible cards.
     QFrame*         statCardSep_[OverviewLayout::StatCardCount]   = {};
     QFrame*         dmgCardFrame_[OverviewLayout::DmgCardCount]   = {};
+    // Separator preceding each damage card (first card of each row has none), so a
+    // hidden card's separator is hidden too instead of stacking into a cluster.
+    QFrame*         dmgCardSep_[OverviewLayout::DmgCardCount]     = {};
     QLabel*         dmgTyreFl   = nullptr; QLabel* dmgTyreFr  = nullptr;
     QLabel*         dmgTyreRl   = nullptr; QLabel* dmgTyreRr  = nullptr;
     QLabel*         dmgBrakeFl  = nullptr; QLabel* dmgBrakeFr = nullptr;
