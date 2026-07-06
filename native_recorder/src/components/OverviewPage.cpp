@@ -354,6 +354,10 @@ void OverviewPage::buildStatCards() {
         statCardFrame_[i] = nullptr;
         statCardSep_[i]   = nullptr;
     }
+    // Compact cards carry their own left margin, so the row's L/R inset would
+    // over-indent the first card ("SPEED") relative to the rest — drop it in
+    // compact mode; the full two-line layout keeps its original inset.
+    sh->setContentsMargins(compact_ ? 0 : 8, 0, compact_ ? 0 : 8, 0);
 
     // Key-driven stat cards. Each card is { key, label }: title from the i18n
     // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
@@ -399,7 +403,12 @@ void OverviewPage::buildDamageCards() {
     dmgRowA_->setFixedHeight(rowH);
     dmgRowB_->setFixedHeight(rowH);
 
+    // Drop the rows' L/R inset in compact mode so the first card ("WING FL") lines
+    // up with the rest; the full two-line layout keeps its original inset.
+    const int dmgSide = compact_ ? 0 : 8;
+
     QHBoxLayout* ah = qobject_cast<QHBoxLayout*>(dmgRowA_->layout());
+    ah->setContentsMargins(dmgSide, 0, dmgSide, 0);
     ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFl] =
         makeDmgCard("Tyre FL",  dmgTyreFl, compact_));   ah->addWidget(tnrui::vline());
     ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFr] =
@@ -418,6 +427,7 @@ void OverviewPage::buildDamageCards() {
         makeDmgCard("Brake RR", dmgBrakeRr, compact_));
 
     QHBoxLayout* bh = qobject_cast<QHBoxLayout*>(dmgRowB_->layout());
+    bh->setContentsMargins(dmgSide, 0, dmgSide, 0);
     bh->addWidget(dmgCardFrame_[OverviewLayout::WingFl] =
         makeDmgCard("Wing FL",   dmgWingFl, compact_));   bh->addWidget(tnrui::vline());
     bh->addWidget(dmgCardFrame_[OverviewLayout::WingFr] =

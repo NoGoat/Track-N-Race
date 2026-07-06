@@ -597,6 +597,10 @@ void SessionPage::buildSessionCards() {
     clearLayout(sh);
     spCardValue_.clear();
     spStatsRow_->setFixedHeight(compact_ ? 34 : 58);
+    // Compact cards carry their own 12px left margin, so the row's extra left inset
+    // would over-indent the first card ("TOTAL LAPS") relative to the rest — drop it
+    // in compact mode; the full two-line layout keeps its original inset.
+    sh->setContentsMargins(compact_ ? 0 : 10, 0, 0, 0);
 
     const bool compact = compact_;
     // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
@@ -619,7 +623,7 @@ void SessionPage::buildSessionCards() {
         if (compact) {
             // Two-value card: label left, value pinned right.
             QHBoxLayout* cl = new QHBoxLayout(card);
-            cl->setContentsMargins(12, 3, 12, 3);
+            cl->setContentsMargins(8, 3, 8, 3);
             cl->setSpacing(4);
             cl->addWidget(capLbl);
             cl->addStretch();
