@@ -37,8 +37,8 @@ int tyreCardsHeight(int level) {
     switch (level) {
         case TyreCardsWidget::Compact:       return 44;
         case TyreCardsWidget::UltraCompact1: return 30;
-        case TyreCardsWidget::UltraCompact2: return 30;
-        case TyreCardsWidget::UltraCompact3: return 30;
+        case TyreCardsWidget::UltraCompact2: return 24;
+        case TyreCardsWidget::UltraCompact3: return 24;
         default:                             return 160;   // Full
     }
 }
@@ -420,7 +420,7 @@ void OverviewPage::buildDamageCards() {
         dmgCardSep_[i]   = nullptr;
     }
 
-    const int rowH = damageCompact_ ? 34 : 60;
+    const int rowH = damageCompact_ ? 26 : 60;
     dmgRowA_->setFixedHeight(rowH);
     dmgRowB_->setFixedHeight(rowH);
 

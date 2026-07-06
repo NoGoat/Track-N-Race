@@ -360,7 +360,7 @@ void StrategyPage::buildStratHeader() {
         lapTotal_->setForegroundRole(QPalette::PlaceholderText);
         if (compact) {
             auto* row = new QHBoxLayout(cell);
-            row->setContentsMargins(16, 6, 16, 6); row->setSpacing(6);
+            row->setContentsMargins(16, 3, 16, 3); row->setSpacing(6);
             row->addWidget(lapValue_); row->addWidget(lapTotal_, 0, Qt::AlignBottom); row->addStretch();
         } else {
             auto* cv = new QVBoxLayout(cell);
@@ -387,7 +387,7 @@ void StrategyPage::buildStratHeader() {
         wearBar_->setTextVisible(false); wearBar_->setFixedHeight(6);
 
         auto* cl = new QHBoxLayout(cell);
-        cl->setContentsMargins(16, 6, 16, 6); cl->setSpacing(12);
+        cl->setContentsMargins(16, compact ? 3 : 6, 16, compact ? 3 : 6); cl->setSpacing(12);
         if (compact) {
             // One line: chip · % · bar · tyre info.
             cl->addWidget(compoundChip_, 0, Qt::AlignVCenter);
@@ -416,7 +416,7 @@ void StrategyPage::buildStratHeader() {
         cliffPlus_->setForegroundRole(QPalette::PlaceholderText);
         if (compact) {
             auto* row = new QHBoxLayout(cell);
-            row->setContentsMargins(16, 6, 16, 6); row->setSpacing(6);
+            row->setContentsMargins(16, 3, 16, 3); row->setSpacing(6);
             row->addWidget(capLabel("TYRE CLIFF"), 0, Qt::AlignVCenter);
             row->addWidget(cliffValue_, 0, Qt::AlignVCenter);
             row->addWidget(cliffPlus_,  0, Qt::AlignBottom);

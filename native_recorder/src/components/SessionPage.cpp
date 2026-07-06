@@ -425,7 +425,7 @@ void SessionPage::buildHeader() {
     QHBoxLayout* hh = qobject_cast<QHBoxLayout*>(sp_header_->layout());
     clearLayout(hh);
     const bool compact = headerCompact_;
-    sp_header_->setFixedHeight(compact ? 40 : 58);
+    sp_header_->setFixedHeight(compact ? 32 : 58);
     hh->setSpacing(compact ? 12 : 16);
 
     // GP block — name always; the circuit name only in the full layout.
