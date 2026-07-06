@@ -56,8 +56,14 @@ public:
     bool tyreGraphLifeMode() const { return settings_.value("ui/tyreWearMode", "life").toString() != "wear"; }
     void setTyreGraphLifeMode(bool life);
 
+    // Collapse the stat + damage cards to a single line (label · value · info).
+    // Rebuilds the card rows in place and repaints from the cache.
+    void setCompactMode(bool on);
+
 private:
     void refreshCards();   // recompute value + colour for every built card
+    void buildStatCards();     // (re)populate the stats row with cards at the current density
+    void buildDamageCards();   // (re)populate both damage rows at the current density
     void saveLayout(const OverviewLayout& layout);
     void applyLayout(const OverviewLayout& layout);
 
@@ -77,6 +83,8 @@ private:
         int tyreCompound = -1; int visualCompound = -1; int tyreAgeLaps = 0; int fuelMix = -1;
         int pos = 0; int lapNum = 0;
     } cache_;
+    nlohmann::json lastDamage_;   // last damage row, replayed after a compact rebuild
+    bool compact_ = false;        // one-line cards when true (ui/compactMode)
 
     TelemetryChart* chart_       = nullptr;
     QComboBox*      lapCombo_    = nullptr;   // compare-lap selector

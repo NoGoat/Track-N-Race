@@ -5,6 +5,7 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QLayout>
 #include <QFrame>
 #include <QLabel>
 #include <QFont>
@@ -13,24 +14,29 @@
 #include <cmath>
 
 namespace {
-    QWidget* makeStatCard(const QString& labelTxt, QLabel** valPtr, const QString& unitTxt, const QColor& color) {
+    // Remove and delete every item in a layout so the card row can be rebuilt in
+    // place when compact mode toggles at runtime.
+    void clearLayout(QLayout* lay) {
+        if (!lay) return;
+        while (QLayoutItem* item = lay->takeAt(0)) {
+            if (QWidget* w = item->widget()) delete w;
+            delete item;
+        }
+    }
+
+    // compact collapses the card to one line — label left, value+unit centred —
+    // instead of the two-line label-over-value block.
+    QWidget* makeStatCard(const QString& labelTxt, QLabel** valPtr, const QString& unitTxt,
+                          const QColor& color, bool compact) {
         QWidget* w = new QWidget;
-        QVBoxLayout* l = new QVBoxLayout(w);
-        l->setContentsMargins(12, 8, 12, 8);
-        l->setSpacing(2);
 
         QLabel* label = new QLabel(labelTxt);
         QFont f; f.setPointSize(8); f.setBold(true);
         label->setFont(f);
         label->setForegroundRole(QPalette::PlaceholderText);
 
-        QWidget* valRow = new QWidget;
-        QHBoxLayout* hl = new QHBoxLayout(valRow);
-        hl->setContentsMargins(0, 0, 0, 0);
-        hl->setSpacing(4);
-
         *valPtr = new QLabel("—");
-        QFont vf; vf.setPointSize(18); vf.setBold(true);
+        QFont vf; vf.setPointSize(compact ? 13 : 18); vf.setBold(true);
         (*valPtr)->setFont(vf);
         if (color.isValid()) {
             QPalette p = (*valPtr)->palette();
@@ -39,10 +45,30 @@ namespace {
         }
 
         QLabel* unit = new QLabel(unitTxt);
-        QFont uf; uf.setPointSize(9);
+        QFont uf; uf.setPointSize(compact ? 8 : 9);
         unit->setFont(uf);
         unit->setForegroundRole(QPalette::PlaceholderText);
 
+        if (compact) {
+            QHBoxLayout* cl = new QHBoxLayout(w);
+            cl->setContentsMargins(12, 3, 12, 3);
+            cl->setSpacing(4);
+            cl->addWidget(label);
+            cl->addStretch();
+            cl->addWidget(*valPtr);
+            if (!unitTxt.isEmpty()) cl->addWidget(unit);
+            cl->addStretch();
+            return w;
+        }
+
+        QVBoxLayout* l = new QVBoxLayout(w);
+        l->setContentsMargins(12, 8, 12, 8);
+        l->setSpacing(2);
+
+        QWidget* valRow = new QWidget;
+        QHBoxLayout* hl = new QHBoxLayout(valRow);
+        hl->setContentsMargins(0, 0, 0, 0);
+        hl->setSpacing(4);
         hl->addWidget(*valPtr);
         if (!unitTxt.isEmpty()) hl->addWidget(unit);
         hl->addStretch();
@@ -57,6 +83,8 @@ namespace {
 PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
+    compact_ = settings_.value("ui/compactMode", false).toBool();
+
     QVBoxLayout* vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
@@ -66,25 +94,7 @@ PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     QHBoxLayout* topLay = new QHBoxLayout(topBar_);
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
-
-    // Key-driven cards: { key, label, unit }. Colours are applied per-update from
-    // the shared library spec (update), so none are set here.
-    struct PCardDef { const char* key; const char* label; const char* unit; };
-    static const PCardDef defs[] = {
-        { "total",    "TOTAL POWER", "kW" }, { "ice",      "ICE",   "kW" },
-        { "mguk",     "MGU-K",       "kW" }, { "split",    "SPLIT", ""   },
-        { "ersStore", "ERS STORE",   "MJ" }, { "ersPct",   "ERS %", "%"  },
-        { "fuel",     "FUEL",        "kg" },
-    };
-    for (int i = 0; i < (int)(sizeof(defs) / sizeof(defs[0])); ++i) {
-        QLabel* val = nullptr;
-        topLay->addWidget(cardFrames_[i] = makeStatCard(defs[i].label, &val, defs[i].unit, QColor()), 1);
-        cardValue_[defs[i].key] = val;
-        if (i < 6) {
-            cardDivs_[i] = tnrui::vline();
-            topLay->addWidget(cardDivs_[i]);
-        }
-    }
+    buildCards();   // populates topBar_'s layout (rebuilt on compact toggle)
 
     vbox->addWidget(topBar_);
     hdiv_ = tnrui::hline();
@@ -97,6 +107,47 @@ PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     charts_->setModel(model);
     vbox->addWidget(charts_, 1);
 
+    applyLayout(loadLayout());
+}
+
+// Build (or rebuild in place) the key-driven stat cards into topBar_'s row.
+// Called from the ctor and again on a compact-mode toggle: it clears the row and
+// the pointer maps first so the new cards fully replace the old ones.
+void PowerPage::buildCards() {
+    QHBoxLayout* topLay = qobject_cast<QHBoxLayout*>(topBar_->layout());
+    clearLayout(topLay);
+    cardValue_.clear();
+    for (int i = 0; i < PowerLayout::CardCount; ++i)     cardFrames_[i] = nullptr;
+    for (int i = 0; i < PowerLayout::CardCount - 1; ++i) cardDivs_[i]   = nullptr;
+
+    // Key-driven cards: { key, label, unit }. Colours are applied per-update from
+    // the shared library spec (update), so none are set here.
+    struct PCardDef { const char* key; const char* label; const char* unit; };
+    static const PCardDef defs[] = {
+        { "total",    "TOTAL POWER", "kW" }, { "ice",      "ICE",   "kW" },
+        { "mguk",     "MGU-K",       "kW" }, { "split",    "SPLIT", ""   },
+        { "ersStore", "ERS STORE",   "MJ" }, { "ersPct",   "ERS %", "%"  },
+        { "fuel",     "FUEL",        "kg" },
+    };
+    const int n = (int)(sizeof(defs) / sizeof(defs[0]));
+    for (int i = 0; i < n; ++i) {
+        QLabel* val = nullptr;
+        topLay->addWidget(cardFrames_[i] = makeStatCard(defs[i].label, &val, defs[i].unit, QColor(), compact_), 1);
+        cardValue_[defs[i].key] = val;
+        if (i < n - 1) {
+            cardDivs_[i] = tnrui::vline();
+            topLay->addWidget(cardDivs_[i]);
+        }
+    }
+}
+
+// Live compact-mode toggle. Rebuilds the cards at the new density and re-applies
+// the layout visibility; MainWindow re-feeds the latest status row so the fresh
+// labels repaint (see MainWindow::setCompactMode).
+void PowerPage::setCompactMode(bool on) {
+    if (compact_ == on) return;
+    compact_ = on;
+    buildCards();
     applyLayout(loadLayout());
 }
 

@@ -10,6 +10,7 @@
 #include <QPixmap>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QLayout>
 #include <QFrame>
 #include <QLabel>
 #include <QFont>
@@ -24,6 +25,16 @@
 #include <unordered_map>
 
 namespace {
+
+// Remove and delete every item in a layout so the stat-card row can be rebuilt in
+// place when compact mode toggles at runtime.
+void clearLayout(QLayout* lay) {
+    if (!lay) return;
+    while (QLayoutItem* item = lay->takeAt(0)) {
+        if (QWidget* w = item->widget()) delete w;
+        delete item;
+    }
+}
 
 // ── Marshal zones strip widget ────────────────────────────────────────────
 
@@ -253,6 +264,8 @@ QString infringementLabel(int id) {
 SessionPage::SessionPage(QWidget* parent)
     : QWidget(parent)
 {
+    compact_ = settings_.value("ui/compactMode", false).toBool();
+
     QVBoxLayout* root = new QVBoxLayout(this);
     // No left/top padding here so the full-width separator lines reach the left edge
     // and the header's vertical separators reach the toolbar above; the left inset
@@ -361,60 +374,14 @@ SessionPage::SessionPage(QWidget* parent)
     { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
 
     // ── Stat cards ───────────────────────────────────────────────
-    QWidget* statsRow = new QWidget;
-    statsRow->setFixedHeight(58);
-    QHBoxLayout* sh = new QHBoxLayout(statsRow);
+    spStatsRow_ = new QWidget;
+    QHBoxLayout* sh = new QHBoxLayout(spStatsRow_);
     sh->setContentsMargins(10, 0, 0, 0);   // left inset for the first stat card
     sh->setSpacing(0);
+    buildSessionCards();   // populates spStatsRow_'s layout (rebuilt on compact toggle)
 
-    // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
-    // come from the shared library spec at build; conditional ones (temps) are
-    // applied per-update in updateSession. `out` is kept as a convenience alias
-    // for this page's bespoke per-card value formatting.
-    auto makeStatCard = [&](const QString& key, const QString& cap, QLabel*& out,
-                            const QString& colorSpec = "") -> QWidget* {
-        QWidget* card = new QWidget;
-        QVBoxLayout* v = new QVBoxLayout(card);
-        v->setContentsMargins(12, 6, 12, 6);
-        v->setSpacing(2);
-        QLabel* capLbl = new QLabel(cap);
-        QFont capf; capf.setPointSize(7); capLbl->setFont(capf);
-        capLbl->setForegroundRole(QPalette::PlaceholderText);
-        out = new QLabel("—");
-        QFont valf; valf.setPointSize(16); valf.setBold(true); out->setFont(valf);
-        if (!colorSpec.isEmpty()) {
-            const QColor c = tnr::cardColor(colorSpec.toStdString());
-            if (c.isValid()) out->setStyleSheet("color:" + c.name() + ";");
-        }
-        spCardValue_[key] = out;
-        v->addWidget(capLbl); v->addWidget(out);
-        return card;
-    };
-
-    auto addVSep = [&]() {
-        sh->addWidget(tnrui::vline());
-    };
-
-    sh->addWidget(makeStatCard("totalLaps", "TOTAL LAPS", sp_statTotalLaps),                    1);
-    addVSep();
-    sh->addWidget(makeStatCard("remaining", "REMAINING",  sp_statRemain),                       1);
-    addVSep();
-    sh->addWidget(makeStatCard("pitSpeed",  "PIT SPEED",  sp_statPitSpeed, "session.pitSpeed"), 1);
-    addVSep();
-    sh->addWidget(makeStatCard("pitWindow", "PIT WINDOW", sp_statPitWin,   "session.pitWindow"),1);
-    addVSep();
-    sh->addWidget(makeStatCard("rejoin",    "REJOIN",     sp_statRejoin,   "session.rejoin"),   1);
-    addVSep();
-    sh->addWidget(makeStatCard("trackTemp", "TRACK TEMP", sp_trackTemp),                        1);
-    addVSep();
-    sh->addWidget(makeStatCard("airTemp",   "AIR TEMP",   sp_airTemp),                          1);
-    addVSep();
-    sh->addWidget(makeStatCard("trackLen",  "TRACK LENGTH", sp_trackLen),                       1);
-    addVSep();
-    sh->addWidget(makeStatCard("timeOfDay", "TIME OF DAY",  sp_timeOfDay),                      1);
-
-    root->addWidget(statsRow);
-    mapFsHide_.push_back(statsRow);
+    root->addWidget(spStatsRow_);
+    mapFsHide_.push_back(spStatsRow_);
 
     { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
 
@@ -619,6 +586,83 @@ void SessionPage::clearEvents() {
 
 void SessionPage::setRenderingActive(bool on) {
     if (trackMap_) trackMap_->setRenderingActive(on);
+}
+
+// Build (or rebuild in place) the key-driven stat cards into spStatsRow_. Called
+// from the ctor and again on a compact-mode toggle: it clears the row and the
+// value map first so the new cards fully replace the old ones. Compact collapses
+// each card to one line — label left, value (with its embedded units) centred.
+void SessionPage::buildSessionCards() {
+    QHBoxLayout* sh = qobject_cast<QHBoxLayout*>(spStatsRow_->layout());
+    clearLayout(sh);
+    spCardValue_.clear();
+    spStatsRow_->setFixedHeight(compact_ ? 34 : 58);
+
+    const bool compact = compact_;
+    // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
+    // come from the shared library spec at build; conditional ones (temps) are
+    // applied per-update in updateSession. `out` is kept as a convenience alias
+    // for this page's bespoke per-card value formatting.
+    auto makeStatCard = [&](const QString& key, const QString& cap, QLabel*& out,
+                            const QString& colorSpec = "") -> QWidget* {
+        QWidget* card = new QWidget;
+        QLabel* capLbl = new QLabel(cap);
+        QFont capf; capf.setPointSize(compact ? 8 : 7); capLbl->setFont(capf);
+        capLbl->setForegroundRole(QPalette::PlaceholderText);
+        out = new QLabel("—");
+        QFont valf; valf.setPointSize(compact ? 13 : 16); valf.setBold(true); out->setFont(valf);
+        if (!colorSpec.isEmpty()) {
+            const QColor c = tnr::cardColor(colorSpec.toStdString());
+            if (c.isValid()) out->setStyleSheet("color:" + c.name() + ";");
+        }
+        spCardValue_[key] = out;
+        if (compact) {
+            QHBoxLayout* cl = new QHBoxLayout(card);
+            cl->setContentsMargins(12, 3, 12, 3);
+            cl->setSpacing(4);
+            cl->addWidget(capLbl);
+            cl->addStretch();
+            cl->addWidget(out);
+            cl->addStretch();
+        } else {
+            QVBoxLayout* v = new QVBoxLayout(card);
+            v->setContentsMargins(12, 6, 12, 6);
+            v->setSpacing(2);
+            v->addWidget(capLbl); v->addWidget(out);
+        }
+        return card;
+    };
+
+    auto addVSep = [&]() {
+        sh->addWidget(tnrui::vline());
+    };
+
+    sh->addWidget(makeStatCard("totalLaps", "TOTAL LAPS", sp_statTotalLaps),                    1);
+    addVSep();
+    sh->addWidget(makeStatCard("remaining", "REMAINING",  sp_statRemain),                       1);
+    addVSep();
+    sh->addWidget(makeStatCard("pitSpeed",  "PIT SPEED",  sp_statPitSpeed, "session.pitSpeed"), 1);
+    addVSep();
+    sh->addWidget(makeStatCard("pitWindow", "PIT WINDOW", sp_statPitWin,   "session.pitWindow"),1);
+    addVSep();
+    sh->addWidget(makeStatCard("rejoin",    "REJOIN",     sp_statRejoin,   "session.rejoin"),   1);
+    addVSep();
+    sh->addWidget(makeStatCard("trackTemp", "TRACK TEMP", sp_trackTemp),                        1);
+    addVSep();
+    sh->addWidget(makeStatCard("airTemp",   "AIR TEMP",   sp_airTemp),                          1);
+    addVSep();
+    sh->addWidget(makeStatCard("trackLen",  "TRACK LENGTH", sp_trackLen),                       1);
+    addVSep();
+    sh->addWidget(makeStatCard("timeOfDay", "TIME OF DAY",  sp_timeOfDay),                      1);
+}
+
+// Live compact-mode toggle. Rebuilds the cards at the new density; MainWindow
+// re-feeds the latest session row so the fresh labels repaint (see
+// MainWindow::setCompactMode).
+void SessionPage::setCompactMode(bool on) {
+    if (compact_ == on) return;
+    compact_ = on;
+    buildSessionCards();
 }
 
 // ── Session page updater ──────────────────────────────────────────────────

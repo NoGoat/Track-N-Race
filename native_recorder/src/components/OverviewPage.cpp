@@ -10,6 +10,7 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QLayout>
 #include <QFrame>
 #include <QLabel>
 #include <QFont>
@@ -28,22 +29,72 @@
 
 namespace {
 
-// subOut, when non-null, receives a small bold label pinned to the top-right of
-// the heading row — the native home for the per-card extra info the Electron app
-// shows as a sub-row under the value (ERS mode, fuel "vs fin", lap, tyre age).
+// Remove and delete every item in a layout so a card row can be rebuilt in place
+// (used when compact mode toggles at runtime). The child widgets are deleted, not
+// just detached, so the stale card frames don't linger under the new ones.
+void clearLayout(QLayout* lay) {
+    if (!lay) return;
+    while (QLayoutItem* item = lay->takeAt(0)) {
+        if (QWidget* w = item->widget()) delete w;
+        delete item;
+    }
+}
+
+// subOut, when non-null, receives a small bold label carrying the per-card extra
+// info the Electron app shows as a sub-row under the value (ERS mode, fuel
+// "vs fin", lap, tyre age). In the full (two-line) layout it's pinned to the
+// top-right of the heading row; in compact mode it sits in the card's right zone.
+//
+// Compact collapses the card to one line — [label] · value+unit (middle) · [sub]
+// (right) — trading vertical space for a shorter row.
 QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut,
-                     QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
+                     bool compact, QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    QVBoxLayout* cv = new QVBoxLayout(card);
-    cv->setContentsMargins(8, 6, 8, 6);
-    cv->setSpacing(1);
 
     QLabel* lbl = new QLabel(label.toUpper());
-    QFont lf; lf.setPointSize(7);
+    QFont lf; lf.setPointSize(compact ? 8 : 7);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
     if (titleOut) *titleOut = lbl;   // expose the title so it can be re-labelled on format change
+
+    valueOut = new QLabel("—");
+    QFont vf; vf.setPointSize(compact ? 12 : 15); vf.setBold(true);
+    valueOut->setFont(vf);
+
+    QLabel* ulbl = nullptr;
+    if (!unit.isEmpty()) {
+        ulbl = new QLabel(unit);
+        QFont uf; uf.setPointSize(compact ? 8 : 7);
+        ulbl->setFont(uf);
+        ulbl->setForegroundRole(QPalette::PlaceholderText);
+    }
+    QLabel* sub = nullptr;
+    if (subOut) {
+        sub = new QLabel;
+        QFont sf; sf.setPointSize(compact ? 8 : 7); sf.setBold(true);
+        sub->setFont(sf);
+        sub->setForegroundRole(QPalette::PlaceholderText);
+        *subOut = sub;
+    }
+
+    if (compact) {
+        // One line: label left, value+unit centred, sub pinned right.
+        QHBoxLayout* cl = new QHBoxLayout(card);
+        cl->setContentsMargins(8, 3, 8, 3);
+        cl->setSpacing(4);
+        cl->addWidget(lbl);
+        cl->addStretch();
+        cl->addWidget(valueOut);
+        if (ulbl) cl->addWidget(ulbl);
+        cl->addStretch();
+        if (sub) cl->addWidget(sub);
+        return card;
+    }
+
+    QVBoxLayout* cv = new QVBoxLayout(card);
+    cv->setContentsMargins(8, 6, 8, 6);
+    cv->setSpacing(1);
 
     // Heading row: title on the left, optional sub-info pinned to the right.
     QWidget* hdrRow = new QWidget;
@@ -52,32 +103,14 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     hh->setSpacing(4);
     hh->addWidget(lbl);
     hh->addStretch();
-    if (subOut) {
-        QLabel* sub = new QLabel;
-        QFont sf; sf.setPointSize(7); sf.setBold(true);
-        sub->setFont(sf);
-        sub->setForegroundRole(QPalette::PlaceholderText);
-        hh->addWidget(sub);
-        *subOut = sub;
-    }
+    if (sub) hh->addWidget(sub);
 
     QWidget* valRow = new QWidget;
     QHBoxLayout* hl = new QHBoxLayout(valRow);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(4);
-
-    valueOut = new QLabel("—");
-    QFont vf; vf.setPointSize(15); vf.setBold(true);
-    valueOut->setFont(vf);
-
     hl->addWidget(valueOut);
-    if (!unit.isEmpty()) {
-        QLabel* ulbl = new QLabel(unit);
-        QFont uf; uf.setPointSize(7);
-        ulbl->setFont(uf);
-        ulbl->setForegroundRole(QPalette::PlaceholderText);
-        hl->addWidget(ulbl);
-    }
+    if (ulbl) hl->addWidget(ulbl);
     hl->addStretch();
 
     cv->addWidget(hdrRow);
@@ -85,22 +118,34 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     return card;
 }
 
-QFrame* makeDmgCard(const QString& label, QLabel*& valueOut) {
+QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, bool compact) {
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    QVBoxLayout* cv = new QVBoxLayout(card);
-    cv->setContentsMargins(6, 4, 6, 4);
-    cv->setSpacing(0);
 
     QLabel* lbl = new QLabel(label.toUpper());
-    QFont lf; lf.setPointSize(6);
+    QFont lf; lf.setPointSize(compact ? 7 : 6);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
 
     valueOut = new QLabel("—");
-    QFont vf; vf.setPointSize(12); vf.setBold(true);
+    QFont vf; vf.setPointSize(compact ? 11 : 12); vf.setBold(true);
     valueOut->setFont(vf);
 
+    if (compact) {
+        // One line: label left, value centred.
+        QHBoxLayout* cl = new QHBoxLayout(card);
+        cl->setContentsMargins(6, 2, 6, 2);
+        cl->setSpacing(4);
+        cl->addWidget(lbl);
+        cl->addStretch();
+        cl->addWidget(valueOut);
+        cl->addStretch();
+        return card;
+    }
+
+    QVBoxLayout* cv = new QVBoxLayout(card);
+    cv->setContentsMargins(6, 4, 6, 4);
+    cv->setSpacing(0);
     cv->addWidget(lbl);
     cv->addWidget(valueOut);
     return card;
@@ -119,6 +164,8 @@ void setDmgValue(QLabel* lbl, int val) {
 OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
+    compact_ = settings_.value("ui/compactMode", false).toBool();
+
     QVBoxLayout* vbox = new QVBoxLayout(this);
     // No outer padding so the separator lines reach every edge; the inset is
     // re-added to the inner rows below (the chart keeps its own 8px L/R inset).
@@ -130,38 +177,7 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     QHBoxLayout* sh = new QHBoxLayout(statsFrame_);
     sh->setContentsMargins(8, 0, 8, 0);   // L/R inset; lines above/below reach edges
     sh->setSpacing(0);
-
-    // Key-driven stat cards. Each card is { key, label }: title from the i18n
-    // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
-    // data cache (see refreshCards). The wing card keeps the 'drs'
-    // visibility key while its data field is format-aware (drs ↔ slm).
-    struct CardDef { OverviewLayout::StatCard idx; const char* unit; bool sub; };
-    static const CardDef defs[] = {
-        { OverviewLayout::Speed,      "kph", false }, { OverviewLayout::Rpm,        "",    false },
-        { OverviewLayout::Gear,       "",    false }, { OverviewLayout::Throttle,   "%",   false },
-        { OverviewLayout::Brake,      "%",   false }, { OverviewLayout::Drs,        "",    true  },
-        { OverviewLayout::EngineTemp, "°C",  false }, { OverviewLayout::Ers,        "%",   true  },
-        { OverviewLayout::Fuel,       "kg",  true  }, { OverviewLayout::Pos,        "",    true  },
-        { OverviewLayout::Tyre,       "",    true  },
-    };
-    bool first = true;
-    for (const CardDef& d : defs) {
-        const QString key = OverviewLayout::statCardKey(d.idx);
-        QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
-        QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
-                                     val, d.sub ? &sub : nullptr, &title);
-        statCardFrame_[d.idx] = frame;
-        cardValue_[key] = val;
-        cardTitle_[key] = title;
-        if (sub) cardSub_[key] = sub;
-        if (!first) {
-            QFrame* sep = tnrui::vline();
-            statCardSep_[d.idx] = sep;   // tracked so applyLayout can hide it with its card
-            sh->addWidget(sep);
-        }
-        first = false;
-        sh->addWidget(frame);
-    }
+    buildStatCards();   // populates statsFrame_'s layout (rebuilt on compact toggle)
 
     vbox->addWidget(statsFrame_);
 
@@ -300,50 +316,18 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     dv->setSpacing(0);
 
     dmgRowA_ = new QFrame;
-    dmgRowA_->setFixedHeight(60);
     QHBoxLayout* ah = new QHBoxLayout(dmgRowA_);
     ah->setContentsMargins(8, 0, 8, 0);   // L/R inset; the row's lines reach edges
     ah->setSpacing(0);
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFl] =
-        makeDmgCard("Tyre FL",  dmgTyreFl));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFr] =
-        makeDmgCard("Tyre FR",  dmgTyreFr));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRl] =
-        makeDmgCard("Tyre RL",  dmgTyreRl));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRr] =
-        makeDmgCard("Tyre RR",  dmgTyreRr));   ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFl] =
-        makeDmgCard("Brake FL", dmgBrakeFl));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFr] =
-        makeDmgCard("Brake FR", dmgBrakeFr));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRl] =
-        makeDmgCard("Brake RL", dmgBrakeRl));  ah->addWidget(tnrui::vline());
-    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRr] =
-        makeDmgCard("Brake RR", dmgBrakeRr));
 
     dmgHdiv_ = tnrui::hline();
 
     dmgRowB_ = new QFrame;
-    dmgRowB_->setFixedHeight(60);
     QHBoxLayout* bh = new QHBoxLayout(dmgRowB_);
     bh->setContentsMargins(8, 0, 8, 0);   // L/R inset; the row's lines reach edges
     bh->setSpacing(0);
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFl] =
-        makeDmgCard("Wing FL",   dmgWingFl));   bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFr] =
-        makeDmgCard("Wing FR",   dmgWingFr));   bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::WingRear] =
-        makeDmgCard("Wing Rear", dmgWingRear)); bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Floor] =
-        makeDmgCard("Floor",     dmgFloor));    bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Sidepod] =
-        makeDmgCard("Sidepod",   dmgSidepod));  bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Diffuser] =
-        makeDmgCard("Diffuser",  dmgDiffuser)); bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Gearbox] =
-        makeDmgCard("Gearbox",   dmgGearbox));  bh->addWidget(tnrui::vline());
-    bh->addWidget(dmgCardFrame_[OverviewLayout::Engine] =
-        makeDmgCard("Engine",    dmgEngine));
+
+    buildDamageCards();   // populates both rows (rebuilt on compact toggle)
 
     dv->addWidget(dmgRowA_);
     dv->addWidget(dmgHdiv_);
@@ -352,6 +336,114 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     vbox->addWidget(dmgFrame_);
 
     applyLayout(loadLayout());
+}
+
+// Build (or rebuild in place) the key-driven stat cards into statsFrame_'s row.
+// Called from the ctor and again on a compact-mode toggle: it clears the row and
+// the card/pointer maps first, so the new cards fully replace the old ones.
+void OverviewPage::buildStatCards() {
+    QHBoxLayout* sh = qobject_cast<QHBoxLayout*>(statsFrame_->layout());
+    clearLayout(sh);
+    cardValue_.clear();
+    cardSub_.clear();
+    cardTitle_.clear();
+    for (int i = 0; i < OverviewLayout::StatCardCount; ++i) {
+        statCardFrame_[i] = nullptr;
+        statCardSep_[i]   = nullptr;
+    }
+
+    // Key-driven stat cards. Each card is { key, label }: title from the i18n
+    // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
+    // data cache (see refreshCards). The wing card keeps the 'drs'
+    // visibility key while its data field is format-aware (drs ↔ slm).
+    struct CardDef { OverviewLayout::StatCard idx; const char* unit; bool sub; };
+    static const CardDef defs[] = {
+        { OverviewLayout::Speed,      "kph", false }, { OverviewLayout::Rpm,        "",    false },
+        { OverviewLayout::Gear,       "",    false }, { OverviewLayout::Throttle,   "%",   false },
+        { OverviewLayout::Brake,      "%",   false }, { OverviewLayout::Drs,        "",    true  },
+        { OverviewLayout::EngineTemp, "°C",  false }, { OverviewLayout::Ers,        "%",   true  },
+        { OverviewLayout::Fuel,       "kg",  true  }, { OverviewLayout::Pos,        "",    true  },
+        { OverviewLayout::Tyre,       "",    true  },
+    };
+    bool first = true;
+    for (const CardDef& d : defs) {
+        const QString key = OverviewLayout::statCardKey(d.idx);
+        QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
+        QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
+                                     val, compact_, d.sub ? &sub : nullptr, &title);
+        statCardFrame_[d.idx] = frame;
+        cardValue_[key] = val;
+        cardTitle_[key] = title;
+        if (sub) cardSub_[key] = sub;
+        if (!first) {
+            QFrame* sep = tnrui::vline();
+            statCardSep_[d.idx] = sep;   // tracked so applyLayout can hide it with its card
+            sh->addWidget(sep);
+        }
+        first = false;
+        sh->addWidget(frame);
+    }
+}
+
+// Build (or rebuild in place) both damage rows. Compact mode collapses the cards
+// to one line, so the rows also shrink from their two-line fixed height.
+void OverviewPage::buildDamageCards() {
+    clearLayout(dmgRowA_->layout());
+    clearLayout(dmgRowB_->layout());
+    for (int i = 0; i < OverviewLayout::DmgCardCount; ++i) dmgCardFrame_[i] = nullptr;
+
+    const int rowH = compact_ ? 34 : 60;
+    dmgRowA_->setFixedHeight(rowH);
+    dmgRowB_->setFixedHeight(rowH);
+
+    QHBoxLayout* ah = qobject_cast<QHBoxLayout*>(dmgRowA_->layout());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFl] =
+        makeDmgCard("Tyre FL",  dmgTyreFl, compact_));   ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreFr] =
+        makeDmgCard("Tyre FR",  dmgTyreFr, compact_));   ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRl] =
+        makeDmgCard("Tyre RL",  dmgTyreRl, compact_));   ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::TyreRr] =
+        makeDmgCard("Tyre RR",  dmgTyreRr, compact_));   ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFl] =
+        makeDmgCard("Brake FL", dmgBrakeFl, compact_));  ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeFr] =
+        makeDmgCard("Brake FR", dmgBrakeFr, compact_));  ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRl] =
+        makeDmgCard("Brake RL", dmgBrakeRl, compact_));  ah->addWidget(tnrui::vline());
+    ah->addWidget(dmgCardFrame_[OverviewLayout::BrakeRr] =
+        makeDmgCard("Brake RR", dmgBrakeRr, compact_));
+
+    QHBoxLayout* bh = qobject_cast<QHBoxLayout*>(dmgRowB_->layout());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFl] =
+        makeDmgCard("Wing FL",   dmgWingFl, compact_));   bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::WingFr] =
+        makeDmgCard("Wing FR",   dmgWingFr, compact_));   bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::WingRear] =
+        makeDmgCard("Wing Rear", dmgWingRear, compact_)); bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::Floor] =
+        makeDmgCard("Floor",     dmgFloor, compact_));    bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::Sidepod] =
+        makeDmgCard("Sidepod",   dmgSidepod, compact_));  bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::Diffuser] =
+        makeDmgCard("Diffuser",  dmgDiffuser, compact_)); bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::Gearbox] =
+        makeDmgCard("Gearbox",   dmgGearbox, compact_));  bh->addWidget(tnrui::vline());
+    bh->addWidget(dmgCardFrame_[OverviewLayout::Engine] =
+        makeDmgCard("Engine",    dmgEngine, compact_));
+}
+
+// Live compact-mode toggle: rebuild every card with the new density, re-apply the
+// layout visibility (the rebuild recreated the frames applyLayout hides), then
+// repopulate values from the cache so nothing shows a stale "—" while paused.
+void OverviewPage::setCompactMode(bool on) {
+    if (compact_ == on) return;
+    compact_ = on;
+    buildStatCards();
+    buildDamageCards();
+    applyLayout(loadLayout());
+    refreshCards();
+    if (!lastDamage_.is_null()) { const nlohmann::json d = lastDamage_; onDamage(d); }
 }
 
 // ── Per-row updates (were the MainWindow live/playback signals) ───────────
@@ -381,6 +473,7 @@ void OverviewPage::onStatus(const nlohmann::json& row) {
 }
 
 void OverviewPage::onDamage(const nlohmann::json& row) {
+    lastDamage_ = row;   // cached so a compact-mode rebuild can repaint while paused
     setDmgValue(dmgTyreFl,   row.value("tyre_dmg_fl",   0));
     setDmgValue(dmgTyreFr,   row.value("tyre_dmg_fr",   0));
     setDmgValue(dmgTyreRl,   row.value("tyre_dmg_rl",   0));

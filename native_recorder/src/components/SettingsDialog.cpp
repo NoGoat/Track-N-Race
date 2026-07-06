@@ -323,6 +323,10 @@ QWidget* SettingsDialog::buildAppearancePage() {
     toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
     form->addRow("Toolbar:", toolbarLabelsCheck_);
 
+    compactModeCheck_ = new QCheckBox("Compact cards (single-line stat/damage cards)");
+    compactModeCheck_->setChecked(mainWindow_->compactModeEnabled());
+    form->addRow("Cards:", compactModeCheck_);
+
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Graphs"));
 
@@ -368,6 +372,9 @@ QWidget* SettingsDialog::buildAppearancePage() {
     connect(themeDark_,   &QRadioButton::toggled, this, applyTheme);
     connect(toolbarLabelsCheck_, &QCheckBox::toggled, this, [this](bool on) {
         mainWindow_->setToolbarLabels(on);
+    });
+    connect(compactModeCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        mainWindow_->setCompactMode(on);
     });
     connect(contrastSlider, &QSlider::valueChanged, this, [this, contrastVal](int val) {
         float f = val / 100.0f;

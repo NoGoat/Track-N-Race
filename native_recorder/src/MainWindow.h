@@ -61,6 +61,8 @@ public:
     void    setStyleName(const QString& name);
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
+    bool    compactModeEnabled() const { return settings.value("ui/compactMode", false).toBool(); }
+    void    setCompactMode(bool on);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
     int     chartMsaaSamples() const { return settings.value("ui/chartMsaaSamples", 4).toInt(); }

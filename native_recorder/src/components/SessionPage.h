@@ -39,13 +39,21 @@ public:
     // The Settings dialog's map setters push live values through this.
     TrackMapWidget* trackMap() const { return trackMap_; }
 
+    // Collapse the info cards to a single line (label · value). Rebuilds the card
+    // row in place; MainWindow re-feeds the latest session row to repaint it.
+    void setCompactMode(bool on);
+
 private:
+    void buildSessionCards();   // (re)populate the stat-card row at the current density
+
     QWidget*     sp_marshalStrip  = nullptr;
     QLabel*      sp_gpName        = nullptr;
     QLabel*      sp_circuitName   = nullptr;
     QLabel*      sp_sessionType   = nullptr;
     QLabel*      sp_timeLeft      = nullptr;
     // Session stat cards registered by key (value labels also aliased below).
+    QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
+    bool         compact_         = false;     // one-line cards when true (ui/compactMode)
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;
     QLabel*      sp_statRemain    = nullptr;

@@ -58,6 +58,7 @@ private:
     QRadioButton* themeDark_          = nullptr;
     QComboBox*    styleCombo_         = nullptr;
     QCheckBox*    toolbarLabelsCheck_ = nullptr;
+    QCheckBox*    compactModeCheck_   = nullptr;
     QComboBox*    chartMsaaCombo_     = nullptr;
     QCheckBox*    toastsCheck_        = nullptr;
     QComboBox*    toastDurationCombo_ = nullptr;

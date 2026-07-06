@@ -38,10 +38,16 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Collapse the info cards to a single line (label · value · unit). Rebuilds the
+    // card row in place; MainWindow re-feeds the latest status row to repaint it.
+    void setCompactMode(bool on);
+
 private:
+    void buildCards();   // (re)populate the card row at the current density
     void saveLayout(const PowerLayout& layout);
     void applyLayout(const PowerLayout& layout);
 
+    bool compact_ = false;   // one-line cards when true (ui/compactMode)
     QHash<QString, QLabel*> cardValue_;
     QWidget* topBar_      = nullptr;
     QWidget* cardFrames_[PowerLayout::CardCount] = {};

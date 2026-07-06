@@ -594,6 +594,20 @@ void MainWindow::setToolbarLabels(bool checked) {
         map->setShowLabels(checked);
 }
 
+void MainWindow::setCompactMode(bool on) {
+    settings.setValue("ui/compactMode", on);
+    // Rebuild each page's card rows at the new density. Overview repaints itself
+    // (its cards refresh per-packet, not on the dirty tick); Session and Power are
+    // repopulated via the coalesced refresh below (only the visible page runs now,
+    // the rest refresh when shown).
+    if (overviewPage_) overviewPage_->setCompactMode(on);
+    if (sessionPage_)  sessionPage_->setCompactMode(on);
+    if (powerPage_)    powerPage_->setCompactMode(on);
+    dirtySession_ = true;
+    dirtyPower_   = true;
+    scheduleUiRefresh();
+}
+
 void MainWindow::setContrastThreshold(float val) {
     settings.setValue("ui/contrastThreshold", val);
     dirtyTiming_ = true;
