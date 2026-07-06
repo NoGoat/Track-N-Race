@@ -50,6 +50,7 @@ namespace {
         unit->setForegroundRole(QPalette::PlaceholderText);
 
         if (compact) {
+            // Two-value card: label left, value+unit pinned right.
             QHBoxLayout* cl = new QHBoxLayout(w);
             cl->setContentsMargins(12, 3, 12, 3);
             cl->setSpacing(4);
@@ -57,7 +58,6 @@ namespace {
             cl->addStretch();
             cl->addWidget(*valPtr);
             if (!unitTxt.isEmpty()) cl->addWidget(unit);
-            cl->addStretch();
             return w;
         }
 

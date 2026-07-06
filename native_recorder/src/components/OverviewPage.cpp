@@ -79,7 +79,9 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     }
 
     if (compact) {
-        // One line: label left, value+unit centred, sub pinned right.
+        // One line. Three-value cards (those carrying extra info) read
+        // label · value+unit (centred) · info (right); two-value cards drop the
+        // trailing stretch so the value pins to the right edge.
         QHBoxLayout* cl = new QHBoxLayout(card);
         cl->setContentsMargins(8, 3, 8, 3);
         cl->setSpacing(4);
@@ -87,8 +89,10 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
         cl->addStretch();
         cl->addWidget(valueOut);
         if (ulbl) cl->addWidget(ulbl);
-        cl->addStretch();
-        if (sub) cl->addWidget(sub);
+        if (sub) {
+            cl->addStretch();
+            cl->addWidget(sub);
+        }
         return card;
     }
 
@@ -132,14 +136,13 @@ QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, bool compact) {
     valueOut->setFont(vf);
 
     if (compact) {
-        // One line: label left, value centred.
+        // One line, two-value: label left, value pinned right.
         QHBoxLayout* cl = new QHBoxLayout(card);
         cl->setContentsMargins(6, 2, 6, 2);
         cl->setSpacing(4);
         cl->addWidget(lbl);
         cl->addStretch();
         cl->addWidget(valueOut);
-        cl->addStretch();
         return card;
     }
 

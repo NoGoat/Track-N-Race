@@ -617,13 +617,13 @@ void SessionPage::buildSessionCards() {
         }
         spCardValue_[key] = out;
         if (compact) {
+            // Two-value card: label left, value pinned right.
             QHBoxLayout* cl = new QHBoxLayout(card);
             cl->setContentsMargins(12, 3, 12, 3);
             cl->setSpacing(4);
             cl->addWidget(capLbl);
             cl->addStretch();
             cl->addWidget(out);
-            cl->addStretch();
         } else {
             QVBoxLayout* v = new QVBoxLayout(card);
             v->setContentsMargins(12, 6, 12, 6);
@@ -651,9 +651,10 @@ void SessionPage::buildSessionCards() {
     addVSep();
     sh->addWidget(makeStatCard("airTemp",   "AIR TEMP",   sp_airTemp),                          1);
     addVSep();
-    sh->addWidget(makeStatCard("trackLen",  "TRACK LENGTH", sp_trackLen),                       1);
+    // Shorter labels in compact mode where they share the row with the value.
+    sh->addWidget(makeStatCard("trackLen",  compact ? "LENGTH" : "TRACK LENGTH", sp_trackLen),  1);
     addVSep();
-    sh->addWidget(makeStatCard("timeOfDay", "TIME OF DAY",  sp_timeOfDay),                      1);
+    sh->addWidget(makeStatCard("timeOfDay", compact ? "TIME" : "TIME OF DAY", sp_timeOfDay),    1);
 }
 
 // Live compact-mode toggle. Rebuilds the cards at the new density; MainWindow
