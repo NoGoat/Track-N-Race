@@ -607,6 +607,7 @@ void MainWindow::setCompactMode(bool on) {
     dirtySession_  = true;
     dirtyPower_    = true;
     dirtyStrategy_ = true;
+    dirtyTyres_    = true;   // Overview tyre cards were rebuilt at the new density
     scheduleUiRefresh();
 }
 

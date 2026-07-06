@@ -17,9 +17,17 @@ public:
     void update(const nlohmann::json& telemetry, const nlohmann::json& damage);
     void setCornerVisible(int i, bool on);
 
+    // Compact single-line-ish redesign — corner name centred over a Surface/Inner/
+    // Brake/Wear header + value row, no wear bar. Only the Overview page enables it;
+    // the Tyres page keeps the full stacked layout.
+    void setCompactMode(bool on);
+
 private:
     void updateDividers();
+    void buildCards();   // (re)build the four corner cards at the current density
 
+    Qt::Orientation orientation_ = Qt::Horizontal;
+    bool            compact_     = false;
     QWidget*      cards_[4]     = {};
     QFrame*       dividers_[3]  = {};
     QLabel*       surfaceTemp_[4] = {};

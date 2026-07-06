@@ -297,7 +297,8 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     tyreLay->addWidget(tyreSep_);
 
     tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
-    tyreCards_->setFixedHeight(160);
+    tyreCards_->setFixedHeight(compact_ ? 78 : 160);
+    if (compact_) tyreCards_->setCompactMode(true);
     tyreLay->addWidget(tyreCards_);
 
     tyreCharts_ = new TyreChartsWidget;
@@ -454,6 +455,10 @@ void OverviewPage::setCompactMode(bool on) {
     compact_ = on;
     buildStatCards();
     buildDamageCards();
+    if (tyreCards_) {
+        tyreCards_->setFixedHeight(on ? 78 : 160);
+        tyreCards_->setCompactMode(on);   // rebuilds the corner cards; applyLayout re-applies visibility
+    }
     applyLayout(loadLayout());
     refreshCards();
     if (!lastDamage_.is_null()) { const nlohmann::json d = lastDamage_; onDamage(d); }
