@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QColor>
 #include <QString>
+#include <QSettings>
 #include <unordered_map>
 #include <map>
 #include <vector>
@@ -81,8 +82,15 @@ public:
     // Called internally on a detected session change and by MainWindow on SSTA.
     void resetForNewSession();
 
+    // Collapse the top header (lap / tyre bar / cliff) to single-line cells.
+    // Rebuilds the header in place; MainWindow re-feeds update() to repaint it.
+    void setCompactMode(bool on);
+
 private:
+    void buildStratHeader();   // (re)build the top header at the current density
+
     // ── Persistent widgets (built once, refilled on update) ──────────────
+    QWidget*        stratHeader_  = nullptr;   // header container, repopulated on compact toggle
     QLabel*         lapValue_     = nullptr;
     QLabel*         lapTotal_     = nullptr;
     QLabel*         compoundChip_ = nullptr;
@@ -150,4 +158,7 @@ private:
     // Circuit pit-loss, loaded once per track from the map file (cached by track id).
     PitLoss pitLoss_;
     int     pitLossTrackId_ = -2;
+
+    bool      compact_ = false;   // single-line header cells when true (ui/compactMode)
+    QSettings settings_{ "TrackNRace", "NativeRecorder" };
 };

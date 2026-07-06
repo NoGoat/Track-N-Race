@@ -603,8 +603,10 @@ void MainWindow::setCompactMode(bool on) {
     if (overviewPage_) overviewPage_->setCompactMode(on);
     if (sessionPage_)  sessionPage_->setCompactMode(on);
     if (powerPage_)    powerPage_->setCompactMode(on);
-    dirtySession_ = true;
-    dirtyPower_   = true;
+    if (strategyPage_) strategyPage_->setCompactMode(on);
+    dirtySession_  = true;
+    dirtyPower_    = true;
+    dirtyStrategy_ = true;
     scheduleUiRefresh();
 }
 

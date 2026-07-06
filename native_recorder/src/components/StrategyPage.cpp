@@ -4,9 +4,11 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QGridLayout>
+#include <QLayout>
 #include <QLabel>
 #include <QFrame>
 #include <QProgressBar>
+#include <QSettings>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStackedWidget>
@@ -31,6 +33,17 @@ using nlohmann::json;
 // ─── File-local data + helpers ─────────────────────────────────────────────
 
 namespace {
+
+// Remove and delete every item in a layout so the header can be rebuilt in place
+// when compact mode toggles at runtime.
+void clearLayout(QLayout* lay) {
+    if (!lay) return;
+    while (QLayoutItem* item = lay->takeAt(0)) {
+        if (QWidget* w = item->widget()) delete w;
+        else if (QLayout* child = item->layout()) clearLayout(child);
+        delete item;
+    }
+}
 
 // Reads the circuit's pit-lane time loss from the track map (the same files used for
 // map rendering). Returns the 11.25/13.75/25s fallback when no map exists.
@@ -313,7 +326,122 @@ struct StrategyData {
 
 // ─── StrategyPage ──────────────────────────────────────────────────────────
 
+// Build (or rebuild in place) the top header — lap counter, compound + wear bar,
+// tyre-cliff — into stratHeader_. Compact mode collapses each cell to a single row:
+// the lap counter drops its "LAP" caption (just "6 / 22"); the tyre cell becomes
+// chip · % · bar · info on one line; the cliff cell becomes "TYRE CLIFF Lap N +M".
+// The leaf widgets are recreated, so update() repaints them on the next tick.
+void StrategyPage::buildStratHeader() {
+    auto* hl = qobject_cast<QHBoxLayout*>(stratHeader_->layout());
+    clearLayout(hl);
+    const bool compact = compact_;
+
+    auto vline = []() {
+        auto* f = new QFrame;
+        f->setFrameShape(QFrame::VLine);
+        f->setFrameShadow(QFrame::Sunken);
+        return f;
+    };
+    auto capLabel = [](const QString& t) {
+        auto* l = new QLabel(t);
+        QFont f = l->font(); f.setPointSize(7); f.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+        l->setFont(f);
+        l->setForegroundRole(QPalette::PlaceholderText);
+        return l;
+    };
+
+    // Lap cell — "LAP" over "N / M", or just "N / M" in compact.
+    {
+        auto* cell = new QWidget;
+        lapValue_ = new QLabel("—");
+        QFont vf = lapValue_->font(); vf.setPointSize(compact ? 15 : 19); vf.setBold(true); lapValue_->setFont(vf);
+        lapTotal_ = new QLabel("/ —");
+        lapTotal_->setForegroundRole(QPalette::PlaceholderText);
+        if (compact) {
+            auto* row = new QHBoxLayout(cell);
+            row->setContentsMargins(16, 6, 16, 6); row->setSpacing(6);
+            row->addWidget(lapValue_); row->addWidget(lapTotal_, 0, Qt::AlignBottom); row->addStretch();
+        } else {
+            auto* cv = new QVBoxLayout(cell);
+            cv->setContentsMargins(16, 6, 16, 6); cv->setSpacing(1);
+            cv->addWidget(capLabel("LAP"));
+            auto* row = new QHBoxLayout; row->setContentsMargins(0, 0, 0, 0); row->setSpacing(6);
+            row->addWidget(lapValue_); row->addWidget(lapTotal_, 0, Qt::AlignBottom); row->addStretch();
+            cv->addLayout(row);
+        }
+        hl->addWidget(cell);
+    }
+    hl->addWidget(vline());
+
+    // Compound + wear cell.
+    {
+        auto* cell = new QWidget;
+        compoundChip_ = new QLabel("—");
+        compoundChip_->setAlignment(Qt::AlignCenter);
+        wearPct_ = new QLabel("0%");
+        QFont wf = wearPct_->font(); wf.setPointSize(11); wf.setBold(true); wearPct_->setFont(wf);
+        wearAge_ = new QLabel("—");
+        wearAge_->setForegroundRole(QPalette::PlaceholderText);
+        wearBar_ = new QProgressBar; wearBar_->setRange(0, 100); wearBar_->setValue(0);
+        wearBar_->setTextVisible(false); wearBar_->setFixedHeight(6);
+
+        auto* cl = new QHBoxLayout(cell);
+        cl->setContentsMargins(16, 6, 16, 6); cl->setSpacing(12);
+        if (compact) {
+            // One line: chip · % · bar · tyre info.
+            cl->addWidget(compoundChip_, 0, Qt::AlignVCenter);
+            cl->addWidget(wearPct_,      0, Qt::AlignVCenter);
+            cl->addWidget(wearBar_,      1, Qt::AlignVCenter);
+            cl->addWidget(wearAge_,      0, Qt::AlignVCenter);
+        } else {
+            cl->addWidget(compoundChip_, 0, Qt::AlignVCenter);
+            auto* col = new QVBoxLayout; col->setContentsMargins(0, 0, 0, 0); col->setSpacing(6);
+            auto* top = new QHBoxLayout; top->setContentsMargins(0, 0, 0, 0); top->setSpacing(12);
+            top->addWidget(wearPct_); top->addStretch(); top->addWidget(wearAge_);
+            col->addLayout(top);
+            col->addWidget(wearBar_);
+            cl->addLayout(col, 1);
+        }
+        hl->addWidget(cell, 1);
+    }
+    hl->addWidget(vline());
+
+    // Cliff cell — "TYRE CLIFF" over "Lap N +M", or all on one line in compact.
+    {
+        auto* cell = new QWidget;
+        cliffValue_ = new QLabel("—");
+        QFont cf = cliffValue_->font(); cf.setPointSize(11); cf.setBold(true); cliffValue_->setFont(cf);
+        cliffPlus_ = new QLabel("");
+        cliffPlus_->setForegroundRole(QPalette::PlaceholderText);
+        if (compact) {
+            auto* row = new QHBoxLayout(cell);
+            row->setContentsMargins(16, 6, 16, 6); row->setSpacing(6);
+            row->addWidget(capLabel("TYRE CLIFF"), 0, Qt::AlignVCenter);
+            row->addWidget(cliffValue_, 0, Qt::AlignVCenter);
+            row->addWidget(cliffPlus_,  0, Qt::AlignBottom);
+        } else {
+            auto* cv = new QVBoxLayout(cell);
+            cv->setContentsMargins(16, 6, 16, 6); cv->setSpacing(1);
+            cv->addWidget(capLabel("TYRE CLIFF"));
+            auto* row = new QHBoxLayout; row->setContentsMargins(0, 0, 0, 0); row->setSpacing(6);
+            row->addWidget(cliffValue_); row->addWidget(cliffPlus_, 0, Qt::AlignBottom); row->addStretch();
+            cv->addLayout(row);
+        }
+        hl->addWidget(cell);
+    }
+}
+
+// Live compact-mode toggle. Rebuilds the header at the new density; MainWindow
+// marks the strategy panel dirty so the next refresh repaints the fresh widgets.
+void StrategyPage::setCompactMode(bool on) {
+    if (compact_ == on) return;
+    compact_ = on;
+    buildStratHeader();
+}
+
 StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
+    compact_ = settings_.value("ui/compactMode", false).toBool();
+
     // Top level is horizontal: a left pane (header + strategy columns) beside a
     // full-height sidebar. The header therefore spans only the columns, and the
     // sidebar runs edge-to-edge from the very top.
@@ -350,67 +478,14 @@ StrategyPage::StrategyPage(QWidget* parent) : QWidget(parent) {
     };
 
     // ── Header ────────────────────────────────────────────────────────────
-    auto* header = new QWidget;
-    header->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    auto* hl = new QHBoxLayout(header);
+    stratHeader_ = new QWidget;
+    stratHeader_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    auto* hl = new QHBoxLayout(stratHeader_);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(0);
+    buildStratHeader();   // fills the header cells (rebuilt on compact toggle)
 
-    // Lap cell
-    {
-        auto* cell = new QWidget; auto* cv = new QVBoxLayout(cell);
-        cv->setContentsMargins(16, 6, 16, 6); cv->setSpacing(1);
-        cv->addWidget(capLabel("LAP"));
-        auto* row = new QHBoxLayout; row->setContentsMargins(0, 0, 0, 0); row->setSpacing(6);
-        lapValue_ = new QLabel("—");
-        QFont vf = lapValue_->font(); vf.setPointSize(19); vf.setBold(true); lapValue_->setFont(vf);
-        lapTotal_ = new QLabel("/ —");
-        lapTotal_->setForegroundRole(QPalette::PlaceholderText);
-        row->addWidget(lapValue_); row->addWidget(lapTotal_, 0, Qt::AlignBottom); row->addStretch();
-        cv->addLayout(row);
-        hl->addWidget(cell);
-    }
-    hl->addWidget(vline());
-
-    // Compound + wear cell
-    {
-        auto* cell = new QWidget; auto* cl = new QHBoxLayout(cell);
-        cl->setContentsMargins(16, 6, 16, 6); cl->setSpacing(12);
-        compoundChip_ = new QLabel("—");
-        compoundChip_->setAlignment(Qt::AlignCenter);
-        cl->addWidget(compoundChip_, 0, Qt::AlignVCenter);
-        auto* col = new QVBoxLayout; col->setContentsMargins(0, 0, 0, 0); col->setSpacing(6);
-        auto* top = new QHBoxLayout; top->setContentsMargins(0, 0, 0, 0); top->setSpacing(12);
-        wearPct_ = new QLabel("0%");
-        QFont wf = wearPct_->font(); wf.setPointSize(11); wf.setBold(true); wearPct_->setFont(wf);
-        wearAge_ = new QLabel("—");
-        wearAge_->setForegroundRole(QPalette::PlaceholderText);
-        top->addWidget(wearPct_); top->addStretch(); top->addWidget(wearAge_);
-        col->addLayout(top);
-        wearBar_ = new QProgressBar; wearBar_->setRange(0, 100); wearBar_->setValue(0);
-        wearBar_->setTextVisible(false); wearBar_->setFixedHeight(6);
-        col->addWidget(wearBar_);
-        cl->addLayout(col, 1);
-        hl->addWidget(cell, 1);
-    }
-    hl->addWidget(vline());
-
-    // Cliff cell
-    {
-        auto* cell = new QWidget; auto* cv = new QVBoxLayout(cell);
-        cv->setContentsMargins(16, 6, 16, 6); cv->setSpacing(1);
-        cv->addWidget(capLabel("TYRE CLIFF"));
-        auto* row = new QHBoxLayout; row->setContentsMargins(0, 0, 0, 0); row->setSpacing(6);
-        cliffValue_ = new QLabel("—");
-        QFont cf = cliffValue_->font(); cf.setPointSize(11); cf.setBold(true); cliffValue_->setFont(cf);
-        cliffPlus_ = new QLabel("");
-        cliffPlus_->setForegroundRole(QPalette::PlaceholderText);
-        row->addWidget(cliffValue_); row->addWidget(cliffPlus_, 0, Qt::AlignBottom); row->addStretch();
-        cv->addLayout(row);
-        hl->addWidget(cell);
-    }
-
-    lpv->addWidget(header);
+    lpv->addWidget(stratHeader_);
     lpv->addWidget(hline());
 
     // ── Left pane body: strategy columns vs non-race placeholder ───────────
