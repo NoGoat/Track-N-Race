@@ -254,9 +254,10 @@ SessionPage::SessionPage(QWidget* parent)
     : QWidget(parent)
 {
     QVBoxLayout* root = new QVBoxLayout(this);
-    // No left padding here so the full-width separator lines reach the left edge;
-    // the left inset is re-added to the inner text rows below instead.
-    root->setContentsMargins(0, 8, 0, 0);
+    // No left/top padding here so the full-width separator lines reach the left edge
+    // and the header's vertical separators reach the toolbar above; the left inset
+    // is re-added to the inner text rows below instead.
+    root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
     // ── Header ───────────────────────────────────────────────────
