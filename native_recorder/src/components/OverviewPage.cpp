@@ -22,7 +22,7 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QSignalBlocker>
-#include <QStackedWidget>
+#include <QGridLayout>
 #include <QApplication>
 #include <QLocale>
 
@@ -280,20 +280,28 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     model_ = model;
     chart_ = new TelemetryChart;
     chart_->setModel(model);
-    // Stacked with a raw-values table so the Settings "Graphs" tab can swap the
-    // Speed/RPM/ERS chart for its underlying samples (page 0 chart, page 1 table).
+    // The Settings "Graphs" tab can swap the Speed/RPM/ERS chart for its underlying
+    // samples. Set up exactly like the other pages' graph tables: a plain GraphTable
+    // in a QGridLayout on a plain QWidget, with the chart and table sharing the one
+    // cell and toggled by setTelemetryTable. (A QStackedWidget was tried here but it
+    // fills its own background, which squared off the table's rounded frame corners —
+    // the grid host is transparent, so the table renders identically to the others.)
     telemetryTable_ = new GraphTable({ { "Time",        GraphTable::Time },
                                        { "Speed (kph)", GraphTable::Fixed0 },
                                        { "RPM",         GraphTable::Fixed0 },
                                        { "ERS (%)",     GraphTable::Fixed1 } });
-    chartStack_ = new QStackedWidget;
-    chartStack_->addWidget(chart_);
-    chartStack_->addWidget(telemetryTable_);
+    QWidget* chartHost = new QWidget;
+    QGridLayout* chartHostLay = new QGridLayout(chartHost);
+    chartHostLay->setContentsMargins(0, 8, 0, 8);   // top/bottom breathing room
+    chartHostLay->setSpacing(0);
+    chartHostLay->addWidget(chart_,          0, 0);
+    chartHostLay->addWidget(telemetryTable_, 0, 0);
+    telemetryTable_->hide();   // chart shown by default; setTelemetryTable swaps them
     QWidget* chartWrap = new QWidget;
     QVBoxLayout* chartWrapLay = new QVBoxLayout(chartWrap);
     chartWrapLay->setContentsMargins(8, 0, 8, 0);
     chartWrapLay->setSpacing(0);
-    chartWrapLay->addWidget(chartStack_);
+    chartWrapLay->addWidget(chartHost);
     vbox->addWidget(chartWrap, 1);
 
     // Keep the telemetry table live while it's the visible page.
@@ -668,7 +676,8 @@ void OverviewPage::setWindowSeconds(float secs) {
 
 void OverviewPage::setTelemetryTable(bool table) {
     telemetryTableMode_ = table;
-    if (chartStack_) chartStack_->setCurrentWidget(table ? (QWidget*)telemetryTable_ : (QWidget*)chart_);
+    if (chart_)          chart_->setVisible(!table);
+    if (telemetryTable_) { telemetryTable_->setVisible(table); if (table) telemetryTable_->raise(); }
     // The mode bar (Default/Current Lap/… chart-mode buttons, lap-compare combo and
     // the Speed/RPM/ERS legend) only applies to the chart — hide it in table mode.
     if (modeBar_) modeBar_->setVisible(!table);

@@ -13,7 +13,6 @@ class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
-class QStackedWidget;
 class SessionModel;
 class TelemetryChart;
 class TyreCardsWidget;
@@ -102,8 +101,7 @@ private:
     int  tyresLevel_    = 0;       // TyreCardsWidget::Level (0 Full … 3 Ultra Compact 2)
 
     TelemetryChart* chart_       = nullptr;
-    QStackedWidget* chartStack_  = nullptr;   // swaps chart_ ⇄ telemetryTable_
-    GraphTable*     telemetryTable_ = nullptr;
+    GraphTable*     telemetryTable_ = nullptr;   // shares chart_'s grid cell (toggled)
     bool            telemetryTableMode_ = false;
     QPointer<SessionModel> model_;            // for the telemetry table's raw values
     float           windowS_     = 30.0f;     // chart window (toolbar default 30s)
