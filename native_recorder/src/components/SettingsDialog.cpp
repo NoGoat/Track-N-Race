@@ -427,12 +427,17 @@ QWidget* SettingsDialog::buildCompactPage() {
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(0);
 
+    // Registry of every section's segmented group, so the "Toggle all" button
+    // below the sidebar can both flip the setting and re-check the right segment.
+    struct Ctl { tnr::CompactSection s; QButtonGroup* group; };
+    QList<Ctl> controls;
+
     // One control = a label on the left and a density segmented control on the
     // right, exactly like the toolbar's window-size row: an exclusive
     // edge-to-edge row of checkable buttons, the active one wearing the native
     // default-button outline. Most sections are a 2-way Normal/Compact; the
-    // Overview tyre cards add three Ultra Compact levels, so that one is 5-way.
-    auto makeControl = [this](const char* label, tnr::CompactSection s) -> QWidget* {
+    // Overview tyre cards add three extra levels, so that one is 5-way.
+    auto makeControl = [this, &controls](const char* label, tnr::CompactSection s) -> QWidget* {
         QWidget* w = new QWidget;
         QHBoxLayout* cv = new QHBoxLayout(w);
         cv->setContentsMargins(0, 0, 0, 0);
@@ -467,6 +472,7 @@ QWidget* SettingsDialog::buildCompactPage() {
             connect(group, &QButtonGroup::idClicked, this,
                     [this, s](int idx) { mainWindow_->setCompactSection(s, idx == 1); });
         }
+        controls.push_back({ s, group });
 
         cv->addWidget(cap);
         cv->addStretch(1);
@@ -534,7 +540,48 @@ QWidget* SettingsDialog::buildCompactPage() {
             stack, &QStackedWidget::setCurrentIndex);
     sidebar->setCurrentRow(0);
 
-    h->addWidget(sidebar);
+    // "Toggle all" pinned to the bottom of the sidebar column. If any section is
+    // already compact it resets everything to Normal; otherwise it makes
+    // everything compact (the tyre-cards level goes to Compact 1). Programmatic
+    // setChecked() doesn't emit idClicked, so re-checking the segments here
+    // doesn't re-fire the per-control handlers — we push each setting directly.
+    QPushButton* toggleAllBtn = new QPushButton("Toggle all");
+    connect(toggleAllBtn, &QPushButton::clicked, this, [this, controls]() {
+        bool anyCompact = false;
+        for (const Ctl& c : controls) {
+            const bool compact = c.s == tnr::CompactSection::OverviewTyres
+                ? mainWindow_->tyresCompactLevel() != 0
+                : mainWindow_->compactSection(c.s);
+            if (compact) { anyCompact = true; break; }
+        }
+        const bool makeCompact = !anyCompact;   // all Normal → compact; else → Normal
+        for (const Ctl& c : controls) {
+            if (c.s == tnr::CompactSection::OverviewTyres) {
+                const int lvl = makeCompact ? 1 : 0;   // 1 == "Compact 1"
+                mainWindow_->setTyresCompactLevel(lvl);
+                c.group->button(lvl)->setChecked(true);
+            } else {
+                mainWindow_->setCompactSection(c.s, makeCompact);
+                c.group->button(makeCompact ? 1 : 0)->setChecked(true);
+            }
+        }
+    });
+
+    QWidget* sideCol = new QWidget;
+    sideCol->setAutoFillBackground(true);
+    sideCol->setBackgroundRole(QPalette::Button);
+    QVBoxLayout* sideColLay = new QVBoxLayout(sideCol);
+    sideColLay->setContentsMargins(0, 0, 0, 0);
+    sideColLay->setSpacing(0);
+    sideColLay->addWidget(sidebar, 1);
+    sideColLay->addWidget(horizontalSeparator());
+    QWidget* btnWrap = new QWidget;
+    QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
+    btnWrapLay->setContentsMargins(8, 8, 8, 8);
+    btnWrapLay->addWidget(toggleAllBtn);
+    sideColLay->addWidget(btnWrap);
+
+    h->addWidget(sideCol);
     h->addWidget(verticalSeparator());
     h->addWidget(stack, 1);
     return page;
