@@ -420,42 +420,57 @@ QWidget* SettingsDialog::buildAppearancePage() {
 }
 
 QWidget* SettingsDialog::buildCompactPage() {
+    // Sidebar (group list) on the left, a stack of per-group control pages on
+    // the right — same layout as the Graphs page.
     QWidget* page = new QWidget;
-    QVBoxLayout* v = new QVBoxLayout(page);
-    v->setContentsMargins(8, 12, 8, 8);
-    v->setSpacing(10);
+    QHBoxLayout* h = new QHBoxLayout(page);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(0);
 
-    // One control = a muted caption over a Normal/Compact dropdown. (A dropdown, not
-    // a checkbox, so a planned "Ultra Compact" option can be added to select sections
-    // later without a redesign.) Each page's controls sit side by side in one row.
+    // One control = a label on the left and a density segmented control on the
+    // right, exactly like the toolbar's window-size row: an exclusive
+    // edge-to-edge row of checkable buttons, the active one wearing the native
+    // default-button outline. Most sections are a 2-way Normal/Compact; the
+    // Overview tyre cards add three Ultra Compact levels, so that one is 5-way.
     auto makeControl = [this](const char* label, tnr::CompactSection s) -> QWidget* {
         QWidget* w = new QWidget;
-        QVBoxLayout* cv = new QVBoxLayout(w);
+        QHBoxLayout* cv = new QHBoxLayout(w);
         cv->setContentsMargins(0, 0, 0, 0);
-        cv->setSpacing(3);
+        cv->setSpacing(12);
         QLabel* cap = new QLabel(label);
-        cap->setForegroundRole(QPalette::PlaceholderText);
-        QComboBox* combo = new QComboBox;
-        // The Overview tyre cards have two extra density levels (Ultra Compact 1/2),
-        // so that one control gets a 4-way int level; every other section is on/off.
+
+        QWidget* seg = new QWidget;
+        QHBoxLayout* segLay = new QHBoxLayout(seg);
+        segLay->setContentsMargins(0, 0, 0, 0);
+        segLay->setSpacing(0);
+        QButtonGroup* group = new QButtonGroup(w);
+        group->setExclusive(true);
+        int idc = 0;
+        auto addSeg = [&](const char* text) {
+            SegmentButton* b = new SegmentButton;
+            b->setText(text);
+            b->setCheckable(true);
+            b->setAutoRaise(true);
+            group->addButton(b, idc++);
+            segLay->addWidget(b);
+        };
+
         if (s == tnr::CompactSection::OverviewTyres) {
-            combo->addItem("Normal");
-            combo->addItem("Compact");
-            combo->addItem("Ultra Compact 1");
-            combo->addItem("Ultra Compact 2");
-            combo->addItem("Ultra Compact 3");
-            combo->setCurrentIndex(mainWindow_->tyresCompactLevel());
-            connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            addSeg("Normal"); addSeg("Compact");
+            addSeg("Ultra Compact 1"); addSeg("Ultra Compact 2"); addSeg("Ultra Compact 3");
+            group->button(mainWindow_->tyresCompactLevel())->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
         } else {
-            combo->addItem("Normal");
-            combo->addItem("Compact");
-            combo->setCurrentIndex(mainWindow_->compactSection(s) ? 1 : 0);
-            connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            addSeg("Normal"); addSeg("Compact");
+            group->button(mainWindow_->compactSection(s) ? 1 : 0)->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
                     [this, s](int idx) { mainWindow_->setCompactSection(s, idx == 1); });
         }
+
         cv->addWidget(cap);
-        cv->addWidget(combo);
+        cv->addStretch(1);
+        cv->addWidget(seg);
         return w;
     };
 
@@ -471,24 +486,57 @@ QWidget* SettingsDialog::buildCompactPage() {
         { tnr::CompactSection::StrategySummary, "Strategy", "Summary" },
     };
 
+    // Left nav column listing the groups. Tinted a shade lighter than the
+    // window (Button role) so it reads as a distinct surface, matching the top
+    // tab bar; the selected row uses the accent highlight.
+    QListWidget* sidebar = new QListWidget;
+    sidebar->setFrameShape(QFrame::NoFrame);
+    sidebar->setMinimumWidth(130);
+    sidebar->setMaximumWidth(160);
+    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
+    sidebar->setStyleSheet(QString(
+        "QListWidget { background: %1; border: none; outline: none; }"
+        "QListWidget::item { padding: 8px 14px; }"
+    ).arg(sidebarBg));
+
+    QStackedWidget* stack = new QStackedWidget;
+
+    // rows are grouped consecutively, so each time the group changes we start a
+    // fresh sidebar entry + stack page and stack the group's controls into it,
+    // one Label/segment row per section.
     QString lastGroup;
-    QHBoxLayout* rowLay = nullptr;
+    QVBoxLayout* colLay = nullptr;
     for (const Row& r : rows) {
         if (r.group != lastGroup) {
-            if (rowLay) rowLay->addStretch(1);
-            if (!lastGroup.isEmpty()) v->addWidget(horizontalSeparator());
-            v->addWidget(subHeading(r.group));
-            QWidget* rowW = new QWidget;
-            rowLay = new QHBoxLayout(rowW);
-            rowLay->setContentsMargins(0, 0, 0, 0);
-            rowLay->setSpacing(20);
-            v->addWidget(rowW);
+            sidebar->addItem(r.group);
+
+            QWidget* groupPage = new QWidget;
+            QVBoxLayout* gv = new QVBoxLayout(groupPage);
+            gv->setContentsMargins(16, 12, 16, 8);
+            gv->setSpacing(10);
+            gv->addWidget(subHeading(r.group));
+
+            QWidget* colW = new QWidget;
+            colLay = new QVBoxLayout(colW);
+            colLay->setContentsMargins(0, 0, 0, 0);
+            colLay->setSpacing(8);
+            gv->addWidget(colW);
+            gv->addStretch(1);
+
+            stack->addWidget(groupPage);
             lastGroup = r.group;
         }
-        rowLay->addWidget(makeControl(r.label, r.s));
+        colLay->addWidget(makeControl(r.label, r.s));
     }
-    if (rowLay) rowLay->addStretch(1);
-    v->addStretch(1);
+
+    connect(sidebar, &QListWidget::currentRowChanged,
+            stack, &QStackedWidget::setCurrentIndex);
+    sidebar->setCurrentRow(0);
+
+    h->addWidget(sidebar);
+    h->addWidget(verticalSeparator());
+    h->addWidget(stack, 1);
     return page;
 }
 
