@@ -183,6 +183,10 @@ void TyresPage::setWindowSeconds(float secs) {
     if (tyreCharts_) tyreCharts_->setWindowSeconds(secs);
 }
 
+void TyresPage::setGraphSectionTable(int section, bool table) {
+    if (tyreCharts_) tyreCharts_->setSectionViewMode(section, table);
+}
+
 // ── Tyres page updater ────────────────────────────────────────────────────
 
 void TyresPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage) {

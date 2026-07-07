@@ -8,6 +8,7 @@
 #include "TyreCardsWidget.h"
 #include "TyreChartsWidget.h"
 #include "TyreHelpers.h"
+#include "GraphTable.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -21,8 +22,11 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QApplication>
 #include <QLocale>
+
+#include <algorithm>
 
 #include <cmath>
 
@@ -273,14 +277,29 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     // ── Chart ────────────────────────────────────────────────────
     // Wrapped so it keeps the same 8px L/R inset as the rows above/below now that
     // the outer layout has no margins.
+    model_ = model;
     chart_ = new TelemetryChart;
     chart_->setModel(model);
+    // Stacked with a raw-values table so the Settings "Graphs" tab can swap the
+    // Speed/RPM/ERS chart for its underlying samples (page 0 chart, page 1 table).
+    telemetryTable_ = new GraphTable({ "Time", "Speed (kph)", "RPM", "ERS (%)" });
+    chartStack_ = new QStackedWidget;
+    chartStack_->addWidget(chart_);
+    chartStack_->addWidget(telemetryTable_);
     QWidget* chartWrap = new QWidget;
     QVBoxLayout* chartWrapLay = new QVBoxLayout(chartWrap);
     chartWrapLay->setContentsMargins(8, 0, 8, 0);
     chartWrapLay->setSpacing(0);
-    chartWrapLay->addWidget(chart_);
+    chartWrapLay->addWidget(chartStack_);
     vbox->addWidget(chartWrap, 1);
+
+    // Keep the telemetry table live while it's the visible page.
+    connect(model, &SessionModel::telemetryAppended, this, [this] {
+        if (telemetryTableMode_) refreshTelemetryTable();
+    });
+    connect(model, &SessionModel::wasReset, this, [this] {
+        if (telemetryTableMode_) refreshTelemetryTable();
+    });
 
     // Repopulate the compare-lap selector whenever the set of laps changes.
     connect(model, &SessionModel::lapsChanged, this, [this, model] {
@@ -614,7 +633,9 @@ void OverviewPage::refreshCards() {
 // ── Playback plumbing ─────────────────────────────────────────────────────
 
 void OverviewPage::setPlaybackMode(bool on, float currentTime) {
+    playback_ = on;
     if (on) {
+        currentTime_ = currentTime;
         if (chart_) { chart_->setPlaybackMode(true); chart_->setCurrentTime(currentTime); }
         if (tyreCharts_) { tyreCharts_->setPlaybackMode(true); tyreCharts_->setCurrentTime(currentTime); }
         if (compareBtn_) compareBtn_->setEnabled(true);
@@ -625,16 +646,61 @@ void OverviewPage::setPlaybackMode(bool on, float currentTime) {
         if (defaultBtn_) defaultBtn_->setChecked(true);
         if (lapCombo_) lapCombo_->setVisible(false);
     }
+    if (telemetryTableMode_) refreshTelemetryTable();
 }
 
 void OverviewPage::setCurrentTime(float t) {
+    currentTime_ = t;
     if (chart_) chart_->setCurrentTime(t);
     if (tyreCharts_) tyreCharts_->setCurrentTime(t);
+    if (telemetryTableMode_) refreshTelemetryTable();
 }
 
 void OverviewPage::setWindowSeconds(float secs) {
+    windowS_ = secs;
     if (chart_) chart_->setWindowSeconds(secs);
     if (tyreCharts_) tyreCharts_->setWindowSeconds(secs);
+    if (telemetryTableMode_) refreshTelemetryTable();
+}
+
+void OverviewPage::setTelemetryTable(bool table) {
+    telemetryTableMode_ = table;
+    if (chartStack_) chartStack_->setCurrentWidget(table ? (QWidget*)telemetryTable_ : (QWidget*)chart_);
+    if (table) refreshTelemetryTable();
+}
+
+void OverviewPage::setTyreGraphTable(int section, bool table) {
+    if (tyreCharts_) tyreCharts_->setSectionViewMode(section, table);
+}
+
+void OverviewPage::refreshTelemetryTable() {
+    if (!telemetryTable_ || !model_) return;
+    const SessionData& d = model_->data();
+    const float endTime = playback_ ? currentTime_ : d.latestTime;
+    const float left    = endTime - windowS_;
+
+    // ERS lives in stsBuf, sampled independently of telBuf — match each telemetry
+    // sample to the most recent status sample at or before it.
+    auto ersAt = [&](float t) -> float {
+        const auto& s = d.stsBuf;
+        if (s.isEmpty()) return 0.0f;
+        auto it = std::upper_bound(s.begin(), s.end(), t,
+            [](float key, const StsSample& x) { return key < x.t; });
+        if (it == s.begin()) return it->ers;
+        return (it - 1)->ers;
+    };
+
+    telemetryTable_->beginRebuild();
+    for (int i = d.telBuf.size() - 1; i >= 0 && !telemetryTable_->full(); --i) {
+        const auto& s = d.telBuf[i];
+        if (s.t > endTime) continue;
+        if (s.t < left)    break;
+        telemetryTable_->addRow({ GraphTable::fmtTime(s.t),
+                                  QString::number(s.speed, 'f', 0),
+                                  QString::number(s.rpm),
+                                  QString::number(ersAt(s.t), 'f', 1) });
+    }
+    telemetryTable_->endRebuild();
 }
 
 // ── Layout persistence ────────────────────────────────────────────────────

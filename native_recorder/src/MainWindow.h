@@ -11,6 +11,7 @@
 
 #include "HotRowSmoother.h"
 #include "CompactSettings.h"
+#include "GraphViewSettings.h"
 #include "components/OverviewLayout.h"
 
 class OverviewPage;
@@ -68,6 +69,9 @@ public:
     // so they use an int level rather than the on/off compactSection() path.
     int     tyresCompactLevel() const { return settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(); }
     void    setTyresCompactLevel(int level);
+    // Per-graph view mode: false = chart (default), true = raw-values table.
+    bool    graphView(tnr::GraphSection s) const { return settings.value(tnr::graphViewKey(s), false).toBool(); }
+    void    setGraphView(tnr::GraphSection s, bool table);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
     int     chartMsaaSamples() const { return settings.value("ui/chartMsaaSamples", 4).toInt(); }
@@ -232,6 +236,11 @@ private:
     bool dirtyPower_     = false;
     void scheduleUiRefresh();
     void flushUiRefresh();
+
+    // Route a per-graph Chart/Table choice to the owning page. Shared by
+    // setGraphView() (on user change) and applyGraphViews() (persisted, at startup).
+    void dispatchGraphView(tnr::GraphSection s, bool table);
+    void applyGraphViews();   // apply every persisted graph view mode once, at startup
 
     // ── Rendering gate (pause all UI work when the window isn't displayed) ──
     // Recording (UDP → parse → .tnrd) is independent of these and keeps running.

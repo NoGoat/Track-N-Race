@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QHash>
 #include <QSettings>
+#include <QPointer>
 
 #include <nlohmann/json.hpp>
 
@@ -12,10 +13,12 @@ class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QStackedWidget;
 class SessionModel;
 class TelemetryChart;
 class TyreCardsWidget;
 class TyreChartsWidget;
+class GraphTable;
 
 // Overview tab — key-driven stat cards, telemetry chart with mode bar and
 // compare-lap selector, tyre cards/charts section, and the damage rows.
@@ -48,6 +51,11 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Per-graph Chart/Table toggles (driven by the Settings "Graphs" tab via
+    // MainWindow). The tyre strip shares the Tyres page's tyre-graph settings.
+    void setTelemetryTable(bool table);              // Speed / RPM / ERS chart
+    void setTyreGraphTable(int section, bool table); // tyre strip (surf/inner/brake/wear)
+
     // "Edit Layout" / Settings dialogs read/write through these (immediate-apply).
     OverviewLayout loadLayout();
     void applyAndSaveLayout(const OverviewLayout& layout);
@@ -66,6 +74,7 @@ public:
 
 private:
     void refreshCards();   // recompute value + colour for every built card
+    void refreshTelemetryTable();   // repopulate the Speed/RPM/ERS raw-values table
     void buildStatCards();     // (re)populate the stats row with cards at the current density
     void buildDamageCards();   // (re)populate both damage rows at the current density
     void saveLayout(const OverviewLayout& layout);
@@ -93,6 +102,13 @@ private:
     int  tyresLevel_    = 0;       // TyreCardsWidget::Level (0 Full … 3 Ultra Compact 2)
 
     TelemetryChart* chart_       = nullptr;
+    QStackedWidget* chartStack_  = nullptr;   // swaps chart_ ⇄ telemetryTable_
+    GraphTable*     telemetryTable_ = nullptr;
+    bool            telemetryTableMode_ = false;
+    QPointer<SessionModel> model_;            // for the telemetry table's raw values
+    float           windowS_     = 30.0f;     // chart window (toolbar default 30s)
+    bool            playback_    = false;
+    float           currentTime_ = 0.0f;
     QComboBox*      lapCombo_    = nullptr;   // compare-lap selector
     QPushButton*    compareBtn_  = nullptr;   // enabled only while a file is loaded
     QPushButton*    defaultBtn_  = nullptr;   // re-selected when a recording closes

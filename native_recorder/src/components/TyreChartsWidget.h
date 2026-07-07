@@ -6,6 +6,8 @@
 class ChartView;
 class SessionModel;
 class QTimer;
+class QGridLayout;
+class GraphTable;
 
 class TyreChartsWidget : public QWidget {
     Q_OBJECT
@@ -18,6 +20,8 @@ public:
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
     void setChartSectionVisible(int i, bool on);
+    // Swap a section between its chart and a raw-values table; reflows the layout.
+    void setSectionViewMode(int section, bool table);
     // Tyre wear graph mode: true = remaining life (100 - wear), false = accumulated
     // wear. Mirrors the Electron tyreWearMode toggle. Retitles the 4th chart.
     void setTyreLifeMode(bool life);
@@ -32,6 +36,7 @@ private:
     void requestRefresh();
     void refresh();
     void rebuildLayout();   // (re)arrange visible panels + dividers
+    void ensureTable(int section);   // build a section's raw-values table on demand
 
     QPointer<SessionModel> model_;
     QTimer*   refreshTimer_ = nullptr;
@@ -51,7 +56,10 @@ private:
     // — a single QCustomPlot / GL context / replot instead of four separate widgets.
     enum Section { SURF = 0, INNER = 1, BRAKE = 2, WEAR = 3, SECTIONS = 4 };
     ChartView* chart_ = nullptr;
+    QGridLayout* outer_ = nullptr;   // holds chart_ + any table-mode section tables
     int  xId_[SECTIONS]             = {};   // bottom (time) axis id per panel
     int  seriesIds_[SECTIONS][4]    = {};   // [section][FL/FR/RL/RR]
     bool visible_[SECTIONS]         = { true, true, true, true };
+    bool tableMode_[SECTIONS]       = { false, false, false, false };   // false = chart, true = table
+    GraphTable* table_[SECTIONS]    = { nullptr, nullptr, nullptr, nullptr };
 };

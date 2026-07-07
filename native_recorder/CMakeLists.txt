@@ -72,6 +72,7 @@ set(SOURCES
     src/EngineSink.h
     src/HotRowSmoother.h
     src/CompactSettings.h
+    src/GraphViewSettings.h
     src/BreezePalette.cpp
     src/BreezePalette.h
     src/TnrdPlayer.cpp
@@ -82,6 +83,8 @@ set(SOURCES
     src/TelemetryChart.h
     src/components/ChartView.cpp
     src/components/ChartView.h
+    src/components/GraphTable.cpp
+    src/components/GraphTable.h
     src/components/PageUiHelpers.h
     src/third_party/qcustomplot/qcustomplot.cpp
     src/third_party/qcustomplot/qcustomplot.h

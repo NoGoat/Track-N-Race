@@ -1,11 +1,13 @@
 #include "MiscChartsWidget.h"
 #include "ChartView.h"
+#include "GraphTable.h"
 #include "../SessionModel.h"
 
-#include <QVBoxLayout>
+#include <QGridLayout>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
+#include <QStringList>
 #include <algorithm>
 
 namespace {
@@ -16,14 +18,15 @@ const QColor C_FRONT("#73BF69"), C_REAR("#B877DB");
 MiscChartsWidget::MiscChartsWidget(QWidget* parent)
     : QWidget(parent)
 {
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
+    outer_ = new QGridLayout(this);
+    outer_->setContentsMargins(0, 0, 0, 0);
+    outer_->setSpacing(ChartView::PanelGap);   // match the chart's inter-panel gap so
+                                               // overlaid tables align with chart cells
 
     // Both sections are panels of one ChartView — a single QCustomPlot / GL context
-    // / replot — each with its own in-plot title and colour key.
+    // / replot — each with its own in-plot title and colour key. Table-mode sections
+    // render as GraphTables overlaid in the same grid cell (see rebuildLayout).
     chart_ = new ChartView;
-    outer->addWidget(chart_, 1);
 
     // ── G-FORCE (panel 0) ────────────────────────────────────────────────────
     xId_[GFORCE] = chart_->addAxis(
@@ -88,12 +91,36 @@ void MiscChartsWidget::setSectionVisible(int section, bool on) {
     rebuildLayout();
 }
 
+void MiscChartsWidget::setSectionViewMode(int section, bool table) {
+    if (section < 0 || section >= SECTIONS) return;
+    if (tableMode_[section] == table) return;
+    tableMode_[section] = table;
+    rebuildLayout();
+    requestRefresh();   // populate the freshly-shown table immediately
+}
+
+void MiscChartsWidget::ensureTable(int section) {
+    if (table_[section]) return;
+    QStringList headers;
+    switch (section) {
+        case GFORCE:     headers = { "Time", "Lateral (G)", "Longitudinal (G)" }; break;
+        case RIDEHEIGHT: headers = { "Time", "Front (mm)",  "Rear (mm)" };        break;
+    }
+    table_[section] = new GraphTable(headers, this);
+    table_[section]->setVisible(false);
+}
+
 void MiscChartsWidget::rebuildLayout() {
-    if (!chart_) return;
-    QVector<QVector<int>> rows;   // stacked, each full-width
+    if (!chart_ || !outer_) return;
+
+    // G-force over ride-height, each a full-width row. Both chart- and table-mode
+    // sections keep these positions; a table just replaces its chart in place.
+    QVector<QVector<int>> rows;
     if (visible_[GFORCE])     rows.append(QVector<int>{ GFORCE });
     if (visible_[RIDEHEIGHT]) rows.append(QVector<int>{ RIDEHEIGHT });
-    chart_->layoutPanelsRows(rows);
+
+    tnr::layoutSectionGrid(outer_, chart_, rows, SECTIONS, tableMode_, table_,
+                           [this](int s) { ensureTable(s); });
 }
 
 float MiscChartsWidget::currentTime() const {
@@ -159,6 +186,36 @@ void MiscChartsWidget::refresh() {
 
     chart_->setXRange(xId_[GFORCE],     startTime, startTime + windowS_);
     chart_->setXRange(xId_[RIDEHEIGHT], startTime, startTime + windowS_);
+
+    // Feed any table-mode sections from the same window (newest sample on top).
+    if (tableMode_[GFORCE] && visible_[GFORCE] && table_[GFORCE]) {
+        GraphTable* t = table_[GFORCE];
+        t->beginRebuild();
+        const auto& buf = d.motionBuf;
+        for (int i = buf.size() - 1; i >= 0 && !t->full(); --i) {
+            const auto& s = buf[i];
+            if (s.t > endTime)   continue;
+            if (s.t < startTime) break;
+            t->addRow({ GraphTable::fmtTime(s.t),
+                        QString::number(s.g_lat,  'f', 2),
+                        QString::number(s.g_long, 'f', 2) });
+        }
+        t->endRebuild();
+    }
+    if (tableMode_[RIDEHEIGHT] && visible_[RIDEHEIGHT] && table_[RIDEHEIGHT]) {
+        GraphTable* t = table_[RIDEHEIGHT];
+        t->beginRebuild();
+        const auto& buf = d.motionExBuf;
+        for (int i = buf.size() - 1; i >= 0 && !t->full(); --i) {
+            const auto& s = buf[i];
+            if (s.t > endTime)   continue;
+            if (s.t < startTime) break;
+            t->addRow({ GraphTable::fmtTime(s.t),
+                        QString::number(s.front_aero, 'f', 1),
+                        QString::number(s.rear_aero,  'f', 1) });
+        }
+        t->endRebuild();
+    }
 
     chart_->requestReplot();   // ONE replot renders both panels
     prevEndTime_ = endTime;

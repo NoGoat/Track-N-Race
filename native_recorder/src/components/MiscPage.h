@@ -26,6 +26,9 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Per-graph Chart/Table toggle (section: gforce=0, ride height=1).
+    void setGraphSectionTable(int section, bool table);
+
 private:
     void saveLayout(const MiscLayout& layout);
     void applyLayout(const MiscLayout& layout);

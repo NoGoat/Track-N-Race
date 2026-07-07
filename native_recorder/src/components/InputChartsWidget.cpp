@@ -1,11 +1,14 @@
 #include "InputChartsWidget.h"
 #include "ChartView.h"
+#include "GraphTable.h"
 #include "../SessionModel.h"
 
-#include <QVBoxLayout>
+#include <QGridLayout>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
+#include <QStringList>
+#include <QLayoutItem>
 #include <algorithm>
 
 namespace {
@@ -17,14 +20,16 @@ const QColor C_STEER("#BF5FFF");
 InputChartsWidget::InputChartsWidget(QWidget* parent)
     : QWidget(parent)
 {
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
+    outer_ = new QGridLayout(this);
+    outer_->setContentsMargins(0, 0, 0, 0);
+    outer_->setSpacing(ChartView::PanelGap);   // match the chart's inter-panel gap so
+                                               // overlaid tables align with chart cells
 
     // All three sections are panels of one ChartView — a single QCustomPlot / GL
     // context / replot. Each carries its own in-plot title (and colour key).
+    // Table-mode sections render as GraphTables placed in the same grid geometry
+    // as the charts (see rebuildLayout); chart_ is added to the grid there.
     chart_ = new ChartView;
-    outer->addWidget(chart_, 1);
 
     // ── GEAR (panel 0, the ChartView's default panel) ────────────────────────
     xId_[GEAR] = chart_->addAxis(
@@ -105,17 +110,40 @@ void InputChartsWidget::setSectionVisible(int section, bool on) {
     rebuildLayout();
 }
 
+void InputChartsWidget::setSectionViewMode(int section, bool table) {
+    if (section < 0 || section >= SECTIONS) return;
+    if (tableMode_[section] == table) return;
+    tableMode_[section] = table;
+    rebuildLayout();
+    requestRefresh();   // populate the freshly-shown table immediately
+}
+
+void InputChartsWidget::ensureTable(int section) {
+    if (table_[section]) return;
+    QStringList headers;
+    switch (section) {
+        case GEAR:     headers = { "Time", "Gear" };               break;
+        case INPUTS:   headers = { "Time", "Throttle", "Brake" };  break;
+        case STEERING: headers = { "Time", "Steering" };           break;
+    }
+    table_[section] = new GraphTable(headers, this);
+    table_[section]->setVisible(false);
+}
+
 void InputChartsWidget::rebuildLayout() {
-    if (!chart_) return;
+    if (!chart_ || !outer_) return;
     // Gear + throttle-brake share the top row; steering spans the full width below.
+    // Both chart- and table-mode sections keep these natural positions — tables just
+    // replace their chart in place (see tnr::layoutSectionGrid).
+    QVector<QVector<int>> nat;   // natural grid rows of visible sections
     QVector<int> top;
     if (visible_[GEAR])   top.append(GEAR);
     if (visible_[INPUTS]) top.append(INPUTS);
+    if (!top.isEmpty())     nat.append(top);
+    if (visible_[STEERING]) nat.append(QVector<int>{ STEERING });
 
-    QVector<QVector<int>> rows;
-    if (!top.isEmpty())       rows.append(top);
-    if (visible_[STEERING])   rows.append(QVector<int>{ STEERING });
-    chart_->layoutPanelsRows(rows);
+    tnr::layoutSectionGrid(outer_, chart_, nat, SECTIONS, tableMode_, table_,
+                           [this](int s) { ensureTable(s); });
 }
 
 float InputChartsWidget::currentTime() const {
@@ -163,6 +191,34 @@ void InputChartsWidget::refresh() {
     const double hiClamped = hi > lo ? hi : lo + 1.0;
     for (int s = 0; s < SECTIONS; ++s)
         chart_->setXRange(xId_[s], lo, hiClamped);
+
+    // Feed any table-mode sections from the same window (newest sample on top).
+    const bool anyTable = tableMode_[GEAR] || tableMode_[INPUTS] || tableMode_[STEERING];
+    if (anyTable) {
+        GraphTable* tg = (tableMode_[GEAR]     && visible_[GEAR])     ? table_[GEAR]     : nullptr;
+        GraphTable* ti = (tableMode_[INPUTS]   && visible_[INPUTS])   ? table_[INPUTS]   : nullptr;
+        GraphTable* ts = (tableMode_[STEERING] && visible_[STEERING]) ? table_[STEERING] : nullptr;
+        if (tg) tg->beginRebuild();
+        if (ti) ti->beginRebuild();
+        if (ts) ts->beginRebuild();
+        for (int i = d.telBuf.size() - 1; i >= 0; --i) {
+            const auto& s = d.telBuf[i];
+            if (s.t > endTime) continue;
+            if (s.t < left)    break;
+            if (tg && !tg->full())
+                tg->addRow({ GraphTable::fmtTime(s.t), QString::number(s.gear) });
+            if (ti && !ti->full())
+                ti->addRow({ GraphTable::fmtTime(s.t),
+                             QString::number(s.throttle, 'f', 2),
+                             QString::number(s.brake,    'f', 2) });
+            if (ts && !ts->full())
+                ts->addRow({ GraphTable::fmtTime(s.t), QString::number(s.steering, 'f', 2) });
+            if ((!tg || tg->full()) && (!ti || ti->full()) && (!ts || ts->full())) break;
+        }
+        if (tg) tg->endRebuild();
+        if (ti) ti->endRebuild();
+        if (ts) ts->endRebuild();
+    }
 
     chart_->requestReplot();   // ONE replot renders all three panels
     prevEndTime_ = endTime;

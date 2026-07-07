@@ -32,6 +32,9 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Per-graph Chart/Table toggle (section: surface=0, inner=1, brake=2, wear=3).
+    void setGraphSectionTable(int section, bool table);
+
 private:
     void setGraphsShown(bool on);   // swap allocation ⇄ graphs views
 

@@ -1,11 +1,13 @@
 #include "PowerChartsWidget.h"
 #include "ChartView.h"
+#include "GraphTable.h"
 #include "../SessionModel.h"
 
-#include <QVBoxLayout>
+#include <QGridLayout>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
+#include <QStringList>
 #include <algorithm>
 
 namespace {
@@ -17,15 +19,16 @@ const QColor C_FUEL("#F0A500");
 PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     : QWidget(parent)
 {
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
+    outer_ = new QGridLayout(this);
+    outer_->setContentsMargins(0, 0, 0, 0);
+    outer_->setSpacing(ChartView::PanelGap);   // match the chart's inter-panel gap so
+                                               // overlaid tables align with chart cells
 
     // All four sections are panels of one ChartView — a single QCustomPlot / GL
     // context / replot. Each carries its own in-plot title (no colour key, matching
-    // the old headers). All four read stsBuf.
+    // the old headers). All four read stsBuf. Table-mode sections render as
+    // GraphTables overlaid in the same grid cell (see rebuildLayout).
     chart_ = new ChartView;
-    outer->addWidget(chart_, 1);
 
     auto timeAxis = [&](int sec) {
         xId_[sec] = chart_->addAxis(
@@ -109,10 +112,33 @@ void PowerChartsWidget::setSectionVisible(int section, bool on) {
     rebuildLayout();
 }
 
+void PowerChartsWidget::setSectionViewMode(int section, bool table) {
+    if (section < 0 || section >= SECTIONS) return;
+    if (tableMode_[section] == table) return;
+    tableMode_[section] = table;
+    rebuildLayout();
+    requestRefresh();   // populate the freshly-shown table immediately
+}
+
+void PowerChartsWidget::ensureTable(int section) {
+    if (table_[section]) return;
+    QStringList headers;
+    switch (section) {
+        case SPLIT:   headers = { "Time", "ICE (kW)", "MGU-K (kW)" };   break;
+        case HARVEST: headers = { "Time", "MGU-K (kJ)", "MGU-H (kJ)" }; break;
+        case STORE:   headers = { "Time", "ERS (%)" };                 break;
+        case FUEL:    headers = { "Time", "Fuel (kg)" };               break;
+    }
+    table_[section] = new GraphTable(headers, this);
+    table_[section]->setVisible(false);
+}
+
 void PowerChartsWidget::rebuildLayout() {
-    if (!chart_) return;
+    if (!chart_ || !outer_) return;
     // 2×2: split + harvest on top, store + fuel below; hidden panels drop out and
-    // the survivors reflow (a lone panel in a row spans the full width).
+    // the survivors reflow (a lone section in a row spans the full width). Both
+    // chart- and table-mode sections keep these positions; a table just replaces
+    // its chart in place (see tnr::layoutSectionGrid).
     QVector<int> top, bottom;
     if (visible_[SPLIT])   top.append(SPLIT);
     if (visible_[HARVEST]) top.append(HARVEST);
@@ -122,7 +148,9 @@ void PowerChartsWidget::rebuildLayout() {
     QVector<QVector<int>> rows;
     if (!top.isEmpty())    rows.append(top);
     if (!bottom.isEmpty()) rows.append(bottom);
-    chart_->layoutPanelsRows(rows);
+
+    tnr::layoutSectionGrid(outer_, chart_, rows, SECTIONS, tableMode_, table_,
+                           [this](int s) { ensureTable(s); });
 }
 
 float PowerChartsWidget::currentTime() const {
@@ -171,6 +199,37 @@ void PowerChartsWidget::refresh() {
     const double hiClamped = hi > lo ? hi : lo + 1.0;
     for (int s = 0; s < SECTIONS; ++s)
         chart_->setXRange(xId_[s], lo, hiClamped);
+
+    // Feed any table-mode sections from the same window (newest sample on top).
+    if (tableMode_[SPLIT] || tableMode_[HARVEST] || tableMode_[STORE] || tableMode_[FUEL]) {
+        GraphTable* tSplit   = (tableMode_[SPLIT]   && visible_[SPLIT])   ? table_[SPLIT]   : nullptr;
+        GraphTable* tHarvest = (tableMode_[HARVEST] && visible_[HARVEST]) ? table_[HARVEST] : nullptr;
+        GraphTable* tStore   = (tableMode_[STORE]   && visible_[STORE])   ? table_[STORE]   : nullptr;
+        GraphTable* tFuel    = (tableMode_[FUEL]    && visible_[FUEL])    ? table_[FUEL]    : nullptr;
+        for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel }) if (t) t->beginRebuild();
+        for (int i = d.stsBuf.size() - 1; i >= 0; --i) {
+            const auto& s = d.stsBuf[i];
+            if (s.t > endTime) continue;
+            if (s.t < left)    break;
+            if (tSplit && !tSplit->full())
+                tSplit->addRow({ GraphTable::fmtTime(s.t),
+                                 QString::number(s.ice_kw,  'f', 1),
+                                 QString::number(s.mguk_kw, 'f', 1) });
+            if (tHarvest && !tHarvest->full())
+                tHarvest->addRow({ GraphTable::fmtTime(s.t),
+                                   QString::number(s.mguk_harvest_j / 1000.0f, 'f', 1),
+                                   QString::number(s.mguh_harvest_j / 1000.0f, 'f', 1) });
+            if (tStore && !tStore->full())
+                tStore->addRow({ GraphTable::fmtTime(s.t), QString::number(s.ers, 'f', 1) });
+            if (tFuel && !tFuel->full())
+                tFuel->addRow({ GraphTable::fmtTime(s.t), QString::number(s.fuel_kg, 'f', 2) });
+            bool allFull = true;
+            for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel })
+                if (t && !t->full()) { allFull = false; break; }
+            if (allFull) break;
+        }
+        for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel }) if (t) t->endRebuild();
+    }
 
     chart_->requestReplot();   // ONE replot renders all four panels
     prevEndTime_ = endTime;

@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "../MainWindow.h"
 #include "../CompactSettings.h"
+#include "../GraphViewSettings.h"
 #include "../IconUtils.h"
 
 #include <QVBoxLayout>
@@ -82,6 +83,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     const Page pages[] = {
         { "Appearance",    buildAppearancePage()    },
         { "Compact",       buildCompactPage()       },
+        { "Graphs",        buildGraphsPage()        },
         { "Recording",     buildRecordingPage()     },
         { "Overview",      buildOverviewPage()      },
         { "Track Map",     buildTrackMapPage()      },
@@ -448,6 +450,80 @@ QWidget* SettingsDialog::buildCompactPage() {
         rowLay->addWidget(makeControl(r.label, r.s));
     }
     if (rowLay) rowLay->addStretch(1);
+    v->addStretch(1);
+    return page;
+}
+
+QWidget* SettingsDialog::buildGraphsPage() {
+    QWidget* page = new QWidget;
+    QVBoxLayout* v = new QVBoxLayout(page);
+    v->setContentsMargins(8, 12, 8, 8);
+    v->setSpacing(10);
+
+    // One control = a muted caption over a Chart/Table dropdown, mirroring the
+    // Compact page. Each graph can independently show as its chart or as a table
+    // of the raw sample values behind it (see GraphTable / the charts widgets).
+    auto makeControl = [this](const char* label, tnr::GraphSection s) -> QWidget* {
+        QWidget* w = new QWidget;
+        QVBoxLayout* cv = new QVBoxLayout(w);
+        cv->setContentsMargins(0, 0, 0, 0);
+        cv->setSpacing(3);
+        QLabel* cap = new QLabel(label);
+        cap->setForegroundRole(QPalette::PlaceholderText);
+        QComboBox* combo = new QComboBox;
+        combo->addItem("Chart");
+        combo->addItem("Table");
+        combo->setCurrentIndex(mainWindow_->graphView(s) ? 1 : 0);
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, s](int idx) { mainWindow_->setGraphView(s, idx == 1); });
+        cv->addWidget(cap);
+        cv->addWidget(combo);
+        return w;
+    };
+
+    struct Row { tnr::GraphSection s; const char* group; const char* label; };
+    static const Row rows[] = {
+        { tnr::GraphSection::OverviewTelemetry,  "Overview", "Speed / RPM / ERS" },
+        { tnr::GraphSection::TyreSurface,        "Tyres",    "Surface temp" },
+        { tnr::GraphSection::TyreInner,          "Tyres",    "Inner temp" },
+        { tnr::GraphSection::TyreBrake,          "Tyres",    "Brake temp" },
+        { tnr::GraphSection::TyreWear,           "Tyres",    "Wear / life" },
+        { tnr::GraphSection::InputGear,          "Input",    "Gear" },
+        { tnr::GraphSection::InputThrottleBrake, "Input",    "Throttle / brake" },
+        { tnr::GraphSection::InputSteering,      "Input",    "Steering" },
+        { tnr::GraphSection::PowerSplit,         "Power",    "Power split" },
+        { tnr::GraphSection::PowerHarvest,       "Power",    "ERS harvest" },
+        { tnr::GraphSection::PowerStore,         "Power",    "ERS store" },
+        { tnr::GraphSection::PowerFuel,          "Power",    "Fuel" },
+        { tnr::GraphSection::MiscGForce,         "Misc",     "G-force" },
+        { tnr::GraphSection::MiscRideHeight,     "Misc",     "Ride height" },
+    };
+
+    QString lastGroup;
+    QHBoxLayout* rowLay = nullptr;
+    for (const Row& r : rows) {
+        if (r.group != lastGroup) {
+            if (rowLay) rowLay->addStretch(1);
+            if (!lastGroup.isEmpty()) v->addWidget(horizontalSeparator());
+            v->addWidget(subHeading(r.group));
+            QWidget* rowW = new QWidget;
+            rowLay = new QHBoxLayout(rowW);
+            rowLay->setContentsMargins(0, 0, 0, 0);
+            rowLay->setSpacing(20);
+            v->addWidget(rowW);
+            lastGroup = r.group;
+        }
+        rowLay->addWidget(makeControl(r.label, r.s));
+    }
+    if (rowLay) rowLay->addStretch(1);
+
+    // The tyre graphs are shared with the Overview tyre strip; note it so the user
+    // isn't surprised that toggling one place changes both.
+    QLabel* note = new QLabel("Tyre graph choices also apply to the Overview tyre strip.");
+    note->setForegroundRole(QPalette::PlaceholderText);
+    note->setWordWrap(true);
+    v->addWidget(note);
+
     v->addStretch(1);
     return page;
 }

@@ -31,6 +31,7 @@ private:
     QWidget* buildRecordingPage();
     QWidget* buildAppearancePage();
     QWidget* buildCompactPage();
+    QWidget* buildGraphsPage();
     QWidget* buildNotificationsPage();
     QWidget* buildOverviewPage();
     QWidget* buildTrackMapPage();

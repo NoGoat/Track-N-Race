@@ -176,6 +176,9 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(powerPage_ = new PowerPage(model_));   // Power
     stack->addWidget(miscPage_ = new MiscPage(model_));   // Misc
 
+    // Apply persisted per-graph Chart/Table choices now that every page exists.
+    applyGraphViews();
+
     // Coalesces panel rebuilds to one per event-loop pass (one per arriving packet,
     // 20..60 Hz) so bursts can't stack redundant rebuilds, without a fixed rate cap.
     uiRefreshTimer_ = new QTimer(this);
@@ -620,6 +623,44 @@ void MainWindow::setTyresCompactLevel(int level) {
     if (overviewPage_) overviewPage_->setTyresLevel(level);
     dirtyTyres_ = true;
     scheduleUiRefresh();
+}
+
+void MainWindow::dispatchGraphView(tnr::GraphSection s, bool table) {
+    using GS = tnr::GraphSection;
+    switch (s) {
+        case GS::OverviewTelemetry:  if (overviewPage_) overviewPage_->setTelemetryTable(table); break;
+        // Tyre graphs are shared: the Tyres page and the Overview tyre strip both follow them.
+        case GS::TyreSurface:        if (tyresPage_) tyresPage_->setGraphSectionTable(0, table);
+                                     if (overviewPage_) overviewPage_->setTyreGraphTable(0, table); break;
+        case GS::TyreInner:          if (tyresPage_) tyresPage_->setGraphSectionTable(1, table);
+                                     if (overviewPage_) overviewPage_->setTyreGraphTable(1, table); break;
+        case GS::TyreBrake:          if (tyresPage_) tyresPage_->setGraphSectionTable(2, table);
+                                     if (overviewPage_) overviewPage_->setTyreGraphTable(2, table); break;
+        case GS::TyreWear:           if (tyresPage_) tyresPage_->setGraphSectionTable(3, table);
+                                     if (overviewPage_) overviewPage_->setTyreGraphTable(3, table); break;
+        case GS::InputGear:          if (inputPage_) inputPage_->setGraphSectionTable(0, table); break;
+        case GS::InputThrottleBrake: if (inputPage_) inputPage_->setGraphSectionTable(1, table); break;
+        case GS::InputSteering:      if (inputPage_) inputPage_->setGraphSectionTable(2, table); break;
+        case GS::PowerSplit:         if (powerPage_) powerPage_->setGraphSectionTable(0, table); break;
+        case GS::PowerHarvest:       if (powerPage_) powerPage_->setGraphSectionTable(1, table); break;
+        case GS::PowerStore:         if (powerPage_) powerPage_->setGraphSectionTable(2, table); break;
+        case GS::PowerFuel:          if (powerPage_) powerPage_->setGraphSectionTable(3, table); break;
+        case GS::MiscGForce:         if (miscPage_) miscPage_->setGraphSectionTable(0, table); break;
+        case GS::MiscRideHeight:     if (miscPage_) miscPage_->setGraphSectionTable(1, table); break;
+        default: break;
+    }
+}
+
+void MainWindow::setGraphView(tnr::GraphSection s, bool table) {
+    settings.setValue(tnr::graphViewKey(s), table);
+    dispatchGraphView(s, table);
+}
+
+void MainWindow::applyGraphViews() {
+    for (int i = 0; i < (int)tnr::GraphSection::Count_; ++i) {
+        const tnr::GraphSection s = (tnr::GraphSection)i;
+        dispatchGraphView(s, graphView(s));
+    }
 }
 
 void MainWindow::setContrastThreshold(float val) {

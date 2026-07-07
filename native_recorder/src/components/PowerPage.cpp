@@ -282,3 +282,8 @@ void PowerPage::setWindowSeconds(float secs)
 {
     if (charts_) charts_->setWindowSeconds(secs);
 }
+
+void PowerPage::setGraphSectionTable(int section, bool table)
+{
+    if (charts_) charts_->setSectionViewMode(section, table);
+}

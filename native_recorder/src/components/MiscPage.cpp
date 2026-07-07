@@ -65,3 +65,8 @@ void MiscPage::setWindowSeconds(float secs)
 {
     if (charts_) charts_->setWindowSeconds(secs);
 }
+
+void MiscPage::setGraphSectionTable(int section, bool table)
+{
+    if (charts_) charts_->setSectionViewMode(section, table);
+}

@@ -38,6 +38,9 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Per-graph Chart/Table toggle (section: split=0, harvest=1, store=2, fuel=3).
+    void setGraphSectionTable(int section, bool table);
+
     // Collapse the info cards to a single line (label · value · unit). Rebuilds the
     // card row in place; MainWindow re-feeds the latest status row to repaint it.
     void setCompactMode(bool on);

@@ -58,7 +58,7 @@ protected:
 
 // Gap left between panels (see layoutPanelsRows); dividers are drawn down its
 // centre so they never crowd a panel's axis labels.
-constexpr int PANEL_GAP = 12;
+constexpr int PANEL_GAP = ChartView::PanelGap;
 
 // Minimum right margin reserved on each multi-panel axis rect so the last x-axis
 // tick label (centred on the right edge) stays inside the panel instead of
@@ -118,7 +118,8 @@ struct ChartView::Impl {
     QVector<Panel>       panels;          // panels[0] == default rect/legend
     int                  panelCols = 1;   // grid columns (see layoutPanels)
     QVector<QCPLayoutGrid*>  rowGrids;    // nested per-row grids from layoutPanelsRows
-    QVector<QVector<int>>    layoutRows;   // panel ids per row, as placed (for dividers)
+    QVector<QCPLayoutElement*> spacers;   // blank cells reserved for overlaid widgets
+    QVector<QVector<QCPLayoutElement*>> layoutCells;  // element per placed cell (for dividers)
     DividerOverlay*      dividerOverlay = nullptr;              // draws lines between panels
     QColor               dividerColor{ 128, 128, 128, 120 };   // theme-updated in applyPaletteText
 
@@ -286,23 +287,24 @@ ChartView::ChartView(QWidget* parent)
     // Overlay that draws divider lines between panels (multi-panel charts only; it
     // draws nothing until layoutPanelsRows records a layout). Owned by the plot.
     d_->dividerOverlay = new DividerOverlay(p, [d = d_.get()](QCPPainter* painter) {
-        const int N = d->layoutRows.size();
+        const int N = d->layoutCells.size();
         if (N == 0) return;
         painter->setAntialiasing(false);
         QPen pen(d->dividerColor); pen.setCosmetic(true);
         painter->setPen(pen);
         const int half = PANEL_GAP / 2;
-        // Panel bounds use the container rect, so a row splits its width evenly and
-        // dividers line up across rows; the gap between containers is PANEL_GAP.
-        auto rectOf = [d](int id) { return d->panels[id].element()->rect(); };
+        // Cells hold the placed layout element (a panel container or a blank spacer
+        // reserved for an overlaid table), so a row splits its width evenly and
+        // dividers line up across rows; the gap between cells is PANEL_GAP.
+        auto rectOf = [](QCPLayoutElement* e) { return e->rect(); };
 
-        // Vertical dividers between adjacent panels in a row. Extend into the gaps
+        // Vertical dividers between adjacent cells in a row. Extend into the gaps
         // above/below (half a gap each) so they meet the horizontal dividers.
         for (int ri = 0; ri < N; ++ri) {
-            const QVector<int>& row = d->layoutRows[ri];
+            const QVector<QCPLayoutElement*>& row = d->layoutCells[ri];
             if (row.size() < 2) continue;
             int top = rectOf(row[0]).top(), bot = rectOf(row[0]).bottom();
-            for (int id : row) { const QRect r = rectOf(id); top = qMin(top, r.top()); bot = qMax(bot, r.bottom()); }
+            for (auto* e : row) { const QRect r = rectOf(e); top = qMin(top, r.top()); bot = qMax(bot, r.bottom()); }
             if (ri > 0)     top -= half;
             if (ri < N - 1) bot += half;
             for (int k = 1; k < row.size(); ++k) {
@@ -312,12 +314,12 @@ ChartView::ChartView(QWidget* parent)
         }
         // Horizontal dividers between consecutive rows, spanning their combined width.
         for (int ri = 1; ri < N; ++ri) {
-            const QVector<int>& a = d->layoutRows[ri - 1];
-            const QVector<int>& b = d->layoutRows[ri];
+            const QVector<QCPLayoutElement*>& a = d->layoutCells[ri - 1];
+            const QVector<QCPLayoutElement*>& b = d->layoutCells[ri];
             int aboveBot = rectOf(a[0]).bottom(), belowTop = rectOf(b[0]).top();
             int left = rectOf(a[0]).left(), right = rectOf(a[0]).right();
-            for (int id : a) { const QRect r = rectOf(id); aboveBot = qMax(aboveBot, r.bottom()); left = qMin(left, r.left()); right = qMax(right, r.right()); }
-            for (int id : b) { const QRect r = rectOf(id); belowTop = qMin(belowTop, r.top());   left = qMin(left, r.left()); right = qMax(right, r.right()); }
+            for (auto* e : a) { const QRect r = rectOf(e); aboveBot = qMax(aboveBot, r.bottom()); left = qMin(left, r.left()); right = qMax(right, r.right()); }
+            for (auto* e : b) { const QRect r = rectOf(e); belowTop = qMin(belowTop, r.top());   left = qMin(left, r.left()); right = qMax(right, r.right()); }
             const int y = (aboveBot + belowTop) / 2;
             painter->drawLine(QPointF(left, y), QPointF(right, y));
         }
@@ -554,6 +556,14 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
     for (const Impl::Panel& pn : d_->panels)
         if (QCPLayout* parent = pn.element()->layout()) parent->take(pn.element());
 
+    // Drop the blank spacer cells from the previous call (they aren't panels, so
+    // they're safe to delete — panels were detached above and survive).
+    for (QCPLayoutElement* sp : d_->spacers) {
+        if (QCPLayout* parent = sp->layout()) parent->take(sp);
+        delete sp;
+    }
+    d_->spacers.clear();
+
     // Drop the (now-empty) row sub-grids from the previous call.
     for (QCPLayoutGrid* g : d_->rowGrids) { top->take(g); delete g; }
     d_->rowGrids.clear();
@@ -573,26 +583,37 @@ void ChartView::layoutPanelsRows(const QVector<QVector<int>>& rows)
     // Top grid is a single column, so a row holding one element spans the full
     // width; a row with several panels gets a nested horizontal sub-grid. The
     // DividerOverlay draws the lines between them, in the gaps left by the spacing.
-    d_->layoutRows.clear();
+    d_->layoutCells.clear();
     int topRow = 0;
     for (const QVector<int>& row : rows) {
-        QVector<int> valid;
-        for (int id : row) if (id >= 0 && id < d_->panels.size()) valid.append(id);
-        if (valid.isEmpty()) continue;
-        for (int id : valid) d_->panels[id].element()->setVisible(true);
+        // Map each id to a layout element: a real panel, or a fresh blank spacer for
+        // a negative id (a hole where the caller overlays an external widget).
+        QVector<QCPLayoutElement*> cells;
+        for (int id : row) {
+            if (id >= 0 && id < d_->panels.size()) {
+                d_->panels[id].element()->setVisible(true);
+                cells.append(d_->panels[id].element());
+            } else {
+                auto* sp = new QCPLayoutElement(d_->plot);
+                sp->setMargins(QMargins(0, 0, 0, 0));
+                d_->spacers.append(sp);
+                cells.append(sp);
+            }
+        }
+        if (cells.isEmpty()) continue;
 
-        if (valid.size() == 1) {
-            top->addElement(topRow++, 0, d_->panels[valid[0]].element());
+        if (cells.size() == 1) {
+            top->addElement(topRow++, 0, cells[0]);
         } else {
             QCPLayoutGrid* rg = new QCPLayoutGrid;
             rg->setMargins(QMargins(0, 0, 0, 0));
             rg->setColumnSpacing(PANEL_GAP);
-            for (int c = 0; c < valid.size(); ++c)
-                rg->addElement(0, c, d_->panels[valid[c]].element());
+            for (int c = 0; c < cells.size(); ++c)
+                rg->addElement(0, c, cells[c]);
             d_->rowGrids.append(rg);
             top->addElement(topRow++, 0, rg);
         }
-        d_->layoutRows.append(valid);
+        d_->layoutCells.append(cells);
     }
 
     top->simplify();

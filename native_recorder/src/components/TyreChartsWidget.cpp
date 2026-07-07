@@ -1,11 +1,13 @@
 #include "TyreChartsWidget.h"
 #include "ChartView.h"
+#include "GraphTable.h"
 #include "../SessionModel.h"
 
-#include <QVBoxLayout>
+#include <QGridLayout>
 #include <QColor>
 #include <QTimer>
 #include <QShowEvent>
+#include <QStringList>
 #include <algorithm>
 
 namespace {
@@ -20,15 +22,17 @@ const char*  kWheelNames[4]  = { "FL", "FR", "RL", "RR" };
 TyreChartsWidget::TyreChartsWidget(bool grid, QWidget* parent)
     : QWidget(parent), grid_(grid)
 {
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(0);
+    outer_ = new QGridLayout(this);
+    outer_->setContentsMargins(0, 0, 0, 0);
+    outer_->setSpacing(ChartView::PanelGap);   // match the chart's inter-panel gap so
+                                               // overlaid tables align with chart cells
 
     // All four sections are panels of ONE ChartView, so they render in a single
     // QCustomPlot / OpenGL context / replot rather than four separate widgets. Each
     // panel carries its own in-plot title and FL/FR/RL/RR colour-key legend.
+    // Table-mode sections render as GraphTables overlaid in the same grid cell (see
+    // rebuildLayout).
     chart_ = new ChartView;
-    outer->addWidget(chart_, 1);
 
     auto addSection = [&](int sec, const QString& title, double yMin, double yMax,
                           const QString& unit) {
@@ -104,11 +108,33 @@ void TyreChartsWidget::setChartSectionVisible(int i, bool on)
     rebuildLayout();
 }
 
+void TyreChartsWidget::setSectionViewMode(int section, bool table)
+{
+    if (section < 0 || section >= SECTIONS) return;
+    if (tableMode_[section] == table) return;
+    tableMode_[section] = table;
+    rebuildLayout();
+    requestRefresh();   // populate the freshly-shown table immediately
+}
+
+void TyreChartsWidget::ensureTable(int section)
+{
+    if (table_[section]) return;
+    const char* unit = (section == WEAR) ? " (%)" : " (°C)";
+    QStringList headers = { "Time",
+                            QString("FL%1").arg(unit), QString("FR%1").arg(unit),
+                            QString("RL%1").arg(unit), QString("RR%1").arg(unit) };
+    table_[section] = new GraphTable(headers, this);
+    table_[section]->setVisible(false);
+}
+
 void TyreChartsWidget::rebuildLayout()
 {
-    if (!chart_) return;
-    // 2×2 grid (fullscreen) packs visible panels two-per-row; 1×4 (Overview strip)
-    // is a single row. Hidden sections drop out and the rest reflow.
+    if (!chart_ || !outer_) return;
+    // 2×2 grid (fullscreen) packs visible sections two-per-row; 1×4 (Overview strip)
+    // is a single row. Hidden sections drop out and the rest reflow. Both chart- and
+    // table-mode sections keep these positions; a table replaces its chart in place
+    // (see tnr::layoutSectionGrid).
     QVector<int> vis;
     for (int s = 0; s < SECTIONS; ++s) if (visible_[s]) vis.append(s);
 
@@ -116,7 +142,9 @@ void TyreChartsWidget::rebuildLayout()
     QVector<QVector<int>> rows;
     for (int i = 0; i < vis.size(); i += perRow)
         rows.append(vis.mid(i, perRow));
-    chart_->layoutPanelsRows(rows);
+
+    tnr::layoutSectionGrid(outer_, chart_, rows, SECTIONS, tableMode_, table_,
+                           [this](int s) { ensureTable(s); });
 }
 
 float TyreChartsWidget::currentTime() const {
@@ -183,6 +211,39 @@ void TyreChartsWidget::refresh() {
     const double hiClamped = hi > lo ? hi : lo + 1.0;
     for (int s = 0; s < SECTIONS; ++s)
         chart_->setXRange(xId_[s], lo, hiClamped);
+
+    // Feed any table-mode sections from the same window (newest sample on top).
+    bool anyTable = false;
+    for (int s = 0; s < SECTIONS; ++s)
+        if (tableMode_[s] && visible_[s] && table_[s]) anyTable = true;
+    if (anyTable) {
+        const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
+        for (int s = 0; s < SECTIONS; ++s)
+            if (tableMode_[s] && visible_[s] && table_[s]) table_[s]->beginRebuild();
+        for (int i = d.tyreBuf.size() - 1; i >= 0; --i) {
+            const auto& s = d.tyreBuf[i];
+            if (s.t > endTime) continue;
+            if (s.t < left)    break;
+            const QString ts = GraphTable::fmtTime(s.t);
+            auto add4 = [&](int sec, float fl, float fr, float rl, float rr) {
+                if (!(tableMode_[sec] && visible_[sec] && table_[sec]) || table_[sec]->full()) return;
+                table_[sec]->addRow({ ts,
+                    QString::number(fl, 'f', 0), QString::number(fr, 'f', 0),
+                    QString::number(rl, 'f', 0), QString::number(rr, 'f', 0) });
+            };
+            add4(SURF,  s.surfFl,  s.surfFr,  s.surfRl,  s.surfRr);
+            add4(INNER, s.innerFl, s.innerFr, s.innerRl, s.innerRr);
+            add4(BRAKE, s.brakeFl, s.brakeFr, s.brakeRl, s.brakeRr);
+            add4(WEAR,  wv(s.wearFl), wv(s.wearFr), wv(s.wearRl), wv(s.wearRr));
+            bool allFull = true;
+            for (int sec = 0; sec < SECTIONS; ++sec)
+                if (tableMode_[sec] && visible_[sec] && table_[sec] && !table_[sec]->full())
+                    { allFull = false; break; }
+            if (allFull) break;
+        }
+        for (int s = 0; s < SECTIONS; ++s)
+            if (tableMode_[s] && visible_[s] && table_[s]) table_[s]->endRebuild();
+    }
 
     chart_->requestReplot();   // ONE replot renders all four panels
     prevEndTime_ = endTime;

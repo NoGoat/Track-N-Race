@@ -68,3 +68,8 @@ void InputPage::setWindowSeconds(float secs)
 {
     if (charts_) charts_->setWindowSeconds(secs);
 }
+
+void InputPage::setGraphSectionTable(int section, bool table)
+{
+    if (charts_) charts_->setSectionViewMode(section, table);
+}

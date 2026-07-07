@@ -21,6 +21,12 @@ class ChartView : public QWidget {
 public:
     enum class Side { Bottom, Left, Right };
 
+    // Gap (px) left between panels — also the divider channel width. Exposed so a
+    // caller laying tables out alongside the chart (see GraphTable's
+    // layoutSectionGrid) can use the same spacing and have its cells line up with
+    // the chart's internal panel grid.
+    static constexpr int PanelGap = 12;
+
     struct AxisSpec {
         Side    side         = Side::Left;
         double  min          = 0.0;
@@ -83,6 +89,8 @@ public:
     // so this supports asymmetric layouts (e.g. two panels over one wide one).
     // Panels not listed are hidden. Supersedes layoutPanels/setPanelVisible for
     // callers that manage their own arrangement.
+    // A negative id reserves an empty (blank) cell in the grid, so a caller can
+    // leave a hole where an external widget (e.g. a raw-values table) is overlaid.
     void layoutPanelsRows(const QVector<QVector<int>>& rows);
     void setPanelVisible(int panelId, bool on);
     void setPanelTitle(int panelId, const QString& title);

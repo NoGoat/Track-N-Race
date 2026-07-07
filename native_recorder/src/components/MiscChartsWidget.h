@@ -6,6 +6,8 @@
 class ChartView;
 class SessionModel;
 class QTimer;
+class QGridLayout;
+class GraphTable;
 
 // The Misc page's two graphs — G-force / ride-height — rendered as panels of ONE
 // ChartView (a single QCustomPlot / OpenGL context / replot) rather than two
@@ -21,6 +23,8 @@ public:
     void setWindowSeconds(float seconds);
     // Show/hide a section (gforce=0, ride height=1); reflows the layout.
     void setSectionVisible(int section, bool on);
+    // Swap a section between its chart and a raw-values table; reflows the layout.
+    void setSectionViewMode(int section, bool table);
 
 public slots:
     void setCurrentTime(float t);
@@ -32,6 +36,7 @@ private:
     void requestRefresh();
     void refresh();
     void rebuildLayout();
+    void ensureTable(int section);   // build a section's raw-values table on demand
     float currentTime() const;
 
     QPointer<SessionModel> model_;
@@ -47,8 +52,11 @@ private:
 
     enum Section { GFORCE = 0, RIDEHEIGHT = 1, SECTIONS = 2 };
     ChartView* chart_ = nullptr;
+    QGridLayout* outer_ = nullptr;   // holds chart_ + any table-mode section tables
     int  xId_[SECTIONS]     = {};
     bool visible_[SECTIONS] = { true, true };
+    bool tableMode_[SECTIONS] = { false, false };   // false = chart, true = raw table
+    GraphTable* table_[SECTIONS] = { nullptr, nullptr };
 
     int latId_   = -1;
     int longId_  = -1;

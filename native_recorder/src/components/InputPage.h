@@ -26,6 +26,9 @@ public:
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
+    // Per-graph Chart/Table toggle (section: gear=0, inputs=1, steering=2).
+    void setGraphSectionTable(int section, bool table);
+
 private:
     void saveLayout(const InputLayout& layout);
     void applyLayout(const InputLayout& layout);
