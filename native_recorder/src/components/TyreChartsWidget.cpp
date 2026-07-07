@@ -121,10 +121,13 @@ void TyreChartsWidget::ensureTable(int section)
 {
     if (table_[section]) return;
     const char* unit = (section == WEAR) ? " (%)" : " (°C)";
-    QStringList headers = { "Time",
-                            QString("FL%1").arg(unit), QString("FR%1").arg(unit),
-                            QString("RL%1").arg(unit), QString("RR%1").arg(unit) };
-    table_[section] = new GraphTable(headers, this);
+    const QVector<GraphTable::Column> cols = {
+        { "Time", GraphTable::Time },
+        { QString("FL%1").arg(unit), GraphTable::Fixed0 },
+        { QString("FR%1").arg(unit), GraphTable::Fixed0 },
+        { QString("RL%1").arg(unit), GraphTable::Fixed0 },
+        { QString("RR%1").arg(unit), GraphTable::Fixed0 } };
+    table_[section] = new GraphTable(cols, this);
     table_[section]->setVisible(false);
 }
 
@@ -224,12 +227,9 @@ void TyreChartsWidget::refresh() {
             const auto& s = d.tyreBuf[i];
             if (s.t > endTime) continue;
             if (s.t < left)    break;
-            const QString ts = GraphTable::fmtTime(s.t);
             auto add4 = [&](int sec, float fl, float fr, float rl, float rr) {
                 if (!(tableMode_[sec] && visible_[sec] && table_[sec]) || table_[sec]->full()) return;
-                table_[sec]->addRow({ ts,
-                    QString::number(fl, 'f', 0), QString::number(fr, 'f', 0),
-                    QString::number(rl, 'f', 0), QString::number(rr, 'f', 0) });
+                table_[sec]->addRow(s.t, fl, fr, rl, rr);
             };
             add4(SURF,  s.surfFl,  s.surfFr,  s.surfRl,  s.surfRr);
             add4(INNER, s.innerFl, s.innerFr, s.innerRl, s.innerRr);

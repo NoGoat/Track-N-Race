@@ -282,7 +282,10 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     chart_->setModel(model);
     // Stacked with a raw-values table so the Settings "Graphs" tab can swap the
     // Speed/RPM/ERS chart for its underlying samples (page 0 chart, page 1 table).
-    telemetryTable_ = new GraphTable({ "Time", "Speed (kph)", "RPM", "ERS (%)" });
+    telemetryTable_ = new GraphTable({ { "Time",        GraphTable::Time },
+                                       { "Speed (kph)", GraphTable::Fixed0 },
+                                       { "RPM",         GraphTable::Fixed0 },
+                                       { "ERS (%)",     GraphTable::Fixed1 } });
     chartStack_ = new QStackedWidget;
     chartStack_->addWidget(chart_);
     chartStack_->addWidget(telemetryTable_);
@@ -698,10 +701,7 @@ void OverviewPage::refreshTelemetryTable() {
         const auto& s = d.telBuf[i];
         if (s.t > endTime) continue;
         if (s.t < left)    break;
-        telemetryTable_->addRow({ GraphTable::fmtTime(s.t),
-                                  QString::number(s.speed, 'f', 0),
-                                  QString::number(s.rpm),
-                                  QString::number(ersAt(s.t), 'f', 1) });
+        telemetryTable_->addRow(s.t, s.speed, s.rpm, ersAt(s.t));
     }
     telemetryTable_->endRebuild();
 }

@@ -101,12 +101,14 @@ void MiscChartsWidget::setSectionViewMode(int section, bool table) {
 
 void MiscChartsWidget::ensureTable(int section) {
     if (table_[section]) return;
-    QStringList headers;
+    QVector<GraphTable::Column> cols;
     switch (section) {
-        case GFORCE:     headers = { "Time", "Lateral (G)", "Longitudinal (G)" }; break;
-        case RIDEHEIGHT: headers = { "Time", "Front (mm)",  "Rear (mm)" };        break;
+        case GFORCE:     cols = { { "Time", GraphTable::Time }, { "Lateral (G)", GraphTable::Fixed2 },
+                                  { "Longitudinal (G)", GraphTable::Fixed2 } }; break;
+        case RIDEHEIGHT: cols = { { "Time", GraphTable::Time }, { "Front (mm)", GraphTable::Fixed1 },
+                                  { "Rear (mm)", GraphTable::Fixed1 } }; break;
     }
-    table_[section] = new GraphTable(headers, this);
+    table_[section] = new GraphTable(cols, this);
     table_[section]->setVisible(false);
 }
 
@@ -196,9 +198,7 @@ void MiscChartsWidget::refresh() {
             const auto& s = buf[i];
             if (s.t > endTime)   continue;
             if (s.t < startTime) break;
-            t->addRow({ GraphTable::fmtTime(s.t),
-                        QString::number(s.g_lat,  'f', 2),
-                        QString::number(s.g_long, 'f', 2) });
+            t->addRow(s.t, s.g_lat, s.g_long);
         }
         t->endRebuild();
     }
@@ -210,9 +210,7 @@ void MiscChartsWidget::refresh() {
             const auto& s = buf[i];
             if (s.t > endTime)   continue;
             if (s.t < startTime) break;
-            t->addRow({ GraphTable::fmtTime(s.t),
-                        QString::number(s.front_aero, 'f', 1),
-                        QString::number(s.rear_aero,  'f', 1) });
+            t->addRow(s.t, s.front_aero, s.rear_aero);
         }
         t->endRebuild();
     }

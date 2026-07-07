@@ -122,14 +122,16 @@ void PowerChartsWidget::setSectionViewMode(int section, bool table) {
 
 void PowerChartsWidget::ensureTable(int section) {
     if (table_[section]) return;
-    QStringList headers;
+    QVector<GraphTable::Column> cols;
     switch (section) {
-        case SPLIT:   headers = { "Time", "ICE (kW)", "MGU-K (kW)" };   break;
-        case HARVEST: headers = { "Time", "MGU-K (kJ)", "MGU-H (kJ)" }; break;
-        case STORE:   headers = { "Time", "ERS (%)" };                 break;
-        case FUEL:    headers = { "Time", "Fuel (kg)" };               break;
+        case SPLIT:   cols = { { "Time", GraphTable::Time }, { "ICE (kW)", GraphTable::Fixed1 },
+                               { "MGU-K (kW)", GraphTable::Fixed1 } }; break;
+        case HARVEST: cols = { { "Time", GraphTable::Time }, { "MGU-K (kJ)", GraphTable::Fixed1 },
+                               { "MGU-H (kJ)", GraphTable::Fixed1 } }; break;
+        case STORE:   cols = { { "Time", GraphTable::Time }, { "ERS (%)", GraphTable::Fixed1 } }; break;
+        case FUEL:    cols = { { "Time", GraphTable::Time }, { "Fuel (kg)", GraphTable::Fixed2 } }; break;
     }
-    table_[section] = new GraphTable(headers, this);
+    table_[section] = new GraphTable(cols, this);
     table_[section]->setVisible(false);
 }
 
@@ -212,17 +214,13 @@ void PowerChartsWidget::refresh() {
             if (s.t > endTime) continue;
             if (s.t < left)    break;
             if (tSplit && !tSplit->full())
-                tSplit->addRow({ GraphTable::fmtTime(s.t),
-                                 QString::number(s.ice_kw,  'f', 1),
-                                 QString::number(s.mguk_kw, 'f', 1) });
+                tSplit->addRow(s.t, s.ice_kw, s.mguk_kw);
             if (tHarvest && !tHarvest->full())
-                tHarvest->addRow({ GraphTable::fmtTime(s.t),
-                                   QString::number(s.mguk_harvest_j / 1000.0f, 'f', 1),
-                                   QString::number(s.mguh_harvest_j / 1000.0f, 'f', 1) });
+                tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f, s.mguh_harvest_j / 1000.0f);
             if (tStore && !tStore->full())
-                tStore->addRow({ GraphTable::fmtTime(s.t), QString::number(s.ers, 'f', 1) });
+                tStore->addRow(s.t, s.ers);
             if (tFuel && !tFuel->full())
-                tFuel->addRow({ GraphTable::fmtTime(s.t), QString::number(s.fuel_kg, 'f', 2) });
+                tFuel->addRow(s.t, s.fuel_kg);
             bool allFull = true;
             for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel })
                 if (t && !t->full()) { allFull = false; break; }

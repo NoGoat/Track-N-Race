@@ -120,13 +120,14 @@ void InputChartsWidget::setSectionViewMode(int section, bool table) {
 
 void InputChartsWidget::ensureTable(int section) {
     if (table_[section]) return;
-    QStringList headers;
+    QVector<GraphTable::Column> cols;
     switch (section) {
-        case GEAR:     headers = { "Time", "Gear" };               break;
-        case INPUTS:   headers = { "Time", "Throttle", "Brake" };  break;
-        case STEERING: headers = { "Time", "Steering" };           break;
+        case GEAR:     cols = { { "Time", GraphTable::Time }, { "Gear", GraphTable::Fixed0 } }; break;
+        case INPUTS:   cols = { { "Time", GraphTable::Time }, { "Throttle", GraphTable::Fixed2 },
+                                { "Brake", GraphTable::Fixed2 } }; break;
+        case STEERING: cols = { { "Time", GraphTable::Time }, { "Steering", GraphTable::Fixed2 } }; break;
     }
-    table_[section] = new GraphTable(headers, this);
+    table_[section] = new GraphTable(cols, this);
     table_[section]->setVisible(false);
 }
 
@@ -206,13 +207,11 @@ void InputChartsWidget::refresh() {
             if (s.t > endTime) continue;
             if (s.t < left)    break;
             if (tg && !tg->full())
-                tg->addRow({ GraphTable::fmtTime(s.t), QString::number(s.gear) });
+                tg->addRow(s.t, s.gear);
             if (ti && !ti->full())
-                ti->addRow({ GraphTable::fmtTime(s.t),
-                             QString::number(s.throttle, 'f', 2),
-                             QString::number(s.brake,    'f', 2) });
+                ti->addRow(s.t, s.throttle, s.brake);
             if (ts && !ts->full())
-                ts->addRow({ GraphTable::fmtTime(s.t), QString::number(s.steering, 'f', 2) });
+                ts->addRow(s.t, s.steering);
             if ((!tg || tg->full()) && (!ti || ti->full()) && (!ts || ts->full())) break;
         }
         if (tg) tg->endRebuild();
