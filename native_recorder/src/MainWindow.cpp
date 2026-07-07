@@ -629,15 +629,15 @@ void MainWindow::dispatchGraphView(tnr::GraphSection s, bool table) {
     using GS = tnr::GraphSection;
     switch (s) {
         case GS::OverviewTelemetry:  if (overviewPage_) overviewPage_->setTelemetryTable(table); break;
-        // Tyre graphs are shared: the Tyres page and the Overview tyre strip both follow them.
-        case GS::TyreSurface:        if (tyresPage_) tyresPage_->setGraphSectionTable(0, table);
-                                     if (overviewPage_) overviewPage_->setTyreGraphTable(0, table); break;
-        case GS::TyreInner:          if (tyresPage_) tyresPage_->setGraphSectionTable(1, table);
-                                     if (overviewPage_) overviewPage_->setTyreGraphTable(1, table); break;
-        case GS::TyreBrake:          if (tyresPage_) tyresPage_->setGraphSectionTable(2, table);
-                                     if (overviewPage_) overviewPage_->setTyreGraphTable(2, table); break;
-        case GS::TyreWear:           if (tyresPage_) tyresPage_->setGraphSectionTable(3, table);
-                                     if (overviewPage_) overviewPage_->setTyreGraphTable(3, table); break;
+        // Tyre graphs are chosen independently for the Overview strip and the Tyres page.
+        case GS::OverviewTyreSurface: if (overviewPage_) overviewPage_->setTyreGraphTable(0, table); break;
+        case GS::OverviewTyreInner:   if (overviewPage_) overviewPage_->setTyreGraphTable(1, table); break;
+        case GS::OverviewTyreBrake:   if (overviewPage_) overviewPage_->setTyreGraphTable(2, table); break;
+        case GS::OverviewTyreWear:    if (overviewPage_) overviewPage_->setTyreGraphTable(3, table); break;
+        case GS::TyreSurface:        if (tyresPage_) tyresPage_->setGraphSectionTable(0, table); break;
+        case GS::TyreInner:          if (tyresPage_) tyresPage_->setGraphSectionTable(1, table); break;
+        case GS::TyreBrake:          if (tyresPage_) tyresPage_->setGraphSectionTable(2, table); break;
+        case GS::TyreWear:           if (tyresPage_) tyresPage_->setGraphSectionTable(3, table); break;
         case GS::InputGear:          if (inputPage_) inputPage_->setGraphSectionTable(0, table); break;
         case GS::InputThrottleBrake: if (inputPage_) inputPage_->setGraphSectionTable(1, table); break;
         case GS::InputSteering:      if (inputPage_) inputPage_->setGraphSectionTable(2, table); break;

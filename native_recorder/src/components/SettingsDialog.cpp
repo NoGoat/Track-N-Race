@@ -483,7 +483,11 @@ QWidget* SettingsDialog::buildGraphsPage() {
 
     struct Row { tnr::GraphSection s; const char* group; const char* label; };
     static const Row rows[] = {
-        { tnr::GraphSection::OverviewTelemetry,  "Overview", "Speed / RPM / ERS" },
+        { tnr::GraphSection::OverviewTelemetry,   "Overview", "Speed / RPM / ERS" },
+        { tnr::GraphSection::OverviewTyreSurface, "Overview", "Tyre surface temp" },
+        { tnr::GraphSection::OverviewTyreInner,   "Overview", "Tyre inner temp" },
+        { tnr::GraphSection::OverviewTyreBrake,   "Overview", "Tyre brake temp" },
+        { tnr::GraphSection::OverviewTyreWear,    "Overview", "Tyre wear / life" },
         { tnr::GraphSection::TyreSurface,        "Tyres",    "Surface temp" },
         { tnr::GraphSection::TyreInner,          "Tyres",    "Inner temp" },
         { tnr::GraphSection::TyreBrake,          "Tyres",    "Brake temp" },
@@ -516,13 +520,6 @@ QWidget* SettingsDialog::buildGraphsPage() {
         rowLay->addWidget(makeControl(r.label, r.s));
     }
     if (rowLay) rowLay->addStretch(1);
-
-    // The tyre graphs are shared with the Overview tyre strip; note it so the user
-    // isn't surprised that toggling one place changes both.
-    QLabel* note = new QLabel("Tyre graph choices also apply to the Overview tyre strip.");
-    note->setForegroundRole(QPalette::PlaceholderText);
-    note->setWordWrap(true);
-    v->addWidget(note);
 
     v->addStretch(1);
     return page;

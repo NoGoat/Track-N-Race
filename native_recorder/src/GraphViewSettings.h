@@ -13,8 +13,14 @@ namespace tnr {
 enum class GraphSection {
     OverviewTelemetry,      // Overview Speed / RPM / ERS chart
 
-    // Tyre graphs — shared between the Tyres page and the Overview tyre strip
-    // (both are TyreChartsWidget instances) so a choice applies consistently.
+    // Overview tyre strip graphs (its own TyreChartsWidget) — chosen independently
+    // of the Tyres page's tyre graphs below.
+    OverviewTyreSurface,
+    OverviewTyreInner,
+    OverviewTyreBrake,
+    OverviewTyreWear,
+
+    // Tyres page tyre graphs.
     TyreSurface,
     TyreInner,
     TyreBrake,
@@ -38,6 +44,10 @@ enum class GraphSection {
 inline const char* graphViewKey(GraphSection s) {
     switch (s) {
         case GraphSection::OverviewTelemetry:  return "ui/graphView/overviewTelemetry";
+        case GraphSection::OverviewTyreSurface: return "ui/graphView/overviewTyreSurface";
+        case GraphSection::OverviewTyreInner:  return "ui/graphView/overviewTyreInner";
+        case GraphSection::OverviewTyreBrake:  return "ui/graphView/overviewTyreBrake";
+        case GraphSection::OverviewTyreWear:   return "ui/graphView/overviewTyreWear";
         case GraphSection::TyreSurface:        return "ui/graphView/tyreSurface";
         case GraphSection::TyreInner:          return "ui/graphView/tyreInner";
         case GraphSection::TyreBrake:          return "ui/graphView/tyreBrake";
