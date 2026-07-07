@@ -540,21 +540,34 @@ QWidget* SettingsDialog::buildCompactPage() {
             stack, &QStackedWidget::setCurrentIndex);
     sidebar->setCurrentRow(0);
 
-    // "Toggle all" pinned to the bottom of the sidebar column. If any section is
-    // already compact it resets everything to Normal; otherwise it makes
-    // everything compact (the tyre-cards level goes to Compact 1). Programmatic
-    // setChecked() doesn't emit idClicked, so re-checking the segments here
-    // doesn't re-fire the per-control handlers — we push each setting directly.
-    QPushButton* toggleAllBtn = new QPushButton("Toggle all");
-    connect(toggleAllBtn, &QPushButton::clicked, this, [this, controls]() {
-        bool anyCompact = false;
+    // Pinned to the bottom of the sidebar column. If any section is already
+    // compact the click resets everything to Normal; otherwise it makes
+    // everything compact (the tyre-cards level goes to Compact 1). The label
+    // shows the action the next click will perform. Programmatic setChecked()
+    // doesn't emit idClicked, so re-checking the segments here doesn't re-fire
+    // the per-control handlers — we push each setting directly.
+    QToolButton* toggleAllBtn = new QToolButton;
+    toggleAllBtn->setAutoRaise(true);
+    toggleAllBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toggleAllBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    auto anyCompact = [this, controls]() {
         for (const Ctl& c : controls) {
             const bool compact = c.s == tnr::CompactSection::OverviewTyres
                 ? mainWindow_->tyresCompactLevel() != 0
                 : mainWindow_->compactSection(c.s);
-            if (compact) { anyCompact = true; break; }
+            if (compact) return true;
         }
-        const bool makeCompact = !anyCompact;   // all Normal → compact; else → Normal
+        return false;
+    };
+    auto refreshLabel = [anyCompact, toggleAllBtn]() {
+        toggleAllBtn->setText(anyCompact() ? "Set Normal" : "Set Compact");
+    };
+    refreshLabel();
+
+    connect(toggleAllBtn, &QToolButton::clicked, this,
+            [this, controls, anyCompact, refreshLabel]() {
+        const bool makeCompact = !anyCompact();   // all Normal → compact; else → Normal
         for (const Ctl& c : controls) {
             if (c.s == tnr::CompactSection::OverviewTyres) {
                 const int lvl = makeCompact ? 1 : 0;   // 1 == "Compact 1"
@@ -565,7 +578,11 @@ QWidget* SettingsDialog::buildCompactPage() {
                 c.group->button(makeCompact ? 1 : 0)->setChecked(true);
             }
         }
+        refreshLabel();
     });
+    // Keep the label current when individual sections are changed directly.
+    for (const Ctl& c : controls)
+        connect(c.group, &QButtonGroup::idClicked, this, [refreshLabel](int) { refreshLabel(); });
 
     QWidget* sideCol = new QWidget;
     sideCol->setAutoFillBackground(true);
@@ -574,7 +591,6 @@ QWidget* SettingsDialog::buildCompactPage() {
     sideColLay->setContentsMargins(0, 0, 0, 0);
     sideColLay->setSpacing(0);
     sideColLay->addWidget(sidebar, 1);
-    sideColLay->addWidget(horizontalSeparator());
     QWidget* btnWrap = new QWidget;
     QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
     btnWrapLay->setContentsMargins(8, 8, 8, 8);
