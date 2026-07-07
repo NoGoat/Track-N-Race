@@ -456,8 +456,8 @@ QWidget* SettingsDialog::buildCompactPage() {
         };
 
         if (s == tnr::CompactSection::OverviewTyres) {
-            addSeg("Normal"); addSeg("Compact");
-            addSeg("Ultra Compact 1"); addSeg("Ultra Compact 2"); addSeg("Ultra Compact 3");
+            addSeg("Normal"); addSeg("Compact 1");
+            addSeg("Compact 2"); addSeg("Compact 3"); addSeg("Compact 4");
             group->button(mainWindow_->tyresCompactLevel())->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
