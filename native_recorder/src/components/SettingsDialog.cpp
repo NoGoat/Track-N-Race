@@ -613,13 +613,18 @@ QWidget* SettingsDialog::buildGraphsPage() {
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(0);
 
+    // Registry of every graph's segmented group, so the "Set Chart/Table" button
+    // below the sidebar can both flip the setting and re-check the right segment.
+    struct Ctl { tnr::GraphSection s; QButtonGroup* group; };
+    QList<Ctl> controls;
+
     // One control = a label on the left and a Chart/Table segmented control on
     // the right, exactly like the toolbar's window-size row: an exclusive
     // edge-to-edge pair of checkable buttons, the active one wearing the native
     // default-button outline. Each graph can independently show as its chart or
     // as a table of the raw sample values behind it (see GraphTable / the charts
     // widgets).
-    auto makeControl = [this](const char* label, tnr::GraphSection s) -> QWidget* {
+    auto makeControl = [this, &controls](const char* label, tnr::GraphSection s) -> QWidget* {
         QWidget* w = new QWidget;
         QHBoxLayout* cv = new QHBoxLayout(w);
         cv->setContentsMargins(0, 0, 0, 0);
@@ -644,6 +649,7 @@ QWidget* SettingsDialog::buildGraphsPage() {
         group->button(mainWindow_->graphView(s) ? 1 : 0)->setChecked(true);
         connect(group, &QButtonGroup::idClicked, this,
                 [this, s](int idx) { mainWindow_->setGraphView(s, idx == 1); });
+        controls.push_back({ s, group });
 
         cv->addWidget(cap);
         cv->addStretch(1);
@@ -721,7 +727,54 @@ QWidget* SettingsDialog::buildGraphsPage() {
             stack, &QStackedWidget::setCurrentIndex);
     sidebar->setCurrentRow(0);
 
-    h->addWidget(sidebar);
+    // Pinned to the bottom of the sidebar column. If any graph is already a
+    // Table the click resets everything to Chart; otherwise it makes everything
+    // a Table. The label shows the action the next click will perform.
+    // Programmatic setChecked() doesn't emit idClicked, so re-checking the
+    // segments here doesn't re-fire the per-control handlers — we push each
+    // setting directly.
+    QToolButton* setAllBtn = new QToolButton;
+    setAllBtn->setAutoRaise(true);
+    setAllBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    setAllBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    auto anyTable = [this, controls]() {
+        for (const Ctl& c : controls)
+            if (mainWindow_->graphView(c.s)) return true;
+        return false;
+    };
+    auto refreshLabel = [anyTable, setAllBtn]() {
+        setAllBtn->setText(anyTable() ? "Set Chart" : "Set Table");
+    };
+    refreshLabel();
+
+    connect(setAllBtn, &QToolButton::clicked, this,
+            [this, controls, anyTable, refreshLabel]() {
+        const bool makeTable = !anyTable();   // all Chart → table; else → Chart
+        for (const Ctl& c : controls) {
+            mainWindow_->setGraphView(c.s, makeTable);
+            c.group->button(makeTable ? 1 : 0)->setChecked(true);
+        }
+        refreshLabel();
+    });
+    // Keep the label current when individual graphs are changed directly.
+    for (const Ctl& c : controls)
+        connect(c.group, &QButtonGroup::idClicked, this, [refreshLabel](int) { refreshLabel(); });
+
+    QWidget* sideCol = new QWidget;
+    sideCol->setAutoFillBackground(true);
+    sideCol->setBackgroundRole(QPalette::Button);
+    QVBoxLayout* sideColLay = new QVBoxLayout(sideCol);
+    sideColLay->setContentsMargins(0, 0, 0, 0);
+    sideColLay->setSpacing(0);
+    sideColLay->addWidget(sidebar, 1);
+    QWidget* btnWrap = new QWidget;
+    QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
+    btnWrapLay->setContentsMargins(8, 8, 8, 8);
+    btnWrapLay->addWidget(setAllBtn);
+    sideColLay->addWidget(btnWrap);
+
+    h->addWidget(sideCol);
     h->addWidget(verticalSeparator());
     h->addWidget(stack, 1);
     return page;
