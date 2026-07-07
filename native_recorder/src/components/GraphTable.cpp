@@ -116,8 +116,13 @@ void tnr::layoutSectionGrid(QGridLayout* outer, ChartView* chart,
     }
 
     chart->layoutPanelsRows(anyChart ? chartRows : QVector<QVector<int>>{});
-    chart->setVisible(anyChart);
+    // Reparent (addWidget) BEFORE setVisible: on the first layout the chart has
+    // never been parented, so setVisible(true) while it's still top-level makes Qt
+    // briefly show it as its own window — a tiny window that flashes on screen
+    // during startup. Adding it to the grid first gives it a (hidden) parent, so
+    // setVisible only affects it in place.
     if (anyChart) outer->addWidget(chart, 0, 0, (int)rows.size(), maxCols);
+    chart->setVisible(anyChart);
 
     // Overlay each table on its natural cell (on top of the spanning chart). A lone
     // section in a row spans the full width, matching ChartView's single-panel row.

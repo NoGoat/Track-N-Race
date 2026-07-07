@@ -96,8 +96,18 @@ MainWindow::MainWindow(QWidget* parent)
     }
     normalGeometry_ = saved;
     setGeometry(saved);
-    if (settings.value("window/maximized", false).toBool())
+    if (settings.value("window/maximized", false).toBool()) {
+        // Lay the window out at the maximized size *before* it's shown. setWindowState
+        // alone maps the frame maximized but leaves the central widget sized to `saved`
+        // (the small windowed geometry) until the first real resize event — that lag
+        // paints the content shrunk into the top-left corner over a white margin for a
+        // frame at launch. Sizing to the screen's available area here makes the first
+        // layout already fill the frame. normalGeometry_ still holds `saved` for the
+        // un-maximize restore (changeEvent), so overriding the on-screen geometry is safe.
+        if (const QScreen* scr = QGuiApplication::primaryScreen())
+            setGeometry(scr->availableGeometry());
         setWindowState(windowState() | Qt::WindowMaximized);
+    }
 
     outputDirectory = settings.value("outputDirectory").toString();
     wantRecord      = settings.value("autoRecord", false).toBool();

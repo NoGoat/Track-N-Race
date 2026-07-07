@@ -116,8 +116,11 @@ void TyreCardsWidget::buildCards() {
         cv->addWidget(blisters_[i]);
 
         cards_[i] = card;
-        card->setVisible(cornerVisible_[i]);
+        // addWidget (reparent) before setVisible — otherwise setVisible(true) on the
+        // still-unparented card briefly shows it as its own top-level window, which
+        // flashes on screen during startup.
         outer->addWidget(card, 1);
+        card->setVisible(cornerVisible_[i]);
 
         if (i < 3) {
             QFrame* div = new QFrame;
@@ -273,8 +276,10 @@ void TyreCardsWidget::buildOneLine(QBoxLayout* outer, bool abbrev, bool showLabe
         valueLabel("Wear",    wearLabel_[k]);
 
         compactCorner_[k] = { cell };
-        cell->setVisible(cornerVisible_[k]);
+        // Reparent before setVisible (see buildCards) so a still-unparented cell is
+        // never briefly shown as its own top-level window at startup.
         outer->addWidget(cell, 1);
+        cell->setVisible(cornerVisible_[k]);
 
         if (k < 3) {
             QFrame* div = new QFrame;
