@@ -666,6 +666,9 @@ void OverviewPage::setWindowSeconds(float secs) {
 void OverviewPage::setTelemetryTable(bool table) {
     telemetryTableMode_ = table;
     if (chartStack_) chartStack_->setCurrentWidget(table ? (QWidget*)telemetryTable_ : (QWidget*)chart_);
+    // The mode bar (Default/Current Lap/… chart-mode buttons, lap-compare combo and
+    // the Speed/RPM/ERS legend) only applies to the chart — hide it in table mode.
+    if (modeBar_) modeBar_->setVisible(!table);
     if (table) refreshTelemetryTable();
 }
 

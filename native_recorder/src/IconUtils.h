@@ -18,20 +18,34 @@
 #if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
 class TintedIconEngine : public QIconEngine {
 public:
-    TintedIconEngine(QIcon src, QColor tint) : src_(std::move(src)), tint_(tint) {}
-    QIconEngine* clone() const override { return new TintedIconEngine(src_, tint_); }
+    // followForeground: for the normal (enabled) state, resolve the tint from the
+    // live application-palette foreground at paint time rather than the colour
+    // captured here. Icons built early — e.g. the toolbar, whose actions are created
+    // during window construction before the dark Breeze palette has fully settled —
+    // would otherwise bake in the wrong (light-palette) foreground and render dark on
+    // a dark toolbar, with no palette-change afterwards to rebuild them. Resolving
+    // live fixes that without depending on a rebuild (this is exactly what the
+    // disabled state already does, which is why disabled icons were unaffected).
+    // Fixed-colour icons (e.g. a weather glyph's own colour) leave this false so
+    // their tint is honoured verbatim.
+    TintedIconEngine(QIcon src, QColor tint, bool followForeground = false)
+        : src_(std::move(src)), tint_(tint), follow_(followForeground) {}
+    QIconEngine* clone() const override { return new TintedIconEngine(src_, tint_, follow_); }
 
     QPixmap scaledPixmap(const QSize& size, QIcon::Mode mode, QIcon::State state,
                          qreal scale) override {
         QPixmap pm = src_.pixmap(size, scale, mode, state);  // crisp at device res
         if (pm.isNull()) return pm;
         // SourceIn fills the glyph with a flat tint, which discards the mode-specific
-        // shading Qt would normally apply. For disabled actions, tint with the
-        // palette's disabled foreground colour so they dim like every other widget
-        // instead of staying at the full-contrast foreground colour.
-        QColor tint = mode == QIcon::Disabled
-            ? QApplication::palette().color(QPalette::Disabled, QPalette::WindowText)
-            : tint_;
+        // shading Qt would normally apply. Disabled actions tint with the palette's
+        // disabled foreground so they dim like every other widget; follow-foreground
+        // icons track the live palette foreground (see above); otherwise the fixed
+        // tint captured at construction is used.
+        QColor tint = tint_;
+        if (mode == QIcon::Disabled)
+            tint = QApplication::palette().color(QPalette::Disabled, QPalette::WindowText);
+        else if (follow_)
+            tint = QApplication::palette().color(QPalette::WindowText);
         QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
         QPainter p(&img);
         p.setCompositionMode(QPainter::CompositionMode_SourceIn);
@@ -52,6 +66,7 @@ public:
 private:
     QIcon  src_;
     QColor tint_;
+    bool   follow_ = false;
 };
 #endif
 
@@ -68,7 +83,7 @@ inline QIcon adaptThemeIcon(const QIcon& themed, const QColor& tint, const QIcon
     if (themed.isNull()) return fallback;
 #if defined(Q_OS_WIN) || defined(HAVE_BREEZE_ICONS)
     if (QIcon::themeName() == QLatin1String("breeze"))
-        return QIcon(new TintedIconEngine(themed, tint));
+        return QIcon(new TintedIconEngine(themed, tint, /*followForeground=*/true));
 #endif
     Q_UNUSED(tint);
     return themed;
@@ -127,7 +142,8 @@ public:
                 return base;  // colourful or unknown — leave as-is
         }
         const QPalette pal = w ? w->palette() : QApplication::palette();
-        return QIcon(new TintedIconEngine(base, pal.color(QPalette::WindowText)));
+        return QIcon(new TintedIconEngine(base, pal.color(QPalette::WindowText),
+                                          /*followForeground=*/true));
     }
 };
 #endif

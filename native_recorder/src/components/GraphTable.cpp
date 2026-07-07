@@ -19,7 +19,10 @@ GraphTable::GraphTable(const QStringList& headers, QWidget* parent)
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setSelectionMode(QAbstractItemView::NoSelection);
     setFocusPolicy(Qt::NoFocus);
-    setAlternatingRowColors(true);
+    // No alternating row colours: as new samples stream in, rows shift up every
+    // frame, so the zebra banding crawls/flickers against the scrolling data. A flat
+    // background keeps the readout stable while it updates.
+    setAlternatingRowColors(false);
     setShowGrid(false);
     setWordWrap(false);
 
