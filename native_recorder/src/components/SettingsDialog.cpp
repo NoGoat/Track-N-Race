@@ -17,6 +17,8 @@
 #include <QLineEdit>
 #include <QStyleFactory>
 #include <QPushButton>
+#include <QStyleOptionButton>
+#include <QStylePainter>
 #include <QFileDialog>
 #include <QSizePolicy>
 #include <QFont>
@@ -49,6 +51,34 @@ static QFrame* verticalSeparator() {
     f->setFrameShadow(QFrame::Sunken);
     return f;
 }
+
+// Segmented-control button, identical to the toolbar's window-size picker (see
+// SegmentButton in AppToolbar.cpp). When checked it paints itself as the active
+// style's *default button* — the same blue outline the on-toggles wear — which a
+// QToolButton can't get for free: the DefaultButton look lives on
+// QStyleOptionButton, which only QPushButton feeds the style, so for the checked
+// state we draw a default QPushButton bevel + label ourselves. Unchecked
+// segments fall through to the normal flat auto-raised look.
+namespace {
+class SegmentButton : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+
+protected:
+    void paintEvent(QPaintEvent* e) override {
+        if (!isChecked()) { QToolButton::paintEvent(e); return; }
+        QStylePainter p(this);
+        QStyleOptionButton opt;
+        opt.initFrom(this);
+        opt.rect = rect();
+        opt.text = text();
+        opt.features = QStyleOptionButton::DefaultButton;
+        opt.state |= QStyle::State_Raised;
+        opt.state &= ~(QStyle::State_On | QStyle::State_Sunken);
+        p.drawControl(QStyle::CE_PushButton, opt);
+    }
+};
+} // namespace
 
 // Bold label spanning both form columns, for a sub-section header inside a page.
 static QLabel* subHeading(const QString& text) {
@@ -472,24 +502,41 @@ QWidget* SettingsDialog::buildGraphsPage() {
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(0);
 
-    // One control = a muted caption over a Chart/Table dropdown, mirroring the
-    // Compact page. Each graph can independently show as its chart or as a table
-    // of the raw sample values behind it (see GraphTable / the charts widgets).
+    // One control = a label on the left and a Chart/Table segmented control on
+    // the right, exactly like the toolbar's window-size row: an exclusive
+    // edge-to-edge pair of checkable buttons, the active one wearing the native
+    // default-button outline. Each graph can independently show as its chart or
+    // as a table of the raw sample values behind it (see GraphTable / the charts
+    // widgets).
     auto makeControl = [this](const char* label, tnr::GraphSection s) -> QWidget* {
         QWidget* w = new QWidget;
-        QVBoxLayout* cv = new QVBoxLayout(w);
+        QHBoxLayout* cv = new QHBoxLayout(w);
         cv->setContentsMargins(0, 0, 0, 0);
-        cv->setSpacing(3);
+        cv->setSpacing(12);
         QLabel* cap = new QLabel(label);
-        cap->setForegroundRole(QPalette::PlaceholderText);
-        QComboBox* combo = new QComboBox;
-        combo->addItem("Chart");
-        combo->addItem("Table");
-        combo->setCurrentIndex(mainWindow_->graphView(s) ? 1 : 0);
-        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+
+        QWidget* seg = new QWidget;
+        QHBoxLayout* segLay = new QHBoxLayout(seg);
+        segLay->setContentsMargins(0, 0, 0, 0);
+        segLay->setSpacing(0);
+        QButtonGroup* group = new QButtonGroup(w);
+        group->setExclusive(true);
+        static const char* const opts[] = { "Chart", "Table" };
+        for (int i = 0; i < 2; ++i) {
+            SegmentButton* b = new SegmentButton;
+            b->setText(opts[i]);
+            b->setCheckable(true);
+            b->setAutoRaise(true);
+            group->addButton(b, i);
+            segLay->addWidget(b);
+        }
+        group->button(mainWindow_->graphView(s) ? 1 : 0)->setChecked(true);
+        connect(group, &QButtonGroup::idClicked, this,
                 [this, s](int idx) { mainWindow_->setGraphView(s, idx == 1); });
+
         cv->addWidget(cap);
-        cv->addWidget(combo);
+        cv->addStretch(1);
+        cv->addWidget(seg);
         return w;
     };
 
@@ -532,12 +579,12 @@ QWidget* SettingsDialog::buildGraphsPage() {
     QStackedWidget* stack = new QStackedWidget;
 
     // rows are grouped consecutively, so each time the group changes we start a
-    // fresh sidebar entry + stack page and lay the group's controls into a row.
+    // fresh sidebar entry + stack page and stack the group's controls into it,
+    // one Label/toggle row per graph.
     QString lastGroup;
-    QHBoxLayout* rowLay = nullptr;
+    QVBoxLayout* colLay = nullptr;
     for (const Row& r : rows) {
         if (r.group != lastGroup) {
-            if (rowLay) rowLay->addStretch(1);
             sidebar->addItem(r.group);
 
             QWidget* groupPage = new QWidget;
@@ -546,19 +593,18 @@ QWidget* SettingsDialog::buildGraphsPage() {
             gv->setSpacing(10);
             gv->addWidget(subHeading(r.group));
 
-            QWidget* rowW = new QWidget;
-            rowLay = new QHBoxLayout(rowW);
-            rowLay->setContentsMargins(0, 0, 0, 0);
-            rowLay->setSpacing(20);
-            gv->addWidget(rowW);
+            QWidget* colW = new QWidget;
+            colLay = new QVBoxLayout(colW);
+            colLay->setContentsMargins(0, 0, 0, 0);
+            colLay->setSpacing(8);
+            gv->addWidget(colW);
             gv->addStretch(1);
 
             stack->addWidget(groupPage);
             lastGroup = r.group;
         }
-        rowLay->addWidget(makeControl(r.label, r.s));
+        colLay->addWidget(makeControl(r.label, r.s));
     }
-    if (rowLay) rowLay->addStretch(1);
 
     connect(sidebar, &QListWidget::currentRowChanged,
             stack, &QStackedWidget::setCurrentIndex);
