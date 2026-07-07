@@ -22,6 +22,7 @@
 #include <QFont>
 #include <QButtonGroup>
 #include <QStackedWidget>
+#include <QListWidget>
 #include <QPalette>
 #include <QApplication>
 #include <QTableWidget>
@@ -38,6 +39,13 @@
 static QFrame* horizontalSeparator() {
     QFrame* f = new QFrame;
     f->setFrameShape(QFrame::HLine);
+    f->setFrameShadow(QFrame::Sunken);
+    return f;
+}
+
+static QFrame* verticalSeparator() {
+    QFrame* f = new QFrame;
+    f->setFrameShape(QFrame::VLine);
     f->setFrameShadow(QFrame::Sunken);
     return f;
 }
@@ -455,10 +463,14 @@ QWidget* SettingsDialog::buildCompactPage() {
 }
 
 QWidget* SettingsDialog::buildGraphsPage() {
+    // Sidebar (group list) on the left, a stack of per-group control pages on
+    // the right. Each sidebar row maps 1:1 to a stack page; there are far more
+    // graphs than fit comfortably in one flat list, so grouping them behind a
+    // navigation column keeps each pane short.
     QWidget* page = new QWidget;
-    QVBoxLayout* v = new QVBoxLayout(page);
-    v->setContentsMargins(8, 12, 8, 8);
-    v->setSpacing(10);
+    QHBoxLayout* h = new QHBoxLayout(page);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(0);
 
     // One control = a muted caption over a Chart/Table dropdown, mirroring the
     // Compact page. Each graph can independently show as its chart or as a table
@@ -503,25 +515,58 @@ QWidget* SettingsDialog::buildGraphsPage() {
         { tnr::GraphSection::MiscRideHeight,     "Misc",     "Ride height" },
     };
 
+    // Left nav column listing the groups. Tinted a shade lighter than the
+    // window (Button role) so it reads as a distinct surface, matching the top
+    // tab bar; the selected row uses the accent highlight.
+    QListWidget* sidebar = new QListWidget;
+    sidebar->setFrameShape(QFrame::NoFrame);
+    sidebar->setMinimumWidth(130);
+    sidebar->setMaximumWidth(160);
+    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
+    sidebar->setStyleSheet(QString(
+        "QListWidget { background: %1; border: none; outline: none; }"
+        "QListWidget::item { padding: 8px 14px; }"
+    ).arg(sidebarBg));
+
+    QStackedWidget* stack = new QStackedWidget;
+
+    // rows are grouped consecutively, so each time the group changes we start a
+    // fresh sidebar entry + stack page and lay the group's controls into a row.
     QString lastGroup;
     QHBoxLayout* rowLay = nullptr;
     for (const Row& r : rows) {
         if (r.group != lastGroup) {
             if (rowLay) rowLay->addStretch(1);
-            if (!lastGroup.isEmpty()) v->addWidget(horizontalSeparator());
-            v->addWidget(subHeading(r.group));
+            sidebar->addItem(r.group);
+
+            QWidget* groupPage = new QWidget;
+            QVBoxLayout* gv = new QVBoxLayout(groupPage);
+            gv->setContentsMargins(16, 12, 16, 8);
+            gv->setSpacing(10);
+            gv->addWidget(subHeading(r.group));
+
             QWidget* rowW = new QWidget;
             rowLay = new QHBoxLayout(rowW);
             rowLay->setContentsMargins(0, 0, 0, 0);
             rowLay->setSpacing(20);
-            v->addWidget(rowW);
+            gv->addWidget(rowW);
+            gv->addStretch(1);
+
+            stack->addWidget(groupPage);
             lastGroup = r.group;
         }
         rowLay->addWidget(makeControl(r.label, r.s));
     }
     if (rowLay) rowLay->addStretch(1);
 
-    v->addStretch(1);
+    connect(sidebar, &QListWidget::currentRowChanged,
+            stack, &QStackedWidget::setCurrentIndex);
+    sidebar->setCurrentRow(0);
+
+    h->addWidget(sidebar);
+    h->addWidget(verticalSeparator());
+    h->addWidget(stack, 1);
     return page;
 }
 
