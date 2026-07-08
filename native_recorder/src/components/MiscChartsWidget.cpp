@@ -215,6 +215,9 @@ void MiscChartsWidget::refresh() {
         t->endRebuild();
     }
 
-    chart_->requestReplot();   // ONE replot renders both panels
+    // ONE replot renders both panels — but skip it when the chart is hidden (every
+    // section in table mode), so nothing renders off-screen. rebuildLayout() re-shows
+    // it and requestRefresh()es on the way back to chart mode, so it repaints then.
+    if (chart_->isVisible()) chart_->requestReplot();
     prevEndTime_ = endTime;
 }

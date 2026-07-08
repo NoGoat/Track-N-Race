@@ -278,8 +278,15 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     // Wrapped so it keeps the same 8px L/R inset as the rows above/below now that
     // the outer layout has no margins.
     model_ = model;
-    chart_ = new TelemetryChart;
+
+    QWidget* chartWrap = new QWidget;
+    QGridLayout* chartWrapLay = new QGridLayout(chartWrap);
+    chartWrapLay->setContentsMargins(8, 8, 8, 8);   // remove all padding
+    chartWrapLay->setSpacing(0);
+
+    chart_ = new TelemetryChart(chartWrap);
     chart_->setModel(model);
+
     // The Settings "Graphs" tab can swap the Speed/RPM/ERS chart for its underlying
     // samples. Set up exactly like the other pages' graph tables: a plain GraphTable
     // in a QGridLayout on a plain QWidget, with the chart and table sharing the one
@@ -289,19 +296,26 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     telemetryTable_ = new GraphTable({ { "Time",        GraphTable::Time },
                                        { "Speed (kph)", GraphTable::Fixed0 },
                                        { "RPM",         GraphTable::Fixed0 },
-                                       { "ERS (%)",     GraphTable::Fixed1 } });
-    QWidget* chartHost = new QWidget;
-    QGridLayout* chartHostLay = new QGridLayout(chartHost);
-    chartHostLay->setContentsMargins(0, 8, 0, 8);   // top/bottom breathing room
-    chartHostLay->setSpacing(0);
-    chartHostLay->addWidget(chart_,          0, 0);
-    chartHostLay->addWidget(telemetryTable_, 0, 0);
+                                       { "ERS (%)",     GraphTable::Fixed1 } }, chartWrap);
+    // The platform style resolves QTableView's frame width to 0 for THIS table while
+    // giving every other graph table 2 (confirmed via style()->pixelMetric(
+    // PM_DefaultFrameWidth)), so it alone rendered borderless with square corners.
+    // Draw the rounded frame explicitly so it matches the boxed look of the others,
+    // independent of the style's per-widget frame-width quirk. The opaque base
+    // background is required too: once a QTableView carries a stylesheet its
+    // scrollbar groove renders transparent, so without a filled background whatever
+    // sits behind the table shows through that strip. The :hover clause pins the
+    // border across hover repaints. (border-radius clips the fill, so corners stay
+    // rounded — unlike an opaque *parent*, which would square them.)
+    telemetryTable_->setStyleSheet(QStringLiteral(
+        "QTableView, QTableView:hover {"
+        " border: 1px solid rgba(255, 255, 255, 0.1);"
+        " border-radius: 6px;"
+        " background: palette(base); }"));
+
+    chartWrapLay->addWidget(chart_,          0, 0);
+    chartWrapLay->addWidget(telemetryTable_, 0, 0);
     telemetryTable_->hide();   // chart shown by default; setTelemetryTable swaps them
-    QWidget* chartWrap = new QWidget;
-    QVBoxLayout* chartWrapLay = new QVBoxLayout(chartWrap);
-    chartWrapLay->setContentsMargins(8, 0, 8, 0);
-    chartWrapLay->setSpacing(0);
-    chartWrapLay->addWidget(chartHost);
     vbox->addWidget(chartWrap, 1);
 
     // Keep the telemetry table live while it's the visible page.
@@ -676,6 +690,9 @@ void OverviewPage::setWindowSeconds(float secs) {
 
 void OverviewPage::setTelemetryTable(bool table) {
     telemetryTableMode_ = table;
+    // Hide the chart in table mode so it isn't replotting unseen behind the opaque
+    // table. The table draws its own rounded frame (see its stylesheet) and fills an
+    // opaque background, so it needs nothing painted behind it.
     if (chart_)          chart_->setVisible(!table);
     if (telemetryTable_) { telemetryTable_->setVisible(table); if (table) telemetryTable_->raise(); }
     // The mode bar (Default/Current Lap/… chart-mode buttons, lap-compare combo and

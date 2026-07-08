@@ -219,6 +219,9 @@ void InputChartsWidget::refresh() {
         if (ts) ts->endRebuild();
     }
 
-    chart_->requestReplot();   // ONE replot renders all three panels
+    // ONE replot renders all three panels — but skip it when the chart is hidden
+    // (every section in table mode), so nothing renders off-screen. rebuildLayout()
+    // re-shows and requestRefresh()es on the way back to chart mode, so it repaints then.
+    if (chart_->isVisible()) chart_->requestReplot();
     prevEndTime_ = endTime;
 }
