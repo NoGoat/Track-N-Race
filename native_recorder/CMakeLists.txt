@@ -138,6 +138,7 @@ set(SOURCES
     resources.qrc
     maps.qrc
     licenses.qrc
+    fonts.qrc
 )
 
 if(WIN32)

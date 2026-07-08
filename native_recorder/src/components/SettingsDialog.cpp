@@ -940,6 +940,9 @@ QWidget* SettingsDialog::buildAboutPage() {
         // license text, which notes the fork and reproduces the upstream notice).
         { "qt-toast (fork)", "—",      "MIT",     "© 2024 Niklas Henning",                  "https://github.com/niklashenning/qt-toast", "github.com", ":/licenses/MIT-qt-toast.txt" },
         { "zlib",          "1.3.2",    "zlib",    "© 1995–2026 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
+        // Noto Sans is bundled (fonts.qrc) in every build as the Breeze UI font, so
+        // it's credited here unconditionally — not under BREEZE_BUNDLED.
+        { "Noto Sans",     "—",        "OFL 1.1", "© The Noto Project Authors",             "https://fonts.google.com/noto/specimen/Noto+Sans", "fonts.google.com", ":/licenses/OFL-1.1-Noto.txt" },
 #ifdef BREEZE_BUNDLED
         // KDE is bundled only in --with-breeze builds (BREEZE_BUNDLED). "KDE
         // Frameworks" covers every KF6 module in the breeze6 runtime closure

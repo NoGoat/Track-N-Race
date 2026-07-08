@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <QVariant>
 
 #ifdef HAVE_BREEZE_ICONS
@@ -90,6 +91,13 @@ bool s_breezeFontApplied = false;
 void applyBreezeFont() {
     if (s_breezeFontApplied)
         return;
+    // Register the bundled Noto Sans (fonts.qrc) so "Noto Sans" resolves to our copy
+    // rather than depending on a system install (which most Windows machines lack).
+    // addApplicationFont dedupes by content, so calling this once is enough for all
+    // four weights; the family name they register under is what setFont() asks for.
+    for (const char* f : { ":/fonts/NotoSans-Regular.ttf", ":/fonts/NotoSans-Bold.ttf",
+                           ":/fonts/NotoSans-Italic.ttf",  ":/fonts/NotoSans-BoldItalic.ttf" })
+        QFontDatabase::addApplicationFont(QString::fromLatin1(f));
     QApplication::setFont(QFont(QStringLiteral("Noto Sans"), 10));
     s_breezeFontApplied = true;
 }

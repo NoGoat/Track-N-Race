@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+<qresource prefix="/fonts">
+    <!-- Noto Sans (SIL Open Font License 1.1) — bundled so the Breeze UI font
+         ("Noto Sans", see applyBreezeFont) renders identically on machines that
+         don't have it installed. Static weights rather than the variable font so
+         weight/italic selection is unambiguous across styles. Licence text is in
+         licenses.qrc (:/licenses/OFL-1.1-Noto.txt) and credited in the Settings
+         "Third-party software" table. -->
+    <file alias="NotoSans-Regular.ttf">assets/fonts/NotoSans-Regular.ttf</file>
+    <file alias="NotoSans-Bold.ttf">assets/fonts/NotoSans-Bold.ttf</file>
+    <file alias="NotoSans-Italic.ttf">assets/fonts/NotoSans-Italic.ttf</file>
+    <file alias="NotoSans-BoldItalic.ttf">assets/fonts/NotoSans-BoldItalic.ttf</file>
+</qresource>
+</RCC>

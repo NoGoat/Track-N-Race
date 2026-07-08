@@ -15,5 +15,8 @@
     <file alias="MIT-glaze.txt">licenses/MIT-glaze.txt</file>
     <file alias="MIT-qt-toast.txt">licenses/MIT-qt-toast.txt</file>
     <file alias="Zlib.txt">licenses/Zlib.txt</file>
+    <!-- Noto Sans (bundled under fonts.qrc) ships under the SIL Open Font
+         License 1.1; the OFL requires the licence to accompany the font. -->
+    <file alias="OFL-1.1-Noto.txt">licenses/OFL-1.1-Noto.txt</file>
 </qresource>
 </RCC>
