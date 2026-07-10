@@ -102,7 +102,7 @@ export const WheelCard = memo(function WheelCard({
     const row = (
       <div className="flex items-stretch w-full">
         {metrics.map((m, i) => (
-          <div key={m.label} className={`flex-1 min-w-0 flex items-baseline justify-center gap-1.5 px-2 py-1 ${i > 0 ? 'border-l border-[var(--border)]' : ''}`}>
+          <div key={m.label} className={`flex-1 min-w-0 flex items-baseline justify-between gap-2 px-3 py-1 ${i > 0 ? 'border-l border-[var(--border)]' : ''}`}>
             <span className="text-[9px] uppercase tracking-wide text-[var(--text-secondary)]">{m.label}</span>
             <span className="text-[11px] font-bold tabular-nums" style={{ color: m.color }}>{m.text}</span>
           </div>
