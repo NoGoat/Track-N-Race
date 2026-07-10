@@ -185,7 +185,7 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: Cha
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {view === 'table' ? (
-          <GraphTable columns={tableCols} data={data} />
+          <GraphTable columns={tableCols} data={data} edgePadRem={0.75} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

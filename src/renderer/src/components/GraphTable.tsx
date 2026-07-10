@@ -24,9 +24,13 @@ function fmtTime(s: number): string {
   return `${m}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
 }
 
-export default function GraphTable({ columns, data }: {
+export default function GraphTable({ columns, data, edgePadRem = 1 }: {
   columns: GraphTableColumn[]
   data: uPlot.AlignedData
+  // How far (in rem) the table should break out of its container's padding on the
+  // left/right/bottom so it sits flush against the panel edge/border instead of
+  // floating with a gap — matches the parent's own p-* padding (defaults to p-4's 1rem).
+  edgePadRem?: number
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef  = useRef(true)               // is the view pinned to the newest row?
@@ -85,7 +89,10 @@ export default function GraphTable({ columns, data }: {
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-[var(--bg-panel)] border border-[var(--border)] overflow-hidden">
+    <div
+      style={{ top: 0, left: `-${edgePadRem}rem`, right: `-${edgePadRem}rem`, bottom: `-${edgePadRem}rem` }}
+      className="absolute flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden"
+    >
       <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
         <div
           style={{ gridTemplateColumns: gridCols }}
