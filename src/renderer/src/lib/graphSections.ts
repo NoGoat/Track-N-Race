@@ -13,7 +13,9 @@ export type GraphView = 'chart' | 'table'
 export type GraphSection =
   | 'overviewTelemetry'
   | 'overviewTyreSurface' | 'overviewTyreInner' | 'overviewTyreBrake' | 'overviewTyreWear'
+  | 'overviewTyreCardFL' | 'overviewTyreCardFR' | 'overviewTyreCardRL' | 'overviewTyreCardRR'
   | 'tyreSurface' | 'tyreInner' | 'tyreBrake' | 'tyreWear'
+  | 'tyreCardFL' | 'tyreCardFR' | 'tyreCardRL' | 'tyreCardRR'
   | 'inputGear' | 'inputThrottleBrake' | 'inputSteering'
   | 'powerSplit' | 'powerHarvest' | 'powerStore' | 'powerFuel'
   | 'miscGForce' | 'miscRideHeight'
@@ -22,19 +24,27 @@ export type GraphViewState = Record<GraphSection, GraphView>
 
 // Grouped by the tab the graph lives on — drives the Settings "Graphs" page and
 // also enumerates every section for defaults / set-all.
-export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label: string }[] }[] = [
+export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label: string; chartLabel?: string }[] }[] = [
   { group: 'Overview', sections: [
     { key: 'overviewTelemetry',   label: 'Speed / RPM / ERS' },
     { key: 'overviewTyreSurface', label: 'Tyre Surface Temp' },
     { key: 'overviewTyreInner',   label: 'Tyre Inner Temp' },
     { key: 'overviewTyreBrake',   label: 'Brake Temp' },
     { key: 'overviewTyreWear',    label: 'Tyre Wear / Life' },
+    { key: 'overviewTyreCardFL',  label: 'Tyre Card FL', chartLabel: 'Card' },
+    { key: 'overviewTyreCardFR',  label: 'Tyre Card FR', chartLabel: 'Card' },
+    { key: 'overviewTyreCardRL',  label: 'Tyre Card RL', chartLabel: 'Card' },
+    { key: 'overviewTyreCardRR',  label: 'Tyre Card RR', chartLabel: 'Card' },
   ] },
   { group: 'Tyres', sections: [
     { key: 'tyreSurface', label: 'Tyre Surface Temp' },
     { key: 'tyreInner',   label: 'Tyre Inner Temp' },
     { key: 'tyreBrake',   label: 'Brake Temp' },
     { key: 'tyreWear',    label: 'Tyre Wear / Life' },
+    { key: 'tyreCardFL',  label: 'Tyre Card FL', chartLabel: 'Card' },
+    { key: 'tyreCardFR',  label: 'Tyre Card FR', chartLabel: 'Card' },
+    { key: 'tyreCardRL',  label: 'Tyre Card RL', chartLabel: 'Card' },
+    { key: 'tyreCardRR',  label: 'Tyre Card RR', chartLabel: 'Card' },
   ] },
   { group: 'Input', sections: [
     { key: 'inputGear',          label: 'Gear' },

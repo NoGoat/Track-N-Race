@@ -1539,7 +1539,7 @@ export default function App() {
               )}
               {showThermalPanel && (
                 <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} />
+                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} />
                 </div>
               )}
               {visibleDamageCount > 0 && (
@@ -1649,6 +1649,7 @@ export default function App() {
               isDark={theme === 'dark'}
               visibleGraphs={tyresLayout.charts}
               graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
+              cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
               sessionType={session?.session_type ?? null}
             />
           </div>

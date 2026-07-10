@@ -268,7 +268,7 @@ const Settings = memo(function Settings({
             {group.sections.map(s => (
               <Row key={s.key} label={s.label} description="">
                 <SegmentedControl
-                  options={[{ value: 'chart' as const, label: 'Chart' }, { value: 'table' as const, label: 'Table' }]}
+                  options={[{ value: 'chart' as const, label: s.chartLabel ?? 'Chart' }, { value: 'table' as const, label: 'Table' }]}
                   value={graphView[s.key]}
                   onChange={(v) => onGraphViewChange({ ...graphView, [s.key]: v })}
                 />
