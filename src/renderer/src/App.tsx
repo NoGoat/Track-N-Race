@@ -1481,7 +1481,7 @@ export default function App() {
               )}
               {showSpeedChartPanel && (
                 <div className={`${speedChartFlex} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} />
+                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} />
                 </div>
               )}
               {showThermalPanel && (

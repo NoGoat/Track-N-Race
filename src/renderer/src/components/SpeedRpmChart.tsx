@@ -23,6 +23,7 @@ interface Props {
   onModeChange: (mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
   isDark: boolean
   view?: 'chart' | 'table'
+  currentLapNum?: number | null
 }
 
 const COLOR_SPEED = '#37872D'
@@ -140,9 +141,17 @@ function buildOverlayData(
   return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
 }
 
-export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark, view = 'chart' }: Props) {
+export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark, view = 'chart', currentLapNum = null }: Props) {
   const activeData = mode === 'CL' ? lapData   : data
   const activeSts  = mode === 'CL' ? lapStatusHistory : statusHistory
+
+  // Playback-only: the full current-lap block (speedRpmBlocks holds whole laps from
+  // the loaded file), used to trace the live/scrubbed position over its own full-lap
+  // background in Current Lap mode — mirrors native_recorder's ChartMode::CurrentLap.
+  const clBlock = useMemo(
+    () => speedRpmBlocks?.find(b => b.lapNum === currentLapNum) ?? null,
+    [speedRpmBlocks, currentLapNum]
+  )
 
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -172,7 +181,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     if (opt) setCompareLapNum(opt.value)
   }, [])
 
-  const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare'
+  const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare' || (mode === 'CL' && !!clBlock)
   // Table view only applies to the single-lap live/current data path; the lap-overlay
   // modes (PL/FL/compare) always stay as a chart.
   const showTable = view === 'table' && !is2L
@@ -196,6 +205,10 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       return buildOverlayData(prevLap as any, lapData, lapStatusHistory)
     }
 
+    if (mode === 'CL' && clBlock) {
+      return buildOverlayData(clBlock, lapData, lapStatusHistory)
+    }
+
     if (activeData.length === 0) return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array()]
     const ts  = new Float64Array(activeData.length)
     const spd = new Float64Array(activeData.length)
@@ -212,7 +225,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       }
     })
     return [ts, spd, rpm, ers]
-  }, [is2L ? lapHistory : activeData, is2L ? lapStatusHistory : activeSts, mode, lapData, fastestLap, compareLapNum, speedRpmBlocks])
+  }, [is2L ? lapHistory : activeData, is2L ? lapStatusHistory : activeSts, mode, lapData, fastestLap, compareLapNum, speedRpmBlocks, clBlock])
 
   const compLabel = compareLapNum !== null ? `L${compareLapNum}` : 'CMP'
 
@@ -231,7 +244,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
             const cSpd = (u.data[4] as Float64Array)[idx]
             const cRpm = (u.data[5] as Float64Array)[idx]
             const cErs = (u.data[6] as Float64Array)[idx]
-            const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
+            const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : mode === 'CL' ? 'LAP' : 'PL'
             html = [
               `<div style="color:var(--text-secondary);margin-bottom:4px">${fmtLapTime(ts)}</div>`,
               `<div style="color:var(--text-secondary);font-size:10px;margin-bottom:2px">${refLabel}</div>`,
@@ -255,7 +268,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       },
     }
 
-    const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
+    const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : mode === 'CL' ? 'LAP' : 'PL'
     const series: uPlot.Series[] = is2L ? [
       {},
       { label: `${refLabel} Speed`, stroke: COLOR_SPEED_MUTED, scale: 'spd', width: 1.5, points: { show: false } },
@@ -352,7 +365,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     ? 'Complete a lap to see comparison'
     : 'No data — start driving to see telemetry'
 
-  const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : 'PL'
+  const refLabel = mode === 'FL' ? 'FL' : mode === 'compare' ? compLabel : mode === 'CL' ? 'LAP' : 'PL'
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 flex flex-col h-full">
