@@ -27,7 +27,8 @@ function fmtSteer(v: number): string {
 }
 
 const TABLE_COLS: GraphTableColumn[] = [
-  { header: 'Steering', color: COLOR_STEER, format: fmtSteer },
+  // Native table shows the raw signed percentage (negative = left, positive = right).
+  { header: 'Steering', color: COLOR_STEER, format: v => `${Math.round(v * 100)}%` },
 ]
 
 export default function SteeringChart({ data, isDark, view = 'chart' }: Props) {
