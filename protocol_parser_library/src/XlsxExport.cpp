@@ -146,24 +146,6 @@ void writeHeaderRow(lxw_worksheet* ws, lxw_format* bold, const std::vector<const
         worksheet_write_string(ws, 0, static_cast<lxw_col_t>(i), cols[i], bold);
 }
 
-void writeInfoSheet(lxw_workbook* wb, lxw_format* bold, const HeaderRow& header) {
-    lxw_worksheet* ws = workbook_add_worksheet(wb, "Info");
-    static const char* cols[] = {
-        "magic", "protocol", "track_id", "track_name", "session_type", "session_name", "start_time"
-    };
-    for (size_t i = 0; i < 7; ++i)
-        worksheet_write_string(ws, 0, static_cast<lxw_col_t>(i), cols[i], bold);
-
-    lxw_col_t c = 0;
-    worksheet_write_string(ws, 1, c++, header.magic.c_str(), nullptr);
-    worksheet_write_number(ws, 1, c++, header.protocol, nullptr);
-    worksheet_write_number(ws, 1, c++, header.track_id, nullptr);
-    worksheet_write_string(ws, 1, c++, header.track_name.c_str(), nullptr);
-    worksheet_write_number(ws, 1, c++, header.session_type, nullptr);
-    worksheet_write_string(ws, 1, c++, header.session_name.c_str(), nullptr);
-    worksheet_write_number(ws, 1, c++, static_cast<double>(header.start_time), nullptr);
-}
-
 // Writes one (or more, for multi-car packets) data row(s) for a single JSONL
 // line, advancing `row` past whatever it wrote.
 void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, const std::string& line) {
@@ -486,6 +468,8 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     lxw_format* bold = workbook_add_format(wb);
     format_set_bold(bold);
 
+    (void)header;  // no longer written to an Info sheet; kept for API stability
+
     const size_t total = index_.size();
     // Throttle progress callbacks to ~500 calls over the whole export rather
     // than once per row (row counts can run into the hundreds of thousands).
@@ -511,8 +495,7 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         onProgress(doneUnits, total > 0 ? total : 1, stage);
     };
 
-    report(0.0, "Reading session header");
-    writeInfoSheet(wb, bold, header);
+    report(0.0, "Preparing worksheets");
 
     // Bucket the flat, time-ordered index into per-type groups, preserving each
     // type's rows in file order and the first-seen order of the types (so sheet
@@ -544,10 +527,21 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         writeHeaderRow(ws, bold, columnsForType(type));
         lxw_row_t nextRow = 1;
 
+        // The Participants packet is re-emitted throughout the session (once per
+        // session_time change) but its driver roster is effectively static, so
+        // writing every occurrence duplicates the same drivers. Emit it just
+        // once (the first occurrence). Other row types are genuine time series.
+        const bool firstOnly = (type == 8);
+
+        bool wrote = false;
         for (const IndexEntry* e : entries) {
-            std::string line = readLine(e->offset);
-            if (!line.empty())
-                writeDataRow(ws, nextRow, e->sessionTime, type, line);
+            if (!firstOnly || !wrote) {
+                std::string line = readLine(e->offset);
+                if (!line.empty()) {
+                    writeDataRow(ws, nextRow, e->sessionTime, type, line);
+                    wrote = true;
+                }
+            }
 
             ++done;
             if (total > 0 && (done % reportEvery == 0 || done == total))
