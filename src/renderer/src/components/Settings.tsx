@@ -571,11 +571,11 @@ const Settings = memo(function Settings({
                         {item.name}
                       </span>
                       {item.version && (
-                        <span className="text-[9px] font-mono text-[var(--text-secondary)] font-bold bg-[var(--bg-input)] border border-[var(--border-muted)] px-1.5 py-0.5 rounded-full tabular-nums">
+                        <span className="text-[9px] font-mono text-[var(--text-primary)] font-bold bg-[var(--border-muted)] px-1.5 py-0.5 rounded-full tabular-nums">
                           {item.version}
                         </span>
                       )}
-                      <span className="text-[9px] font-mono text-[var(--text-secondary)] font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-1.5 py-0.5 rounded">
+                      <span className="text-[9px] font-mono text-[var(--text-primary)] font-bold uppercase tracking-wider bg-[var(--border-muted)] px-1.5 py-0.5 rounded">
                         {item.license}
                       </span>
                       <span className="flex-1" />
@@ -632,7 +632,7 @@ const Settings = memo(function Settings({
       onClick={onClose}
     >
       <div
-        className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[960px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -714,7 +714,7 @@ const Settings = memo(function Settings({
               ? 'items-center justify-center'
               : 'items-start justify-start'
           }`}>
-            <div className="w-full max-w-[640px]">
+            <div className="w-full max-w-[858px]">
               {view === 'about'
                 ? renderAbout()
                 : view === 'attributions'
