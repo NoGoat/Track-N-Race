@@ -1519,10 +1519,10 @@ export default function App() {
             thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
           }
 
-          // Compact tyre cards size to their (short) content instead of filling the
-          // flex region, so the space they free up goes to the chart above — the whole
-          // point of compact density. Normal (level 0) keeps the flex-fill behaviour.
-          const thermalCompactCards = tyreView === 'cards' && compact.overviewTyres > 0
+          // Tyre cards size to their (short) content instead of filling the flex
+          // region, so the space they free up goes to the chart above — otherwise the
+          // stretched card just spreads its rows apart with ugly gaps to fill the space.
+          const thermalCompactCards = tyreView === 'cards'
 
           return (
           <div className="h-full flex flex-col overflow-hidden">

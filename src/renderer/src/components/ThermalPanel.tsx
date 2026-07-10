@@ -85,6 +85,10 @@ export const WheelCard = memo(function WheelCard({
   const ramp = useColorFn(null, null, isDark)
   // `level` (Overview) takes precedence; `compact` (Tyres page) maps to level 5 / 0.
   const lvl = Math.max(0, Math.min(5, level ?? (compact ? 5 : 0)))
+  // Only the Overview page passes `level` explicitly — the Tyres page's own WheelCard
+  // usage (via `compact`) keeps the original stretched/justify-between layout, since
+  // it stacks 4 cards in a fixed-height flex column that relies on that fill behaviour.
+  const isOverviewNormal = level !== undefined && lvl === 0
   const abbrev = pos.split(/\s+/).map(w => w[0]).join('').toUpperCase()
 
   // The four metrics, in native's Surface/Inner/Brake/Wear order, each with its
@@ -144,16 +148,21 @@ export const WheelCard = memo(function WheelCard({
 
   // ── Level 0 (Normal) & 5 (the app's earlier compact column card) ──
   const isCompactCol = lvl === 5
+  const padding = isCompactCol ? 'p-2' : (isOverviewNormal ? 'p-3' : 'p-4')
+  const labelMb = isCompactCol ? 'mb-1' : (isOverviewNormal ? 'mb-2' : 'mb-3')
+  const dividerMy = isOverviewNormal ? 'my-1' : 'my-1.5'
   return (
-    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col justify-between ${isCompactCol ? 'p-2' : 'p-4'}`}>
-      <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${isCompactCol ? 'mb-1' : 'mb-3'}`}>
+    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col ${isOverviewNormal ? '' : 'justify-between'} ${padding}`}>
+      <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${labelMb}`}>
         {pos}
       </div>
       <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} />
       <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} />
-      {!isCompactCol && <div className="my-1.5 border-t border-[var(--border)]" />}
+      {!isCompactCol && <div className={`${dividerMy} border-t border-[var(--border)]`} />}
       <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} />
-      <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} isDark={isDark} />
+      <div className={isOverviewNormal && !isCompactCol ? 'mt-2' : undefined}>
+        <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} isDark={isDark} />
+      </div>
     </div>
   )
 })
@@ -164,9 +173,9 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
 
-  // Compact tyre cards (level ≥ 1) are content-height so the strip is short; Normal
-  // cards keep filling their flex region.
-  const compactCards = view === 'cards' && tyresLevel > 0
+  // Tyre cards are content-height (at every density level) so the strip is short —
+  // stretching them to fill the flex region just spreads the rows apart with gaps.
+  const compactCards = view === 'cards'
 
   return (
     <div className={compactCards ? '' : 'h-full'}>
