@@ -246,7 +246,7 @@ const Settings = memo(function Settings({
   const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
     <button
       onClick={onClick}
-      className="text-[11px] px-3 h-7 rounded-lg font-medium bg-[var(--bg-input)] border border-[var(--border-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--border-focus)] transition-colors active:scale-95"
+      className="text-xs px-3 h-8 rounded-lg font-medium transition-all active:scale-95 bg-[var(--border-muted)] text-[var(--text-primary)] hover:bg-[var(--border-focus)] hover:text-white"
     >
       {label}
     </button>

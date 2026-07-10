@@ -124,9 +124,14 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
     <div className="flex divide-x divide-[var(--border)]">
       {shown.map(d => {
         const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
+        let sub = v.sub
+        if (compact && sub) {
+          if (d.key === 'ers') sub = sub.replace('Overtake', 'OT')
+          else if (d.key === 'fuel') sub = sub.replace(' vs fin', '')
+        }
         return (
           <Card key={d.vis} label={d.label} value={v.value} unit={v.unit}
-                textColor={v.color} sub={v.sub} subTextColor={v.subColor} compact={compact} />
+                textColor={v.color} sub={sub} subTextColor={v.subColor} compact={compact} />
         )
       })}
     </div>
