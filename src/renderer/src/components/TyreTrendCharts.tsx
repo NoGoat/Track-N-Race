@@ -170,16 +170,18 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: Cha
     <div className="flex-1 min-w-0 bg-[var(--bg-panel)] p-3 flex flex-col">
       <div className="flex items-center justify-between mb-2 shrink-0">
         <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
-        <div className="flex gap-3">
-          {legend.map(({ label, color, dash }) => (
-            <div key={label} className="flex items-center gap-1">
-              <svg width="16" height="4">
-                <line x1="0" y1="2" x2="16" y2="2" stroke={color} strokeWidth="2" strokeDasharray={solid ? undefined : dash} />
-              </svg>
-              <span className="text-[9px] text-[var(--text-secondary)]">{label}</span>
-            </div>
-          ))}
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-3">
+            {legend.map(({ label, color, dash }) => (
+              <div key={label} className="flex items-center gap-1">
+                <svg width="16" height="4">
+                  <line x1="0" y1="2" x2="16" y2="2" stroke={color} strokeWidth="2" strokeDasharray={solid ? undefined : dash} />
+                </svg>
+                <span className="text-[9px] text-[var(--text-secondary)]">{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {view === 'table' ? (

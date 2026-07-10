@@ -359,6 +359,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       <div className="flex items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-3">
           <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
+          {view !== 'table' && (
           <div className="flex gap-1">
             {(['default', 'CL', 'PL', 'FL'] as const).map(m => (
               <button
@@ -386,7 +387,9 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
               </button>
             )}
           </div>
+          )}
         </div>
+        {view !== 'table' && (
         <div className="flex items-center gap-3">
           {mode === 'compare' && speedRpmBlocks && (
             <div className="w-16 shrink-0">
@@ -421,6 +424,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
             )}
           </div>
         </div>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>

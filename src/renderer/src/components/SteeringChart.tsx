@@ -143,10 +143,12 @@ export default function SteeringChart({ data, isDark, view = 'chart' }: Props) {
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: COLOR_STEER }}>— Input</span>
-          <span className="text-[var(--text-secondary)]">L = left / R = right</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: COLOR_STEER }}>— Input</span>
+            <span className="text-[var(--text-secondary)]">L = left / R = right</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (

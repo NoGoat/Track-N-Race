@@ -14,7 +14,7 @@ export interface GraphTableColumn {
   format: (v: number) => string
 }
 
-const ROW_H = 20
+const ROW_H = 26
 const OVERSCAN = 6
 
 function fmtTime(s: number): string {
@@ -57,7 +57,9 @@ export default function GraphTable({ columns, data }: {
     setScrollTop(el.scrollTop)
   }, [])
 
-  const gridCols = `76px ${columns.map(() => '1fr').join(' ')}`
+  // Time column + one column per series, all equal-width so they fill the available
+  // width (left-aligned cells, Standings styling).
+  const gridCols = Array(columns.length + 1).fill('minmax(0, 1fr)').join(' ')
   const total    = n * ROW_H
   const first    = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
   const count    = Math.min(n - first, Math.ceil(viewH / ROW_H) + OVERSCAN * 2)
@@ -69,11 +71,11 @@ export default function GraphTable({ columns, data }: {
       <div
         key={i}
         style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
-        className="grid items-center px-2 text-[11px] tabular-nums border-b border-[var(--border)]/40"
+        className="grid items-center border-b border-[var(--border)] hover:bg-[var(--bg-hover)]"
       >
-        <span className="text-[var(--text-secondary)]">{fmtTime(xs[i])}</span>
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{fmtTime(xs[i])}</span>
         {columns.map((c, ci) => (
-          <span key={ci} className="text-right pr-2 truncate" style={{ color: c.color }}>
+          <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
             {c.format((data[ci + 1] as Float64Array)[i])}
           </span>
         ))}
@@ -83,17 +85,19 @@ export default function GraphTable({ columns, data }: {
 
   return (
     <div className="absolute inset-0 flex flex-col bg-[var(--bg-panel)] overflow-hidden">
-      <div
-        style={{ gridTemplateColumns: gridCols }}
-        className="grid shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-secondary)] border-b border-[var(--border)]"
-      >
-        <span>Time</span>
-        {columns.map((c, ci) => (
-          <span key={ci} className="text-right pr-2" style={{ color: c.color }}>{c.header}</span>
-        ))}
-      </div>
-      <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto relative">
-        <div style={{ height: total, position: 'relative' }}>{rows}</div>
+      <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
+        <div
+          style={{ gridTemplateColumns: gridCols }}
+          className="grid shrink-0 border-b border-[var(--border)] bg-[var(--bg-panel)]"
+        >
+          <span className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">Time</span>
+          {columns.map((c, ci) => (
+            <span key={ci} className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">{c.header}</span>
+          ))}
+        </div>
+        <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto relative">
+          <div style={{ height: total, position: 'relative' }}>{rows}</div>
+        </div>
       </div>
     </div>
   )

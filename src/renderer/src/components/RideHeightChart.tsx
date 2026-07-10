@@ -115,11 +115,13 @@ export default function RideHeightChart({ data, isDark, view = 'chart' }: Props)
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: COLOR_FRONT }}>— Front</span>
-          <span style={{ color: COLOR_REAR }}>— Rear</span>
-          <span className="text-[var(--text-secondary)]">plank edge above road</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: COLOR_FRONT }}>— Front</span>
+            <span style={{ color: COLOR_REAR }}>— Rear</span>
+            <span className="text-[var(--text-secondary)]">plank edge above road</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (

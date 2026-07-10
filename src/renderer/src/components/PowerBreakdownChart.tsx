@@ -116,10 +116,12 @@ function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Power Split</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: C_ICE }}>— ICE</span>
-          <span style={{ color: C_MGUK }}>— MGU-K</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: C_ICE }}>— ICE</span>
+            <span style={{ color: C_MGUK }}>— MGU-K</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
@@ -196,11 +198,13 @@ function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">ERS Harvest</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: C_HARV_K }}>— MGU-K</span>
-          <span style={{ color: C_HARV_H }}>— MGU-H</span>
-          <span className="text-[var(--text-secondary)]">resets each lap</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: C_HARV_K }}>— MGU-K</span>
+            <span style={{ color: C_HARV_H }}>— MGU-H</span>
+            <span className="text-[var(--text-secondary)]">resets each lap</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
@@ -270,10 +274,12 @@ function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">ERS Store</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: C_ICE }}>— Store %</span>
-          <span className="text-[var(--text-secondary)]">max 4.0 MJ</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: C_ICE }}>— Store %</span>
+            <span className="text-[var(--text-secondary)]">max 4.0 MJ</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
@@ -341,9 +347,11 @@ function FuelHistoryChart({ data, isDark, view = 'chart' }: CP) {
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
       <div className="flex items-center justify-between mb-3 shrink-0">
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Fuel History</h2>
-        <div className="flex gap-4 text-xs">
-          <span style={{ color: C_FUEL }}>— Fuel kg</span>
-        </div>
+        {view !== 'table' && (
+          <div className="flex gap-4 text-xs">
+            <span style={{ color: C_FUEL }}>— Fuel kg</span>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
