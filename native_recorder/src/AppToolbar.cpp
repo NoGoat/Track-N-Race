@@ -16,6 +16,10 @@
 #include <QStylePainter>
 #include <QTimer>
 #include <QToolButton>
+// TEMP DIAGNOSTIC (icon blur investigation) — remove with the logging block below.
+#include <QFile>
+#include <QTextStream>
+#include <QDir>
 
 // Chart window-size options, shown as a segmented toolbar control.
 static const struct { const char* label; float secs; } kWindowOptions[] = {
@@ -95,6 +99,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     setMovable(false);
     setFloatable(false);
     setToolButtonStyle(showLabels ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    setIconSize(QSize(26, 26));
     setContentsMargins(0, 0, 0, 0);
     if (layout()) layout()->setContentsMargins(0, 0, 0, 0);
     if (layout()) layout()->setSpacing(4);
@@ -235,7 +240,19 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
         extButton_->installEventFilter(this);
     }
     // Initial pass once the toolbar has a real width (after the window is shown).
-    QTimer::singleShot(0, this, [this] { relayout(); });
+    QTimer::singleShot(0, this, [this] {
+        relayout();
+        // TEMP DIAGNOSTIC (icon blur investigation): log the toolbar's effective icon
+        // size + dpr once it's realized, to cross-check against the per-icon requested
+        // sizes in tnr_icon_debug.log. Remove along with the engine logging block.
+        QFile lf(QCoreApplication::applicationDirPath() + QStringLiteral("/tnr_icon_debug.log"));
+        if (lf.open(QIODevice::Append | QIODevice::Text)) {
+            QTextStream(&lf)
+                << "toolbar iconSize " << iconSize().width() << "x" << iconSize().height()
+                << "  devicePixelRatio " << devicePixelRatioF()
+                << "  toolButtonStyle " << int(toolButtonStyle()) << "\n";
+        }
+    });
 }
 
 void AppToolbar::setEditLayoutEnabled(bool on) {

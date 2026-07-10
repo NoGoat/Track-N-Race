@@ -9,6 +9,11 @@
 #include <QProxyStyle>
 #include <QStyleFactory>
 #include <QPalette>
+// TEMP DIAGNOSTIC (icon blur investigation) — remove with the logging block below.
+#include <QFile>
+#include <QTextStream>
+#include <QDir>
+#include <QSet>
 
 // Recolours a source theme icon to a fixed tint while keeping it fully scalable.
 // It renders the source at the exact size + device-pixel-ratio Qt requests (so it
@@ -53,6 +58,29 @@ public:
         p.end();
         QPixmap out = QPixmap::fromImage(img);
         out.setDevicePixelRatio(scale);
+        // TEMP DIAGNOSTIC (icon blur investigation): record requested vs actual
+        // source pixmap size to <temp>/tnr_icon_debug.log (GUI apps have no console).
+        // `pm` is what gets drawn; if its device size is smaller than size*scale the
+        // source didn't resolve as a scalable SVG and is being upscaled → blur.
+        // Deduped per unique (size, scale, result) so repaints don't flood the file.
+        {
+            static QSet<QString> seen;
+            const QString key = QStringLiteral("%1x%2@%3->%4x%5@%6f%7")
+                .arg(size.width()).arg(size.height()).arg(scale)
+                .arg(pm.width()).arg(pm.height()).arg(pm.devicePixelRatio()).arg(follow_);
+            if (!seen.contains(key)) {
+                seen.insert(key);
+                QFile lf(QCoreApplication::applicationDirPath() + QStringLiteral("/tnr_icon_debug.log"));
+                if (lf.open(QIODevice::Append | QIODevice::Text)) {
+                    QTextStream(&lf)
+                        << "icon requested " << size.width() << "x" << size.height()
+                        << "  scale " << scale
+                        << "  -> source pixmap " << pm.width() << "x" << pm.height()
+                        << " (dpr " << pm.devicePixelRatio() << ")"
+                        << "  followFg " << follow_ << "\n";
+                }
+            }
+        }
         return out;
     }
     QPixmap pixmap(const QSize& size, QIcon::Mode mode, QIcon::State state) override {
