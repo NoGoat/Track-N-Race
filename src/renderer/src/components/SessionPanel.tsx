@@ -152,6 +152,13 @@ const WeatherIcon = memo(function WeatherIcon({ id, size, isDark }: { id: number
   return <entry.icon size={size} strokeWidth={1.5} color={isDark ? entry.dark : entry.light} />
 })
 
+// The weather's icon colour, reused to tint the label in the compact strip (native
+// colours the weather name with the icon colour when the icon itself is dropped).
+function weatherColor(id: number, isDark: boolean): string {
+  const e = WEATHER_ICONS[id] ?? WEATHER_ICONS[2]
+  return isDark ? e.dark : e.light
+}
+
 const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: boolean }) {
   if (compact) {
     // Single-line: label · value+unit — the row collapses to one line.
@@ -497,33 +504,45 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
           </div>
 
-          {/* Now + forecast strip — pinned to bottom */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 44 : 110 }}>
+          {/* Now + forecast strip — pinned to bottom. Compact: each cell is a single
+              horizontal row (time · weather · rain %), matching native's compact strip. */}
+          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 32 : 110 }}>
 
             {/* Now card */}
-            <div className="flex flex-col items-center justify-evenly w-44 shrink-0 px-4">
-              <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
-              {!compactWeather && (
+            {compactWeather ? (
+              <div className="flex items-center w-44 shrink-0 px-4 gap-2">
+                <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
+                <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: session ? weatherColor(session.weather, isDark) : 'var(--text-secondary)' }}>
+                  {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-evenly w-44 shrink-0 px-4">
+                <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
                 <div style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
                   <WeatherIcon id={session?.weather ?? 2} size={28} isDark={isDark} />
                 </div>
-              )}
-              <span className={`text-sm font-semibold text-center leading-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
-                {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
-              </span>
-              {!compactWeather && (
+                <span className={`text-sm font-semibold text-center leading-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                  {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                </span>
                 <span className="text-[9px] text-[var(--text-secondary)]">
                   {session ? (session.forecast_accuracy === 0 ? 'Exact' : 'Approx') : '—'}
                 </span>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Forecast cards — skeleton when no data */}
             {noData
-              ? [1, 2, 3, 4, 5].map(i => (
+              ? [1, 2, 3, 4, 5].map(i => compactWeather ? (
+                <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
+                  <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
+                  <span className="flex-1 text-center text-xs text-[var(--text-secondary)]">—</span>
+                  <span className="text-[10px] font-bold tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
+                </div>
+              ) : (
                 <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">—</span>
-                  {!compactWeather && <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} isDark={isDark} /></div>}
+                  <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} isDark={isDark} /></div>
                   <span className="text-[10px] text-[var(--text-secondary)] text-center">—</span>
                   <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">—</span>
                 </div>
@@ -531,10 +550,20 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               : forecast.map((s, i) => {
                 const rainColor = s.rain_percentage > 50 ? '#5794F2'
                   : s.rain_percentage > 20 ? '#73BF69' : 'var(--text-secondary)'
-                return (
+                return compactWeather ? (
+                  <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
+                    <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
+                    <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: weatherColor(s.weather, isDark) }}>
+                      {WEATHER_LABELS[s.weather] ?? '—'}
+                    </span>
+                    <span className="text-[10px] font-bold tabular-nums shrink-0" style={{ color: rainColor }}>
+                      {s.rain_percentage}%
+                    </span>
+                  </div>
+                ) : (
                   <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
-                    {!compactWeather && <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} isDark={isDark} /></div>}
+                    <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} isDark={isDark} /></div>
                     <span className="text-[10px] text-[var(--text-primary)] text-center leading-tight">
                       {WEATHER_LABELS[s.weather] ?? '—'}
                     </span>

@@ -18,9 +18,10 @@ const ROW_H = 26
 const OVERSCAN = 6
 
 function fmtTime(s: number): string {
-  const m = Math.floor(s / 60)
-  const sec = s % 60
-  return `${m}:${sec.toFixed(1).padStart(4, '0')}`
+  const m   = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  const ms  = Math.floor((s % 1) * 1000)
+  return `${m}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
 }
 
 export default function GraphTable({ columns, data }: {

@@ -106,14 +106,14 @@ GraphTable::GraphTable(const QVector<Column>& columns, QWidget* parent)
 
 QString GraphTable::fmtTime(float t) {
     if (t < 0) t = 0;
-    const int totalTenths = (int)(t * 10.0f + 0.5f);
-    const int mins   = totalTenths / 600;
-    const int secs   = (totalTenths / 10) % 60;
-    const int tenths = totalTenths % 10;
+    const int totalMs = (int)(t * 1000.0f + 0.5f);
+    const int mins   = totalMs / 60000;
+    const int secs   = (totalMs / 1000) % 60;
+    const int millis = totalMs % 1000;
     return QString("%1:%2.%3")
         .arg(mins)
         .arg(secs, 2, 10, QChar('0'))
-        .arg(tenths);
+        .arg(millis, 3, 10, QChar('0'));
 }
 
 void GraphTable::beginRebuild() { model_->begin(); }

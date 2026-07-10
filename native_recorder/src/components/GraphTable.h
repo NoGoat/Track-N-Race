@@ -32,13 +32,13 @@ class GraphTableModel;
 class GraphTable : public QTableView {
     Q_OBJECT
 public:
-    // How a column's raw value renders: Time -> "m:ss.s"; FixedN -> N decimals.
+    // How a column's raw value renders: Time -> "m:ss.mmm"; FixedN -> N decimals.
     enum Fmt { Time, Fixed0, Fixed1, Fixed2 };
     struct Column { QString header; Fmt fmt; };
 
     explicit GraphTable(const QVector<Column>& columns, QWidget* parent = nullptr);
 
-    // Format a session time (seconds) as "m:ss.s".
+    // Format a session time (seconds) as "m:ss.mmm".
     static QString fmtTime(float t);
 
     // Rebuild cycle — see the class comment. Pass each row's values (session time
