@@ -78,6 +78,11 @@ const playerBridge = {
   getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
   close: () => ipcRenderer.send('player:close'),
   exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
+  onExportProgress: (cb: (pct: number, stage: string) => void) => {
+    const handler = (_e: any, pct: number, stage: string) => cb(pct, stage)
+    ipcRenderer.on('player:export-progress', handler)
+    return () => { ipcRenderer.removeListener('player:export-progress', handler) }
+  },
   onStateChange: (cb: (state: any) => void) => {
     const handler = (_e: any, state: any) => cb(state)
     ipcRenderer.on('playback_state', handler)

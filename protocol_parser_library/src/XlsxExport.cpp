@@ -7,7 +7,9 @@
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,11 +28,6 @@ namespace {
 // Local copy of TnrdReader.cpp's partial-read options (that one lives in an
 // anonymous namespace there, so it isn't visible here).
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
-
-struct SheetState {
-    lxw_worksheet* ws;
-    lxw_row_t      nextRow;   // next data row to write (row 0 is the header)
-};
 
 const char* sheetNameForType(uint8_t type) {
     switch (type) {
@@ -174,7 +171,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
 
     switch (type) {
     case 1: { // telemetry
-        TelemetryRow r{}; glz::read<kPartialRead>(r, sv);
+        TelemetryRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -204,7 +201,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 2: { // status
-        StatusRow r{}; glz::read<kPartialRead>(r, sv);
+        StatusRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -229,7 +226,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 3: { // damage
-        DamageRow r{}; glz::read<kPartialRead>(r, sv);
+        DamageRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -264,7 +261,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 4: { // lap
-        LapRow r{}; glz::read<kPartialRead>(r, sv);
+        LapRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -284,7 +281,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 5: { // session
-        SessionRow r{}; glz::read<kPartialRead>(r, sv);
+        SessionRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -317,7 +314,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 6: { // race_event — optional<> fields: leave the cell blank when unset
-        RaceEventRow r{}; glz::read<kPartialRead>(r, sv);
+        RaceEventRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -334,7 +331,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 7: { // timing — multi-car: one Excel row per car
-        TimingRow r{}; glz::read<kPartialRead>(r, sv);
+        TimingRow r{}; (void)glz::read<kPartialRead>(r, sv);
         for (const TimingCar& car : r.cars) {
             lxw_col_t c = 0;
             worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
@@ -363,7 +360,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 8: { // participants — multi-driver: one Excel row per driver (no ts on this packet)
-        ParticipantsRow r{}; glz::read<kPartialRead>(r, sv);
+        ParticipantsRow r{}; (void)glz::read<kPartialRead>(r, sv);
         for (const Driver& d : r.drivers) {
             lxw_col_t c = 0;
             worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
@@ -379,7 +376,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 9: { // all_status — multi-car: one Excel row per car
-        AllStatusRow r{}; glz::read<kPartialRead>(r, sv);
+        AllStatusRow r{}; (void)glz::read<kPartialRead>(r, sv);
         for (const AllStatusCar& car : r.cars) {
             lxw_col_t c = 0;
             worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
@@ -407,7 +404,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 10: { // tyre_sets — multi-set: one Excel row per set
-        TyreSetsRow r{}; glz::read<kPartialRead>(r, sv);
+        TyreSetsRow r{}; (void)glz::read<kPartialRead>(r, sv);
         for (const TyreSet& set : r.sets) {
             lxw_col_t c = 0;
             worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
@@ -429,7 +426,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 11: { // motion
-        MotionRow r{}; glz::read<kPartialRead>(r, sv);
+        MotionRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -441,7 +438,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 12: { // motion_ex
-        MotionExRow r{}; glz::read<kPartialRead>(r, sv);
+        MotionExRow r{}; (void)glz::read<kPartialRead>(r, sv);
         lxw_col_t c = 0;
         worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
         worksheet_write_number(ws, row, c++, t, nullptr);
@@ -452,7 +449,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         break;
     }
     case 13: { // positions — multi-car: one Excel row per car
-        PositionsRow r{}; glz::read<kPartialRead>(r, sv);
+        PositionsRow r{}; (void)glz::read<kPartialRead>(r, sv);
         for (const PositionCar& car : r.cars) {
             lxw_col_t c = 0;
             worksheet_write_number(ws, row, c++, static_cast<double>(row - 1), nullptr);
@@ -473,7 +470,8 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
 
 } // namespace
 
-bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath, std::string* errorOut) {
+bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath, std::string* errorOut,
+                            const std::function<void(size_t, size_t, const std::string&)>& onProgress) {
     if (!tempFile_) {
         if (errorOut) *errorOut = "no .tnrd loaded";
         return false;
@@ -488,41 +486,97 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     lxw_format* bold = workbook_add_format(wb);
     format_set_bold(bold);
 
+    const size_t total = index_.size();
+    // Throttle progress callbacks to ~500 calls over the whole export rather
+    // than once per row (row counts can run into the hundreds of thousands).
+    const size_t reportEvery = total > 0 ? std::max<size_t>(1, total / 500) : 1;
+
+    // The bar is split into two honest bands:
+    //   0 .. kRowBandTop  — building each worksheet in memory (row-by-row)
+    //   kRowBandTop .. 1  — reserved for workbook_close(), which serializes and
+    //                       zip-compresses the actual .xlsx bytes to disk. That
+    //                       call is opaque (no callbacks), so the bar holds at
+    //                       kRowBandTop while it runs and only snaps to 100%
+    //                       once the file is fully written.
+    constexpr double kRowBandTop = 0.95; // sheet building fills 0..95%
+
+    // Report an absolute [0,1] fraction of the bar plus a stage message through
+    // the (done,total,stage) callback (consumers compute pct = 100*done/total).
+    auto report = [&](double frac, const std::string& stage) {
+        if (!onProgress) return;
+        if (frac < 0.0) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        size_t doneUnits = total > 0 ? static_cast<size_t>(frac * static_cast<double>(total) + 0.5)
+                                     : static_cast<size_t>(frac + 0.5);
+        onProgress(doneUnits, total > 0 ? total : 1, stage);
+    };
+
+    report(0.0, "Reading session header");
     writeInfoSheet(wb, bold, header);
 
-    std::unordered_map<uint8_t, SheetState> sheets;
+    // Bucket the flat, time-ordered index into per-type groups, preserving each
+    // type's rows in file order and the first-seen order of the types (so sheet
+    // tabs come out in the same order as before). Building one sheet fully
+    // before the next lets us report an honest per-sheet stage message.
+    std::vector<uint8_t> typeOrder;                       // first-seen order
+    std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
     for (const IndexEntry& e : index_) {
-        const char* sheetName = sheetNameForType(e.type);
-        if (!sheetName) continue;   // untagged / unknown row type
-
-        auto it = sheets.find(e.type);
-        if (it == sheets.end()) {
-            lxw_worksheet* ws = workbook_add_worksheet(wb, sheetName);
-            writeHeaderRow(ws, bold, columnsForType(e.type));
-            it = sheets.emplace(e.type, SheetState{ ws, 1 }).first;
+        if (!sheetNameForType(e.type)) continue;          // skip unknown/untabled types
+        auto it = byType.find(e.type);
+        if (it == byType.end()) {
+            typeOrder.push_back(e.type);
+            it = byType.emplace(e.type, std::vector<const IndexEntry*>{}).first;
         }
-
-        std::string line = readLine(e.offset);
-        if (!line.empty())
-            writeDataRow(it->second.ws, it->second.nextRow, e.sessionTime, e.type, line);
+        it->second.push_back(&e);
     }
 
+    size_t done = 0;
+    for (size_t s = 0; s < typeOrder.size(); ++s) {
+        const uint8_t type = typeOrder[s];
+        const char* sheetName = sheetNameForType(type);
+        const auto& entries = byType[type];
+
+        std::string stage = "Writing " + std::string(sheetName) + " sheet ("
+                          + std::to_string(s + 1) + "/" + std::to_string(typeOrder.size()) + ")";
+        report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total > 0 ? total : 1), stage);
+
+        lxw_worksheet* ws = workbook_add_worksheet(wb, sheetName);
+        writeHeaderRow(ws, bold, columnsForType(type));
+        lxw_row_t nextRow = 1;
+
+        for (const IndexEntry* e : entries) {
+            std::string line = readLine(e->offset);
+            if (!line.empty())
+                writeDataRow(ws, nextRow, e->sessionTime, type, line);
+
+            ++done;
+            if (total > 0 && (done % reportEvery == 0 || done == total))
+                report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total), stage);
+        }
+    }
+
+    // All sheets built in memory; now flush to disk. Bar holds at kRowBandTop.
+    report(kRowBandTop, "Writing file to disk");
     lxw_error err = workbook_close(wb);
     if (err != LXW_NO_ERROR) {
         if (errorOut) *errorOut = lxw_strerror(err);
         return false;
     }
+
+    // File is now fully written to disk — only now is the bar truly complete.
+    report(1.0, "Done");
     return true;
 }
 
-bool exportTnrdFileToXlsx(const std::string& srcTnrdPath, const std::string& destXlsxPath, std::string* errorOut) {
+bool exportTnrdFileToXlsx(const std::string& srcTnrdPath, const std::string& destXlsxPath, std::string* errorOut,
+                          const XlsxProgressFn& onProgress) {
     TnrdReader reader;
     HeaderRow header;
     if (!reader.load(srcTnrdPath, header)) {
         if (errorOut) *errorOut = "failed to open/decompress/parse .tnrd file";
         return false;
     }
-    bool ok = reader.exportXlsx(header, destXlsxPath, errorOut);
+    bool ok = reader.exportXlsx(header, destXlsxPath, errorOut, onProgress);
     reader.close();
     return ok;
 }

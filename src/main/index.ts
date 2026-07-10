@@ -183,7 +183,7 @@ ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:close', () => playerClose())
 
-ipcMain.handle('player:export-xlsx', async () => {
+ipcMain.handle('player:export-xlsx', async (event) => {
   const srcPath = getActiveFilePath()
   if (!srcPath) return { ok: false, error: 'No session loaded' }
 
@@ -195,7 +195,10 @@ ipcMain.handle('player:export-xlsx', async () => {
   })
   if (canceled || !filePath) return { ok: false, error: 'cancelled' }
 
-  return exportSessionXlsx(srcPath, filePath)
+  const sender = event.sender
+  return exportSessionXlsx(srcPath, filePath, (pct, stage) => {
+    if (!sender.isDestroyed()) sender.send('player:export-progress', pct, stage)
+  })
 })
 
 ipcMain.on('udp-restart', (event) => {

@@ -198,9 +198,13 @@ export function stopBridge(): void {
   }
 }
 
-export function exportSessionXlsx(srcPath: string, destPath: string): Promise<{ ok: boolean; error?: string }> {
+export function exportSessionXlsx(
+  srcPath: string,
+  destPath: string,
+  onProgress?: (pct: number, stage: string) => void
+): Promise<{ ok: boolean; error?: string }> {
   if (!engine) return Promise.resolve({ ok: false, error: 'engine not started' })
-  return engine.playerExportXlsx(srcPath, destPath)
+  return engine.playerExportXlsx(srcPath, destPath, onProgress ?? (() => {}))
 }
 
 export function setOverride(value: ProtocolOverride): void {

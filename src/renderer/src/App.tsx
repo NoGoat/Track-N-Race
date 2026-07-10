@@ -673,6 +673,8 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [xlsxExportState, setXlsxExportState] = useState<'idle' | 'busy' | 'error'>('idle')
   const [xlsxExportError, setXlsxExportError] = useState<string | null>(null)
+  const [xlsxExportProgress, setXlsxExportProgress] = useState(0)
+  const [xlsxExportStage, setXlsxExportStage] = useState('')
   const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
   const [scBanner, setScBanner] = useState<BannerItem | null>(null)
@@ -735,6 +737,13 @@ export default function App() {
     })
   }, [])
 
+  useEffect(() => {
+    return window.playerBridge.onExportProgress((pct, stage) => {
+      setXlsxExportProgress(pct)
+      if (stage) setXlsxExportStage(stage)
+    })
+  }, [])
+
   useEffect(() => window.windowControls.onMaximizeChange(setIsMaximized), [])
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
   useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
@@ -782,6 +791,8 @@ export default function App() {
     if (xlsxExportState === 'busy') return
     setXlsxExportState('busy')
     setXlsxExportError(null)
+    setXlsxExportProgress(0)
+    setXlsxExportStage('Preparing export')
     const result = await window.playerBridge.exportXlsx()
     if (result.ok || result.error === 'cancelled') {
       setXlsxExportState('idle')
@@ -1035,6 +1046,27 @@ export default function App() {
               100% { left: 100%; }
             }
           `}</style>
+        </div>
+      )}
+
+      {/* Exporting to Excel Modal */}
+      {xlsxExportState === 'busy' && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[var(--bg-modal)] backdrop-blur-sm">
+          <div className="text-xl font-bold text-[var(--text-primary)] mb-4 tracking-widest uppercase text-sm">Exporting to Excel</div>
+          <div className="w-64 h-1.5 bg-[var(--border)] rounded-full overflow-hidden relative">
+            <div
+              className="absolute inset-y-0 left-0 bg-[#5794F2] rounded-full transition-[width] duration-150 ease-linear"
+              style={{ width: `${Math.max(0, Math.min(100, xlsxExportProgress))}%` }}
+            />
+          </div>
+          <div className="mt-3 text-xs font-mono text-[var(--text-secondary)] tracking-wider">
+            {Math.round(Math.max(0, Math.min(100, xlsxExportProgress)))}%
+          </div>
+          {xlsxExportStage && (
+            <div className="mt-1 text-[11px] text-[var(--text-secondary)] tracking-wide opacity-80">
+              {xlsxExportStage}…
+            </div>
+          )}
         </div>
       )}
 
@@ -1668,14 +1700,6 @@ export default function App() {
               isSearchable={false}
             />
           </div>
-          <button
-            onClick={handleExportXlsx}
-            disabled={xlsxExportState === 'busy'}
-            title={xlsxExportState === 'error' ? xlsxExportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
-            className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0"
-          >
-            <Download size={16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
-          </button>
           {speedRpmBlocks && speedRpmBlocks.length > 0 && (
             <PlaybackLapSelector
               speedRpmBlocks={speedRpmBlocks}
@@ -1685,6 +1709,14 @@ export default function App() {
               selectStyles={selectStyles}
             />
           )}
+          <button
+            onClick={handleExportXlsx}
+            disabled={xlsxExportState === 'busy'}
+            title={xlsxExportState === 'error' ? xlsxExportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
+            className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0"
+          >
+            <Download size={16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
+          </button>
         </div>
       )}
 

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -61,8 +62,11 @@ public:
     // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
     // Walks the whole index in file order and writes one XLSX sheet per row
     // type encountered, plus an "Info" sheet from `header`. Requires isLoaded().
+    // onProgress (if set) is called periodically from this same thread with
+    // (rowsDone, totalUnits, stage) as the export proceeds — see XlsxExport.h.
     bool exportXlsx(const HeaderRow& header, const std::string& outPath,
-                    std::string* errorOut = nullptr);
+                    std::string* errorOut = nullptr,
+                    const std::function<void(size_t, size_t, const std::string&)>& onProgress = nullptr);
 
 private:
     struct IndexEntry { long offset; float sessionTime; uint8_t type; };

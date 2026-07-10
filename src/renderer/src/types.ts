@@ -389,6 +389,7 @@ declare global {
       setSpeed: (mult: number) => void
       close: () => void
       exportXlsx: () => Promise<{ ok: boolean; error?: string }>
+      onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
     }

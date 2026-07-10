@@ -15,19 +15,40 @@ using namespace Napi;
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
 // Runs the (potentially several-second) XLSX export off the JS thread via
-// libuv's threadpool, resolving a Promise on completion. One-shot
-// request/response work — unlike TnrdWriter's long-lived disk thread, no
-// persistent worker needs to be managed here.
-class ExportXlsxWorker : public Napi::AsyncWorker {
+// libuv's threadpool, resolving a Promise on completion. Progress (0..100)
+// is reported back through AsyncProgressQueueWorker's queue, which safely
+// marshals each Send() from the worker thread onto the JS thread as an
+// OnProgress() call — that's where the JS progress callback is invoked.
+// One progress tick carried across the threadpool→JS boundary: a percentage
+// plus the human-readable stage message describing what the export is doing.
+struct ExportTick {
+    double pct;
+    std::string stage;
+};
+
+class ExportXlsxWorker : public Napi::AsyncProgressQueueWorker<ExportTick> {
 public:
-    ExportXlsxWorker(Napi::Env env, std::string src, std::string dest)
-        : Napi::AsyncWorker(env), src_(std::move(src)), dest_(std::move(dest)),
+    ExportXlsxWorker(Napi::Env env, std::string src, std::string dest, Napi::Function progressCb)
+        : Napi::AsyncProgressQueueWorker<ExportTick>(env), src_(std::move(src)), dest_(std::move(dest)),
+          progressCb_(Napi::Persistent(progressCb)),
           deferred_(Napi::Promise::Deferred::New(env)) {}
 
-    void Execute() override {   // runs on a libuv worker thread — no Napi/JS access here
-        ok_ = tnrp::exportTnrdFileToXlsx(src_, dest_, &error_);
+    void Execute(const ExecutionProgress& progress) override {   // libuv worker thread — no Napi/JS access here
+        ok_ = tnrp::exportTnrdFileToXlsx(src_, dest_, &error_,
+            [&progress](size_t done, size_t total, const std::string& stage) {
+                ExportTick tick;
+                tick.pct = total > 0 ? (100.0 * static_cast<double>(done) / static_cast<double>(total)) : 100.0;
+                tick.stage = stage;
+                progress.Send(&tick, 1);
+            });
     }
-    void OnOK() override {      // back on the JS thread
+    void OnProgress(const ExportTick* data, size_t count) override {   // back on the JS thread
+        if (count == 0 || progressCb_.IsEmpty()) return;
+        Napi::HandleScope scope(Env());
+        const ExportTick& tick = data[count - 1];
+        progressCb_.Call({ Napi::Number::New(Env(), tick.pct), Napi::String::New(Env(), tick.stage) });
+    }
+    void OnOK() override {
         Napi::HandleScope scope(Env());
         Napi::Object result = Napi::Object::New(Env());
         result.Set("ok", ok_);
@@ -40,6 +61,7 @@ public:
 private:
     std::string src_, dest_, error_;
     bool ok_ = false;
+    Napi::FunctionReference progressCb_;
     Napi::Promise::Deferred deferred_;
 };
 
@@ -319,12 +341,13 @@ private:
     // method purely because that's where N-API methods live on this class.
     Napi::Value PlayerExportXlsx(const Napi::CallbackInfo& info) {
         Napi::Env env = info.Env();
-        if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
-            Napi::TypeError::New(env, "Expected (srcPath, destPath)").ThrowAsJavaScriptException();
+        if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {
+            Napi::TypeError::New(env, "Expected (srcPath, destPath, onProgress)").ThrowAsJavaScriptException();
             return env.Undefined();
         }
         auto* worker = new ExportXlsxWorker(env, info[0].As<Napi::String>().Utf8Value(),
-                                                  info[1].As<Napi::String>().Utf8Value());
+                                                  info[1].As<Napi::String>().Utf8Value(),
+                                                  info[2].As<Napi::Function>());
         Napi::Promise p = worker->GetPromise();
         worker->Queue();
         return p;
