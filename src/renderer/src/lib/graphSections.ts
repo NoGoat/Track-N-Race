@@ -73,6 +73,7 @@ export interface CompactState {
   sessionHeader:   boolean
   powerCards:      boolean
   strategySummary: boolean
+  playbackBar:     boolean
 }
 
 export const DEFAULT_COMPACT: CompactState = {
@@ -84,6 +85,7 @@ export const DEFAULT_COMPACT: CompactState = {
   sessionHeader:   false,
   powerCards:      false,
   strategySummary: false,
+  playbackBar:     false,
 }
 
 // Boolean (Normal/Compact) compact sections — overviewTyres is handled separately
@@ -106,6 +108,9 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
   ] },
   { group: 'Strategy', sections: [
     { key: 'strategySummary', label: 'Summary Header' },
+  ] },
+  { group: 'Playback', sections: [
+    { key: 'playbackBar', label: 'Playback Bar' },
   ] },
 ]
 

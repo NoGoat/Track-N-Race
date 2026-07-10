@@ -491,6 +491,7 @@ interface PlaybackControlsBarProps {
   onSeekBackward: () => void
   onTogglePlay: () => void
   onSeekForward: () => void
+  compact?: boolean
 }
 
 const PlaybackControlsBar = memo(function PlaybackControlsBar({
@@ -498,26 +499,27 @@ const PlaybackControlsBar = memo(function PlaybackControlsBar({
   onSeekBackward,
   onTogglePlay,
   onSeekForward,
+  compact,
 }: PlaybackControlsBarProps) {
   return (
-    <div className="flex items-center gap-3">
+    <div className={`flex items-center ${compact ? 'gap-1' : 'gap-3'}`}>
       <button
         onClick={onSeekBackward}
-        className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+        className={`${compact ? 'w-6 h-6' : 'w-8 h-8'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}
       >
-        <ChevronLeft size={18} />
+        <ChevronLeft size={compact ? 14 : 18} />
       </button>
       <button
         onClick={onTogglePlay}
-        className="w-10 h-10 flex items-center justify-center rounded-full bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] transition-colors shadow-lg shadow-[var(--border-focus)]/20"
+        className={`${compact ? 'w-5 h-5' : 'w-7 h-7'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}
       >
-        {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+        {isPlaying ? <Pause size={compact ? 13 : 16} fill="currentColor" /> : <Play size={compact ? 13 : 16} fill="currentColor" className="ml-0.5" />}
       </button>
       <button
         onClick={onSeekForward}
-        className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+        className={`${compact ? 'w-6 h-6' : 'w-8 h-8'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}
       >
-        <ChevronRight size={18} />
+        <ChevronRight size={compact ? 14 : 18} />
       </button>
     </div>
   )
@@ -528,12 +530,14 @@ interface PlaybackProgressTrackerProps {
   currentTime: number
   progressPct: number
   totalTime: number
+  compact?: boolean
 }
 
 const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
   currentTime,
   progressPct,
-  totalTime
+  totalTime,
+  compact
 }: PlaybackProgressTrackerProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const isDraggingRef = useRef(false)
@@ -586,7 +590,7 @@ const PlaybackProgressTracker = memo(function PlaybackProgressTracker({
   }, [])
 
   return (
-    <div className="flex-1 flex items-center gap-4">
+    <div className={`flex-1 flex items-center ${compact ? 'gap-2' : 'gap-4'}`}>
       <span className="text-xs font-mono text-[var(--text-secondary)] tabular-nums">{fmtLap(displayTime)}</span>
       <input
         ref={inputRef}
@@ -617,10 +621,11 @@ interface PlaybackLapSelectorProps {
   sessionFileStart: number
   currentLapNum: number | null
   selectStyles: any
+  compact?: boolean
 }
 
 const PlaybackLapSelector = memo(function PlaybackLapSelector({
-  speedRpmBlocks, totalTime, sessionFileStart, currentLapNum, selectStyles
+  speedRpmBlocks, totalTime, sessionFileStart, currentLapNum, selectStyles, compact
 }: PlaybackLapSelectorProps) {
   const options = useMemo(
     () => speedRpmBlocks.map(b => ({ value: b.lapNum, label: String(b.lapNum) })),
@@ -641,7 +646,7 @@ const PlaybackLapSelector = memo(function PlaybackLapSelector({
   }, [speedRpmBlocks, sessionFileStart, totalTime])
 
   return (
-    <div className="w-[4.5rem] shrink-0">
+    <div className={`${compact ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}>
       <Select
         value={value}
         options={options}
@@ -1669,19 +1674,21 @@ export default function App() {
 
       {/* Playback Controls Bar */}
       {playbackState && playbackState.filename && (
-        <div className="h-14 border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 gap-2 z-40 select-none">
+        <div className={`${compact.playbackBar ? 'h-10 gap-1' : 'h-14 gap-2'} border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 z-40 select-none`}>
           <PlaybackControlsBar
             isPlaying={playbackState.isPlaying}
             onSeekBackward={handleSeekBackward}
             onTogglePlay={handleTogglePlay}
             onSeekForward={handleSeekForward}
+            compact={compact.playbackBar}
           />
           <PlaybackProgressTracker
             currentTime={playbackState.currentTime}
             progressPct={playbackState.progressPct}
             totalTime={playbackState.totalTime}
+            compact={compact.playbackBar}
           />
-          <div className="w-[4.5rem] shrink-0">
+          <div className={`${compact.playbackBar ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}>
             <Select
               value={{ value: playbackState.speed, label: `${playbackState.speed}x` }}
               onChange={(option) => {
@@ -1707,15 +1714,16 @@ export default function App() {
               sessionFileStart={sessionFileStartRef.current}
               currentLapNum={currentPlaybackLapNum}
               selectStyles={selectStyles}
+              compact={compact.playbackBar}
             />
           )}
           <button
             onClick={handleExportXlsx}
             disabled={xlsxExportState === 'busy'}
             title={xlsxExportState === 'error' ? xlsxExportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
-            className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0"
+            className={`${compact.playbackBar ? 'w-6 h-6' : 'w-8 h-8'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}
           >
-            <Download size={16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
+            <Download size={compact.playbackBar ? 14 : 16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
           </button>
         </div>
       )}
