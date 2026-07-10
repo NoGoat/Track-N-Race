@@ -388,6 +388,7 @@ declare global {
       seek: (pct: number) => void
       setSpeed: (mult: number) => void
       close: () => void
+      exportXlsx: () => Promise<{ ok: boolean; error?: string }>
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
     }

@@ -582,6 +582,10 @@ function extractAndBroadcastSeek(targetTime: number, currentLapStart: number, cu
 // CORE PLAYER APIS
 // --------------------------------------------------------
 
+export function getActiveFilePath(): string | null {
+  return activeFilePath
+}
+
 export async function loadFile(filePath: string): Promise<boolean> {
   closePlayer()
   activeFilePath = filePath

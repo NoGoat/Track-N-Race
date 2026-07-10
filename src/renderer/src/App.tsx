@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from '
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2 } from 'lucide-react'
+import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2, Download } from 'lucide-react'
 import { useTelemetry } from './hooks/useTelemetry'
 import { LabelsProvider } from './lib/labels'
 import { CardColorsProvider } from './lib/cards'
@@ -671,6 +671,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [xlsxExportState, setXlsxExportState] = useState<'idle' | 'busy' | 'error'>('idle')
+  const [xlsxExportError, setXlsxExportError] = useState<string | null>(null)
   const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
   const [scBanner, setScBanner] = useState<BannerItem | null>(null)
@@ -775,6 +777,20 @@ export default function App() {
       }
     }
   }, [])
+
+  const handleExportXlsx = useCallback(async () => {
+    if (xlsxExportState === 'busy') return
+    setXlsxExportState('busy')
+    setXlsxExportError(null)
+    const result = await window.playerBridge.exportXlsx()
+    if (result.ok || result.error === 'cancelled') {
+      setXlsxExportState('idle')
+    } else {
+      setXlsxExportState('error')
+      setXlsxExportError(result.error ?? 'Export failed')
+      setTimeout(() => setXlsxExportState('idle'), 4000)
+    }
+  }, [xlsxExportState])
 
   const handleCloseSettings = useCallback(() => {
     setSettingsOpen(false)
@@ -1652,6 +1668,14 @@ export default function App() {
               isSearchable={false}
             />
           </div>
+          <button
+            onClick={handleExportXlsx}
+            disabled={xlsxExportState === 'busy'}
+            title={xlsxExportState === 'error' ? xlsxExportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
+            className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0"
+          >
+            <Download size={16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
+          </button>
           {speedRpmBlocks && speedRpmBlocks.length > 0 && (
             <PlaybackLapSelector
               speedRpmBlocks={speedRpmBlocks}

@@ -58,6 +58,12 @@ public:
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
     std::string getLapDataMessage(int lapNum) const;  // "playback_lap_data" row, "" if unknown lap
 
+    // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
+    // Walks the whole index in file order and writes one XLSX sheet per row
+    // type encountered, plus an "Info" sheet from `header`. Requires isLoaded().
+    bool exportXlsx(const HeaderRow& header, const std::string& outPath,
+                    std::string* errorOut = nullptr);
+
 private:
     struct IndexEntry { long offset; float sessionTime; uint8_t type; };
     // A stored raw JSONL row plus its session_time (for ordering). The json is

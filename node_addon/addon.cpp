@@ -2,6 +2,7 @@
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
+#include <tnrp/XlsxExport.h>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -12,6 +13,35 @@
 using namespace Napi;
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
+
+// Runs the (potentially several-second) XLSX export off the JS thread via
+// libuv's threadpool, resolving a Promise on completion. One-shot
+// request/response work — unlike TnrdWriter's long-lived disk thread, no
+// persistent worker needs to be managed here.
+class ExportXlsxWorker : public Napi::AsyncWorker {
+public:
+    ExportXlsxWorker(Napi::Env env, std::string src, std::string dest)
+        : Napi::AsyncWorker(env), src_(std::move(src)), dest_(std::move(dest)),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {   // runs on a libuv worker thread — no Napi/JS access here
+        ok_ = tnrp::exportTnrdFileToXlsx(src_, dest_, &error_);
+    }
+    void OnOK() override {      // back on the JS thread
+        Napi::HandleScope scope(Env());
+        Napi::Object result = Napi::Object::New(Env());
+        result.Set("ok", ok_);
+        if (!ok_) result.Set("error", error_);
+        deferred_.Resolve(result);
+    }
+    void OnError(const Napi::Error& e) override { deferred_.Reject(e.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::string src_, dest_, error_;
+    bool ok_ = false;
+    Napi::Promise::Deferred deferred_;
+};
 
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
@@ -28,6 +58,7 @@ public:
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
+            InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
         TRACE("Init: after DefineClass");
@@ -278,6 +309,25 @@ private:
     Napi::Value PlayerClose(const Napi::CallbackInfo& info) {
         if (engine) engine->playerClose();
         return info.Env().Undefined();
+    }
+
+    // Exports an arbitrary .tnrd file to XLSX. Deliberately independent of
+    // `engine`'s playback state — the Electron app's playback path
+    // (src/main/sessionPlayer.ts) doesn't use this native Engine's
+    // player*/TnrdReader at all, so this opens its own throwaway TnrdReader
+    // internally (see tnrp::exportTnrdFileToXlsx). Registered as an instance
+    // method purely because that's where N-API methods live on this class.
+    Napi::Value PlayerExportXlsx(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
+            Napi::TypeError::New(env, "Expected (srcPath, destPath)").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        auto* worker = new ExportXlsxWorker(env, info[0].As<Napi::String>().Utf8Value(),
+                                                  info[1].As<Napi::String>().Utf8Value());
+        Napi::Promise p = worker->GetPromise();
+        worker->Queue();
+        return p;
     }
 };
 

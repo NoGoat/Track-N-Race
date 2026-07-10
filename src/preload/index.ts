@@ -77,6 +77,7 @@ const playerBridge = {
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
   close: () => ipcRenderer.send('player:close'),
+  exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
   onStateChange: (cb: (state: any) => void) => {
     const handler = (_e: any, state: any) => cb(state)
     ipcRenderer.on('playback_state', handler)

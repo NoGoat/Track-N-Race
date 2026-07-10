@@ -198,6 +198,11 @@ export function stopBridge(): void {
   }
 }
 
+export function exportSessionXlsx(srcPath: string, destPath: string): Promise<{ ok: boolean; error?: string }> {
+  if (!engine) return Promise.resolve({ ok: false, error: 'engine not started' })
+  return engine.playerExportXlsx(srcPath, destPath)
+}
+
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)

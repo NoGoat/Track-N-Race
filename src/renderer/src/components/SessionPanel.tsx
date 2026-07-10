@@ -439,7 +439,9 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
         {/* Time left */}
         <div className={`flex flex-col justify-center items-end shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
+          {!compactHeader && (
+            <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
+          )}
           <div
             className={`${compactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
             style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
@@ -479,7 +481,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
           {/* Now + forecast strip — pinned to bottom. Compact: each cell is a single
               horizontal row (time · weather · rain %), matching native's compact strip. */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 32 : 110 }}>
+          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 32 : 90 }}>
 
             {/* Now card — same width as the forecast cards either way */}
             {compactWeather ? (

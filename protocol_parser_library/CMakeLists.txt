@@ -28,6 +28,25 @@ if(NOT TARGET zlibstatic)
     FetchContent_MakeAvailable(zlib)
 endif()
 
+# XLSX export (raw-data dump of a recorded session). libxlsxwriter's own
+# CMakeLists.txt calls find_package(ZLIB REQUIRED); shadow CMake's bundled
+# FindZLIB.cmake with cmake/FindZLIB.cmake so that resolves to the zlib we
+# already fetched above (target `zlibstatic`) instead of searching for a
+# system zlib. CMAKE_MODULE_PATH must be updated before FetchContent's
+# add_subdirectory() runs below.
+if(NOT TARGET xlsxwriter)
+    list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(USE_SYSTEM_MINIZIP OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(libxlsxwriter
+        GIT_REPOSITORY https://github.com/jmcnamara/libxlsxwriter.git
+        GIT_TAG v1.2.4
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(libxlsxwriter)
+endif()
+
 add_library(tnrp STATIC
     src/protocols/protocol.cpp
     src/protocols/f1_24.cpp
@@ -41,6 +60,7 @@ add_library(tnrp STATIC
     src/TnrdReader.cpp
     src/UdpListener.cpp
     src/Engine.cpp
+    src/XlsxExport.cpp
 )
 
 # Public headers (tnrp/*.h) under include/; internal headers (protocols/*) under src/.
@@ -49,7 +69,7 @@ target_include_directories(tnrp
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # glaze is in public headers (rows/control_rows/TnrdReader); zlib is in TnrdWriter.h.
-target_link_libraries(tnrp PUBLIC zlibstatic glaze::glaze)
+target_link_libraries(tnrp PUBLIC zlibstatic glaze::glaze xlsxwriter)
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
 target_include_directories(tnrp PUBLIC

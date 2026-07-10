@@ -12,7 +12,8 @@ import {
   getProtocolConfig,
   requestStatus,
   setRendererVisible,
-  isRendererVisible
+  isRendererVisible,
+  exportSessionXlsx
 } from './bridgeManager'
 import {
   loadFile as playerLoad,
@@ -22,7 +23,8 @@ import {
   setSpeed as playerSetSpeed,
   closePlayer as playerClose,
   sweepTempDir,
-  setOnPlayerStateChange as setOnPlaybackState
+  setOnPlayerStateChange as setOnPlaybackState,
+  getActiveFilePath
 } from './sessionPlayer'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
@@ -180,6 +182,21 @@ ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:close', () => playerClose())
+
+ipcMain.handle('player:export-xlsx', async () => {
+  const srcPath = getActiveFilePath()
+  if (!srcPath) return { ok: false, error: 'No session loaded' }
+
+  const base = path.basename(srcPath).replace(/\.(tnrd|trnd)$/i, '')
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: 'Export Session to Excel',
+    defaultPath: path.join(path.dirname(srcPath), `${base}.xlsx`),
+    filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
+  })
+  if (canceled || !filePath) return { ok: false, error: 'cancelled' }
+
+  return exportSessionXlsx(srcPath, filePath)
+})
 
 ipcMain.on('udp-restart', (event) => {
   try {
