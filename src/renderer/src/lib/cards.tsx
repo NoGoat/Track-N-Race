@@ -122,7 +122,7 @@ export const POWER_RESOLVERS: Record<string, CardResolver> = {
   totalPower: c => { const v = powerVals(c); return { value: c.status ? v.total.toFixed(0) : '—', unit: c.status ? 'kW' : undefined, color: c.color('power.total', v.total) } },
   ice:        c => { const v = powerVals(c); return { value: c.status ? v.ice.toFixed(0) : '—',   unit: c.status ? 'kW' : undefined, color: c.color('power.ice') } },
   mguk:       c => { const v = powerVals(c); return { value: c.status ? v.mguk.toFixed(0) : '—',  unit: c.status ? 'kW' : undefined, color: c.color('power.mguk') } },
-  split:      c => { const v = powerVals(c); return { value: c.status ? `${v.iceSplit.toFixed(0)}:${v.ersSplit.toFixed(0)}` : '—', sub: c.status ? 'ICE : Electric' : undefined, color: c.color('power.split') } },
+  split:      c => { const v = powerVals(c); return { value: c.status ? `${v.iceSplit.toFixed(0)}:${v.ersSplit.toFixed(0)}` : '—', sub: undefined, color: c.color('power.split') } },
   ersStore:   c => { const v = powerVals(c); return { value: c.status ? v.ersMJ.toFixed(2) : '—',  unit: c.status ? 'MJ' : undefined, color: c.color('power.ers', v.ersPct) } },
   ersPct:     c => { const v = powerVals(c); return { value: c.status ? v.ersPct.toFixed(0) : '—', unit: c.status ? '%' : undefined,  color: c.color('power.ers', v.ersPct) } },
   fuel:       c => ({ value: c.status ? (c.status.fuel_kg.toFixed(1)) : '—', unit: c.status ? 'kg' : undefined, color: c.color('power.fuel') }),

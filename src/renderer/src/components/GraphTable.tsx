@@ -85,7 +85,7 @@ export default function GraphTable({ columns, data }: {
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-[var(--bg-panel)] overflow-hidden">
+    <div className="absolute inset-0 flex flex-col bg-[var(--bg-panel)] border border-[var(--border)] overflow-hidden">
       <div className="overflow-x-auto flex-1 min-h-0 flex flex-col">
         <div
           style={{ gridTemplateColumns: gridCols }}
