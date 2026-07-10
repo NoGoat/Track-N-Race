@@ -1,8 +1,9 @@
 import { memo } from 'react'
 import type { TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
-import { useSize } from '../hooks/useSize'
 import { useColorFn } from '../lib/cards'
+
+type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 
 interface Props {
   latest: TelemetryRow | null
@@ -14,7 +15,20 @@ interface Props {
   thermalGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
   thermalCards:  { fl: boolean; fr: boolean; rl: boolean; rr: boolean }
   isDark: boolean
+  // Overview tyre-card density, 0 Normal … 5 Compact 5 (Compact 5 = the app's
+  // previous height-derived compact layout, now a selectable level).
+  tyresLevel?: number
+  graphViews?: TyreGraphViews
 }
+
+// Tyre-card density levels, ported from native TyreCardsWidget::Level:
+//   0 Normal        — full column card (Surface/Inner/Brake/Wear rows + wear bar)
+//   1 Compact 1     — centred corner name + rule, then one horizontal row:
+//                     SURFACE [v]  INNER [v]  BRAKE [v]  WEAR [v]   (native "Compact")
+//   2 Compact 2     — the same horizontal row, without the name heading (UltraCompact1)
+//   3 Compact 3     — one line: full corner name + the four bare values (UltraCompact2)
+//   4 Compact 4     — one line: abbreviated name (FL) + labelled values (UltraCompact3)
+//   5 Compact 5     — the app's earlier compact column card, kept as a level
 
 // Temp/wear colours now come from the shared library spec (temp.tyre / temp.brake
 // / wear) via the card colour evaluator, so they stay in lockstep with the native
@@ -63,51 +77,113 @@ export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, i
 })
 
 export const WheelCard = memo(function WheelCard({
-  pos, surface, inner, brake, wear, blisters, noData, compact, isDark = true,
+  pos, surface, inner, brake, wear, blisters, noData, compact, level, isDark = true,
 }: {
   pos: string; surface: number; inner: number; brake: number
-  wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; isDark?: boolean
+  wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; level?: number; isDark?: boolean
 }) {
   const ramp = useColorFn(null, null, isDark)
+  // `level` (Overview) takes precedence; `compact` (Tyres page) maps to level 5 / 0.
+  const lvl = Math.max(0, Math.min(5, level ?? (compact ? 5 : 0)))
+  const abbrev = pos.split(/\s+/).map(w => w[0]).join('').toUpperCase()
+
+  // The four metrics, in native's Surface/Inner/Brake/Wear order, each with its
+  // ramped colour. Temps are integers with °C; wear is an integer percent.
+  const noWear = noData || wear === null
+  const metrics = [
+    { label: 'Surface', text: noData ? '—' : `${Math.round(surface)}°C`, color: noData ? '#4a4a4a' : (ramp('temp.tyre', surface) ?? '#888') },
+    { label: 'Inner',   text: noData ? '—' : `${Math.round(inner)}°C`,   color: noData ? '#4a4a4a' : (ramp('temp.tyre', inner) ?? '#888') },
+    { label: 'Brake',   text: noData ? '—' : `${Math.round(brake)}°C`,   color: noData ? '#4a4a4a' : (ramp('temp.brake', brake) ?? '#888') },
+    { label: 'Wear',    text: noWear ? '—' : `${Math.round(wear!)}%`,     color: noWear ? '#4a4a4a' : (ramp('wear', wear!) ?? '#888') },
+  ]
+
+  // ── Compact 1 & 2: the four metrics as one horizontal row (± a name heading) ──
+  if (lvl === 1 || lvl === 2) {
+    const row = (
+      <div className="flex items-stretch w-full">
+        {metrics.map((m, i) => (
+          <div key={m.label} className={`flex-1 min-w-0 flex items-baseline justify-center gap-1.5 px-2 py-1 ${i > 0 ? 'border-l border-[var(--border)]' : ''}`}>
+            <span className="text-[9px] uppercase tracking-wide text-[var(--text-secondary)]">{m.label}</span>
+            <span className="text-[11px] font-bold tabular-nums" style={{ color: m.color }}>{m.text}</span>
+          </div>
+        ))}
+      </div>
+    )
+    return (
+      <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-center">
+        {lvl === 1 && (
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-secondary)] text-center pt-1 pb-1 border-b border-[var(--border)]">
+            {pos}
+          </div>
+        )}
+        {row}
+      </div>
+    )
+  }
+
+  // ── Compact 3 & 4: a single line — name (± metric labels) then the values ──
+  if (lvl === 3 || lvl === 4) {
+    const showLabels = lvl === 4
+    return (
+      <div className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 px-3">
+        <span className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-secondary)] shrink-0">
+          {lvl === 4 ? abbrev : pos}
+        </span>
+        <div className="flex-1 min-w-0" />
+        <div className={`flex items-baseline ${showLabels ? 'gap-1.5' : 'gap-3'} shrink-0`}>
+          {metrics.map(m => (
+            <span key={m.label} className={`flex items-baseline gap-1 ${showLabels ? 'pl-1.5' : ''}`}>
+              {showLabels && <span className="text-[9px] text-[var(--text-secondary)]">{m.label}</span>}
+              <span className="text-[11px] font-bold tabular-nums" style={{ color: m.color }}>{m.text}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Level 0 (Normal) & 5 (the app's earlier compact column card) ──
+  const isCompactCol = lvl === 5
   return (
-    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col justify-between ${compact ? 'p-2' : 'p-4'}`}>
-      <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${compact ? 'mb-1' : 'mb-3'}`}>
+    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col justify-between ${isCompactCol ? 'p-2' : 'p-4'}`}>
+      <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${isCompactCol ? 'mb-1' : 'mb-3'}`}>
         {pos}
       </div>
-      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={compact} />
-      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={compact} />
-      {!compact && <div className="my-1.5 border-t border-[var(--border)]" />}
-      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={compact} />
-      <WearBar pct={wear} blisters={blisters} noData={noData} compact={compact} isDark={isDark} />
+      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} />
+      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} />
+      {!isCompactCol && <div className="my-1.5 border-t border-[var(--border)]" />}
+      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} />
+      <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} isDark={isDark} />
     </div>
   )
 })
 
 
-const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark }: Props) {
-  const { ref: cardsRef, height: cardsHeight } = useSize()
-  const compact = cardsHeight > 0 && cardsHeight < 200
-
+const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews }: Props) {
   const sf = { fl: latest?.tyre_temp_surface_fl ?? 0, fr: latest?.tyre_temp_surface_fr ?? 0, rl: latest?.tyre_temp_surface_rl ?? 0, rr: latest?.tyre_temp_surface_rr ?? 0 }
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
 
+  // Compact tyre cards (level ≥ 1) are content-height so the strip is short; Normal
+  // cards keep filling their flex region.
+  const compactCards = view === 'cards' && tyresLevel > 0
+
   return (
-    <div className="h-full">
+    <div className={compactCards ? '' : 'h-full'}>
       {view === 'graphs' ? (
         <div className="h-full">
-          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} />
+          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} />
         </div>
       ) : (
-        <div ref={cardsRef} className="flex h-full divide-x divide-[var(--border)]">
+        <div className={`flex divide-x divide-[var(--border)] ${compactCards ? '' : 'h-full'}`}>
           {thermalCards.fl && <WheelCard pos="Front Left"  surface={sf.fl}  inner={inn.fl}  brake={brk.fl}
-            wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={!latest} compact={compact} isDark={isDark} />}
+            wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={!latest} level={tyresLevel} isDark={isDark} />}
           {thermalCards.fr && <WheelCard pos="Front Right" surface={sf.fr}  inner={inn.fr}  brake={brk.fr}
-            wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={!latest} compact={compact} isDark={isDark} />}
+            wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={!latest} level={tyresLevel} isDark={isDark} />}
           {thermalCards.rl && <WheelCard pos="Rear Left"   surface={sf.rl}  inner={inn.rl}  brake={brk.rl}
-            wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={!latest} compact={compact} isDark={isDark} />}
+            wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={!latest} level={tyresLevel} isDark={isDark} />}
           {thermalCards.rr && <WheelCard pos="Rear Right"  surface={sf.rr}  inner={inn.rr}  brake={brk.rr}
-            wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={!latest} compact={compact} isDark={isDark} />}
+            wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={!latest} level={tyresLevel} isDark={isDark} />}
         </div>
       )}
     </div>

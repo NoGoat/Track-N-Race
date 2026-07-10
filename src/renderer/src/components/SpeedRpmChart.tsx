@@ -7,6 +7,7 @@ import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 type LapOption = { value: number; label: string }
 
@@ -21,11 +22,18 @@ interface Props {
   mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
   onModeChange: (mode: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
   isDark: boolean
+  view?: 'chart' | 'table'
 }
 
 const COLOR_SPEED = '#37872D'
 const COLOR_RPM   = '#C4162A'
 const COLOR_ERS   = '#FADE2A'
+
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Speed', color: COLOR_SPEED, format: v => `${Math.round(v)}` },
+  { header: 'RPM',   color: COLOR_RPM,   format: v => Math.round(v).toLocaleString() },
+  { header: 'ERS',   color: COLOR_ERS,   format: v => `${Math.round(v)}%` },
+]
 const COLOR_SPEED_MUTED = 'rgba(55, 135, 45, 0.35)'
 const COLOR_RPM_MUTED   = 'rgba(196, 22, 42, 0.35)'
 const COLOR_ERS_MUTED   = 'rgba(250, 222, 42, 0.35)'
@@ -132,7 +140,7 @@ function buildOverlayData(
   return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
 }
 
-export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark }: Props) {
+export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark, view = 'chart' }: Props) {
   const activeData = mode === 'CL' ? lapData   : data
   const activeSts  = mode === 'CL' ? lapStatusHistory : statusHistory
 
@@ -165,6 +173,9 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   }, [])
 
   const is2L = mode === 'PL' || mode === 'FL' || mode === 'compare'
+  // Table view only applies to the single-lap live/current data path; the lap-overlay
+  // modes (PL/FL/compare) always stay as a chart.
+  const showTable = view === 'table' && !is2L
 
   const uData = useMemo((): uPlot.AlignedData => {
     if (mode === 'compare') {
@@ -417,6 +428,8 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">
             {emptyMsg}
           </div>
+        ) : showTable ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

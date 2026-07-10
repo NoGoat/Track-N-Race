@@ -16,6 +16,7 @@ interface Props {
   isConnected: boolean
   visibleCards: VisibleCards
   isDark: boolean
+  compact?: boolean
 }
 
 const Card = memo(function Card({
@@ -27,6 +28,7 @@ const Card = memo(function Card({
   sub,
   subColor,
   subTextColor,
+  compact,
 }: {
   label: string
   value: string
@@ -36,7 +38,33 @@ const Card = memo(function Card({
   sub?: string
   subColor?: string
   subTextColor?: string
+  compact?: boolean
 }) {
+  if (compact) {
+    // Single-line: label · value+unit · sub — trades vertical space for a short row.
+    return (
+      <div className="flex-1 min-w-0 px-3 py-1.5 flex items-center justify-between gap-2">
+        <span className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest truncate">{label}</span>
+        <span className="flex items-baseline gap-0.5 shrink-0">
+          <span
+            className={`text-sm font-bold tabular-nums ${color ?? ''}`}
+            style={textColor ? { color: textColor } : undefined}
+          >
+            {value}
+          </span>
+          {unit && <span className="text-[9px] text-[var(--text-secondary)]">{unit}</span>}
+          {sub && (
+            <span
+              className={`text-[9px] ml-1 font-semibold ${subColor ?? ''}`}
+              style={subTextColor ? { color: subTextColor } : undefined}
+            >
+              {sub}
+            </span>
+          )}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="flex-1 min-w-0 px-3 py-2 min-h-[75px]">
       <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest mb-0.5">{label}</div>
@@ -61,7 +89,7 @@ const Card = memo(function Card({
   )
 })
 
-const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark }: Props) {
+const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConnected, visibleCards, isDark, compact }: Props) {
   const { t, tn } = useLabels()
   const color = useColorFn(latest, status, isDark)
 
@@ -86,7 +114,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   if (!isConnected || !latest) {
     return (
       <div className="flex divide-x divide-[var(--border)]">
-        {shown.map(d => <Card key={d.vis} label={d.label} value="—" />)}
+        {shown.map(d => <Card key={d.vis} label={d.label} value="—" compact={compact} />)}
       </div>
     )
   }
@@ -98,7 +126,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
         const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
         return (
           <Card key={d.vis} label={d.label} value={v.value} unit={v.unit}
-                textColor={v.color} sub={v.sub} subTextColor={v.subColor} />
+                textColor={v.color} sub={v.sub} subTextColor={v.subColor} compact={compact} />
         )
       })}
     </div>

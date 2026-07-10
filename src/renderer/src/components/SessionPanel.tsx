@@ -152,7 +152,19 @@ const WeatherIcon = memo(function WeatherIcon({ id, size, isDark }: { id: number
   return <entry.icon size={size} strokeWidth={1.5} color={isDark ? entry.dark : entry.light} />
 })
 
-const StatCard = memo(function StatCard({ label, value, unit, accent }: { label: string; value: string; unit?: string; accent?: string }) {
+const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: boolean }) {
+  if (compact) {
+    // Single-line: label · value+unit — the row collapses to one line.
+    return (
+      <div className="flex-1 flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
+        <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
+        <span className="flex items-baseline gap-1 shrink-0">
+          <span className="text-lg font-black tabular-nums leading-none" style={{ color: accent ?? 'var(--text-primary)' }}>{value}</span>
+          {unit && <span className="text-[10px] text-[var(--text-secondary)]">{unit}</span>}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="flex-1 flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
       <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)]">{label}</span>
@@ -305,9 +317,12 @@ interface Props {
   reduceAnimations: boolean
   mapDimmed?: boolean
   aeroMode: 'drs' | 'slm'
+  compactHeader?: boolean
+  compactCards?: boolean
+  compactWeather?: boolean
 }
 
-const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
@@ -413,18 +428,18 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
         className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
       >
         {/* GP name */}
-        <div className="flex flex-col justify-center shrink-0 px-6 py-4">
-          <div className="flex items-center gap-3 mb-0.5">
-            <h1 className={`text-xl font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+        <div className={`flex flex-col justify-center shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
+          <div className={`flex items-center gap-3 ${compactHeader ? '' : 'mb-0.5'}`}>
+            <h1 className={`${compactHeader ? 'text-base' : 'text-xl'} font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
               {gpName}
             </h1>
           </div>
-          {circuit && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
+          {circuit && !compactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
         </div>
 
         {/* Zones strip */}
-        <div className="flex flex-col justify-center flex-1 min-w-0 px-6 py-4">
-          <div className="flex items-center justify-between mb-2">
+        <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
+          <div className={`flex items-center justify-between ${compactHeader ? 'mb-1' : 'mb-2'}`}>
             <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Zones</span>
             <div className="flex items-center gap-4">
               {[{ c: '#fdd835', l: 'Yellow' }, { c: '#00c853', l: 'Green' }, { c: '#2196f3', l: 'Blue' }, { c: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)', l: 'Clear' }].map(({ c, l }) => (
@@ -445,10 +460,10 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
         </div>
 
         {/* Time left */}
-        <div className="flex flex-col justify-center items-end shrink-0 px-6 py-4">
+        <div className={`flex flex-col justify-center items-end shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
           <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
           <div
-            className="text-3xl font-black tabular-nums leading-tight"
+            className={`${compactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
             style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
           >
             {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
@@ -459,14 +474,14 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
       {/* ── Stat cards ── */}
       {!isSpecialMode && (
         <div className="shrink-0 flex border-b border-[var(--border)]">
-          <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} />
+          <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />
           {remainingLaps !== null
-            ? <StatCard label="Remaining" value={String(remainingLaps)} />
-            : <StatCard label="Remaining" value="—" />
+            ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />
+            : <StatCard label="Remaining" value="—" compact={compactCards} />
           }
-          <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} />
-          <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} />
-          <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} />
+          <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} compact={compactCards} />
+          <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} compact={compactCards} />
+          <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} compact={compactCards} />
         </div>
       )}
 
@@ -483,20 +498,24 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           </div>
 
           {/* Now + forecast strip — pinned to bottom */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: 110 }}>
+          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 44 : 110 }}>
 
             {/* Now card */}
             <div className="flex flex-col items-center justify-evenly w-44 shrink-0 px-4">
               <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
-              <div style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
-                <WeatherIcon id={session?.weather ?? 2} size={28} isDark={isDark} />
-              </div>
+              {!compactWeather && (
+                <div style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
+                  <WeatherIcon id={session?.weather ?? 2} size={28} isDark={isDark} />
+                </div>
+              )}
               <span className={`text-sm font-semibold text-center leading-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
                 {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
               </span>
-              <span className="text-[9px] text-[var(--text-secondary)]">
-                {session ? (session.forecast_accuracy === 0 ? 'Exact' : 'Approx') : '—'}
-              </span>
+              {!compactWeather && (
+                <span className="text-[9px] text-[var(--text-secondary)]">
+                  {session ? (session.forecast_accuracy === 0 ? 'Exact' : 'Approx') : '—'}
+                </span>
+              )}
             </div>
 
             {/* Forecast cards — skeleton when no data */}
@@ -504,7 +523,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               ? [1, 2, 3, 4, 5].map(i => (
                 <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">—</span>
-                  <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} isDark={isDark} /></div>
+                  {!compactWeather && <div className="text-[var(--text-secondary)]"><WeatherIcon id={2} size={20} isDark={isDark} /></div>}
                   <span className="text-[10px] text-[var(--text-secondary)] text-center">—</span>
                   <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">—</span>
                 </div>
@@ -515,7 +534,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                 return (
                   <div key={i} className="flex-1 flex flex-col items-center justify-evenly px-2 py-2">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
-                    <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} isDark={isDark} /></div>
+                    {!compactWeather && <div className="text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={20} isDark={isDark} /></div>}
                     <span className="text-[10px] text-[var(--text-primary)] text-center leading-tight">
                       {WEATHER_LABELS[s.weather] ?? '—'}
                     </span>

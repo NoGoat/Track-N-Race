@@ -4,14 +4,21 @@ import uPlot from 'uplot'
 import type { MotionRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: MotionRow[]
   isDark: boolean
+  view?: 'chart' | 'table'
 }
 
 const COLOR_LAT  = '#F0A500'
 const COLOR_LONG = '#5794F2'
+
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Lateral',      color: COLOR_LAT,  format: v => `${v.toFixed(2)}g` },
+  { header: 'Longitudinal', color: COLOR_LONG, format: v => `${v.toFixed(2)}g` },
+]
 
 function fmtTime(s: number) {
   const m = Math.floor(s / 60)
@@ -19,7 +26,7 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function GForceChart({ data, isDark }: Props) {
+export default function GForceChart({ data, isDark, view = 'chart' }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -147,6 +154,8 @@ export default function GForceChart({ data, isDark }: Props) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

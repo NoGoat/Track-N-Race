@@ -4,14 +4,21 @@ import uPlot from 'uplot'
 import type { MotionExRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: MotionExRow[]
   isDark: boolean
+  view?: 'chart' | 'table'
 }
 
 const COLOR_FRONT = '#73BF69'
 const COLOR_REAR  = '#B877DB'
+
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Front', color: COLOR_FRONT, format: v => `${v.toFixed(1)}mm` },
+  { header: 'Rear',  color: COLOR_REAR,  format: v => `${v.toFixed(1)}mm` },
+]
 
 function fmtTime(s: number) {
   const m = Math.floor(s / 60)
@@ -19,7 +26,7 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function RideHeightChart({ data, isDark }: Props) {
+export default function RideHeightChart({ data, isDark, view = 'chart' }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -117,6 +124,8 @@ export default function RideHeightChart({ data, isDark }: Props) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

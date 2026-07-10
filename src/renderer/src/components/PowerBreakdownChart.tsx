@@ -4,14 +4,30 @@ import uPlot from 'uplot'
 import type { StatusRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
-interface CP { data: StatusRow[]; isDark: boolean }
+interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table' }
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
 const C_HARV_K = '#37872D'
 const C_HARV_H = '#C4162A'
 const C_FUEL   = '#F0A500'
+
+const COLS_SPLIT: GraphTableColumn[] = [
+  { header: 'ICE',   color: C_ICE,  format: v => `${v.toFixed(1)}kW` },
+  { header: 'MGU-K', color: C_MGUK, format: v => `${v.toFixed(1)}kW` },
+]
+const COLS_HARVEST: GraphTableColumn[] = [
+  { header: 'MGU-K', color: C_HARV_K, format: v => `${v.toFixed(1)}kJ` },
+  { header: 'MGU-H', color: C_HARV_H, format: v => `${v.toFixed(1)}kJ` },
+]
+const COLS_STORE: GraphTableColumn[] = [
+  { header: 'ERS', color: C_ICE, format: v => `${v.toFixed(1)}%` },
+]
+const COLS_FUEL: GraphTableColumn[] = [
+  { header: 'Fuel', color: C_FUEL, format: v => `${v.toFixed(2)}kg` },
+]
 
 function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
@@ -43,7 +59,7 @@ function yAxis(ac: string, fmt: (v: number) => string): uPlot.Axis {
 }
 
 // ── Power Split (ICE vs MGU-K) ─────────────────────────────────────────────
-function PowerSplitChart({ data, isDark }: CP) {
+function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -108,6 +124,8 @@ function PowerSplitChart({ data, isDark }: CP) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={COLS_SPLIT} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
@@ -122,7 +140,7 @@ function PowerSplitChart({ data, isDark }: CP) {
 }
 
 // ── ERS Harvest This Lap ───────────────────────────────────────────────────
-function ERSHarvestChart({ data, isDark }: CP) {
+function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -187,6 +205,8 @@ function ERSHarvestChart({ data, isDark }: CP) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={COLS_HARVEST} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
@@ -201,7 +221,7 @@ function ERSHarvestChart({ data, isDark }: CP) {
 }
 
 // ── ERS Store History ──────────────────────────────────────────────────────
-function ERSStoreChart({ data, isDark }: CP) {
+function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -258,6 +278,8 @@ function ERSStoreChart({ data, isDark }: CP) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={COLS_STORE} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
@@ -272,7 +294,7 @@ function ERSStoreChart({ data, isDark }: CP) {
 }
 
 // ── Fuel History ───────────────────────────────────────────────────────────
-function FuelHistoryChart({ data, isDark }: CP) {
+function FuelHistoryChart({ data, isDark, view = 'chart' }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -326,6 +348,8 @@ function FuelHistoryChart({ data, isDark }: CP) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={COLS_FUEL} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
@@ -343,13 +367,19 @@ interface VisibleCharts {
   powerSplit: boolean; ersHarvest: boolean; ersStore: boolean; fuelHistory: boolean
 }
 
+// Per-sub-chart Chart/Table view mode (defaults to chart for any omitted key).
+export interface PowerViews {
+  powerSplit?: 'chart' | 'table'; ersHarvest?: 'chart' | 'table'
+  ersStore?: 'chart' | 'table';   fuelHistory?: 'chart' | 'table'
+}
+
 // ── Main export ────────────────────────────────────────────────────────────
-export default function PowerBreakdownChart({ data, isDark, visibleCharts }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews }) {
   const items = [
-    { key: 'powerSplit',  el: <PowerSplitChart  data={data} isDark={isDark} /> },
-    { key: 'ersHarvest',  el: <ERSHarvestChart  data={data} isDark={isDark} /> },
-    { key: 'ersStore',    el: <ERSStoreChart    data={data} isDark={isDark} /> },
-    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} /> },
+    { key: 'powerSplit',  el: <PowerSplitChart  data={data} isDark={isDark} view={views?.powerSplit} /> },
+    { key: 'ersHarvest',  el: <ERSHarvestChart  data={data} isDark={isDark} view={views?.ersHarvest} /> },
+    { key: 'ersStore',    el: <ERSStoreChart    data={data} isDark={isDark} view={views?.ersStore} /> },
+    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])
 
   const odd = items.length % 2 !== 0

@@ -16,6 +16,7 @@ interface Props {
   tyreWearMode:  'wear' | 'life'
   isDark:        boolean
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
+  graphViews?:   { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
   sessionType:   number | null
 }
 
@@ -203,7 +204,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, sessionType }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, sessionType }: Props) {
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
@@ -254,6 +255,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             damageHistory={damageHistory}
             tyreWearMode={tyreWearMode}
             visibleGraphs={visibleGraphs}
+            graphViews={graphViews}
             isDark={isDark}
             layout="grid"
           />

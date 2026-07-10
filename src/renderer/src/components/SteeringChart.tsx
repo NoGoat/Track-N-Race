@@ -4,10 +4,12 @@ import uPlot from 'uplot'
 import type { TelemetryRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: TelemetryRow[]
   isDark: boolean
+  view?: 'chart' | 'table'
 }
 
 const COLOR_STEER = '#BF5FFF'
@@ -24,7 +26,11 @@ function fmtSteer(v: number): string {
   return v < 0 ? `${pct}% L` : `${pct}% R`
 }
 
-export default function SteeringChart({ data, isDark }: Props) {
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Steering', color: COLOR_STEER, format: fmtSteer },
+]
+
+export default function SteeringChart({ data, isDark, view = 'chart' }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -145,6 +151,8 @@ export default function SteeringChart({ data, isDark }: Props) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

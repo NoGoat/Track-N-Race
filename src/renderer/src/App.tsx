@@ -24,6 +24,7 @@ import PowerStatsBar from './components/PowerStatsBar'
 import TyresPanel from './components/TyresPanel'
 import SessionPanel, { SESSION_TYPES, sessionAccent } from './components/SessionPanel'
 import StrategyPanel from './components/StrategyPanel'
+import { DEFAULT_GRAPH_VIEW, DEFAULT_COMPACT, type GraphViewState, type CompactState } from './lib/graphSections'
 import type { RaceEventMsg, ParticipantsMsg } from './types'
 import iconTransparent from './assets/icon_transparent.png'
 import iconTransparentLight from './assets/icon_transparent_light.png'
@@ -695,6 +696,13 @@ export default function App() {
   const tyresLayout = useMemo((): TyresLayout => ({
     charts: { ...DEFAULT_TYRES_LAYOUT.charts, ...(rawTyresLayout?.charts ?? {}) },
   }), [rawTyresLayout])
+  // Per-graph Chart/Table view mode and per-section compact density (ported from
+  // native_recorder). Merged with defaults so newly-added sections don't break
+  // configs stored by older builds (same pattern as coreLayout above).
+  const [rawGraphView, setGraphView] = useAppConfig<GraphViewState>('graphView', DEFAULT_GRAPH_VIEW)
+  const graphView = useMemo((): GraphViewState => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
+  const [rawCompact, setCompact] = useAppConfig<CompactState>('compact', DEFAULT_COMPACT)
+  const compact = useMemo((): CompactState => ({ ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }), [rawCompact])
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
@@ -1430,6 +1438,10 @@ export default function App() {
           onReduceAnimationsChange={setReduceAnimations}
           mapDimmed={mapDimmed}
           onMapDimmedChange={setMapDimmed}
+          graphView={graphView}
+          onGraphViewChange={setGraphView}
+          compact={compact}
+          onCompactChange={setCompact}
         />
       )}
 
@@ -1454,27 +1466,32 @@ export default function App() {
             thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
           }
 
+          // Compact tyre cards size to their (short) content instead of filling the
+          // flex region, so the space they free up goes to the chart above — the whole
+          // point of compact density. Normal (level 0) keeps the flex-fill behaviour.
+          const thermalCompactCards = tyreView === 'cards' && compact.overviewTyres > 0
+
           return (
           <div className="h-full flex flex-col overflow-hidden">
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
               {showStatsPanel && (
                 <div className="shrink-0">
-                  <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={theme === 'dark'} />
+                  <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={theme === 'dark'} compact={compact.overviewStats} />
                 </div>
               )}
               {showSpeedChartPanel && (
                 <div className={`${speedChartFlex} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} />
+                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} />
                 </div>
               )}
               {showThermalPanel && (
-                <div className={`${thermalFlex} min-h-0`}>
-                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} />
+                <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
+                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} />
                 </div>
               )}
               {visibleDamageCount > 0 && (
                 <div className="shrink-0">
-                  <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={theme === 'dark'} />
+                  <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={theme === 'dark'} compact={compact.overviewDamage} />
                 </div>
               )}
             </div>
@@ -1512,7 +1529,7 @@ export default function App() {
         )}
         {tab === 'session' && (
           <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} />
+            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
           </div>
         )}
         {tab === 'input' && (
@@ -1522,19 +1539,19 @@ export default function App() {
                 <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                   {inputLayout.showGear && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <GearChart data={telemetry} isDark={theme === 'dark'} />
+                      <GearChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputGear} />
                     </div>
                   )}
                   {inputLayout.showInputs && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <InputsChart data={telemetry} isDark={theme === 'dark'} />
+                      <InputsChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputThrottleBrake} />
                     </div>
                   )}
                 </div>
               )}
               {inputLayout.showSteering && (
                 <div className="flex-1 min-h-0">
-                  <SteeringChart data={telemetry} isDark={theme === 'dark'} />
+                  <SteeringChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputSteering} />
                 </div>
               )}
             </div>
@@ -1546,12 +1563,12 @@ export default function App() {
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
               {miscLayout.showGForce && (
                 <div className="flex-1 min-h-0">
-                  <GForceChart data={motion} isDark={theme === 'dark'} />
+                  <GForceChart data={motion} isDark={theme === 'dark'} view={graphView.miscGForce} />
                 </div>
               )}
               {miscLayout.showRideHeight && (
                 <div className="flex-1 min-h-0">
-                  <RideHeightChart data={motionEx} isDark={theme === 'dark'} />
+                  <RideHeightChart data={motionEx} isDark={theme === 'dark'} view={graphView.miscRideHeight} />
                 </div>
               )}
             </div>
@@ -1560,10 +1577,10 @@ export default function App() {
         {tab === 'power' && (
           <div className="h-full flex flex-col overflow-hidden border-t border-[var(--border)] divide-y divide-[var(--border)]">
             <div className="shrink-0 bg-[var(--bg-panel)]">
-              <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={theme === 'dark'} />
+              <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={theme === 'dark'} compact={compact.powerCards} />
             </div>
             <div className="flex-1 min-h-0">
-              <PowerBreakdownChart data={statusHistory} isDark={theme === 'dark'} visibleCharts={powerLayout.charts} />
+              <PowerBreakdownChart data={statusHistory} isDark={theme === 'dark'} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} />
             </div>
           </div>
         )}
@@ -1578,6 +1595,7 @@ export default function App() {
               tyreWearMode={tyreWearMode}
               isDark={theme === 'dark'}
               visibleGraphs={tyresLayout.charts}
+              graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
               sessionType={session?.session_type ?? null}
             />
           </div>
@@ -1595,6 +1613,7 @@ export default function App() {
               allStatus={allStatus}
               lapTimesByNum={lapTimesByNum}
               isDark={theme === 'dark'}
+              compact={compact.strategySummary}
             />
           </div>
         )}

@@ -4,11 +4,17 @@ import uPlot from 'uplot'
 import type { TelemetryRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: TelemetryRow[]
   isDark: boolean
+  view?: 'chart' | 'table'
 }
+
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Gear', color: '#5794F2', format: v => String(Math.round(v)) },
+]
 
 const GEAR_BANDS = [
   { y1: 0.5, y2: 2.5, fill: 'rgba(31,96,196,0.2)'   },
@@ -25,7 +31,7 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function GearChart({ data, isDark }: Props) {
+export default function GearChart({ data, isDark, view = 'chart' }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -145,6 +151,8 @@ export default function GearChart({ data, isDark }: Props) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

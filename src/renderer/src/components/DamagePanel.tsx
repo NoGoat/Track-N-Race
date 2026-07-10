@@ -14,10 +14,25 @@ interface Props {
   visibleItems: VisibleItems
   twoRow?: boolean
   isDark: boolean
+  compact?: boolean
 }
 
-const DamageCard = memo(function DamageCard({ label, v, connected, isDark }: { label: string; v: number; connected: boolean; isDark: boolean }) {
+const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compact }: { label: string; v: number; connected: boolean; isDark: boolean; compact?: boolean }) {
   const textColor = !connected ? undefined : v > 0 ? '#C4162A' : (isDark ? '#37872D' : '#137333')
+  if (compact) {
+    // Single-line: label · value% — the row shrinks from two lines to one.
+    return (
+      <div className="flex-1 min-w-0 px-3 py-1 flex items-center justify-between gap-2">
+        <span className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest truncate">{label}</span>
+        <span className="flex items-baseline gap-0.5 shrink-0">
+          <span className="text-sm font-bold tabular-nums" style={textColor ? { color: textColor } : undefined}>
+            {!connected ? '—' : String(v)}
+          </span>
+          {connected && <span className="text-[9px] text-[var(--text-secondary)]">%</span>}
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="flex-1 min-w-0 px-3 py-2">
       <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest mb-0.5">{label}</div>
@@ -34,7 +49,7 @@ const DamageCard = memo(function DamageCard({ label, v, connected, isDark }: { l
   )
 })
 
-const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems, twoRow, isDark }: Props) {
+const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems, twoRow, isDark, compact }: Props) {
   const allItems = [
     { key: 'tyreDmgFl'  as keyof VisibleItems, label: 'Tyre FL',   v: damage?.tyre_dmg_fl    ?? 0 },
     { key: 'brakeDmgFl' as keyof VisibleItems, label: 'Brake FL',  v: damage?.brake_dmg_fl   ?? 0 },
@@ -61,10 +76,10 @@ const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems,
     return (
       <div className="flex flex-col divide-y divide-[var(--border)]">
         <div className="flex divide-x divide-[var(--border)]">
-          {row1.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} />)}
+          {row1.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} compact={compact} />)}
         </div>
         <div className="flex divide-x divide-[var(--border)]">
-          {row2.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} />)}
+          {row2.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} compact={compact} />)}
         </div>
       </div>
     )
@@ -72,7 +87,7 @@ const DamagePanel = memo(function DamagePanel({ connected, damage, visibleItems,
 
   return (
     <div className="flex divide-x divide-[var(--border)]">
-      {allItems.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} />)}
+      {allItems.map(item => <DamageCard key={item.key} label={item.label} v={item.v} connected={connected} isDark={isDark} compact={compact} />)}
     </div>
   )
 })

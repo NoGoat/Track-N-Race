@@ -4,6 +4,7 @@ import uPlot from 'uplot'
 import type { TelemetryRow, DamageRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -120,9 +121,10 @@ interface ChartProps {
   data: uPlot.AlignedData
   isDark: boolean
   solid?: boolean
+  view?: 'chart' | 'table'
 }
 
-function TyreLineChart({ title, unit, data, isDark, solid }: ChartProps) {
+function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: ChartProps) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -150,6 +152,13 @@ function TyreLineChart({ title, unit, data, isDark, solid }: ChartProps) {
     u.over.addEventListener('mouseleave', hide)
   }, [hide])
 
+  const tableCols = useMemo((): GraphTableColumn[] => [
+    { header: 'FL', color: flColor, format: v => `${v.toFixed(1)}${unit}` },
+    { header: 'FR', color: frColor, format: v => `${v.toFixed(1)}${unit}` },
+    { header: 'RL', color: rlColor, format: v => `${v.toFixed(1)}${unit}` },
+    { header: 'RR', color: rrColor, format: v => `${v.toFixed(1)}${unit}` },
+  ], [flColor, frColor, rlColor, rrColor, unit])
+
   const legend = [
     { label: 'FL', color: flColor,  dash: undefined    },
     { label: 'FR', color: frColor,  dash: '6 3'        },
@@ -173,14 +182,22 @@ function TyreLineChart({ title, unit, data, isDark, solid }: ChartProps) {
         </div>
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
-        <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-          {mountedRef.current && <UPlotReact options={opts} data={data} onCreate={onCreate} />}
-        </div>
-        <div ref={tooltipRef} style={TOOLTIP_STYLE} />
+        {view === 'table' ? (
+          <GraphTable columns={tableCols} data={data} />
+        ) : (
+          <>
+            <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
+              {mountedRef.current && <UPlotReact options={opts} data={data} onCreate={onCreate} />}
+            </div>
+            <div ref={tooltipRef} style={TOOLTIP_STYLE} />
+          </>
+        )}
       </div>
     </div>
   )
 }
+
+type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 
 interface Props {
   telemetry: TelemetryRow[]
@@ -189,9 +206,12 @@ interface Props {
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
   isDark: boolean
   layout?: 'row' | 'grid'
+  // Per-metric Chart/Table view mode. The same component serves the Overview strip
+  // and the Tyres page, which persist independent keys — the caller supplies the map.
+  graphViews?: TyreGraphViews
 }
 
-export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row' }: Props) {
+export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews }: Props) {
   const surface = useMemo((): uPlot.AlignedData => {
     const ts = new Float64Array(telemetry.length)
     const fl = new Float64Array(telemetry.length), fr = new Float64Array(telemetry.length)
@@ -246,10 +266,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
 
   if (layout === 'grid') {
     const items = [
-      { key: 'surfaceTemp', el: <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} solid /> },
-      { key: 'innerTemp',   el: <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} solid /> },
-      { key: 'brakeTemp',   el: <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} solid /> },
-      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid /> },
+      { key: 'surfaceTemp', el: <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} solid view={graphViews?.surfaceTemp} /> },
+      { key: 'innerTemp',   el: <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} solid view={graphViews?.innerTemp} /> },
+      { key: 'brakeTemp',   el: <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} solid view={graphViews?.brakeTemp} /> },
+      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid view={graphViews?.tyreLife} /> },
     ].filter(({ key }) => visibleGraphs[key as keyof typeof visibleGraphs])
 
     const odd = items.length % 2 !== 0
@@ -270,10 +290,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
 
   return (
     <div className="flex h-full divide-x divide-[var(--border)]">
-      {visibleGraphs.surfaceTemp && <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} />}
-      {visibleGraphs.innerTemp   && <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} />}
-      {visibleGraphs.brakeTemp   && <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} />}
-      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} />}
+      {visibleGraphs.surfaceTemp && <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} view={graphViews?.surfaceTemp} />}
+      {visibleGraphs.innerTemp   && <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} view={graphViews?.innerTemp} />}
+      {visibleGraphs.brakeTemp   && <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} view={graphViews?.brakeTemp} />}
+      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} view={graphViews?.tyreLife} />}
     </div>
   )
 }

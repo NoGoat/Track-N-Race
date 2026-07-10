@@ -4,14 +4,22 @@ import uPlot from 'uplot'
 import type { TelemetryRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: TelemetryRow[]
   isDark: boolean
+  view?: 'chart' | 'table'
 }
 
 const COLOR_THROTTLE = '#37872D'
 const COLOR_BRAKE    = '#C4162A'
+
+// Brake is stored negated (see uData) — the table shows its magnitude as a percent.
+const TABLE_COLS: GraphTableColumn[] = [
+  { header: 'Throttle', color: COLOR_THROTTLE, format: v => `${Math.round(v * 100)}%` },
+  { header: 'Brake',    color: COLOR_BRAKE,    format: v => `${Math.round(Math.abs(v) * 100)}%` },
+]
 
 
 function fmtTime(s: number) {
@@ -20,7 +28,7 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function InputsChart({ data, isDark }: Props) {
+export default function InputsChart({ data, isDark, view = 'chart' }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -151,6 +159,8 @@ export default function InputsChart({ data, isDark }: Props) {
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
+          <GraphTable columns={TABLE_COLS} data={uData} />
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>

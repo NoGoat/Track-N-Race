@@ -1,6 +1,10 @@
 import { useState, memo } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
+import {
+  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS,
+  type GraphViewState, type GraphView, type CompactState,
+} from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
@@ -31,6 +35,10 @@ interface Props {
   onReduceAnimationsChange: (v: boolean) => void
   mapDimmed: boolean
   onMapDimmedChange: (v: boolean) => void
+  graphView: GraphViewState
+  onGraphViewChange: (v: GraphViewState) => void
+  compact: CompactState
+  onCompactChange: (v: CompactState) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -121,8 +129,12 @@ const Settings = memo(function Settings({
   onReduceAnimationsChange,
   mapDimmed,
   onMapDimmedChange,
+  graphView,
+  onGraphViewChange,
+  compact,
+  onCompactChange,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   
@@ -182,6 +194,8 @@ const Settings = memo(function Settings({
 
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
+    { id: 'graphs' as const, label: 'Graphs', icon: <LineChart size={14} />, color: '#0ea5e9' },
+    { id: 'compact' as const, label: 'Compact', icon: <Shrink size={14} />, color: '#14b8a6' },
     { id: 'notifications' as const, label: 'Notifications', icon: <Clock size={14} />, color: '#8b5cf6' },
     { id: 'map' as const, label: 'Map', icon: <Map size={14} />, color: '#10b981' },
     { id: 'network' as const, label: 'Network', icon: <Network size={14} />, color: '#0ea5e9' },
@@ -224,6 +238,87 @@ const Settings = memo(function Settings({
       </Row>
     </div>
   )
+
+  const GroupLabel = ({ children }: { children: React.ReactNode }) => (
+    <div className="px-4 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{children}</div>
+  )
+
+  const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
+    <button
+      onClick={onClick}
+      className="text-[11px] px-3 h-7 rounded-lg font-medium bg-[var(--bg-input)] border border-[var(--border-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--border-focus)] transition-colors active:scale-95"
+    >
+      {label}
+    </button>
+  )
+
+  const renderGraphs = () => {
+    const anyChart = ALL_GRAPH_SECTIONS.some(k => graphView[k] === 'chart')
+    const setAll = (v: GraphView) =>
+      onGraphViewChange(Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, v])) as GraphViewState)
+    return (
+      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+        <div className="flex items-center justify-between px-4 py-3">
+          <p className="text-xs text-[var(--text-muted)]">Show each telemetry graph as its line chart or a raw-values table.</p>
+          <BulkButton label={anyChart ? 'Set All Table' : 'Set All Chart'} onClick={() => setAll(anyChart ? 'table' : 'chart')} />
+        </div>
+        {GRAPH_GROUPS.map(group => (
+          <div key={group.group}>
+            <GroupLabel>{group.group}</GroupLabel>
+            {group.sections.map(s => (
+              <Row key={s.key} label={s.label} description="">
+                <SegmentedControl
+                  options={[{ value: 'chart' as const, label: 'Chart' }, { value: 'table' as const, label: 'Table' }]}
+                  value={graphView[s.key]}
+                  onChange={(v) => onGraphViewChange({ ...graphView, [s.key]: v })}
+                />
+              </Row>
+            ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderCompact = () => {
+    const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0
+    const setAll = (on: boolean) => {
+      const next = { ...compact, overviewTyres: on ? 5 : 0 }
+      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = on
+      onCompactChange(next)
+    }
+    return (
+      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+        <div className="flex items-center justify-between px-4 py-3">
+          <p className="text-xs text-[var(--text-muted)]">Collapse a section's cards to a denser single-line layout.</p>
+          <BulkButton label={anyCompact ? 'Set All Normal' : 'Set All Compact'} onClick={() => setAll(!anyCompact)} />
+        </div>
+        {COMPACT_GROUPS.map(group => (
+          <div key={group.group}>
+            <GroupLabel>{group.group}</GroupLabel>
+            {group.sections.map(s => (
+              <Row key={s.key} label={s.label} description="">
+                <SegmentedControl
+                  options={[{ value: false, label: 'Normal' }, { value: true, label: 'Compact' }]}
+                  value={compact[s.key]}
+                  onChange={(v) => onCompactChange({ ...compact, [s.key]: v })}
+                />
+              </Row>
+            ))}
+            {group.group === 'Overview' && (
+              <Row label="Tyre Cards" description="">
+                <SegmentedControl
+                  options={TYRE_LEVEL_OPTIONS}
+                  value={compact.overviewTyres}
+                  onChange={(v) => onCompactChange({ ...compact, overviewTyres: v })}
+                />
+              </Row>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   const renderNotifications = () => (
     <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
@@ -514,6 +609,10 @@ const Settings = memo(function Settings({
     switch (activeCategory) {
       case 'appearance':
         return renderAppearance()
+      case 'graphs':
+        return renderGraphs()
+      case 'compact':
+        return renderCompact()
       case 'notifications':
         return renderNotifications()
       case 'map':
