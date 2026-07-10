@@ -772,15 +772,53 @@ const StrategyHeader = memo(function StrategyHeader({
   compact?: boolean
 }) {
   const wearBar = wearColor(wearPct)
-  const cellPad = compact ? 'py-1.5' : 'py-3'
-  const labelMb = compact ? 'mb-0' : 'mb-1'
+  const cliffColor = lapsUntilCliff <= 5 ? '#C4162A' : lapsUntilCliff <= 10 ? '#FADE2A' : 'var(--text-primary)'
+
+  // ── Compact: every cell collapses to a single line (matches native buildStratHeader) ──
+  if (compact) {
+    return (
+      <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+        {/* Lap — just N / M, no caption */}
+        <div className="shrink-0 flex items-baseline gap-1.5 px-6 py-1.5">
+          <span className="text-lg font-black tabular-nums leading-none text-[var(--text-primary)]">{lapNum ?? '—'}</span>
+          <span className="text-xs font-medium text-[var(--text-secondary)]">/ {totalLaps > 0 ? totalLaps : '—'}</span>
+        </div>
+
+        {/* Compound · % · bar · age — one row */}
+        <div className="flex-1 min-w-0 flex items-center gap-3 px-6 py-1.5">
+          <CompoundChip name={tyreName} color={tyreColor} />
+          <span className="text-sm font-black tabular-nums leading-none shrink-0" style={{ color: wearBar }}>{wearPct}%</span>
+          <div className="flex-1 min-w-0 h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-300" style={{ width: `${Math.min(100, wearPct)}%`, backgroundColor: wearBar }} />
+          </div>
+          <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">
+            {tyreAge != null ? `${tyreAge}L · ${wearPerLapStr}%/L` : '—'}
+          </span>
+        </div>
+
+        {/* Tyre cliff — caption kept inline with the value */}
+        <div className="shrink-0 flex items-baseline gap-2 px-6 py-1.5">
+          <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Cliff</span>
+          {hasStrategy ? (
+            <>
+              <span className="text-sm font-black tabular-nums leading-none" style={{ color: cliffColor }}>Lap {cliffLap}</span>
+              <span className="text-[10px] text-[var(--text-secondary)]">+{lapsUntilCliff}</span>
+            </>
+          ) : (
+            <span className="text-sm text-[var(--text-secondary)]">—</span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
       {/* Lap counter */}
-      <div className={`shrink-0 flex flex-col justify-center px-6 ${cellPad}`}>
-        <span className={`text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] ${labelMb}`}>Lap</span>
+      <div className="shrink-0 flex flex-col justify-center px-6 py-3">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Lap</span>
         <div className="flex items-baseline gap-1.5">
-          <span className={`${compact ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-none text-[var(--text-primary)]`}>
+          <span className="text-3xl font-black tabular-nums leading-none text-[var(--text-primary)]">
             {lapNum ?? '—'}
           </span>
           <span className="text-base font-medium text-[var(--text-secondary)]">
@@ -790,10 +828,10 @@ const StrategyHeader = memo(function StrategyHeader({
       </div>
 
       {/* Compound + wear */}
-      <div className={`flex-1 min-w-0 flex items-center gap-4 px-6 ${cellPad}`}>
+      <div className="flex-1 min-w-0 flex items-center gap-4 px-6 py-3">
         <CompoundChip name={tyreName} color={tyreColor} />
         <div className="flex-1 min-w-0">
-          <div className={`flex items-baseline justify-between gap-3 ${compact ? 'mb-0.5' : 'mb-1.5'}`}>
+          <div className="flex items-baseline justify-between gap-3 mb-1.5">
             <span className="text-lg font-black tabular-nums leading-none" style={{ color: wearBar }}>
               {wearPct}%
             </span>
@@ -811,13 +849,13 @@ const StrategyHeader = memo(function StrategyHeader({
       </div>
 
       {/* Tyre cliff */}
-      <div className={`shrink-0 flex flex-col justify-center px-6 ${cellPad}`}>
-        <span className={`text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] ${labelMb}`}>Tyre Cliff</span>
+      <div className="shrink-0 flex flex-col justify-center px-6 py-3">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] mb-1">Tyre Cliff</span>
         {hasStrategy ? (
           <div className="flex items-baseline gap-1.5">
             <span
               className="text-lg font-black tabular-nums leading-none"
-              style={{ color: lapsUntilCliff <= 5 ? '#C4162A' : lapsUntilCliff <= 10 ? '#FADE2A' : 'var(--text-primary)' }}
+              style={{ color: cliffColor }}
             >
               Lap {cliffLap}
             </span>

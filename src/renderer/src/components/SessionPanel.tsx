@@ -444,26 +444,42 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           {circuit && !compactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
         </div>
 
-        {/* Zones strip */}
+        {/* Zones strip. Compact: ZONES · marshal strip · legend all on one row. */}
         <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          <div className={`flex items-center justify-between ${compactHeader ? 'mb-1' : 'mb-2'}`}>
-            <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Zones</span>
-            <div className="flex items-center gap-4">
-              {[{ c: '#fdd835', l: 'Yellow' }, { c: '#00c853', l: 'Green' }, { c: '#2196f3', l: 'Blue' }, { c: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)', l: 'Clear' }].map(({ c, l }) => (
-                <div key={l} className="flex items-center gap-1.5">
-                  <div
-                    className="w-3 h-3 rounded-sm"
-                    style={{
-                      backgroundColor: c,
-                      border: `1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.15)'}`
-                    }}
-                  />
-                  <span className="text-[10px] text-[var(--text-secondary)]">{l}</span>
+          {(() => {
+            const legend = (
+              <div className="flex items-center gap-4 shrink-0">
+                {[{ c: '#fdd835', l: 'Yellow' }, { c: '#00c853', l: 'Green' }, { c: '#2196f3', l: 'Blue' }, { c: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)', l: 'Clear' }].map(({ c, l }) => (
+                  <div key={l} className="flex items-center gap-1.5">
+                    <div
+                      className="w-3 h-3 rounded-sm"
+                      style={{
+                        backgroundColor: c,
+                        border: `1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.15)'}`
+                      }}
+                    />
+                    <span className="text-[10px] text-[var(--text-secondary)]">{l}</span>
+                  </div>
+                ))}
+              </div>
+            )
+            const zonesLbl = <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
+            return compactHeader ? (
+              <div className="flex items-center gap-3">
+                {zonesLbl}
+                <div className="flex-1 min-w-0"><MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} /></div>
+                {legend}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  {zonesLbl}
+                  {legend}
                 </div>
-              ))}
-            </div>
-          </div>
-          <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+              </>
+            )
+          })()}
         </div>
 
         {/* Time left */}
