@@ -125,7 +125,7 @@ export const WheelCard = memo(function WheelCard({
   if (lvl === 3 || lvl === 4) {
     const showLabels = lvl === 4
     return (
-      <div className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 px-3">
+      <div className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 px-3 py-1">
         <span className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-secondary)] shrink-0">
           {lvl === 4 ? abbrev : pos}
         </span>
