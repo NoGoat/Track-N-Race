@@ -1,42 +1,17 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { flushSync } from 'react-dom'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import type { TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg, ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg, LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 
 const MAX_ROWS = 750000
+const RETENTION_S = 600 // 10 minutes
+const MAX_RACE_EVENTS = 1000
+// Rows older than the retention window are only dropped once this many have
+// accumulated, so trimming is one slice every ~30s instead of work on every row.
+const TRIM_CHUNK = 4096
 
-function getNextBuffer<T extends { session_time: number }>(prev: T[], msg: T, maxRows: number): T[] {
-  const last = prev[prev.length - 1]
-  const cutoffTime = msg.session_time - 600 // 10 minutes
-
-  let validPrev = prev
-  if (last && msg.session_time < last.session_time) {
-    validPrev = prev.filter(d => d.session_time < msg.session_time && d.session_time >= cutoffTime)
-  } else {
-    let l = 0, r = prev.length - 1
-    let firstValidIdx = prev.length
-    while (l <= r) {
-      const mid = (l + r) >> 1
-      if (prev[mid].session_time >= cutoffTime) {
-        firstValidIdx = mid
-        r = mid - 1
-      } else {
-        l = mid + 1
-      }
-    }
-    let dropCount = firstValidIdx
-    const overflow = prev.length + 1 - maxRows
-    if (dropCount < overflow) dropCount = overflow
-
-    validPrev = dropCount > 0 ? prev.slice(dropCount) : prev
-  }
-
-  return [...validPrev, msg]
-}
-
-// Buffers are sorted by session_time (getNextBuffer enforces ordering), so the
-// windowed views below are contiguous suffixes/prefixes — binary-search the
-// boundary and slice instead of filtering the whole buffer every frame.
+// Buffers are sorted by session_time (appendRow enforces ordering), so the
+// windowed views are contiguous suffixes/prefixes — binary-search the boundary
+// instead of filtering the whole buffer every frame.
 function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inclusive: boolean): number {
   let l = 0, r = arr.length
   while (l < r) {
@@ -47,16 +22,45 @@ function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inc
   return l
 }
 
-// Rows with session_time > t (exclusive) or >= t (inclusive).
-function sliceAfter<T extends { session_time: number }>(arr: T[], t: number, inclusive = false): T[] {
-  const idx = lowerBound(arr, t, inclusive)
-  return idx === 0 ? arr : arr.slice(idx)
+// Append a row to a ref-held buffer in place — O(1) amortized. The buffer may
+// briefly hold up to TRIM_CHUNK rows older than the retention window; consumers
+// slice by time so the excess is invisible. A session_time reversal (backward
+// seek / session restart) rebuilds the buffer, matching the old getNextBuffer.
+function appendRow<T extends { session_time: number }>(ref: { current: T[] }, msg: T, maxRows: number): void {
+  const buf = ref.current
+  const last = buf[buf.length - 1]
+  const cutoff = msg.session_time - RETENTION_S
+  if (last && msg.session_time < last.session_time) {
+    const rebuilt = buf.filter(d => d.session_time < msg.session_time && d.session_time >= cutoff)
+    rebuilt.push(msg)
+    ref.current = rebuilt
+    return
+  }
+  buf.push(msg)
+  const firstValid = lowerBound(buf, cutoff, true)
+  if (firstValid >= TRIM_CHUNK || buf.length > maxRows) {
+    ref.current = buf.slice(Math.max(firstValid, buf.length - maxRows))
+  }
 }
 
-// Rows with session_time <= t.
-function sliceUpTo<T extends { session_time: number }>(arr: T[], t: number): T[] {
-  const idx = lowerBound(arr, t, false)
-  return idx === arr.length ? arr : arr.slice(0, idx)
+// Double-buffered window views: the visible time-window arrays are rebuilt every
+// frame, so instead of slicing a fresh array each time we refill one of two
+// persistent arrays (two, so consumers' identity-based memo deps still see a
+// change each frame and the previous frame's array is never mutated under a
+// holder mid-comparison).
+interface WindowPool<T> { a: T[]; b: T[]; flip: boolean }
+
+function makeWindowPool<T>(): WindowPool<T> {
+  return { a: [], b: [], flip: false }
+}
+
+function fillRange<T>(pool: WindowPool<T>, src: T[], start: number, end: number): T[] {
+  pool.flip = !pool.flip
+  const out = pool.flip ? pool.a : pool.b
+  const n = Math.max(0, end - start)
+  out.length = n
+  for (let i = 0; i < n; i++) out[i] = src[start + i]
+  return out
 }
 
 declare global {
@@ -82,7 +86,10 @@ export interface TelemetryState {
   participants: ParticipantsMsg | null
   allStatus: AllStatusMsg | null
   fastestLapCarIdx: number | null
-  raceEvent: RaceEventMsg | null
+  // Subscribe to live race events (used for transient banners). Events are
+  // delivered synchronously as they stream in, so none are lost to React's
+  // state batching when several arrive in one batch.
+  onRaceEvent: (cb: (e: RaceEventMsg) => void) => () => void
   raceEvents: RaceEventMsg[]
   session: SessionMsg | null
   tyreSets: TyreSetsMsg | null
@@ -100,11 +107,11 @@ export interface TelemetryState {
 }
 
 export function useTelemetry(seconds: number): TelemetryState {
-  const [telBuf, setTelBuf]     = useState<TelemetryRow[]>([])
-  const [motBuf, setMotBuf]     = useState<MotionRow[]>([])
-  const [motExBuf, setMotExBuf] = useState<MotionExRow[]>([])
-  const [dmgBuf, setDmgBuf]     = useState<DamageRow[]>([])
-  const [stsBuf, setStsBuf]     = useState<StatusRow[]>([])
+  // The hot 60 Hz buffers live in refs and are mutated in place (appendRow);
+  // dataVersion is bumped once per delivered batch to publish them to React.
+  // Keeping them in useState meant a full array copy per row plus a state
+  // update per row, which was the dominant GC/render cost during playback.
+  const [dataVersion, setDataVersion] = useState(0)
   const [status, setStatus]     = useState<StatusRow | null>(null)
   const [damage, setDamage]     = useState<DamageRow | null>(null)
   const [lap, setLap]           = useState<LapRow | null>(null)
@@ -112,7 +119,6 @@ export function useTelemetry(seconds: number): TelemetryState {
   const [participants, setParticipants] = useState<ParticipantsMsg | null>(null)
   const [allStatus, setAllStatus]       = useState<AllStatusMsg | null>(null)
   const [fastestLapCarIdx, setFastestLapCarIdx] = useState<number | null>(null)
-  const [raceEvent, setRaceEvent]   = useState<RaceEventMsg | null>(null)
   const [raceEvents, setRaceEvents] = useState<RaceEventMsg[]>([])
   const [session, setSession]       = useState<SessionMsg | null>(null)
   const [tyreSets, setTyreSets]   = useState<TyreSetsMsg | null>(null)
@@ -141,8 +147,19 @@ export function useTelemetry(seconds: number): TelemetryState {
 
   const telBufRef      = useRef<TelemetryRow[]>([])
   const motBufRef      = useRef<MotionRow[]>([])
+  const motExBufRef    = useRef<MotionExRow[]>([])
   const dmgBufRef      = useRef<DamageRow[]>([])
   const stsBufRef      = useRef<StatusRow[]>([])
+  const raceEventListenersRef = useRef(new Set<(e: RaceEventMsg) => void>())
+  const poolsRef = useRef({
+    tel:    makeWindowPool<TelemetryRow>(),
+    mot:    makeWindowPool<MotionRow>(),
+    motEx:  makeWindowPool<MotionExRow>(),
+    sts:    makeWindowPool<StatusRow>(),
+    dmg:    makeWindowPool<DamageRow>(),
+    lapTel: makeWindowPool<TelemetryRow>(),
+    lapSts: makeWindowPool<StatusRow>(),
+  })
   const lapNumRef      = useRef<number | null>(null)
   const lapStartTimeRef = useRef<number>(0)
   const fastestLapSetRef      = useRef<boolean>(false)
@@ -155,11 +172,11 @@ export function useTelemetry(seconds: number): TelemetryState {
         case 'playback_close': {
           isPlaybackRef.current = false
 
-          setTelBuf([]); telBufRef.current = []
-          setMotBuf([]); motBufRef.current = []
-          setMotExBuf([])
-          setStsBuf([]); stsBufRef.current = []
-          setDmgBuf([])
+          telBufRef.current = []
+          motBufRef.current = []
+          motExBufRef.current = []
+          stsBufRef.current = []
+          dmgBufRef.current = []
           setStatus(null)
           setDamage(null)
           setLap(null)
@@ -184,54 +201,39 @@ export function useTelemetry(seconds: number): TelemetryState {
           break
         }
         case 'telemetry': {
-          setTelBuf(prev => {
-            const last = prev.at(-1)
-            if (last && msg.session_time < last.session_time) {
-              setLapHistoryBuf(lapPrev =>
-                lapPrev.filter(l => l.startSessionTime < msg.session_time)
-              )
-              setFastestLap(prev => {
-                if (prev && prev.startSessionTime < msg.session_time) return prev
-                fastestLapTimeRef.current = Infinity
-                return null
-              })
-              setRaceEvents(prev =>
-                prev.filter(e => e.session_time == null || e.session_time <= msg.session_time)
-              )
-              lapStartTimeRef.current = msg.session_time
-              lapNumRef.current = null
-            }
-            const next = getNextBuffer(prev, msg, MAX_ROWS)
-            telBufRef.current = next
-            return next
-          })
+          const buf = telBufRef.current
+          const last = buf[buf.length - 1]
+          if (last && msg.session_time < last.session_time) {
+            setLapHistoryBuf(lapPrev =>
+              lapPrev.filter(l => l.startSessionTime < msg.session_time)
+            )
+            setFastestLap(prev => {
+              if (prev && prev.startSessionTime < msg.session_time) return prev
+              fastestLapTimeRef.current = Infinity
+              return null
+            })
+            setRaceEvents(prev =>
+              prev.filter(e => e.session_time == null || e.session_time <= msg.session_time)
+            )
+            lapStartTimeRef.current = msg.session_time
+            lapNumRef.current = null
+          }
+          appendRow(telBufRef, msg, MAX_ROWS)
           break
         }
         case 'motion':
-          setMotBuf(prev => {
-            const next = getNextBuffer(prev, msg, MAX_ROWS)
-            motBufRef.current = next
-            return next
-          })
+          appendRow(motBufRef, msg, MAX_ROWS)
           break
         case 'motion_ex':
-          setMotExBuf(prev => {
-            return getNextBuffer(prev, msg, MAX_ROWS)
-          })
+          appendRow(motExBufRef, msg, MAX_ROWS)
           break
         case 'status':
           setStatus(msg)
-          setStsBuf(prev => {
-            const next = getNextBuffer(prev, msg, MAX_ROWS)
-            stsBufRef.current = next
-            return next
-          })
+          appendRow(stsBufRef, msg, MAX_ROWS)
           break
         case 'damage':
           setDamage(msg)
-          setDmgBuf(prev => {
-            return getNextBuffer(prev, msg, MAX_ROWS)
-          })
+          appendRow(dmgBufRef, msg, MAX_ROWS)
           break
         case 'lap': {
           const lapMsg = msg as any
@@ -259,15 +261,21 @@ export function useTelemetry(seconds: number): TelemetryState {
         }
         case 'tyre_sets':    setTyreSets(msg);                     break
         case 'race_event':
-          flushSync(() => setRaceEvent(msg))
-          setRaceEvents(prev => [...prev, msg])
+          // Banners are delivered through the listener channel so multiple events
+          // in one batch each produce a banner without flushSync forcing a
+          // synchronous whole-app render per event (a guaranteed frame hitch).
+          for (const cb of raceEventListenersRef.current) cb(msg)
+          setRaceEvents(prev => {
+            const next = [...prev, msg]
+            return next.length > MAX_RACE_EVENTS ? next.slice(-MAX_RACE_EVENTS) : next
+          })
           if (msg.code === 'SEND') {
             if (!isPlaybackRef.current) {
-              setTelBuf([]); telBufRef.current = []
-              setMotBuf([]); motBufRef.current = []
-              setMotExBuf([])
-              setStsBuf([]); stsBufRef.current = []
-              setDmgBuf([])
+              telBufRef.current = []
+              motBufRef.current = []
+              motExBufRef.current = []
+              stsBufRef.current = []
+              dmgBufRef.current = []
               setStatus(null)
               setDamage(null)
               setLap(null)
@@ -374,11 +382,11 @@ export function useTelemetry(seconds: number): TelemetryState {
             start = end + 1
           }
 
-          setTelBuf(tel); telBufRef.current = tel;
-          setMotBuf(mot); motBufRef.current = mot;
-          setMotExBuf(motEx);
-          setStsBuf(sts); stsBufRef.current = sts;
-          setDmgBuf(dmg); dmgBufRef.current = dmg;
+          telBufRef.current = tel
+          motBufRef.current = mot
+          motExBufRef.current = motEx
+          stsBufRef.current = sts
+          dmgBufRef.current = dmg
 
           if (sts.length) setStatus(sts[sts.length - 1])
           if (dmg.length) setDamage(dmg[dmg.length - 1])
@@ -403,6 +411,9 @@ export function useTelemetry(seconds: number): TelemetryState {
       }
     }
 
+    // The ref-held buffers are published to React with a single dataVersion bump
+    // per delivered batch (batches arrive at the frame cadence), instead of a
+    // state update per row.
     const unsubBatch = window.telemetryBridge.onBatch((batchStr: string) => {
       let start = 0
       while (start < batchStr.length) {
@@ -418,10 +429,12 @@ export function useTelemetry(seconds: number): TelemetryState {
         }
         start = end + 1
       }
+      setDataVersion(v => v + 1)
     })
 
     const unsubOn = window.telemetryBridge.on((raw) => {
       handleMsg(raw as GatewayMsg)
+      setDataVersion(v => v + 1)
     })
 
     // Live hot 60 Hz rows (telemetry/motion/motion_ex) arrive packed as binary.
@@ -433,6 +446,7 @@ export function useTelemetry(seconds: number): TelemetryState {
       } catch (e) {
         console.error('Failed to decode binary batch:', e)
       }
+      setDataVersion(v => v + 1)
     })
 
     return () => {
@@ -440,6 +454,11 @@ export function useTelemetry(seconds: number): TelemetryState {
       unsubOn()
       unsubBinary()
     }
+  }, [])
+
+  const onRaceEvent = useCallback((cb: (e: RaceEventMsg) => void) => {
+    raceEventListenersRef.current.add(cb)
+    return () => { raceEventListenersRef.current.delete(cb) }
   }, [])
 
   useEffect(() => {
@@ -483,7 +502,7 @@ export function useTelemetry(seconds: number): TelemetryState {
     lapStartTimeRef.current = endTime
   }, [lap])
 
-  const latestSessionTime = telBuf.at(-1)?.session_time ?? 0
+  const latestSessionTime = telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0
   const cutoff = latestSessionTime - seconds
   const lapStartSessionTime = lap && lap.current_lap_ms > 0 ? lapStartTimeRef.current : 0
   const isPlayback = speedRpmBlocks !== null
@@ -494,26 +513,52 @@ export function useTelemetry(seconds: number): TelemetryState {
   // Playback uses the seek-correct pre-scan; live uses the accumulated map.
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
-  const telemetry        = useMemo(() => sliceAfter(telBuf, cutoff),                            [telBuf, cutoff])
-  const motion           = useMemo(() => sliceAfter(motBuf, cutoff),                            [motBuf, cutoff])
-  const motionEx         = useMemo(() => sliceAfter(motExBuf, cutoff),                          [motExBuf, cutoff])
-  const statusHistory    = useMemo(() => sliceAfter(stsBuf, cutoff),                            [stsBuf, cutoff])
-  const damageHistory    = useMemo(() => sliceAfter(dmgBuf, cutoff),                            [dmgBuf, cutoff])
-  const latest           = useMemo(() => telBuf.length > 0 ? telBuf[telBuf.length - 1] : null, [telBuf])
+  // Windowed views over the ref-held buffers: binary-search the boundary, then
+  // refill a pooled array (no per-frame allocation). Keyed on dataVersion, which
+  // bumps once per delivered batch.
+  const pools = poolsRef.current
+  const telemetry        = useMemo(() => {
+    const buf = telBufRef.current
+    return fillRange(pools.tel, buf, lowerBound(buf, cutoff, false), buf.length)
+  }, [dataVersion, cutoff])
+  const motion           = useMemo(() => {
+    const buf = motBufRef.current
+    return fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
+  }, [dataVersion, cutoff])
+  const motionEx         = useMemo(() => {
+    const buf = motExBufRef.current
+    return fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
+  }, [dataVersion, cutoff])
+  const statusHistory    = useMemo(() => {
+    const buf = stsBufRef.current
+    return fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+  }, [dataVersion, cutoff])
+  const damageHistory    = useMemo(() => {
+    const buf = dmgBufRef.current
+    return fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+  }, [dataVersion, cutoff])
+  const latest           = useMemo(() => {
+    const buf = telBufRef.current
+    return buf.length > 0 ? buf[buf.length - 1] : null
+  }, [dataVersion])
   const lapHistory       = useMemo(() => isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf, [isPlayback, prevBlock, lapHistoryBuf])
   const resolvedFastLap  = useMemo(() => isPlayback && fastBlock ? fastBlock : fastestLap,      [isPlayback, fastBlock, fastestLap])
-  const lapTelemetry     = useMemo(
-    () => isPlayback && curBlock
-      ? sliceUpTo(curBlock.telemetry as TelemetryRow[], latestSessionTime)
-      : sliceAfter(telBuf, lapStartSessionTime, true),
-    [isPlayback, curBlock, telBuf, lapStartSessionTime, latestSessionTime]
-  )
-  const lapStatusHistory = useMemo(
-    () => isPlayback && curBlock
-      ? sliceUpTo(curBlock.statusHistory as StatusRow[], latestSessionTime)
-      : sliceAfter(stsBuf, lapStartSessionTime, true),
-    [isPlayback, curBlock, stsBuf, lapStartSessionTime, latestSessionTime]
-  )
+  const lapTelemetry     = useMemo(() => {
+    if (isPlayback && curBlock) {
+      const src = curBlock.telemetry as TelemetryRow[]
+      return fillRange(pools.lapTel, src, 0, lowerBound(src, latestSessionTime, false))
+    }
+    const buf = telBufRef.current
+    return fillRange(pools.lapTel, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+  }, [dataVersion, isPlayback, curBlock, lapStartSessionTime, latestSessionTime])
+  const lapStatusHistory = useMemo(() => {
+    if (isPlayback && curBlock) {
+      const src = curBlock.statusHistory as StatusRow[]
+      return fillRange(pools.lapSts, src, 0, lowerBound(src, latestSessionTime, false))
+    }
+    const buf = stsBufRef.current
+    return fillRange(pools.lapSts, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+  }, [dataVersion, isPlayback, curBlock, lapStartSessionTime, latestSessionTime])
 
   const resolvedRaceEvents = useMemo(
     () => isPlayback
@@ -527,7 +572,7 @@ export function useTelemetry(seconds: number): TelemetryState {
     telemetry, motion, motionEx,
     status, statusHistory, damage, damageHistory,
     lap, timing, participants, allStatus,
-    fastestLapCarIdx, raceEvent, raceEvents: resolvedRaceEvents, session, tyreSets,
+    fastestLapCarIdx, onRaceEvent, raceEvents: resolvedRaceEvents, session, tyreSets,
     latest, lapHistory, fastestLap: resolvedFastLap, lapTelemetry, lapStatusHistory,
     speedRpmBlocks, lapTimesByNum,
     isConnected: true, error: null, protocolStatus, protocolWarning,

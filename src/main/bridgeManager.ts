@@ -75,6 +75,7 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 const BOOTSTRAP_TICK_MS = 16
 let binPending: Uint8Array[] = []
 let binFlushTimer: NodeJS.Timeout | null = null
+let binNextDueMs = 0
 const smoother = new HotRowSmoother()
 
 function flushBinary(): void {
@@ -87,11 +88,16 @@ function flushBinary(): void {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
     }
   }
-  // Re-schedule at the measured frame period. setTimeout delay is integer-ms, so the
-  // wall-clock poll rounds to 16/17 ms etc.; the sub-ms precision lives in the fill's
-  // session_time advance, not the timer.
-  const delayMs = Math.max(1, Math.round(smoother.getPeriodMs()))
-  binFlushTimer = setTimeout(flushBinary, delayMs)
+  // Re-schedule against an absolute deadline rather than the rounded period:
+  // setTimeout delay is integer-ms, so scheduling "period from now" makes a
+  // 16.67 ms stream alternate 16/17 ms and drift. Advancing a running deadline
+  // feeds each tick's rounding error back into the next delay, keeping the
+  // long-run cadence locked to the measured frame period.
+  const now = performance.now()
+  if (binNextDueMs === 0) binNextDueMs = now
+  binNextDueMs += smoother.getPeriodMs()
+  if (binNextDueMs < now + 1) binNextDueMs = now + 1 // fell behind: skip forward, don't burst
+  binFlushTimer = setTimeout(flushBinary, binNextDueMs - now)
 }
 
 function broadcast(row: Record<string, unknown>): void {

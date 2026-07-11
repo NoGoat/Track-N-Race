@@ -812,7 +812,7 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, raceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, onRaceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
 
   speedRpmBlocksRef.current = speedRpmBlocks
 
@@ -894,12 +894,14 @@ export default function App() {
     // Banners fire in playback too: race_event rows only stream when the
     // playhead crosses them (load/seek restore panel state, never events),
     // so each one is a "live" moment of the replay, not a historical dump.
-    if (!raceEvent) return
-    const item = buildBanner(raceEvent, participantsRef.current)
-    if (!item) return
-    tQueueRef.current.push(item)
-    if (!tShowingRef.current) dequeueRef.current()
-  }, [raceEvent])
+    // Subscription (not state) so several events in one batch each banner.
+    return onRaceEvent((event) => {
+      const item = buildBanner(event, participantsRef.current)
+      if (!item) return
+      tQueueRef.current.push(item)
+      if (!tShowingRef.current) dequeueRef.current()
+    })
+  }, [onRaceEvent])
 
   useEffect(() => () => { if (tTimerRef.current) clearTimeout(tTimerRef.current) }, [])
 
@@ -1537,7 +1539,7 @@ export default function App() {
               )}
               {showSpeedChartPanel && (
                 <div className={`${speedChartFlex} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} />
+                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} windowSeconds={seconds} />
                 </div>
               )}
               {showThermalPanel && (
