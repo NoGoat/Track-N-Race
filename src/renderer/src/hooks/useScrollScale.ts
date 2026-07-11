@@ -22,11 +22,13 @@ function ensurePlaybackSub(): void {
 }
 
 // For live data there is no pause event, so stalls are detected from the
-// stream's own measured rate (the engine sends at 20/40/60 Hz — the clock
-// EMAs the arrival gaps to find it): if the next sample is more than
-// STALL_PERIODS late, the stream is considered stopped and the window halts
-// on the last real sample immediately.
-const STALL_PERIODS = 1.5
+// stream's own measured rate (the engine sends hot rows at 20/40/60 Hz and
+// cold rows sparser; the clock takes the median of recent arrival gaps): if
+// the next sample is more than STALL_PERIODS late, the stream is considered
+// stopped and the window halts on the last real sample. Two periods gives
+// irregular sparse streams (damage/status) headroom without making detection
+// sluggish on the hot ones (~33 ms at 60 Hz).
+const STALL_PERIODS = 2
 const MIN_STALL_S = 0.05
 
 // Smooth scrolling for time-windowed realtime charts. Data arrives at the
@@ -52,7 +54,8 @@ export function useScrollScale(
   const clockRef = useRef<{
     lastT: number; wallAtT: number; est: number; firstT: number
     periodS: number; lastMin: number; lastData: uPlot.AlignedData | null
-  }>({ lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN, periodS: NaN, lastMin: NaN, lastData: null })
+    gaps: number[]; gapIdx: number
+  }>({ lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN, periodS: NaN, lastMin: NaN, lastData: null, gaps: [], gapIdx: 0 })
 
   useEffect(() => {
     if (latestT == null) return
@@ -60,16 +63,17 @@ export function useScrollScale(
     c.firstT = firstT ?? NaN
     if (latestT !== c.lastT) {
       const now = performance.now()
-      // Measure the stream's sample period from arrival gaps. Gaps ≥3x the
-      // current estimate are stalls (pause, dropout), not cadence, and are
-      // excluded so they don't inflate the stall threshold.
+      // Measure the stream's sample period as the median of the last few
+      // arrival gaps. Median rather than a mean/EMA: a pause or dropout is one
+      // outlier gap and can't skew the estimate, while a genuinely slower
+      // cadence (sparse damage/status rows vs 60 Hz telemetry) takes over
+      // within a few samples — in either direction.
       if (!Number.isNaN(c.lastT) && latestT > c.lastT) {
         const gap = (now - c.wallAtT) / 1000
-        if (Number.isNaN(c.periodS)) {
-          if (gap > 0 && gap < 1) c.periodS = gap
-        } else if (gap < c.periodS * 3) {
-          c.periodS = c.periodS * 0.8 + gap * 0.2
-        }
+        c.gaps[c.gapIdx % 5] = gap
+        c.gapIdx++
+        const sorted = [...c.gaps].sort((a, b) => a - b)
+        c.periodS = sorted[sorted.length >> 1]
       }
       c.lastT = latestT
       c.wallAtT = now

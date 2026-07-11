@@ -58,6 +58,10 @@ Write-Host "> npm run dist"
 npm run dist
 if ($LASTEXITCODE -ne 0) { Write-Host "Dist failed!" -ForegroundColor Red; exit $LASTEXITCODE }
 
+Write-Host "> npm run dist:win:portable"
+npm run dist:win:portable
+if ($LASTEXITCODE -ne 0) { Write-Host "Portable dist failed!" -ForegroundColor Red; exit $LASTEXITCODE }
+
 $Commit = Read-Host "Do you want to commit the version upgrade and push it? (y/n)"
 if ($Commit.ToLower().StartsWith('y')) {
     Write-Host "Committing and pushing package.json..." -ForegroundColor Cyan

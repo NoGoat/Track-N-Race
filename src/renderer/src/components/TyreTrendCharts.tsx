@@ -134,6 +134,9 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windo
   if (visible) mountedRef.current = true
 
   const ts = data[0]
+  // A single sample can't draw a line, so it counts as no data — otherwise the
+  // one damage row delivered by a playback load/seek shows a bare axis frame.
+  const hasData = ts.length > 1
   const { attach, detach } = useScrollScale(
     view !== 'table',
     ts.length > 0 ? (ts[ts.length - 1] as number) : null,
@@ -195,7 +198,9 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windo
         )}
       </div>
       <div className="flex-1 min-h-0 relative" ref={sizeRef}>
-        {view === 'table' ? (
+        {!hasData ? (
+          <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        ) : view === 'table' ? (
           <GraphTable columns={tableCols} data={data} edgePadRem={0.75} />
         ) : (
           <>
