@@ -6,7 +6,9 @@
 #include <QElapsedTimer>
 #include <vector>
 #include <unordered_map>
-#include <nlohmann/json.hpp>
+
+#include <tnrp/rows.h>
+#include <tnrp/control_rows.h>
 
 class QTimer;
 class QComboBox;
@@ -26,8 +28,8 @@ public:
     // Loads :/maps/track_<id>.json and rebuilds the prepared geometry + static layer.
     // No-op if the same track is already loaded. Returns false if no map exists.
     bool setTrack(int trackId);
-    void setPositions(const nlohmann::json& positions);   // {cars:[{idx,x,z}], ...}
-    void setParticipants(const nlohmann::json& participants);
+    void setPositions(const PositionsRow& positions);
+    void setParticipants(const tnrp::ParticipantsRow& participants);
     void setDark(bool dark);
     void setLabelMode(LabelMode mode);
     void setSectorColors(bool on);   // rebuilds the static layer on change
@@ -114,7 +116,7 @@ private:
     QPixmap     staticLayer_;        // cached circuit, device-pixel sized
     QSize       staticLayerSize_;    // logical size the cache was built for
 
-    nlohmann::json participants_;    // {drivers:[{idx,name,livery_color,race_number}]}
+    tnrp::ParticipantsRow participants_;   // drivers: idx/name/livery_color/race_number
     bool        dark_ = true;
     bool        sectorColors_ = true;   // colored sectors vs plain white/black lines
     bool        aeroSlm_       = false; // false = DRS overlay, true = SLM overlay (2026)

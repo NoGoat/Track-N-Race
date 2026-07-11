@@ -11,7 +11,6 @@
          gets its own file so the displayed notice matches (MIT requires the
          copyright notice to be reproduced verbatim). qt-toast is a fork; its file
          notes that and reproduces the upstream notice. -->
-    <file alias="MIT-nlohmann.txt">licenses/MIT-nlohmann.txt</file>
     <file alias="MIT-glaze.txt">licenses/MIT-glaze.txt</file>
     <file alias="MIT-qt-toast.txt">licenses/MIT-qt-toast.txt</file>
     <file alias="Zlib.txt">licenses/Zlib.txt</file>

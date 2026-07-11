@@ -23,13 +23,8 @@ option(NATIVE_RECORDER_MARCH_NATIVE
 
 include(FetchContent)
 
-# Fetch nlohmann/json for JSON serialization
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
+# All row (de)serialization is typed via libtnrp/glaze (tnrp/AnyRow.h); the only
+# JSON the app parses itself is the bundled track-map resources, via QJsonDocument.
 
 # zlib (.tnrd gzip) is no longer used directly by the app — it lives entirely in
 # libtnrp's TnrdWriter/TnrdReader now, which fetches and links zlibstatic itself.
@@ -147,7 +142,7 @@ if(WIN32)
     target_compile_options(native_recorder PRIVATE /utf-8 /FI"windows.h")
     # NOMINMAX prevents windows.h min/max macros from shadowing std::min/std::max.
     # The /FI force-include ensures tagMSG is fully defined before Qt forward-declares
-    # it, so nlohmann::json's type-trait templates compile cleanly under MSVC.
+    # it, so type-trait-heavy templates compile cleanly under MSVC.
     target_compile_definitions(native_recorder PRIVATE NOMINMAX)
 else()
     add_executable(native_recorder ${SOURCES})
@@ -157,7 +152,7 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Backg
 # Single source of truth for the version shown in Settings → About (read at
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
-target_link_libraries(native_recorder PRIVATE nlohmann_json::nlohmann_json tnrp ${QT_LIBS})
+target_link_libraries(native_recorder PRIVATE tnrp ${QT_LIBS})
 
 # Keep every directly-linked Qt module in DT_NEEDED even if whole-program LTO
 # proves none of its symbols are reachable (e.g. QSvgRenderer/QPrinter/

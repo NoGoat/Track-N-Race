@@ -19,6 +19,8 @@
 #include <QAbstractItemView>
 #include <QBrush>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -28,8 +30,6 @@
 #include <set>
 #include <utility>
 #include <vector>
-
-using nlohmann::json;
 
 // ─── File-local data + helpers ─────────────────────────────────────────────
 
@@ -52,14 +52,13 @@ PitLoss loadPitLoss(int trackId) {
     PitLoss pl;   // defaults already hold the fallback values
     QFile f(QString(":/maps/track_%1.json").arg(trackId));
     if (!f.open(QIODevice::ReadOnly)) return pl;
-    const QByteArray bytes = f.readAll();
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
     f.close();
-    try {
-        const json j = json::parse(bytes.constData(), bytes.constData() + bytes.size());
-        pl.inlapMs  = j.value("inlap_pit_time",  pl.inlapMs  / 1000.0) * 1000.0;
-        pl.outlapMs = j.value("outlap_pit_time", pl.outlapMs / 1000.0) * 1000.0;
-        pl.totalMs  = j.value("pit_time",        pl.totalMs  / 1000.0) * 1000.0;
-    } catch (...) {}
+    if (!doc.isObject()) return pl;
+    const QJsonObject j = doc.object();
+    pl.inlapMs  = j.value("inlap_pit_time").toDouble(pl.inlapMs  / 1000.0) * 1000.0;
+    pl.outlapMs = j.value("outlap_pit_time").toDouble(pl.outlapMs / 1000.0) * 1000.0;
+    pl.totalMs  = j.value("pit_time").toDouble(pl.totalMs  / 1000.0) * 1000.0;
     return pl;
 }
 
@@ -102,7 +101,9 @@ struct WearWarning { QString text, detail; QColor color; int priority = 3; };
 
 // StrategyLapRow / PastStint / DisplayStint live in the header (cached as members).
 
-struct TimingCar {
+// Local slice of a timing car (double gap for the trend math). Named distinctly
+// from the global ::TimingCar row struct in tnrp/rows.h.
+struct StratCar {
     int idx = -1, position = 0, driver_status = 0, result_status = 0, pit_status = 0;
     double gap_ms = 0.0;
     int last_lap_ms = 0;
@@ -126,12 +127,11 @@ QString fmtLapTime(double ms) {
     return QString("%1:%2").arg(mins).arg(secs, 6, 'f', 3, QChar('0'));
 }
 
-QString driverName(const json& participants, int idx) {
-    if (participants.is_object() && participants.contains("drivers")) {
-        for (const auto& d : participants["drivers"]) {
-            if (d.value("idx", -1) == idx) {
-                QString name = QString::fromStdString(d.value("name", std::string()))
-                                   .trimmed();
+QString driverName(const tnrp::ParticipantsRow* participants, int idx) {
+    if (participants) {
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx == idx) {
+                QString name = QString::fromStdString(d.name).trimmed();
                 if (name.isEmpty()) break;
                 const QStringList parts = name.split(QRegularExpression("\\s+"),
                                                      Qt::SkipEmptyParts);
@@ -142,12 +142,12 @@ QString driverName(const json& participants, int idx) {
     return QString("Car %1").arg(idx);
 }
 
-QColor liveryColor(const json& participants, int idx) {
-    if (participants.is_object() && participants.contains("drivers")) {
-        for (const auto& d : participants["drivers"]) {
-            if (d.value("idx", -1) == idx) {
-                const QString c = QString::fromStdString(d.value("livery_color", std::string()));
-                if (!c.isEmpty()) return QColor(c);
+QColor liveryColor(const tnrp::ParticipantsRow* participants, int idx) {
+    if (participants) {
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx == idx) {
+                if (!d.livery_color.empty())
+                    return QColor(QString::fromStdString(d.livery_color));
             }
         }
     }
@@ -159,38 +159,38 @@ QColor compoundColor(int visual, const QColor& fallback) {
     return c.isValid() ? c : fallback;
 }
 
-std::vector<Set> parseSets(const json& tyreSets) {
+std::vector<Set> parseSets(const tnrp::TyreSetsRow* tyreSets) {
     std::vector<Set> out;
-    if (tyreSets.is_object() && tyreSets.contains("sets") && tyreSets["sets"].is_array()) {
-        for (const auto& s : tyreSets["sets"]) {
+    if (tyreSets) {
+        for (const tnrp::TyreSet& s : tyreSets->sets) {
             Set e;
-            e.idx          = s.value("idx", -1);
-            e.actual       = s.value("actual_compound", 0);
-            e.visual       = s.value("visual_compound", 0);
-            e.wear         = s.value("wear", 0.0);
-            e.usable_life  = s.value("usable_life", 0);
-            e.lap_delta_ms = s.value("lap_delta_ms", 0.0);
-            e.available    = s.value("available", false);
-            e.fitted       = s.value("fitted", false);
+            e.idx          = s.idx;
+            e.actual       = s.actual_compound;
+            e.visual       = s.visual_compound;
+            e.wear         = s.wear;
+            e.usable_life  = s.usable_life;
+            e.lap_delta_ms = s.lap_delta_ms;
+            e.available    = s.available;
+            e.fitted       = s.fitted;
             out.push_back(e);
         }
     }
     return out;
 }
 
-std::vector<TimingCar> parseTiming(const json& timing) {
-    std::vector<TimingCar> out;
-    if (timing.is_object() && timing.contains("cars") && timing["cars"].is_array()) {
-        for (const auto& c : timing["cars"]) {
-            TimingCar t;
-            t.idx           = c.value("idx", -1);
-            t.position      = c.value("position", 0);
-            t.driver_status = c.value("driver_status", 0);
-            t.result_status = c.value("result_status", 0);
-            t.pit_status    = c.value("pit_status", 0);
-            t.gap_ms        = c.value("gap_ms", 0.0);
-            t.last_lap_ms   = c.value("last_lap_ms", 0);
-            t.num_pit_stops = c.value("num_pit_stops", 0);
+std::vector<StratCar> parseTiming(const TimingRow* timing) {
+    std::vector<StratCar> out;
+    if (timing) {
+        for (const TimingCar& c : timing->cars) {
+            StratCar t;
+            t.idx           = c.idx;
+            t.position      = c.position;
+            t.driver_status = c.driver_status;
+            t.result_status = c.result_status;
+            t.pit_status    = c.pit_status;
+            t.gap_ms        = c.gap_ms;
+            t.last_lap_ms   = c.last_lap_ms;
+            t.num_pit_stops = c.num_pit_stops;
             out.push_back(t);
         }
     }
@@ -910,37 +910,38 @@ static bool reconcileColumn(QVBoxLayout* lay, const QColor& sec,
 
 // ─── update() ───────────────────────────────────────────────────────────────
 
-void StrategyPage::update(const json& lap, const json& session, const json& status,
-                          const json& damage, const json& timing, const json& participants,
-                          const json& tyreSets, const json& allStatus,
+void StrategyPage::update(const LapRow* lap, const tnrp::SessionRow* session,
+                          const StatusRow* status, const DamageRow* damage,
+                          const TimingRow* timing, const tnrp::ParticipantsRow* participants,
+                          const tnrp::TyreSetsRow* tyreSets, const AllStatusRow* allStatus,
                           const std::map<int, int>& lapTimesByNum) {
     const QColor sec    = palette().color(QPalette::PlaceholderText);
     const QColor priCol = palette().color(QPalette::WindowText);
 
     // Session-change detection → drop stale tracking.
-    if (session.is_object()) {
-        std::string key = std::to_string(session.value("track_id", -1)) + "/" +
-                          std::to_string(session.value("session_type", -1));
+    if (session) {
+        std::string key = std::to_string(session->track_id) + "/" +
+                          std::to_string(session->session_type);
         if (key != lastSessionKey_) { resetForNewSession(); lastSessionKey_ = key; }
     }
 
-    const bool hasLap   = lap.is_object() && lap.contains("lap_num");
-    const int  lapNum   = hasLap ? lap.value("lap_num", 0) : 0;
-    const int  totalLaps = session.is_object() ? session.value("total_laps", 0) : 0;
-    const int  sessionType = session.is_object() ? session.value("session_type", -1) : -1;
+    const bool hasLap   = lap != nullptr;
+    const int  lapNum   = hasLap ? lap->lap_num : 0;
+    const int  totalLaps = session ? session->total_laps : 0;
+    const int  sessionType = session ? session->session_type : -1;
     const bool isRace = (sessionType == 15 || sessionType == 16 || sessionType == 17);
     // A fitted tyre keeps the strategy valid regardless of age, so a fresh tyre on a
     // pit out-lap (age 0) doesn't blank the panel back to "Waiting for tyre data".
-    const bool hasTyreData = status.is_object() && status.value("tyre_compound", 0) > 0;
-    const int  trackId = session.is_object() ? session.value("track_id", -1) : -1;
-    const int  weather = session.is_object() ? session.value("weather", 0) : 0;
+    const bool hasTyreData = status && status->tyre_compound > 0;
+    const int  trackId = session ? session->track_id : -1;
+    const int  weather = session ? session->weather : 0;
 
     // Pit-loss is circuit-specific (from the track map); reload only when it changes.
     if (trackId != pitLossTrackId_) { pitLoss_ = loadPitLoss(trackId); pitLossTrackId_ = trackId; }
 
     const auto sets   = parseSets(tyreSets);
     const auto cars   = parseTiming(timing);
-    const int  playerIdx = timing.is_object() ? timing.value("player_idx", -1) : -1;
+    const int  playerIdx = timing ? timing->player_idx : -1;
 
     // ── Strategy calculation ────────────────────────────────────────────
     // Hold off until lap 2 is complete (i.e. once lap_num ≥ 3, so last_lap_ms is
@@ -948,17 +949,17 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     // otherwise be frozen as the stint's Required baseline; lap 2 is the first
     // representative lap, so the strategy engages off that.
     StrategyData sd;
-    if (hasLap && lapNum >= 3 && session.is_object() && status.is_object() && damage.is_object() &&
+    if (hasLap && lapNum >= 3 && session && status && damage &&
         isRace && totalLaps > 0 && hasTyreData) {
         sd.valid = true;
 
-        const double flW = damage.value("tyre_wear_fl", 0.0);
-        const double frW = damage.value("tyre_wear_fr", 0.0);
-        const double rlW = damage.value("tyre_wear_rl", 0.0);
-        const double rrW = damage.value("tyre_wear_rr", 0.0);
-        const int    tyreAge = status.value("tyre_age_laps", 0);
-        const int    tyreCompound  = status.value("tyre_compound", 0);
-        const int    visualCompound = status.value("visual_compound", 0);
+        const double flW = damage->tyre_wear_fl;
+        const double frW = damage->tyre_wear_fr;
+        const double rlW = damage->tyre_wear_rl;
+        const double rrW = damage->tyre_wear_rr;
+        const int    tyreAge = status->tyre_age_laps;
+        const int    tyreCompound  = status->tyre_compound;
+        const int    visualCompound = status->visual_compound;
 
         const double avgWear = (flW + frW + rlW + rrW) / 4.0;
         const double wearPerLap = tyreAge > 0 ? avgWear / tyreAge : 2.0;
@@ -1117,12 +1118,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     }
 
     // ── Position window + gap trend (needs timing) ──────────────────────
-    const TimingCar* player = nullptr;
-    std::vector<const TimingCar*> active;
+    const StratCar* player = nullptr;
+    std::vector<const StratCar*> active;
     for (const auto& c : cars) if (c.result_status == 2 && c.position > 0) active.push_back(&c);
     for (const auto* c : active) if (c->idx == playerIdx) player = c;
 
-    std::vector<const TimingCar*> aheadCars, behindCars;
+    std::vector<const StratCar*> aheadCars, behindCars;
     if (player) {
         int carsAhead = 0, carsBehind = 0;
         for (const auto* c : active) { if (c->position < player->position) ++carsAhead; else if (c->position > player->position) ++carsBehind; }
@@ -1135,8 +1136,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         for (int i = 0; i < behindCount; ++i)
             for (const auto* c : active) if (c->position == player->position + (i + 1)) { behindCars.push_back(c); break; }
 
-        const TimingCar* immAhead  = aheadCars.empty()  ? nullptr : aheadCars.front();
-        const TimingCar* immBehind = behindCars.empty() ? nullptr : behindCars.front();
+        const StratCar* immAhead  = aheadCars.empty()  ? nullptr : aheadCars.front();
+        const StratCar* immBehind = behindCars.empty() ? nullptr : behindCars.front();
         if (!immBehind) { hasPrevBehindGap_ = false; behindIsGaining_ = -1; }
         else {
             const double g = immBehind->gap_ms - player->gap_ms;
@@ -1170,7 +1171,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     std::vector<StintTarget> consTargets, aggTargets;
     if (sd.valid && player) {
         double playerLapMs = player->last_lap_ms;
-        if (playerLapMs <= 0) playerLapMs = hasLap ? lap.value("last_lap_ms", 0) : 0;
+        if (playerLapMs <= 0) playerLapMs = hasLap ? lap->last_lap_ms : 0;
         double behindLapMs = 0;
         for (const auto* c : active) if (c->position == player->position + 1) { behindLapMs = c->last_lap_ms; break; }
 
@@ -1221,7 +1222,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     // tyre age) so laps already driven stay in the table. Actuals are gated to laps
     // completed as of the playhead (n < lapNum), so this is identical live and in
     // playback. The display is rebuilt once per lap and cached.
-    const int tyreAge = status.is_object() ? status.value("tyre_age_laps", 0) : 0;
+    const int tyreAge = status ? status->tyre_age_laps : 0;
     const int openingStart = std::max(1, lapNum - tyreAge);
 
     // Record the current opening stint into the per-variant history (idempotent —
@@ -1358,7 +1359,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     enum CallType { None, Undercut, Overcut };
     CallType callType = None; int callTarget = -1; double callGap = 0; int callCross = 0;
     if (sd.valid && player) {
-        const int playerTyreAge = status.value("tyre_age_laps", 0);
+        const int playerTyreAge = status->tyre_age_laps;
         double freshGainMs = 0;
         if (sd.conservative.stints.size() > 1) {
             const Set* fittedSet = nullptr;
@@ -1375,12 +1376,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         }
 
         auto rivalTyreAge = [&](int idx) -> int {
-            if (allStatus.is_object() && allStatus.contains("cars"))
-                for (const auto& c : allStatus["cars"]) if (c.value("idx", -1) == idx) return c.value("tyre_age_laps", 0);
+            if (allStatus)
+                for (const AllStatusCar& c : allStatus->cars) if (c.idx == idx) return c.tyre_age_laps;
             return 0;
         };
 
-        const TimingCar* carAhead = nullptr;
+        const StratCar* carAhead = nullptr;
         for (const auto* c : active) if (c->position == player->position - 1) { carAhead = c; break; }
         if (carAhead) {
             const double aheadGapMs = player->gap_ms - carAhead->gap_ms;
@@ -1391,7 +1392,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
             }
         }
         if (callType == None) {
-            const TimingCar* carBehind = nullptr;
+            const StratCar* carBehind = nullptr;
             for (const auto* c : active) if (c->position == player->position + 1) { carBehind = c; break; }
             if (carBehind && sd.lapsUntilCliff >= 3) {
                 const double behindGapMs = carBehind->gap_ms - player->gap_ms;
@@ -1422,12 +1423,12 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     const double headlineWear = sd.valid ? sd.limitWear : sd.avgWear;
     wearPct_->setText(QString("%1%").arg((int)std::lround(headlineWear)));
     { QPalette p = wearPct_->palette(); p.setColor(QPalette::WindowText, wearC); wearPct_->setPalette(p); }
-    wearAge_->setText(status.is_object()
+    wearAge_->setText(status
         ? (sd.valid
-               ? QString("%1 · %2L · %3%/L").arg(sd.limitCorner).arg(status.value("tyre_age_laps", 0))
-                     .arg(status.value("tyre_age_laps", 0) > 0
+               ? QString("%1 · %2L · %3%/L").arg(sd.limitCorner).arg(status->tyre_age_laps)
+                     .arg(status->tyre_age_laps > 0
                               ? QString::number(sd.limitWearPerLap, 'f', 1) : QString("—"))
-               : QString("%1L · —%/L").arg(status.value("tyre_age_laps", 0)))
+               : QString("%1L · —%/L").arg(status->tyre_age_laps))
         : QString("—"));
     wearBar_->setValue((int)std::min(100.0, headlineWear));
     wearBar_->setStyleSheet(QString(
@@ -1604,7 +1605,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         if (rivalBehindIdx_ != -1) rows.push_back({ rivalBehindIdx_, false });
         for (size_t r = 0; r < rows.size(); ++r) {
             const auto& rr = rows[r];
-            const TimingCar* car = nullptr;
+            const StratCar* car = nullptr;
             for (const auto& c : cars) if (c.idx == rr.idx) { car = &c; break; }
             const bool retired = !car || car->result_status != 2;
             const QColor dirColor = rr.ahead ? kBlue : kAmber;
@@ -1651,7 +1652,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         sv->setContentsMargins(0, 0, 0, 0); sv->setSpacing(0);
         sv->addWidget(sectionHeader("Position", sec));
         if (player) {
-            struct PosRow { const TimingCar* car; int role; bool immediate; };  // role: 0 ahead, 1 player, 2 behind
+            struct PosRow { const StratCar* car; int role; bool immediate; };  // role: 0 ahead, 1 player, 2 behind
             std::vector<PosRow> rows;
             for (int i = (int)aheadCars.size() - 1; i >= 0; --i)
                 rows.push_back({ aheadCars[i], 0, i == 0 });
@@ -1712,7 +1713,7 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
     }
 
     // Tyre wear
-    if (damage.is_object()) {
+    if (damage) {
         auto* sect = new QWidget; auto* sv = new QVBoxLayout(sect);
         sv->setContentsMargins(0, 0, 0, 0); sv->setSpacing(0);
         sv->addWidget(sectionHeader("Tyre Wear", sec));
@@ -1720,8 +1721,8 @@ void StrategyPage::update(const json& lap, const json& session, const json& stat
         gl->setContentsMargins(0, 0, 0, 0); gl->setSpacing(0);
         struct Corner { const char* label; double value; };
         const Corner corners[4] = {
-            { "FL", damage.value("tyre_wear_fl", 0.0) }, { "FR", damage.value("tyre_wear_fr", 0.0) },
-            { "RL", damage.value("tyre_wear_rl", 0.0) }, { "RR", damage.value("tyre_wear_rr", 0.0) },
+            { "FL", damage->tyre_wear_fl }, { "FR", damage->tyre_wear_fr },
+            { "RL", damage->tyre_wear_rl }, { "RR", damage->tyre_wear_rr },
         };
         for (int i = 0; i < 4; ++i) {
             const QColor c = wearColor(corners[i].value);

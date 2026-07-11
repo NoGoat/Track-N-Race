@@ -4,6 +4,9 @@
 #include <QPainterPath>
 #include <QTimer>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QComboBox>
 #include <QToolButton>
 #include <QFontMetrics>
@@ -272,36 +275,40 @@ bool TrackMapWidget::setTrack(int trackId) {
         update();
         return false;
     }
-    const QByteArray bytes = f.readAll();
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
     f.close();
 
-    nlohmann::json j;
-    try {
-        j = nlohmann::json::parse(bytes.constData(), bytes.constData() + bytes.size());
-    } catch (...) {
+    if (!doc.isObject()) {
         loaded_ = false; trackId_ = trackId;
         update();
         return false;
     }
+    const QJsonObject j = doc.object();
 
-    transform_.minX  = j["transform"].value("min_x", 0.0);
-    transform_.minZ  = j["transform"].value("min_z", 0.0);
-    transform_.scale = j["transform"].value("scale", 1.0);
-    transform_.offX  = j["transform"].value("off_x", 0.0);
-    transform_.offZ  = j["transform"].value("off_z", 0.0);
-    viewBoxW_    = j["view_box"].value("width", 1000.0);
-    viewBoxH_    = j["view_box"].value("height", 1000.0);
-    rotationDeg_ = j.value("rotation_deg", 0.0);
+    const QJsonObject tf = j.value("transform").toObject();
+    transform_.minX  = tf.value("min_x").toDouble(0.0);
+    transform_.minZ  = tf.value("min_z").toDouble(0.0);
+    transform_.scale = tf.value("scale").toDouble(1.0);
+    transform_.offX  = tf.value("off_x").toDouble(0.0);
+    transform_.offZ  = tf.value("off_z").toDouble(0.0);
+    const QJsonObject vb = j.value("view_box").toObject();
+    viewBoxW_    = vb.value("width").toDouble(1000.0);
+    viewBoxH_    = vb.value("height").toDouble(1000.0);
+    rotationDeg_ = j.value("rotation_deg").toDouble(0.0);
 
     rawSectors_.clear();
     rawSectors_.resize(3);
-    for (const auto& sector : j["sectors"]) {
-        int idx = sector.value("index", (int)rawSectors_.size());  // 1-based
+    for (const QJsonValue& sv : j.value("sectors").toArray()) {
+        const QJsonObject sector = sv.toObject();
+        int idx = sector.value("index").toInt((int)rawSectors_.size());  // 1-based
+        const QJsonArray points = sector.value("points").toArray();
         std::vector<QPointF> pts;
-        pts.reserve(sector["points"].size());
-        for (const auto& p : sector["points"])
-            if (p.is_array() && p.size() >= 2)
-                pts.emplace_back(p[0].get<double>(), p[1].get<double>());
+        pts.reserve((size_t)points.size());
+        for (const QJsonValue& pv : points) {
+            const QJsonArray p = pv.toArray();
+            if (p.size() >= 2)
+                pts.emplace_back(p[0].toDouble(), p[1].toDouble());
+        }
         if (idx >= 1 && idx <= 3) rawSectors_[idx - 1] = std::move(pts);
         else                      rawSectors_.push_back(std::move(pts));
     }
@@ -309,31 +316,31 @@ bool TrackMapWidget::setTrack(int trackId) {
     // Overtaking-aid zones store only {start,end}; the polyline is re-derived from
     // the centerline in rebuildPrepared(). DRS (F1 24/25) plus the 2026 SLM dry-
     // and wet-weather zone sets.
-    const auto parseZones = [](const nlohmann::json& arr) {
+    const auto parseZones = [](const QJsonArray& arr) {
         std::vector<std::pair<QPointF, QPointF>> zones;
-        for (const auto& z : arr) {
-            if (z.contains("start") && z.contains("end") &&
-                z["start"].is_array() && z["end"].is_array() &&
-                z["start"].size() >= 2 && z["end"].size() >= 2) {
+        for (const QJsonValue& zv : arr) {
+            const QJsonObject z = zv.toObject();
+            const QJsonArray start = z.value("start").toArray();
+            const QJsonArray end   = z.value("end").toArray();
+            if (start.size() >= 2 && end.size() >= 2) {
                 zones.emplace_back(
-                    QPointF(z["start"][0].get<double>(), z["start"][1].get<double>()),
-                    QPointF(z["end"][0].get<double>(),   z["end"][1].get<double>()));
+                    QPointF(start[0].toDouble(), start[1].toDouble()),
+                    QPointF(end[0].toDouble(),   end[1].toDouble()));
             }
         }
         return zones;
     };
-    rawDrs_.clear();
-    rawSlmDry_.clear();
-    rawSlmWet_.clear();
-    if (j.contains("drs_zones")) rawDrs_    = parseZones(j["drs_zones"]);
-    if (j.contains("slm_dry"))   rawSlmDry_ = parseZones(j["slm_dry"]);
-    if (j.contains("slm_wet"))   rawSlmWet_ = parseZones(j["slm_wet"]);
+    rawDrs_    = parseZones(j.value("drs_zones").toArray());
+    rawSlmDry_ = parseZones(j.value("slm_dry").toArray());
+    rawSlmWet_ = parseZones(j.value("slm_wet").toArray());
 
     rawHasSF_ = false;
-    if (j.contains("start_finish") && j["start_finish"].is_array() &&
-        j["start_finish"].size() >= 2) {
-        rawHasSF_ = true;
-        rawSF_ = QPointF(j["start_finish"][0].get<double>(), j["start_finish"][1].get<double>());
+    {
+        const QJsonArray sf = j.value("start_finish").toArray();
+        if (sf.size() >= 2) {
+            rawHasSF_ = true;
+            rawSF_ = QPointF(sf[0].toDouble(), sf[1].toDouble());
+        }
     }
 
     trackId_ = trackId;
@@ -555,19 +562,17 @@ void TrackMapWidget::rebuildStaticLayer() {
 
 // ── Live data setters ───────────────────────────────────────────────────────
 
-void TrackMapWidget::setPositions(const nlohmann::json& positions) {
-    if (!positions.contains("cars")) return;
-
-    playerIdx_ = positions.value("player_idx", 0);
+void TrackMapWidget::setPositions(const PositionsRow& positions) {
+    playerIdx_ = positions.player_idx;
 
     Snapshot snap;
     const qint64 now = idleClock_.elapsed();
     const qint64 timeoutMs = (qint64)idleTimeoutSec_ * 1000;
-    for (const auto& c : positions["cars"]) {
+    for (const PositionCar& c : positions.cars) {
         Car car;
-        car.idx = c.value("idx", -1);
-        car.x   = c.value("x", 0.0);
-        car.z   = c.value("z", 0.0);
+        car.idx = c.idx;
+        car.x   = c.x;
+        car.z   = c.z;
         if (car.idx < 0) continue;
 
         // Hide drivers that haven't moved for longer than the timeout. The player
@@ -595,7 +600,7 @@ void TrackMapWidget::setPositions(const nlohmann::json& positions) {
     update();
 }
 
-void TrackMapWidget::setParticipants(const nlohmann::json& participants) {
+void TrackMapWidget::setParticipants(const tnrp::ParticipantsRow& participants) {
     participants_ = participants;
     rebuildDriverCombo();
     update();
@@ -727,21 +732,21 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
     struct LabelJob { QPointF c; QString text; QColor color; };
     std::vector<LabelJob> labels;
 
-    const auto findDriver = [&](int idx) -> const nlohmann::json* {
-        if (!participants_.contains("drivers")) return nullptr;
-        for (const auto& d : participants_["drivers"])
-            if (d.value("idx", -1) == idx) return &d;
+    const auto findDriver = [&](int idx) -> const tnrp::Driver* {
+        for (const tnrp::Driver& d : participants_.drivers)
+            if (d.idx == idx) return &d;
         return nullptr;
     };
 
     for (const Car& car : curSnap_.cars) {
         double cx, cz;
         if (!interpCar(car.idx, t, cx, cz)) continue;      // skips idle / (0,0)
-        const nlohmann::json* d = findDriver(car.idx);
+        const tnrp::Driver* d = findDriver(car.idx);
         if (!d) continue;
 
         const QPointF pt = project(cx, cz, l);
-        const QColor livery(QString::fromStdString(d->value("livery_color", "#8e8e8e")));
+        const QColor livery(d->livery_color.empty()
+            ? QStringLiteral("#8e8e8e") : QString::fromStdString(d->livery_color));
 
         // Dot
         if (labelMode_ != LabelMode::LabelsOnly) {
@@ -752,9 +757,9 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
         // Label text: driver abbreviation, else race number
         if (labelMode_ != LabelMode::DotsOnly) {
-            QString name = QString::fromStdString(d->value("name", ""));
+            QString name = QString::fromStdString(d->name);
             QString text = name.trimmed().isEmpty()
-                ? QString::number(d->value("race_number", 0))
+                ? QString::number(d->race_number)
                 : abbrev(name);
             labels.push_back({ pt, text, livery });
         }
@@ -850,15 +855,15 @@ void TrackMapWidget::positionControls() {
 }
 
 void TrackMapWidget::rebuildDriverCombo() {
-    if (!driverCombo_ || !participants_.contains("drivers")) return;
+    if (!driverCombo_ || participants_.drivers.empty()) return;
 
     QString sig;
     std::vector<std::tuple<int, int, QString>> drivers;  // raceNum, idx, label
-    for (const auto& d : participants_["drivers"]) {
-        const int idx = d.value("idx", -1);
+    for (const tnrp::Driver& d : participants_.drivers) {
+        const int idx = d.idx;
         if (idx < 0) continue;
-        const QString name = QString::fromStdString(d.value("name", "")).trimmed();
-        const int raceNum = d.value("race_number", 0);
+        const QString name = QString::fromStdString(d.name).trimmed();
+        const int raceNum = d.race_number;
         if (name.isEmpty() && raceNum <= 0) continue;
         const QString last = name.isEmpty()
             ? QString("C%1").arg(idx)

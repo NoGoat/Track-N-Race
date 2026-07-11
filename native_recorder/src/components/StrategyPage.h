@@ -8,7 +8,8 @@
 #include <map>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
+#include <tnrp/control_rows.h>
 
 class QLabel;
 class QProgressBar;
@@ -70,12 +71,12 @@ class StrategyPage : public QWidget {
 public:
     explicit StrategyPage(QWidget* parent = nullptr);
 
-    // One call with all the JSON rows MainWindow already caches. Any of them may be
-    // an empty object early in a session — the page degrades gracefully.
-    void update(const nlohmann::json& lap,      const nlohmann::json& session,
-                const nlohmann::json& status,   const nlohmann::json& damage,
-                const nlohmann::json& timing,    const nlohmann::json& participants,
-                const nlohmann::json& tyreSets,  const nlohmann::json& allStatus,
+    // One call with all the typed rows MainWindow already caches. Any of them may
+    // be nullptr early in a session — the page degrades gracefully.
+    void update(const LapRow* lap,        const tnrp::SessionRow* session,
+                const StatusRow* status,  const DamageRow* damage,
+                const TimingRow* timing,  const tnrp::ParticipantsRow* participants,
+                const tnrp::TyreSetsRow* tyreSets, const AllStatusRow* allStatus,
                 const std::map<int, int>& lapTimesByNum);
 
     // Clears the cross-update tracking (pit counts, latched rivals, gap trend).
