@@ -68,15 +68,42 @@ function advanceHold<T extends { session_time: number }>(arr: T[], idx: number, 
   return idx
 }
 
+// The overlay rebuilds every frame while a lap is in progress (lapData grows each
+// tick), so allocating fresh Float64Arrays per call caused constant GC churn and
+// frame drops in the lap-overlay modes. Instead we refill persistent backing
+// columns (grown geometrically) and return subarray views.
+//
+// Two backing buffers are alternated because uplot-react deep-compares the
+// previous data against the new data to decide whether to setData: with a single
+// buffer refilled in place, the "previous" views would alias the just-written
+// values, the compare would always match, and the chart would freeze.
+interface ColumnCache { cap: number; cols: Float64Array[] }
+interface ColumnPool { bufs: (ColumnCache | null)[]; flip: number }
+
+function getCols(pool: ColumnPool, nCols: number, n: number): Float64Array[] {
+  pool.flip ^= 1
+  let c = pool.bufs[pool.flip]
+  if (!c || c.cap < n || c.cols.length !== nCols) {
+    const cap = Math.max(n, c ? c.cap * 2 : 1024)
+    c = { cap, cols: Array.from({ length: nCols }, () => new Float64Array(cap)) }
+    pool.bufs[pool.flip] = c
+  }
+  return c.cols
+}
+
+const EMPTY_COL = new Float64Array()
+const EMPTY_OVERLAY: uPlot.AlignedData = [EMPTY_COL, EMPTY_COL, EMPTY_COL, EMPTY_COL, EMPTY_COL, EMPTY_COL, EMPTY_COL]
+const EMPTY_SINGLE:  uPlot.AlignedData = [EMPTY_COL, EMPTY_COL, EMPTY_COL, EMPTY_COL]
+
 function buildOverlayData(
   prevLap: { telemetry: any[]; statusHistory: any[]; startSessionTime: number; lapNum?: number },
   lapData: TelemetryRow[],
-  lapStatusHistory: StatusRow[]
+  lapStatusHistory: StatusRow[],
+  pool: ColumnPool
 ): uPlot.AlignedData {
 
   if (!prevLap || prevLap.telemetry.length === 0) {
-    return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
-            new Float64Array(), new Float64Array(), new Float64Array()]
+    return EMPTY_OVERLAY
   }
   const prevTel  = prevLap.telemetry
   const prevSts  = prevLap.statusHistory
@@ -99,13 +126,7 @@ function buildOverlayData(
   const extraPoints = lapData.length - curExtendStart
   const n = prevTel.length + extraPoints
 
-  const x       = new Float64Array(n)
-  const prevSpd = new Float64Array(n)
-  const prevRpm = new Float64Array(n)
-  const prevErs = new Float64Array(n)
-  const curSpd  = new Float64Array(n)
-  const curRpm  = new Float64Array(n)
-  const curErs  = new Float64Array(n)
+  const [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs] = getCols(pool, 7, n)
 
   let ci = 0, siP = 0, siC = 0
 
@@ -138,7 +159,10 @@ function buildOverlayData(
   }
 
 
-  return [x, prevSpd, prevRpm, prevErs, curSpd, curRpm, curErs]
+  return [
+    x.subarray(0, n), prevSpd.subarray(0, n), prevRpm.subarray(0, n), prevErs.subarray(0, n),
+    curSpd.subarray(0, n), curRpm.subarray(0, n), curErs.subarray(0, n),
+  ]
 }
 
 export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, mode, onModeChange, isDark, view = 'chart', currentLapNum = null }: Props) {
@@ -186,30 +210,26 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   // modes (PL/FL/compare) always stay as a chart.
   const showTable = view === 'table' && !is2L
 
+  const colPoolRef = useRef<ColumnPool>({ bufs: [null, null], flip: 0 })
+
   const uData = useMemo((): uPlot.AlignedData => {
     if (mode === 'compare') {
       const compareBlock = speedRpmBlocks?.find(b => b.lapNum === compareLapNum) ?? null
-      if (!compareBlock) {
-        return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
-                new Float64Array(), new Float64Array(), new Float64Array()]
-      }
-      return buildOverlayData(compareBlock, lapData, lapStatusHistory)
+      if (!compareBlock) return EMPTY_OVERLAY
+      return buildOverlayData(compareBlock, lapData, lapStatusHistory, colPoolRef.current)
     }
 
     if (mode === 'PL' || mode === 'FL') {
       const prevLap = mode === 'FL' ? fastestLap : lapHistory[lapHistory.length - 1]
-      if (!prevLap) {
-        return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array(),
-                new Float64Array(), new Float64Array(), new Float64Array()]
-      }
-      return buildOverlayData(prevLap as any, lapData, lapStatusHistory)
+      if (!prevLap) return EMPTY_OVERLAY
+      return buildOverlayData(prevLap as any, lapData, lapStatusHistory, colPoolRef.current)
     }
 
     if (mode === 'CL' && clBlock) {
-      return buildOverlayData(clBlock, lapData, lapStatusHistory)
+      return buildOverlayData(clBlock, lapData, lapStatusHistory, colPoolRef.current)
     }
 
-    if (activeData.length === 0) return [new Float64Array(), new Float64Array(), new Float64Array(), new Float64Array()]
+    if (activeData.length === 0) return EMPTY_SINGLE
     const ts  = new Float64Array(activeData.length)
     const spd = new Float64Array(activeData.length)
     const rpm = new Float64Array(activeData.length)
