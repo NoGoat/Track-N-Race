@@ -20,6 +20,7 @@ interface Props {
   graphViews?:   { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
   cardViews?:    TyreCardViews
   sessionType:   number | null
+  windowSeconds?: number
 }
 
 function useCornerHistories(telemetry: TelemetryRow[]): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
@@ -228,7 +229,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30 }: Props) {
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
@@ -283,6 +284,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             graphViews={graphViews}
             isDark={isDark}
             layout="grid"
+            windowSeconds={windowSeconds}
           />
         </div>
       </div>

@@ -4,6 +4,7 @@ import uPlot from 'uplot'
 import type { TelemetryRow, DamageRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip } from '../hooks/useChartTooltip'
+import { useScrollScale } from '../hooks/useScrollScale'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 const FL = '#e10600'
@@ -122,14 +123,29 @@ interface ChartProps {
   isDark: boolean
   solid?: boolean
   view?: 'chart' | 'table'
+  windowSeconds?: number
+  // Wear comes from the sparse ~1-2 Hz damage rows; the scroll clock needs a
+  // longer extrapolation window there than for the 60 Hz telemetry streams.
+  sparse?: boolean
 }
 
-function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: ChartProps) {
+const SPARSE_SCROLL = { stallS: 1.5, snapS: 2 }
+
+function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windowSeconds = 30, sparse = false }: ChartProps) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
+
+  const ts = data[0]
+  const { attach, detach } = useScrollScale(
+    view !== 'table',
+    ts.length > 0 ? (ts[ts.length - 1] as number) : null,
+    ts.length > 0 ? (ts[0] as number) : null,
+    windowSeconds,
+    sparse ? SPARSE_SCROLL : undefined,
+  )
 
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
@@ -149,8 +165,9 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: Cha
   )
 
   const onCreate = useCallback((u: uPlot) => {
+    attach(u)
     u.over.addEventListener('mouseleave', hide)
-  }, [hide])
+  }, [hide, attach])
 
   const tableCols = useMemo((): GraphTableColumn[] => [
     { header: 'FL', color: flColor, format: v => `${v.toFixed(1)}${unit}` },
@@ -189,7 +206,7 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart' }: Cha
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={data} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={data} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
@@ -211,9 +228,10 @@ interface Props {
   // Per-metric Chart/Table view mode. The same component serves the Overview strip
   // and the Tyres page, which persist independent keys — the caller supplies the map.
   graphViews?: TyreGraphViews
+  windowSeconds?: number
 }
 
-export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews }: Props) {
+export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30 }: Props) {
   const surface = useMemo((): uPlot.AlignedData => {
     const ts = new Float64Array(telemetry.length)
     const fl = new Float64Array(telemetry.length), fr = new Float64Array(telemetry.length)
@@ -268,10 +286,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
 
   if (layout === 'grid') {
     const items = [
-      { key: 'surfaceTemp', el: <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} solid view={graphViews?.surfaceTemp} /> },
-      { key: 'innerTemp',   el: <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} solid view={graphViews?.innerTemp} /> },
-      { key: 'brakeTemp',   el: <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} solid view={graphViews?.brakeTemp} /> },
-      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid view={graphViews?.tyreLife} /> },
+      { key: 'surfaceTemp', el: <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} solid view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} /> },
+      { key: 'innerTemp',   el: <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} solid view={graphViews?.innerTemp} windowSeconds={windowSeconds} /> },
+      { key: 'brakeTemp',   el: <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} solid view={graphViews?.brakeTemp} windowSeconds={windowSeconds} /> },
+      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid view={graphViews?.tyreLife} windowSeconds={windowSeconds} sparse /> },
     ].filter(({ key }) => visibleGraphs[key as keyof typeof visibleGraphs])
 
     const odd = items.length % 2 !== 0
@@ -292,10 +310,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
 
   return (
     <div className="flex h-full divide-x divide-[var(--border)]">
-      {visibleGraphs.surfaceTemp && <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} view={graphViews?.surfaceTemp} />}
-      {visibleGraphs.innerTemp   && <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} view={graphViews?.innerTemp} />}
-      {visibleGraphs.brakeTemp   && <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} view={graphViews?.brakeTemp} />}
-      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} view={graphViews?.tyreLife} />}
+      {visibleGraphs.surfaceTemp && <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} />}
+      {visibleGraphs.innerTemp   && <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} />}
+      {visibleGraphs.brakeTemp   && <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} />}
+      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} sparse />}
     </div>
   )
 }

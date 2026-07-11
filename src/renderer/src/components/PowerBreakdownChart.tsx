@@ -4,9 +4,24 @@ import uPlot from 'uplot'
 import type { StatusRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import { useScrollScale } from '../hooks/useScrollScale'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 
-interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table' }
+interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
+
+// Status rows arrive at ~1-2 Hz (not the 60 Hz hot rate), so the scroll clock
+// needs a longer extrapolation window before it treats the stream as stalled.
+const SPARSE_SCROLL = { stallS: 1.5, snapS: 2 }
+
+function useStatusScroll(data: StatusRow[], view: 'chart' | 'table', windowSeconds: number) {
+  return useScrollScale(
+    view !== 'table',
+    data.length > 0 ? data[data.length - 1].session_time : null,
+    data.length > 0 ? data[0].session_time : null,
+    windowSeconds,
+    SPARSE_SCROLL,
+  )
+}
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
@@ -59,9 +74,10 @@ function yAxis(ac: string, fmt: (v: number) => string): uPlot.Axis {
 }
 
 // ── Power Split (ICE vs MGU-K) ─────────────────────────────────────────────
-function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
+function PowerSplitChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const { attach, detach } = useStatusScroll(data, view, windowSeconds)
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
@@ -110,7 +126,7 @@ function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
     }
   }, [width, height, isDark])
 
-  const onCreate = useCallback((u: uPlot) => { u.over.addEventListener('mouseleave', hide) }, [hide])
+  const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -131,7 +147,7 @@ function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
@@ -142,9 +158,10 @@ function PowerSplitChart({ data, isDark, view = 'chart' }: CP) {
 }
 
 // ── ERS Harvest This Lap ───────────────────────────────────────────────────
-function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
+function ERSHarvestChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const { attach, detach } = useStatusScroll(data, view, windowSeconds)
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
@@ -192,7 +209,7 @@ function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
     }
   }, [width, height, isDark])
 
-  const onCreate = useCallback((u: uPlot) => { u.over.addEventListener('mouseleave', hide) }, [hide])
+  const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -214,7 +231,7 @@ function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
@@ -225,9 +242,10 @@ function ERSHarvestChart({ data, isDark, view = 'chart' }: CP) {
 }
 
 // ── ERS Store History ──────────────────────────────────────────────────────
-function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
+function ERSStoreChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const { attach, detach } = useStatusScroll(data, view, windowSeconds)
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
@@ -268,7 +286,7 @@ function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
     }
   }, [width, height, isDark])
 
-  const onCreate = useCallback((u: uPlot) => { u.over.addEventListener('mouseleave', hide) }, [hide])
+  const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -289,7 +307,7 @@ function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
@@ -300,9 +318,10 @@ function ERSStoreChart({ data, isDark, view = 'chart' }: CP) {
 }
 
 // ── Fuel History ───────────────────────────────────────────────────────────
-function FuelHistoryChart({ data, isDark, view = 'chart' }: CP) {
+function FuelHistoryChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const { attach, detach } = useStatusScroll(data, view, windowSeconds)
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
@@ -341,7 +360,7 @@ function FuelHistoryChart({ data, isDark, view = 'chart' }: CP) {
     }
   }, [width, height, isDark])
 
-  const onCreate = useCallback((u: uPlot) => { u.over.addEventListener('mouseleave', hide) }, [hide])
+  const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -361,7 +380,7 @@ function FuelHistoryChart({ data, isDark, view = 'chart' }: CP) {
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
@@ -382,12 +401,12 @@ export interface PowerViews {
 }
 
 // ── Main export ────────────────────────────────────────────────────────────
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30 }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number }) {
   const items = [
-    { key: 'powerSplit',  el: <PowerSplitChart  data={data} isDark={isDark} view={views?.powerSplit} /> },
-    { key: 'ersHarvest',  el: <ERSHarvestChart  data={data} isDark={isDark} view={views?.ersHarvest} /> },
-    { key: 'ersStore',    el: <ERSStoreChart    data={data} isDark={isDark} view={views?.ersStore} /> },
-    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} /> },
+    { key: 'powerSplit',  el: <PowerSplitChart  data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
+    { key: 'ersHarvest',  el: <ERSHarvestChart  data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} /> },
+    { key: 'ersStore',    el: <ERSStoreChart    data={data} isDark={isDark} view={views?.ersStore} windowSeconds={windowSeconds} /> },
+    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])
 
   const odd = items.length % 2 !== 0

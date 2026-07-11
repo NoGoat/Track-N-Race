@@ -4,12 +4,14 @@ import uPlot from 'uplot'
 import type { MotionRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import { useScrollScale } from '../hooks/useScrollScale'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
   data: MotionRow[]
   isDark: boolean
   view?: 'chart' | 'table'
+  windowSeconds?: number
 }
 
 const COLOR_LAT  = '#F0A500'
@@ -26,12 +28,19 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function GForceChart({ data, isDark, view = 'chart' }: Props) {
+export default function GForceChart({ data, isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
+
+  const { attach, detach } = useScrollScale(
+    view !== 'table',
+    data.length > 0 ? data[data.length - 1].session_time : null,
+    data.length > 0 ? data[0].session_time : null,
+    windowSeconds,
+  )
 
   const uData = useMemo((): uPlot.AlignedData => {
     const ts   = new Float64Array(data.length)
@@ -138,8 +147,9 @@ export default function GForceChart({ data, isDark, view = 'chart' }: Props) {
   }, [width, height, isDark])
 
   const onCreate = useCallback((u: uPlot) => {
+    attach(u)
     u.over.addEventListener('mouseleave', hide)
-  }, [hide])
+  }, [hide, attach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -161,7 +171,7 @@ export default function GForceChart({ data, isDark, view = 'chart' }: Props) {
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>

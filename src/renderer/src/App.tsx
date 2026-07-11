@@ -1544,7 +1544,7 @@ export default function App() {
               )}
               {showThermalPanel && (
                 <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} />
+                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} />
                 </div>
               )}
               {visibleDamageCount > 0 && (
@@ -1597,19 +1597,19 @@ export default function App() {
                 <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                   {inputLayout.showGear && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <GearChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputGear} />
+                      <GearChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputGear} windowSeconds={seconds} />
                     </div>
                   )}
                   {inputLayout.showInputs && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <InputsChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputThrottleBrake} />
+                      <InputsChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
                     </div>
                   )}
                 </div>
               )}
               {inputLayout.showSteering && (
                 <div className="flex-1 min-h-0">
-                  <SteeringChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputSteering} />
+                  <SteeringChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputSteering} windowSeconds={seconds} />
                 </div>
               )}
             </div>
@@ -1621,12 +1621,12 @@ export default function App() {
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
               {miscLayout.showGForce && (
                 <div className="flex-1 min-h-0">
-                  <GForceChart data={motion} isDark={theme === 'dark'} view={graphView.miscGForce} />
+                  <GForceChart data={motion} isDark={theme === 'dark'} view={graphView.miscGForce} windowSeconds={seconds} />
                 </div>
               )}
               {miscLayout.showRideHeight && (
                 <div className="flex-1 min-h-0">
-                  <RideHeightChart data={motionEx} isDark={theme === 'dark'} view={graphView.miscRideHeight} />
+                  <RideHeightChart data={motionEx} isDark={theme === 'dark'} view={graphView.miscRideHeight} windowSeconds={seconds} />
                 </div>
               )}
             </div>
@@ -1638,7 +1638,7 @@ export default function App() {
               <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={theme === 'dark'} compact={compact.powerCards} />
             </div>
             <div className="flex-1 min-h-0">
-              <PowerBreakdownChart data={statusHistory} isDark={theme === 'dark'} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} />
+              <PowerBreakdownChart data={statusHistory} isDark={theme === 'dark'} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} />
             </div>
           </div>
         )}
@@ -1656,6 +1656,7 @@ export default function App() {
               graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
               cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
               sessionType={session?.session_type ?? null}
+              windowSeconds={seconds}
             />
           </div>
         )}

@@ -5,6 +5,7 @@ import Select, { type SingleValue } from 'react-select'
 import type { TelemetryRow, StatusRow, LapData } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
+import { useScrollScale } from '../hooks/useScrollScale'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -28,16 +29,6 @@ interface Props {
   // smooth-scrolled x range in default mode.
   windowSeconds?: number
 }
-
-// Smooth-scroll clock for the default (time-windowed) view. Data arrives at the
-// telemetry rate (~60 Hz) with timer/IPC jitter, while the display may refresh at
-// 120/180 Hz; sliding the x-window only when data lands therefore judders. A rAF
-// loop slides the window against wall-clock time instead, extrapolating from the
-// newest sample. Extrapolation stops STALL_S after data stops (pause/disconnect);
-// backward jumps larger than SNAP_S (seek/session restart) snap immediately,
-// while smaller ones (resume catch-up, jitter) hold until the data catches up.
-const STALL_S = 0.2
-const SNAP_S = 0.5
 
 const COLOR_SPEED = '#37872D'
 const COLOR_RPM   = '#C4162A'
@@ -384,73 +375,32 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
   // the full stable prev-lap columns in the overlay modes. The data prop stays a
   // constant empty dataset so that compare is trivially cheap; onCreate re-pushes
   // after the wrapper recreates the chart (options/mode/theme changes).
-  const chartRef = useRef<uPlot | null>(null)
   const uDataRef = useRef(uData)
   uDataRef.current = uData
 
-  // In default mode the x range is owned by the rAF scroll loop below, so setData
-  // must not reset scales; the lap-overlay modes keep autoscale-on-data.
+  // In default mode the x range is owned by the useScrollScale rAF loop, so
+  // setData must not reset scales; the lap-overlay modes keep autoscale-on-data.
   const isScroll = mode === 'default' && !showTable
   const isScrollRef = useRef(isScroll)
   isScrollRef.current = isScroll
 
-  const onCreate = useCallback((u: uPlot) => {
-    chartRef.current = u
-    u.over.addEventListener('mouseleave', hide)
-    u.setData(uDataRef.current, !isScrollRef.current)
-  }, [])
-
-  const onDelete = useCallback(() => {
-    chartRef.current = null
-  }, [])
-
-  useEffect(() => {
-    chartRef.current?.setData(uData, !isScroll)
-  }, [uData, isScroll])
-
-  // Feed the scroll clock: record when the newest sample changed, in wall time,
-  // plus the oldest visible sample so the window can clamp to the data start
-  // instead of scrolling into negative session time early in a session.
-  const clockRef = useRef({ lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN })
   const latestT = mode === 'default' && activeData.length > 0
     ? activeData[activeData.length - 1].session_time
     : null
   const firstT = mode === 'default' && activeData.length > 0
     ? activeData[0].session_time
     : null
-  useEffect(() => {
-    if (latestT == null) return
-    const c = clockRef.current
-    c.firstT = firstT ?? NaN
-    if (latestT !== c.lastT) {
-      c.lastT = latestT
-      c.wallAtT = performance.now()
-    }
-  }, [latestT, firstT])
+  const { chartRef, attach, detach } = useScrollScale(isScroll, latestT, firstT, windowSeconds)
 
-  // Slide the x-window every display frame from the wall clock, so scrolling is
-  // smooth at the monitor's refresh rate regardless of data arrival jitter. New
-  // points still land at their exact session_time positions when they arrive.
+  const onCreate = useCallback((u: uPlot) => {
+    attach(u)
+    u.over.addEventListener('mouseleave', hide)
+    u.setData(uDataRef.current, !isScrollRef.current)
+  }, [attach])
+
   useEffect(() => {
-    if (!isScroll) return
-    let raf = 0
-    const loop = () => {
-      raf = requestAnimationFrame(loop)
-      const u = chartRef.current
-      const c = clockRef.current
-      if (!u || Number.isNaN(c.lastT)) return
-      const age = (performance.now() - c.wallAtT) / 1000
-      const target = c.lastT + Math.min(age, STALL_S)
-      if (target > c.est || !(c.est - target < SNAP_S)) c.est = target
-      // Until a full window of data exists, anchor the window at the data start
-      // (the trace grows from the left) instead of showing pre-session time.
-      let min = c.est - windowSeconds
-      if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
-      u.setScale('x', { min, max: min + windowSeconds })
-    }
-    raf = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(raf)
-  }, [isScroll, windowSeconds])
+    chartRef.current?.setData(uData, !isScroll)
+  }, [uData, isScroll])
 
   const noData = mode === 'compare'
     ? !speedRpmBlocks || speedRpmBlocks.length === 0 || compareLapNum === null
@@ -553,7 +503,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={is2L ? EMPTY_OVERLAY : EMPTY_SINGLE} onCreate={onCreate} onDelete={onDelete} />}
+              {mountedRef.current && <UPlotReact options={opts} data={is2L ? EMPTY_OVERLAY : EMPTY_SINGLE} onCreate={onCreate} onDelete={detach} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
