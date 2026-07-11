@@ -357,6 +357,7 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     tyreLay->addWidget(tyreSep_);
 
     tyreCards_ = new TyreCardsWidget(Qt::Horizontal);
+    tyreCards_->setModel(model);   // feeds the per-corner Table view from the session buffer
     tyreCards_->setFixedHeight(tyreCardsHeight(tyresLevel_));
     if (tyresLevel_ != TyreCardsWidget::Full)
         tyreCards_->setLevel(static_cast<TyreCardsWidget::Level>(tyresLevel_));
@@ -663,10 +664,12 @@ void OverviewPage::setPlaybackMode(bool on, float currentTime) {
         currentTime_ = currentTime;
         if (chart_) { chart_->setPlaybackMode(true); chart_->setCurrentTime(currentTime); }
         if (tyreCharts_) { tyreCharts_->setPlaybackMode(true); tyreCharts_->setCurrentTime(currentTime); }
+        if (tyreCards_) { tyreCards_->setPlaybackMode(true); tyreCards_->setCurrentTime(currentTime); }
         if (compareBtn_) compareBtn_->setEnabled(true);
     } else {
         if (chart_) { chart_->setPlaybackMode(false); chart_->setMode(ChartMode::Default); }
         if (tyreCharts_) tyreCharts_->setPlaybackMode(false);
+        if (tyreCards_) tyreCards_->setPlaybackMode(false);
         if (compareBtn_) compareBtn_->setEnabled(false);
         if (defaultBtn_) defaultBtn_->setChecked(true);
         if (lapCombo_) lapCombo_->setVisible(false);
@@ -678,6 +681,7 @@ void OverviewPage::setCurrentTime(float t) {
     currentTime_ = t;
     if (chart_) chart_->setCurrentTime(t);
     if (tyreCharts_) tyreCharts_->setCurrentTime(t);
+    if (tyreCards_) tyreCards_->setCurrentTime(t);
     if (telemetryTableMode_) refreshTelemetryTable();
 }
 
@@ -685,6 +689,7 @@ void OverviewPage::setWindowSeconds(float secs) {
     windowS_ = secs;
     if (chart_) chart_->setWindowSeconds(secs);
     if (tyreCharts_) tyreCharts_->setWindowSeconds(secs);
+    if (tyreCards_) tyreCards_->setWindowSeconds(secs);
     if (telemetryTableMode_) refreshTelemetryTable();
 }
 
@@ -703,6 +708,10 @@ void OverviewPage::setTelemetryTable(bool table) {
 
 void OverviewPage::setTyreGraphTable(int section, bool table) {
     if (tyreCharts_) tyreCharts_->setSectionViewMode(section, table);
+}
+
+void OverviewPage::setCardTable(int corner, bool table) {
+    if (tyreCards_) tyreCards_->setCornerTable(corner, table);
 }
 
 void OverviewPage::refreshTelemetryTable() {

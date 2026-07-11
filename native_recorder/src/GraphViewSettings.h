@@ -20,11 +20,25 @@ enum class GraphSection {
     OverviewTyreBrake,
     OverviewTyreWear,
 
+    // Overview per-corner tyre cards — Card or Time/Surface/Inner/Brake table,
+    // chosen independently of the Tyres page cards below.
+    OverviewTyreCardFL,
+    OverviewTyreCardFR,
+    OverviewTyreCardRL,
+    OverviewTyreCardRR,
+
     // Tyres page tyre graphs.
     TyreSurface,
     TyreInner,
     TyreBrake,
     TyreWear,
+
+    // Tyres page per-corner tyre cards — each can show as its card or as a
+    // Time/Surface/Inner/Brake table (mirrors Electron's tyreCardFL/FR/RL/RR).
+    TyreCardFL,
+    TyreCardFR,
+    TyreCardRL,
+    TyreCardRR,
 
     InputGear,
     InputThrottleBrake,
@@ -48,10 +62,18 @@ inline const char* graphViewKey(GraphSection s) {
         case GraphSection::OverviewTyreInner:  return "ui/graphView/overviewTyreInner";
         case GraphSection::OverviewTyreBrake:  return "ui/graphView/overviewTyreBrake";
         case GraphSection::OverviewTyreWear:   return "ui/graphView/overviewTyreWear";
+        case GraphSection::OverviewTyreCardFL: return "ui/graphView/overviewTyreCardFL";
+        case GraphSection::OverviewTyreCardFR: return "ui/graphView/overviewTyreCardFR";
+        case GraphSection::OverviewTyreCardRL: return "ui/graphView/overviewTyreCardRL";
+        case GraphSection::OverviewTyreCardRR: return "ui/graphView/overviewTyreCardRR";
         case GraphSection::TyreSurface:        return "ui/graphView/tyreSurface";
         case GraphSection::TyreInner:          return "ui/graphView/tyreInner";
         case GraphSection::TyreBrake:          return "ui/graphView/tyreBrake";
         case GraphSection::TyreWear:           return "ui/graphView/tyreWear";
+        case GraphSection::TyreCardFL:         return "ui/graphView/tyreCardFL";
+        case GraphSection::TyreCardFR:         return "ui/graphView/tyreCardFR";
+        case GraphSection::TyreCardRL:         return "ui/graphView/tyreCardRL";
+        case GraphSection::TyreCardRR:         return "ui/graphView/tyreCardRR";
         case GraphSection::InputGear:          return "ui/graphView/inputGear";
         case GraphSection::InputThrottleBrake: return "ui/graphView/inputThrottleBrake";
         case GraphSection::InputSteering:      return "ui/graphView/inputSteering";

@@ -37,6 +37,10 @@ public:
     // Per-graph Chart/Table toggle (section: surface=0, inner=1, brake=2, wear=3).
     void setGraphSectionTable(int section, bool table);
 
+    // Per-corner tyre-card Card/Table toggle (corner: FL=0, FR=1, RL=2, RR=3),
+    // driven from the Settings "Graphs" tab like every other graph section.
+    void setCardTable(int corner, bool table);
+
 private:
     void setGraphsShown(bool on);   // swap allocation ⇄ graphs views
 

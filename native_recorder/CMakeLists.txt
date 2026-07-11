@@ -85,6 +85,8 @@ set(SOURCES
     src/third_party/qcustomplot/qcustomplot.h
     src/components/Toast.cpp
     src/components/Toast.h
+    src/components/XlsxExportWorker.cpp
+    src/components/XlsxExportWorker.h
     src/components/ToastEnums.h
     src/components/ToastEvents.cpp
     src/components/ToastEvents.h

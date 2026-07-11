@@ -49,6 +49,13 @@ QIcon seekForwardIcon(QWidget* w, const QColor& tint) {
         w->style()->standardIcon(QStyle::SP_MediaSeekForward));
 }
 
+QIcon exportIcon(QWidget* w, const QColor& tint) {
+    return adaptThemeIcon(
+        QIcon::fromTheme("document-save", QIcon::fromTheme("document-export")),
+        tint,
+        w->style()->standardIcon(QStyle::SP_DialogSaveButton));
+}
+
 // QSlider's click behaviour is style-dependent: Windows' native style jumps the
 // handle straight to the clicked position, but Linux styles (Breeze, Fusion,
 // GTK) treat a groove click as a page step in that direction instead — hence
@@ -163,6 +170,17 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
     speedCombo_->addItem("4×",    4.0f);
     speedCombo_->setCurrentIndex(2);
     pbLayout->addWidget(speedCombo_);
+
+    // Export the currently-loaded clip to Excel. Flat icon-only button matching the
+    // seek/play transport buttons; the actual save dialog + off-thread export live in
+    // MainWindow (mirrors the Electron renderer→main split), reached via exportRequested().
+    exportBtn_ = new QPushButton(bar_);
+    exportBtn_->setIcon(exportIcon(bar_, iconTint));
+    exportBtn_->setIconSize(QSize(20, 20));
+    exportBtn_->setFixedSize(34, 34);
+    exportBtn_->setFlat(true);
+    exportBtn_->setToolTip("Export to Excel");
+    pbLayout->addWidget(exportBtn_);
 
     // A normal (non-flat) button so it reads as a real "Close" action; icon-only by
     // default, gaining a "Close File" label when the toolbar's labels option is on
@@ -304,9 +322,14 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
         }
     });
 
+    connect(exportBtn_, &QPushButton::clicked, this, [this] {
+        emit exportRequested();
+    });
+
     connect(closeRecBtn_, &QPushButton::clicked, this, [this] {
         player_->close();
         if (model_) model_->clear();
+        loadedPath_.clear();
         sep_->hide();
         bar_->hide();
         emit exited();
@@ -327,6 +350,7 @@ void PlaybackController::setShowLabels(bool on) {
 }
 
 void PlaybackController::load(const QString& path) {
+    loadedPath_ = path;
     player_->load(path);
 }
 

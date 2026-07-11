@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QLabel>
 #include <QProgressBar>
+#include <QPointer>
 
 #include <vector>
 
@@ -10,6 +11,10 @@
 
 class QBoxLayout;
 class QGridLayout;
+class QStackedWidget;
+class QTimer;
+class SessionModel;
+class GraphTable;
 
 class TyreCardsWidget : public QWidget {
     Q_OBJECT
@@ -22,6 +27,18 @@ public:
     // nullptr = the row hasn't been seen yet; that section keeps its placeholder.
     void update(const TelemetryRow* telemetry, const DamageRow* damage);
     void setCornerVisible(int i, bool on);
+
+    // Per-corner Card|Table view (Tyres page, vertical orientation, Full level only).
+    // The Table view is a scrolling Time/Surface/Inner/Brake history table for that
+    // one corner, so it needs the session buffer + playback window — fed through
+    // these, exactly like TyreChartsWidget. No-ops for the Overview strip.
+    // The mode itself is driven from the Settings "Graphs" tab via setCornerTable(),
+    // mirroring every other graph's Chart/Table toggle (no per-card button).
+    void setModel(SessionModel* model);
+    void setPlaybackMode(bool on);
+    void setCurrentTime(float t);
+    void setWindowSeconds(float secs);
+    void setCornerTable(int i, bool table);   // Settings-driven Card ⇄ Table swap
 
     // Density levels for the Overview tyre cards (the Tyres page always uses Full):
     //   Full          — stacked Surface/Inner/Brake/Wear rows + wear bar (default)
@@ -36,6 +53,9 @@ public:
     // the Overview page re-applies corner visibility and re-feeds update().
     void setLevel(Level level);
 
+protected:
+    void showEvent(QShowEvent* e) override;     // repopulate table-mode corners when shown
+
 private:
     void updateDividers();
     void buildCards();                          // (re)build the four corners at the current level
@@ -45,6 +65,12 @@ private:
     // One line per corner (UltraCompact2/3): name + 4 values. abbrev shortens the
     // corner name; showLabels prefixes each value with its metric.
     void buildOneLine(QBoxLayout* outer, bool abbrev, bool showLabels);
+
+    // Per-corner Table view helpers (vertical/Tyres page only).
+    void  ensureCornerTable(int i);             // build corner i's GraphTable on demand
+    void  requestRefresh();                     // coalesced repaint of table-mode corners
+    void  refresh();                            // feed the visible-window samples into the tables
+    float currentTime() const;                  // playhead (playback) or latest live sample
 
     Qt::Orientation orientation_ = Qt::Horizontal;
     Level           level_       = Full;
@@ -59,4 +85,17 @@ private:
     QLabel*       wearLabel_[4]   = {};
     QProgressBar* wear_[4]        = {};
     QLabel*       blisters_[4]    = {};
+
+    // Per-corner Table view state (vertical/Tyres page, Full level). cornerStack_
+    // swaps the card body for cornerTable_. All null on the Overview strip and at
+    // compact levels. The mode is set externally (Settings), not persisted here.
+    QPointer<SessionModel> model_;
+    QTimer*         refreshTimer_ = nullptr;
+    bool            dirty_        = false;
+    bool            playback_     = false;
+    float           currentTime_  = 0.0f;
+    float           windowS_      = 30.0f;      // view window; matches TyreChartsWidget default
+    bool            cornerTableMode_[4] = { false, false, false, false };
+    GraphTable*     cornerTable_[4]     = {};
+    QStackedWidget* cornerStack_[4]     = {};
 };

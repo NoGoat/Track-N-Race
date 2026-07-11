@@ -103,8 +103,9 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
 
     // ── Right panel: wheel cards under a slim header carrying the Graphs toggle ─
     tyreCards_ = new TyreCardsWidget(Qt::Vertical);
+    tyreCards_->setModel(model);   // feeds the per-corner Table view from the session buffer
     QWidget* cardsCol = new QWidget;
-    cardsCol->setFixedWidth(240);
+    cardsCol->setFixedWidth(340);   // wide enough for the per-corner Table columns (Card or Table view)
     QVBoxLayout* cc = new QVBoxLayout(cardsCol);
     cc->setContentsMargins(0, 0, 0, 0);
     cc->setSpacing(0);
@@ -170,21 +171,32 @@ void TyresPage::setGraphsShown(bool on) {
 }
 
 void TyresPage::setPlaybackMode(bool on, float currentTime) {
-    if (!tyreCharts_) return;
-    tyreCharts_->setPlaybackMode(on);
-    if (on) tyreCharts_->setCurrentTime(currentTime);
+    if (tyreCharts_) {
+        tyreCharts_->setPlaybackMode(on);
+        if (on) tyreCharts_->setCurrentTime(currentTime);
+    }
+    if (tyreCards_) {
+        tyreCards_->setPlaybackMode(on);
+        if (on) tyreCards_->setCurrentTime(currentTime);
+    }
 }
 
 void TyresPage::setCurrentTime(float t) {
     if (tyreCharts_) tyreCharts_->setCurrentTime(t);
+    if (tyreCards_)  tyreCards_->setCurrentTime(t);
 }
 
 void TyresPage::setWindowSeconds(float secs) {
     if (tyreCharts_) tyreCharts_->setWindowSeconds(secs);
+    if (tyreCards_)  tyreCards_->setWindowSeconds(secs);
 }
 
 void TyresPage::setGraphSectionTable(int section, bool table) {
     if (tyreCharts_) tyreCharts_->setSectionViewMode(section, table);
+}
+
+void TyresPage::setCardTable(int corner, bool table) {
+    if (tyreCards_) tyreCards_->setCornerTable(corner, table);
 }
 
 // ── Tyres page updater ────────────────────────────────────────────────────

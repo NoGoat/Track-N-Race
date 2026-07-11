@@ -14,6 +14,9 @@
     <file alias="MIT-glaze.txt">licenses/MIT-glaze.txt</file>
     <file alias="MIT-qt-toast.txt">licenses/MIT-qt-toast.txt</file>
     <file alias="Zlib.txt">licenses/Zlib.txt</file>
+    <!-- libxlsxwriter (the Excel export engine) is BSD 2-Clause; its own license
+         file also reproduces the notices for its bundled minizip/tmpfileplus/md5. -->
+    <file alias="BSD-2-Clause-libxlsxwriter.txt">licenses/BSD-2-Clause-libxlsxwriter.txt</file>
     <!-- Noto Sans (bundled under fonts.qrc) ships under the SIL Open Font
          License 1.1; the OFL requires the licence to accompany the font. -->
     <file alias="OFL-1.1-Noto.txt">licenses/OFL-1.1-Noto.txt</file>

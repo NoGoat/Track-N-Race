@@ -30,6 +30,9 @@ class EngineSink;
 namespace tnrp { class Engine; }
 class ToastHost;
 class QTimer;
+class QLabel;
+class QProgressBar;
+class QThread;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -173,6 +176,17 @@ private:
     bool         inPlayback_     = false;
     QWidget*     container_      = nullptr;
     QWidget*     loadingOverlay_ = nullptr;
+
+    // ── Excel export (playback bar → here) ────────────────────────
+    // Export runs off the GUI thread (XlsxExportWorker on exportThread_); progress
+    // is shown on a determinate overlay mirroring loadingOverlay_. exporting_ guards
+    // against a second export starting while one is in flight.
+    QWidget*      exportOverlay_     = nullptr;
+    QLabel*       exportStageLabel_  = nullptr;
+    QProgressBar* exportProgressBar_ = nullptr;
+    QThread*      exportThread_      = nullptr;
+    bool          exporting_         = false;
+    void onExportXlsxRequested();   // save dialog + off-thread export of the loaded clip
 
     // ── Telemetry engine (libtnrp) ────────────────────────────────
     // Owns UDP receive, F1 24/25 parsing, .tnrd recording, and (Stage 2) playback.

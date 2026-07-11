@@ -1,5 +1,7 @@
 #include "TyreCardsWidget.h"
 #include "TyreHelpers.h"
+#include "GraphTable.h"
+#include "../SessionModel.h"
 
 #include <QBoxLayout>
 #include <QHBoxLayout>
@@ -10,6 +12,10 @@
 #include <QFont>
 #include <QPalette>
 #include <QSizePolicy>
+#include <QStackedWidget>
+#include <QTimer>
+#include <QShowEvent>
+#include <QVector>
 #include <algorithm>
 
 static const char* kCornerNames[]  = { "FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT" };
@@ -34,6 +40,16 @@ TyreCardsWidget::TyreCardsWidget(Qt::Orientation orientation, QWidget* parent)
         : static_cast<QBoxLayout*>(new QVBoxLayout(this));
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
+
+    // Coalesce table refills to one per event-loop pass (mirrors TyreChartsWidget):
+    // packets arrive 20..60 Hz but we only rebuild the table once per pass, when shown.
+    refreshTimer_ = new QTimer(this);
+    refreshTimer_->setSingleShot(true);
+    refreshTimer_->setInterval(0);
+    connect(refreshTimer_, &QTimer::timeout, this, [this] {
+        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
+    });
+
     buildCards();
 }
 
@@ -51,6 +67,10 @@ void TyreCardsWidget::buildCards() {
         wear_[i] = nullptr;
         blisters_[i] = nullptr;
         compactCorner_[i].clear();
+        // clearLayout() above deleted the cards (and any table/stack children); drop
+        // the dangling pointers. cornerTableMode_ persists across the rebuild.
+        cornerTable_[i]  = nullptr;
+        cornerStack_[i]  = nullptr;
     }
     for (int d = 0; d < 3; ++d) dividers_[d] = nullptr;
     compactGrid_ = nullptr;
@@ -60,41 +80,30 @@ void TyreCardsWidget::buildCards() {
     if (level_ == UltraCompact2)  { buildOneLine(outer, /*abbrev*/ false, /*showLabels*/ false); return; }
     if (level_ == UltraCompact3)  { buildOneLine(outer, /*abbrev*/ true,  /*showLabels*/ true);  return; }
 
-    for (int i = 0; i < 4; ++i) {
-        QWidget* card = new QWidget;
-        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        QVBoxLayout* cv = new QVBoxLayout(card);
+    auto makeRow = [&](const QString& label, QLabel*& valueOut) {
+        QWidget* row = new QWidget;
+        QHBoxLayout* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        QLabel* lbl = new QLabel(label);
+        QFont lf; lf.setPointSize(8); lbl->setFont(lf);
+        lbl->setForegroundRole(QPalette::PlaceholderText);
+        valueOut = new QLabel("—");
+        QFont vf; vf.setPointSize(8); vf.setBold(true);
+        valueOut->setFont(vf);
+        valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        h->addWidget(lbl);
+        h->addStretch();
+        h->addWidget(valueOut);
+        return row;
+    };
 
-        QLabel* title = new QLabel(kCornerNames[i]);
-        QFont tf; tf.setPointSize(7); tf.setBold(true);
-        title->setFont(tf);
-        title->setForegroundRole(QPalette::PlaceholderText);
-
-        cv->setContentsMargins(10, 8, 10, 8);
-        cv->setSpacing(2);
-        cv->addWidget(title);
-
-        auto makeRow = [&](const QString& label, QLabel*& valueOut) {
-            QWidget* row = new QWidget;
-            QHBoxLayout* h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            QLabel* lbl = new QLabel(label);
-            QFont lf; lf.setPointSize(8); lbl->setFont(lf);
-            lbl->setForegroundRole(QPalette::PlaceholderText);
-            valueOut = new QLabel("—");
-            QFont vf; vf.setPointSize(8); vf.setBold(true);
-            valueOut->setFont(vf);
-            valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            h->addWidget(lbl);
-            h->addStretch();
-            h->addWidget(valueOut);
-            return row;
-        };
-
-        cv->addWidget(makeRow("Surface", surfaceTemp_[i]));
-        cv->addWidget(makeRow("Inner",   innerTemp_[i]));
-        cv->addWidget(makeRow("Brake",   brakeTemp_[i]));
-        cv->addWidget(makeRow("Wear",    wearLabel_[i]));
+    // The card body (temp rows + wear bar + blisters) built into a given layout;
+    // shared by the plain card and the toggle-able stacked card.
+    auto buildBody = [&](int i, QVBoxLayout* bl) {
+        bl->addWidget(makeRow("Surface", surfaceTemp_[i]));
+        bl->addWidget(makeRow("Inner",   innerTemp_[i]));
+        bl->addWidget(makeRow("Brake",   brakeTemp_[i]));
+        bl->addWidget(makeRow("Wear",    wearLabel_[i]));
 
         auto* wearBar = new QProgressBar;
         wearBar->setRange(0, 100);
@@ -106,14 +115,52 @@ void TyreCardsWidget::buildCards() {
             "QProgressBar::chunk { background: #73BF69; border-radius: 3px; }"
         );
         wear_[i] = wearBar;
-        cv->addWidget(wearBar);
+        bl->addWidget(wearBar);
 
         blisters_[i] = new QLabel;
         blisters_[i]->setVisible(false);
         QFont bf; bf.setPointSize(7);
         blisters_[i]->setFont(bf);
         blisters_[i]->setForegroundRole(QPalette::PlaceholderText);
-        cv->addWidget(blisters_[i]);
+        bl->addWidget(blisters_[i]);
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        QWidget* card = new QWidget;
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        // No padding on the card itself: the Table view (page 1) fills it edge to
+        // edge. The card body (page 0) carries its own inset + the corner title.
+        QVBoxLayout* cv = new QVBoxLayout(card);
+        cv->setContentsMargins(0, 0, 0, 0);
+        cv->setSpacing(0);
+
+        // Card body: corner title + temp rows + wear bar + blisters, inset as before.
+        // The title lives here so the Table view stays title-less and edge to edge.
+        QWidget* body = new QWidget;
+        QVBoxLayout* bl = new QVBoxLayout(body);
+        bl->setContentsMargins(10, 8, 10, 8);
+        bl->setSpacing(2);
+
+        QLabel* title = new QLabel(kCornerNames[i]);
+        QFont tf; tf.setPointSize(7); tf.setBold(true);
+        title->setFont(tf);
+        title->setForegroundRole(QPalette::PlaceholderText);
+        bl->addWidget(title);
+
+        buildBody(i, bl);
+
+        // Body and the (lazy) table share one stacked cell, so the table replaces
+        // the card body in place when Settings flips this corner to Table view.
+        cornerStack_[i] = new QStackedWidget;
+        cornerStack_[i]->addWidget(body);   // page 0 = card body
+        cv->addWidget(cornerStack_[i], 1);
+
+        // Re-apply the current mode after a rebuild (e.g. an Overview density switch),
+        // so the card comes back up in the view Settings last chose.
+        if (cornerTableMode_[i]) {
+            ensureCornerTable(i);
+            cornerStack_[i]->setCurrentWidget(cornerTable_[i]);
+        }
 
         cards_[i] = card;
         // addWidget (reparent) before setVisible — otherwise setVisible(true) on the
@@ -331,6 +378,97 @@ void TyreCardsWidget::updateDividers()
             dividers_[k - 1]->setVisible(cornerVisible_[k] && anyEarlier);
         anyEarlier = anyEarlier || cornerVisible_[k];
     }
+}
+
+// ── Per-corner Table view (vertical/Tyres page) ───────────────────────────────
+
+void TyreCardsWidget::setModel(SessionModel* m) {
+    model_ = m;
+    if (!m) return;
+    connect(m, &SessionModel::tyreAppended, this, &TyreCardsWidget::requestRefresh);
+    connect(m, &SessionModel::wasReset,     this, &TyreCardsWidget::requestRefresh);
+    requestRefresh();
+}
+
+void TyreCardsWidget::setPlaybackMode(bool on)  { playback_ = on;    requestRefresh(); }
+void TyreCardsWidget::setCurrentTime(float t)   { currentTime_ = t;  requestRefresh(); }
+void TyreCardsWidget::setWindowSeconds(float s) { windowS_ = s;      requestRefresh(); }
+
+void TyreCardsWidget::requestRefresh() {
+    dirty_ = true;
+    if (refreshTimer_ && !refreshTimer_->isActive()) refreshTimer_->start();
+}
+
+void TyreCardsWidget::showEvent(QShowEvent* e) {
+    QWidget::showEvent(e);
+    requestRefresh();   // repopulate any table-mode corners when the page is shown
+}
+
+float TyreCardsWidget::currentTime() const {
+    if (playback_) return currentTime_;
+    return model_ ? model_->data().latestTime : 0.0f;
+}
+
+void TyreCardsWidget::ensureCornerTable(int i) {
+    if (i < 0 || i >= 4 || cornerTable_[i] || !cornerStack_[i]) return;
+    const QVector<GraphTable::Column> cols = {
+        { "Time",         GraphTable::Time },
+        { "Surface (°C)", GraphTable::Fixed0 },
+        { "Inner (°C)",   GraphTable::Fixed0 },
+        { "Brake (°C)",   GraphTable::Fixed0 } };
+    cornerTable_[i] = new GraphTable(cols, cornerStack_[i]);
+    cornerTable_[i]->setFrameShape(QFrame::NoFrame);   // edge-to-edge, no inset border
+    cornerStack_[i]->addWidget(cornerTable_[i]);       // page 1 = table
+}
+
+// Card ⇄ Table swap for corner i, driven from the Settings "Graphs" tab (persisted
+// there like every other graph's Chart/Table mode). No-op unless this is a vertical
+// Full card (the Overview strip has no table view).
+void TyreCardsWidget::setCornerTable(int i, bool table) {
+    if (i < 0 || i >= 4) return;
+    cornerTableMode_[i] = table;
+    if (!cornerStack_[i]) return;   // horizontal / compact levels: no table view
+    if (table) {
+        ensureCornerTable(i);
+        cornerStack_[i]->setCurrentWidget(cornerTable_[i]);
+    } else {
+        cornerStack_[i]->setCurrentIndex(0);   // back to the card body
+    }
+    requestRefresh();
+}
+
+void TyreCardsWidget::refresh() {
+    if (!model_) return;
+    bool any = false;
+    for (int i = 0; i < 4; ++i)
+        if (cornerTableMode_[i] && cornerTable_[i]) { any = true; break; }
+    if (!any) return;
+
+    const SessionData& d = model_->data();
+    const float endTime = currentTime();
+    const float left    = endTime - windowS_;
+
+    for (int i = 0; i < 4; ++i)
+        if (cornerTableMode_[i] && cornerTable_[i]) cornerTable_[i]->beginRebuild();
+
+    // Feed newest-first over the visible window (the table renders oldest→newest);
+    // stop once we walk past the window's start. Mirrors TyreChartsWidget's table feed.
+    for (int k = (int)d.tyreBuf.size() - 1; k >= 0; --k) {
+        const TyreSample& s = d.tyreBuf[k];
+        if (s.t > endTime) continue;
+        if (s.t < left)    break;
+        auto add = [&](int i, float surf, float inner, float brake) {
+            if (cornerTableMode_[i] && cornerTable_[i])
+                cornerTable_[i]->addRow(s.t, surf, inner, brake);
+        };
+        add(0, s.surfFl, s.innerFl, s.brakeFl);
+        add(1, s.surfFr, s.innerFr, s.brakeFr);
+        add(2, s.surfRl, s.innerRl, s.brakeRl);
+        add(3, s.surfRr, s.innerRr, s.brakeRr);
+    }
+
+    for (int i = 0; i < 4; ++i)
+        if (cornerTableMode_[i] && cornerTable_[i]) cornerTable_[i]->endRebuild();
 }
 
 void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* damage) {

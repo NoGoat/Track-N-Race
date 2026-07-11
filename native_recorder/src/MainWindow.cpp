@@ -22,6 +22,7 @@
 #include "components/ToastEvents.h"
 #include "components/Toast.h"
 #include "components/ToastHost.h"
+#include "components/XlsxExportWorker.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
 
@@ -34,6 +35,9 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QFileInfo>
+#include <QDir>
+#include <QProgressBar>
+#include <QThread>
 #include <QSizePolicy>
 #include <QStyleHints>
 #include <QCoreApplication>
@@ -243,6 +247,27 @@ MainWindow::MainWindow(QWidget* parent)
     ol->addWidget(spinner);
     loadingOverlay_->hide();
 
+    // Export overlay: same full-central-area cover as the loading overlay, but with a
+    // *determinate* progress bar + stage label, driven by the off-thread XlsxExportWorker.
+    exportOverlay_ = new QWidget(container_);
+    exportOverlay_->setAutoFillBackground(true);
+    {
+        QPalette pal = exportOverlay_->palette();
+        pal.setColor(QPalette::Window, palette().color(QPalette::Window));
+        exportOverlay_->setPalette(pal);
+    }
+    auto* eol = new QVBoxLayout(exportOverlay_);
+    eol->setAlignment(Qt::AlignCenter);
+    eol->setSpacing(12);
+    exportStageLabel_ = new QLabel("Exporting to Excel…", exportOverlay_);
+    exportStageLabel_->setAlignment(Qt::AlignCenter);
+    eol->addWidget(exportStageLabel_);
+    exportProgressBar_ = new QProgressBar(exportOverlay_);
+    exportProgressBar_->setRange(0, 100);
+    exportProgressBar_->setFixedWidth(300);
+    eol->addWidget(exportProgressBar_);
+    exportOverlay_->hide();
+
     connect(toolbar_, &AppToolbar::pageSelected, stack, &QStackedWidget::setCurrentIndex);
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
@@ -284,6 +309,8 @@ MainWindow::MainWindow(QWidget* parent)
         loadingOverlay_->hide();
         QMessageBox::warning(this, "Load Failed", "Could not open the recording file.");
     });
+
+    connect(playback_, &PlaybackController::exportRequested, this, &MainWindow::onExportXlsxRequested);
 
     connect(playback_, &PlaybackController::entered, this,
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
@@ -404,11 +431,72 @@ MainWindow::~MainWindow() {
     engine_.reset();
 }
 
+// Export the currently-loaded .tnrd clip to Excel. Mirrors the Electron flow
+// (renderer button → main-process save dialog + off-thread export + progress). The
+// libxlsxwriter-backed tnrp::exportTnrdFileToXlsx opens its own reader on the file,
+// so this is independent of the live SessionModel and works while a clip is loaded.
+void MainWindow::onExportXlsxRequested() {
+    if (exporting_) return;   // one export at a time (the overlay is up meanwhile)
+
+    const QString src = playback_ ? playback_->loadedPath() : QString();
+    if (src.isEmpty()) {
+        QMessageBox::warning(this, "Export to Excel", "No session file is loaded.");
+        return;
+    }
+
+    const QFileInfo srcInfo(src);
+    const QString defaultPath = srcInfo.dir().filePath(srcInfo.completeBaseName() + ".xlsx");
+    const QString dest = QFileDialog::getSaveFileName(
+        this, "Export to Excel", defaultPath, "Excel Workbook (*.xlsx)");
+    if (dest.isEmpty()) return;   // cancelled
+
+    exporting_ = true;
+    exportStageLabel_->setText("Preparing export…");
+    exportProgressBar_->setValue(0);
+    exportOverlay_->setGeometry(container_->rect());
+    exportOverlay_->raise();
+    exportOverlay_->show();
+
+    // Run off the GUI thread; progress()/finished() arrive here as queued signals.
+    exportThread_ = new QThread(this);
+    auto* worker = new XlsxExportWorker(src, dest);
+    worker->moveToThread(exportThread_);
+    connect(exportThread_, &QThread::started, worker, &XlsxExportWorker::run);
+    connect(worker, &XlsxExportWorker::progress, this, [this](int pct, const QString& stage) {
+        exportProgressBar_->setValue(pct);
+        exportStageLabel_->setText(stage);
+    });
+    connect(worker, &XlsxExportWorker::finished, this, [this, dest](bool ok, const QString& error) {
+        exportOverlay_->hide();
+        exporting_ = false;
+        exportThread_ = nullptr;   // deleted below via the thread's finished() chain
+        if (ok) {
+            ToastSpec spec;
+            spec.label = "Exported to Excel";
+            spec.sub   = QFileInfo(dest).fileName();
+            spec.color = QColor("#37872D");
+            spec.persistent = false;
+            spec.dismissesPersistent = false;
+            if (toasts_) toasts_->show(spec);
+        } else {
+            QMessageBox::warning(this, "Export Failed",
+                error.isEmpty() ? "Could not export the session to Excel." : error);
+        }
+    });
+    // Tear-down: stop the thread's loop once the export finishes, then delete both.
+    connect(worker, &XlsxExportWorker::finished, exportThread_, &QThread::quit);
+    connect(exportThread_, &QThread::finished, worker, &QObject::deleteLater);
+    connect(exportThread_, &QThread::finished, exportThread_, &QObject::deleteLater);
+    exportThread_->start();
+}
+
 void MainWindow::resizeEvent(QResizeEvent* e) {
     QMainWindow::resizeEvent(e);
     scheduleNormalGeometryCapture();
     if (loadingOverlay_ && loadingOverlay_->isVisible() && container_)
         loadingOverlay_->setGeometry(container_->rect());
+    if (exportOverlay_ && exportOverlay_->isVisible() && container_)
+        exportOverlay_->setGeometry(container_->rect());
     // Keep any visible toasts pinned to the content area's top-right corner.
     Toast::updateAllPositions();
 }
@@ -654,10 +742,18 @@ void MainWindow::dispatchGraphView(tnr::GraphSection s, bool table) {
         case GS::OverviewTyreInner:   if (overviewPage_) overviewPage_->setTyreGraphTable(1, table); break;
         case GS::OverviewTyreBrake:   if (overviewPage_) overviewPage_->setTyreGraphTable(2, table); break;
         case GS::OverviewTyreWear:    if (overviewPage_) overviewPage_->setTyreGraphTable(3, table); break;
+        case GS::OverviewTyreCardFL:  if (overviewPage_) overviewPage_->setCardTable(0, table); break;
+        case GS::OverviewTyreCardFR:  if (overviewPage_) overviewPage_->setCardTable(1, table); break;
+        case GS::OverviewTyreCardRL:  if (overviewPage_) overviewPage_->setCardTable(2, table); break;
+        case GS::OverviewTyreCardRR:  if (overviewPage_) overviewPage_->setCardTable(3, table); break;
         case GS::TyreSurface:        if (tyresPage_) tyresPage_->setGraphSectionTable(0, table); break;
         case GS::TyreInner:          if (tyresPage_) tyresPage_->setGraphSectionTable(1, table); break;
         case GS::TyreBrake:          if (tyresPage_) tyresPage_->setGraphSectionTable(2, table); break;
         case GS::TyreWear:           if (tyresPage_) tyresPage_->setGraphSectionTable(3, table); break;
+        case GS::TyreCardFL:         if (tyresPage_) tyresPage_->setCardTable(0, table); break;
+        case GS::TyreCardFR:         if (tyresPage_) tyresPage_->setCardTable(1, table); break;
+        case GS::TyreCardRL:         if (tyresPage_) tyresPage_->setCardTable(2, table); break;
+        case GS::TyreCardRR:         if (tyresPage_) tyresPage_->setCardTable(3, table); break;
         case GS::InputGear:          if (inputPage_) inputPage_->setGraphSectionTable(0, table); break;
         case GS::InputThrottleBrake: if (inputPage_) inputPage_->setGraphSectionTable(1, table); break;
         case GS::InputSteering:      if (inputPage_) inputPage_->setGraphSectionTable(2, table); break;

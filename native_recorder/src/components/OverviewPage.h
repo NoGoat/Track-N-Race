@@ -57,6 +57,7 @@ public:
     // MainWindow). The tyre strip shares the Tyres page's tyre-graph settings.
     void setTelemetryTable(bool table);              // Speed / RPM / ERS chart
     void setTyreGraphTable(int section, bool table); // tyre strip (surf/inner/brake/wear)
+    void setCardTable(int corner, bool table);       // per-corner tyre card (FL/FR/RL/RR)
 
     // "Edit Layout" / Settings dialogs read/write through these (immediate-apply).
     OverviewLayout loadLayout();

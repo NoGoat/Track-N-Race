@@ -637,7 +637,13 @@ QWidget* SettingsDialog::buildGraphsPage() {
         segLay->setSpacing(0);
         QButtonGroup* group = new QButtonGroup(w);
         group->setExclusive(true);
-        static const char* const opts[] = { "Chart", "Table" };
+        // Tyre cards toggle Card ⇄ Table; every other graph toggles Chart ⇄ Table.
+        const bool isCard =
+               s == tnr::GraphSection::TyreCardFL || s == tnr::GraphSection::TyreCardFR
+            || s == tnr::GraphSection::TyreCardRL || s == tnr::GraphSection::TyreCardRR
+            || s == tnr::GraphSection::OverviewTyreCardFL || s == tnr::GraphSection::OverviewTyreCardFR
+            || s == tnr::GraphSection::OverviewTyreCardRL || s == tnr::GraphSection::OverviewTyreCardRR;
+        const char* const opts[] = { isCard ? "Card" : "Chart", "Table" };
         for (int i = 0; i < 2; ++i) {
             SegmentButton* b = new SegmentButton;
             b->setText(opts[i]);
@@ -664,10 +670,18 @@ QWidget* SettingsDialog::buildGraphsPage() {
         { tnr::GraphSection::OverviewTyreInner,   "Overview", "Tyre inner temp" },
         { tnr::GraphSection::OverviewTyreBrake,   "Overview", "Tyre brake temp" },
         { tnr::GraphSection::OverviewTyreWear,    "Overview", "Tyre wear / life" },
+        { tnr::GraphSection::OverviewTyreCardFL,  "Overview", "Tyre card FL" },
+        { tnr::GraphSection::OverviewTyreCardFR,  "Overview", "Tyre card FR" },
+        { tnr::GraphSection::OverviewTyreCardRL,  "Overview", "Tyre card RL" },
+        { tnr::GraphSection::OverviewTyreCardRR,  "Overview", "Tyre card RR" },
         { tnr::GraphSection::TyreSurface,        "Tyres",    "Surface temp" },
         { tnr::GraphSection::TyreInner,          "Tyres",    "Inner temp" },
         { tnr::GraphSection::TyreBrake,          "Tyres",    "Brake temp" },
         { tnr::GraphSection::TyreWear,           "Tyres",    "Wear / life" },
+        { tnr::GraphSection::TyreCardFL,         "Tyres",    "Front-left card" },
+        { tnr::GraphSection::TyreCardFR,         "Tyres",    "Front-right card" },
+        { tnr::GraphSection::TyreCardRL,         "Tyres",    "Rear-left card" },
+        { tnr::GraphSection::TyreCardRR,         "Tyres",    "Rear-right card" },
         { tnr::GraphSection::InputGear,          "Input",    "Gear" },
         { tnr::GraphSection::InputThrottleBrake, "Input",    "Throttle / brake" },
         { tnr::GraphSection::InputSteering,      "Input",    "Steering" },
@@ -939,6 +953,8 @@ QWidget* SettingsDialog::buildAboutPage() {
         // license text, which notes the fork and reproduces the upstream notice).
         { "qt-toast (fork)", "—",      "MIT",     "© 2024 Niklas Henning",                  "https://github.com/niklashenning/qt-toast", "github.com", ":/licenses/MIT-qt-toast.txt" },
         { "zlib",          "1.3.2",    "zlib",    "© 1995–2026 Jean-loup Gailly & Mark Adler", "https://zlib.net",              "zlib.net",        ":/licenses/Zlib.txt"     },
+        // libxlsxwriter powers the "Export to Excel" action; linked in every build.
+        { "libxlsxwriter", "1.2.4",    "BSD 2-Clause", "© 2014–2026 John McNamara",         "https://libxlsxwriter.github.io", "libxlsxwriter.github.io", ":/licenses/BSD-2-Clause-libxlsxwriter.txt" },
         // Noto Sans is bundled (fonts.qrc) in every build as the Breeze UI font, so
         // it's credited here unconditionally — not under BREEZE_BUNDLED.
         { "Noto Sans",     "—",        "OFL 1.1", "© The Noto Project Authors",             "https://fonts.google.com/noto/specimen/Noto+Sans", "fonts.google.com", ":/licenses/OFL-1.1-Noto.txt" },
