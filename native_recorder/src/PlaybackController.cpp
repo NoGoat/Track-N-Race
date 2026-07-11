@@ -171,14 +171,13 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
     speedCombo_->setCurrentIndex(2);
     pbLayout->addWidget(speedCombo_);
 
-    // Export the currently-loaded clip to Excel. Flat icon-only button matching the
-    // seek/play transport buttons; the actual save dialog + off-thread export live in
+    // A normal (non-flat) button so it reads as a real "Export" action; icon-only by
+    // default, gaining an "Export to Excel" label when the toolbar's labels option is
+    // on (see setShowLabels). The actual save dialog + off-thread export live in
     // MainWindow (mirrors the Electron renderer→main split), reached via exportRequested().
     exportBtn_ = new QPushButton(bar_);
     exportBtn_->setIcon(exportIcon(bar_, iconTint));
     exportBtn_->setIconSize(QSize(20, 20));
-    exportBtn_->setFixedSize(34, 34);
-    exportBtn_->setFlat(true);
     exportBtn_->setToolTip("Export to Excel");
     pbLayout->addWidget(exportBtn_);
 
@@ -346,6 +345,15 @@ void PlaybackController::setShowLabels(bool on) {
     } else {
         // Compact square, icon-only.
         closeRecBtn_->setFixedSize(34, 34);
+    }
+
+    if (!exportBtn_) return;
+    exportBtn_->setText(on ? "Export to Excel" : QString());
+    if (on) {
+        exportBtn_->setMinimumSize(0, 34);
+        exportBtn_->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    } else {
+        exportBtn_->setFixedSize(34, 34);
     }
 }
 
