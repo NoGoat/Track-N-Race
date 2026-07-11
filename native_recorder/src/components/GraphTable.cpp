@@ -150,8 +150,15 @@ void tnr::layoutSectionGrid(QGridLayout* outer, ChartView* chart,
     // Detach the current items (deleting a QWidgetItem does NOT delete its widget,
     // so chart_ and the tables survive and get re-placed below).
     while (QLayoutItem* it = outer->takeAt(0)) delete it;
+    // Delete the separator lines from the previous all-tables layout — takeAt drops
+    // their layout items but not the widgets, so remove them explicitly (they're the
+    // only "gtsep"-named children; the GraphTables, though also QFrames, are not).
+    if (QWidget* host = outer->parentWidget())
+        for (QFrame* sep : host->findChildren<QFrame*>(QStringLiteral("gtsep"), Qt::FindDirectChildrenOnly))
+            delete sep;
     // Clear stretch from a previous, possibly larger, layout before re-setting it.
-    for (int i = 0; i < sectionCount; ++i) {
+    // The all-tables layout interleaves separator tracks, so clear twice the sections.
+    for (int i = 0; i < 2 * sectionCount; ++i) {
         outer->setRowStretch(i, 0);
         outer->setColumnStretch(i, 0);
     }
@@ -178,6 +185,11 @@ void tnr::layoutSectionGrid(QGridLayout* outer, ChartView* chart,
         chartRows.append(cr);
     }
 
+    // The inter-panel gap only exists so overlay tables line up with the chart's
+    // panels. With no chart (every section is a table), there's nothing to align to,
+    // so drop it — the tables tile flush against the separator lines placed below.
+    outer->setSpacing(anyChart ? ChartView::PanelGap : 0);
+
     chart->layoutPanelsRows(anyChart ? chartRows : QVector<QVector<int>>{});
     // Reparent (addWidget) BEFORE setVisible: on the first layout the chart has
     // never been parented, so setVisible(true) while it's still top-level makes Qt
@@ -187,23 +199,62 @@ void tnr::layoutSectionGrid(QGridLayout* outer, ChartView* chart,
     if (anyChart) outer->addWidget(chart, 0, 0, (int)rows.size(), maxCols);
     chart->setVisible(anyChart);
 
-    // Overlay each table on its natural cell (on top of the spanning chart). A lone
-    // section in a row spans the full width, matching ChartView's single-panel row.
-    for (int r = 0; r < rows.size(); ++r) {
-        const QVector<int>& row = rows[r];
-        for (int c = 0; c < row.size(); ++c) {
-            const int s = row[c];
-            if (!tableMode[s]) continue;
-            ensureTable(s);
-            GraphTable* t = tables[s];
-            if (!t) continue;
-            if (row.size() == 1) outer->addWidget(t, r, 0, 1, maxCols);
-            else                 outer->addWidget(t, r, c);
-            t->setVisible(true);
-            t->raise();   // sit above the spanning chart underneath
+    if (anyChart) {
+        // Chart present: overlay each table on its natural cell (on top of the
+        // spanning chart), aligned by the panel gap. A lone section spans full width.
+        for (int r = 0; r < rows.size(); ++r) {
+            const QVector<int>& row = rows[r];
+            for (int c = 0; c < row.size(); ++c) {
+                const int s = row[c];
+                if (!tableMode[s]) continue;
+                ensureTable(s);
+                GraphTable* t = tables[s];
+                if (!t) continue;
+                if (row.size() == 1) outer->addWidget(t, r, 0, 1, maxCols);
+                else                 outer->addWidget(t, r, c);
+                t->setVisible(true);
+                t->raise();   // sit above the spanning chart underneath
+            }
         }
+        for (int r = 0; r < rows.size(); ++r) outer->setRowStretch(r, 1);
+        for (int c = 0; c < maxCols; ++c)     outer->setColumnStretch(c, 1);
+    } else {
+        // All tables: tile them on even (content) tracks and drop a QFrame Sunken
+        // separator — identical to the dividers between the tyre cards — on the odd
+        // tracks between adjacent tables. Separator tracks carry no stretch, so the
+        // tables stay flush against the lines; outer edges get no separator.
+        auto sepLine = [](QFrame::Shape shape) {
+            QFrame* f = new QFrame;
+            f->setObjectName(QStringLiteral("gtsep"));
+            f->setFrameShape(shape);
+            f->setFrameShadow(QFrame::Sunken);
+            return f;
+        };
+        const int gCols = 2 * maxCols - 1;
+        for (int r = 0; r < rows.size(); ++r) {
+            const QVector<int>& row = rows[r];
+            const int gr = 2 * r;
+            if (row.size() == 1) {
+                ensureTable(row[0]);
+                if (GraphTable* t = tables[row[0]]) {
+                    outer->addWidget(t, gr, 0, 1, gCols);   // spans full width
+                    t->setVisible(true); t->raise();
+                }
+            } else {
+                for (int c = 0; c < row.size(); ++c) {
+                    ensureTable(row[c]);
+                    GraphTable* t = tables[row[c]];
+                    if (!t) continue;
+                    outer->addWidget(t, gr, 2 * c);
+                    t->setVisible(true); t->raise();
+                    if (c < row.size() - 1)                 // vertical divider to the right
+                        outer->addWidget(sepLine(QFrame::VLine), gr, 2 * c + 1);
+                }
+            }
+            if (r < rows.size() - 1)                        // horizontal divider below the row
+                outer->addWidget(sepLine(QFrame::HLine), gr + 1, 0, 1, gCols);
+        }
+        for (int r = 0; r < rows.size(); ++r) outer->setRowStretch(2 * r, 1);
+        for (int c = 0; c < maxCols; ++c)     outer->setColumnStretch(2 * c, 1);
     }
-
-    for (int r = 0; r < rows.size(); ++r) outer->setRowStretch(r, 1);
-    for (int c = 0; c < maxCols; ++c)     outer->setColumnStretch(c, 1);
 }

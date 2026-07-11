@@ -281,7 +281,9 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
 
     QWidget* chartWrap = new QWidget;
     QGridLayout* chartWrapLay = new QGridLayout(chartWrap);
-    chartWrapLay->setContentsMargins(8, 8, 8, 8);   // remove all padding
+    // 8px L/R keeps the chart/table aligned with the stat + damage rows; no top/bottom
+    // inset so the table (and chart) sit flush against the separators — no vertical gap.
+    chartWrapLay->setContentsMargins(8, 0, 8, 0);
     chartWrapLay->setSpacing(0);
 
     chart_ = new TelemetryChart(chartWrap);
