@@ -297,21 +297,13 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
                                        { "Speed (kph)", GraphTable::Fixed0 },
                                        { "RPM",         GraphTable::Fixed0 },
                                        { "ERS (%)",     GraphTable::Fixed1 } }, chartWrap);
-    // The platform style resolves QTableView's frame width to 0 for THIS table while
-    // giving every other graph table 2 (confirmed via style()->pixelMetric(
-    // PM_DefaultFrameWidth)), so it alone rendered borderless with square corners.
-    // Draw the rounded frame explicitly so it matches the boxed look of the others,
-    // independent of the style's per-widget frame-width quirk. The opaque base
-    // background is required too: once a QTableView carries a stylesheet its
-    // scrollbar groove renders transparent, so without a filled background whatever
-    // sits behind the table shows through that strip. The :hover clause pins the
-    // border across hover repaints. (border-radius clips the fill, so corners stay
-    // rounded — unlike an opaque *parent*, which would square them.)
+    // GraphTable is borderless/edge-to-edge (see its constructor), so this table needs
+    // no frame. But it overlays the chart in the same cell, so it must stay opaque:
+    // fill the base background here. (An opaque background is doubly required because
+    // once a QTableView carries a stylesheet its scrollbar groove renders transparent,
+    // which would otherwise let the chart show through that strip.)
     telemetryTable_->setStyleSheet(QStringLiteral(
-        "QTableView, QTableView:hover {"
-        " border: 1px solid rgba(255, 255, 255, 0.1);"
-        " border-radius: 6px;"
-        " background: palette(base); }"));
+        "QTableView, QTableView:hover { border: none; background: palette(base); }"));
 
     chartWrapLay->addWidget(chart_,          0, 0);
     chartWrapLay->addWidget(telemetryTable_, 0, 0);

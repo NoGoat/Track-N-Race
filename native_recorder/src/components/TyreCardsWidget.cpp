@@ -416,9 +416,8 @@ void TyreCardsWidget::ensureCornerTable(int i) {
         { "Surface (°C)", GraphTable::Fixed0 },
         { "Inner (°C)",   GraphTable::Fixed0 },
         { "Brake (°C)",   GraphTable::Fixed0 } };
-    cornerTable_[i] = new GraphTable(cols, cornerStack_[i]);
-    cornerTable_[i]->setFrameShape(QFrame::NoFrame);   // edge-to-edge, no inset border
-    cornerStack_[i]->addWidget(cornerTable_[i]);       // page 1 = table
+    cornerTable_[i] = new GraphTable(cols, cornerStack_[i]);   // frameless/edge-to-edge by default
+    cornerStack_[i]->addWidget(cornerTable_[i]);               // page 1 = table
 }
 
 // Card ⇄ Table swap for corner i, driven from the Settings "Graphs" tab (persisted

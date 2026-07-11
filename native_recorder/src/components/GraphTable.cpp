@@ -2,6 +2,7 @@
 #include "ChartView.h"
 
 #include <QAbstractTableModel>
+#include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QLayoutItem>
@@ -90,6 +91,11 @@ GraphTable::GraphTable(const QVector<Column>& columns, QWidget* parent)
     setEditTriggers(QAbstractItemView::NoEditTriggers);
     setSelectionMode(QAbstractItemView::NoSelection);
     setFocusPolicy(Qt::NoFocus);
+    // Edge to edge: no frame border, so the table fills its cell with no inset (the
+    // platform style otherwise gives QTableView a 2px sunken frame). The viewport is
+    // still painted opaque with palette(base) by the style, so overlay tables (placed
+    // on top of a chart cell) don't let the chart bleed through.
+    setFrameShape(QFrame::NoFrame);
     // No alternating row colours: as new samples stream in, rows shift up every
     // frame, so the zebra banding crawls/flickers against the scrolling data. A flat
     // background keeps the readout stable while it updates.
