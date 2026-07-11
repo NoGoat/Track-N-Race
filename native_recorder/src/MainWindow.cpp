@@ -54,6 +54,11 @@
 #include <tnrp/Engine.h>
 #include <tnrp/Config.h>
 #include <tnrp/AeroMode.h>
+#include <tnrp/BinaryRows.h>
+
+// std::optional cache → nullable pointer for the page update methods.
+template <class T>
+static const T* optPtr(const std::optional<T>& o) { return o ? &*o : nullptr; }
 
 // Packet IDs, header layout, rate-limit/dedup tables and the F1 24/25 packet
 // parsers used to live here; they now belong to libtnrp (tnrp::Parser /
@@ -175,9 +180,11 @@ MainWindow::MainWindow(QWidget* parent)
     // A row click changed the selection; re-feed the cached rows immediately
     // (same synchronous rebuild as the old in-page click handler).
     connect(standingsPage_, &StandingsPage::refreshRequested, this, [this] {
-        standingsPage_->updateTimingTable(lastTimingData, lastParticipantsData, lastAllStatusData);
-        standingsPage_->updateRacePanel(lastTimingData, lastParticipantsData,
-                                        lastPlayerLapData, lastPlayerStatusData, lastAllStatusData);
+        standingsPage_->updateTimingTable(optPtr(lastTimingData), optPtr(lastParticipantsData),
+                                          optPtr(lastAllStatusData));
+        standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData),
+                                        optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData),
+                                        optPtr(lastAllStatusData));
     });
     stack->addWidget(sessionPage_ = new SessionPage);   // Session
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
@@ -279,13 +286,13 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     connect(playback_, &PlaybackController::entered, this,
-            [this](const nlohmann::json& hdr, float currentTime) {
+            [this](const tnrp::HeaderRow& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
         // Resolve labels against the recorded clip's format (DRS vs Straight Line
         // Mode, etc.) for the duration of playback.
-        if (hdr.contains("protocol") && hdr["protocol"].is_number()) {
-            const uint16_t fmt = hdr["protocol"].get<uint16_t>();
+        if (hdr.protocol > 0) {
+            const uint16_t fmt = (uint16_t)hdr.protocol;
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
@@ -303,13 +310,15 @@ MainWindow::MainWindow(QWidget* parent)
         if (miscPage_) miscPage_->setPlaybackMode(true, currentTime);
         hotSmoother_.reset();   // entering playback: drop live fill state
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
-        QString trackName = QString::fromStdString(hdr.value("track_name", "Unknown"));
-        QString sessName  = QString::fromStdString(hdr.value("session_name", "Unknown"));
+        const QString trackName = hdr.track_name.empty()
+            ? QStringLiteral("Unknown") : QString::fromStdString(hdr.track_name);
+        const QString sessName = hdr.session_name.empty()
+            ? QStringLiteral("Unknown") : QString::fromStdString(hdr.session_name);
         setWindowTitle(QString("Track N Race — %1 %2 [Playback]").arg(trackName, sessName));
     });
 
-    connect(playback_, &PlaybackController::rowReady, this, [this](const nlohmann::json& j) {
-        emitLiveData(j);   // panels only — the charts read the pre-scanned model
+    connect(playback_, &PlaybackController::rowReady, this, [this](const tnrp::AnyRow& row) {
+        emitLiveData(row);   // panels only — the charts read the pre-scanned model
     });
 
     // A seek replays a state snapshot (incl. the session packet); swallow the one
@@ -346,12 +355,13 @@ MainWindow::MainWindow(QWidget* parent)
     // engine emits an initial protocol_status row from its constructor.
     engineSink_ = new EngineSink(this);
     connect(engineSink_, &EngineSink::rowReady, this, &MainWindow::onEngineRow);
+    connect(engineSink_, &EngineSink::binaryReady, this, &MainWindow::onEngineBinary);
 
     tnrp::Config cfg;
     cfg.port            = static_cast<uint16_t>(udpPort());
     cfg.bindAddress     = udpBindAddress().toStdString();
     cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
-    cfg.hotRowsAsJson   = true;   // in-process consumer: hot rows as JSON, no binary channel
+    cfg.hotRowsAsJson   = false;  // hot 60 Hz rows arrive packed via onEngineBinary — no JSON round-trip
     cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty();
     cfg.outputDirectory = outputDirectory.toStdString();
     engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
@@ -735,23 +745,17 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     // engine is still parsing in the background (mirrors the old datagram drain).
     if (inPlayback_) return;
 
-    nlohmann::json row;
-    try {
-        row = nlohmann::json::parse(json.constData(), json.constData() + json.size());
-    } catch (...) {
-        return;
-    }
-    if (!row.contains("type")) return;
+    std::optional<tnrp::AnyRow> parsed =
+        tnrp::parseRow(std::string_view(json.constData(), (size_t)json.size()));
+    if (!parsed) return;
 
     // Track the active packet format so UI labels resolve through the library's
     // i18n catalog (tnr::Labels). The engine emits protocol_status on connect and
     // on every format change, so labels re-theme when 2025↔2026 switches.
-    if (row.value("type", std::string{}) == "protocol_status") {
-        if (row.contains("detected_format") && row["detected_format"].is_number()) {
-            lastDetectedProtocolFormat_ = row["detected_format"].get<int>();
-        }
-        if (row.contains("active_format") && row["active_format"].is_number()) {
-            const uint16_t fmt = row["active_format"].get<uint16_t>();
+    if (const auto* ps = std::get_if<tnrp::ProtocolStatusRow>(&*parsed)) {
+        if (ps->detected_format) lastDetectedProtocolFormat_ = *ps->detected_format;
+        if (ps->active_format) {
+            const uint16_t fmt = (uint16_t)*ps->active_format;
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
@@ -764,22 +768,33 @@ void MainWindow::onEngineRow(const QByteArray& json) {
 
     // The engine has already done format detection, rate-limiting, recording and
     // (when enabled) state-row deduplication; we only fan the row out to the live
-    // UI panels and the lap-aware SessionModel. Header session_time rides on every
-    // hot/cold row that needs it.
-    const std::string type = row.value("type", std::string{});
-    const float sessionTime = row.value("session_time", -1.0f);
+    // UI panels and the lap-aware SessionModel.
+    routeLiveRow(*parsed);
+}
+
+// Hot 60 Hz rows (telemetry/motion/motion_ex/positions) as one packed batch —
+// decoded straight into typed structs, no JSON anywhere on this path.
+void MainWindow::onEngineBinary(const QByteArray& batch) {
+    if (inPlayback_) return;
+    tnrp::bin::decodeBatch(reinterpret_cast<const uint8_t*>(batch.constData()),
+                           (size_t)batch.size(),
+                           [this](auto&& row) { routeLiveRow(tnrp::AnyRow(std::move(row))); });
+}
+
+// Shared tail of the live paths: panels + SessionModel + forward-fill smoother.
+void MainWindow::routeLiveRow(const tnrp::AnyRow& row) {
     emitLiveData(row);
-    ingestForModel(row, sessionTime);
-    feedHotSmoother(type, row, sessionTime);
+    ingestForModel(row);
+    feedHotSmoother(row);
 }
 
 // Records the latest real hot row in the forward-fill smoother (live only). The
 // fill timer (onHotFillTick) re-emits these during gaps so the charts stay smooth
 // on a lossy link. See HotRowSmoother.
-void MainWindow::feedHotSmoother(const std::string& type, const nlohmann::json& row, float sessionTime) {
-    if (type == "telemetry")      hotSmoother_.onTelemetry(row, sessionTime);
-    else if (type == "motion")    hotSmoother_.onMotion(row);
-    else if (type == "motion_ex") hotSmoother_.onMotionEx(row);
+void MainWindow::feedHotSmoother(const tnrp::AnyRow& row) {
+    if (const auto* t = std::get_if<TelemetryRow>(&row))      hotSmoother_.onTelemetry(*t);
+    else if (const auto* m = std::get_if<MotionRow>(&row))    hotSmoother_.onMotion(*m);
+    else if (const auto* m = std::get_if<MotionExRow>(&row))  hotSmoother_.onMotionEx(*m);
 }
 
 // Fires at the measured frame cadence. When the last interval had no fresh
@@ -787,11 +802,9 @@ void MainWindow::feedHotSmoother(const std::string& type, const nlohmann::json& 
 // push through the same live path as real rows — display-only, never recorded.
 void MainWindow::onHotFillTick() {
     if (inPlayback_) return;   // playback feeds the model from the file, no fills
-    std::vector<nlohmann::json> fills = hotSmoother_.tick();
-    for (const nlohmann::json& f : fills) {
-        const float st = f.value("session_time", -1.0f);
+    for (const tnrp::AnyRow& f : hotSmoother_.tick()) {
         emitLiveData(f);
-        ingestForModel(f, st);
+        ingestForModel(f);
     }
     // Track the detected cadence so the timer beats with the game's send rate.
     const int p = hotSmoother_.periodMs();
@@ -800,40 +813,40 @@ void MainWindow::onHotFillTick() {
 
 // ── Live data extraction → signals ─────────────────────────────────────────
 
-void MainWindow::emitLiveData(const nlohmann::json& row) {
-    const std::string type = row["type"].get<std::string>();
-    // Every packet carries the header session_time; drive the toolbar timer from it.
-    if (row.contains("session_time"))
-        if (toolbar_) toolbar_->updateSessionTimer(row["session_time"].get<float>());
-    if (type == "telemetry") {
-        if (overviewPage_) overviewPage_->onTelemetry(row);
-        lastPlayerTelemetryData = row;
+void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
+    // Every packet that carries the header session_time drives the toolbar timer.
+    const float st = tnrp::rowSessionTime(row);
+    if (st >= 0.0f && toolbar_) toolbar_->updateSessionTimer(st);
+
+    if (const auto* tel = std::get_if<TelemetryRow>(&row)) {
+        if (overviewPage_) overviewPage_->onTelemetry(*tel);
+        lastPlayerTelemetryData = *tel;
         dirtyTyres_ = true; scheduleUiRefresh();
-    } else if (type == "status") {
-        if (overviewPage_) overviewPage_->onStatus(row);
-        lastPlayerStatusData = row;
+    } else if (const auto* status = std::get_if<StatusRow>(&row)) {
+        if (overviewPage_) overviewPage_->onStatus(*status);
+        lastPlayerStatusData = *status;
         dirtyRacePanel_ = true; dirtyPower_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "damage") {
-        if (overviewPage_) overviewPage_->onDamage(row);
-        lastPlayerDamageData = row;
+    } else if (const auto* dmg = std::get_if<DamageRow>(&row)) {
+        if (overviewPage_) overviewPage_->onDamage(*dmg);
+        lastPlayerDamageData = *dmg;
         dirtyTyres_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "tyre_sets") {
-        lastTyreSetsData = row;
+    } else if (const auto* ts = std::get_if<tnrp::TyreSetsRow>(&row)) {
+        lastTyreSetsData = *ts;
         dirtyTyreSets_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "lap") {
-        if (overviewPage_) overviewPage_->onLap(row);
-        lastPlayerLapData = row;
+    } else if (const auto* lap = std::get_if<LapRow>(&row)) {
+        if (overviewPage_) overviewPage_->onLap(*lap);
+        lastPlayerLapData = *lap;
         dirtyRacePanel_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "positions") {
-        lastPositionsData = row;
+    } else if (const auto* pos = std::get_if<PositionsRow>(&row)) {
+        lastPositionsData = *pos;
         dirtyTrackMap_ = true; scheduleUiRefresh();
-    } else if (type == "session") {
-        lastSessionData = row;
+    } else if (const auto* session = std::get_if<tnrp::SessionRow>(&row)) {
+        lastSessionData = *session;
         // Safety-car state changes update the persistent banner. SC/VSC/FL show a
         // persistent toast; returning to green (sc=0) silently dismisses it — no
         // "Track Clear" notification, matching the Electron app. Seeks are suppressed
         // via the one-shot flag set in seeked().
-        const int sc = row.value("safety_car_status", 0);
+        const int sc = session->safety_car_status;
         const bool suppress = scSuppressOnce_;
         scSuppressOnce_ = false;
         if (!suppress && sc != lastSafetyCarStatus_) {
@@ -845,33 +858,33 @@ void MainWindow::emitLiveData(const nlohmann::json& row) {
         }
         lastSafetyCarStatus_ = sc;
         dirtySession_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "race_event") {
-        if (row.value("code", "") == "SSTA") {
+    } else if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
+        if (ev->code == "SSTA") {
             if (sessionPage_) sessionPage_->clearEvents();
             if (standingsPage_) standingsPage_->resetForNewSession();
             if (strategyPage_) strategyPage_->resetForNewSession();
             lastSafetyCarStatus_ = 0;
         }
-        if (sessionPage_) sessionPage_->addEvent(row);
+        if (sessionPage_) sessionPage_->addEvent(*ev);
         // Transient notification for the event, both live and during playback.
         // race_events are never replayed on seek, so scrubbing won't re-fire them.
-        if (auto spec = buildToast(row, lastParticipantsData)) toasts_->show(*spec);
+        if (auto spec = buildToast(*ev, optPtr(lastParticipantsData))) toasts_->show(*spec);
         dirtyEvents_ = true; scheduleUiRefresh();
-    } else if (type == "timing") {
-        lastTimingData = row;
+    } else if (const auto* timing = std::get_if<TimingRow>(&row)) {
+        lastTimingData = *timing;
         dirtyTiming_ = true; dirtyProximity_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "participants") {
-        lastParticipantsData = row;
+    } else if (const auto* part = std::get_if<tnrp::ParticipantsRow>(&row)) {
+        lastParticipantsData = *part;
         dirtyTiming_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "all_status") {
-        lastAllStatusData = row;
+    } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
+        lastAllStatusData = *as;
         dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
-    } else if (type == "fastest_lap") {
-        if (standingsPage_) standingsPage_->noteFastestLap(row.value("car_idx", -1));
+    } else if (const auto* fl = std::get_if<tnrp::FastestLapRow>(&row)) {
+        if (standingsPage_) standingsPage_->noteFastestLap(fl->car_idx);
         dirtyTiming_ = true; scheduleUiRefresh();
-    } else if (type == "session_history_fastest") {
+    } else if (const auto* shf = std::get_if<tnrp::SessionHistoryFastestRow>(&row)) {
         if (standingsPage_ && standingsPage_->noteSessionHistoryFastest(
-                row.value("car_idx", -1), row.value("best_lap_time_ms", 0))) {
+                shf->car_idx, (int)shf->best_lap_time_ms)) {
             dirtyTiming_ = true; scheduleUiRefresh();
         }
     }
@@ -891,16 +904,17 @@ void MainWindow::updateStrategyPage() {
     if (model_)
         for (const LapBlock& lb : model_->data().laps)
             if (lb.lapTimeMs > 0) lapTimesByNum[lb.lapNum] = lb.lapTimeMs;
-    strategyPage_->update(lastPlayerLapData, lastSessionData, lastPlayerStatusData,
-                          lastPlayerDamageData, lastTimingData, lastParticipantsData,
-                          lastTyreSetsData, lastAllStatusData, lapTimesByNum);
+    strategyPage_->update(optPtr(lastPlayerLapData), optPtr(lastSessionData),
+                          optPtr(lastPlayerStatusData), optPtr(lastPlayerDamageData),
+                          optPtr(lastTimingData), optPtr(lastParticipantsData),
+                          optPtr(lastTyreSetsData), optPtr(lastAllStatusData), lapTimesByNum);
 }
 
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed
 // together off the single dirtyTyres_ flag so neither goes stale while hidden.
 void MainWindow::updateTyreCards() {
-    if (tyresPage_) tyresPage_->updateTyreCards(lastPlayerTelemetryData, lastPlayerDamageData);
-    if (overviewPage_) overviewPage_->updateTyreCards(lastPlayerTelemetryData, lastPlayerDamageData);
+    if (tyresPage_) tyresPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
+    if (overviewPage_) overviewPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
 }
 
 void MainWindow::scheduleUiRefresh() {
@@ -921,24 +935,24 @@ void MainWindow::flushUiRefresh() {
             if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
             break;
         case Standings:
-            if (dirtyTiming_)    { standingsPage_->updateTimingTable(lastTimingData, lastParticipantsData, lastAllStatusData); dirtyTiming_ = false; }
-            if (dirtyRacePanel_) { standingsPage_->updateRacePanel(lastTimingData, lastParticipantsData, lastPlayerLapData, lastPlayerStatusData, lastAllStatusData); dirtyRacePanel_ = false; }
+            if (dirtyTiming_)    { standingsPage_->updateTimingTable(optPtr(lastTimingData), optPtr(lastParticipantsData), optPtr(lastAllStatusData)); dirtyTiming_ = false; }
+            if (dirtyRacePanel_) { standingsPage_->updateRacePanel(optPtr(lastTimingData), optPtr(lastParticipantsData), optPtr(lastPlayerLapData), optPtr(lastPlayerStatusData), optPtr(lastAllStatusData)); dirtyRacePanel_ = false; }
             break;
         case Session:
-            if (dirtyProximity_) { sessionPage_->updateProximity(lastTimingData, lastParticipantsData); dirtyProximity_ = false; }
-            if (dirtySession_)   { sessionPage_->updateSession(lastSessionData, lastTimingData);        dirtySession_   = false; }
-            if (dirtyEvents_)    { sessionPage_->updateEvents(lastParticipantsData);                    dirtyEvents_    = false; }
-            if (dirtyTrackMap_)  { sessionPage_->updateTrackMap(lastSessionData, lastParticipantsData, lastPositionsData); dirtyTrackMap_ = false; }
+            if (dirtyProximity_) { sessionPage_->updateProximity(optPtr(lastTimingData), optPtr(lastParticipantsData)); dirtyProximity_ = false; }
+            if (dirtySession_)   { sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));        dirtySession_   = false; }
+            if (dirtyEvents_)    { sessionPage_->updateEvents(optPtr(lastParticipantsData));                            dirtyEvents_    = false; }
+            if (dirtyTrackMap_)  { sessionPage_->updateTrackMap(optPtr(lastSessionData), optPtr(lastParticipantsData), optPtr(lastPositionsData)); dirtyTrackMap_ = false; }
             break;
         case Tyres:
             if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
-            if (dirtyTyreSets_)  { if (tyresPage_) tyresPage_->updateTyreSets(lastTyreSetsData); dirtyTyreSets_ = false; }
+            if (dirtyTyreSets_)  { if (tyresPage_) tyresPage_->updateTyreSets(optPtr(lastTyreSetsData)); dirtyTyreSets_ = false; }
             break;
         case Strategy:
             if (dirtyStrategy_)  { updateStrategyPage();     dirtyStrategy_  = false; }
             break;
         case Power:
-            if (dirtyPower_)     { if (powerPage_) powerPage_->update(lastPlayerStatusData); dirtyPower_ = false; }
+            if (dirtyPower_)     { if (powerPage_) powerPage_->update(optPtr(lastPlayerStatusData)); dirtyPower_ = false; }
             break;
         default:
             break;
@@ -948,55 +962,43 @@ void MainWindow::flushUiRefresh() {
 // Routes a parsed row into the lap-aware SessionModel. Shared by the live UDP
 // path and (for completeness) any streamed source. The model — not the chart —
 // owns chart state; the chart re-queries the model on its change signals.
-void MainWindow::ingestForModel(const nlohmann::json& row, float sessionTime) {
+void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
     if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
-    const std::string rtype = row.value("type", std::string{});
-    // A backward jump in session time is an in-game flashback/rewind: drop only the
-    // samples newer than the rewind point and keep the rest (NOT a full reset — that
-    // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
-    // anyway. Same 0.2s guard as the recording-side truncate above.
-    if (rtype == "telemetry" && sessionTime < model_->data().latestTime - 0.2f)
-        model_->truncateAfter(sessionTime);
-    if (rtype == "telemetry") {
-        model_->onTelemetry(sessionTime,
-                            row.value("speed_kph", 0.0f),
-                            row.value("rpm", 0),
-                            row.value("gear", 0),
-                            row.value("throttle", 0.0f),
-                            row.value("brake", 0.0f),
-                            row.value("steering", 0.0f));
+    if (const auto* t = std::get_if<TelemetryRow>(&row)) {
+        // A backward jump in session time is an in-game flashback/rewind: drop only the
+        // samples newer than the rewind point and keep the rest (NOT a full reset — that
+        // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
+        // anyway. Same 0.2s guard as the recording-side truncate above.
+        if (t->session_time < model_->data().latestTime - 0.2f)
+            model_->truncateAfter(t->session_time);
+        model_->onTelemetry(t->session_time, (float)t->speed_kph, t->rpm, t->gear,
+                            t->throttle, t->brake, (float)t->steering);
         // Combine live tyre temps with last-seen wear from the damage packet.
-        model_->onTyre(sessionTime,
-            row.value("tyre_temp_surface_fl", 0.0f), row.value("tyre_temp_surface_fr", 0.0f),
-            row.value("tyre_temp_surface_rl", 0.0f), row.value("tyre_temp_surface_rr", 0.0f),
-            row.value("tyre_temp_inner_fl",   0.0f), row.value("tyre_temp_inner_fr",   0.0f),
-            row.value("tyre_temp_inner_rl",   0.0f), row.value("tyre_temp_inner_rr",   0.0f),
-            row.value("brake_temp_fl",        0.0f), row.value("brake_temp_fr",        0.0f),
-            row.value("brake_temp_rl",        0.0f), row.value("brake_temp_rr",        0.0f),
-            lastPlayerDamageData.value("tyre_wear_fl",  0.0f), lastPlayerDamageData.value("tyre_wear_fr",  0.0f),
-            lastPlayerDamageData.value("tyre_wear_rl",  0.0f), lastPlayerDamageData.value("tyre_wear_rr",  0.0f));
+        const DamageRow* d = optPtr(lastPlayerDamageData);
+        model_->onTyre(t->session_time,
+            (float)t->tyre_temp_surface_fl, (float)t->tyre_temp_surface_fr,
+            (float)t->tyre_temp_surface_rl, (float)t->tyre_temp_surface_rr,
+            (float)t->tyre_temp_inner_fl,   (float)t->tyre_temp_inner_fr,
+            (float)t->tyre_temp_inner_rl,   (float)t->tyre_temp_inner_rr,
+            (float)t->brake_temp_fl,        (float)t->brake_temp_fr,
+            (float)t->brake_temp_rl,        (float)t->brake_temp_rr,
+            d ? (float)d->tyre_wear_fl : 0.0f, d ? (float)d->tyre_wear_fr : 0.0f,
+            d ? (float)d->tyre_wear_rl : 0.0f, d ? (float)d->tyre_wear_rr : 0.0f);
     }
-    else if (rtype == "status")
-        model_->onStatus(
-            sessionTime,
-            row.value("ers_pct", 0.0f),
-            row.value("fuel_kg", 0.0f),
-            row.value("engine_power_ice_kw", 0.0f),
-            row.value("engine_power_mguk_kw", 0.0f),
-            row.value("ers_harvested_mguk_j", 0.0f),
-            row.value("ers_harvested_mguh_j", 0.0f)
-        );
-    else if (rtype == "lap")
-        model_->onLap(row.value("lap_num", 0),
-                     row.value("current_lap_ms", 0),
-                     row.value("last_lap_ms", 0),
-                     row.value("lap_invalid", false));
-    else if (rtype == "motion")
-        model_->onMotion(sessionTime,
-                         row.value("g_lat", 0.0f),
-                         row.value("g_long", 0.0f));
-    else if (rtype == "motion_ex")
-        model_->onMotionEx(sessionTime,
-                           row.value("front_aero_height_mm", 0.0f),
-                           row.value("rear_aero_height_mm", 0.0f));
+    else if (const auto* s = std::get_if<StatusRow>(&row))
+        model_->onStatus(s->session_time,
+                         (float)s->ers_pct,
+                         (float)s->fuel_kg,
+                         (float)s->engine_power_ice_kw,
+                         (float)s->engine_power_mguk_kw,
+                         (float)s->ers_harvested_mguk_j,
+                         (float)s->ers_harvested_mguh_j);
+    else if (const auto* l = std::get_if<LapRow>(&row))
+        model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+    else if (const auto* m = std::get_if<MotionRow>(&row))
+        model_->onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
+    else if (const auto* me = std::get_if<MotionExRow>(&row))
+        model_->onMotionEx(me->session_time,
+                           (float)me->front_aero_height_mm,
+                           (float)me->rear_aero_height_mm);
 }

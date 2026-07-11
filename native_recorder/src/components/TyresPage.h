@@ -2,7 +2,8 @@
 
 #include <QWidget>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
+#include <tnrp/control_rows.h>
 
 class QTableWidget;
 class QStackedWidget;
@@ -21,11 +22,12 @@ class TyresPage : public QWidget {
 public:
     explicit TyresPage(SessionModel* model, QWidget* parent = nullptr);
 
-    // Refresh the per-corner cards from the latest telemetry + damage rows.
-    void updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage);
+    // Refresh the per-corner cards from the latest telemetry + damage rows
+    // (nullptr = not yet seen).
+    void updateTyreCards(const TelemetryRow* telemetry, const DamageRow* damage);
 
     // Rebuild the dry/wet set tables from the latest tyre_sets row.
-    void updateTyreSets(const nlohmann::json& tyreSets);
+    void updateTyreSets(const tnrp::TyreSetsRow* tyreSets);
 
     // Playback + chart-window pass-through for the tyre graphs (mirrors OverviewPage).
     void setPlaybackMode(bool on, float currentTime = 0.0f);

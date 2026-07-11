@@ -189,51 +189,46 @@ void TyresPage::setGraphSectionTable(int section, bool table) {
 
 // ── Tyres page updater ────────────────────────────────────────────────────
 
-void TyresPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage) {
+void TyresPage::updateTyreCards(const TelemetryRow* telemetry, const DamageRow* damage) {
     if (tyreCards_) tyreCards_->update(telemetry, damage);
 }
 
 // ── Tyre sets table updater ───────────────────────────────────────────────
 
-void TyresPage::updateTyreSets(const nlohmann::json& tyreSets) {
-    if (!drySetsTable_ || !wetSetsTable_ || tyreSets.empty() || !tyreSets.contains("sets")) return;
+void TyresPage::updateTyreSets(const tnrp::TyreSetsRow* tyreSets) {
+    if (!drySetsTable_ || !wetSetsTable_ || !tyreSets || tyreSets->sets.empty()) return;
 
     // Fitted-tyre summary for the graphs header: compound · wear · life remaining.
     if (graphsFitted_) {
         QString txt;
-        for (const auto& s : tyreSets["sets"]) {
-            if (!s.value("fitted", false)) continue;
-            const int compound = s.value("actual_compound", 0);
-            const int visual   = s.value("visual_compound", 0);
-            const int wear     = s.value("wear",      0);
-            const int life     = s.value("life_span", 0);
-            const QColor cmp   = tyreTextColor(visual);
+        for (const tnrp::TyreSet& s : tyreSets->sets) {
+            if (!s.fitted) continue;
+            const QColor cmp   = tyreTextColor(s.visual_compound);
             const QString cmpCol  = (cmp.isValid() ? cmp : palette().color(QPalette::WindowText)).name();
-            const QString wearCol = wearPctColor(wear).name();
+            const QString wearCol = wearPctColor(s.wear).name();
             const QString secCol  = palette().color(QPalette::PlaceholderText).name();
-            txt = "<span style='color:" + cmpCol + ";font-weight:bold;'>" + tyreLabel(compound) + "</span>"
+            txt = "<span style='color:" + cmpCol + ";font-weight:bold;'>" + tyreLabel(s.actual_compound) + "</span>"
                 + " <span style='color:" + secCol + ";'>&middot;</span> "
-                + "<span style='color:" + wearCol + ";'>" + QString::number(wear) + "% wear</span>"
-                + " <span style='color:" + secCol + ";'>&middot; " + QString::number(life) + "L remaining</span>";
+                + "<span style='color:" + wearCol + ";'>" + QString::number(s.wear) + "% wear</span>"
+                + " <span style='color:" + secCol + ";'>&middot; " + QString::number(s.life_span) + "L remaining</span>";
             break;
         }
         graphsFitted_->setText(txt);
     }
 
-    std::vector<nlohmann::json> drySets;
-    std::vector<nlohmann::json> wetSets;
-    for (const auto& s : tyreSets["sets"]) {
-        int compound = s.value("actual_compound", 0);
-        if (compound != 0) {
-            if (compound == 7 || compound == 8) {
-                wetSets.push_back(s);
+    std::vector<const tnrp::TyreSet*> drySets;
+    std::vector<const tnrp::TyreSet*> wetSets;
+    for (const tnrp::TyreSet& s : tyreSets->sets) {
+        if (s.actual_compound != 0) {
+            if (s.actual_compound == 7 || s.actual_compound == 8) {
+                wetSets.push_back(&s);
             } else {
-                drySets.push_back(s);
+                drySets.push_back(&s);
             }
         }
     }
 
-    auto statusPriority = [](const nlohmann::json& s) {
+    auto statusPriority = [](const tnrp::TyreSet& s) {
         QString st = setStatusText(s);
         if (st == "FITTED")   return 1;
         if (st == "NEW")      return 2;
@@ -242,17 +237,16 @@ void TyresPage::updateTyreSets(const nlohmann::json& tyreSets) {
         return 5;
     };
 
-    auto sortSets = [&](std::vector<nlohmann::json>& vec) {
-        std::sort(vec.begin(), vec.end(), [&](const nlohmann::json& a, const nlohmann::json& b) {
-            int vcA = a.value("visual_compound", 99);
-            int vcB = b.value("visual_compound", 99);
-            if (vcA != vcB) return vcA < vcB;
+    auto sortSets = [&](std::vector<const tnrp::TyreSet*>& vec) {
+        std::sort(vec.begin(), vec.end(), [&](const tnrp::TyreSet* a, const tnrp::TyreSet* b) {
+            if (a->visual_compound != b->visual_compound)
+                return a->visual_compound < b->visual_compound;
 
-            int spA = statusPriority(a);
-            int spB = statusPriority(b);
+            int spA = statusPriority(*a);
+            int spB = statusPriority(*b);
             if (spA != spB) return spA < spB;
 
-            return a.value("idx", 99) < b.value("idx", 99);
+            return a->idx < b->idx;
         });
     };
     sortSets(drySets);
@@ -270,17 +264,17 @@ void TyresPage::updateTyreSets(const nlohmann::json& tyreSets) {
 
     auto makeItem = [](const QString& text) { return new QTableWidgetItem(text); };
 
-    auto populateTable = [&](QTableWidget* table, const std::vector<nlohmann::json>& setsList) {
+    auto populateTable = [&](QTableWidget* table, const std::vector<const tnrp::TyreSet*>& setsList) {
         for (int row = 0; row < (int)setsList.size(); ++row) {
-            const auto& s = setsList[row];
-            int idx        = s.value("idx", 0);
-            int compound   = s.value("actual_compound",     0);
-            int visual     = s.value("visual_compound",     0);
-            int wear       = s.value("wear",                0);
-            int lifeSpan   = s.value("life_span",           0);
-            int usable     = s.value("usable_life",         0);
-            int recSess    = s.value("recommended_session", 0);
-            int deltaMs    = s.value("lap_delta_ms",        0);
+            const tnrp::TyreSet& s = *setsList[row];
+            int idx        = s.idx;
+            int compound   = s.actual_compound;
+            int visual     = s.visual_compound;
+            int wear       = s.wear;
+            int lifeSpan   = s.life_span;
+            int usable     = s.usable_life;
+            int recSess    = s.recommended_session;
+            int deltaMs    = s.lap_delta_ms;
 
             QString status    = setStatusText(s);
             QColor  statusCol = setStatusColor(s);

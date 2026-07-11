@@ -223,19 +223,19 @@ void PowerPage::applyAndSaveLayout(const PowerLayout& L)
     saveLayout(L);
 }
 
-void PowerPage::update(const nlohmann::json& status) {
-    if (!status.is_object()) return;
+void PowerPage::update(const StatusRow* status) {
+    if (!status) return;
 
-    float iceKw  = status.value("engine_power_ice_kw", 0.0f);
-    float mgukKw = status.value("engine_power_mguk_kw", 0.0f);
+    float iceKw  = (float)status->engine_power_ice_kw;
+    float mgukKw = (float)status->engine_power_mguk_kw;
     float totalKw = iceKw + mgukKw;
 
     float icePct = totalKw > 0 ? (iceKw / totalKw * 100.0f) : 0.0f;
     float ersPctS= totalKw > 0 ? (mgukKw / totalKw * 100.0f) : 0.0f;
 
-    float ersPct = status.value("ers_pct", 0.0f);
+    float ersPct = (float)status->ers_pct;
     float ersMj  = (ersPct / 100.0f) * 4.0f;
-    float fuelKg = status.value("fuel_kg", 0.0f);
+    float fuelKg = (float)status->fuel_kg;
 
     // Per-key resolver: value text + colour-spec key + the value the conditional
     // rules test against (NAN where the colour is unconditional).

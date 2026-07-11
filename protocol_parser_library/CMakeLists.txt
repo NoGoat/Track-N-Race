@@ -56,6 +56,7 @@ add_library(tnrp STATIC
     src/Labels.cpp
     src/CardColors.cpp
     src/Parser.cpp
+    src/AnyRow.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp

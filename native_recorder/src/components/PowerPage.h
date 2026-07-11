@@ -4,7 +4,7 @@
 #include <QHash>
 #include <QSettings>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
 
 #include "PowerLayout.h"
 
@@ -23,8 +23,8 @@ class PowerPage : public QWidget {
 public:
     explicit PowerPage(SessionModel* model, QWidget* parent = nullptr);
 
-    // Recompute the stat cards from the latest status row (lastPlayerStatusData).
-    void update(const nlohmann::json& status);
+    // Recompute the stat cards from the latest status row (nullptr = none yet).
+    void update(const StatusRow* status);
 
     // 4 MJ → 8 MJ harvest axis in 2026; forwarded to the harvest chart.
     void applyHarvestScale(uint16_t format);

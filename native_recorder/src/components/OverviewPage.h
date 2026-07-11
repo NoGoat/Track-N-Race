@@ -5,7 +5,9 @@
 #include <QSettings>
 #include <QPointer>
 
-#include <nlohmann/json.hpp>
+#include <optional>
+
+#include <tnrp/rows.h>
 
 #include "OverviewLayout.h"
 
@@ -33,13 +35,14 @@ public:
 
     // Direct per-row updates — these replaced the old telemetryUpdated /
     // statusUpdated / damageUpdated / lapUpdated MainWindow signals.
-    void onTelemetry(const nlohmann::json& row);
-    void onStatus(const nlohmann::json& row);
-    void onDamage(const nlohmann::json& row);
-    void onLap(const nlohmann::json& row);
+    void onTelemetry(const TelemetryRow& row);
+    void onStatus(const StatusRow& row);
+    void onDamage(const DamageRow& row);
+    void onLap(const LapRow& row);
 
-    // Refresh the per-corner tyre cards from the latest telemetry + damage rows.
-    void updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage);
+    // Refresh the per-corner tyre cards from the latest telemetry + damage rows
+    // (nullptr = not yet seen).
+    void updateTyreCards(const TelemetryRow* telemetry, const DamageRow* damage);
 
     // Re-label the stat-card titles from the i18n catalog. Called on format
     // change so the wing card flips DRS ↔ SLM with the active game year.
@@ -95,7 +98,7 @@ private:
         int tyreCompound = -1; int visualCompound = -1; int tyreAgeLaps = 0; int fuelMix = -1;
         int pos = 0; int lapNum = 0;
     } cache_;
-    nlohmann::json lastDamage_;   // last damage row, replayed after a compact rebuild
+    std::optional<DamageRow> lastDamage_;   // last damage row, replayed after a compact rebuild
     bool statsCompact_  = false;  // per-section compact density (ui/compact/overview*)
     bool damageCompact_ = false;
     int  tyresLevel_    = 0;       // TyreCardsWidget::Level (0 Full … 3 Ultra Compact 2)

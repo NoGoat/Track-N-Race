@@ -9,11 +9,11 @@
 namespace {
 
 // Last word of a participant's name, by car index — mirrors lastName() in App.tsx.
-QString lastName(const nlohmann::json& participants, int idx) {
-    if (participants.contains("drivers") && participants["drivers"].is_array()) {
-        for (const auto& d : participants["drivers"]) {
-            if (d.value("idx", -1) == idx) {
-                const QString name = QString::fromStdString(d.value("name", std::string())).trimmed();
+QString lastName(const tnrp::ParticipantsRow* participants, int idx) {
+    if (participants) {
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx == idx) {
+                const QString name = QString::fromStdString(d.name).trimmed();
                 if (name.isEmpty()) break;
                 const QStringList parts = name.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
                 return parts.isEmpty() ? name : parts.last();
@@ -56,21 +56,21 @@ const char* infringementLabel(int i) {
 
 } // namespace
 
-std::optional<ToastSpec> buildToast(const nlohmann::json& event,
-                                    const nlohmann::json& participants) {
-    const std::string code = event.value("code", std::string());
-    const int carIdx = event.value("car_idx", 0);
+std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
+                                    const tnrp::ParticipantsRow* participants) {
+    const std::string& code = event.code;
+    const int carIdx = event.car_idx.value_or(0);
 
     if (code == "FTLP")
         return ToastSpec{ "Fastest Lap",
             QString("%1  ·  %2").arg(lastName(participants, carIdx),
-                                     fmtLap(event.value("lap_time_s", 0.0))),
+                                     fmtLap(event.lap_time_s.value_or(0.0f))),
             QColor("#BF5FFF") };
     if (code == "DRSE") return ToastSpec{ tnr::L("event.DRSE"), {}, QColor("#37872D") };
     if (code == "DRSD") return ToastSpec{ tnr::L("event.DRSD"), {}, QColor("#8e8e8e") };
     if (code == "RDFL") return ToastSpec{ "Red Flag",     {}, QColor("#e10600") };
     if (code == "PENA") {
-        const int pt = event.value("penalty_type", 0);
+        const int pt = event.penalty_type.value_or(0);
         struct P { const char* label; const char* color; };
         // Index by penalty_type; type 3 has no mapping (skipped), matching Electron.
         static const std::array<P, 7> M = {{
@@ -81,12 +81,11 @@ std::optional<ToastSpec> buildToast(const nlohmann::json& event,
         }};
         if (pt < 0 || pt >= (int)M.size() || !M[pt].label) return std::nullopt;
         QString label = M[pt].label;
-        if ((pt == 1 || pt == 4) && event.contains("penalty_time_s") &&
-            event["penalty_time_s"].get<double>() > 0)
-            label += QString(" %1s").arg(event["penalty_time_s"].get<double>());
+        if ((pt == 1 || pt == 4) && event.penalty_time_s && *event.penalty_time_s > 0)
+            label += QString(" %1s").arg(*event.penalty_time_s);
         const QString driver = lastName(participants, carIdx);
-        const char* infr = event.contains("infringement_type")
-            ? infringementLabel(event["infringement_type"].get<int>()) : nullptr;
+        const char* infr = event.infringement_type
+            ? infringementLabel(*event.infringement_type) : nullptr;
         const QString sub = (pt == 5 && infr) ? QString("%1  ·  %2").arg(driver, infr) : driver;
         return ToastSpec{ label, sub, QColor(M[pt].color) };
     }

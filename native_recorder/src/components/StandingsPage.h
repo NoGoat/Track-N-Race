@@ -4,7 +4,8 @@
 #include <QColor>
 #include <QSettings>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
+#include <tnrp/control_rows.h>
 
 #include <unordered_map>
 #include <vector>
@@ -24,14 +25,15 @@ class StandingsPage : public QWidget {
 public:
     explicit StandingsPage(QWidget* parent = nullptr);
 
-    void updateTimingTable(const nlohmann::json& timing,
-                           const nlohmann::json& participants,
-                           const nlohmann::json& allStatus);
-    void updateRacePanel(const nlohmann::json& timing,
-                         const nlohmann::json& participants,
-                         const nlohmann::json& playerLap,
-                         const nlohmann::json& playerStatus,
-                         const nlohmann::json& allStatus);
+    // Cached rows fed by MainWindow; nullptr = the row hasn't been seen yet.
+    void updateTimingTable(const TimingRow* timing,
+                           const tnrp::ParticipantsRow* participants,
+                           const AllStatusRow* allStatus);
+    void updateRacePanel(const TimingRow* timing,
+                         const tnrp::ParticipantsRow* participants,
+                         const LapRow* playerLap,
+                         const StatusRow* playerStatus,
+                         const AllStatusRow* allStatus);
 
     // Fastest-lap tracking, fed from the row stream ("fastest_lap" /
     // "session_history_fastest"). The latter returns true when the fastest

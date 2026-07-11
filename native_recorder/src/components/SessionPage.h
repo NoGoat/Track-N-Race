@@ -4,7 +4,8 @@
 #include <QHash>
 #include <QSettings>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
+#include <tnrp/control_rows.h>
 
 #include <vector>
 
@@ -22,15 +23,16 @@ class SessionPage : public QWidget {
 public:
     explicit SessionPage(QWidget* parent = nullptr);
 
-    void updateSession(const nlohmann::json& session, const nlohmann::json& timing);
-    void updateEvents(const nlohmann::json& participants);   // rebuild list from the internal log
-    void updateProximity(const nlohmann::json& timing, const nlohmann::json& participants);
-    void updateTrackMap(const nlohmann::json& session,
-                        const nlohmann::json& participants,
-                        const nlohmann::json& positions);
+    // Cached rows fed by MainWindow; nullptr = the row hasn't been seen yet.
+    void updateSession(const tnrp::SessionRow* session, const TimingRow* timing);
+    void updateEvents(const tnrp::ParticipantsRow* participants);   // rebuild list from the internal log
+    void updateProximity(const TimingRow* timing, const tnrp::ParticipantsRow* participants);
+    void updateTrackMap(const tnrp::SessionRow* session,
+                        const tnrp::ParticipantsRow* participants,
+                        const PositionsRow* positions);
 
     // Event log maintenance, fed from the race_event row stream.
-    void addEvent(const nlohmann::json& eventRow);
+    void addEvent(const tnrp::RaceEventRow& eventRow);
     void clearEvents();   // SSTA / new session
 
     // Rendering gate pass-through for the map's 60fps animation timer.
@@ -82,7 +84,7 @@ private:
     QLabel*      sp_proxGap[3]    = {};
     QWidget*     sp_proxRow[3]    = {};
     QListWidget* sp_eventsList    = nullptr;
-    std::vector<nlohmann::json> eventLog_;
+    std::vector<tnrp::RaceEventRow> eventLog_;
 
     TrackMapWidget* trackMap_   = nullptr;
     int             mapTrackId_ = -1;   // last track loaded into the map widget

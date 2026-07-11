@@ -333,50 +333,51 @@ void TyreCardsWidget::updateDividers()
     }
 }
 
-void TyreCardsWidget::update(const nlohmann::json& telemetry, const nlohmann::json& damage) {
-    static const char* surfKeys[]    = { "tyre_temp_surface_fl", "tyre_temp_surface_fr", "tyre_temp_surface_rl", "tyre_temp_surface_rr" };
-    static const char* innerKeys[]   = { "tyre_temp_inner_fl",   "tyre_temp_inner_fr",   "tyre_temp_inner_rl",   "tyre_temp_inner_rr"   };
-    static const char* brakeKeys[]   = { "brake_temp_fl",        "brake_temp_fr",        "brake_temp_rl",        "brake_temp_rr"        };
-    static const char* wearKeys[]    = { "tyre_wear_fl",         "tyre_wear_fr",         "tyre_wear_rl",         "tyre_wear_rr"         };
-    static const char* blisterKeys[] = { "blisters_fl",          "blisters_fr",          "blisters_rl",          "blisters_rr"          };
+void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* damage) {
+    // Per-corner values in FL, FR, RL, RR order (matching the card slots).
+    int surf[4] = {}, inner[4] = {}, brake[4] = {};
+    if (telemetry) {
+        const int s[4] = { telemetry->tyre_temp_surface_fl, telemetry->tyre_temp_surface_fr,
+                           telemetry->tyre_temp_surface_rl, telemetry->tyre_temp_surface_rr };
+        const int n[4] = { telemetry->tyre_temp_inner_fl, telemetry->tyre_temp_inner_fr,
+                           telemetry->tyre_temp_inner_rl, telemetry->tyre_temp_inner_rr };
+        const int b[4] = { telemetry->brake_temp_fl, telemetry->brake_temp_fr,
+                           telemetry->brake_temp_rl, telemetry->brake_temp_rr };
+        std::copy(s, s + 4, surf); std::copy(n, n + 4, inner); std::copy(b, b + 4, brake);
+    }
+    int wear[4] = {}, blisters[4] = {};
+    if (damage) {
+        const int w[4]  = { (int)damage->tyre_wear_fl, (int)damage->tyre_wear_fr,
+                            (int)damage->tyre_wear_rl, (int)damage->tyre_wear_rr };
+        const int bl[4] = { damage->blisters_fl, damage->blisters_fr,
+                            damage->blisters_rl, damage->blisters_rr };
+        std::copy(w, w + 4, wear); std::copy(bl, bl + 4, blisters);
+    }
 
     for (int i = 0; i < 4; ++i) {
-        if (!telemetry.empty()) {
-            int surf = telemetry.value(surfKeys[i], -1);
-            if (surf >= 0) {
-                surfaceTemp_[i]->setText(QString::number(surf) + "°C");
-                surfaceTemp_[i]->setStyleSheet("color: " + tyreTempColor(surf).name() + "; font-weight: bold;");
-            }
-            int inner = telemetry.value(innerKeys[i], -1);
-            if (inner >= 0) {
-                innerTemp_[i]->setText(QString::number(inner) + "°C");
-                innerTemp_[i]->setStyleSheet("color: " + tyreTempColor(inner).name() + "; font-weight: bold;");
-            }
-            int brk = telemetry.value(brakeKeys[i], -1);
-            if (brk >= 0) {
-                brakeTemp_[i]->setText(QString::number(brk) + "°C");
-                brakeTemp_[i]->setStyleSheet("color: " + brakeTempColor(brk).name() + "; font-weight: bold;");
-            }
+        if (telemetry) {
+            surfaceTemp_[i]->setText(QString::number(surf[i]) + "°C");
+            surfaceTemp_[i]->setStyleSheet("color: " + tyreTempColor(surf[i]).name() + "; font-weight: bold;");
+            innerTemp_[i]->setText(QString::number(inner[i]) + "°C");
+            innerTemp_[i]->setStyleSheet("color: " + tyreTempColor(inner[i]).name() + "; font-weight: bold;");
+            brakeTemp_[i]->setText(QString::number(brake[i]) + "°C");
+            brakeTemp_[i]->setStyleSheet("color: " + brakeTempColor(brake[i]).name() + "; font-weight: bold;");
         }
 
-        if (!damage.empty()) {
-            int wear = damage.value(wearKeys[i], -1);
-            if (wear >= 0) {
-                const QString wearCol = wearPctColor(wear).name();
-                wearLabel_[i]->setText(QString::number(wear) + "%");
-                wearLabel_[i]->setStyleSheet("color: " + wearCol + "; font-weight: bold;");
-                if (wear_[i]) {   // no wear bar in compact mode
-                    wear_[i]->setValue(wear);
-                    wear_[i]->setStyleSheet(QString(
-                        "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
-                        "QProgressBar::chunk { background: %1; border-radius: 3px; }"
-                    ).arg(wearCol));
-                }
+        if (damage) {
+            const QString wearCol = wearPctColor(wear[i]).name();
+            wearLabel_[i]->setText(QString::number(wear[i]) + "%");
+            wearLabel_[i]->setStyleSheet("color: " + wearCol + "; font-weight: bold;");
+            if (wear_[i]) {   // no wear bar in compact mode
+                wear_[i]->setValue(wear[i]);
+                wear_[i]->setStyleSheet(QString(
+                    "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
+                    "QProgressBar::chunk { background: %1; border-radius: 3px; }"
+                ).arg(wearCol));
             }
             if (blisters_[i]) {   // no blister line in compact mode
-                int blisters = damage.value(blisterKeys[i], 0);
-                if (blisters > 0) {
-                    blisters_[i]->setText(QString("· %1% blisters").arg(blisters));
+                if (blisters[i] > 0) {
+                    blisters_[i]->setText(QString("· %1% blisters").arg(blisters[i]));
                     blisters_[i]->setVisible(true);
                 } else {
                     blisters_[i]->setVisible(false);

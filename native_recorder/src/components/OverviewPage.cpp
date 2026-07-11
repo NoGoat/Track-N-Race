@@ -518,7 +518,7 @@ void OverviewPage::setDamageCompact(bool on) {
     damageCompact_ = on;
     buildDamageCards();
     applyLayout(loadLayout());
-    if (!lastDamage_.is_null()) { const nlohmann::json d = lastDamage_; onDamage(d); }
+    if (lastDamage_) { const DamageRow d = *lastDamage_; onDamage(d); }
 }
 
 void OverviewPage::setTyresLevel(int level) {
@@ -533,61 +533,61 @@ void OverviewPage::setTyresLevel(int level) {
 
 // ── Per-row updates (were the MainWindow live/playback signals) ───────────
 
-void OverviewPage::onTelemetry(const nlohmann::json& row) {
-    cache_.speed      = row["speed_kph"].get<float>();
-    cache_.rpm        = row["rpm"].get<int>();
-    cache_.gear       = row["gear"].get<int>();
-    cache_.throttle   = row["throttle"].get<float>();
-    cache_.brake      = row["brake"].get<float>();
-    cache_.drs        = row.value("drs", 0) != 0;
-    cache_.slm        = row.value("slm", 0) != 0;
-    cache_.engineTemp = row.value("engine_temp", 0);
+void OverviewPage::onTelemetry(const TelemetryRow& row) {
+    cache_.speed      = (float)row.speed_kph;
+    cache_.rpm        = row.rpm;
+    cache_.gear       = row.gear;
+    cache_.throttle   = row.throttle;
+    cache_.brake      = row.brake;
+    cache_.drs        = row.drs != 0;
+    cache_.slm        = row.slm != 0;
+    cache_.engineTemp = row.engine_temp;
     refreshCards();
 }
 
-void OverviewPage::onStatus(const nlohmann::json& row) {
-    cache_.ersPct         = row["ers_pct"].get<float>();
-    cache_.ersMode        = row["ers_mode"].get<int>();
-    cache_.fuelKg         = row["fuel_kg"].get<float>();
-    cache_.fuelLaps       = row["fuel_laps"].get<float>();
-    cache_.tyreCompound   = row["tyre_compound"].get<int>();
-    cache_.tyreAgeLaps    = row["tyre_age_laps"].get<int>();
-    cache_.fuelMix        = row.value("fuel_mix", 0);
-    cache_.visualCompound = row.value("visual_compound", 0);
+void OverviewPage::onStatus(const StatusRow& row) {
+    cache_.ersPct         = (float)row.ers_pct;
+    cache_.ersMode        = row.ers_mode;
+    cache_.fuelKg         = (float)row.fuel_kg;
+    cache_.fuelLaps       = (float)row.fuel_laps;
+    cache_.tyreCompound   = row.tyre_compound;
+    cache_.tyreAgeLaps    = row.tyre_age_laps;
+    cache_.fuelMix        = row.fuel_mix;
+    cache_.visualCompound = row.visual_compound;
     refreshCards();
 }
 
-void OverviewPage::onDamage(const nlohmann::json& row) {
+void OverviewPage::onDamage(const DamageRow& row) {
     lastDamage_ = row;   // cached so a compact-mode rebuild can repaint while paused
-    setDmgValue(dmgTyreFl,   row.value("tyre_dmg_fl",   0));
-    setDmgValue(dmgTyreFr,   row.value("tyre_dmg_fr",   0));
-    setDmgValue(dmgTyreRl,   row.value("tyre_dmg_rl",   0));
-    setDmgValue(dmgTyreRr,   row.value("tyre_dmg_rr",   0));
-    setDmgValue(dmgBrakeFl,  row.value("brake_dmg_fl",  0));
-    setDmgValue(dmgBrakeFr,  row.value("brake_dmg_fr",  0));
-    setDmgValue(dmgBrakeRl,  row.value("brake_dmg_rl",  0));
-    setDmgValue(dmgBrakeRr,  row.value("brake_dmg_rr",  0));
-    setDmgValue(dmgWingFl,   row.value("wing_fl",         0));
-    setDmgValue(dmgWingFr,   row.value("wing_fr",         0));
-    setDmgValue(dmgWingRear, row.value("wing_rear",       0));
-    setDmgValue(dmgFloor,    row.value("floor_damage",    0));
-    setDmgValue(dmgSidepod,  row.value("sidepod_damage",  0));
-    setDmgValue(dmgDiffuser, row.value("diffuser_damage", 0));
-    setDmgValue(dmgGearbox,  row.value("gearbox_damage",  0));
-    setDmgValue(dmgEngine,   row.value("engine_damage",   0));
+    setDmgValue(dmgTyreFl,   row.tyre_dmg_fl);
+    setDmgValue(dmgTyreFr,   row.tyre_dmg_fr);
+    setDmgValue(dmgTyreRl,   row.tyre_dmg_rl);
+    setDmgValue(dmgTyreRr,   row.tyre_dmg_rr);
+    setDmgValue(dmgBrakeFl,  row.brake_dmg_fl);
+    setDmgValue(dmgBrakeFr,  row.brake_dmg_fr);
+    setDmgValue(dmgBrakeRl,  row.brake_dmg_rl);
+    setDmgValue(dmgBrakeRr,  row.brake_dmg_rr);
+    setDmgValue(dmgWingFl,   row.wing_fl);
+    setDmgValue(dmgWingFr,   row.wing_fr);
+    setDmgValue(dmgWingRear, row.wing_rear);
+    setDmgValue(dmgFloor,    row.floor_damage);
+    setDmgValue(dmgSidepod,  row.sidepod_damage);
+    setDmgValue(dmgDiffuser, row.diffuser_damage);
+    setDmgValue(dmgGearbox,  row.gearbox_damage);
+    setDmgValue(dmgEngine,   row.engine_damage);
 
-    cache_.drsFault = row.value("drs_fault", 0) == 1;
-    cache_.ersFault = row.value("ers_fault", 0) == 1;
+    cache_.drsFault = row.drs_fault == 1;
+    cache_.ersFault = row.ers_fault == 1;
     refreshCards();
 }
 
-void OverviewPage::onLap(const nlohmann::json& row) {
-    cache_.pos    = row["position"].get<int>();
-    cache_.lapNum = row["lap_num"].get<int>();
+void OverviewPage::onLap(const LapRow& row) {
+    cache_.pos    = row.position;
+    cache_.lapNum = row.lap_num;
     refreshCards();
 }
 
-void OverviewPage::updateTyreCards(const nlohmann::json& telemetry, const nlohmann::json& damage) {
+void OverviewPage::updateTyreCards(const TelemetryRow* telemetry, const DamageRow* damage) {
     if (tyreCards_) tyreCards_->update(telemetry, damage);
 }
 

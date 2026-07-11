@@ -2,7 +2,7 @@
 
 #include <QObject>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/AnyRow.h>
 
 class QComboBox;
 class QFrame;
@@ -40,9 +40,9 @@ signals:
     void loadFailed();                             // hide overlay + warn
     // Recording opened: model loaded, bar shown. `header` is the .tnrd header
     // (protocol/track_name/session_name), `currentTime` the initial playhead.
-    void entered(const nlohmann::json& header, float currentTime);
+    void entered(const tnrp::HeaderRow& header, float currentTime);
     void exited();                                 // recording closed, bar hidden
-    void rowReady(const nlohmann::json& row);      // replayed packet (→ emitLiveData)
+    void rowReady(const tnrp::AnyRow& row);        // replayed packet (→ emitLiveData)
     void seeked();                                 // user seek (suppress SC toast once)
     void timeChanged(float absoluteTime);          // per playback tick / scrub
 

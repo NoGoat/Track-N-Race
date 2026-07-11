@@ -405,7 +405,7 @@ SessionPage::SessionPage(QWidget* parent)
 
 // ── Event log maintenance ─────────────────────────────────────────────────
 
-void SessionPage::addEvent(const nlohmann::json& eventRow) {
+void SessionPage::addEvent(const tnrp::RaceEventRow& eventRow) {
     eventLog_.push_back(eventRow);
 }
 
@@ -744,21 +744,21 @@ void SessionPage::setHeaderCompact(bool on) {
 
 // ── Session page updater ──────────────────────────────────────────────────
 
-void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::json& timing) {
-    if (!sp_gpName || session.empty()) return;
+void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow* timing) {
+    if (!sp_gpName || !session) return;
 
-    int trackId   = session.value("track_id",        -1);
-    int timeLeft  = session.value("session_time_left", 0);
-    int totalLaps = session.value("total_laps",       0);
-    int pitSpeed  = session.value("pit_speed_limit",  0);
-    int idealLap  = session.value("pit_stop_window_ideal_lap",  0);
-    int latestLap = session.value("pit_stop_window_latest_lap", 0);
-    int rejoin    = session.value("pit_stop_rejoin_position",   0);
-    int weather   = session.value("weather",           0);
-    int trackTemp = session.value("track_temp",        0);
-    int airTemp   = session.value("air_temp",          0);
-    int trackLenM = session.value("track_length_m",    0);
-    uint32_t todS = session.value("time_of_day",       0u);
+    int trackId   = session->track_id;
+    int timeLeft  = session->session_time_left;
+    int totalLaps = session->total_laps;
+    int pitSpeed  = session->pit_speed_limit;
+    int idealLap  = session->pit_stop_window_ideal_lap;
+    int latestLap = session->pit_stop_window_latest_lap;
+    int rejoin    = session->pit_stop_rejoin_position;
+    int weather   = session->weather;
+    int trackTemp = session->track_temp;
+    int airTemp   = session->air_temp;
+    int trackLenM = session->track_length_m;
+    uint32_t todS = (uint32_t)session->time_of_day;
 
     sp_gpName->setText(trackGpName(trackId));
     if (sp_circuitName) sp_circuitName->setText(trackCircuitName(trackId));   // dropped in compact
@@ -800,17 +800,17 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
     if (weatherCompact_) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
     applyWeatherIcon(sp_weatherNowIcon, weather, 40);
 
-    if (session.contains("weather_forecast_samples")) {
-        const auto& fc = session["weather_forecast_samples"];
+    {
+        const auto& fc = session->weather_forecast_samples;
         int count = std::min((int)fc.size(), 5);
         for (int i = 0; i < 5; ++i) {
             if (i < count) {
-                const int fw = fc[i].value("weather", 0);
-                sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].value("time_offset", 0)));
+                const int fw = fc[i].weather;
+                sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].time_offset));
                 sp_fcWeather[i]->setText(weatherLabel(fw));
                 if (weatherCompact_) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
                 applyWeatherIcon(sp_fcIcon[i], fw, 40);
-                int rain = fc[i].value("rain_percentage", 0);
+                int rain = fc[i].rain_percentage;
                 sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");
             } else {
                 sp_fcTime[i]->setText("");
@@ -821,23 +821,21 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
         }
     }
 
-    if (session.contains("marshal_zones")) {
+    {
         auto* ms = static_cast<MarshalStripWidget*>(sp_marshalStrip);
         ms->zones.clear();
-        for (const auto& z : session["marshal_zones"]) {
-            int flag = z.value("flag", -1);
-            if (flag != -1) {
-                ms->zones.push_back({z.value("zone_start", 0.0f), flag});
+        for (const tnrp::MarshalZone& z : session->marshal_zones) {
+            if (z.flag != -1) {
+                ms->zones.push_back({(float)z.zone_start, z.flag});
             }
         }
         ms->update();
     }
 
-    if (!timing.empty() && timing.contains("cars")) {
-        int playerIdx = timing.value("player_idx", -1);
-        for (const auto& car : timing["cars"]) {
-            if (car.value("idx", -1) == playerIdx) {
-                int lap = car.value("lap_num", 0);
+    if (timing) {
+        for (const TimingCar& car : timing->cars) {
+            if (car.idx == timing->player_idx) {
+                int lap = car.lap_num;
                 sp_statRemain->setText((totalLaps > 0 && lap > 0)
                     ? QString::number(totalLaps - lap + 1) : "—");
                 break;
@@ -848,16 +846,16 @@ void SessionPage::updateSession(const nlohmann::json& session, const nlohmann::j
 
 // ── Session events updater ────────────────────────────────────────────────
 
-void SessionPage::updateEvents(const nlohmann::json& participants) {
+void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
     if (!sp_eventsList || eventLog_.empty()) return;
 
     sp_eventsList->clear();
 
     auto get3LetterCode = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !participants.contains("drivers")) return "—";
-        for (const auto& d : participants["drivers"]) {
-            if (d.value("idx", -1) == carIdx) {
-                QString qn = QString::fromStdString(d.value("name", ""));
+        if (carIdx < 0 || !participants) return "—";
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx == carIdx) {
+                QString qn = QString::fromStdString(d.name);
                 QStringList parts = qn.split(' ');
                 QString last = parts.size() > 1 ? parts.last() : qn;
                 return last.left(3).toUpper();
@@ -867,10 +865,10 @@ void SessionPage::updateEvents(const nlohmann::json& participants) {
     };
 
     for (int i = (int)eventLog_.size() - 1; i >= 0; --i) {
-        const auto& ev = eventLog_[i];
-        std::string code = ev.value("code", "");
+        const tnrp::RaceEventRow& ev = eventLog_[i];
+        const std::string& code = ev.code;
 
-        int totalSecs = (int)ev.value("session_time", 0.0f);
+        int totalSecs = (int)ev.session_time;
         QString timeStr = QString("%1:%2")
             .arg(totalSecs / 60, 2, 10, QChar('0'))
             .arg(totalSecs % 60, 2, 10, QChar('0'));
@@ -881,22 +879,22 @@ void SessionPage::updateEvents(const nlohmann::json& participants) {
 
         if (code == "FTLP") {
             eventType = "Fastest Lap";
-            float lapS = ev.value("lap_time_s", 0.0f);
+            float lapS = ev.lap_time_s.value_or(0.0f);
             int lapMs  = (int)(lapS * 1000.0f);
             QString lapTimeStr = QString("%1:%2.%3")
                 .arg(lapMs / 60000)
                 .arg((lapMs % 60000) / 1000, 2, 10, QChar('0'))
                 .arg(lapMs % 1000, 3, 10, QChar('0'));
-            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
+            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
             text = nameCode + " - " + lapTimeStr;
             colorOverride = QColor("#BF5FFF"); // Purple
         } else if (code == "PENA") {
-            int pt = ev.value("penalty_type", -1);
+            int pt = ev.penalty_type.value_or(-1);
             const char* ptLabel = penaltyTypeLabel(pt);
             if (!ptLabel) continue;
 
-            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
-            QString inf = infringementLabel(ev.value("infringement_type", -1));
+            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
+            QString inf = infringementLabel(ev.infringement_type.value_or(-1));
 
             if (pt == 5) {
                 eventType = "Warning";
@@ -905,23 +903,23 @@ void SessionPage::updateEvents(const nlohmann::json& participants) {
             } else {
                 eventType = "Penalty";
                 QString penText = ptLabel;
-                int timeS = ev.value("penalty_time_s", 0);
+                int timeS = ev.penalty_time_s.value_or(0);
                 if ((pt == 1 || pt == 4) && timeS > 0) penText += QString(" %1s").arg(timeS);
                 text = nameCode + " - " + penText;
                 if (!inf.isEmpty()) text += " (" + inf + ")";
                 colorOverride = QColor("#e10600"); // Red
             }
         } else if (code == "SCAR") {
-            int t = ev.value("safety_car_type", 0);
+            int t = ev.safety_car_type.value_or(0);
             eventType = (t == 1) ? "Safety Car" : (t == 2) ? "Virtual SC"
                          : (t == 3) ? "Formation Lap" : "SC";
-            int a = ev.value("event_type", 0);
+            int a = ev.event_type.value_or(0);
             const char* action = (a == 0) ? "Deployed" : (a == 1) ? "Returning"
                                : (a == 2) ? "Returned" : (a == 3) ? "Resume Race" : "";
             text = action;
         } else if (code == "RTMT" || code == "RCWN" || code == "DTSV" || code == "SGSV") {
             eventType = eventCodeLabel(code);
-            QString nameCode = get3LetterCode(ev.value("car_idx", -1));
+            QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
             text = nameCode;
         } else {
             eventType = eventCodeLabel(code);
@@ -994,21 +992,20 @@ void SessionPage::updateEvents(const nlohmann::json& participants) {
 
 // ── Proximity widget updater ──────────────────────────────────────────────
 
-void SessionPage::updateProximity(const nlohmann::json& timing, const nlohmann::json& participants) {
-    if (!sp_proxPos[0] || timing.empty()) return;
+void SessionPage::updateProximity(const TimingRow* timing, const tnrp::ParticipantsRow* participants) {
+    if (!sp_proxPos[0] || !timing) return;
 
-    int playerIdx = timing.value("player_idx", -1);
-    if (playerIdx < 0 || !timing.contains("cars")) {
+    int playerIdx = timing->player_idx;
+    if (playerIdx < 0) {
         for (int i = 0; i < 3; ++i) sp_proxRow[i]->setVisible(false);
         return;
     }
 
     struct CarEntry { int idx; int pos; int gapMs; };
     std::vector<CarEntry> cars;
-    for (const auto& car : timing["cars"]) {
-        int rs = car.value("result_status", 0);
-        if (rs == 0 || rs == 3) continue;
-        cars.push_back({car.value("idx",-1), car.value("position",0), car.value("gap_ms",0)});
+    for (const TimingCar& car : timing->cars) {
+        if (car.result_status == 0 || car.result_status == 3) continue;
+        cars.push_back({car.idx, car.position, car.gap_ms});
     }
     std::sort(cars.begin(), cars.end(), [](const CarEntry& a, const CarEntry& b){ return a.pos < b.pos; });
 
@@ -1035,10 +1032,10 @@ void SessionPage::updateProximity(const nlohmann::json& timing, const nlohmann::
     }
 
     auto driverName = [&](int carIdx) -> QString {
-        if (carIdx < 0 || !participants.contains("drivers")) return "—";
-        for (const auto& d : participants["drivers"]) {
-            if (d.value("idx", -1) == carIdx) {
-                QString qn = QString::fromStdString(d.value("name", ""));
+        if (carIdx < 0 || !participants) return "—";
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx == carIdx) {
+                QString qn = QString::fromStdString(d.name);
                 QStringList parts = qn.split(' ');
                 return (parts.size() > 1 ? parts.last() : qn).left(3).toUpper();
             }
@@ -1078,21 +1075,21 @@ void SessionPage::updateProximity(const nlohmann::json& timing, const nlohmann::
 // The map widget lives in the central area of this page; this pushes live
 // data into it and re-reads the map display settings.
 
-void SessionPage::updateTrackMap(const nlohmann::json& session,
-                                 const nlohmann::json& participants,
-                                 const nlohmann::json& positions) {
+void SessionPage::updateTrackMap(const tnrp::SessionRow* session,
+                                 const tnrp::ParticipantsRow* participants,
+                                 const PositionsRow* positions) {
     if (!trackMap_) return;
 
     // Load the circuit geometry when the track changes.
-    if (!session.empty()) {
-        int tid = session.value("track_id", -1);
+    if (session) {
+        int tid = session->track_id;
         if (tid >= 0 && tid != mapTrackId_) {
             trackMap_->setTrack(tid);
             mapTrackId_ = tid;
         }
         // 2026 SLM track status (0 = Full, 1 = Partial, -1 = n/a) selects which
         // SLM zone set the overlay draws. Absent on F1 24/25 sessions.
-        trackMap_->setSlmTrackStatus(session.value("active_aero_track_status", -1));
+        trackMap_->setSlmTrackStatus(session->active_aero_track_status);
     }
 
     // Theme: derive light/dark from the active palette.
@@ -1104,10 +1101,10 @@ void SessionPage::updateTrackMap(const nlohmann::json& session,
     trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
     trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
 
-    if (!participants.empty())
-        trackMap_->setParticipants(participants);
-    if (!positions.empty())
-        trackMap_->setPositions(positions);
+    if (participants)
+        trackMap_->setParticipants(*participants);
+    if (positions)
+        trackMap_->setPositions(*positions);
 }
 
 void SessionPage::setMapFullscreen(bool on) {

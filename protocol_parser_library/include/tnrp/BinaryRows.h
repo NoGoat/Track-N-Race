@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 #include <vector>
 
@@ -86,6 +87,94 @@ inline void encodePositions(std::vector<uint8_t>& b, const PositionsRow& p) {
         put<double>(b, c.x);
         put<double>(b, c.z);
     }
+}
+
+// ── Decode (C++ mirror of decodeBinaryBatch.ts, for in-process consumers) ───
+// Walks a packed batch and invokes `f(row)` once per record with the typed row
+// (TelemetryRow / MotionRow / MotionExRow / PositionsRow). Returns false and
+// stops on a malformed/truncated batch. `ts` is left empty — the batch format
+// deliberately omits it (see the encode notes above).
+
+struct BinReader {
+    const uint8_t* p;
+    const uint8_t* end;
+    template <class T>
+    bool get(T& v) {
+        static_assert(std::is_trivially_copyable_v<T>, "POD only");
+        if (end - p < (ptrdiff_t)sizeof(T)) return false;
+        std::memcpy(&v, p, sizeof(T));
+        p += sizeof(T);
+        return true;
+    }
+    // Reads a stored S and widens/converts it into the row's field type D.
+    template <class S, class D>
+    bool getAs(D& out) {
+        S v{};
+        if (!get(v)) return false;
+        out = (D)v;
+        return true;
+    }
+};
+
+inline bool decodeTelemetry(BinReader& r, TelemetryRow& t) {
+    return r.get(t.session_time)
+        && r.getAs<uint16_t>(t.speed_kph)
+        && r.getAs<uint16_t>(t.rpm)
+        && r.getAs<int8_t>(t.gear)
+        && r.getAs<uint8_t>(t.drs)
+        && r.get(t.throttle)
+        && r.get(t.brake)
+        && r.get(t.steering)
+        && r.getAs<uint8_t>(t.tyre_temp_surface_rl)
+        && r.getAs<uint8_t>(t.tyre_temp_surface_rr)
+        && r.getAs<uint8_t>(t.tyre_temp_surface_fl)
+        && r.getAs<uint8_t>(t.tyre_temp_surface_fr)
+        && r.getAs<uint8_t>(t.tyre_temp_inner_rl)
+        && r.getAs<uint8_t>(t.tyre_temp_inner_rr)
+        && r.getAs<uint8_t>(t.tyre_temp_inner_fl)
+        && r.getAs<uint8_t>(t.tyre_temp_inner_fr)
+        && r.getAs<uint16_t>(t.brake_temp_rl)
+        && r.getAs<uint16_t>(t.brake_temp_rr)
+        && r.getAs<uint16_t>(t.brake_temp_fl)
+        && r.getAs<uint16_t>(t.brake_temp_fr)
+        && r.getAs<uint16_t>(t.engine_temp)
+        && r.getAs<uint8_t>(t.slm);
+}
+
+inline bool decodeMotion(BinReader& r, MotionRow& m) {
+    return r.get(m.session_time) && r.get(m.g_lat) && r.get(m.g_long) && r.get(m.g_vert);
+}
+
+inline bool decodeMotionEx(BinReader& r, MotionExRow& m) {
+    return r.get(m.session_time) && r.get(m.front_aero_height_mm) && r.get(m.rear_aero_height_mm);
+}
+
+inline bool decodePositions(BinReader& r, PositionsRow& p) {
+    uint8_t count = 0;
+    if (!r.getAs<uint8_t>(p.player_idx) || !r.get(count)) return false;
+    p.cars.resize(count);
+    for (int i = 0; i < (int)count; ++i) {
+        p.cars[i].idx = i;   // implicit on the wire (== array index)
+        if (!r.get(p.cars[i].x) || !r.get(p.cars[i].z)) return false;
+    }
+    return true;
+}
+
+template <class F>
+inline bool decodeBatch(const uint8_t* data, size_t len, F&& f) {
+    BinReader r{ data, data + len };
+    while (r.p < r.end) {
+        uint8_t tag = 0;
+        if (!r.get(tag)) return false;
+        switch (tag) {
+            case kTelemetry: { TelemetryRow t; if (!decodeTelemetry(r, t)) return false; f(std::move(t)); break; }
+            case kMotion:    { MotionRow m;    if (!decodeMotion(r, m))    return false; f(std::move(m)); break; }
+            case kMotionEx:  { MotionExRow m;  if (!decodeMotionEx(r, m))  return false; f(std::move(m)); break; }
+            case kPositions: { PositionsRow p; if (!decodePositions(r, p)) return false; f(std::move(p)); break; }
+            default: return false;   // unknown tag — cannot resync, stop
+        }
+    }
+    return true;
 }
 
 } // namespace tnrp::bin

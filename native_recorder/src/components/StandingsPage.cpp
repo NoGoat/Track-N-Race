@@ -376,27 +376,27 @@ void StandingsPage::resetForNewSession() {
 
 // ── Race panel updater ────────────────────────────────────────────────────
 
-void StandingsPage::updateRacePanel(const nlohmann::json& timing,
-                                    const nlohmann::json& participants,
-                                    const nlohmann::json& playerLap,
-                                    const nlohmann::json& playerStatus,
-                                    const nlohmann::json& allStatus) {
+void StandingsPage::updateRacePanel(const TimingRow* timing,
+                                    const tnrp::ParticipantsRow* participants,
+                                    const LapRow* playerLap,
+                                    const StatusRow* playerStatus,
+                                    const AllStatusRow* allStatus) {
     if (!rp_lapNum) return;
 
-    int playerIdx    = timing.empty() ? -1 : timing.value("player_idx", -1);
+    int playerIdx    = timing ? timing->player_idx : -1;
     bool viewingOther = (selectedCarIdx_ != -1 && selectedCarIdx_ != playerIdx);
 
     {
         const int targetIdx = viewingOther ? selectedCarIdx_ : playerIdx;
         QString name;
         QColor liveryColor;
-        if (targetIdx >= 0 && !participants.empty() && participants.contains("drivers")) {
-            for (const auto& d : participants["drivers"]) {
-                if (d.value("idx", -1) == targetIdx) {
+        if (targetIdx >= 0 && participants) {
+            for (const tnrp::Driver& d : participants->drivers) {
+                if (d.idx == targetIdx) {
                     name = QString("#%1 %2")
-                        .arg(d.value("race_number", 0))
-                        .arg(QString::fromStdString(d.value("name", "")));
-                    liveryColor = QColor(QString::fromStdString(d.value("livery_color", "")));
+                        .arg(d.race_number)
+                        .arg(QString::fromStdString(d.name));
+                    liveryColor = QColor(QString::fromStdString(d.livery_color));
                     break;
                 }
             }
@@ -410,16 +410,17 @@ void StandingsPage::updateRacePanel(const nlohmann::json& timing,
             rp_driverName->setStyleSheet(QString());
     }
 
-    auto applyTiming = [&](const nlohmann::json& lap) {
-        int lapNum    = lap.value("lap_num",        0);
-        int pos       = lap.value("position",       0);
-        int pitSt     = lap.value("pit_status",     0);
-        int currentMs = lap.value("current_lap_ms", 0);
-        int lastMs    = lap.value("last_lap_ms",    0);
-        int s1Ms      = lap.value("s1_ms",          0);
-        int s2Ms      = lap.value("s2_ms",          0);
-        bool invalid  = lap.value("lap_invalid",    false);
-        int  penS     = lap.value("penalties_s",    0);
+    // Generic over LapRow and TimingCar — both carry the same timing field names.
+    auto applyTiming = [&](const auto& lap) {
+        int lapNum    = lap.lap_num;
+        int pos       = lap.position;
+        int pitSt     = lap.pit_status;
+        int currentMs = lap.current_lap_ms;
+        int lastMs    = lap.last_lap_ms;
+        int s1Ms      = lap.s1_ms;
+        int s2Ms      = lap.s2_ms;
+        bool invalid  = lap.lap_invalid;
+        int  penS     = lap.penalties_s;
 
         rp_lapNum->setText(lapNum > 0 ? QString::number(lapNum) : "—");
         rp_position->setText(pos > 0 ? "P" + QString::number(pos) : "—");
@@ -438,25 +439,26 @@ void StandingsPage::updateRacePanel(const nlohmann::json& timing,
         rp_s2->setText(formatSector(s2Ms));
     };
 
-    if (viewingOther && !timing.empty() && timing.contains("cars")) {
-        for (const auto& car : timing["cars"]) {
-            if (car.value("idx", -1) == selectedCarIdx_) { applyTiming(car); break; }
+    if (viewingOther && timing) {
+        for (const TimingCar& car : timing->cars) {
+            if (car.idx == selectedCarIdx_) { applyTiming(car); break; }
         }
-    } else if (!playerLap.empty()) {
-        applyTiming(playerLap);
+    } else if (playerLap) {
+        applyTiming(*playerLap);
     }
 
-    auto applyStatus = [&](const nlohmann::json& st) {
-        float ersPct    = st.value("ers_pct",          0.0f);
-        int   ersMode   = st.value("ers_mode",         0);
-        float fuelKg    = st.value("fuel_kg",          0.0f);
-        float fuelLaps  = st.value("fuel_laps",        0.0f);
-        int   fuelMix   = st.value("fuel_mix",         0);
-        int   compound  = st.value("tyre_compound",    -1);
-        int   visual    = st.value("visual_compound",  -1);
-        int   tyreAge   = st.value("tyre_age_laps",    0);
-        float brakeBias = st.value("front_brake_bias", 0.0f);
-        bool  drsOk     = st.value("drs_allowed",      false);
+    // Generic over StatusRow and AllStatusCar — same status field names.
+    auto applyStatus = [&](const auto& st) {
+        float ersPct    = (float)st.ers_pct;
+        int   ersMode   = st.ers_mode;
+        float fuelKg    = (float)st.fuel_kg;
+        float fuelLaps  = (float)st.fuel_laps;
+        int   fuelMix   = st.fuel_mix;
+        int   compound  = st.tyre_compound;
+        int   visual    = st.visual_compound;
+        int   tyreAge   = st.tyre_age_laps;
+        float brakeBias = (float)st.front_brake_bias;
+        bool  drsOk     = st.drs_allowed;
 
         rp_ersPct->setText(QString::number((int)ersPct) + "%");
         rp_ersBar->setValue((int)ersPct);
@@ -487,58 +489,54 @@ void StandingsPage::updateRacePanel(const nlohmann::json& timing,
         rp_brakeBias->setText(brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
     };
 
-    if (viewingOther && !allStatus.empty() && allStatus.contains("cars")) {
-        for (const auto& car : allStatus["cars"]) {
-            if (car.value("idx", -1) == selectedCarIdx_) { applyStatus(car); break; }
+    if (viewingOther && allStatus) {
+        for (const AllStatusCar& car : allStatus->cars) {
+            if (car.idx == selectedCarIdx_) { applyStatus(car); break; }
         }
-    } else if (!playerStatus.empty()) {
-        applyStatus(playerStatus);
+    } else if (playerStatus) {
+        applyStatus(*playerStatus);
     }
 }
 
 // ── Standings table updater ───────────────────────────────────────────────
 
-void StandingsPage::updateTimingTable(const nlohmann::json& timing,
-                                      const nlohmann::json& participants,
-                                      const nlohmann::json& allStatus) {
-    if (!timingTable_ || timing.empty()) return;
+void StandingsPage::updateTimingTable(const TimingRow* timing,
+                                      const tnrp::ParticipantsRow* participants,
+                                      const AllStatusRow* allStatus) {
+    if (!timingTable_ || !timing) return;
 
     struct DriverInfo { QString name; int raceNum; QColor color; };
     std::unordered_map<int, DriverInfo> driverMap;
-    if (!participants.empty() && participants.contains("drivers")) {
-        for (const auto& d : participants["drivers"]) {
-            int idx = d.value("idx", -1);
-            if (idx < 0) continue;
-            driverMap[idx] = {
-                QString::fromStdString(d.value("name", "")),
-                d.value("race_number", 0),
-                QColor(QString::fromStdString(d.value("livery_color", "#8e8e8e")))
+    if (participants) {
+        for (const tnrp::Driver& d : participants->drivers) {
+            if (d.idx < 0) continue;
+            driverMap[d.idx] = {
+                QString::fromStdString(d.name),
+                d.race_number,
+                QColor(d.livery_color.empty() ? QStringLiteral("#8e8e8e")
+                                              : QString::fromStdString(d.livery_color))
             };
         }
     }
 
     struct TyreInfo { int compound; int visual; };
     std::unordered_map<int, TyreInfo> tyreMap;
-    if (!allStatus.empty() && allStatus.contains("cars")) {
-        for (const auto& c : allStatus["cars"]) {
-            int idx = c.value("idx", -1);
-            if (idx >= 0)
-                tyreMap[idx] = { c.value("tyre_compound", -1), c.value("visual_compound", -1) };
+    if (allStatus) {
+        for (const AllStatusCar& c : allStatus->cars) {
+            if (c.idx >= 0)
+                tyreMap[c.idx] = { c.tyre_compound, c.visual_compound };
         }
     }
 
-    int playerIdx = timing.value("player_idx", -1);
-    const auto& cars = timing["cars"];
+    int playerIdx = timing->player_idx;
 
-    std::vector<nlohmann::json> active;
-    for (const auto& car : cars) {
-        int rs  = car.value("result_status", 0);
-        int pos = car.value("position", 0);
-        if (rs >= 2 && pos > 0) active.push_back(car);
+    std::vector<const TimingCar*> active;
+    for (const TimingCar& car : timing->cars) {
+        if (car.result_status >= 2 && car.position > 0) active.push_back(&car);
     }
     std::sort(active.begin(), active.end(),
-        [](const nlohmann::json& a, const nlohmann::json& b) {
-            return a.value("position", 99) < b.value("position", 99);
+        [](const TimingCar* a, const TimingCar* b) {
+            return a->position < b->position;
         });
 
     bool orderOrSettingChanged = false;
@@ -547,7 +545,7 @@ void StandingsPage::updateTimingTable(const nlohmann::json& timing,
         orderOrSettingChanged = true;
     } else {
         for (int i = 0; i < (int)active.size(); ++i) {
-            if (active[i].value("idx", -1) != tableRowCarIdx_[i]) {
+            if (active[i]->idx != tableRowCarIdx_[i]) {
                 orderOrSettingChanged = true; break;
             }
         }
@@ -565,7 +563,7 @@ void StandingsPage::updateTimingTable(const nlohmann::json& timing,
             );
         };
         for (int row = 0; row < (int)active.size(); ++row) {
-            int idx = active[row].value("idx", -1);
+            int idx = active[row]->idx;
             auto di = driverMap.find(idx);
             QColor rawColor = (di != driverMap.end()) ? di->second.color : QColor("#8e8e8e");
             QColor bgNormal = timingTable_->palette().color(row % 2 == 0 ? QPalette::Base : QPalette::AlternateBase);
@@ -587,23 +585,23 @@ void StandingsPage::updateTimingTable(const nlohmann::json& timing,
     timingTable_->setRowCount((int)active.size());
     tableRowCarIdx_.resize(active.size());
     for (int i = 0; i < (int)active.size(); ++i)
-        tableRowCarIdx_[i] = active[i].value("idx", -1);
+        tableRowCarIdx_[i] = active[i]->idx;
 
     for (int row = 0; row < (int)active.size(); ++row) {
-        const auto& car = active[row];
-        int  idx        = car.value("idx",           -1);
-        int  pos        = car.value("position",       0);
-        int  lapNum     = car.value("lap_num",        0);
-        int  lastLapMs  = car.value("last_lap_ms",    0);
-        int  s1Ms       = car.value("s1_ms",          0);
-        int  s2Ms       = car.value("s2_ms",          0);
-        int  gapMs      = car.value("gap_ms",         0);
-        int  pitStatus  = car.value("pit_status",     0);
-        bool lapInvalid = car.value("lap_invalid",    false);
-        int  penaltiesS = car.value("penalties_s",    0);
-        int  numDt      = car.value("num_dt_pens",    0);
-        int  numSg      = car.value("num_sg_pens",    0);
-        int  resultSt   = car.value("result_status",  0);
+        const TimingCar& car = *active[row];
+        int  idx        = car.idx;
+        int  pos        = car.position;
+        int  lapNum     = car.lap_num;
+        int  lastLapMs  = car.last_lap_ms;
+        int  s1Ms       = car.s1_ms;
+        int  s2Ms       = car.s2_ms;
+        int  gapMs      = car.gap_ms;
+        int  pitStatus  = car.pit_status;
+        bool lapInvalid = car.lap_invalid;
+        int  penaltiesS = car.penalties_s;
+        int  numDt      = car.num_dt_pens;
+        int  numSg      = car.num_sg_pens;
+        int  resultSt   = car.result_status;
         bool isPlayer   = (idx == playerIdx);
 
         int s3Ms = (lastLapMs > 0 && s1Ms > 0 && s2Ms > 0) ? lastLapMs - s1Ms - s2Ms : 0;

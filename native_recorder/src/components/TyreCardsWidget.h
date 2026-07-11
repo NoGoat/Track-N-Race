@@ -6,7 +6,7 @@
 
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/rows.h>
 
 class QBoxLayout;
 class QGridLayout;
@@ -19,7 +19,8 @@ public:
     explicit TyreCardsWidget(Qt::Orientation orientation = Qt::Horizontal,
                              QWidget* parent = nullptr);
 
-    void update(const nlohmann::json& telemetry, const nlohmann::json& damage);
+    // nullptr = the row hasn't been seen yet; that section keeps its placeholder.
+    void update(const TelemetryRow* telemetry, const DamageRow* damage);
     void setCornerVisible(int i, bool on);
 
     // Density levels for the Overview tyre cards (the Tyres page always uses Full):

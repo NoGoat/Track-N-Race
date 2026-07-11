@@ -6,8 +6,9 @@
 
 #include <string>
 #include <memory>
+#include <optional>
 
-#include <nlohmann/json.hpp>
+#include <tnrp/AnyRow.h>
 
 #include "HotRowSmoother.h"
 #include "CompactSettings.h"
@@ -97,10 +98,13 @@ public:
     void    setUdpBindAddress(const QString& addr);
 
 private slots:
-    // Receives one pre-serialised JSON row from the libtnrp engine (marshalled
-    // onto the GUI thread by EngineSink). Replaces the old onDatagramReady() →
-    // processPacket() path; parsing/recording/rate-limiting now live in the engine.
+    // Receives one pre-serialised JSON row (cold/control) from the libtnrp engine
+    // (marshalled onto the GUI thread by EngineSink) and parses it into a typed
+    // tnrp::AnyRow. Hot 60 Hz rows arrive packed via onEngineBinary instead.
     void onEngineRow(const QByteArray& json);
+    // Receives one packed hot-row batch (telemetry/motion/motion_ex/positions)
+    // and decodes it with tnrp::bin::decodeBatch — no JSON on the live hot path.
+    void onEngineBinary(const QByteArray& batch);
 
 private:
     // ── Overview tab ──────────────────────────────────────────────
@@ -114,19 +118,19 @@ private:
     // Self-contained page widget (timing table + race panel + selection and
     // fastest-lap state); fed the cached rows below via its update methods.
     StandingsPage*   standingsPage_      = nullptr;
-    nlohmann::json   lastTimingData;
-    nlohmann::json   lastParticipantsData;
-    nlohmann::json   lastAllStatusData;
-    nlohmann::json   lastPlayerLapData;
-    nlohmann::json   lastPlayerStatusData;
+    std::optional<TimingRow>             lastTimingData;
+    std::optional<tnrp::ParticipantsRow> lastParticipantsData;
+    std::optional<AllStatusRow>          lastAllStatusData;
+    std::optional<LapRow>                lastPlayerLapData;
+    std::optional<StatusRow>             lastPlayerStatusData;
 
     // ── Tyres page ───────────────────────────────────────────────
     // Self-contained page widget; fed the latest cached rows via
     // updateTyreCards()/updateTyreSets() from flushUiRefresh().
     TyresPage*       tyresPage_       = nullptr;
-    nlohmann::json   lastPlayerTelemetryData;
-    nlohmann::json   lastPlayerDamageData;
-    nlohmann::json   lastTyreSetsData;
+    std::optional<TelemetryRow>      lastPlayerTelemetryData;
+    std::optional<DamageRow>         lastPlayerDamageData;
+    std::optional<tnrp::TyreSetsRow> lastTyreSetsData;
 
     // ── Strategy page ─────────────────────────────────────────────
     // Self-contained: fed the cached JSON rows below on refresh, runs its own
@@ -138,8 +142,8 @@ private:
     // events log); fed the cached rows below via its update methods. Owns the
     // event log and TrackMapWidget (settings setters push via trackMap()).
     SessionPage*   sessionPage_ = nullptr;
-    nlohmann::json lastSessionData;
-    nlohmann::json lastPositionsData;
+    std::optional<tnrp::SessionRow> lastSessionData;
+    std::optional<PositionsRow>     lastPositionsData;
 
     // ── Input tab ──────────────────────────────────────────────
     // Self-contained page widget (charts bound to model_); MainWindow only
@@ -187,7 +191,7 @@ private:
     // don't stutter on a flaky link. Display-only; driven by hotFillTimer_.
     HotRowSmoother hotSmoother_;
     QTimer*        hotFillTimer_ = nullptr;
-    void feedHotSmoother(const std::string& type, const nlohmann::json& row, float sessionTime);
+    void feedHotSmoother(const tnrp::AnyRow& row);
     void onHotFillTick();
 
     // ── Persistence ───────────────────────────────────────────────
@@ -256,7 +260,10 @@ private:
     void setRenderingActive(bool on);   // start/stop the rendering subsystems
 
     // ── Live data routing ─────────────────────────────────────────
-    void emitLiveData(const nlohmann::json& row);
+    void emitLiveData(const tnrp::AnyRow& row);
+    // Shared tail of the live paths (JSON cold rows, binary hot rows, fills):
+    // panels + SessionModel + forward-fill smoother.
+    void routeLiveRow(const tnrp::AnyRow& row);
 
     // Event toast notifications live in ToastHost; lastSafetyCarStatus_ tracks
     // the session packet's SC state so changes can be toasted (routing decision).
@@ -265,5 +272,5 @@ private:
     // Set when the player seeks: the safety-car snapshot that follows resyncs
     // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
     bool scSuppressOnce_ = false;
-    void ingestForModel(const nlohmann::json& row, float sessionTime);
+    void ingestForModel(const tnrp::AnyRow& row);
 };

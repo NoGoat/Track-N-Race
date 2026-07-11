@@ -184,7 +184,7 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
     connect(player_, &TnrdPlayer::loadingStarted, this, &PlaybackController::loadingStarted);
     connect(player_, &TnrdPlayer::loadFailed, this, &PlaybackController::loadFailed);
 
-    connect(player_, &TnrdPlayer::loaded, this, [this](const nlohmann::json& hdr) {
+    connect(player_, &TnrdPlayer::loaded, this, [this](const tnrp::HeaderRow& hdr) {
         // Hand the chart the whole pre-scanned session; it now drives off currentTime.
         if (model_) model_->load(player_->takeScannedData());
 

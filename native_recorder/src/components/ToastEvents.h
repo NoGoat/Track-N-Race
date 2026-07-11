@@ -3,7 +3,8 @@
 #include <optional>
 #include <QString>
 #include <QColor>
-#include <nlohmann/json.hpp>
+
+#include <tnrp/control_rows.h>
 
 // Resolved content for one toast. MainWindow::showToast() feeds this into the
 // vendored Toast widget (third_party/qt-toast). Kept Qt-widget-free so the
@@ -21,9 +22,9 @@ struct ToastSpec {
 
 // race_event row → toast, or nullopt for codes that shouldn't notify (SCAR is
 // driven by the session packet; OVTK/SPTP are intentionally silent). `participants`
-// is the latest "participants" row (with its "drivers" array) for name lookup.
-std::optional<ToastSpec> buildToast(const nlohmann::json& event,
-                                    const nlohmann::json& participants);
+// is the latest "participants" row for name lookup (nullptr = none seen yet).
+std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
+                                    const tnrp::ParticipantsRow* participants);
 
 // Safety-car transition → toast. status values are the session packet's
 // safety_car_status (0=clear, 1=SC, 2=VSC, 3=formation). Returns nullopt when the

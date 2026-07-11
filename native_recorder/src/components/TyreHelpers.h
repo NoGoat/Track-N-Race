@@ -2,7 +2,8 @@
 
 #include <QString>
 #include <QColor>
-#include <nlohmann/json.hpp>
+
+#include <tnrp/control_rows.h>
 
 #include "../Labels.h"
 #include "CardColors.h"
@@ -44,14 +45,14 @@ inline QColor wearPctColor(int pct) { return tnr::cardColor("wear", pct); }
 
 // ── Tyre set status helpers ───────────────────────────────────────────────
 
-inline QString setStatusText(const nlohmann::json& s) {
-    if (s.value("fitted",    false)) return "FITTED";
-    if (s.value("available", false)) return s.value("wear", 0) == 0 ? "NEW" : "USED";
-    if (s.value("recommended_session", 0) > 0) return "RESERVED";
+inline QString setStatusText(const tnrp::TyreSet& s) {
+    if (s.fitted)    return "FITTED";
+    if (s.available) return s.wear == 0 ? "NEW" : "USED";
+    if (s.recommended_session > 0) return "RESERVED";
     return "RETURNED";
 }
 
-inline QColor setStatusColor(const nlohmann::json& s) {
+inline QColor setStatusColor(const tnrp::TyreSet& s) {
     const std::string st = setStatusText(s).toStdString();
     if (st == "FITTED")   return QColor("#5794F2");
     if (st == "NEW")      return QColor("#37872D");

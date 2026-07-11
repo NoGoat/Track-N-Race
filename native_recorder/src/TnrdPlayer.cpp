@@ -85,21 +85,11 @@ void TnrdPlayer::load(const QString& path) {
 
         reader_.setCursor(startTime_);   // rewind the stream cursor for playback
 
-        // Hand the header to the UI as JSON (MainWindow reads track_name/session_name).
-        nlohmann::json hdr;
-        hdr["magic"]        = header.magic;
-        hdr["protocol"]     = header.protocol;
-        hdr["track_id"]     = header.track_id;
-        hdr["track_name"]   = header.track_name;
-        hdr["session_type"] = header.session_type;
-        hdr["session_name"] = header.session_name;
-        hdr["start_time"]   = header.start_time;
-
-        QMetaObject::invokeMethod(this, [this, hdr] {
+        QMetaObject::invokeMethod(this, [this, header] {
             if (cancelled_) { reader_.close(); loading_ = false; return; }
             loading_ = false;
             emitState();
-            emit loaded(hdr);
+            emit loaded(header);
 
             // Emit the reconstructed frame at the start so panels — and the track
             // map, which needs the one-shot participants row to draw car dots at
@@ -214,10 +204,11 @@ void TnrdPlayer::scanIntoSessionData() {
     scanned_.trimBuffers = false;   // playback keeps the whole session in memory
 
     float lastDmg[4] = { 0.0f, 0.0f, 0.0f, 0.0f };  // last tyre wear seen, merged into tyre samples
-    float lastT = startTime_;
 
-    // Every row in the recording, in time order. The reader returns raw JSONL; we
-    // only fully parse the row types the charts consume.
+    // Every row in the recording, in time order. The reader returns raw JSONL; the
+    // scanType pre-filter skips the row types the charts ignore, and the survivors
+    // are glaze-parsed into typed structs via tnrp::parseRow (fields the structs
+    // don't declare are skipped — no dynamic JSON objects anywhere in the scan).
     std::vector<std::string> rows = reader_.readRange(startTime_, totalTime_);
     qInfo("[player] scan: %zu raw rows in [%.2f, %.2f]", rows.size(), startTime_, totalTime_);
     int parseFails = 0;
@@ -226,56 +217,46 @@ void TnrdPlayer::scanIntoSessionData() {
         int tid = scanType(s.data(), (int)s.size());
         if (tid != 1 && tid != 2 && tid != 3 && tid != 4 && tid != 11 && tid != 12)
             continue;
-        nlohmann::json j;
-        try { j = nlohmann::json::parse(s); } catch (...) { ++parseFails; continue; }
-        const float t = j.value("session_time", lastT);
-        lastT = t;
-        if (tid == 1) {
-            scanned_.onTelemetry(t,
-                                 j.value("speed_kph", 0.0f),
-                                 j.value("rpm", 0),
-                                 j.value("gear", 0),
-                                 j.value("throttle", 0.0f),
-                                 j.value("brake", 0.0f),
-                                 j.value("steering", 0.0f));
-            scanned_.onTyre(t,
-                j.value("tyre_temp_surface_fl", 0.0f), j.value("tyre_temp_surface_fr", 0.0f),
-                j.value("tyre_temp_surface_rl", 0.0f), j.value("tyre_temp_surface_rr", 0.0f),
-                j.value("tyre_temp_inner_fl",   0.0f), j.value("tyre_temp_inner_fr",   0.0f),
-                j.value("tyre_temp_inner_rl",   0.0f), j.value("tyre_temp_inner_rr",   0.0f),
-                j.value("brake_temp_fl",        0.0f), j.value("brake_temp_fr",        0.0f),
-                j.value("brake_temp_rl",        0.0f), j.value("brake_temp_rr",        0.0f),
+        std::optional<tnrp::AnyRow> parsed = tnrp::parseRow(s);
+        if (!parsed) { ++parseFails; continue; }
+
+        if (const TelemetryRow* t = std::get_if<TelemetryRow>(&*parsed)) {
+            scanned_.onTelemetry(t->session_time, (float)t->speed_kph, t->rpm, t->gear,
+                                 t->throttle, t->brake, (float)t->steering);
+            scanned_.onTyre(t->session_time,
+                (float)t->tyre_temp_surface_fl, (float)t->tyre_temp_surface_fr,
+                (float)t->tyre_temp_surface_rl, (float)t->tyre_temp_surface_rr,
+                (float)t->tyre_temp_inner_fl,   (float)t->tyre_temp_inner_fr,
+                (float)t->tyre_temp_inner_rl,   (float)t->tyre_temp_inner_rr,
+                (float)t->brake_temp_fl,        (float)t->brake_temp_fr,
+                (float)t->brake_temp_rl,        (float)t->brake_temp_rr,
                 lastDmg[0], lastDmg[1], lastDmg[2], lastDmg[3]);
-        } else if (tid == 2) {
-            scanned_.onStatus(
-                t,
-                j.value("ers_pct", 0.0f),
-                j.value("fuel_kg", 0.0f),
-                j.value("engine_power_ice_kw", 0.0f),
-                j.value("engine_power_mguk_kw", 0.0f),
-                j.value("ers_harvested_mguk_j", 0.0f),
-                j.value("ers_harvested_mguh_j", 0.0f));
-        } else if (tid == 3) {
-            lastDmg[0] = j.value("tyre_wear_fl", 0.0f);
-            lastDmg[1] = j.value("tyre_wear_fr", 0.0f);
-            lastDmg[2] = j.value("tyre_wear_rl", 0.0f);
-            lastDmg[3] = j.value("tyre_wear_rr", 0.0f);
-        } else if (tid == 4) {
-            scanned_.onLap(j.value("lap_num", 0),
-                           j.value("current_lap_ms", 0),
-                           j.value("last_lap_ms", 0),
-                           j.value("lap_invalid", false));
-        } else if (tid == 11) {
-            scanned_.onMotion(t, j.value("g_lat", 0.0f), j.value("g_long", 0.0f));
-        } else if (tid == 12) {
-            scanned_.onMotionEx(t,
-                                j.value("front_aero_height_mm", 0.0f),
-                                j.value("rear_aero_height_mm", 0.0f));
+        } else if (const StatusRow* st = std::get_if<StatusRow>(&*parsed)) {
+            scanned_.onStatus(st->session_time,
+                              (float)st->ers_pct,
+                              (float)st->fuel_kg,
+                              (float)st->engine_power_ice_kw,
+                              (float)st->engine_power_mguk_kw,
+                              (float)st->ers_harvested_mguk_j,
+                              (float)st->ers_harvested_mguh_j);
+        } else if (const DamageRow* d = std::get_if<DamageRow>(&*parsed)) {
+            lastDmg[0] = (float)d->tyre_wear_fl;
+            lastDmg[1] = (float)d->tyre_wear_fr;
+            lastDmg[2] = (float)d->tyre_wear_rl;
+            lastDmg[3] = (float)d->tyre_wear_rr;
+        } else if (const LapRow* l = std::get_if<LapRow>(&*parsed)) {
+            scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+        } else if (const MotionRow* m = std::get_if<MotionRow>(&*parsed)) {
+            scanned_.onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
+        } else if (const MotionExRow* me = std::get_if<MotionExRow>(&*parsed)) {
+            scanned_.onMotionEx(me->session_time,
+                                (float)me->front_aero_height_mm,
+                                (float)me->rear_aero_height_mm);
         }
     }
 
     // Close the trailing in-progress lap and sort everything by time, since UDP
-    // packets can be recorded slightly out of order. Mirrors sessionPlayer.ts.
+    // packets can be recorded slightly out of order.
     scanned_.finalizeOpenLap();
     auto byT = [](const auto& a, const auto& b) { return a.t < b.t; };
     std::sort(scanned_.telBuf.begin(),      scanned_.telBuf.end(),      byT);
@@ -296,9 +277,8 @@ void TnrdPlayer::scanIntoSessionData() {
 
 void TnrdPlayer::emitRows(const std::vector<std::string>& rows) {
     for (const std::string& s : rows) {
-        nlohmann::json j;
-        try { j = nlohmann::json::parse(s); } catch (...) { continue; }
-        emit packetReady(j);
+        std::optional<tnrp::AnyRow> parsed = tnrp::parseRow(s);
+        if (parsed) emit packetReady(*parsed);
     }
 }
 

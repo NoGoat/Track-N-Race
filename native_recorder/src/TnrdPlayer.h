@@ -8,8 +8,8 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <nlohmann/json.hpp>
 
+#include <tnrp/AnyRow.h>
 #include <tnrp/TnrdReader.h>
 
 #include "SessionModel.h"
@@ -20,8 +20,8 @@
 // recording into a SessionData once (for the lap-aware charts), then advances a
 // QTimer-driven cursor, pulling the due rows from the reader and emitting them.
 //
-// Public interface and signals are unchanged from the old self-contained player,
-// so MainWindow's playback wiring needs no changes.
+// Rows are emitted as typed tnrp::AnyRow structs (parsed with glaze via
+// tnrp::parseRow) — no dynamic JSON objects anywhere in the playback path.
 class TnrdPlayer : public QObject {
     Q_OBJECT
 
@@ -47,9 +47,9 @@ public:
 
 signals:
     void loadingStarted();
-    void loaded(nlohmann::json header);
+    void loaded(const tnrp::HeaderRow& header);
     void loadFailed();
-    void packetReady(nlohmann::json packet);
+    void packetReady(const tnrp::AnyRow& packet);
     void stateChanged(bool playing, float currentTime, float totalTime, float speed);
     void seeked();
     void finished();
@@ -80,7 +80,7 @@ private:
     // load thread. Mirrors the old buildIndex() second pass.
     void scanIntoSessionData();
 
-    // Parse a raw JSONL row and emit it as a packetReady() for the live panels.
+    // Parse raw JSONL rows into typed rows and emit each as a packetReady().
     void emitRows(const std::vector<std::string>& rows);
     void emitState();
     void cleanup();

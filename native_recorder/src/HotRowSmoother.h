@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include <tnrp/AnyRow.h>
 
 #include <algorithm>
 #include <cmath>
@@ -33,7 +33,8 @@ public:
     int periodMs() const { return std::max(1, (int)std::lround(periodS_ * 1000.0f)); }
 
     // ── Feed real hot rows as they arrive live ───────────────────────────────
-    void onTelemetry(const nlohmann::json& row, float st) {
+    void onTelemetry(const TelemetryRow& row) {
+        const float st = row.session_time;
         // A large backward jump is a flashback / new session — drop the fill state
         // so we don't synthesise rows across the discontinuity.
         if (lastTel_ && st < lastRealST_ - 0.2f) {
@@ -45,11 +46,11 @@ public:
         if (lastRealST_ > lastEmitST_) lastEmitST_ = lastRealST_;
         realSinceTick_ = true;
     }
-    void onMotion(const nlohmann::json& row)   { lastMot_   = row; realSinceTick_ = true; }
-    void onMotionEx(const nlohmann::json& row) { lastMotEx_ = row; realSinceTick_ = true; }
+    void onMotion(const MotionRow& row)     { lastMot_   = row; realSinceTick_ = true; }
+    void onMotionEx(const MotionExRow& row) { lastMotEx_ = row; realSinceTick_ = true; }
 
     // ── Timer tick: forward-fill rows (0..3) when no real telemetry arrived ──
-    std::vector<nlohmann::json> tick() {
+    std::vector<tnrp::AnyRow> tick() {
         // Real data already flowed through the live path this interval — no fill.
         if (realSinceTick_) { realSinceTick_ = false; return {}; }
         if (!lastTel_) return {};
@@ -60,10 +61,10 @@ public:
         if (target <= lastEmitST_ + 1e-6f) return {};
         lastEmitST_ = target;
 
-        std::vector<nlohmann::json> out;
-        out.push_back(withTime(*lastTel_, target));
-        if (lastMot_)   out.push_back(withTime(*lastMot_, target));
-        if (lastMotEx_) out.push_back(withTime(*lastMotEx_, target));
+        std::vector<tnrp::AnyRow> out;
+        { TelemetryRow t = *lastTel_; t.session_time = target; out.emplace_back(std::move(t)); }
+        if (lastMot_)   { MotionRow m = *lastMot_;     m.session_time = target; out.emplace_back(std::move(m)); }
+        if (lastMotEx_) { MotionExRow m = *lastMotEx_; m.session_time = target; out.emplace_back(std::move(m)); }
         return out;
     }
 
@@ -74,11 +75,6 @@ private:
     static constexpr float kMinDeltaS  = 0.005f; // 200 Hz ceiling — reject sub-frame noise
     static constexpr float kMaxDeltaS  = 0.2f;   // 5 Hz floor — reject pauses/gaps as frames
     static constexpr float kChangeEpsS = 5e-5f;  // ignore rounding jitter, track real changes
-
-    static nlohmann::json withTime(nlohmann::json row, float t) {
-        row["session_time"] = t;
-        return row;
-    }
 
     void observe(float st) {
         if (prevTelST_ >= 0.0f) {
@@ -99,7 +95,9 @@ private:
         }
     }
 
-    std::optional<nlohmann::json> lastTel_, lastMot_, lastMotEx_;
+    std::optional<TelemetryRow> lastTel_;
+    std::optional<MotionRow>    lastMot_;
+    std::optional<MotionExRow>  lastMotEx_;
     float lastRealST_ = 0.0f, lastEmitST_ = 0.0f;
     float periodS_    = kDefaultPeriodS;
     float prevTelST_  = -1.0f;
