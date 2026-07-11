@@ -20,7 +20,7 @@ export default defineConfig({
     },
     plugins: [react()],
     define: {
-      __APP_VERSION__: JSON.stringify(pkg.version)
+      __APP_VERSION__: JSON.stringify(process.env.RC_VERSION || pkg.version)
     }
   }
 })
