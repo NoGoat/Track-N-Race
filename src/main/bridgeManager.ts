@@ -30,6 +30,42 @@ let rendererVisible = true
 let engine: any = null
 let unsubLogging: Array<() => void> = []
 
+// ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
+// The native engine owns the clock/index/seek logic and streams rows through
+// the same JSON/binary channels as live telemetry; this layer only tracks the
+// loaded file, adapts playback_state to the renderer's shape, and forwards the
+// binary seek flush.
+export interface PlaybackState {
+  isPlaying: boolean
+  speed: number
+  progressPct: number
+  currentTime: number   // absolute session_time (start_time + relative cursor)
+  totalTime: number
+  filename: string | null
+  isScanning: boolean
+}
+
+let activeFilePath: string | null = null
+let onPlaybackState: ((state: PlaybackState) => void) | null = null
+
+function activeFilename(): string | null {
+  return activeFilePath ? (activeFilePath.split(/[\\/]/).pop() ?? null) : null
+}
+
+function emitPlaybackState(state: Partial<PlaybackState>): void {
+  if (!onPlaybackState) return
+  onPlaybackState({
+    isPlaying: false,
+    speed: 1,
+    progressPct: 0,
+    currentTime: 0,
+    totalTime: 0,
+    filename: activeFilename(),
+    isScanning: false,
+    ...state,
+  })
+}
+
 // The game streams 3 hot packet types per frame (motion, car_tel, motion_ex), so
 // the addon can hand us ~3x the frame rate in binary batches/sec. Forwarding each as
 // its own IPC message makes the renderer fall behind (bursty "every few seconds"
@@ -84,6 +120,29 @@ function handleRow(row: Record<string, unknown>): void {
   broadcast(row)
 }
 
+// Playback control rows intercepted from the engine's JSON batch (they also
+// flow through to the renderer inside the batch, which ignores the ones it
+// doesn't know).
+function handlePlaybackRow(row: Record<string, unknown>): void {
+  const type = row.type as string
+  if (type === 'playback_state') {
+    const total = (row.total_time as number) ?? 0
+    const current = (row.current_time as number) ?? 0
+    emitPlaybackState({
+      isPlaying: !!row.playing,
+      speed: (row.speed as number) ?? 1,
+      progressPct: total > 0 ? current / total : 0,
+      currentTime: ((row.start_time as number) ?? 0) + current,
+      totalTime: total,
+    })
+  } else if (type === 'playback_close') {
+    activeFilePath = null
+    smoother.reset()
+    binPending = []
+    emitPlaybackState({})   // paused, no file
+  }
+}
+
 let addonModule: any = null
 function loadAddon(): any {
   // Try to load the N-API module
@@ -92,33 +151,6 @@ function loadAddon(): any {
   let p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
   addonModule = require(p)
   return addonModule
-}
-
-// The library-owned i18n catalog for a packet format (2024/2025/2026), used by
-// the TS playback path to label a recorded clip without an Engine instance.
-export function labelsForFormat(format: number): Record<string, string> {
-  try {
-    return JSON.parse(loadAddon().labelsJson(format))
-  } catch {
-    return {}
-  }
-}
-
-// The library-owned declarative card-colour spec (format-independent).
-export function cardColorSpecs(): Record<string, unknown> {
-  try {
-    return JSON.parse(loadAddon().cardColorsJson())
-  } catch {
-    return {}
-  }
-}
-
-// The format the live engine is currently routing with (for restoring labels
-// after playback closes). Falls back to the last detected/stored format.
-export function getLiveFormat(): number {
-  return lastStatus.active
-      ?? lastStatus.detected
-      ?? (store.get('udp.lastDetectedProtocol', 2025) as number)
 }
 
 function pushLogging(): void {
@@ -137,21 +169,32 @@ export function startBridge(): void {
     const config = {
       format: store.get('udp.protocol', 'auto'),
       port: store.get('udp.port', 20777),
-      bindAddress: store.get('udp.bindAddress', '0.0.0.0')
+      bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
+      // Playback fast path: hot playback rows arrive on the binary channel
+      // (smoother-paced like live), seeks via the dedicated flush callback.
+      binaryPlayback: true
     }
-    
+
     engine = new addon.Engine(config, (batch: string) => {
-      // Skip forwarding to a hidden renderer; playback delivers hot rows through
-      // this channel too, so it's a high-volume path worth gating. The
-      // protocol_status handling below still runs so the cache stays current and
-      // is re-pushed on refocus (see setRendererVisible).
-      if (rendererVisible) {
+      // Skip forwarding to a hidden renderer; playback delivers its cold rows
+      // through this channel too, so it's a high-volume path worth gating —
+      // except one-shot playback control rows, which must never be dropped.
+      const forwardWhileHidden =
+        batch.includes('"type":"playback_lap_blocks"') ||
+        batch.includes('"type":"playback_loaded"') ||
+        batch.includes('"type":"playback_close"')
+      if (rendererVisible || forwardWhileHidden) {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
         }
       }
 
-      if (batch.includes('"type":"protocol_status"')) {
+      // Control-row interception (always runs, visible or not): protocol_status
+      // feeds the label cache; playback_state/playback_close drive the
+      // playback-state channel and the local playback bookkeeping.
+      if (batch.includes('"type":"protocol_status"') ||
+          batch.includes('"type":"playback_state"') ||
+          batch.includes('"type":"playback_close"')) {
         let start = 0
         while (start < batch.length) {
           let end = batch.indexOf('\n', start)
@@ -160,6 +203,9 @@ export function startBridge(): void {
             const rowStr = batch.slice(start, end)
             if (rowStr.includes('"type":"protocol_status"')) {
               handleRow(JSON.parse(rowStr))
+            } else if (rowStr.includes('"type":"playback_state"') ||
+                       rowStr.includes('"type":"playback_close"')) {
+              try { handlePlaybackRow(JSON.parse(rowStr)) } catch (e) {}
             }
           }
           start = end + 1
@@ -168,6 +214,13 @@ export function startBridge(): void {
     }, (binBatch: Uint8Array) => {
       // Hot rows: accumulate and flush once per frame (see flushBinary).
       binPending.push(binBatch)
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number) => {
+      // Playback seek flush: reset the smoother first so a held hot row can't
+      // forward-fill a stale session_time across the jump, then hand the
+      // renderer the backfill in the shape the TS engine used.
+      smoother.reset()
+      binPending = []
+      broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum })
     })
 
     engine.startUdp()
@@ -191,10 +244,64 @@ export function stopBridge(): void {
   if (binFlushTimer) { clearTimeout(binFlushTimer); binFlushTimer = null }
   binPending = []
   smoother.reset()
+  activeFilePath = null
   if (engine) {
     engine.playerClose()
     engine.destroy()
     engine = null
+  }
+}
+
+// ── Player API (thin wrappers over the C++ engine's player) ─────────────────
+
+export function setOnPlaybackState(cb: (state: PlaybackState) => void): void {
+  onPlaybackState = cb
+}
+
+export async function playerLoad(filePath: string): Promise<boolean> {
+  if (!engine) return false
+  // Loading over an already-open clip: close it first so the renderer clears
+  // its playback buffers (playback_close) before the new clip's rows arrive.
+  if (activeFilePath) engine.playerClose()
+  activeFilePath = filePath
+  smoother.reset()
+  binPending = []
+  emitPlaybackState({ isScanning: true })
+  let ok = false
+  try {
+    ok = await engine.playerLoad(filePath)   // async: decompress+index off-thread
+  } catch (err) {
+    console.error('[bridge] playerLoad failed:', err)
+  }
+  if (!ok) {
+    activeFilePath = null
+    emitPlaybackState({})
+    return false
+  }
+  // The engine's own playback_state row (intercepted above) follows with the
+  // real duration; this one just clears the scanning flag deterministically.
+  emitPlaybackState({ isScanning: false })
+  return true
+}
+
+export function playerPlay(): void { engine?.playerPlay() }
+export function playerPause(): void { engine?.playerPause() }
+export function playerSeek(pct: number): void { engine?.playerSeek(pct) }
+export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
+export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
+export function playerClose(): void { engine?.playerClose() }
+
+export function getActiveFilePath(): string | null {
+  return activeFilePath
+}
+
+// Reclaim stale decompression temps from prior runs (either app). Called once
+// at startup after the single-instance lock is held.
+export function sweepTempFiles(): void {
+  try {
+    loadAddon().sweepTempFiles()
+  } catch (err) {
+    console.error('[bridge] temp sweep failed:', err)
   }
 }
 

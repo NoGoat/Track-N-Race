@@ -4,12 +4,52 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <thread>
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
 namespace tnrp {
+
+// Sparse panel-row type ids re-emitted each binary-playback tick so their
+// panels track the playhead between native ~2 Hz updates (reader ids:
+// status, damage, lap, session, timing, all_status, positions).
+static constexpr uint8_t kDupTypeIds[] = { 2, 3, 4, 5, 7, 9, 13 };
+
+// Rewrites (or inserts, for row types that lack it, e.g. positions/session)
+// the top-level "session_time" of a raw JSON row to the playhead. A targeted
+// string splice — the row is otherwise re-emitted verbatim.
+static void setSessionTime(std::string& line, float t) {
+    char num[32];
+    std::snprintf(num, sizeof(num), "%.9g", (double)t);
+    static const char KEY[] = "\"session_time\":";
+    size_t k = line.find(KEY);
+    if (k != std::string::npos) {
+        size_t vs = k + sizeof(KEY) - 1;
+        size_t ve = vs;
+        while (ve < line.size() && line[ve] != ',' && line[ve] != '}') ++ve;
+        line.replace(vs, ve - vs, num);
+    } else {
+        size_t brace = line.find('{');
+        if (brace == std::string::npos) return;
+        std::string ins = std::string(KEY) + num + ",";
+        line.insert(brace + 1, ins);
+    }
+}
+
+// Emits a newline-terminated multi-row batch through the per-row Sink::onRow
+// contract.
+static void emitLines(Sink* sink, const std::string& batch) {
+    if (!sink) return;
+    size_t start = 0;
+    while (start < batch.size()) {
+        size_t nl = batch.find('\n', start);
+        if (nl == std::string::npos) nl = batch.size();
+        if (nl > start) sink->onRow(batch.substr(start, nl - start));
+        start = nl + 1;
+    }
+}
 
 Engine::Engine(const Config& config, Sink* sink)
     : config_(config), sink_(sink), parser_(config.protocol) {
@@ -112,9 +152,12 @@ bool Engine::playerLoad(const std::string& path) {
     bool ok = false;
     HeaderRow header;
     std::string lapBlocksMsg;
+    std::string statusMsg;
     std::vector<std::string> initState;
+    std::vector<std::pair<uint8_t, std::string>> initPanels;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        reader_.setBinaryPlayback(config_.binaryPlayback);
         ok = reader_.load(path, header);
         if (ok) {
             inPlayback_.store(true);
@@ -124,6 +167,18 @@ bool Engine::playerLoad(const std::string& path) {
             writer_.closeActiveStream();
             lapBlocksMsg = reader_.lapBlocksMessage();
             initState = reader_.stateSnapshot(reader_.startTime());
+            if (config_.binaryPlayback) {
+                // Label the clip with its recorded format's catalog (the TS
+                // glue caches/rebroadcasts protocol_status rows as usual).
+                uint16_t fmt = header.protocol >= 2024 ? (uint16_t)header.protocol : 2025;
+                statusMsg = Parser::statusRowForFormat(fmt);
+                // Seed the dup cache and restore the panels the snapshot
+                // doesn't cover (status/damage/positions).
+                dupCache_ = {};
+                initPanels = reader_.latestOfTypesTagged(
+                    reader_.startTime(), { std::begin(kDupTypeIds), std::end(kDupTypeIds) });
+                for (auto& [tid, line] : initPanels) dupCache_[tid] = line;
+            }
         }
     }
 
@@ -132,8 +187,11 @@ bool Engine::playerLoad(const std::string& path) {
     if (ok) loaded.header = header;
     emitRow(writeJsonNullable(loaded));
     if (ok) {
+        if (!statusMsg.empty()) emitRow(statusMsg);
         emitRow(lapBlocksMsg);
         for (const auto& s : initState) emitRow(s);
+        for (const auto& [tid, line] : initPanels)
+            if (tid == 2 || tid == 3 || tid == 13) emitRow(line);
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
         emitPlaybackState();
@@ -145,7 +203,12 @@ void Engine::playerPlay() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
-        if (currentTime_ >= reader_.totalTime()) currentTime_ = reader_.startTime();
+        if (currentTime_ >= reader_.totalTime()) {
+            // Replay from the top: the cursor has to rewind with the clock, or
+            // the drained index never yields another row.
+            currentTime_ = reader_.startTime();
+            reader_.setCursor(currentTime_);
+        }
         playing_ = true;
     }
     emitPlaybackState();
@@ -164,6 +227,8 @@ void Engine::playerSeek(float pct) {
     float lapStart = 0.0f;
     int   lapNum   = 0;
     float target   = 0.0f;
+    TnrdReader::SeekFlush binFlush;
+    std::vector<std::pair<uint8_t, std::string>> panels;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -175,13 +240,32 @@ void Engine::playerSeek(float pct) {
         state    = reader_.stateSnapshot(target);
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
+        if (config_.binaryPlayback) {
+            binFlush = reader_.seekFlush(target, lapStart);
+            // Re-key the dup cache to the seek point so the next tick's
+            // re-emissions carry the right panel data.
+            dupCache_ = {};
+            panels = reader_.latestOfTypesTagged(
+                target, { std::begin(kDupTypeIds), std::end(kDupTypeIds) });
+            for (auto& [tid, line] : panels) dupCache_[tid] = line;
+        }
     }
 
-    PlaybackSeekFlushRow flush;
-    flush.currentLapStart = lapStart;
-    flush.lapNum          = lapNum;
-    emitRow(writeJson(flush));
-    for (const auto& s : state) emitRow(s);
+    if (config_.binaryPlayback) {
+        if (sink_) sink_->onSeekFlush(binFlush.binary.data(), binFlush.binary.size(),
+                                      binFlush.coldJson, lapStart, lapNum);
+        for (const auto& s : state) emitRow(s);
+        // status/damage already ride in the flush's coldJson; positions has no
+        // cold cache, so restore the track map explicitly.
+        for (const auto& [tid, line] : panels)
+            if (tid == 13) emitRow(line);
+    } else {
+        PlaybackSeekFlushRow flush;
+        flush.currentLapStart = lapStart;
+        flush.lapNum          = lapNum;
+        emitRow(writeJson(flush));
+        for (const auto& s : state) emitRow(s);
+    }
     emitPlaybackState();
 }
 
@@ -205,13 +289,22 @@ void Engine::playerGetLapData(int lapNum) {
 
 void Engine::playerClose() {
     stopPlaybackThread();
+    std::string liveStatus;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         reader_.close();
         inPlayback_.store(false);
         playing_ = false;
+        if (config_.binaryPlayback) {
+            dupCache_ = {};
+            // Restore the live format's labels — playback may have switched
+            // them (e.g. a 2026 clip while the live game is 2025). Before any
+            // live packet was seen the parser falls back to the 2025 catalog.
+            liveStatus = parser_.statusRow();
+        }
     }
     emitRow(writeJson(TypeOnlyRow{"playback_close"}));
+    if (!liveStatus.empty()) emitRow(liveStatus);
 }
 
 void Engine::stopPlaybackThread() {
@@ -229,6 +322,7 @@ void Engine::emitPlaybackState() {
         s.current_time = currentTime_ - start;
         s.total_time   = std::max(0.0f, reader_.totalTime() - start);
         s.speed        = speed_;
+        s.start_time   = start;
         st = writeJson(s);
     }
     emitRow(st);
@@ -238,6 +332,10 @@ void Engine::playbackLoop() {
     using clock = std::chrono::steady_clock;
     auto last = clock::now();
 
+    // Reused across ticks to avoid a per-tick allocation churn in binary mode.
+    std::string          jsonBatch;
+    std::vector<uint8_t> binBatch;
+
     while (playRun_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
         auto now = clock::now();
@@ -245,6 +343,8 @@ void Engine::playbackLoop() {
         last = now;
 
         std::vector<std::string> batch;
+        jsonBatch.clear();
+        binBatch.clear();
         bool finished = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
@@ -254,16 +354,39 @@ void Engine::playbackLoop() {
             currentTime_ += (float)step;
 
             float total = reader_.totalTime();
-            if (currentTime_ >= total) {
-                currentTime_ = total;
+            bool  atEnd = currentTime_ >= total;
+            if (atEnd) currentTime_ = total;
+
+            if (config_.binaryPlayback) {
+                uint32_t seen = 0;
+                reader_.pullUntilSplit(atEnd ? INFINITY : currentTime_,
+                                       jsonBatch, binBatch, seen, &dupCache_);
+                // Re-emit the sparse panel rows that delivered nothing this
+                // tick, session_time moved to the playhead (only on ticks that
+                // delivered something — a fully idle tick stays silent).
+                if (seen != 0) {
+                    for (uint8_t tid : kDupTypeIds) {
+                        if ((seen & (1u << tid)) || dupCache_[tid].empty()) continue;
+                        std::string dup = dupCache_[tid];
+                        setSessionTime(dup, currentTime_);
+                        jsonBatch += dup;
+                        jsonBatch.push_back('\n');
+                    }
+                }
+            } else if (atEnd) {
                 batch = reader_.drainRest();
-                playing_ = false;
-                finished = true;
             } else {
                 batch = reader_.pullUntil(currentTime_);
             }
+
+            if (atEnd) {
+                playing_ = false;
+                finished = true;
+            }
         }
         for (const auto& row : batch) emitRow(row);
+        if (!jsonBatch.empty()) emitLines(sink_, jsonBatch);
+        if (!binBatch.empty() && sink_) sink_->onBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();
         if (finished) emitRow(writeJson(TypeOnlyRow{"playback_finished"}));
     }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -10,6 +11,8 @@
 #include <unordered_set>
 
 #include <zlib.h>
+
+#include "tnrp/BinaryRows.h"
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -26,6 +29,10 @@ struct LapScanFields {
     int lap_num{};
     int current_lap_ms{};
     int last_lap_ms{};
+};
+// Partial read of a "status" row for the slim ERS chart points (binary playback).
+struct StatusScanFields {
+    double ers_pct{};
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
@@ -152,6 +159,13 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
+    hotBin_.clear();
+    hotTimes_.clear();
+    hotStart_.clear();
+    hotCum_.clear();
+    coldStatus_.clear();
+    coldDamage_.clear();
+    coldLap_.clear();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
     startTime_ = 0.0f;
@@ -163,7 +177,16 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         std::fprintf(stderr, "[tnrd] buildIndex: cannot open '%s'\n", filePath.c_str());
         return;
     }
+    // Reserve against vector regrowth during the scan: rows average well under
+    // ~96 bytes of JSONL, so this slightly over-reserves and settles in one go.
+    {
+        std::fseek(f, 0, SEEK_END);
+        long sz = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (sz > 0) index_.reserve((size_t)sz / 96);
+    }
     { int c; while ((c = std::fgetc(f)) != EOF && c != '\n') {} }  // skip header
+    if (binaryPlayback_) hotCum_.push_back(0);
 
     constexpr long CHUNK = 2 * 1024 * 1024;
     std::vector<char> buf(CHUNK);
@@ -184,6 +207,40 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         uint8_t tid = scanType(ld, ll);
         index_.push_back({ lineOffset, t, tid });
         totalTime_ = std::max(totalTime_, t);
+
+        // Binary playback: pre-encode the hot rows into the packed store (so a
+        // playback tick / seek flush is a byte slice, not a re-serialisation)
+        // and keep the sparse cold rows whole for seek flushes. hotCum_ tracks
+        // the store record count per index position for range slicing.
+        TelemetryRow telRow;   // parsed once for the hot store, reused for slim points
+        if (binaryPlayback_) {
+            std::string_view sv(ld, (size_t)ll);
+            if (tid == 1) {
+                (void)glz::read<kPartialRead>(telRow, sv);
+                hotStart_.push_back(hotBin_.size());
+                hotTimes_.push_back(t);
+                bin::encodeTelemetry(hotBin_, telRow);
+            } else if (tid == 11) {
+                MotionRow r;
+                (void)glz::read<kPartialRead>(r, sv);
+                hotStart_.push_back(hotBin_.size());
+                hotTimes_.push_back(t);
+                bin::encodeMotion(hotBin_, r);
+            } else if (tid == 12) {
+                MotionExRow r;
+                (void)glz::read<kPartialRead>(r, sv);
+                hotStart_.push_back(hotBin_.size());
+                hotTimes_.push_back(t);
+                bin::encodeMotionEx(hotBin_, r);
+            } else if (tid == 2) {
+                coldStatus_.push_back({ t, std::string(ld, ll) });
+            } else if (tid == 3) {
+                coldDamage_.push_back({ t, std::string(ld, ll) });
+            } else if (tid == 4) {
+                coldLap_.push_back({ t, std::string(ld, ll) });
+            }
+            hotCum_.push_back((uint32_t)hotTimes_.size());
+        }
 
         if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12) return;
 
@@ -219,6 +276,18 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             else if (tid == 3)  it->second.damageHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 11) it->second.motionHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 12) it->second.motionExHistory.push_back({ t, std::string(ld, ll) });
+
+            // Slim Speed/RPM/ERS chart points for lapBlocksMessage().
+            if (binaryPlayback_) {
+                if (tid == 1) {
+                    it->second.slimTelemetry.push_back(
+                        { "telemetry", t, telRow.speed_kph, telRow.rpm });
+                } else if (tid == 2) {
+                    StatusScanFields sf;
+                    (void)glz::read<kPartialRead>(sf, std::string_view(ld, (size_t)ll));
+                    it->second.slimStatus.push_back({ "status", t, sf.ers_pct });
+                }
+            }
         }
 
         if (tid == 6) {
@@ -265,7 +334,18 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     for (auto& kv : lapBlocks_) {
         std::sort(kv.second.telemetry.begin(), kv.second.telemetry.end(), byT);
         std::sort(kv.second.statusHistory.begin(), kv.second.statusHistory.end(), byT);
+        // Slim points sorted too — recordings can contain out-of-order UDP rows,
+        // which would stall the renderer chart's advance cursor.
+        std::sort(kv.second.slimTelemetry.begin(), kv.second.slimTelemetry.end(),
+                  [](const SlimTelemetryPoint& a, const SlimTelemetryPoint& b) {
+                      return a.session_time < b.session_time;
+                  });
+        std::sort(kv.second.slimStatus.begin(), kv.second.slimStatus.end(),
+                  [](const SlimStatusPoint& a, const SlimStatusPoint& b) {
+                      return a.session_time < b.session_time;
+                  });
     }
+    if (binaryPlayback_) hotStart_.push_back(hotBin_.size());   // sentinel end offset
 }
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
@@ -349,6 +429,16 @@ void TnrdReader::close() {
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
+    hotBin_.clear();
+    hotBin_.shrink_to_fit();     // the hot store can be tens of MB — release it
+    hotTimes_.clear();
+    hotStart_.clear();
+    hotCum_.clear();
+    coldStatus_.clear();
+    coldDamage_.clear();
+    coldLap_.clear();
+    scratch_.clear();
+    scratch_.shrink_to_fit();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
     startTime_ = totalTime_ = 0.0f;
@@ -392,8 +482,9 @@ void TnrdReader::setCursor(float t) {
 // Latest row of each requested type at or before t. Walks the index backward and
 // reads only the matched lines (never the whole window), returning them ordered by
 // file position. Stops as soon as every requested type has been found.
-std::vector<std::string> TnrdReader::latestOfTypes(float t, const std::vector<uint8_t>& types) {
-    std::vector<std::string> out;
+std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
+    float t, const std::vector<uint8_t>& types) {
+    std::vector<std::pair<uint8_t, std::string>> out;
     if (index_.empty() || types.empty()) return out;
     size_t pos = upperBoundTime(t);
     std::unordered_set<uint8_t> wanted(types.begin(), types.end());
@@ -403,7 +494,16 @@ std::vector<std::string> TnrdReader::latestOfTypes(float t, const std::vector<ui
     std::sort(snapshot.begin(), snapshot.end());
     for (size_t idx : snapshot) {
         std::string s = readLine(index_[idx].offset);
-        if (!s.empty()) out.push_back(std::move(s));
+        if (!s.empty()) out.emplace_back(index_[idx].type, std::move(s));
+    }
+    return out;
+}
+
+std::vector<std::string> TnrdReader::latestOfTypes(float t, const std::vector<uint8_t>& types) {
+    std::vector<std::string> out;
+    for (auto& [tid, line] : latestOfTypesTagged(t, types)) {
+        (void)tid;
+        out.push_back(std::move(line));
     }
     return out;
 }
@@ -460,7 +560,10 @@ std::string TnrdReader::lapBlocksMessage() const {
     PlaybackLapBlocksRow msg;
     for (const auto& kv : lapBlocks_) {
         const LapBlock& b = kv.second;
-        msg.blocks.push_back({ b.lapNum, b.startSessionTime, b.endSessionTime });
+        // Slim vectors are empty unless binary playback built them; the copy is
+        // what lets this method stay const and the message one-shot at load.
+        msg.blocks.push_back({ b.lapNum, b.startSessionTime, b.endSessionTime,
+                               b.slimTelemetry, b.slimStatus });
     }
     msg.fastestLapNum = fastestLapNum_;
     msg.events.reserve(scannedEvents_.size());
@@ -489,24 +592,134 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     return writeJson(msg);
 }
 
+// First index >= playPos_ whose sessionTime exceeds t. Linear (not a binary
+// search) on purpose: it matches the old per-row pullUntil's early stop at the
+// first out-of-order row, so an ahead-of-time row is delivered when the cursor
+// actually reaches it rather than skipped.
+size_t TnrdReader::pullEnd(float t) const {
+    size_t end = playPos_;
+    while (end < index_.size() && index_[end].sessionTime <= t) ++end;
+    return end;
+}
+
+// One contiguous fread of the byte range behind index_[fromIdx..toIdx) into
+// scratch_. Replaces the old per-row fseek+fgets walk — one seek + one read per
+// tick instead of one per row, which dominated the playback tick cost.
+size_t TnrdReader::readBlock(size_t fromIdx, size_t toIdx) {
+    if (!tempFile_ || fromIdx >= toIdx || toIdx > index_.size()) return 0;
+    long startOff = index_[fromIdx].offset;
+    long endOff   = (toIdx < index_.size()) ? index_[toIdx].offset : tempFileSize_;
+    long len = endOff - startOff;
+    if (len <= 0) return 0;
+    if (scratch_.size() < (size_t)len) scratch_.resize((size_t)len);
+    if (std::fseek(tempFile_, startOff, SEEK_SET) != 0) return 0;
+    return std::fread(scratch_.data(), 1, (size_t)len, tempFile_);
+}
+
+// Walks the lines of a readBlock()'d range in lockstep with its index entries.
+// Lines the index pass skipped (length <= 1, see commitLine) are skipped here
+// too without consuming an entry; a truncated unindexed tail past the last
+// entry is never reached because the walk stops after `count` entries.
+// `perEntry(entryIdx, lineData, lineLen)` is invoked once per index entry.
+template <class F>
+static void walkBlockLines(const char* data, size_t got,
+                           size_t fromIdx, size_t count, F&& perEntry) {
+    const char* p   = data;
+    const char* end = data + got;
+    size_t consumed = 0;
+    while (p < end && consumed < count) {
+        const char* nl = static_cast<const char*>(std::memchr(p, '\n', end - p));
+        const char* lineEnd = nl ? nl : end;
+        int ll = (int)(lineEnd - p);
+        if (ll > 1) {
+            perEntry(fromIdx + consumed, p, ll);
+            ++consumed;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
 std::vector<std::string> TnrdReader::pullUntil(float t) {
     std::vector<std::string> out;
-    while (playPos_ < index_.size() && index_[playPos_].sessionTime <= t) {
-        std::string s = readLine(index_[playPos_].offset);
-        if (!s.empty()) out.push_back(std::move(s));
-        ++playPos_;
+    size_t end = pullEnd(t);
+    if (end == playPos_) return out;
+    size_t got = readBlock(playPos_, end);
+    if (got > 0) {
+        out.reserve(end - playPos_);
+        walkBlockLines(scratch_.data(), got, playPos_, end - playPos_,
+                       [&](size_t, const char* ld, int ll) { out.emplace_back(ld, (size_t)ll); });
     }
+    playPos_ = end;
     return out;
 }
 
 std::vector<std::string> TnrdReader::drainRest() {
-    std::vector<std::string> out;
-    while (playPos_ < index_.size()) {
-        std::string s = readLine(index_[playPos_].offset);
-        if (!s.empty()) out.push_back(std::move(s));
-        ++playPos_;
+    // +INFINITY compares greater than every finite sessionTime, so pullUntil
+    // walks to the end of the index — identical to the old drain loop.
+    return pullUntil(INFINITY);
+}
+
+void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8_t>& binOut,
+                                uint32_t& seenTypes,
+                                std::array<std::string, 16>* lastOfType) {
+    size_t end = pullEnd(t);
+    if (end == playPos_) return;
+
+    // Hot rows: the range's records are contiguous in the packed store, so the
+    // whole tick's hot payload is a single byte-slice append.
+    if (!hotCum_.empty()) {
+        size_t hotLo = hotCum_[playPos_], hotHi = hotCum_[end];
+        if (hotHi > hotLo)
+            binOut.insert(binOut.end(),
+                          hotBin_.begin() + (long)hotStart_[hotLo],
+                          hotBin_.begin() + (long)hotStart_[hotHi]);
     }
-    return out;
+
+    // Cold rows: contiguous read, hot lines skipped (they went out as binary).
+    size_t got = readBlock(playPos_, end);
+    if (got > 0) {
+        walkBlockLines(scratch_.data(), got, playPos_, end - playPos_,
+                       [&](size_t idx, const char* ld, int ll) {
+            uint8_t tid = index_[idx].type;
+            seenTypes |= (1u << tid);
+            if (tid == 1 || tid == 11 || tid == 12) return;   // hot → binary path
+            jsonOut.append(ld, (size_t)ll);
+            jsonOut.push_back('\n');
+            if (lastOfType && tid < 16) (*lastOfType)[tid].assign(ld, (size_t)ll);
+        });
+    }
+    playPos_ = end;
+}
+
+TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart) {
+    SeekFlush f;
+    // Backfill window: the whole current lap, but at most 10 minutes — mirrors
+    // the TS engine's extractAndBroadcastSeek.
+    float windowStart = std::min(target - 600.0f, currentLapStart);
+
+    if (!hotTimes_.empty()) {
+        size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();
+        size_t hi = std::upper_bound(hotTimes_.begin(), hotTimes_.end(), target) - hotTimes_.begin();
+        if (hi > lo)
+            f.binary.assign(hotBin_.begin() + (long)hotStart_[lo],
+                            hotBin_.begin() + (long)hotStart_[hi]);
+    }
+
+    // Cold rows: full linear scan (small, ~2 Hz), robust to the occasional
+    // out-of-order row — exactly like the TS gatherCold.
+    auto gather = [&](const std::vector<TimedRaw>& rows) {
+        for (const auto& r : rows) {
+            if (r.t > target || r.t < windowStart) continue;
+            f.coldJson += r.json;
+            f.coldJson.push_back('\n');
+        }
+    };
+    gather(coldStatus_);
+    gather(coldDamage_);
+    gather(coldLap_);
+    if (!f.coldJson.empty()) f.coldJson.pop_back();   // no trailing newline
+    return f;
 }
 
 } // namespace tnrp

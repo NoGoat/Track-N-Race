@@ -226,6 +226,9 @@ struct PlaybackStateRow {
     float       current_time{};
     float       total_time{};
     float       speed{};
+    // Absolute session_time of the recording's first row. current_time is
+    // relative to it; consumers needing the absolute cursor add the two.
+    float       start_time{};
 };
 
 struct TypeOnlyRow {
@@ -234,10 +237,28 @@ struct TypeOnlyRow {
 
 // ── playback payloads built by TnrdReader (raw rows embedded verbatim) ─────
 
+// Slim per-lap chart points for the renderer's Speed/RPM/ERS comparison view.
+// Only populated when the reader runs with binary playback enabled (the
+// Electron path); empty arrays otherwise — additive for JSON-only consumers.
+struct SlimTelemetryPoint {
+    std::string type{"telemetry"};
+    float       session_time{};
+    int         speed_kph{};
+    int         rpm{};
+};
+
+struct SlimStatusPoint {
+    std::string type{"status"};
+    float       session_time{};
+    double      ers_pct{};
+};
+
 struct LapBlockMeta {
     int   lapNum{};
     float startSessionTime{};
     float endSessionTime{};
+    std::vector<SlimTelemetryPoint> telemetry;
+    std::vector<SlimStatusPoint>    statusHistory;
 };
 
 struct LapMeta {

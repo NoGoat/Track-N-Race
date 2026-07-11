@@ -35,6 +35,14 @@ struct Config {
     bool        loggingEnabled = false;
     std::string outputDirectory;        // where .tnrd files are written
 
+    // Electron/N-API playback fast path. When true, playback emits the hot
+    // 60 Hz rows (telemetry/motion/motion_ex) packed via Sink::onBinary and
+    // seeks via Sink::onSeekFlush, the lap-blocks payload carries the slim
+    // per-lap chart points, and the playback loop re-emits the sparse panel
+    // rows each tick. Off by default: JSON-only consumers (the Qt recorder,
+    // the stdio pipe) keep the legacy all-JSON playback stream.
+    bool        binaryPlayback = false;
+
     // When true, the live UDP path emits the hot 60 Hz rows as JSON via
     // Sink::onRow() and skips the packed binary Sink::onBinary() channel. Off by
     // default: the Electron/node_addon clients want the binary fast-path across

@@ -2,7 +2,9 @@
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
+#include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -65,6 +67,40 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// Runs Engine::playerLoad (gzip decompress + full index scan — seconds for a
+// long session) off the JS thread so the Electron main process stays
+// responsive during the load, resolving Promise<boolean>. The engine is held
+// by shared_ptr so a destroy() racing a pending load can't free it out from
+// under the worker; `busy` serializes loads (a second concurrent load resolves
+// false instead of racing stopPlaybackThread).
+class PlayerLoadWorker : public Napi::AsyncWorker {
+public:
+    PlayerLoadWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                     std::string path, std::shared_ptr<std::atomic<bool>> busy)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), path_(std::move(path)),
+          busy_(std::move(busy)), deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {   // libuv worker thread — no Napi/JS access here
+        ok_ = engine_->playerLoad(path_);
+    }
+    void OnOK() override {
+        busy_->store(false);
+        deferred_.Resolve(Napi::Boolean::New(Env(), ok_));
+    }
+    void OnError(const Napi::Error& e) override {
+        busy_->store(false);
+        deferred_.Reject(e.Value());
+    }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    std::string path_;
+    std::shared_ptr<std::atomic<bool>> busy_;
+    bool ok_ = false;
+    Napi::Promise::Deferred deferred_;
+};
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -119,6 +155,9 @@ public:
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();
         }
+        if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
+            config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
+        }
         TRACE("TNRPAddon ctor: config parsed");
 
         Napi::Function cb = info[1].As<Napi::Function>();
@@ -145,9 +184,20 @@ public:
             tsfnBin.Unref(env);
             hasBinCb_ = true;
         }
+
+        // Optional third callback for the playback seek flush
+        // (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number).
+        // Only fires when the engine runs with config.binaryPlayback.
+        if (info.Length() >= 4 && info[3].IsFunction()) {
+            Napi::Function seekCb = info[3].As<Napi::Function>();
+            tsfnSeek = Napi::ThreadSafeFunction::New(
+                env, seekCb, "TNRP SeekFlush Callback", 0, 1, [](Napi::Env) {});
+            tsfnSeek.Unref(env);
+            hasSeekCb_ = true;
+        }
         TRACE("TNRPAddon ctor: about to construct Engine");
 
-        engine = std::make_unique<tnrp::Engine>(config, this);
+        engine = std::make_shared<tnrp::Engine>(config, this);
         TRACE("TNRPAddon ctor: Engine constructed, done");
     }
 
@@ -156,6 +206,7 @@ public:
             if (engine) engine->playerClose();
             tsfn.Release();
             if (hasBinCb_) tsfnBin.Release();
+            if (hasSeekCb_) tsfnSeek.Release();
         }
     }
 
@@ -228,6 +279,32 @@ public:
         }
     }
 
+    // Playback seek flush (Config::binaryPlayback only). Seeks arrive at user
+    // rate, so no coalescing — each flush is copied once and handed to JS whole.
+    void onSeekFlush(const uint8_t* bin, size_t len, const std::string& coldJson,
+                     float currentLapStart, int lapNum) override {
+        if (!hasSeekCb_) return;
+        struct SeekData {
+            std::vector<uint8_t> bin;
+            std::string cold;
+            float lapStart;
+            int lapNum;
+        };
+        auto* d = new SeekData{ std::vector<uint8_t>(bin, bin + len), coldJson,
+                                currentLapStart, lapNum };
+        auto status = tsfnSeek.NonBlockingCall(
+            d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
+                if (env != nullptr && cb != nullptr) {
+                    cb.Call({ Napi::Buffer<uint8_t>::Copy(env, d->bin.data(), d->bin.size()),
+                              Napi::String::New(env, d->cold),
+                              Napi::Number::New(env, d->lapStart),
+                              Napi::Number::New(env, d->lapNum) });
+                }
+                delete d;
+            });
+        if (status != napi_ok) delete d;
+    }
+
 private:
     // Shared so queued flush callbacks remain valid even if the wrapper is torn down.
     struct FlushState {
@@ -245,13 +322,16 @@ private:
         bool                 scheduled = false;
     };
 
-    std::unique_ptr<tnrp::Engine> engine;
+    std::shared_ptr<tnrp::Engine> engine;
     Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction tsfnBin;
+    Napi::ThreadSafeFunction tsfnSeek;
     bool destroyed_ = false;
     bool hasBinCb_  = false;
+    bool hasSeekCb_ = false;
     std::shared_ptr<FlushState>    flush_    = std::make_shared<FlushState>();
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
+    std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
         TRACE("StartUdp: calling engine->startUdp()");
@@ -280,12 +360,22 @@ private:
         return info.Env().Undefined();
     }
 
+    // Async: resolves Promise<boolean>. The load (decompress + index scan) runs
+    // on the libuv threadpool so the Electron main thread stays responsive.
     Napi::Value PlayerLoad(const Napi::CallbackInfo& info) {
-        if (info.Length() >= 1 && info[0].IsString()) {
-            bool res = engine->playerLoad(info[0].As<Napi::String>().Utf8Value());
-            return Napi::Boolean::New(info.Env(), res);
-        }
-        return Napi::Boolean::New(info.Env(), false);
+        Napi::Env env = info.Env();
+        auto resolveFalse = [&env]() {
+            auto d = Napi::Promise::Deferred::New(env);
+            d.Resolve(Napi::Boolean::New(env, false));
+            return d.Promise();
+        };
+        if (info.Length() < 1 || !info[0].IsString() || !engine) return resolveFalse();
+        if (loadBusy_->exchange(true)) return resolveFalse();   // a load is already in flight
+        auto* worker = new PlayerLoadWorker(env, engine,
+                                            info[0].As<Napi::String>().Utf8Value(), loadBusy_);
+        Napi::Promise p = worker->GetPromise();
+        worker->Queue();
+        return p;
     }
 
     Napi::Value PlayerPlay(const Napi::CallbackInfo& info) {
@@ -322,9 +412,10 @@ private:
     Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (destroyed_) return info.Env().Undefined();
         destroyed_ = true;
-        engine.reset();
+        engine.reset();   // a pending PlayerLoadWorker holds its own ref
         tsfn.Release();
         if (hasBinCb_) tsfnBin.Release();
+        if (hasSeekCb_) tsfnSeek.Release();
         return info.Env().Undefined();
     }
 
@@ -371,12 +462,21 @@ Napi::Value CardColorsJson(const Napi::CallbackInfo& info) {
     return Napi::String::New(info.Env(), tnrp::cardColorsJson());
 }
 
+// Module-level: reclaim stale "tracknrace_*.tmp" decompression temps left by
+// crashed runs (either app). Call once at startup, after the single-instance
+// lock is held, so a second instance can't unlink an active session's temp.
+Napi::Value SweepTempFiles(const Napi::CallbackInfo& info) {
+    tnrp::TnrdReader::sweepStaleTempFiles();
+    return info.Env().Undefined();
+}
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     TRACE("InitAll: module loading");
     TNRPAddon::Init(env, exports);
     TRACE("InitAll: module loaded");
     exports.Set("labelsJson", Napi::Function::New(env, LabelsJson));
     exports.Set("cardColorsJson", Napi::Function::New(env, CardColorsJson));
+    exports.Set("sweepTempFiles", Napi::Function::New(env, SweepTempFiles));
     return exports;
 }
 

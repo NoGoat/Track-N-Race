@@ -113,6 +113,26 @@ std::string Parser::statusRow() const {
     return writeJsonNullable(row);
 }
 
+std::string Parser::statusRowForFormat(uint16_t format) {
+    int gameYear = format == 2026 ? 26
+                 : (format == 2025 ? 25
+                 : (format == 2024 ? 24 : -1));
+    bool isF125OrLater = format >= 2025;
+    ProtocolStatusRow row;
+    if (gameYear >= 0)   row.capabilities.gameYear = gameYear;
+    row.capabilities.hasBlisters     = isF125OrLater;
+    row.capabilities.hasLiveryColors = isF125OrLater;
+    row.capabilities.hasLapPositions = isF125OrLater;
+    row.detected_format = format;
+    row.active_format   = format;
+    row.override_ = toString(Override::Auto);
+    const auto& cat = labelsFor(format);
+    row.labels.insert(cat.all().begin(), cat.all().end());
+    row.cardColors = cardColors();
+    row.aero_mode  = aeroMode(format);
+    return writeJsonNullable(row);
+}
+
 Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts, bool wantHotJson) {
     Result r;
     if (length < HEADER_SIZE) { r.dropped = true; return r; }

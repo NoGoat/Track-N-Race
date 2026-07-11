@@ -12,20 +12,18 @@ import {
   getProtocolConfig,
   requestStatus,
   setRendererVisible,
-  isRendererVisible,
-  exportSessionXlsx
+  exportSessionXlsx,
+  playerLoad,
+  playerPlay,
+  playerPause,
+  playerSeek,
+  playerSetSpeed,
+  playerGetLapData,
+  playerClose,
+  setOnPlaybackState,
+  getActiveFilePath,
+  sweepTempFiles
 } from './bridgeManager'
-import {
-  loadFile as playerLoad,
-  play as playerPlay,
-  pause as playerPause,
-  seek as playerSeek,
-  setSpeed as playerSetSpeed,
-  closePlayer as playerClose,
-  sweepTempDir,
-  setOnPlayerStateChange as setOnPlaybackState,
-  getActiveFilePath
-} from './sessionPlayer'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
@@ -121,24 +119,6 @@ app.on('open-file', (event, filePath) => {
   }
 })
 
-export function broadcastToWindows(row: Record<string, unknown>): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('telemetry', row)
-  }
-}
-
-export function broadcastBatchToWindows(batchStr: string): void {
-  // Playback's high-volume hot-row batch: skip while the renderer is hidden so it
-  // doesn't buffer a backlog (playback keeps advancing; it resumes at the current
-  // position on refocus). Control/state rows go via broadcastToWindows and are
-  // never gated.
-  if (!isRendererVisible()) return
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batchStr)
-  }
-}
-
-
 ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
   event.returnValue = store.get(key, defaultValue)
 })
@@ -181,6 +161,7 @@ ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
+ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
 ipcMain.on('player:close', () => playerClose())
 
 ipcMain.handle('player:export-xlsx', async (event) => {
@@ -365,7 +346,7 @@ app.whenReady().then(() => {
   // Reclaim decompression temp files leaked by prior runs (or the native app) that
   // exited abnormally. Safe here: secondary instances already exited above, so we
   // hold the single-instance lock and no other session's temp is at risk.
-  sweepTempDir()
+  sweepTempFiles()
 
   console.log('[main] calling startBridge()')
   startBridge()   // spawns the native protocol_parser; owns UDP + recording
@@ -421,8 +402,7 @@ app.whenReady().then(() => {
 
   app.on('will-quit', () => {
     console.log('[main] will-quit')
-    playerClose()
-    stopBridge()
+    stopBridge()   // closes the player too (temp file cleanup happens in-engine)
     clearInterval(pollInterval)
   })
 

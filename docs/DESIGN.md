@@ -1,6 +1,6 @@
 # Track N Race — Architecture & Design
 
-_Last updated: 2026-07-10 (branch `feature/opengl-charts`)._
+_Last updated: 2026-07-11 (branch `feature/opengl-charts`)._
 
 Track N Race is an F1 24/25/26 telemetry suite consisting of four components in
 one repository:
@@ -52,8 +52,9 @@ Key design decisions on this path:
   detected protocol lives in the host (`electron-store`), keeping the parser a
   pure function of inputs + override.
 - **Catalog pattern**: labels (per-format i18n) and card-colour specs are
-  library-owned declarative JSON (`labelsJson()`, `cardColorsJson()`), so both
-  the live engine and the TS playback path hand the renderer one shared model.
+  library-owned declarative JSON (`labelsJson()`, `cardColorsJson()`), shipped
+  on `protocol_status` rows by both the live parser and playback
+  (`Parser::statusRowForFormat`), so the renderer sees one shared model.
 
 ### Live path (native recorder)
 
@@ -62,21 +63,31 @@ adapts `Sink` to Qt signals; UI is QWidget pages backed by QCustomPlot charts
 (OpenGL rasterization when available). Hot-row smoothing is
 `native_recorder/src/HotRowSmoother.h`.
 
-### Playback paths — there are TWO
+### Playback path
 
-1. **C++ (`tnrp::Engine::player*` + `TnrdReader`)** — used by the native
-   recorder. Decompress to temp file, index in one pass (per-lap blocks, event
-   log, fastest lap), stream raw JSONL lines on a 16 ms playback thread.
-2. **TypeScript (`src/main/sessionPlayer.ts`)** — used by the Electron app.
-   Reimplements the same pipeline: gunzip to temp, single-pass scan/index into
-   TypedArrays, pre-encoded binary hot-row store for seek flushes, forward-fill
-   at the recording's measured frame period, sparse-row duplication for
-   stutter-free panels.
+One engine: **C++ (`tnrp::Engine::player*` + `TnrdReader`)**, two hosts.
+Decompress to temp file, index in one pass (per-lap blocks + slim chart points,
+event log, fastest lap), stream rows from a 16 ms playback thread.
 
-The Electron app **does not** call the addon's `playerLoad`/`playerPlay`/... —
-only `playerExportXlsx` (which opens its own throwaway `TnrdReader`). See the
-comment above `PlayerExportXlsx` in `node_addon/addon.cpp`. Consolidating on
-one implementation is the top roadmap item (§4).
+- **Native recorder** drives `TnrdReader` directly through its own Qt timer
+  (`TnrdPlayer`), all-JSON rows.
+- **Electron** drives the engine's `player*` API through the addon with
+  `Config::binaryPlayback` on: hot rows (telemetry/motion/motion_ex) are
+  pre-encoded at load into a packed store and stream out via `Sink::onBinary`
+  — the same channel as live — so the TS `HotRowSmoother` provides
+  measured-period pacing, forward-fill and visibility gating for both live and
+  playback. Seeks flush a binary hot-row slice + cold JSON via
+  `Sink::onSeekFlush` (`playback_seek_flush_bin` to the renderer); the playback
+  loop re-emits the sparse panel rows (status/damage/lap/positions/timing/
+  session/all_status) with the playhead's `session_time` so panels never look
+  frozen; `playerLoad`/`playerClose` emit `protocol_status` to switch labels to
+  the clip's format and back. `playerLoad` runs on the libuv pool
+  (`Promise<boolean>`) so a multi-second index scan doesn't block the main
+  process. `bridgeManager.ts` adapts `playback_state` (relative→absolute time,
+  filename, isScanning) for the renderer.
+
+JSON-only consumers (Qt recorder, the legacy pipe exe) run with
+`binaryPlayback` off and see the legacy all-JSON playback stream unchanged.
 
 ## 2. File format & shared conventions
 
@@ -90,9 +101,11 @@ one implementation is the top roadmap item (§4).
 - **Temp-file convention**: both apps decompress to `tmpdir/tracknrace_*.tmp`
   and both sweep stale files at startup (guarded by Electron's single-instance
   lock / skip-on-locked semantics).
-- **Binary hot-row encoding** is defined in `tnrp/BinaryRows.h` (C++) and
-  mirrored in `src/main/binaryRows.ts` + `src/renderer/src/lib/decodeBinaryBatch.ts`
-  (TS). These must be kept in lockstep — a schema drift is silent corruption.
+- **Binary hot-row encoding** is defined in `tnrp/BinaryRows.h` (C++, the only
+  encoder — live and playback). The decode side is mirrored in
+  `src/main/binaryRows.ts` (record lengths, for the smoother) and
+  `src/renderer/src/lib/decodeBinaryBatch.ts`. These must be kept in lockstep —
+  a schema drift is silent corruption.
 
 ## 3. Threading & concurrency model
 
@@ -100,28 +113,25 @@ one implementation is the top roadmap item (§4).
 |---|---|---|
 | libtnrp Engine | UDP receive thread, playback thread, callers' control threads | One `mutex_` guards all mutable state; `inPlayback_` atomic gates the UDP path. `onDatagram` holds the lock across parse + record + emit. |
 | node_addon | engine threads → TSFN → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
-| Electron main | single JS thread + libuv pool (XLSX export via `AsyncProgressQueueWorker`) | Playback tick is a self-rescheduling `setTimeout` at the recording's period. |
+| Electron main | single JS thread + libuv pool (XLSX export via `AsyncProgressQueueWorker`, player load via `AsyncWorker`) | No TS playback tick — the engine's playback thread drives; the binary flush timer paces both live and playback hot rows. |
 | Renderer | React state for cold rows; rAF/refs for hot rows | `MAX_ROWS` 750k cap + 10-min time cutoff per buffer. |
 
 ## 4. Known issues & roadmap (prioritised)
 
-### P1 — Consolidate the duplicated playback engine
-`sessionPlayer.ts` (~860 lines) and `TnrdReader`/`Engine::player*` implement
-the same feature twice, with subtly different behaviours (the C++ loop ticks at
-a fixed 16 ms; the TS loop follows the measured recording period and
-forward-fills). Recommendation: make the Electron app use the addon's
-`player*` API (it already exists and is battle-tested by the native recorder),
-extend the C++ side with whatever the TS path added (measured-period pacing,
-binary seek flush), and delete `sessionPlayer.ts`. One engine, two hosts.
+### ~~P1 — Consolidate the duplicated playback engine~~ (done)
+`sessionPlayer.ts` is deleted; the Electron app drives the addon's `player*`
+API with `Config::binaryPlayback` (binary hot rows, `onSeekFlush`, slim lap
+blocks, sparse-row re-emission, label switch on load/close, async load). One
+engine, two hosts — see §1 "Playback path".
 
 ### P1 — Delete or clearly retire `protocol_parser/`
 Its README claims Electron spawns it over a pipe; `bridgeManager.ts` actually
 loads the N-API addon in-process. Dead code + wrong docs mislead contributors.
 
 ### P2 — De-duplicate the smoothing/forward-fill logic
-Three copies exist: `native_recorder/src/HotRowSmoother.h`,
-`src/main/binaryForwardFill.ts`, and inline in `sessionPlayer.ts`'s playback
-loop. Candidate for a libtnrp-owned implementation behind the Sink.
+Two copies exist: `native_recorder/src/HotRowSmoother.h` and
+`src/main/binaryForwardFill.ts` (which now paces both live and playback for
+Electron). Candidate for a libtnrp-owned implementation behind the Sink.
 
 ### P2 — Table-drive the versioned protocol parsers
 `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are ~500 lines each and largely
@@ -140,11 +150,8 @@ There are currently no tests. Highest-value, lowest-effort targets:
   into files.
 - Type the addon boundary (`engine: any` in `bridgeManager.ts`) with a
   hand-written `.d.ts` for `protocol_parser.node`.
-- `sessionPlayer.ts` playback loop re-opens the temp file every tick
-  (`fs.openSync`/`closeSync` at up to 60 Hz); hold the fd for the session.
-- `setWindowFocused` in `sessionPlayer.ts` is exported but never wired up
-  (visibility gating moved to `bridgeManager.setRendererVisible`); the
-  `windowFocused` flag is permanently true — remove it.
+- `useTelemetry.ts` still has handlers for `playback_previous_lap_raw` /
+  `playback_fastest_lap_raw`, which nothing emits — delete the dead cases.
 - Windows taskbar-theme detection shells out to `reg query` synchronously on a
   1.5 s poll in the main process; replace with an async query or a registry
   watcher.

@@ -1,10 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tnrp/control_rows.h"
@@ -31,6 +33,13 @@ public:
     void close();
     bool isLoaded() const { return tempFile_ != nullptr; }
 
+    // Enable the Electron binary playback fast path BEFORE load(): the index
+    // pass additionally pre-encodes the hot rows (telemetry/motion/motion_ex)
+    // into a packed binary store (tnrp/BinaryRows.h), keeps the sparse cold
+    // rows (status/damage/lap) for seek flushes, and fills the slim per-lap
+    // chart points in lapBlocksMessage(). Off by default (JSON-only consumers).
+    void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
+
     // Delete stale decompression temp files ("tracknrace_*.tmp") left in the OS
     // temp dir by earlier runs (or the Electron app) that exited abnormally, so
     // they can't accumulate and fill /tmp. Call once at startup — a running
@@ -47,13 +56,34 @@ public:
     std::vector<std::string> drainRest();
     bool hasMore() const { return playPos_ < index_.size(); }
 
+    // Binary-playback variant of pullUntil: due cold rows are appended to
+    // jsonOut as newline-terminated JSONL, due hot rows are appended to binOut
+    // as packed records from the pre-built store, and seenTypes gets bit
+    // (1 << tid) set for every due row's type id. If lastOfType is given, each
+    // due cold row is also assigned to lastOfType[tid] (last one wins) so the
+    // caller can maintain its sparse-row dup cache without re-scanning JSON.
+    // Requires setBinaryPlayback before load. Pass +INFINITY to drain the rest.
+    void pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8_t>& binOut,
+                        uint32_t& seenTypes,
+                        std::array<std::string, 16>* lastOfType = nullptr);
+
     // ── Seek support ─────────────────────────────────────────────────────────
     std::vector<std::string> stateSnapshot(float t);
     // Latest row of each requested type at/before t (backward index walk; reads
     // only matched lines). Used to restore status/damage/positions panels on seek.
     std::vector<std::string> latestOfTypes(float t, const std::vector<uint8_t>& types);
+    // Same walk as latestOfTypes but each line is returned tagged with its type
+    // id, so the caller can key a per-type cache without re-scanning the JSON.
+    std::vector<std::pair<uint8_t, std::string>> latestOfTypesTagged(
+        float t, const std::vector<uint8_t>& types);
     std::vector<std::string> readRange(float fromTime, float toTime);
     bool currentLapAt(float t, float& startOut, int& numOut) const;
+
+    // Binary seek flush (requires setBinaryPlayback before load): the hot rows
+    // of [min(target-600, currentLapStart), target] as one packed binary slice,
+    // plus the window's sparse cold rows (status/damage/lap) newline-joined.
+    struct SeekFlush { std::vector<uint8_t> binary; std::string coldJson; };
+    SeekFlush seekFlush(float target, float currentLapStart);
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
@@ -82,6 +112,10 @@ private:
         std::vector<TimedRaw> motionHistory;
         std::vector<TimedRaw> motionExHistory;
         std::vector<TimedRaw> damageHistory;
+        // Slim chart points for lapBlocksMessage(); only filled when
+        // binaryPlayback_ is on (values fall out of the hot-store parse).
+        std::vector<SlimTelemetryPoint> slimTelemetry;
+        std::vector<SlimStatusPoint>    slimStatus;
     };
     struct ScanLap { int lapNum; float startSessionTime; float endSessionTime; int lapTimeMs; };
 
@@ -92,6 +126,22 @@ private:
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
     size_t      playPos_     = 0;
+    bool        binaryPlayback_ = false;
+
+    // Binary-playback stores (built by buildIndex when binaryPlayback_):
+    // packed hot records + per-record times/byte-offsets (hotStart_ has one
+    // sentinel end entry), a cumulative hot-record count per index position
+    // (hotCum_[i] = hot records among index_[0..i), length index_.size()+1) so
+    // an index range maps to a contiguous store slice, and the sparse cold
+    // rows kept whole for seek flushes.
+    std::vector<uint8_t>  hotBin_;
+    std::vector<float>    hotTimes_;
+    std::vector<size_t>   hotStart_;
+    std::vector<uint32_t> hotCum_;
+    std::vector<TimedRaw> coldStatus_;
+    std::vector<TimedRaw> coldDamage_;
+    std::vector<TimedRaw> coldLap_;
+    std::vector<char>     scratch_;   // reused block-read buffer (pull/drain)
 
     std::map<int, LapBlock>  lapBlocks_;
     std::vector<ScanLap>     scannedLaps_;
@@ -105,6 +155,14 @@ private:
     static bool decompress(const std::string& srcPath, const std::string& destPath);
     void buildIndex(const std::string& filePath);
     std::string readLine(long offset);   // reads raw JSONL line (no parse)
+
+    // Linear forward walk from playPos_ (same early-stop semantics as the old
+    // per-row pullUntil on out-of-order rows): first index >= playPos_ whose
+    // sessionTime exceeds t.
+    size_t pullEnd(float t) const;
+    // One contiguous fread of the lines behind index_[fromIdx..toIdx) into
+    // scratch_; returns bytes read (0 on failure/empty range).
+    size_t readBlock(size_t fromIdx, size_t toIdx);
 };
 
 } // namespace tnrp

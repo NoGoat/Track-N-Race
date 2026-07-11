@@ -49,6 +49,11 @@ public:
     // The engine emits this on construction and after setOverride.
     std::string statusRow() const;
 
+    // protocol_status row for a fixed packet format, independent of any live
+    // parser state. Playback uses this to label a recorded clip with its own
+    // format's i18n catalog / capabilities / aero mode.
+    static std::string statusRowForFormat(uint16_t format);
+
     // Reset rate-limit / debounce state (e.g. on UDP restart).
     void reset();
 

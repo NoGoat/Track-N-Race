@@ -18,10 +18,20 @@ public:
     virtual ~Sink() = default;
     virtual void onRow(const std::string& json) = 0;
 
-    // Packed binary batch for the hot 60 Hz rows (see tnrp/BinaryRows.h). Only the
-    // live UDP path emits these; playback rows arrive as JSON via onRow(). Default
-    // no-op so sinks that don't care (e.g. a JSON-only pipe) need not implement it.
+    // Packed binary batch for the hot 60 Hz rows (see tnrp/BinaryRows.h). The
+    // live UDP path emits these; playback does too when the engine runs with
+    // Config::binaryPlayback. Default no-op so sinks that don't care (e.g. a
+    // JSON-only pipe) need not implement it.
     virtual void onBinary(const uint8_t* /*data*/, size_t /*len*/) {}
+
+    // Seek flush under Config::binaryPlayback: the hot rows of the window
+    // leading up to the seek target as one packed binary slice, plus the sparse
+    // cold rows (status/damage/lap) of the same window as newline-joined JSON.
+    // JSON-only consumers never receive this (legacy mode emits a
+    // playback_seek_flush row via onRow instead).
+    virtual void onSeekFlush(const uint8_t* /*bin*/, size_t /*len*/,
+                             const std::string& /*coldJson*/,
+                             float /*currentLapStart*/, int /*lapNum*/) {}
 };
 
 } // namespace tnrp

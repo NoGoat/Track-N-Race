@@ -891,7 +891,10 @@ export default function App() {
   }, [timing])
 
   useEffect(() => {
-    if (!raceEvent || isPlaybackModeRef.current) return
+    // Banners fire in playback too: race_event rows only stream when the
+    // playhead crosses them (load/seek restore panel state, never events),
+    // so each one is a "live" moment of the replay, not a historical dump.
+    if (!raceEvent) return
     const item = buildBanner(raceEvent, participantsRef.current)
     if (!item) return
     tQueueRef.current.push(item)

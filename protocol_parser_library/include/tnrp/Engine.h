@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -68,6 +69,13 @@ private:
     float             speed_     = 1.0f;
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
+
+    // Binary-playback sparse-row dup cache (guarded by mutex_): the last seen
+    // raw line per type id for the panel row types. On a tick where a dup type
+    // delivered no fresh row, its cached line is re-emitted with session_time
+    // set to the playhead so the panels never appear frozen between their
+    // native ~2 Hz updates. Only used when config_.binaryPlayback.
+    std::array<std::string, 16> dupCache_{};
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void emitRow(const std::string& json);               // forward to the sink
