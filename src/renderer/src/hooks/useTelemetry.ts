@@ -34,6 +34,31 @@ function getNextBuffer<T extends { session_time: number }>(prev: T[], msg: T, ma
   return [...validPrev, msg]
 }
 
+// Buffers are sorted by session_time (getNextBuffer enforces ordering), so the
+// windowed views below are contiguous suffixes/prefixes — binary-search the
+// boundary and slice instead of filtering the whole buffer every frame.
+function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inclusive: boolean): number {
+  let l = 0, r = arr.length
+  while (l < r) {
+    const mid = (l + r) >> 1
+    const keep = inclusive ? arr[mid].session_time >= t : arr[mid].session_time > t
+    if (keep) r = mid; else l = mid + 1
+  }
+  return l
+}
+
+// Rows with session_time > t (exclusive) or >= t (inclusive).
+function sliceAfter<T extends { session_time: number }>(arr: T[], t: number, inclusive = false): T[] {
+  const idx = lowerBound(arr, t, inclusive)
+  return idx === 0 ? arr : arr.slice(idx)
+}
+
+// Rows with session_time <= t.
+function sliceUpTo<T extends { session_time: number }>(arr: T[], t: number): T[] {
+  const idx = lowerBound(arr, t, false)
+  return idx === arr.length ? arr : arr.slice(0, idx)
+}
+
 declare global {
   interface Window {
     telemetryBridge: {
@@ -469,24 +494,24 @@ export function useTelemetry(seconds: number): TelemetryState {
   // Playback uses the seek-correct pre-scan; live uses the accumulated map.
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
-  const telemetry        = useMemo(() => telBuf.filter(d => d.session_time > cutoff),           [telBuf, cutoff])
-  const motion           = useMemo(() => motBuf.filter(d => d.session_time > cutoff),           [motBuf, cutoff])
-  const motionEx         = useMemo(() => motExBuf.filter(d => d.session_time > cutoff),         [motExBuf, cutoff])
-  const statusHistory    = useMemo(() => stsBuf.filter(d => d.session_time > cutoff),           [stsBuf, cutoff])
-  const damageHistory    = useMemo(() => dmgBuf.filter(d => d.session_time > cutoff),           [dmgBuf, cutoff])
+  const telemetry        = useMemo(() => sliceAfter(telBuf, cutoff),                            [telBuf, cutoff])
+  const motion           = useMemo(() => sliceAfter(motBuf, cutoff),                            [motBuf, cutoff])
+  const motionEx         = useMemo(() => sliceAfter(motExBuf, cutoff),                          [motExBuf, cutoff])
+  const statusHistory    = useMemo(() => sliceAfter(stsBuf, cutoff),                            [stsBuf, cutoff])
+  const damageHistory    = useMemo(() => sliceAfter(dmgBuf, cutoff),                            [dmgBuf, cutoff])
   const latest           = useMemo(() => telBuf.length > 0 ? telBuf[telBuf.length - 1] : null, [telBuf])
   const lapHistory       = useMemo(() => isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf, [isPlayback, prevBlock, lapHistoryBuf])
   const resolvedFastLap  = useMemo(() => isPlayback && fastBlock ? fastBlock : fastestLap,      [isPlayback, fastBlock, fastestLap])
   const lapTelemetry     = useMemo(
     () => isPlayback && curBlock
-      ? curBlock.telemetry.filter((p: any) => p.session_time <= latestSessionTime)
-      : telBuf.filter(d => d.session_time >= lapStartSessionTime),
+      ? sliceUpTo(curBlock.telemetry as TelemetryRow[], latestSessionTime)
+      : sliceAfter(telBuf, lapStartSessionTime, true),
     [isPlayback, curBlock, telBuf, lapStartSessionTime, latestSessionTime]
   )
   const lapStatusHistory = useMemo(
     () => isPlayback && curBlock
-      ? curBlock.statusHistory.filter((p: any) => p.session_time <= latestSessionTime)
-      : stsBuf.filter(d => d.session_time >= lapStartSessionTime),
+      ? sliceUpTo(curBlock.statusHistory as StatusRow[], latestSessionTime)
+      : sliceAfter(stsBuf, lapStartSessionTime, true),
     [isPlayback, curBlock, stsBuf, lapStartSessionTime, latestSessionTime]
   )
 

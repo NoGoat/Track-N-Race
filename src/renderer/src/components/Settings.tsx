@@ -283,7 +283,7 @@ const Settings = memo(function Settings({
   const renderCompact = () => {
     const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0
     const setAll = (on: boolean) => {
-      const next = { ...compact, overviewTyres: on ? 5 : 0 }
+      const next = { ...compact, overviewTyres: on ? 1 : 0 }
       for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = on
       onCompactChange(next)
     }
