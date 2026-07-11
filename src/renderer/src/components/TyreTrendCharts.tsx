@@ -124,14 +124,9 @@ interface ChartProps {
   solid?: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
-  // Wear comes from the sparse ~1-2 Hz damage rows; the scroll clock needs a
-  // longer extrapolation window there than for the 60 Hz telemetry streams.
-  sparse?: boolean
 }
 
-const SPARSE_SCROLL = { stallS: 1.5, snapS: 2 }
-
-function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windowSeconds = 30, sparse = false }: ChartProps) {
+function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windowSeconds = 30 }: ChartProps) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -144,7 +139,6 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windo
     ts.length > 0 ? (ts[ts.length - 1] as number) : null,
     ts.length > 0 ? (ts[0] as number) : null,
     windowSeconds,
-    sparse ? SPARSE_SCROLL : undefined,
   )
 
   const axisColor = isDark ? '#7c8098' : '#6b7280'
@@ -289,7 +283,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
       { key: 'surfaceTemp', el: <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} solid view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} /> },
       { key: 'innerTemp',   el: <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} solid view={graphViews?.innerTemp} windowSeconds={windowSeconds} /> },
       { key: 'brakeTemp',   el: <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} solid view={graphViews?.brakeTemp} windowSeconds={windowSeconds} /> },
-      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid view={graphViews?.tyreLife} windowSeconds={windowSeconds} sparse /> },
+      { key: 'tyreLife',    el: <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} solid view={graphViews?.tyreLife} windowSeconds={windowSeconds} /> },
     ].filter(({ key }) => visibleGraphs[key as keyof typeof visibleGraphs])
 
     const odd = items.length % 2 !== 0
@@ -313,7 +307,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
       {visibleGraphs.surfaceTemp && <TyreLineChart title="Surface Temp" unit="°C" data={surface} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} />}
       {visibleGraphs.innerTemp   && <TyreLineChart title="Inner Temp"   unit="°C" data={inner}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} />}
       {visibleGraphs.brakeTemp   && <TyreLineChart title="Brake Temp"   unit="°C" data={brakes}  isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} />}
-      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} sparse />}
+      {visibleGraphs.tyreLife    && <TyreLineChart title={wearTitle}    unit="%"  data={wear}     isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} />}
     </div>
   )
 }

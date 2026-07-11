@@ -9,17 +9,12 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 
-// Status rows arrive at ~1-2 Hz (not the 60 Hz hot rate), so the scroll clock
-// needs a longer extrapolation window before it treats the stream as stalled.
-const SPARSE_SCROLL = { stallS: 1.5, snapS: 2 }
-
 function useStatusScroll(data: StatusRow[], view: 'chart' | 'table', windowSeconds: number) {
   return useScrollScale(
     view !== 'table',
     data.length > 0 ? data[data.length - 1].session_time : null,
     data.length > 0 ? data[0].session_time : null,
     windowSeconds,
-    SPARSE_SCROLL,
   )
 }
 
