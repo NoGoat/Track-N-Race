@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import type uPlot from 'uplot'
 import type { TelemetryRow, DamageRow } from '../types'
@@ -77,7 +77,7 @@ interface ChartProps<T extends { session_time: number }> {
   windowSeconds?: number
 }
 
-function TyreLineChart<T extends { session_time: number }>({ title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30 }: ChartProps<T>) {
+function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30 }: ChartProps<T>) {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
   // A single sample can't draw a line, so it counts as no data — otherwise the
@@ -152,6 +152,10 @@ function TyreLineChart<T extends { session_time: number }>({ title, unit, rows, 
     </div>
   )
 }
+
+// In particular, keep the sparse Tyre Life leaf cold during 60 Hz telemetry
+// publications when its damage rows and configuration have not changed.
+const TyreLineChart = memo(TyreLineChartImpl) as typeof TyreLineChartImpl
 
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 

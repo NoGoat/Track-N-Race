@@ -191,8 +191,14 @@ export const WheelCard = memo(function WheelCard({
 })
 
 
-function useCornerHistories(telemetry: TelemetryRow[]): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
+const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> = {
+  fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
+}
+
+function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
   return useMemo(() => {
+    if (!enabled) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
     const ts = new Float64Array(n)
     const flS = new Float64Array(n), frS = new Float64Array(n), rlS = new Float64Array(n), rrS = new Float64Array(n)
@@ -210,7 +216,7 @@ function useCornerHistories(telemetry: TelemetryRow[]): Record<'fl' | 'fr' | 'rl
       rl: [ts, rlS, rlI, rlB],
       rr: [ts, rrS, rrI, rrB],
     }
-  }, [telemetry])
+  }, [telemetry, enabled])
 }
 
 const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews, cardViews, windowSeconds = 30 }: Props) {
@@ -218,7 +224,12 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
 
-  const cornerHistory = useCornerHistories(telemetry)
+  // Graph view does not consume per-corner uPlot columns; avoid rebuilding all
+  // thirteen typed arrays on every telemetry publication while it is active.
+  const needsCornerHistory = view !== 'graphs' && Object.entries(cardViews ?? {}).some(
+    ([corner, cardView]) => cardView === 'table' && thermalCards[corner as keyof typeof thermalCards],
+  )
+  const cornerHistory = useCornerHistories(telemetry, needsCornerHistory)
 
   // Tyre cards are content-height (at every density level) so the strip is short —
   // stretching them to fill the flex region just spreads the rows apart with gaps.

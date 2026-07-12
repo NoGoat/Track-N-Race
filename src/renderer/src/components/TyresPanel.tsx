@@ -23,8 +23,14 @@ interface Props {
   windowSeconds?: number
 }
 
-function useCornerHistories(telemetry: TelemetryRow[]): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
+const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> = {
+  fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
+}
+
+function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
   return useMemo(() => {
+    if (!enabled) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
     const ts = new Float64Array(n)
     const flS = new Float64Array(n), frS = new Float64Array(n), rlS = new Float64Array(n), rrS = new Float64Array(n)
@@ -42,7 +48,7 @@ function useCornerHistories(telemetry: TelemetryRow[]): Record<'fl' | 'fr' | 'rl
       rl: [ts, rlS, rlI, rlB],
       rr: [ts, rrS, rrI, rrB],
     }
-  }, [telemetry])
+  }, [telemetry, enabled])
 }
 
 const WET_COMPOUNDS = new Set([7, 8])
@@ -234,7 +240,11 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
   const { ref: cardsRef, height: cardsHeight } = useSize()
-  const cornerHistory = useCornerHistories(telemetry)
+  // Expanded mode renders the shared TimeCharts directly. Building thirteen
+  // full-window Float64 columns for the hidden wheel cards was pure allocation
+  // churn (hundreds of MB/s at long 60 Hz windows), so skip it entirely.
+  const needsCornerHistory = !expanded && Object.values(cardViews ?? {}).some(v => v === 'table')
+  const cornerHistory = useCornerHistories(telemetry, needsCornerHistory)
 
   const drySets = useMemo(() => {
     return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
