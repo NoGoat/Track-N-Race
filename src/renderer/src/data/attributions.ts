@@ -11,6 +11,7 @@ import lucideReactLicense from '../assets/licenses/lucide-react.txt?raw'
 import reactSelectLicense from '../assets/licenses/react-select.txt?raw'
 import uplotLicense from '../assets/licenses/uplot.txt?raw'
 import uplotReactLicense from '../assets/licenses/uplot-react.txt?raw'
+import timechartLicense from '../assets/licenses/timechart.txt?raw'
 import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
 import zlibLicense from '../assets/licenses/zlib.txt?raw'
 import glazeLicense from '../assets/licenses/glaze.txt?raw'
@@ -91,6 +92,14 @@ export const ATTRIBUTIONS: Attribution[] = [
     license: 'MIT',
     homepage: 'https://github.com/skalinichev/uplot-react',
     licenseText: uplotReactLicense,
+    category: 'app',
+  },
+  {
+    name: 'TimeChart',
+    version: '1.0.0-beta.10',
+    license: 'MIT',
+    homepage: 'https://github.com/huww98/TimeChart',
+    licenseText: timechartLicense,
     category: 'app',
   },
 
