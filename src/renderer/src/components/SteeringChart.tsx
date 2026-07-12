@@ -1,14 +1,14 @@
 import { useMemo, useRef, useCallback } from 'react'
 import UPlotReact from 'uplot-react'
 import uPlot from 'uplot'
-import type { TelemetryRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
+import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
-  data: TelemetryRow[]
   isDark: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
@@ -33,7 +33,8 @@ const TABLE_COLS: GraphTableColumn[] = [
   { header: 'Steering', color: COLOR_STEER, format: v => `${Math.round(v * 100)}%` },
 ]
 
-export default function SteeringChart({ data, isDark, view = 'chart', windowSeconds = 30 }: Props) {
+export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+  const data = useTelemetryStore(s => s.telemetry)
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -141,7 +142,7 @@ export default function SteeringChart({ data, isDark, view = 'chart', windowSeco
           points: { show: false },
         },
       ],
-      plugins: [refLinePlugin, ttPlugin],
+      plugins: [refLinePlugin, ttPlugin, createDrawProfilerPlugin('Steering')],
     }
   }, [width, height, isDark])
 

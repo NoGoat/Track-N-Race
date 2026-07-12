@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, memo, useCallback } from 'react'
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
 import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2, Download } from 'lucide-react'
-import { useTelemetry } from './hooks/useTelemetry'
+import { useTelemetryStore, setTelemetrySeconds, subscribeRaceEvent } from './stores/telemetryStore'
 import { LabelsProvider } from './lib/labels'
 import { CardColorsProvider } from './lib/cards'
 import { useAppConfig } from './hooks/useAppConfig'
@@ -301,7 +301,10 @@ const SessionBadge = memo(
 )
 SessionBadge.displayName = 'SessionBadge'
 
-const SessionTimer = memo(({ sessionTime }: { sessionTime: number | undefined }) => {
+// Self-sources the session clock so it can tick at the telemetry rate without
+// re-rendering App (App is intentionally cold — it never selects `latest`).
+const SessionTimer = memo(() => {
+  const sessionTime = useTelemetryStore(s => s.latest?.session_time)
   if (sessionTime === undefined) return null
   const s = sessionTime
   const formatted = `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
@@ -663,6 +666,271 @@ const PlaybackLapSelector = memo(function PlaybackLapSelector({
 })
 PlaybackLapSelector.displayName = 'PlaybackLapSelector'
 
+// The tab content is the only part of the UI that consumes the hot (per-frame)
+// telemetry slices. Extracting it into its own store-subscribing component is
+// what lets App itself stay cold: App renders the header/nav (which never touch
+// hot data) plus <TabContent/>, and only TabContent + the active tab's leaves
+// re-render at the telemetry rate. The leaves keep their existing prop shapes —
+// TabContent selects the slices from the store and passes them down, exactly as
+// App used to. All the low-frequency config comes in as props.
+interface TabContentProps {
+  tab: Tab
+  isDark: boolean
+  seconds: number
+  coreLayout: CoreLayout
+  powerLayout: PowerLayout
+  tyresLayout: TyresLayout
+  inputLayout: InputLayout
+  miscLayout: MiscLayout
+  graphView: GraphViewState
+  compact: CompactState
+  tyreView: 'cards' | 'graphs'
+  tyreWearMode: 'wear' | 'life'
+  speedRpmMode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
+  onSpeedRpmModeChange: (m: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
+  selectedIdx: number | null
+  onSelectDriver: (idx: number) => void
+  reduceAnimations: boolean
+  sectorColors: boolean
+  driversMode: 'dots' | 'both' | 'labels'
+  mapTimeout: number
+  mapDimmed: boolean
+  currentPlaybackLapNum: number | null
+}
+
+const TabContent = memo(function TabContent({
+  tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
+  graphView, compact, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
+  selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
+  mapDimmed, currentPlaybackLapNum,
+}: TabContentProps) {
+  // Hot + cold slices this subtree needs. Only components that render these
+  // re-render per frame; App does not.
+  const telemetry        = useTelemetryStore(s => s.telemetry)
+  const statusHistory    = useTelemetryStore(s => s.statusHistory)
+  const damage           = useTelemetryStore(s => s.damage)
+  const damageHistory    = useTelemetryStore(s => s.damageHistory)
+  const lap              = useTelemetryStore(s => s.lap)
+  const timing           = useTelemetryStore(s => s.timing)
+  const latest           = useTelemetryStore(s => s.latest)
+  const lapTelemetry     = useTelemetryStore(s => s.lapTelemetry)
+  const lapStatusHistory = useTelemetryStore(s => s.lapStatusHistory)
+  const allStatus        = useTelemetryStore(s => s.allStatus)
+  const status           = useTelemetryStore(s => s.status)
+  const participants     = useTelemetryStore(s => s.participants)
+  const session          = useTelemetryStore(s => s.session)
+  const tyreSets         = useTelemetryStore(s => s.tyreSets)
+  const raceEvents       = useTelemetryStore(s => s.raceEvents)
+  const fastestLapCarIdx = useTelemetryStore(s => s.fastestLapCarIdx)
+  const lapHistory       = useTelemetryStore(s => s.lapHistory)
+  const fastestLap       = useTelemetryStore(s => s.fastestLap)
+  const speedRpmBlocks   = useTelemetryStore(s => s.speedRpmBlocks)
+  const lapTimesByNum    = useTelemetryStore(s => s.lapTimesByNum)
+  const isConnected      = useTelemetryStore(s => s.isConnected)
+  const protocolStatus   = useTelemetryStore(s => s.protocolStatus)
+
+  const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
+  const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
+  const selectedDriver     = participants?.drivers.find(d => d.idx === selectedIdx) ?? playerDriver
+  const selectedCarStatus  = allStatus?.cars.find(c => c.idx === selectedIdx) ?? null
+
+  return (
+    <>
+      {tab === 'core' && (() => {
+        const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
+        const damageTwoRow = visibleDamageCount > 8
+        const showStatsPanel = coreLayout.showStats && Object.values(coreLayout.statsCards).some(Boolean)
+        const showThermalPanel = coreLayout.showThermal && (
+          tyreView === 'graphs'
+            ? Object.values(coreLayout.thermalGraphs).some(Boolean)
+            : Object.values(coreLayout.thermalCards).some(Boolean)
+        )
+        const showSpeedChartPanel = coreLayout.showSpeedChart
+
+        let speedChartFlex = 'flex-1'
+        let thermalFlex = 'flex-1'
+
+        if (showSpeedChartPanel && showThermalPanel) {
+          speedChartFlex = damageTwoRow ? 'flex-[8]' : 'flex-[13]'
+          thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
+        }
+
+        const thermalCompactCards = tyreView === 'cards'
+
+        return (
+        <div className="h-full flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+            {showStatsPanel && (
+              <div className="shrink-0">
+                <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={isDark} compact={compact.overviewStats} />
+              </div>
+            )}
+            {showSpeedChartPanel && (
+              <div className={`${speedChartFlex} min-h-0`}>
+                <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={onSpeedRpmModeChange} isDark={isDark} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} windowSeconds={seconds} />
+              </div>
+            )}
+            {showThermalPanel && (
+              <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
+                <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} />
+              </div>
+            )}
+            {visibleDamageCount > 0 && (
+              <div className="shrink-0">
+                <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={isDark} compact={compact.overviewDamage} />
+              </div>
+            )}
+          </div>
+        </div>
+        )
+      })()}
+      {tab === 'timing_tower' && (
+        <div className="h-full flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
+            <div className="flex-1 min-w-0 overflow-auto">
+              <TimingTower
+                timing={timing}
+                participants={participants}
+                allStatus={allStatus}
+                fastestLapCarIdx={fastestLapCarIdx}
+                selectedIdx={selectedIdx}
+                onSelectDriver={onSelectDriver}
+                isDark={isDark}
+                animationsEnabled={!reduceAnimations}
+              />
+            </div>
+            <div className="w-80 shrink-0 overflow-y-auto">
+              <RacePanel
+                lap={lap}
+                status={status}
+                selectedCar={selectedCar}
+                selectedDriver={selectedDriver}
+                selectedCarStatus={selectedCarStatus}
+                playerIdx={timing?.player_idx ?? null}
+                isDark={isDark}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+      {tab === 'session' && (
+        <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
+          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
+        </div>
+      )}
+      {tab === 'input' && (
+        <div className="h-full flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+            {(inputLayout.showGear || inputLayout.showInputs) && (
+              <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                {inputLayout.showGear && (
+                  <div className="flex-1 min-w-0 min-h-0">
+                    <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                  </div>
+                )}
+                {inputLayout.showInputs && (
+                  <div className="flex-1 min-w-0 min-h-0">
+                    <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
+                  </div>
+                )}
+              </div>
+            )}
+            {inputLayout.showSteering && (
+              <div className="flex-1 min-h-0">
+                <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'misc' && (
+        <div className="h-full flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+            {miscLayout.showGForce && (
+              <div className="flex-1 min-h-0">
+                <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
+              </div>
+            )}
+            {miscLayout.showRideHeight && (
+              <div className="flex-1 min-h-0">
+                <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {tab === 'power' && (
+        <div className="h-full flex flex-col overflow-hidden border-t border-[var(--border)] divide-y divide-[var(--border)]">
+          <div className="shrink-0 bg-[var(--bg-panel)]">
+            <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={isDark} compact={compact.powerCards} />
+          </div>
+          <div className="flex-1 min-h-0">
+            <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} />
+          </div>
+        </div>
+      )}
+      {tab === 'tyres' && (
+        <div className="h-full overflow-hidden border-t border-[var(--border)]">
+          <TyresPanel
+            tyreSets={tyreSets}
+            latest={latest}
+            damage={damage}
+            damageHistory={damageHistory}
+            telemetry={telemetry}
+            tyreWearMode={tyreWearMode}
+            isDark={isDark}
+            visibleGraphs={tyresLayout.charts}
+            graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
+            cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
+            sessionType={session?.session_type ?? null}
+            windowSeconds={seconds}
+          />
+        </div>
+      )}
+      {tab === 'strategy' && (
+        <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
+          <StrategyPanel
+            lap={lap}
+            session={session}
+            status={status}
+            damage={damage}
+            timing={timing}
+            participants={participants}
+            tyreSets={tyreSets}
+            allStatus={allStatus}
+            lapTimesByNum={lapTimesByNum}
+            isDark={isDark}
+            compact={compact.strategySummary}
+          />
+        </div>
+      )}
+    </>
+  )
+})
+
+// Watches the race leader (which comes from the per-frame `timing` slice) and
+// fires a banner on a change. Isolated into its own subscriber so the hot
+// `timing` read doesn't live in App. `enabled` is false during playback.
+const RaceLeaderWatcher = memo(function RaceLeaderWatcher({ enabled, onLeaderChange }: {
+  enabled: boolean
+  onLeaderChange: (idx: number) => void
+}) {
+  const timing = useTelemetryStore(s => s.timing)
+  const p1IdxRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!timing || !enabled) return
+    const leader = timing.cars.find(c => c.position === 1 && c.result_status === 2)
+    if (!leader) return
+    if (p1IdxRef.current === null) { p1IdxRef.current = leader.idx; return }
+    if (leader.idx !== p1IdxRef.current) {
+      p1IdxRef.current = leader.idx
+      onLeaderChange(leader.idx)
+    }
+  }, [timing, enabled, onLeaderChange])
+  return null
+})
+
 export default function App() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
@@ -674,6 +942,87 @@ export default function App() {
   const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
   const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
   const [tab, setTab] = useState<Tab>('core')
+
+  // Temporary diagnostic: logs any main-thread task >50ms, tagged with the
+  // active tab at the time it fired, and — crucially — the `sync:<label>`
+  // regions (see profileSync) that overlapped the block, so we can see WHAT
+  // ran during the stall rather than just that one happened. If a longtask
+  // reports no overlapping sync region it's browser-internal (GC / paint /
+  // layout), which is itself the answer. Remove once the stutter is root-caused.
+  const tabRef = useRef(tab)
+  tabRef.current = tab
+  useEffect(() => {
+    if (typeof PerformanceObserver === 'undefined') return
+    let po: PerformanceObserver | null = null
+    try {
+      po = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const end = entry.startTime + entry.duration
+          // Regions that overlap the longtask window [startTime, end], busiest first.
+          const overlapping = (performance.getEntriesByType('measure') as PerformanceMeasure[])
+            .filter(m => m.name.startsWith('sync:')
+              && m.startTime < end
+              && m.startTime + m.duration > entry.startTime)
+            .sort((a, b) => b.duration - a.duration)
+          const attribution = overlapping.length
+            ? overlapping.slice(0, 6).map(m => `${m.name.slice(5)}=${m.duration.toFixed(1)}ms`).join(', ')
+            : 'no sync region (browser-internal: GC / paint / layout)'
+          // eslint-disable-next-line no-console
+          console.log(`[perf] longtask ${entry.duration.toFixed(1)}ms on tab="${tabRef.current}" @ ${entry.startTime.toFixed(0)}ms → ${attribution}`)
+        }
+        // Drop consumed measures so the buffer stays small and future longtasks
+        // only see regions from after this point.
+        try { performance.clearMeasures() } catch { /* ignore */ }
+      })
+      po.observe({ entryTypes: ['longtask'] })
+    } catch { /* longtask not supported */ }
+    return () => po?.disconnect()
+  }, [])
+
+  // Diagnostic companion to the longtask observer: brackets each React
+  // render→commit→layout pass as a `sync:react-render+commit` measure, so a
+  // stall caused by React work (re-render of the whole App at the data-batch
+  // cadence, the windowing useMemos, reconciliation) is attributed instead of
+  // showing up as an unexplained longtask. renderStartRef is set at the top of
+  // every render; this layout effect fires after the commit for that render.
+  const renderStartRef = useRef(0)
+  renderStartRef.current = performance.now()
+  // Count how often App actually re-renders, and the total render+commit time
+  // spent per second — tells us whether the fix is "render less often" (high
+  // rate) or "make each render cheaper" (low rate, heavy each).
+  const renderCountRef = useRef(0)
+  const renderCostRef = useRef(0)
+  const renderLogRef = useRef(performance.now())
+  renderCountRef.current++
+  useLayoutEffect(() => {
+    const duration = performance.now() - renderStartRef.current
+    renderCostRef.current += duration
+    if (duration >= 1 && typeof performance.measure === 'function') {
+      try { performance.measure('sync:react-render+commit', { start: renderStartRef.current, duration }) } catch { /* ignore */ }
+    }
+    const now = performance.now()
+    const elapsed = now - renderLogRef.current
+    if (elapsed >= 2000) {
+      // eslint-disable-next-line no-console
+      console.log(`[perf] App renders=${renderCountRef.current} (${(renderCountRef.current / elapsed * 1000).toFixed(0)}/s) total-render+commit=${renderCostRef.current.toFixed(0)}ms/${(elapsed / 1000).toFixed(1)}s tab="${tabRef.current}"`)
+      renderCountRef.current = 0
+      renderCostRef.current = 0
+      renderLogRef.current = now
+    }
+  })
+
+  // Splits the render+commit cost above into its two halves. React.Profiler's
+  // `actualDuration` is the RENDER phase only (reconciling this subtree). If
+  // that number tracks the ~55ms longtask, the cost is JS render/reconciliation
+  // (fix: memoize / stop re-rendering the whole App at the data cadence). If it
+  // stays small while render+commit is large, the cost is the COMMIT phase —
+  // DOM mutation / style-layout (fix: reduce DOM churn, e.g. uPlot setData).
+  const onAppRender = useCallback((_id: string, phase: string, actualDuration: number, baseDuration: number) => {
+    if (actualDuration >= 5) {
+      // eslint-disable-next-line no-console
+      console.log(`[perf] react-render-phase ${phase} actual=${actualDuration.toFixed(1)}ms base=${baseDuration.toFixed(1)}ms tab="${tabRef.current}"`)
+    }
+  }, [])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [xlsxExportState, setXlsxExportState] = useState<'idle' | 'busy' | 'error'>('idle')
@@ -812,7 +1161,23 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
-  const { telemetry, motion, motionEx, status, statusHistory, damage, damageHistory, lap, timing, participants, allStatus, fastestLapCarIdx, onRaceEvent, raceEvents, session, tyreSets, latest, lapTelemetry, lapStatusHistory, lapHistory, fastestLap, speedRpmBlocks, lapTimesByNum, isConnected, error, protocolStatus, protocolWarning } = useTelemetry(seconds)
+  // App is deliberately COLD: it selects only low-frequency slices. Every hot,
+  // per-frame slice is read inside <TabContent/> and the other subscriber
+  // components below, so a telemetry frame never re-renders App itself.
+  const participants    = useTelemetryStore(s => s.participants)
+  const session         = useTelemetryStore(s => s.session)
+  const speedRpmBlocks  = useTelemetryStore(s => s.speedRpmBlocks)
+  const protocolStatus  = useTelemetryStore(s => s.protocolStatus)
+  const protocolWarning = useTelemetryStore(s => s.protocolWarning)
+  // Publish the visible time window to the store so it computes the right slices.
+  useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
+
+  // A renderer that mounts after the engine already settled on a format never
+  // receives the one-shot protocol_status push, so pull the last one when we
+  // have no catalog. (Ported from the old useTelemetry hook.)
+  useEffect(() => {
+    if (!protocolStatus) window.protocolBridge.requestStatus()
+  }, [protocolStatus])
 
   speedRpmBlocksRef.current = speedRpmBlocks
 
@@ -868,40 +1233,31 @@ export default function App() {
     tTimerRef.current = setTimeout(() => dequeueRef.current(), bannerDurationRef.current * 1000)
   }
 
-  // Race leader tracking
-  const p1IdxRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (!timing || isPlaybackModeRef.current) return
-    const leader = timing.cars.find(c => c.position === 1 && c.result_status === 2)
-    if (!leader) return
-    if (p1IdxRef.current === null) {
-      p1IdxRef.current = leader.idx
-      return
+  // Race-leader banners: the change detection lives in <RaceLeaderWatcher/>
+  // (which reads the hot `timing` slice, keeping that read out of App). App just
+  // enqueues the banner when the watcher reports a new leader.
+  const handleLeaderChange = useCallback((idx: number) => {
+    const item: BannerItem = {
+      label: 'New Race Leader',
+      sub: lastName(participantsRef.current, idx),
+      color: '#5794F2',
     }
-    if (leader.idx !== p1IdxRef.current) {
-      p1IdxRef.current = leader.idx
-      const item: BannerItem = {
-        label: 'New Race Leader',
-        sub: lastName(participantsRef.current, leader.idx),
-        color: '#5794F2',
-      }
-      tQueueRef.current.push(item)
-      if (!tShowingRef.current) dequeueRef.current()
-    }
-  }, [timing])
+    tQueueRef.current.push(item)
+    if (!tShowingRef.current) dequeueRef.current()
+  }, [])
 
   useEffect(() => {
     // Banners fire in playback too: race_event rows only stream when the
     // playhead crosses them (load/seek restore panel state, never events),
     // so each one is a "live" moment of the replay, not a historical dump.
     // Subscription (not state) so several events in one batch each banner.
-    return onRaceEvent((event) => {
+    return subscribeRaceEvent((event) => {
       const item = buildBanner(event, participantsRef.current)
       if (!item) return
       tQueueRef.current.push(item)
       if (!tShowingRef.current) dequeueRef.current()
     })
-  }, [onRaceEvent])
+  }, [])
 
   useEffect(() => () => { if (tTimerRef.current) clearTimeout(tTimerRef.current) }, [])
 
@@ -947,14 +1303,15 @@ export default function App() {
     setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
-  const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
-  const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
-  const selectedDriver     = participants?.drivers.find(d => d.idx === selectedIdx) ?? playerDriver
-  const selectedCarStatus  = allStatus?.cars.find(c => c.idx === selectedIdx) ?? null
-
-  return (
+  // Diagnostic: build the tree into a const first so we can measure App's own
+  // function-body cost (hooks + createElement for the whole JSX) BEFORE React
+  // reconciles/commits. `sync:app-body` vs `sync:react-render+commit` splits
+  // "App rebuilding its giant tree every render" from "the DOM commit". App is
+  // the parent of React.Profiler, so this body cost is invisible to that.
+  const appTree = (
     <LabelsProvider labels={protocolStatus?.labels}>
     <CardColorsProvider specs={protocolStatus?.cardColors}>
+    <React.Profiler id="app" onRender={onAppRender}>
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       {/* Dynamic Floating Event Banner for Fullscreen Mode */}
       {isFullscreen && !headerVisible && activeBanner && (
@@ -1024,7 +1381,7 @@ export default function App() {
 
         <div className="flex-1" />
 
-        <SessionTimer sessionTime={latest?.session_time} />
+        <SessionTimer />
 
         <CentreBanner activeBanner={activeBanner} />
 
@@ -1504,179 +1861,32 @@ export default function App() {
       )}
 
       {/* Content */}
+      <RaceLeaderWatcher enabled={!playbackState?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        {tab === 'core' && (() => {
-          const visibleDamageCount = Object.values(coreLayout.damageItems).filter(Boolean).length
-          const damageTwoRow = visibleDamageCount > 8
-          const showStatsPanel = coreLayout.showStats && Object.values(coreLayout.statsCards).some(Boolean)
-          const showThermalPanel = coreLayout.showThermal && (
-            tyreView === 'graphs'
-              ? Object.values(coreLayout.thermalGraphs).some(Boolean)
-              : Object.values(coreLayout.thermalCards).some(Boolean)
-          )
-          const showSpeedChartPanel = coreLayout.showSpeedChart
-
-          let speedChartFlex = 'flex-1'
-          let thermalFlex = 'flex-1'
-
-          if (showSpeedChartPanel && showThermalPanel) {
-            speedChartFlex = damageTwoRow ? 'flex-[8]' : 'flex-[13]'
-            thermalFlex = damageTwoRow ? 'flex-[4]' : 'flex-[7]'
-          }
-
-          // Tyre cards size to their (short) content instead of filling the flex
-          // region, so the space they free up goes to the chart above — otherwise the
-          // stretched card just spreads its rows apart with ugly gaps to fill the space.
-          const thermalCompactCards = tyreView === 'cards'
-
-          return (
-          <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-              {showStatsPanel && (
-                <div className="shrink-0">
-                  <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={theme === 'dark'} compact={compact.overviewStats} />
-                </div>
-              )}
-              {showSpeedChartPanel && (
-                <div className={`${speedChartFlex} min-h-0`}>
-                  <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={setSpeedRpmMode} isDark={theme === 'dark'} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} windowSeconds={seconds} />
-                </div>
-              )}
-              {showThermalPanel && (
-                <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                  <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={theme === 'dark'} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} />
-                </div>
-              )}
-              {visibleDamageCount > 0 && (
-                <div className="shrink-0">
-                  <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={theme === 'dark'} compact={compact.overviewDamage} />
-                </div>
-              )}
-            </div>
-          </div>
-          )
-        })()}
-        {tab === 'timing_tower' && (
-          <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
-              <div className="flex-1 min-w-0 overflow-auto">
-                <TimingTower
-                  timing={timing}
-                  participants={participants}
-                  allStatus={allStatus}
-                  fastestLapCarIdx={fastestLapCarIdx}
-                  selectedIdx={selectedIdx}
-                  onSelectDriver={handleSelectDriver}
-                  isDark={theme === 'dark'}
-                  animationsEnabled={!reduceAnimations}
-                />
-              </div>
-              <div className="w-80 shrink-0 overflow-y-auto">
-                <RacePanel
-                  lap={lap}
-                  status={status}
-                  selectedCar={selectedCar}
-                  selectedDriver={selectedDriver}
-                  selectedCarStatus={selectedCarStatus}
-                  playerIdx={timing?.player_idx ?? null}
-                  isDark={theme === 'dark'}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-        {tab === 'session' && (
-          <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={theme === 'dark'} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
-          </div>
-        )}
-        {tab === 'input' && (
-          <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-              {(inputLayout.showGear || inputLayout.showInputs) && (
-                <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
-                  {inputLayout.showGear && (
-                    <div className="flex-1 min-w-0 min-h-0">
-                      <GearChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputGear} windowSeconds={seconds} />
-                    </div>
-                  )}
-                  {inputLayout.showInputs && (
-                    <div className="flex-1 min-w-0 min-h-0">
-                      <InputsChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
-                    </div>
-                  )}
-                </div>
-              )}
-              {inputLayout.showSteering && (
-                <div className="flex-1 min-h-0">
-                  <SteeringChart data={telemetry} isDark={theme === 'dark'} view={graphView.inputSteering} windowSeconds={seconds} />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === 'misc' && (
-          <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-              {miscLayout.showGForce && (
-                <div className="flex-1 min-h-0">
-                  <GForceChart data={motion} isDark={theme === 'dark'} view={graphView.miscGForce} windowSeconds={seconds} />
-                </div>
-              )}
-              {miscLayout.showRideHeight && (
-                <div className="flex-1 min-h-0">
-                  <RideHeightChart data={motionEx} isDark={theme === 'dark'} view={graphView.miscRideHeight} windowSeconds={seconds} />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-        {tab === 'power' && (
-          <div className="h-full flex flex-col overflow-hidden border-t border-[var(--border)] divide-y divide-[var(--border)]">
-            <div className="shrink-0 bg-[var(--bg-panel)]">
-              <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={theme === 'dark'} compact={compact.powerCards} />
-            </div>
-            <div className="flex-1 min-h-0">
-              <PowerBreakdownChart data={statusHistory} isDark={theme === 'dark'} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} />
-            </div>
-          </div>
-        )}
-        {tab === 'tyres' && (
-          <div className="h-full overflow-hidden border-t border-[var(--border)]">
-            <TyresPanel
-              tyreSets={tyreSets}
-              latest={latest}
-              damage={damage}
-              damageHistory={damageHistory}
-              telemetry={telemetry}
-              tyreWearMode={tyreWearMode}
-              isDark={theme === 'dark'}
-              visibleGraphs={tyresLayout.charts}
-              graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
-              cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
-              sessionType={session?.session_type ?? null}
-              windowSeconds={seconds}
-            />
-          </div>
-        )}
-        {tab === 'strategy' && (
-          <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-            <StrategyPanel
-              lap={lap}
-              session={session}
-              status={status}
-              damage={damage}
-              timing={timing}
-              participants={participants}
-              tyreSets={tyreSets}
-              allStatus={allStatus}
-              lapTimesByNum={lapTimesByNum}
-              isDark={theme === 'dark'}
-              compact={compact.strategySummary}
-            />
-          </div>
-        )}
+        <TabContent
+          tab={tab}
+          isDark={theme === 'dark'}
+          seconds={seconds}
+          coreLayout={coreLayout}
+          powerLayout={powerLayout}
+          tyresLayout={tyresLayout}
+          inputLayout={inputLayout}
+          miscLayout={miscLayout}
+          graphView={graphView}
+          compact={compact}
+          tyreView={tyreView}
+          tyreWearMode={tyreWearMode}
+          speedRpmMode={speedRpmMode}
+          onSpeedRpmModeChange={setSpeedRpmMode}
+          selectedIdx={selectedIdx}
+          onSelectDriver={handleSelectDriver}
+          reduceAnimations={reduceAnimations}
+          sectorColors={sectorColors}
+          driversMode={driversMode}
+          mapTimeout={mapTimeout}
+          mapDimmed={mapDimmed}
+          currentPlaybackLapNum={currentPlaybackLapNum}
+        />
       </main>
 
       {/* Playback Controls Bar */}
@@ -1800,7 +2010,15 @@ export default function App() {
       )}
 
     </div>
+    </React.Profiler>
     </CardColorsProvider>
     </LabelsProvider>
   )
+  if (typeof performance !== 'undefined' && typeof performance.measure === 'function') {
+    const duration = performance.now() - renderStartRef.current
+    if (duration >= 1) {
+      try { performance.measure('sync:app-body', { start: renderStartRef.current, duration }) } catch { /* ignore */ }
+    }
+  }
+  return appTree
 }

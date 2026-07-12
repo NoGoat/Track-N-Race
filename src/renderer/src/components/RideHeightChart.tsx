@@ -1,14 +1,14 @@
-import { useMemo, useRef, useCallback } from 'react'
+import { useMemo, useRef, useCallback, useEffect } from 'react'
 import UPlotReact from 'uplot-react'
 import uPlot from 'uplot'
-import type { MotionExRow } from '../types'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
+import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 
 interface Props {
-  data: MotionExRow[]
   isDark: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
@@ -16,6 +16,16 @@ interface Props {
 
 const COLOR_FRONT = '#73BF69'
 const COLOR_REAR  = '#B877DB'
+
+// Static y-range whose bounds only ever expand outward. Scanning the whole
+// visible window for min/max every scroll tick (a uPlot auto-range function)
+// is expensive at 60Hz; instead we only look at the newest sample each time
+// data changes and push a bound out if it's been exceeded, so the axis
+// expands but never rescans.
+const INITIAL_UPPER_MM = 50
+const UPPER_PADDING_MM = 5
+const INITIAL_LOWER_MM = 0
+const LOWER_PADDING_MM = 2
 
 const TABLE_COLS: GraphTableColumn[] = [
   { header: 'Front', color: COLOR_FRONT, format: v => `${v.toFixed(1)}mm` },
@@ -28,7 +38,15 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function RideHeightChart({ data, isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function computeYSplits(lower: number, upper: number): number[] {
+  const step = (upper - lower) / 4
+  const splits: number[] = []
+  for (let i = 0; i <= 4; i++) splits.push(Math.round(lower + step * i))
+  return splits
+}
+
+export default function RideHeightChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+  const data = useTelemetryStore(s => s.motionEx)
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -41,6 +59,38 @@ export default function RideHeightChart({ data, isDark, view = 'chart', windowSe
     data.length > 0 ? data[0].session_time : null,
     windowSeconds,
   )
+
+  // Bounds live in a ref, not React state: uplot-react's options diff is a
+  // shallow Object.is over each top-level key, and scales/axes/series/plugins
+  // are fresh literals every time the opts memo runs — so if bounds were
+  // useState and opts depended on them, every bound change would read as
+  // "everything changed" and uplot-react would destroy+recreate the whole
+  // chart instance instead of just updating a scale. Since ride-height is a
+  // continuously-varying signal, that was firing often enough to be the
+  // actual source of the Misc-tab stutter. Bounds are applied to the live
+  // uPlot instance imperatively instead, so `opts` never depends on them.
+  const chartRef = useRef<uPlot | null>(null)
+  const boundsRef = useRef({ lower: INITIAL_LOWER_MM, upper: INITIAL_UPPER_MM })
+  useEffect(() => {
+    if (data.length === 0) return
+    const last = data[data.length - 1]
+    const maxVal = Math.max(last.front_aero_height_mm, last.rear_aero_height_mm)
+    const minVal = Math.min(last.front_aero_height_mm, last.rear_aero_height_mm)
+    const b = boundsRef.current
+    let changed = false
+    if (maxVal > b.upper - UPPER_PADDING_MM) {
+      b.upper = Math.ceil(maxVal + UPPER_PADDING_MM)
+      changed = true
+    }
+    if (minVal < b.lower + LOWER_PADDING_MM) {
+      b.lower = Math.floor(minVal - LOWER_PADDING_MM)
+      changed = true
+    }
+    const u = chartRef.current
+    if (changed && u) {
+      u.setScale('y', { min: b.lower, max: b.upper })
+    }
+  }, [data])
 
   const uData = useMemo((): uPlot.AlignedData => {
     const ts    = new Float64Array(data.length)
@@ -58,6 +108,7 @@ export default function RideHeightChart({ data, isDark, view = 'chart', windowSe
     const axisColor   = isDark ? '#7c8098' : '#6b7280'
     const gridColor   = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)'
     const borderColor = isDark ? '#1e2136' : '#d0d5e0'
+    const b = boundsRef.current
 
     const ttPlugin: uPlot.Plugin = {
       hooks: {
@@ -83,7 +134,7 @@ export default function RideHeightChart({ data, isDark, view = 'chart', windowSe
       legend: { show: false },
       cursor: { drag: { setScale: false } },
       scales: {
-        y: { range: (_u, min, max) => [Math.max(0, min - 2), max + 2] },
+        y: { range: [b.lower, b.upper] },
       },
       axes: [
         {
@@ -104,22 +155,35 @@ export default function RideHeightChart({ data, isDark, view = 'chart', windowSe
           ticks: { show: false },
           grid:  { show: false },
           gap: 4,
+          // A function (not a fixed array) so it re-derives ticks from the
+          // scale's actual current min/max whenever uPlot recomputes axes —
+          // correct after u.setScale('y', ...) without us ever touching
+          // axis.splits directly (uPlot internally normalizes an array-form
+          // splits into a function at chart construction; overwriting that
+          // with a plain array later crashes the next axis recompute).
+          splits: (_u, _axisIdx, scaleMin, scaleMax) => computeYSplits(scaleMin, scaleMax),
           values: (_u, splits) => splits.map(v => `${v}mm`),
         },
       ],
       series: [
         {},
-        { label: 'Front', stroke: COLOR_FRONT, width: 1.5, points: { show: false } },
-        { label: 'Rear',  stroke: COLOR_REAR,  width: 1.5, points: { show: false } },
+        { label: 'Front', stroke: COLOR_FRONT, width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
+        { label: 'Rear',  stroke: COLOR_REAR,  width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
       ],
-      plugins: [ttPlugin],
+      plugins: [ttPlugin, createDrawProfilerPlugin('RideHeight')],
     }
   }, [width, height, isDark])
 
   const onCreate = useCallback((u: uPlot) => {
+    chartRef.current = u
     attach(u)
     u.over.addEventListener('mouseleave', hide)
   }, [hide, attach])
+
+  const onDelete = useCallback(() => {
+    chartRef.current = null
+    detach()
+  }, [detach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -141,7 +205,7 @@ export default function RideHeightChart({ data, isDark, view = 'chart', windowSe
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
+              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={onDelete} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>
