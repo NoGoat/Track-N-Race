@@ -30,6 +30,15 @@ export interface AxisConfig {
   showYGrid?: boolean
   /** small tick marks below the x axis (uPlot x ticks); omitted = none. */
   xTickMark?: { color: string; size: number } | null
+  /** Additional normalized y axes, positioned relative to the plot edge. */
+  extraYAxes?: Array<{
+    side: 'left' | 'right'
+    offset: number
+    color: string
+    values: number[]
+    format: (v: number) => string
+  }>
+  yAxisColor?: string
 }
 
 interface TextPool {
@@ -146,7 +155,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           const t = ensureText(xLabels, i)
           t.setAttribute('x', String(px))
           t.setAttribute('y', String(plotBottom + c.xGap + (c.xTickMark ? c.xTickMark.size : 0)))
-          t.setAttribute('fill', c.axisColor)
+          t.setAttribute('fill', c.yAxisColor ?? c.axisColor)
           t.style.font = c.font
           t.setAttribute('text-anchor', 'middle')
           t.setAttribute('dominant-baseline', 'hanging')
@@ -185,7 +194,21 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         }
         const yGridShown = c.showYGrid ? yTicks.length : 0
         for (let i = yGridShown; i < yGridPool.nodes.length; i++) yGridPool.nodes[i].style.display = 'none'
-        for (let i = yTicks.length; i < yLabels.nodes.length; i++) yLabels.nodes[i].style.display = 'none'
+        let labelIndex = yTicks.length
+        for (const axis of c.extraYAxes ?? []) {
+          for (const value of axis.values) {
+            const t = ensureText(yLabels, labelIndex++)
+            t.setAttribute('x', String(axis.side === 'left' ? plotLeft - axis.offset : plotRight + axis.offset))
+            t.setAttribute('y', String(yScale(value)))
+            t.setAttribute('fill', axis.color)
+            t.style.font = c.font
+            t.setAttribute('text-anchor', axis.side === 'left' ? 'end' : 'start')
+            t.setAttribute('dominant-baseline', 'central')
+            t.textContent = axis.format(value)
+            t.style.display = ''
+          }
+        }
+        for (let i = labelIndex; i < yLabels.nodes.length; i++) yLabels.nodes[i].style.display = 'none'
 
         // --- L-frame borders ---
         bottomBorder.setAttribute('x1', String(plotLeft))
