@@ -275,15 +275,15 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     });
 
     // ── Chart ────────────────────────────────────────────────────
-    // Wrapped so it keeps the same 8px L/R inset as the rows above/below now that
-    // the outer layout has no margins.
+    // Wrapped so the chart and its raw-values table can share one grid cell (toggled
+    // by setTelemetryTable); the wrapper carries no inset so both fill edge to edge.
     model_ = model;
 
     QWidget* chartWrap = new QWidget;
     QGridLayout* chartWrapLay = new QGridLayout(chartWrap);
-    // 8px L/R keeps the chart/table aligned with the stat + damage rows; no top/bottom
-    // inset so the table (and chart) sit flush against the separators — no vertical gap.
-    chartWrapLay->setContentsMargins(8, 0, 8, 0);
+    // No inset: the Speed/RPM/ERS chart (and its table) fill the width edge to edge,
+    // flush against the separators above/below — no gap on any side.
+    chartWrapLay->setContentsMargins(0, 0, 0, 0);
     chartWrapLay->setSpacing(0);
 
     chart_ = new TelemetryChart(chartWrap);

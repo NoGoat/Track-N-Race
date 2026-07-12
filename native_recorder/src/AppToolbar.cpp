@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QAction>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QEvent>
 #include <QFont>
 #include <QHBoxLayout>
@@ -188,23 +189,16 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     spacerLay->addWidget(timerLabel_);
     addWidget(spacer);
 
-    // Window-size selector: a flat (auto-raised) dropdown button showing the
-    // current window; the options live in its popup menu. Same auto-raise look as
-    // the overflow button, and far narrower than the old segmented row.
-    windowMenu_ = new QMenu(this);
-    for (int i = 0; i < kWindowOptionCount; ++i) {
-        QAction* a = windowMenu_->addAction(kWindowOptions[i].label);
-        a->setCheckable(true);
-        a->setChecked(i == windowIdx_);
-        connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
-    }
-    windowBtn_ = new QToolButton;
-    windowBtn_->setAutoRaise(true);
-    windowBtn_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);   // text + menu arrow
-    windowBtn_->setPopupMode(QToolButton::InstantPopup);
-    windowBtn_->setMenu(windowMenu_);
-    windowBtn_->setText(kWindowOptions[windowIdx_].label);          // default 30s
+    // Window-size selector: a frameless combo box showing the current window,
+    // with the options as its dropdown list.
+    windowBtn_ = new QComboBox;
+    windowBtn_->setFrame(false);
+    for (int i = 0; i < kWindowOptionCount; ++i)
+        windowBtn_->addItem(kWindowOptions[i].label);
+    windowBtn_->setCurrentIndex(windowIdx_);                        // default 30s
     windowBtn_->setToolTip("Chart window");
+    connect(windowBtn_, QOverload<int>::of(&QComboBox::activated),
+            this, &AppToolbar::applyChartWindow);
     windowAct_ = addWidget(windowBtn_);
 
     openAct_ = addAction(openRecordingIcon(this), "Open File");
@@ -346,14 +340,9 @@ void AppToolbar::applyChartWindow(int idx) {
     if (idx < 0 || idx >= kWindowOptionCount) return;
     windowIdx_ = idx;
     emit chartWindowChanged(kWindowOptions[idx].secs);
-    // Reflect the choice on the dropdown button + its menu (the choice may have
-    // come from the button's menu or the overflow menu).
-    if (windowBtn_) windowBtn_->setText(kWindowOptions[idx].label);
-    if (windowMenu_) {
-        const auto acts = windowMenu_->actions();
-        for (int i = 0; i < (int)acts.size() && i < kWindowOptionCount; ++i)
-            acts[i]->setChecked(i == idx);
-    }
+    // Reflect the choice on the combo box (the choice may have come from the
+    // combo box itself or the overflow menu).
+    if (windowBtn_ && windowBtn_->currentIndex() != idx) windowBtn_->setCurrentIndex(idx);
 }
 
 // Collapse low-priority toolbar items into the "⋯" menu when the window is too

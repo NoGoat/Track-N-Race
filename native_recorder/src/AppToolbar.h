@@ -7,6 +7,7 @@
 
 class QAction;
 class QButtonGroup;
+class QComboBox;
 class QLabel;
 class QMenu;
 class QToolButton;
@@ -56,8 +57,7 @@ private:
     void refreshThemedIcons();
 
     QButtonGroup* pageGroup_    = nullptr;   // exclusive page tabs
-    QToolButton*  windowBtn_    = nullptr;   // window-size dropdown button
-    QMenu*        windowMenu_   = nullptr;   // its popup menu (window-size options)
+    QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
     QToolButton*  overflowBtn_  = nullptr;   // "⋯" menu button (hidden until needed)
     QAction*      overflowAct_  = nullptr;   // its toolbar action (toggle visibility)
