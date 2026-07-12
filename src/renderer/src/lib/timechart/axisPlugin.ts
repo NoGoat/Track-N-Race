@@ -67,14 +67,31 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
     apply(chart) {
       const svg = chart.svgLayer.svgNode
 
+      // TimeChart's built-in SVG layer is appended after its WebGL canvas, so
+      // anything placed in it is composited above the series. Put Cartesian
+      // grid lines in their own SVG immediately before the canvas; labels,
+      // borders and interaction overlays remain in the foreground SVG.
+      const gridSvg = document.createElementNS(SVGNS, 'svg')
+      Object.assign(gridSvg.style, {
+        position: 'absolute', width: '100%', height: '100%',
+        left: '0', right: '0', top: '0', bottom: '0', pointerEvents: 'none',
+      })
+      const shadowRoot = chart.el.shadowRoot
+      if (!shadowRoot) throw new Error('TimeChart shadow root is unavailable')
+      shadowRoot.insertBefore(gridSvg, chart.canvasLayer.canvas)
+
       const gridG = document.createElementNS(SVGNS, 'g')
       const yGridG = document.createElementNS(SVGNS, 'g')
       const tickG = document.createElementNS(SVGNS, 'g')
       const borderG = document.createElementNS(SVGNS, 'g')
       const xLabelG = document.createElementNS(SVGNS, 'g')
       const yLabelG = document.createElementNS(SVGNS, 'g')
-      // grid first (behind), then tick marks + borders, then labels
-      for (const g of [gridG, yGridG, tickG, borderG, xLabelG, yLabelG]) svg.appendChild(g)
+      gridSvg.appendChild(gridG)
+      gridSvg.appendChild(yGridG)
+      // Foreground decorations stay above the WebGL series.
+      for (const g of [tickG, borderG, xLabelG, yLabelG]) svg.appendChild(g)
+
+      chart.model.disposing.on(() => gridSvg.remove())
 
       const gridPool: LinePool = { g: gridG, nodes: [] }
       const yGridPool: LinePool = { g: yGridG, nodes: [] }

@@ -194,12 +194,23 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     }
 
     const b = boundsRef.current
+    const paddingTop = 4
+    const paddingRight = look.paddingRight ?? 16
+    const paddingBottom = look.xAxisSize ?? 22
+    const paddingLeft = yAxisSize + (look.paddingLeftExtra ?? 4)
     const chart = new TimeChart.core(el, {
       // Padding reserves space for our axes (mirrors uPlot axis `size` + padding).
-      paddingTop: 4,
-      paddingRight: look.paddingRight ?? 16,
-      paddingBottom: look.xAxisSize ?? 22,
-      paddingLeft: yAxisSize + (look.paddingLeftExtra ?? 4),
+      paddingTop,
+      paddingRight,
+      paddingBottom,
+      paddingLeft,
+      // TimeChart separates its scale padding from its WebGL viewport padding.
+      // Without matching render padding, lines are transformed against the
+      // inset scales but can still paint across the axis/label margins.
+      renderPaddingTop: paddingTop,
+      renderPaddingRight: paddingRight,
+      renderPaddingBottom: paddingBottom,
+      renderPaddingLeft: paddingLeft,
       lineWidth: 1.5,
       yRange: { min: b.lower, max: b.upper },
       series: defs.map((s) => ({
