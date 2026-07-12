@@ -8,6 +8,7 @@ import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugi
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { createTimeChartDrawProfilerPlugin } from '../../hooks/useTimeChartDrawProfiler'
 import { niceTicks } from '../../lib/timechart/ticks'
+import { createAreaFillPlugin } from '../../lib/timechart/areaFill'
 import type { CSSProperties } from 'react'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
@@ -70,6 +71,13 @@ export interface SeriesDef<T> {
   color: string
   getY: (row: T) => number
   lineWidth?: number
+  /** TimeChart line type: 0 = line, 1 = step. */
+  lineType?: 0 | 1
+  /** Step position within an interval (0 = before, 1 = after). */
+  stepLocation?: number
+  /** Optional translucent area fill from this baseline to the series. */
+  fill?: string
+  fillBaseline?: number
 }
 
 export type YRangeSpec =
@@ -189,6 +197,14 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     if (refLines && refLines.length > 0) {
       plugins.refLines = createReferenceLinesPlugin(refCfgRef)
     }
+    const fillDefs = defs.flatMap((s, i) => s.fill ? [{
+      seriesIndex: i,
+      color: s.fill,
+      baseline: s.fillBaseline ?? 0,
+      stepped: s.lineType === 1,
+      stepLocation: s.stepLocation,
+    }] : [])
+    if (fillDefs.length > 0) plugins.areaFill = createAreaFillPlugin(fillDefs)
     if (profilerLabel) {
       plugins.profiler = createTimeChartDrawProfilerPlugin(profilerLabel)
     }
@@ -217,6 +233,8 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
         name: s.label,
         color: s.color,
         lineWidth: s.lineWidth ?? 1.5,
+        lineType: s.lineType ?? TimeChart.LineType.Line,
+        stepLocation: s.stepLocation ?? 1,
         data: [] as DataPoint[],
       })),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,187 +1,51 @@
-import { useMemo, useRef, useCallback } from 'react'
-import UPlotReact from 'uplot-react'
-import uPlot from 'uplot'
-import { useSize } from '../hooks/useSize'
-import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
-import { useScrollScale } from '../hooks/useScrollScale'
-import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useCallback, useMemo } from 'react'
+import type uPlot from 'uplot'
+import type { TelemetryRow } from '../types'
 import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
-import { usePixelAlignment } from '../lib/chartPixelPolicy'
+import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 
-interface Props {
-  isDark: boolean
-  view?: 'chart' | 'table'
-  windowSeconds?: number
-}
-
+interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_STEER = '#BF5FFF'
+const Y_TICKS = [-1, -0.5, 0, 0.5, 1]
+const SERIES: SeriesDef<TelemetryRow>[] = [{ label: 'Steering', color: COLOR_STEER, getY: d => d.steering }]
+const TABLE_COLS: GraphTableColumn[] = [{ header: 'Steering', color: COLOR_STEER, format: v => `${Math.round(v * 100)}%` }]
+const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0), new Float64Array(0)]
 
-function fmtTime(s: number) {
-  const m = Math.floor(s / 60)
-  const sec = Math.floor(s % 60)
-  return `${m}:${String(sec).padStart(2, '0')}`
-}
-
-function fmtSteer(v: number): string {
-  const pct = Math.abs(v * 100).toFixed(0)
+function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
+function fmtSteer(v: number) {
   if (Math.abs(v) < 0.005) return '0%'
-  return v < 0 ? `${pct}% L` : `${pct}% R`
+  return `${Math.abs(v * 100).toFixed(0)}% ${v < 0 ? 'L' : 'R'}`
 }
-
-const TABLE_COLS: GraphTableColumn[] = [
-  // Native table shows the raw signed percentage (negative = left, positive = right).
-  { header: 'Steering', color: COLOR_STEER, format: v => `${Math.round(v * 100)}%` },
-]
 
 export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
   useChartDataProfiler('Steering', data)
-  const { ref: sizeRef, width, height } = useSize()
-  const { tooltipRef, show, hide } = useChartTooltip()
-  const mountedRef = useRef(false)
-  const visible = width > 0 && height > 0
-  if (visible) mountedRef.current = true
-
-  const { attach, detach } = useScrollScale(
-    view !== 'table',
-    data.length > 0 ? data[data.length - 1].session_time : null,
-    data.length > 0 ? data[0].session_time : null,
-    windowSeconds,
-    undefined,
-    'Steering',
-  )
-
   const uData = useMemo((): uPlot.AlignedData => {
-    const ts    = new Float64Array(data.length)
-    const steer = new Float64Array(data.length)
-    data.forEach((d, i) => {
-      ts[i]    = d.session_time
-      steer[i] = d.steering
-    })
+    if (view !== 'table') return EMPTY_ALIGNED
+    const ts = new Float64Array(data.length), steer = new Float64Array(data.length)
+    data.forEach((d, i) => { ts[i] = d.session_time; steer[i] = d.steering })
     return [ts, steer]
-  }, [data])
+  }, [data, view])
+  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const tooltipFormat = useCallback((x: number, v: number[]) => [
+    `<div style="color:${axisColor};margin-bottom:4px">${fmtTime(x)}</div>`,
+    `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(v[0])}</div>`,
+  ].join(''), [axisColor])
 
-  const opts = useMemo((): uPlot.Options => {
-    const axisColor   = isDark ? '#7c8098' : '#6b7280'
-    const gridColor   = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)'
-    const zeroColor   = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.18)'
-    const borderColor = isDark ? '#1e2136' : '#d0d5e0'
-
-    const refLinePlugin: uPlot.Plugin = {
-      hooks: {
-        draw: (u) => {
-          const ctx = u.ctx
-          ctx.save()
-          ctx.strokeStyle = zeroColor
-          ctx.lineWidth = 1
-          ctx.setLineDash([])
-          const y0 = u.valToPos(0, 'y', true)
-          ctx.beginPath()
-          ctx.moveTo(u.bbox.left, y0)
-          ctx.lineTo(u.bbox.left + u.bbox.width, y0)
-          ctx.stroke()
-          ctx.restore()
-        },
-      },
-    }
-
-    const ttPlugin: uPlot.Plugin = {
-      hooks: {
-        setCursor: (u) => {
-          const idx = u.cursor.idx
-          if (idx == null) { hide(); return }
-          const ts    = (u.data[0] as Float64Array)[idx]
-          const steer = (u.data[1] as Float64Array)[idx]
-          show([
-            `<div style="color:${axisColor};margin-bottom:4px">${fmtTime(ts)}</div>`,
-            `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(steer)}</div>`,
-          ].join(''), u.cursor.left ?? 0, u.cursor.top ?? 0, width, height)
-        },
-      },
-    }
-
-    return {
-      width,
-      height,
-      pxAlign: usePixelAlignment(windowSeconds),
-      padding: [4, 16, 0, 4],
-      legend: { show: false },
-      cursor: { drag: { setScale: false } },
-      scales: {
-        y: { range: [-1, 1] },
-      },
-      axes: [
-        {
-          stroke: axisColor,
-          font: '11px "Cascadia Code", ui-monospace, monospace',
-          ticks: { show: false },
-          grid:  { stroke: gridColor, width: 1 },
-          gap: 2,
-          size: 22,
-          values: (_u, splits) => splits.map(fmtTime),
-          space: 80,
-          border: { stroke: borderColor, width: 1 },
-        },
-        {
-          stroke: axisColor,
-          font: '11px "Cascadia Code", ui-monospace, monospace',
-          size: 52,
-          ticks: { show: false },
-          grid:  { show: false },
-          gap: 4,
-          splits: [-1, -0.5, 0, 0.5, 1],
-          values: (_u, splits) => splits.map(v => {
-            if (Math.abs(v) < 0.01) return '0%'
-            const pct = Math.round(Math.abs(v) * 100)
-            return v < 0 ? `${pct}%L` : `${pct}%R`
-          }),
-        },
-      ],
-      series: [
-        {},
-        {
-          label: 'Steering',
-          stroke: COLOR_STEER,
-          width: 1.5,
-          points: { show: false },
-        },
-      ],
-      plugins: [refLinePlugin, ttPlugin, createDrawProfilerPlugin('Steering')],
-    }
-  }, [width, height, isDark, windowSeconds])
-
-  const onCreate = useCallback((u: uPlot) => {
-    attach(u)
-    u.over.addEventListener('mouseleave', hide)
-  }, [hide, attach])
-
-  return (
-    <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
-        {view !== 'table' && (
-          <div className="flex gap-4 text-xs">
-            <span style={{ color: COLOR_STEER }}>— Input</span>
-            <span className="text-[var(--text-secondary)]">L = left / R = right</span>
-          </div>
-        )}
-      </div>
-      <div className="flex-1 min-h-0 relative" ref={sizeRef}>
-        {data.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        ) : view === 'table' ? (
-          <GraphTable columns={TABLE_COLS} data={uData} />
-        ) : (
-          <>
-            <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
-            </div>
-            <div ref={tooltipRef} style={TOOLTIP_STYLE} />
-          </>
-        )}
-      </div>
+  return <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
+    <div className="flex items-center justify-between mb-3 shrink-0">
+      <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
+      {view !== 'table' && <div className="flex gap-4 text-xs"><span style={{ color: COLOR_STEER }}>— Input</span><span className="text-[var(--text-secondary)]">L = left / R = right</span></div>}
     </div>
-  )
+    <div className="flex-1 min-h-0 relative">
+      {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
+        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={uData} />
+          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
+            windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
+            yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
+            tooltipFormat={tooltipFormat} profilerLabel="Steering" />}
+    </div>
+  </div>
 }
