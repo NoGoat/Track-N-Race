@@ -387,9 +387,39 @@ function handleMsg(msg: GatewayMsg): void {
   }
 }
 
-// Recompute the windowed + derived slices from the buffers and publish them.
-// Replaces the old per-render useMemos + the dataVersion bump.
-function recompute(): void {
+const enum DirtySlice {
+  None = 0,
+  Telemetry = 1 << 0,
+  Motion = 1 << 1,
+  MotionEx = 1 << 2,
+  Status = 1 << 3,
+  Damage = 1 << 4,
+  Derived = 1 << 5,
+  All = Telemetry | Motion | MotionEx | Status | Damage | Derived,
+}
+
+function dirtySliceFor(msg: { type: string }): DirtySlice {
+  switch (msg.type) {
+    case 'telemetry': return DirtySlice.Telemetry | DirtySlice.Derived
+    case 'motion': return DirtySlice.Motion
+    case 'motion_ex': return DirtySlice.MotionEx
+    case 'status': return DirtySlice.Status | DirtySlice.Derived
+    case 'damage': return DirtySlice.Damage
+    case 'lap':
+    case 'race_event':
+    case 'playback_fastest_lap_raw':
+    case 'playback_previous_lap_raw':
+    case 'playback_lap_blocks': return DirtySlice.Derived
+    case 'playback_close':
+    case 'playback_seek_flush_bin': return DirtySlice.All
+    default: return DirtySlice.None
+  }
+}
+
+// Recompute only the window groups touched by a delivered batch. Unchanged
+// groups retain their array identity, so their Zustand subscribers stay cold.
+function recompute(dirty: DirtySlice): void {
+  if (dirty === DirtySlice.None) return
   const telBuf = telBufRef.current
   const latestSessionTime = telBuf[telBuf.length - 1]?.session_time ?? 0
   const cutoff = latestSessionTime - secondsVal
@@ -401,36 +431,45 @@ function recompute(): void {
   const fastBlock = isPlayback ? speedRpmBlocksVal!.find(b => b.lapNum === fastestLapNum) : null
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
-  const telemetry   = fillRange(pools.tel,   telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
-  const motion      = fillRange(pools.mot,   motBufRef.current, lowerBound(motBufRef.current, cutoff, false), motBufRef.current.length)
-  const motionEx    = fillRange(pools.motEx, motExBufRef.current, lowerBound(motExBufRef.current, cutoff, false), motExBufRef.current.length)
-  const statusHistory = fillRange(pools.sts, stsBufRef.current, lowerBound(stsBufRef.current, cutoff, false), stsBufRef.current.length)
-  const damageHistory = fillRange(pools.dmg, dmgBufRef.current, lowerBound(dmgBufRef.current, cutoff, false), dmgBufRef.current.length)
-  const latest = telBuf.length > 0 ? telBuf[telBuf.length - 1] : null
-
-  const lapHistory = isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf
-  const fastestLap = isPlayback && fastBlock ? fastBlock : fastestLapVal
-
-  let lapTelemetry: TelemetryRow[]
-  let lapStatusHistory: StatusRow[]
-  if (isPlayback && curBlock) {
-    const srcT = curBlock.telemetry as TelemetryRow[]
-    lapTelemetry = fillRange(pools.lapTel, srcT, 0, lowerBound(srcT, latestSessionTime, false))
-    const srcS = curBlock.statusHistory as StatusRow[]
-    lapStatusHistory = fillRange(pools.lapSts, srcS, 0, lowerBound(srcS, latestSessionTime, false))
-  } else {
-    lapTelemetry = fillRange(pools.lapTel, telBuf, lowerBound(telBuf, lapStartSessionTime, true), telBuf.length)
-    lapStatusHistory = fillRange(pools.lapSts, stsBufRef.current, lowerBound(stsBufRef.current, lapStartSessionTime, true), stsBufRef.current.length)
+  const next: Partial<TelemetryStoreState> = {}
+  if (dirty & DirtySlice.Telemetry) {
+    next.telemetry = fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
+    next.latest = telBuf.length > 0 ? telBuf[telBuf.length - 1] : null
   }
-
-  const raceEvents = isPlayback
-    ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
-    : raceEventsArr
-
-  set({
-    telemetry, motion, motionEx, statusHistory, damageHistory, latest,
-    lapHistory, fastestLap, lapTelemetry, lapStatusHistory, lapTimesByNum, raceEvents,
-  })
+  if (dirty & DirtySlice.Motion) {
+    const buf = motBufRef.current
+    next.motion = fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
+  }
+  if (dirty & DirtySlice.MotionEx) {
+    const buf = motExBufRef.current
+    next.motionEx = fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
+  }
+  if (dirty & DirtySlice.Status) {
+    const buf = stsBufRef.current
+    next.statusHistory = fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+  }
+  if (dirty & DirtySlice.Damage) {
+    const buf = dmgBufRef.current
+    next.damageHistory = fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+  }
+  if (dirty & DirtySlice.Derived) {
+    next.lapHistory = isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf
+    next.fastestLap = isPlayback && fastBlock ? fastBlock : fastestLapVal
+    if (isPlayback && curBlock) {
+      const srcT = curBlock.telemetry as TelemetryRow[]
+      next.lapTelemetry = fillRange(pools.lapTel, srcT, 0, lowerBound(srcT, latestSessionTime, false))
+      const srcS = curBlock.statusHistory as StatusRow[]
+      next.lapStatusHistory = fillRange(pools.lapSts, srcS, 0, lowerBound(srcS, latestSessionTime, false))
+    } else {
+      next.lapTelemetry = fillRange(pools.lapTel, telBuf, lowerBound(telBuf, lapStartSessionTime, true), telBuf.length)
+      next.lapStatusHistory = fillRange(pools.lapSts, stsBufRef.current, lowerBound(stsBufRef.current, lapStartSessionTime, true), stsBufRef.current.length)
+    }
+    next.lapTimesByNum = lapTimesByNum
+    next.raceEvents = isPlayback
+      ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
+      : raceEventsArr
+  }
+  set(next)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -440,7 +479,7 @@ export function setTelemetrySeconds(s: number): void {
   if (s === secondsVal) return
   secondsVal = s
   set({ seconds: s })
-  recompute()
+  recompute(DirtySlice.All)
 }
 
 // Subscribe to live race events (transient banners). Delivered synchronously as
@@ -459,29 +498,40 @@ export function startTelemetryBridge(): void {
   started = true
 
   window.telemetryBridge.onBatch((batchStr: string) => {
+    let dirty = DirtySlice.None
     let start = 0
     while (start < batchStr.length) {
       let end = batchStr.indexOf('\n', start)
       if (end === -1) end = batchStr.length
       if (end > start) {
-        try { handleMsg(JSON.parse(batchStr.slice(start, end)) as GatewayMsg) }
+        try {
+          const msg = JSON.parse(batchStr.slice(start, end)) as GatewayMsg
+          dirty |= dirtySliceFor(msg)
+          handleMsg(msg)
+        }
         catch (e) { console.error('Failed to parse batch JSON:', e) }
       }
       start = end + 1
     }
-    recompute()
+    recompute(dirty)
   })
 
   window.telemetryBridge.on((raw) => {
-    handleMsg(raw as GatewayMsg)
-    recompute()
+    const msg = raw as GatewayMsg
+    handleMsg(msg)
+    recompute(dirtySliceFor(msg))
   })
 
   window.telemetryBridge.onBinary((batch) => {
+    let dirty = DirtySlice.None
     try {
-      for (const row of decodeBinaryBatch(batch)) handleMsg(row as GatewayMsg)
+      for (const row of decodeBinaryBatch(batch)) {
+        const msg = row as GatewayMsg
+        dirty |= dirtySliceFor(msg)
+        handleMsg(msg)
+      }
     } catch (e) { console.error('Failed to decode binary batch:', e) }
-    recompute()
+    recompute(dirty)
   })
 }
 

@@ -6,6 +6,7 @@ import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 
@@ -92,7 +93,7 @@ function PowerSplitChart({ data, isDark, view = 'chart', windowSeconds = 30 }: C
   const opts = useMemo((): uPlot.Options => {
     const { ac, gc, bc } = colors(isDark)
     return {
-      width, height, padding: [4, 16, 0, 4],
+      width, height, pxAlign: usePixelAlignment(windowSeconds), padding: [4, 16, 0, 4],
       legend: { show: false }, cursor: { drag: { setScale: false } },
       scales: { y: { range: [0, 1000] } },
       axes: [xAxis(ac, gc, bc), yAxis(ac, v => `${v}kW`)],
@@ -119,7 +120,7 @@ function PowerSplitChart({ data, isDark, view = 'chart', windowSeconds = 30 }: C
         },
       }],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
@@ -176,7 +177,7 @@ function ERSHarvestChart({ data, isDark, view = 'chart', windowSeconds = 30 }: C
   const opts = useMemo((): uPlot.Options => {
     const { ac, gc, bc } = colors(isDark)
     return {
-      width, height, padding: [4, 16, 0, 4],
+      width, height, pxAlign: usePixelAlignment(windowSeconds), padding: [4, 16, 0, 4],
       legend: { show: false }, cursor: { drag: { setScale: false } },
       axes: [xAxis(ac, gc, bc), yAxis(ac, v => `${v}kJ`)],
       series: [
@@ -202,7 +203,7 @@ function ERSHarvestChart({ data, isDark, view = 'chart', windowSeconds = 30 }: C
         },
       }],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
@@ -255,7 +256,7 @@ function ERSStoreChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP)
   const opts = useMemo((): uPlot.Options => {
     const { ac, gc, bc } = colors(isDark)
     return {
-      width, height, padding: [4, 16, 0, 4],
+      width, height, pxAlign: usePixelAlignment(windowSeconds), padding: [4, 16, 0, 4],
       legend: { show: false }, cursor: { drag: { setScale: false } },
       scales: { y: { range: [0, 100] } },
       axes: [xAxis(ac, gc, bc), yAxis(ac, v => `${v}%`)],
@@ -279,7 +280,7 @@ function ERSStoreChart({ data, isDark, view = 'chart', windowSeconds = 30 }: CP)
         },
       }],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 
@@ -331,7 +332,7 @@ function FuelHistoryChart({ data, isDark, view = 'chart', windowSeconds = 30 }: 
   const opts = useMemo((): uPlot.Options => {
     const { ac, gc, bc } = colors(isDark)
     return {
-      width, height, padding: [4, 16, 0, 4],
+      width, height, pxAlign: usePixelAlignment(windowSeconds), padding: [4, 16, 0, 4],
       legend: { show: false }, cursor: { drag: { setScale: false } },
       axes: [xAxis(ac, gc, bc), yAxis(ac, v => `${v}kg`)],
       series: [
@@ -353,7 +354,7 @@ function FuelHistoryChart({ data, isDark, view = 'chart', windowSeconds = 30 }: 
         },
       }],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => { attach(u); u.over.addEventListener('mouseleave', hide) }, [hide, attach])
 

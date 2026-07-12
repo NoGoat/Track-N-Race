@@ -49,6 +49,7 @@ export function useScrollScale(
   firstT: number | null,
   windowSeconds: number,
   { snapS = 0.5 }: ScrollScaleOpts = {},
+  profilerLabel?: string,
 ) {
   const chartRef = useRef<uPlot | null>(null)
   const clockRef = useRef<{
@@ -56,6 +57,7 @@ export function useScrollScale(
     periodS: number; lastMin: number; lastData: uPlot.AlignedData | null
     gaps: number[]; gapIdx: number
   }>({ lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN, periodS: NaN, lastMin: NaN, lastData: null, gaps: [], gapIdx: 0 })
+  const perfRef = useRef({ startedAt: performance.now(), calls: 0, total: 0, max: 0 })
 
   useEffect(() => {
     if (latestT == null) return
@@ -110,7 +112,15 @@ export function useScrollScale(
       if (min !== c.lastMin) {
         c.lastMin = min
         c.lastData = u.data
+        const started = performance.now()
         u.setScale('x', { min, max: min + windowSeconds })
+        if (profilerLabel) {
+          const duration = performance.now() - started
+          const perf = perfRef.current
+          perf.calls++
+          perf.total += duration
+          if (duration > perf.max) perf.max = duration
+        }
       } else if (u.data !== c.lastData) {
         // setData(…, false) stores new data WITHOUT redrawing — redraws come
         // from setScale. While the window is anchored at the data start (data
@@ -118,12 +128,33 @@ export function useScrollScale(
         // be painted explicitly. When nothing changed at all (halted stream)
         // neither branch runs and the chart costs nothing.
         c.lastData = u.data
+        const started = performance.now()
         u.redraw()
+        if (profilerLabel) {
+          const duration = performance.now() - started
+          const perf = perfRef.current
+          perf.calls++
+          perf.total += duration
+          if (duration > perf.max) perf.max = duration
+        }
+      }
+      if (profilerLabel) {
+        const perf = perfRef.current
+        const now = performance.now()
+        const elapsed = now - perf.startedAt
+        if (elapsed >= 2000 && perf.calls > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[perf:scroll] ${profilerLabel}: avg=${(perf.total / perf.calls).toFixed(2)}ms max=${perf.max.toFixed(2)}ms calls=${perf.calls} (${(perf.calls / elapsed * 1000).toFixed(1)}/s over ${(elapsed / 1000).toFixed(1)}s)`)
+          perf.startedAt = now
+          perf.calls = 0
+          perf.total = 0
+          perf.max = 0
+        }
       }
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [enabled, windowSeconds, snapS])
+  }, [enabled, windowSeconds, snapS, profilerLabel])
 
   const attach = useCallback((u: uPlot) => {
     chartRef.current = u

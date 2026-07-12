@@ -5,8 +5,10 @@ import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
 import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 
 interface Props {
   isDark: boolean
@@ -47,6 +49,7 @@ function computeYSplits(lower: number, upper: number): number[] {
 
 export default function RideHeightChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.motionEx)
+  useChartDataProfiler('RideHeight', data)
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -58,6 +61,8 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
     data.length > 0 ? data[data.length - 1].session_time : null,
     data.length > 0 ? data[0].session_time : null,
     windowSeconds,
+    undefined,
+    'RideHeight',
   )
 
   // Bounds live in a ref, not React state: uplot-react's options diff is a
@@ -104,6 +109,14 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
     return [ts, front, rear]
   }, [data])
 
+  // Keep uplot-react's data prop stable so its effect cannot call redraw() on
+  // every publication. Feed data into uPlot without drawing; useScrollScale's
+  // rAF loop observes the changed u.data and performs the one scheduled draw.
+  const initialUDataRef = useRef<uPlot.AlignedData>(uData)
+  useEffect(() => {
+    if (view !== 'table') chartRef.current?.setData(uData, false)
+  }, [uData, view])
+
   const opts = useMemo((): uPlot.Options => {
     const axisColor   = isDark ? '#7c8098' : '#6b7280'
     const gridColor   = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)'
@@ -130,6 +143,7 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
     return {
       width,
       height,
+      pxAlign: usePixelAlignment(windowSeconds),
       padding: [4, 16, 0, 4],
       legend: { show: false },
       cursor: { drag: { setScale: false } },
@@ -167,12 +181,12 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
       ],
       series: [
         {},
-        { label: 'Front', stroke: COLOR_FRONT, width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
-        { label: 'Rear',  stroke: COLOR_REAR,  width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
+        { label: 'Front', stroke: COLOR_FRONT, width: 1.5, points: { show: false } },
+        { label: 'Rear',  stroke: COLOR_REAR,  width: 1.5, points: { show: false } },
       ],
       plugins: [ttPlugin, createDrawProfilerPlugin('RideHeight')],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => {
     chartRef.current = u
@@ -205,7 +219,7 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={onDelete} resetScales={false} />}
+              {mountedRef.current && <UPlotReact options={opts} data={initialUDataRef.current} onCreate={onCreate} onDelete={onDelete} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>

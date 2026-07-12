@@ -1,12 +1,14 @@
-import { useMemo, useRef, useCallback } from 'react'
+import { useMemo, useRef, useCallback, useEffect } from 'react'
 import UPlotReact from 'uplot-react'
 import uPlot from 'uplot'
 import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
 import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 
 interface Props {
   isDark: boolean
@@ -30,8 +32,10 @@ function fmtTime(s: number) {
 
 export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.motion)
+  useChartDataProfiler('GForce', data)
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const chartRef = useRef<uPlot | null>(null)
   const mountedRef = useRef(false)
   const visible = width > 0 && height > 0
   if (visible) mountedRef.current = true
@@ -41,6 +45,8 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
     data.length > 0 ? data[data.length - 1].session_time : null,
     data.length > 0 ? data[0].session_time : null,
     windowSeconds,
+    undefined,
+    'GForce',
   )
 
   const uData = useMemo((): uPlot.AlignedData => {
@@ -54,6 +60,14 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
     })
     return [ts, lat, long]
   }, [data])
+
+  // Keep uplot-react's data prop stable so its effect cannot call redraw() on
+  // every publication. Feed data into uPlot without drawing; useScrollScale's
+  // rAF loop observes the changed u.data and performs the one scheduled draw.
+  const initialUDataRef = useRef<uPlot.AlignedData>(uData)
+  useEffect(() => {
+    if (view !== 'table') chartRef.current?.setData(uData, false)
+  }, [uData, view])
 
   const opts = useMemo((): uPlot.Options => {
     const axisColor   = isDark ? '#7c8098' : '#6b7280'
@@ -109,6 +123,7 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
     return {
       width,
       height,
+      pxAlign: usePixelAlignment(windowSeconds),
       padding: [4, 16, 0, 4],
       legend: { show: false },
       cursor: { drag: { setScale: false } },
@@ -140,17 +155,23 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
       ],
       series: [
         {},
-        { label: 'Lateral',       stroke: COLOR_LAT,  width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
-        { label: 'Longitudinal',  stroke: COLOR_LONG, width: 1.5, paths: uPlot.paths.stepped!({ align: 1 }), points: { show: false } },
+        { label: 'Lateral',       stroke: COLOR_LAT,  width: 1.5, points: { show: false } },
+        { label: 'Longitudinal',  stroke: COLOR_LONG, width: 1.5, points: { show: false } },
       ],
       plugins: [refLinesPlugin, ttPlugin, createDrawProfilerPlugin('GForce')],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => {
+    chartRef.current = u
     attach(u)
     u.over.addEventListener('mouseleave', hide)
   }, [hide, attach])
+
+  const onDelete = useCallback(() => {
+    chartRef.current = null
+    detach()
+  }, [detach])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -172,7 +193,7 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
         ) : (
           <>
             <div style={{ position: 'absolute', inset: 0, display: visible ? undefined : 'none' }}>
-              {mountedRef.current && <UPlotReact options={opts} data={uData} onCreate={onCreate} onDelete={detach} resetScales={false} />}
+              {mountedRef.current && <UPlotReact options={opts} data={initialUDataRef.current} onCreate={onCreate} onDelete={onDelete} resetScales={false} />}
             </div>
             <div ref={tooltipRef} style={TOOLTIP_STYLE} />
           </>

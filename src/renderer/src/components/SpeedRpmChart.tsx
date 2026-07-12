@@ -1,6 +1,7 @@
 import { useMemo, useRef, useCallback, useState, useEffect } from 'react'
 import UPlotReact from 'uplot-react'
 import uPlot from 'uplot'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 import Select, { type SingleValue } from 'react-select'
 import type { TelemetryRow, StatusRow, LapData } from '../types'
 import { useSize } from '../hooks/useSize'
@@ -311,6 +312,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     return {
       width,
       height,
+      pxAlign: usePixelAlignment(windowSeconds),
       padding: [4, 0, 0, 0],
       legend: { show: false },
       cursor: { drag: { setScale: false } },
@@ -367,7 +369,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
       series,
       plugins: [ttPlugin],
     }
-  }, [width, height, mode, isDark, compLabel, is2L])
+  }, [width, height, mode, isDark, compLabel, is2L, windowSeconds])
 
   // Data is pushed imperatively via setData instead of through UPlotReact's data
   // prop: the wrapper deep-compares old vs new data element-by-element on every

@@ -5,8 +5,10 @@ import { useSize } from '../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
 import { createDrawProfilerPlugin } from '../hooks/useDrawProfiler'
+import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 
 interface Props {
   isDark: boolean
@@ -35,6 +37,7 @@ function fmtTime(s: number) {
 
 export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
+  useChartDataProfiler('Gear', data)
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const mountedRef = useRef(false)
@@ -46,6 +49,8 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
     data.length > 0 ? data[data.length - 1].session_time : null,
     data.length > 0 ? data[0].session_time : null,
     windowSeconds,
+    undefined,
+    'Gear',
   )
 
   const uData = useMemo((): uPlot.AlignedData => {
@@ -108,6 +113,7 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
     return {
       width,
       height,
+      pxAlign: usePixelAlignment(windowSeconds),
       padding: [4, 16, 0, 4],
       legend: { show: false },
       cursor: { drag: { setScale: false } },
@@ -149,7 +155,7 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
       ],
       plugins: [bandsPlugin, ttPlugin, createDrawProfilerPlugin('Gear')],
     }
-  }, [width, height, isDark])
+  }, [width, height, isDark, windowSeconds])
 
   const onCreate = useCallback((u: uPlot) => {
     attach(u)

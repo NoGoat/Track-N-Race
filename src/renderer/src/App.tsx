@@ -698,7 +698,7 @@ interface TabContentProps {
   currentPlaybackLapNum: number | null
 }
 
-const TabContent = memo(function TabContent({
+const SubscribedTabContent = memo(function SubscribedTabContent({
   tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
   graphView, compact, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
@@ -909,6 +909,37 @@ const TabContent = memo(function TabContent({
   )
 })
 
+// Misc owns no broad telemetry subscription. Its two chart leaves subscribe
+// directly to motion and motionEx, so unrelated store publications cannot
+// re-render this tab container.
+const MiscTabContent = memo(function MiscTabContent({
+  isDark, seconds, miscLayout, graphView,
+}: Pick<TabContentProps, 'isDark' | 'seconds' | 'miscLayout' | 'graphView'>) {
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+        {miscLayout.showGForce && (
+          <div className="flex-1 min-h-0">
+            <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
+          </div>
+        )}
+        {miscLayout.showRideHeight && (
+          <div className="flex-1 min-h-0">
+            <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+})
+
+const TabContent = memo(function TabContent(props: TabContentProps) {
+  if (props.tab === 'misc') {
+    return <MiscTabContent isDark={props.isDark} seconds={props.seconds} miscLayout={props.miscLayout} graphView={props.graphView} />
+  }
+  return <SubscribedTabContent {...props} />
+})
+
 // Watches the race leader (which comes from the per-frame `timing` slice) and
 // fires a banner on a change. Isolated into its own subscriber so the hot
 // `timing` read doesn't live in App. `enabled` is false during playback.
@@ -1078,6 +1109,9 @@ export default function App() {
   const [headerVisible, setHeaderVisible] = useState(false)
   const [playbackState, setPlaybackState] = useState<any>(null)
   const playbackStateRef = useRef<any>(null)
+  const playbackUiLastRef = useRef(0)
+  const playbackUiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const playbackUiPendingRef = useRef<any>(null)
   const sessionFileStartRef = useRef(0)
   const capturedForBlocksRef = useRef<any[] | null>(null)
   const [currentPlaybackLapNum, setCurrentPlaybackLapNum] = useState<number | null>(null)
@@ -1102,9 +1136,45 @@ export default function App() {
   useEffect(() => window.windowControls.onFullscreenChange(setIsFullscreen), [])
   useEffect(() => { if (!isFullscreen) setHeaderVisible(false) }, [isFullscreen])
   useEffect(() => {
-    return window.playerBridge.onStateChange((st) => {
-      playbackStateRef.current = st
+    const publishPlaybackUi = (st: any) => {
+      playbackUiLastRef.current = performance.now()
+      playbackUiPendingRef.current = null
+      playbackUiTimerRef.current = null
       setPlaybackState(st)
+    }
+
+    const unsubscribe = window.playerBridge.onStateChange((st) => {
+      const previous = playbackStateRef.current
+      playbackStateRef.current = st
+
+      // Playback progress arrives at the engine tick rate (~60 Hz). Keep the
+      // authoritative ref at that rate, but publish progress to React at 10 Hz
+      // so the progress bar cannot invalidate App every frame. Structural
+      // changes remain immediate so controls never feel delayed.
+      const structuralChange = !previous
+        || previous.filename !== st.filename
+        || previous.isPlaying !== st.isPlaying
+        || previous.isScanning !== st.isScanning
+        || previous.speed !== st.speed
+
+      const now = performance.now()
+      const remaining = 100 - (now - playbackUiLastRef.current)
+      if (structuralChange || remaining <= 0) {
+        if (playbackUiTimerRef.current) {
+          clearTimeout(playbackUiTimerRef.current)
+          playbackUiTimerRef.current = null
+        }
+        publishPlaybackUi(st)
+      } else {
+        playbackUiPendingRef.current = st
+        if (!playbackUiTimerRef.current) {
+          playbackUiTimerRef.current = setTimeout(() => {
+            const pending = playbackUiPendingRef.current
+            if (pending) publishPlaybackUi(pending)
+          }, remaining)
+        }
+      }
+
       const blocks = speedRpmBlocksRef.current
       if (blocks) {
         const lapNum = blocks.find(b => st.currentTime >= b.startSessionTime && st.currentTime <= b.endSessionTime)?.lapNum ?? null
@@ -1114,6 +1184,10 @@ export default function App() {
         }
       }
     })
+    return () => {
+      unsubscribe()
+      if (playbackUiTimerRef.current) clearTimeout(playbackUiTimerRef.current)
+    }
   }, [])
 
   const handleSeekBackward = useCallback(() => {

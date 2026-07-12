@@ -6,6 +6,7 @@ import { useSize } from '../hooks/useSize'
 import { useChartTooltip } from '../hooks/useChartTooltip'
 import { useScrollScale } from '../hooks/useScrollScale'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
+import { usePixelAlignment } from '../lib/chartPixelPolicy'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -68,7 +69,7 @@ function makeTtPlugin(
   return plugin
 }
 
-function makeOpts(unit: string, w: number, h: number, ttPlugin: uPlot.Plugin, isDark: boolean, solid = false): uPlot.Options {
+function makeOpts(unit: string, w: number, h: number, ttPlugin: uPlot.Plugin, isDark: boolean, solid: boolean | undefined, windowSeconds: number): uPlot.Options {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
   const gridColor = isDark ? '#1e2136' : '#d0d5e0'
   const tickColor = isDark ? '#555'    : '#b0b8cc'
@@ -81,6 +82,7 @@ function makeOpts(unit: string, w: number, h: number, ttPlugin: uPlot.Plugin, is
   return {
     width: w,
     height: h,
+    pxAlign: usePixelAlignment(windowSeconds),
     padding: [4, 4, 0, 0],
     legend: { show: false },
     cursor: { drag: { setScale: false } },
@@ -157,8 +159,8 @@ function TyreLineChart({ title, unit, data, isDark, solid, view = 'chart', windo
   )
 
   const opts = useMemo(
-    () => makeOpts(unit, width, height, ttPlugin, isDark, solid),
-    [unit, width, height, ttPlugin, isDark, solid],
+    () => makeOpts(unit, width, height, ttPlugin, isDark, solid, windowSeconds),
+    [unit, width, height, ttPlugin, isDark, solid, windowSeconds],
   )
 
   const onCreate = useCallback((u: uPlot) => {
