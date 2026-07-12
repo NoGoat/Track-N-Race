@@ -155,7 +155,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           const t = ensureText(xLabels, i)
           t.setAttribute('x', String(px))
           t.setAttribute('y', String(plotBottom + c.xGap + (c.xTickMark ? c.xTickMark.size : 0)))
-          t.setAttribute('fill', c.yAxisColor ?? c.axisColor)
+          t.setAttribute('fill', c.axisColor)
           t.style.font = c.font
           t.setAttribute('text-anchor', 'middle')
           t.setAttribute('dominant-baseline', 'hanging')
@@ -185,7 +185,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           const t = ensureText(yLabels, i)
           t.setAttribute('x', String(plotLeft - c.yGap))
           t.setAttribute('y', String(py))
-          t.setAttribute('fill', c.axisColor)
+          t.setAttribute('fill', c.yAxisColor ?? c.axisColor)
           t.style.font = c.font
           t.setAttribute('text-anchor', 'end')
           t.setAttribute('dominant-baseline', 'central')
