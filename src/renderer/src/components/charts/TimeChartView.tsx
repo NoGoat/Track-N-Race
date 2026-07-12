@@ -7,6 +7,8 @@ import { TimeChartDataBridge, type DataPoint } from '../../lib/timechart/dataBri
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { createTimeChartDrawProfilerPlugin } from '../../hooks/useTimeChartDrawProfiler'
+import { niceTicks } from '../../lib/timechart/ticks'
+import type { CSSProperties } from 'react'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -18,14 +20,50 @@ import { createTimeChartDrawProfilerPlugin } from '../../hooks/useTimeChartDrawP
 // destroys+recreates on option changes) — recreating a WebGL context per theme
 // toggle or resize would be wasteful and is the whole reason we moved off uPlot.
 
-const FONT = '11px "Cascadia Code", ui-monospace, monospace'
-
-function axisColorFor(isDark: boolean) { return isDark ? '#7c8098' : '#6b7280' }
-function gridColorFor(isDark: boolean) { return isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)' }
-function borderColorFor(isDark: boolean) { return isDark ? '#1e2136' : '#d0d5e0' }
 function zeroColorFor(isDark: boolean) { return isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.18)' }
 function refColorFor(isDark: boolean) { return isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)' }
 function overlayBgFor(isDark: boolean) { return isDark ? '#12141f' : '#ffffff' }
+
+export interface ChartColors {
+  axis: string
+  grid: string
+  border: string
+  /** x tick-mark colour; falls back to `axis` when omitted. */
+  tickMark?: string
+}
+
+// Default theme colours (matches the Misc-page charts).
+function defaultColors(isDark: boolean): ChartColors {
+  return {
+    axis: isDark ? '#7c8098' : '#6b7280',
+    grid: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
+    border: isDark ? '#1e2136' : '#d0d5e0',
+  }
+}
+
+// Axis look-and-feel knobs (defaults reproduce the Misc-page charts).
+export interface AxisLook {
+  font?: string
+  /** paddingBottom — space reserved for the x axis (uPlot x `size`). */
+  xAxisSize?: number
+  paddingRight?: number
+  paddingLeftExtra?: number
+  xGap?: number
+  yGap?: number
+  xTickSpacePx?: number
+  gridDash?: number[]
+  showYGrid?: boolean
+  /** x tick-mark length in px; 0/undefined = no tick marks. */
+  xTickSize?: number
+}
+
+const DEFAULT_FONT = '11px "Cascadia Code", ui-monospace, monospace'
+
+// How often an 'auto' y-range does a full rescan of the visible window (which
+// lets the axis shrink again). Between rescans the range only expands via the
+// newest sample, so nothing ever clips — only shrinking is delayed, which is
+// imperceptible. 200ms keeps the scan cost low at large windows.
+const AUTO_RANGE_FULL_MS = 200
 
 export interface SeriesDef<T> {
   label: string
@@ -37,6 +75,9 @@ export interface SeriesDef<T> {
 export type YRangeSpec =
   | { kind: 'fixed'; min: number; max: number }
   | { kind: 'expand'; initialLower: number; initialUpper: number; lowerPad: number; upperPad: number }
+  // Fit to the visible window each update (matches uPlot's auto-range), with
+  // padding and nice round ticks.
+  | { kind: 'auto'; padFraction?: number; tickCount?: number }
 
 export interface TimeChartViewProps<T> {
   isDark: boolean
@@ -47,20 +88,37 @@ export interface TimeChartViewProps<T> {
   yRange: YRangeSpec
   /** width reserved for the y-axis labels (uPlot axis `size`). */
   yAxisSize: number
-  yTickValues: (min: number, max: number) => number[]
+  /** required for fixed/expand ranges; ignored for `auto` (nice ticks derived). */
+  yTickValues?: (min: number, max: number) => number[]
   yTickFormat: (v: number) => string
   xTickFormat: (seconds: number) => string
   refLines?: RefLine[]
   /** builds the tooltip HTML from the cursor's x and the per-series y values. */
   tooltipFormat: (x: number, values: number[]) => string
   profilerLabel?: string
+  /** theme colour resolver; defaults to the Misc-page palette. */
+  colorsFor?: (isDark: boolean) => ChartColors
+  axisLook?: AxisLook
+  tooltipStyle?: CSSProperties
 }
 
 export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const {
     isDark, rows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat, profilerLabel,
+    colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE,
   } = props
+
+  const look = axisLook ?? {}
+  const font = look.font ?? DEFAULT_FONT
+  const padFraction = yRange.kind === 'auto' ? (yRange.padFraction ?? 0.1) : 0.1
+  const tickCount = yRange.kind === 'auto' ? (yRange.tickCount ?? 5) : 5
+
+  // For auto ranges the tick values are nice round numbers derived from the
+  // (padded) domain; for fixed/expand the caller supplies them.
+  const effYTickValues = yRange.kind === 'auto'
+    ? (min: number, max: number) => niceTicks(min, max, tickCount)
+    : (yTickValues ?? ((min: number, max: number) => [min, max]))
 
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -70,25 +128,31 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const seriesBuffersRef = useRef<DataPoint[][]>([])
   const dataDirtyRef = useRef(false)
+  // Auto y-range state: running min/max plus the last full-rescan timestamp.
+  const autoRef = useRef({ min: Infinity, max: -Infinity, lastFull: 0 })
   const boundsRef = useRef(
-    yRange.kind === 'expand'
-      ? { lower: yRange.initialLower, upper: yRange.initialUpper }
-      : { lower: yRange.min, upper: yRange.max },
+    yRange.kind === 'expand' ? { lower: yRange.initialLower, upper: yRange.initialUpper }
+      : yRange.kind === 'fixed' ? { lower: yRange.min, upper: yRange.max }
+        : { lower: 0, upper: 1 },
   )
 
+  const initColors = colorsFor(isDark)
   // Plugin configs live in mutable refs so theme changes update colors in place
   // (the plugins re-read cfg.current on every draw) without recreating the chart.
   const axisCfgRef = useRef<AxisConfig>({
-    axisColor: axisColorFor(isDark),
-    gridColor: gridColorFor(isDark),
-    borderColor: borderColorFor(isDark),
-    font: FONT,
-    xTickSpacePx: 80,
+    axisColor: initColors.axis,
+    gridColor: initColors.grid,
+    borderColor: initColors.border,
+    font,
+    xTickSpacePx: look.xTickSpacePx ?? 80,
     xTickFormat,
-    yTickValues,
+    yTickValues: effYTickValues,
     yTickFormat,
-    xGap: 4,
-    yGap: 6,
+    xGap: look.xGap ?? 4,
+    yGap: look.yGap ?? 6,
+    gridDash: look.gridDash,
+    showYGrid: look.showYGrid,
+    xTickMark: look.xTickSize ? { color: initColors.tickMark ?? initColors.axis, size: look.xTickSize } : null,
   })
   const refCfgRef = useRef<RefLinesConfig>({
     lines: refLines ?? [],
@@ -133,9 +197,9 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     const chart = new TimeChart.core(el, {
       // Padding reserves space for our axes (mirrors uPlot axis `size` + padding).
       paddingTop: 4,
-      paddingRight: 16,
-      paddingBottom: 22,
-      paddingLeft: yAxisSize + 4,
+      paddingRight: look.paddingRight ?? 16,
+      paddingBottom: look.xAxisSize ?? 22,
+      paddingLeft: yAxisSize + (look.paddingLeftExtra ?? 4),
       lineWidth: 1.5,
       yRange: { min: b.lower, max: b.upper },
       series: defs.map((s) => ({
@@ -208,8 +272,59 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   // --- feed new data ---
   useEffect(() => {
     const bridge = bridgeRef.current
+    const chart = chartRef.current
     if (!bridge) return
-    if (bridge.sync(rows)) dataDirtyRef.current = true
+    const changed = bridge.sync(rows)
+    if (changed) dataDirtyRef.current = true
+
+    // Auto y-range: fit to the visible window like uPlot's auto-range. A full
+    // scan of the buffers is O(window), which at 5-/10-min windows is ~tens of
+    // thousands of points *per publication* and is what made the tyre charts lag
+    // (the Misc charts use fixed/expand ranges and never scan). So:
+    //   - every publication, cheaply expand the range to include the newest
+    //     sample — O(series) — so a rising/spiking trace never clips the frame;
+    //   - only rescan the whole window on a throttle, which is what lets the
+    //     axis *shrink* again once old extremes scroll off.
+    if (changed && chart && yRange.kind === 'auto') {
+      const a = autoRef.current
+      if (rows.length > 0) {
+        const last = rows[rows.length - 1]
+        for (const s of seriesDefs.current) {
+          const v = s.getY(last)
+          if (v < a.min) a.min = v
+          if (v > a.max) a.max = v
+        }
+      }
+      const now = performance.now()
+      if (now - a.lastFull >= AUTO_RANGE_FULL_MS) {
+        a.lastFull = now
+        const bufs = seriesBuffersRef.current
+        const b0 = bufs[0]
+        if (b0 && b0.length > 0) {
+          // Scan only the visible window. The bridge keeps some off-window
+          // points in the buffer (to amortise trimming), so binary-search the
+          // window start rather than scanning those stale points.
+          const startX = b0[b0.length - 1].x - windowSeconds
+          let lb = 0, ub = b0.length
+          while (lb < ub) { const mid = (lb + ub) >> 1; if (b0[mid].x < startX) lb = mid + 1; else ub = mid }
+          let lo = Infinity, hi = -Infinity
+          for (const buf of bufs) {
+            for (let i = lb; i < buf.length; i++) {
+              const v = buf[i].y
+              if (v < lo) lo = v
+              if (v > hi) hi = v
+            }
+          }
+          if (Number.isFinite(lo) && Number.isFinite(hi)) { a.min = lo; a.max = hi }
+        }
+      }
+      if (Number.isFinite(a.min) && Number.isFinite(a.max)) {
+        const pad = a.max === a.min ? Math.abs(a.max) * 0.05 + 1 : (a.max - a.min) * padFraction
+        chart.options.yRange = { min: a.min - pad, max: a.max + pad }
+        dataDirtyRef.current = true
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows])
 
   // --- expand-only y-range (Ride Height): only look at the newest sample and
@@ -239,13 +354,17 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     if (chart && width > 0 && height > 0) chart.onResize()
   }, [width, height])
 
-  // --- theme: update plugin colors + cursor colors in place, then redraw ---
+  // --- theme: update plugin colours + cursor colours in place, then redraw ---
   useEffect(() => {
+    const colors = colorsFor(isDark)
     axisCfgRef.current = {
       ...axisCfgRef.current,
-      axisColor: axisColorFor(isDark),
-      gridColor: gridColorFor(isDark),
-      borderColor: borderColorFor(isDark),
+      axisColor: colors.axis,
+      gridColor: colors.grid,
+      borderColor: colors.border,
+      xTickMark: axisCfgRef.current.xTickMark
+        ? { ...axisCfgRef.current.xTickMark, color: colors.tickMark ?? colors.axis }
+        : axisCfgRef.current.xTickMark,
     }
     refCfgRef.current = {
       ...refCfgRef.current,
@@ -254,16 +373,32 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     }
     const el = containerRef.current
     if (el) {
-      el.style.color = axisCfgRef.current.axisColor
+      el.style.color = colors.axis
       el.style.setProperty('--background-overlay', overlayBgFor(isDark))
     }
     chartRef.current?.model.update()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDark])
+
+  // --- series colours: some charts recolour series with the theme (tyre
+  // FR/RL/RR differ in light vs dark). Push new colours to the live series and
+  // redraw; the WebGL renderer re-reads series.color each frame. ---
+  const seriesColorKey = series.map((s) => s.color).join('|')
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    series.forEach((s, i) => {
+      const so = chart.options.series[i]
+      if (so) so.color = s.color
+    })
+    chart.model.update()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seriesColorKey])
 
   return (
     <div className="absolute inset-0" ref={sizeRef}>
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
-      <div ref={tooltipRef} style={TOOLTIP_STYLE} />
+      <div ref={tooltipRef} style={tooltipStyle} />
     </div>
   )
 }

@@ -23,6 +23,10 @@ export interface DataPoint {
 // its overridden push/shift/splice keep the GPU-sync bookkeeping correct.
 type Buffer = DataPoint[]
 
+// Out-of-window points are trimmed in batches of this many rather than every
+// publication, so the O(buffer) front-splice is amortised to O(new points).
+const TRIM_BATCH = 2048
+
 // First index i where getX(rows[i]) > x, assuming rows is sorted ascending by
 // getX. Returns rows.length if none. Strictly-greater so an equal trailing x is
 // not re-pushed.
@@ -93,13 +97,24 @@ export class TimeChartDataBridge<T> {
       changed = true
     }
 
-    // Trim points that fell off the front of the window (older than firstX).
+    // Trim points that fell off the front of the window. `splice(0, k)` reindexes
+    // the whole array — O(buffer) regardless of k — so trimming every publication
+    // is O(window) per buffer per publication, which is what made large windows
+    // with many series lag. Instead let out-of-window points accumulate up to a
+    // fixed batch and trim them in one splice: the O(window) splice then happens
+    // once per TRIM_BATCH new points, amortising to O(new points) per
+    // publication. The check is O(1) (a length comparison; `n` ~= the window's
+    // point count) and the scan only runs when we actually trim. Off-window
+    // points are stored but never drawn (the renderer clips to the visible
+    // x-range) and cost only a bounded amount of extra memory.
     const buf0 = this.buffers[0]
-    let trim = 0
-    while (trim < buf0.length && buf0[trim].x < firstX) trim++
-    if (trim > 0) {
-      for (const buf of this.buffers) buf.splice(0, trim)
-      changed = true
+    if (buf0.length > n + TRIM_BATCH) {
+      let trim = 0
+      while (trim < buf0.length && buf0[trim].x < firstX) trim++
+      if (trim > 0) {
+        for (const buf of this.buffers) buf.splice(0, trim)
+        changed = true
+      }
     }
 
     return changed

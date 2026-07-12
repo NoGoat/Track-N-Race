@@ -24,6 +24,12 @@ export interface AxisConfig {
   yTickFormat: (v: number) => string
   xGap: number
   yGap: number
+  /** dash pattern for grid lines (e.g. [3, 3]); solid when omitted. */
+  gridDash?: number[]
+  /** draw horizontal grid lines at the y ticks (uPlot y-grid). */
+  showYGrid?: boolean
+  /** small tick marks below the x axis (uPlot x ticks); omitted = none. */
+  xTickMark?: { color: string; size: number } | null
 }
 
 interface TextPool {
@@ -62,19 +68,28 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
       const svg = chart.svgLayer.svgNode
 
       const gridG = document.createElementNS(SVGNS, 'g')
+      const yGridG = document.createElementNS(SVGNS, 'g')
+      const tickG = document.createElementNS(SVGNS, 'g')
       const borderG = document.createElementNS(SVGNS, 'g')
       const xLabelG = document.createElementNS(SVGNS, 'g')
       const yLabelG = document.createElementNS(SVGNS, 'g')
-      // grid first (behind), then borders, then labels
-      for (const g of [gridG, borderG, xLabelG, yLabelG]) svg.appendChild(g)
+      // grid first (behind), then tick marks + borders, then labels
+      for (const g of [gridG, yGridG, tickG, borderG, xLabelG, yLabelG]) svg.appendChild(g)
 
       const gridPool: LinePool = { g: gridG, nodes: [] }
+      const yGridPool: LinePool = { g: yGridG, nodes: [] }
+      const tickPool: LinePool = { g: tickG, nodes: [] }
       const xLabels: TextPool = { g: xLabelG, nodes: [] }
       const yLabels: TextPool = { g: yLabelG, nodes: [] }
       const bottomBorder = document.createElementNS(SVGNS, 'line')
       const leftBorder = document.createElementNS(SVGNS, 'line')
       borderG.appendChild(bottomBorder)
       borderG.appendChild(leftBorder)
+
+      const applyDash = (line: SVGLineElement, dash: number[] | undefined) => {
+        if (dash && dash.length) line.setAttribute('stroke-dasharray', dash.join(' '))
+        else line.removeAttribute('stroke-dasharray')
+      }
 
       const draw = () => {
         const c = cfg.current
@@ -83,7 +98,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         const [plotLeft, plotRight] = xScale.range()
         const [plotBottom, plotTop] = yScale.range()
 
-        // --- x axis: grid verticals + labels ---
+        // --- x axis: grid verticals + optional tick marks + labels ---
         const usable = plotRight - plotLeft
         const count = Math.max(2, Math.floor(usable / c.xTickSpacePx))
         const xTicks: number[] = xScale.ticks(count)
@@ -97,13 +112,24 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           line.setAttribute('y2', String(plotBottom))
           line.setAttribute('stroke', c.gridColor)
           line.setAttribute('stroke-width', '1')
+          applyDash(line, c.gridDash)
           line.style.display = ''
+
+          if (c.xTickMark) {
+            const mark = ensureLine(tickPool, i)
+            mark.setAttribute('x1', String(px))
+            mark.setAttribute('x2', String(px))
+            mark.setAttribute('y1', String(plotBottom))
+            mark.setAttribute('y2', String(plotBottom + c.xTickMark.size))
+            mark.setAttribute('stroke', c.xTickMark.color)
+            mark.setAttribute('stroke-width', '1')
+            mark.style.display = ''
+          }
 
           const t = ensureText(xLabels, i)
           t.setAttribute('x', String(px))
-          t.setAttribute('y', String(plotBottom + c.xGap))
+          t.setAttribute('y', String(plotBottom + c.xGap + (c.xTickMark ? c.xTickMark.size : 0)))
           t.setAttribute('fill', c.axisColor)
-          t.setAttribute('font', c.font)
           t.style.font = c.font
           t.setAttribute('text-anchor', 'middle')
           t.setAttribute('dominant-baseline', 'hanging')
@@ -111,13 +137,25 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           t.style.display = ''
         }
         for (let i = xTicks.length; i < gridPool.nodes.length; i++) gridPool.nodes[i].style.display = 'none'
+        for (let i = xTicks.length; i < tickPool.nodes.length; i++) tickPool.nodes[i].style.display = 'none'
         for (let i = xTicks.length; i < xLabels.nodes.length; i++) xLabels.nodes[i].style.display = 'none'
 
-        // --- y axis: labels only (grid hidden, matching uPlot) ---
+        // --- y axis: optional grid horizontals + labels ---
         const [yMin, yMax] = yScale.domain()
         const yTicks = c.yTickValues(yMin, yMax)
         for (let i = 0; i < yTicks.length; i++) {
           const py = yScale(yTicks[i])
+          if (c.showYGrid) {
+            const line = ensureLine(yGridPool, i)
+            line.setAttribute('x1', String(plotLeft))
+            line.setAttribute('x2', String(plotRight))
+            line.setAttribute('y1', String(py))
+            line.setAttribute('y2', String(py))
+            line.setAttribute('stroke', c.gridColor)
+            line.setAttribute('stroke-width', '1')
+            applyDash(line, c.gridDash)
+            line.style.display = ''
+          }
           const t = ensureText(yLabels, i)
           t.setAttribute('x', String(plotLeft - c.yGap))
           t.setAttribute('y', String(py))
@@ -128,6 +166,8 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           t.textContent = c.yTickFormat(yTicks[i])
           t.style.display = ''
         }
+        const yGridShown = c.showYGrid ? yTicks.length : 0
+        for (let i = yGridShown; i < yGridPool.nodes.length; i++) yGridPool.nodes[i].style.display = 'none'
         for (let i = yTicks.length; i < yLabels.nodes.length; i++) yLabels.nodes[i].style.display = 'none'
 
         // --- L-frame borders ---
