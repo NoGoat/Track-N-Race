@@ -10,8 +10,8 @@ import { TimeChartPlugin } from '.';
 import { LinkedWebGLProgram, throwIfFalsy } from './webGLUtils';
 
 const TEXTURE_WIDTH = 256;
-const DATA_OFFSET = 1;
-const TAIL_PADDING = 2;
+const DATA_OFFSET = 0;
+const TAIL_PADDING = 1;
 const TEXTURE_HEIGHT = Math.ceil((DATA_OFFSET + ALIGNED_PAGE_SIZE + TAIL_PADDING) / TEXTURE_WIDTH);
 
 class ShaderUniformData {
@@ -287,25 +287,16 @@ class SharedGpuBuffer {
         }
     }
 
-    /** Maintain the neighbour texels used by the step and page-edge shaders. */
+    /** Maintain the one neighbour texel used by every page-edge segment. */
     private refreshPadding(pageIndex: number) {
         if (!this.pages[pageIndex]) return;
         const pageStart = pageIndex * ALIGNED_PAGE_SIZE;
-        const first = this.data.logicalIndexForPhysical(pageStart);
-        if (first >= 0) {
-            const previousPhysical = (pageStart + ALIGNED_PHYSICAL_CAPACITY - 1) % ALIGNED_PHYSICAL_CAPACITY;
-            const previous = this.data.logicalIndexForPhysical(previousPhysical);
-            this.uploadPaddingPoint(pageIndex, 0, previous >= 0 ? previous : first);
-        }
-
         const pageLast = pageStart + ALIGNED_PAGE_SIZE - 1;
         const last = this.data.logicalIndexForPhysical(pageLast);
         if (last < 0) return;
         const nextPhysical = (pageLast + 1) % ALIGNED_PHYSICAL_CAPACITY;
         const next = this.data.logicalIndexForPhysical(nextPhysical);
-        const next2 = this.data.logicalIndexForPhysical((nextPhysical + 1) % ALIGNED_PHYSICAL_CAPACITY);
         this.uploadPaddingPoint(pageIndex, DATA_OFFSET + ALIGNED_PAGE_SIZE, next >= 0 ? next : last);
-        this.uploadPaddingPoint(pageIndex, DATA_OFFSET + ALIGNED_PAGE_SIZE + 1, next2 >= 0 ? next2 : (next >= 0 ? next : last));
     }
 
     sync() {

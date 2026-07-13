@@ -1,15 +1,18 @@
 import { ResolvedCoreOptions } from '../options';
 import { EventDispatcher } from '../utils';
 import { RenderModel } from './renderModel';
+import { timeChartFrameScheduler } from './frameScheduler';
+import type { FrameScheduleHandle } from './frameScheduler';
 
 export class ContentBoxDetector {
     node: HTMLElement;
     readonly moved = new EventDispatcher<(x: number, y: number) => void>();
     readonly entered = new EventDispatcher();
     readonly left = new EventDispatcher();
-    private moveFrame = 0;
+    private movePending = false;
     private pointerX = 0;
     private pointerY = 0;
+    private readonly frameHandle: FrameScheduleHandle;
 
     constructor(el: HTMLElement, model: RenderModel, options: ResolvedCoreOptions) {
         this.node = document.createElement('div');
@@ -19,6 +22,12 @@ export class ContentBoxDetector {
         this.node.style.top = `${options.paddingTop}px`;
         this.node.style.bottom = `${options.paddingBottom}px`;
         el.shadowRoot!.appendChild(this.node);
+        this.frameHandle = timeChartFrameScheduler.register(el, () => {
+            if (!this.movePending || model.abortController.signal.aborted) return false;
+            this.movePending = false;
+            this.moved.dispatch(this.pointerX, this.pointerY);
+            return false;
+        });
 
         // Mouse devices can report substantially faster than the display can
         // paint. Coalesce the chart's crosshair, nearest-point and tooltip work
@@ -28,23 +37,17 @@ export class ContentBoxDetector {
         this.node.addEventListener('mousemove', (ev) => {
             this.pointerX = ev.offsetX;
             this.pointerY = ev.offsetY;
-            if (this.moveFrame !== 0) return;
-            this.moveFrame = requestAnimationFrame(() => {
-                this.moveFrame = 0;
-                if (!signal.aborted) this.moved.dispatch(this.pointerX, this.pointerY);
-            });
+            this.movePending = true;
+            this.frameHandle.wake();
         }, { signal });
         this.node.addEventListener('mouseenter', () => this.entered.dispatch(), { signal });
         this.node.addEventListener('mouseleave', () => {
-            if (this.moveFrame !== 0) {
-                cancelAnimationFrame(this.moveFrame);
-                this.moveFrame = 0;
-            }
+            this.movePending = false;
             this.left.dispatch();
         }, { signal });
 
         model.disposing.on(() => {
-            if (this.moveFrame !== 0) cancelAnimationFrame(this.moveFrame);
+            this.frameHandle.unregister();
             el.shadowRoot!.removeChild(this.node);
         })
     }

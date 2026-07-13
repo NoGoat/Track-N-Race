@@ -5,7 +5,7 @@ import { TimeChartPlugin } from '../plugins';
 import { CanvasLayer } from './canvasLayer';
 import { ContentBoxDetector } from "./contentBoxDetector";
 import { NearestPointModel } from './nearestPoint';
-import { DataPoint, RenderModel } from './renderModel';
+import { RenderModel } from './renderModel';
 import { SVGLayer } from './svgLayer';
 import { AlignedDataBuffer, isSeriesData } from './alignedData';
 
@@ -44,13 +44,10 @@ type TPluginStates<TPlugins> = { [P in keyof TPlugins]: TPlugins[P] extends Time
 
 function completeSeriesOptions(s: Partial<TimeChartSeriesOptions>): TimeChartSeriesOptions {
     if (!isSeriesData(s.data)) {
-        const initial = Array.isArray(s.data) ? s.data as unknown as DataPoint[] : [];
-        const aligned = new AlignedDataBuffer(1);
-        const value = new Float64Array(1);
-        for (const point of initial) {
-            value[0] = point.y;
-            aligned.append(point.x, value);
+        if (s.data != null) {
+            throw new TypeError('Track N Race TimeChart series require AlignedSeriesData.');
         }
+        const aligned = new AlignedDataBuffer(1);
         s.data = aligned.series[0];
     }
     Object.setPrototypeOf(s, defaultSeriesOptions);
@@ -87,7 +84,7 @@ export default class TimeChart<TPlugins extends TimeChartPlugins=NoPlugin> {
     constructor(public el: HTMLElement, options?: TimeChartOptions<TPlugins>) {
         const coreOptions = completeOptions(el, options);
 
-        this.model = new RenderModel(coreOptions);
+        this.model = new RenderModel(coreOptions, el);
         const shadowRoot = el.shadowRoot ?? el.attachShadow({ mode: 'open' });
         const style = document.createElement('style');
         style.innerText = `

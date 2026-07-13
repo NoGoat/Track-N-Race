@@ -368,10 +368,9 @@ theme/resize is exactly what the migration removed):
   of the default bundle (which would inject d3Axis/legend/zoom/tooltip). Fork
   provenance and local fixes are recorded in `engine/UPSTREAM.md`.
 - **`dataBridge.ts`** reconciles the store's re-published windowed slices with
-  TimeChart's end-mutation-only `DataPointsBuffer` contract: append
-  genuinely-new tail points, batch front-trims (one O(buffer) splice per 2048
-  stale points instead of per publication), full rebuild on any non-contiguous
-  window (seek/flush/restart).
+  the fork's aligned circular store: append genuinely-new samples into one
+  shared X timeline plus typed Y channels, advance a logical head for front
+  eviction, and rebuild on any non-contiguous window (seek/flush/restart).
 - **`axisPlugin.ts`** draws axes/grid into TimeChart's SVG overlay with pooled
   nodes (attribute mutation, not DOM churn), reproducing the uPlot look: fixed
   or derived tick values, m:ss x labels, faint grid, L-frame borders, 11px
@@ -385,14 +384,15 @@ theme/resize is exactly what the migration removed):
   cheaply expands by the newest sample, a full window rescan runs at most every
   200 ms so the axis can shrink — full scans per publication are what made the
   tyre charts lag).
-- **Scrolling** (`hooks/useTimeChartScroll.ts`, a port of the retained uPlot
-  `useScrollScale`): a rAF loop slides the x-window against wall-clock time,
+- **Scrolling** (`hooks/useTimeChartScroll.ts`): one shared, visibility-aware
+  scheduler slides every active x-window from the same animation-frame timestamp,
   extrapolating from the newest sample; stalls are detected from the stream's
   own measured rate (median arrival gap × 2), playback pause halts instantly
   via a module-level `playback_state` subscription, and small backward jumps
   hold rather than visibly scrolling backwards. `fastScroll` mode draws
   WebGL-only frames between throttled full model updates (axes/SVG work at
-  ~60 fps, line scroll at display rate).
+  ~60 fps, line scroll at display rate). Hidden charts are parked through an
+  `IntersectionObserver`, and rAF stops when no visible chart has pending work.
 - Tooltip: custom HTML element snapped to the nearest sample via binary search
   on the shared x-buffer (single index across series, like uPlot's
   `cursor.idx`).
@@ -553,10 +553,11 @@ only the panels. While in playback, live engine rows are dropped at
 API with `Config::binaryPlayback`. One engine, two hosts — see §1.6.
 
 ### ~~P1 — uPlot → TimeChart (WebGL) chart migration~~ (done on this branch)
-All chart leaves render through `TimeChartView`. Remaining cleanup: drop the
-`uplot`/`uplot-react` dependencies, the type-only `import type uPlot` lines
-(`GraphTable`'s `uPlot.AlignedData` prop type), and the now-unused
-`hooks/useScrollScale.ts` + `hooks/useDrawProfiler.ts` uPlot variants.
+All chart leaves render through `TimeChartView`; the unused uPlot scrolling
+hook has been removed. Remaining cleanup: drop the `uplot`/`uplot-react`
+dependencies, the type-only `import type uPlot` lines (`GraphTable`'s
+`uPlot.AlignedData` prop type), and the retained `hooks/useDrawProfiler.ts`
+profiling helper once the current performance investigation ends.
 
 ### P1 — Delete or clearly retire `protocol_parser/`
 Its README claims Electron spawns it over a pipe; `bridgeManager.ts` actually

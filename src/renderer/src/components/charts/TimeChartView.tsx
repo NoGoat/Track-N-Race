@@ -177,7 +177,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
 
   const latestT = rows.length > 0 ? getX(rows[rows.length - 1]) : null
   const firstT = rows.length > 0 ? getX(rows[0]) : null
-  const { attach, detach } = useTimeChartScroll(
+  const { attach, detach, wake } = useTimeChartScroll(
     true, latestT, firstT, windowSeconds, dataDirtyRef, { fastFrames: fastScroll, fullFps: 60 }, profilerLabel,
   )
 
@@ -309,7 +309,10 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     const chart = chartRef.current
     if (!bridge) return
     const changed = bridge.sync(rows)
-    if (changed) dataDirtyRef.current = true
+    if (changed) {
+      dataDirtyRef.current = true
+      wake()
+    }
 
     // Auto y-range: fit to the visible window like uPlot's auto-range. A full
     // scan of the buffers is O(window), which at 5-/10-min windows is ~tens of
@@ -357,7 +360,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows])
+  }, [rows, wake])
 
   // --- expand-only y-range (Ride Height): only look at the newest sample and
   // push a bound outward if exceeded; never rescans, never shrinks. ---
@@ -408,7 +411,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       el.style.color = colors.axis
       el.style.setProperty('--background-overlay', overlayBgFor(isDark))
     }
-    chartRef.current?.model.update()
+    chartRef.current?.model.requestRedraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDark])
 
@@ -423,7 +426,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       const so = chart.options.series[i]
       if (so) so.color = s.color
     })
-    chart.model.update()
+    chart.model.requestRedraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seriesColorKey])
 

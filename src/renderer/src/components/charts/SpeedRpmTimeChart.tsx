@@ -71,7 +71,7 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
 
   const latestT = scrolling && data.current[0].length ? data.current[0][data.current[0].length - 1].x : null
   const firstT = scrolling && data.current[0].length ? data.current[0][0].x : null
-  const { attach, detach } = useTimeChartScroll(scrolling, latestT, firstT, windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60 }, 'SpeedRpm')
+  const { attach, detach, wake } = useTimeChartScroll(scrolling, latestT, firstT, windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60 }, 'SpeedRpm')
 
   useEffect(() => {
     const host = hostRef.current
@@ -159,14 +159,15 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
     if (syncGroup(groups[1], data.current, rebuild, groupScratchRef.current[1])) changed = true
     if (!changed) return
     dirtyRef.current = true
+    wake()
     if (!scrolling) {
       const populated = sources.filter(s => s.length)
       const max = populated.length ? Math.max(...populated.map(s => s[s.length - 1].x)) : 1
       chart.options.xRange = { min: 0, max: Math.max(max, 1) }
       dirtyRef.current = false
-      chart.model.update()
+      chart.model.requestRedraw()
     }
-  }, [data, revision, scrolling])
+  }, [data, revision, scrolling, wake])
 
   useEffect(() => { if (chartRef.current && width > 0 && height > 0) chartRef.current.onResize() }, [width, height])
 

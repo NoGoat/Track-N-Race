@@ -38,3 +38,8 @@ the fork.
 - Replaced per-series `RG32F` WebGL textures with lazy shared GPU pages: one
   `R32F` X texture plus an `R32F` texture-array containing every aligned Y
   channel. Uploads and drawing now follow physical ring/page boundaries.
+- Added one visibility-aware frame scheduler for scrolling, deferred model
+  redraws, and hover coalescing. Active charts share a frame timestamp, hidden
+  charts are parked, and animation frames stop when no chart needs work.
+- Removed the legacy point-array ingestion path, per-chart animation loops,
+  the unused uPlot scrolling hook, and the obsolete domain-search helper.

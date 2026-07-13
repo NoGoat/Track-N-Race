@@ -1,6 +1,8 @@
 import { scaleLinear } from "d3-scale";
 import { ResolvedCoreOptions, TimeChartSeriesOptions } from '../options';
 import { EventDispatcher } from '../utils';
+import { timeChartFrameScheduler } from './frameScheduler';
+import type { FrameScheduleHandle } from './frameScheduler';
 
 export interface DataPoint {
     x: number;
@@ -16,8 +18,16 @@ export class RenderModel {
     yRange: MinMax | null = null;
     private fixedYMin = NaN;
     private fixedYMax = NaN;
+    private redrawRequested = false;
+    private readonly frameHandle: FrameScheduleHandle;
 
-    constructor(private options: ResolvedCoreOptions) {
+    constructor(private options: ResolvedCoreOptions, element: HTMLElement) {
+        this.frameHandle = timeChartFrameScheduler.register(element, () => {
+            if (!this.redrawRequested || this.abortController.signal.aborted) return false;
+            this.redrawRequested = false;
+            this.update();
+            return false;
+        });
         if (options.xRange !== 'auto' && options.xRange) {
             this.xScale.domain([options.xRange.min, options.xRange.max])
         }
@@ -52,11 +62,15 @@ export class RenderModel {
     dispose() {
         if (!this.abortController.signal.aborted) {
             this.abortController.abort();
+            this.frameHandle.unregister();
             this.disposing.dispatch();
         }
     }
 
     update() {
+        // A synchronous scheduler-owned full draw satisfies any coalesced
+        // redraw that was already waiting for this chart.
+        this.redrawRequested = false;
         this.updateModel();
         this.updated.dispatch();
         for (const s of this.options.series) {
@@ -118,19 +132,10 @@ export class RenderModel {
         }
     }
 
-    private redrawRequested = false;
     requestRedraw() {
-        if (this.redrawRequested) {
-            return;
-        }
+        if (this.redrawRequested || this.abortController.signal.aborted) return;
         this.redrawRequested = true;
-        const signal = this.abortController.signal;
-        requestAnimationFrame((time) => {
-            this.redrawRequested = false;
-            if (!signal.aborted) {
-                this.update();
-            }
-        });
+        this.frameHandle.wake();
     }
 
     pxPoint(dataPoint: DataPoint) {

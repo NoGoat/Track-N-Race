@@ -72,7 +72,7 @@ export class Legend {
 
                 item.addEventListener('click', (ev) => {
                     s.visible = !s.visible;
-                    this.model.update();
+                    this.model.requestRedraw();
                 })
 
                 this.items.set(s, {item, example});
