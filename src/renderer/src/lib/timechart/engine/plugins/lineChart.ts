@@ -1,7 +1,6 @@
 import { DataPoint, RenderModel } from "../core/renderModel";
 import { resolveColorRGBA, ResolvedCoreOptions, TimeChartSeriesOptions, LineType } from '../options';
 import { domainSearch } from '../utils';
-import { vec2 } from 'gl-matrix';
 import { TimeChartPlugin } from '.';
 import { LinkedWebGLProgram, throwIfFalsy } from './webGLUtils';
 import { DataPointsBuffer } from "../core/dataPointsBuffer";
@@ -11,25 +10,26 @@ const BUFFER_TEXTURE_WIDTH = 256;
 const BUFFER_TEXTURE_HEIGHT = 2048;
 const BUFFER_POINT_CAPACITY = BUFFER_TEXTURE_WIDTH * BUFFER_TEXTURE_HEIGHT;
 const BUFFER_INTERVAL_CAPACITY = BUFFER_POINT_CAPACITY - 2;
+const dataPointX = (point: DataPoint) => point.x;
 
 class ShaderUniformData {
-    data;
-    ubo;
+    readonly data: ArrayBuffer;
+    readonly ubo: WebGLBuffer;
+    readonly modelScale: Float32Array;
+    readonly modelTranslate: Float32Array;
+    readonly projectionScale: Float32Array;
 
     constructor(private gl: WebGL2RenderingContext, size: number) {
         this.data = new ArrayBuffer(size);
+        // These views target fixed std140 offsets and live for the lifetime of
+        // the renderer. The upstream getters allocated three new views during
+        // every draw.
+        this.modelScale = new Float32Array(this.data, 0, 2);
+        this.modelTranslate = new Float32Array(this.data, 2 * 4, 2);
+        this.projectionScale = new Float32Array(this.data, 4 * 4, 2);
         this.ubo = throwIfFalsy(gl.createBuffer());
         gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
         gl.bufferData(gl.UNIFORM_BUFFER, this.data, gl.DYNAMIC_DRAW);
-    }
-    get modelScale() {
-        return new Float32Array(this.data, 0, 2);
-    }
-    get modelTranslate() {
-        return new Float32Array(this.data, 2 * 4, 2);
-    }
-    get projectionScale() {
-        return new Float32Array(this.data, 4 * 4, 2);
     }
 
     upload(index = 0) {
@@ -194,20 +194,20 @@ class SeriesSegmentVertexArray {
     /**
      * @param renderInterval [start, end) interval of data points, start from 0
      */
-    draw(renderInterval: { start: number, end: number }, type: LineType) {
-        const first = Math.max(0, renderInterval.start);
-        const last = Math.min(BUFFER_INTERVAL_CAPACITY, renderInterval.end)
+    draw(renderStart: number, renderEnd: number, type: LineType) {
+        const first = Math.max(0, renderStart);
+        const last = Math.min(BUFFER_INTERVAL_CAPACITY, renderEnd)
         const count = last - first
 
         const gl = this.gl;
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.dataBuffer);
         if (type === LineType.Line) {
-            gl.drawArrays(gl.TRIANGLE_STRIP, first * 4, count * 4 + (last !== renderInterval.end ? 2 : 0));
+            gl.drawArrays(gl.TRIANGLE_STRIP, first * 4, count * 4 + (last !== renderEnd ? 2 : 0));
         } else if (type === LineType.Step) {
             let firstP = first * 4;
             let countP = count * 4 + 2;
-            if (first === renderInterval.start) {
+            if (first === renderStart) {
                 firstP -= 2;
                 countP += 2;
             }
@@ -356,14 +356,13 @@ class SeriesVertexArray {
         this.pushBack();
     }
 
-    draw(renderDomain: { min: number, max: number }) {
+    draw(renderMin: number, renderMax: number) {
         const data = this.series.data;
-        if (this.segments.length === 0 || data[0].x > renderDomain.max || data[data.length - 1].x < renderDomain.min)
+        if (this.segments.length === 0 || data[0].x > renderMax || data[data.length - 1].x < renderMin)
             return;
 
-        const key = (d: DataPoint) => d.x
-        const firstDP = domainSearch(data, 1, data.length, renderDomain.min, key) - 1;
-        const lastDP = domainSearch(data, firstDP, data.length - 1, renderDomain.max, key)
+        const firstDP = domainSearch(data, 1, data.length, renderMin, dataPointX) - 1;
+        const lastDP = domainSearch(data, firstDP, data.length - 1, renderMax, dataPointX)
         const startInterval = firstDP + this.validStart;
         const endInterval = lastDP + this.validStart;
         const startArray = Math.floor(startInterval / BUFFER_INTERVAL_CAPACITY);
@@ -371,10 +370,11 @@ class SeriesVertexArray {
 
         for (let i = startArray; i < endArray; i++) {
             const arrOffset = i * BUFFER_INTERVAL_CAPACITY
-            this.segments[i].draw({
-                start: startInterval - arrOffset,
-                end: endInterval - arrOffset,
-            }, this.series.lineType);
+            this.segments[i].draw(
+                startInterval - arrOffset,
+                endInterval - arrOffset,
+                this.series.lineType,
+            );
         }
     }
 }
@@ -382,12 +382,22 @@ class SeriesVertexArray {
 export class LineChartRenderer {
     private lineProgram = new LineProgram(this.gl, this.options.debugWebGL);
     private nativeLineProgram = new NativeLineProgram(this.gl, this.options.debugWebGL);
-    private uniformBuffer;
+    private uniformBuffer: ShaderUniformData;
     private arrays = new Map<TimeChartSeriesOptions, SeriesVertexArray>();
     private height = 0;
     private width = 0;
     private renderHeight = 0;
     private renderWidth = 0;
+    private xRangeStart = 0;
+    private xRangeEnd = 0;
+    private yRangeStart = 0;
+    private yRangeEnd = 0;
+    private xDomainMin = 0;
+    private xUnitsPerPixel = 1;
+    private colorCache = new Map<TimeChartSeriesOptions, {
+        source: ResolvedCoreOptions['color'] | TimeChartSeriesOptions['color'];
+        rgba: ReturnType<typeof resolveColorRGBA>;
+    }>();
 
     constructor(
         private model: RenderModel,
@@ -415,15 +425,32 @@ export class LineChartRenderer {
     syncViewport() {
         this.renderWidth = this.width - this.options.renderPaddingLeft - this.options.renderPaddingRight;
         this.renderHeight = this.height - this.options.renderPaddingTop - this.options.renderPaddingBottom;
-
-        const scale = vec2.fromValues(this.renderWidth, this.renderHeight)
-        vec2.divide(scale, [2., 2.], scale)
-        this.uniformBuffer.projectionScale.set(scale);
+        const projection = this.uniformBuffer.projectionScale;
+        projection[0] = 2 / this.renderWidth;
+        projection[1] = 2 / this.renderHeight;
     }
 
     onResize(width: number, height: number) {
         this.height = height;
         this.width = width;
+        // Projection geometry and scale ranges are resize-invariant. Keep them
+        // out of the 60 Hz draw path.
+        const xRange = this.model.xScale.range();
+        const yRange = this.model.yScale.range();
+        this.xRangeStart = Number(xRange[0]);
+        this.xRangeEnd = Number(xRange[1]);
+        this.yRangeStart = Number(yRange[0]);
+        this.yRangeEnd = Number(yRange[1]);
+        this.syncViewport();
+    }
+
+    private colorFor(series: TimeChartSeriesOptions) {
+        const source = series.color ?? this.options.color;
+        const cached = this.colorCache.get(series);
+        if (cached?.source === source) return cached.rgba;
+        const rgba = resolveColorRGBA(source);
+        this.colorCache.set(series, { source, rgba });
+        return rgba;
     }
 
     drawFrame() {
@@ -431,15 +458,18 @@ export class LineChartRenderer {
         this.syncDomain();
         this.uniformBuffer.upload();
         const gl = this.gl;
+        let activeProgram: LineProgram | NativeLineProgram | null = null;
         for (const [ds, arr] of this.arrays) {
             if (!ds.visible) {
                 continue;
             }
 
             const prog = ds.lineType === LineType.NativeLine || ds.lineType === LineType.NativePoint ? this.nativeLineProgram : this.lineProgram;
-            prog.use();
-            const color = resolveColorRGBA(ds.color ?? this.options.color);
-            gl.uniform4fv(prog.locations.uColor, color);
+            if (prog !== activeProgram) {
+                prog.use();
+                activeProgram = prog;
+            }
+            gl.uniform4fv(prog.locations.uColor, this.colorFor(ds));
 
             const lineWidth = ds.lineWidth ?? this.options.lineWidth;
             if (prog instanceof LineProgram) {
@@ -454,11 +484,11 @@ export class LineChartRenderer {
                     gl.uniform1f(prog.locations.uPointSize, lineWidth * this.options.pixelRatio);
             }
 
-            const renderDomain = {
-                min: this.model.xScale.invert(this.options.renderPaddingLeft - lineWidth / 2),
-                max: this.model.xScale.invert(this.width - this.options.renderPaddingRight + lineWidth / 2),
-            };
-            arr.draw(renderDomain);
+            const renderMin = this.xDomainMin +
+                (this.options.renderPaddingLeft - lineWidth / 2 - this.xRangeStart) * this.xUnitsPerPixel;
+            const renderMax = this.xDomainMin +
+                (this.width - this.options.renderPaddingRight + lineWidth / 2 - this.xRangeStart) * this.xUnitsPerPixel;
+            arr.draw(renderMin, renderMax);
         }
         if (this.options.debugWebGL) {
             const err = gl.getError();
@@ -469,7 +499,6 @@ export class LineChartRenderer {
     }
 
     syncDomain() {
-        this.syncViewport();
         const m = this.model;
 
         // for any x,
@@ -477,22 +506,43 @@ export class LineChartRenderer {
         // => s = (range[1] - range[0]) / (domain[1] - domain[0])
         //    t = (range[0] - W / 2 - padding) / s - domain[0]
 
-        // Not using vec2 for precision
-        const xDomain = m.xScale.domain();
-        const xRange = m.xScale.range();
-        const yDomain = m.yScale.domain();
-        const yRange = m.yScale.range();
-        const s = [
-            (xRange[1] - xRange[0]) / (xDomain[1] - xDomain[0]),
-            (yRange[0] - yRange[1]) / (yDomain[1] - yDomain[0]),
-        ];
-        const t = [
-            (xRange[0] - this.renderWidth / 2 - this.options.renderPaddingLeft) / s[0] - xDomain[0],
-            -(yRange[0] - this.renderHeight / 2 - this.options.renderPaddingTop) / s[1] - yDomain[0],
-        ];
+        // Scalar math preserves precision and avoids temporary vectors/arrays.
+        let xMin: number;
+        let xMax: number;
+        const configuredX = this.options.xRange;
+        if (!this.options.realTime && configuredX && configuredX !== 'auto') {
+            xMin = Number(configuredX.min);
+            xMax = Number(configuredX.max);
+        } else {
+            const domain = m.xScale.domain();
+            xMin = Number(domain[0]);
+            xMax = Number(domain[1]);
+        }
 
-        this.uniformBuffer.modelScale.set(s);
-        this.uniformBuffer.modelTranslate.set(t);
+        let yMin: number;
+        let yMax: number;
+        const configuredY = this.options.yRange;
+        if (configuredY && configuredY !== 'auto') {
+            yMin = configuredY.min;
+            yMax = configuredY.max;
+        } else {
+            const domain = m.yScale.domain();
+            yMin = Number(domain[0]);
+            yMax = Number(domain[1]);
+        }
+
+        const sx = (this.xRangeEnd - this.xRangeStart) / (xMax - xMin);
+        const sy = (this.yRangeStart - this.yRangeEnd) / (yMax - yMin);
+        const uniforms = this.uniformBuffer;
+        uniforms.modelScale[0] = sx;
+        uniforms.modelScale[1] = sy;
+        uniforms.modelTranslate[0] =
+            (this.xRangeStart - this.renderWidth / 2 - this.options.renderPaddingLeft) / sx - xMin;
+        uniforms.modelTranslate[1] =
+            -(this.yRangeStart - this.renderHeight / 2 - this.options.renderPaddingTop) / sy - yMin;
+
+        this.xDomainMin = xMin;
+        this.xUnitsPerPixel = 1 / sx;
     }
 }
 

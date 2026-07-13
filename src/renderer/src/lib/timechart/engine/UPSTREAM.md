@@ -24,3 +24,6 @@ the fork.
 - Coalesced hover work behind one animation-frame pointer stream, removed
   per-move layout reads and nearest-point allocations, and made tooltip DOM
   updates allocation-light.
+- Cached frame-invariant WebGL line-renderer state: retained uniform views,
+  resize-only projection geometry, source-aware parsed colors, allocation-free
+  explicit-domain math, numeric render intervals, and consecutive shader binds.
