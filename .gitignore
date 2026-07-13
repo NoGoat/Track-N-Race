@@ -5,6 +5,9 @@ node_modules/
 dist/
 reference_docs/
 
+.agents
+tools
+
 # Python
 __pycache__/
 *.py[cod]
