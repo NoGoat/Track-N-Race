@@ -60,45 +60,44 @@ export function createAreaFillPlugin(defs: AreaFillDef[]): TimeChartPlugin {
           const data = chart.options.series[def.seriesIndex]?.data
           if (!data || data.length === 0) continue
 
-          let lo = 0, hi = data.length
-          while (lo < hi) { const mid = (lo + hi) >> 1; if (data[mid].x < domain[0]) lo = mid + 1; else hi = mid }
-          const start = Math.max(0, lo - 1)
-          lo = start; hi = data.length
-          while (lo < hi) { const mid = (lo + hi) >> 1; if (data[mid].x <= domain[1]) lo = mid + 1; else hi = mid }
-          const end = Math.min(data.length - 1, lo)
+          const start = Math.max(0, data.lowerBoundX(Number(domain[0])) - 1)
+          const end = Math.min(data.length - 1, data.lowerBoundX(Number(domain[1]), start))
           if (end < start) continue
 
           const baselineY = Math.max(plotTop, Math.min(plotBottom, yScale(def.baseline)))
-          const first = data[start]
-          const firstX = xScale(first.x)
+          let previousX = data.xAt(start)
+          let previousY = data.yAt(start)
+          const firstX = xScale(previousX)
           ctx.beginPath()
           ctx.moveTo(firstX, baselineY)
-          ctx.lineTo(firstX, yScale(first.y))
+          ctx.lineTo(firstX, yScale(previousY))
 
-          let previous = first
           let previousPixel = Math.floor(firstX)
           for (let i = start + 1; i <= end; i++) {
-            const current = data[i]
-            const currentX = xScale(current.x)
+            const x = data.xAt(i)
+            const y = data.yAt(i)
+            const currentX = xScale(x)
             const currentPixel = Math.floor(currentX)
             // Multiple telemetry samples landing on one screen pixel cannot
             // add visible detail. Keep the last value and emit once per pixel.
             if (currentPixel === previousPixel && i !== end) {
-              previous = current
+              previousX = x
+              previousY = y
               continue
             }
             if (def.stepped) {
               const step = def.stepLocation ?? 1
-              const transitionX = xScale(previous.x * (1 - step) + current.x * step)
-              ctx.lineTo(transitionX, yScale(previous.y))
-              ctx.lineTo(transitionX, yScale(current.y))
+              const transitionX = xScale(previousX * (1 - step) + x * step)
+              ctx.lineTo(transitionX, yScale(previousY))
+              ctx.lineTo(transitionX, yScale(y))
             } else {
-              ctx.lineTo(currentX, yScale(current.y))
+              ctx.lineTo(currentX, yScale(y))
             }
-            previous = current
+            previousX = x
+            previousY = y
             previousPixel = currentPixel
           }
-          ctx.lineTo(xScale(previous.x), baselineY)
+          ctx.lineTo(xScale(previousX), baselineY)
           ctx.closePath()
           ctx.fillStyle = def.color
           ctx.fill()

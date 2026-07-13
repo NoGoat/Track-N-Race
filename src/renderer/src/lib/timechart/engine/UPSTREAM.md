@@ -32,3 +32,6 @@ the fork.
   texel where shaders require a segment neighbour.
 - Reduced each RG32F series texture page from 256 x 2048 to 256 x 256 points
   (4 MiB to 512 KiB); larger buffers continue to use overlapping pages.
+- Replaced per-series `DataPointsBuffer` object arrays with a paged aligned
+  circular store: one Float64 X timeline, Float32 Y channels, logical-head
+  eviction, shared binary search, rebuild tracking, and incremental dirty spans.

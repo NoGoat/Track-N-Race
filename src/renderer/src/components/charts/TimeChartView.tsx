@@ -3,7 +3,8 @@ import { useSize } from '../../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
-import { TimeChartDataBridge, type DataPoint } from '../../lib/timechart/dataBridge'
+import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
+import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { createTimeChartDrawProfilerPlugin } from '../../hooks/useTimeChartDrawProfiler'
@@ -136,7 +137,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
-  const seriesBuffersRef = useRef<DataPoint[][]>([])
+  const seriesBuffersRef = useRef<readonly AlignedSeriesData[]>([])
   const dataDirtyRef = useRef(false)
   // Auto y-range state: running min/max plus the last full-rescan timestamp.
   const autoRef = useRef({ min: Infinity, max: -Infinity, lastFull: 0 })
@@ -190,6 +191,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     if (!el) return
 
     const defs = seriesDefs.current
+    const bridge = new TimeChartDataBridge<T>(getXRef.current, defs.map((s) => s.getY))
     const plugins: Record<string, unknown> = {
       lineChart: corePlugins.lineChart,
       crosshair: corePlugins.crosshair,
@@ -231,13 +233,13 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       renderPaddingLeft: paddingLeft,
       lineWidth: 1.5,
       yRange: { min: b.lower, max: b.upper },
-      series: defs.map((s) => ({
+      series: defs.map((s, index) => ({
         name: s.label,
         color: s.color,
         lineWidth: s.lineWidth ?? 1.5,
         lineType: s.lineType ?? TimeChart.LineType.Line,
         stepLocation: s.stepLocation ?? 1,
-        data: [] as DataPoint[],
+        data: bridge.series[index],
       })),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       plugins: plugins as any,
@@ -245,10 +247,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     } as any)
     chartRef.current = chart
 
-    // Grab the (now DataPointsBuffer-backed) series data arrays and wire the bridge.
-    const buffers = chart.options.series.map((s) => s.data as unknown as DataPoint[])
-    seriesBuffersRef.current = buffers
-    const bridge = new TimeChartDataBridge<T>(buffers, getXRef.current, defs.map((s) => s.getY))
+    seriesBuffersRef.current = bridge.series
     bridgeRef.current = bridge
 
     // Crosshair uses currentColor; the nearest-point dot centre uses
@@ -258,37 +257,31 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
 
     // Custom HTML tooltip: snap to the nearest sample (single index across all
     // series, matching uPlot's cursor.idx), reusing the shared tooltip element.
-    let lastPoint: DataPoint | undefined
+    let lastX = NaN
     let lastFormatter: typeof tooltipFormatRef.current | undefined
     let lastHtml = ''
     const onMove = (contentX: number, contentY: number) => {
       const bridge = bridgeRef.current
       const chart = chartRef.current
       if (!bridge || !chart) return
-      const xs = bridge.xBuffer
-      if (xs.length === 0) { hide(); return }
+      if (bridge.length === 0) { hide(); return }
       const px = contentX + paddingLeft
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dataX = (chart.model.xScale as any).invert(px) as number
       // nearest index by binary search on the shared x buffer
-      let lo = 0, hi = xs.length - 1
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1
-        if (xs[mid].x < dataX) lo = mid + 1
-        else hi = mid
-      }
-      if (lo > 0 && Math.abs(xs[lo - 1].x - dataX) <= Math.abs(xs[lo].x - dataX)) lo -= 1
-      const idx = lo
-      const point = xs[idx]
+      let idx = bridge.lowerBoundX(dataX)
+      if (idx === bridge.length) idx--
+      else if (idx > 0 && Math.abs(bridge.xAt(idx - 1) - dataX) <= Math.abs(bridge.xAt(idx) - dataX)) idx--
+      const x = bridge.xAt(idx)
       const formatter = tooltipFormatRef.current
       // Pointer events frequently remain on the same telemetry sample. Only
       // rebuild tooltip arrays/HTML when that snapped sample (or formatter)
       // actually changes; positioning remains smooth every frame.
-      if (point !== lastPoint || formatter !== lastFormatter) {
+      if (x !== lastX || formatter !== lastFormatter) {
         const bufs = seriesBuffersRef.current
-        const values = bufs.map((buf) => (buf[idx] ? buf[idx].y : NaN))
-        lastHtml = formatter(point.x, values)
-        lastPoint = point
+        const values = bufs.map((buf) => idx < buf.length ? buf.yAt(idx) : NaN)
+        lastHtml = formatter(x, values)
+        lastX = x
         lastFormatter = formatter
       }
       show(lastHtml, px, contentY + paddingTop, chart.clientWidth, chart.clientHeight)
@@ -342,16 +335,14 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
         const bufs = seriesBuffersRef.current
         const b0 = bufs[0]
         if (b0 && b0.length > 0) {
-          // Scan only the visible window. The bridge keeps some off-window
-          // points in the buffer (to amortise trimming), so binary-search the
-          // window start rather than scanning those stale points.
-          const startX = b0[b0.length - 1].x - windowSeconds
-          let lb = 0, ub = b0.length
-          while (lb < ub) { const mid = (lb + ub) >> 1; if (b0[mid].x < startX) lb = mid + 1; else ub = mid }
+          // Scan only the visible window. Binary-searching the aligned X ring
+          // also keeps this correct when a caller retains a wider source span.
+          const startX = b0.xAt(b0.length - 1) - windowSeconds
+          const lb = b0.lowerBoundX(startX)
           let lo = Infinity, hi = -Infinity
           for (const buf of bufs) {
             for (let i = lb; i < buf.length; i++) {
-              const v = buf[i].y
+              const v = buf.yAt(i)
               if (v < lo) lo = v
               if (v > hi) hi = v
             }

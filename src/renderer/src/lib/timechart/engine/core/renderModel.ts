@@ -60,7 +60,7 @@ export class RenderModel {
         this.updateModel();
         this.updated.dispatch();
         for (const s of this.options.series) {
-            s.data._synced();
+            s.data.markSynced();
         }
     }
 
@@ -73,8 +73,8 @@ export class RenderModel {
             const d = s.data;
             if (d.length === 0) continue;
             hasData = true;
-            const firstX = d[0].x;
-            const lastX = d[d.length - 1].x;
+            const firstX = d.xAt(0);
+            const lastX = d.xAt(d.length - 1);
             if (firstX < minDomain) minDomain = firstX;
             if (lastX > maxDomain) maxDomain = lastX;
         }
@@ -101,14 +101,9 @@ export class RenderModel {
             let maxY = this.yRange?.max ?? -Infinity;
             for (const s of o.series) {
                 const d = s.data;
-                const backStart = d.length - d.pushed_back;
-                for (let i = 0; i < d.pushed_front; i++) {
-                    const y = d[i].y;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
+                const backStart = d.resetPending ? 0 : d.length - d.pushedBack;
                 for (let i = backStart; i < d.length; i++) {
-                    const y = d[i].y;
+                    const y = d.yAt(i);
                     if (y < minY) minY = y;
                     if (y > maxY) maxY = y;
                 }

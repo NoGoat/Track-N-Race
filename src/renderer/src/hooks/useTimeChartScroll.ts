@@ -10,7 +10,7 @@ import type { TChart } from '../lib/timechart/tc'
 //   u.redraw()                    ->   model.update()
 //   u.data changed?               ->   dataDirtyRef (bridge sets it when it mutates)
 // model.update() is TimeChart's synchronous redraw (updateModel + dispatch +
-// buffer _synced), so like uPlot's setScale it performs exactly one draw per call.
+// buffer synchronization), so like uPlot's setScale it performs one draw per call.
 // Keeping our own rAF loop (rather than TimeChart's realTime auto-scroll) lets us
 // slide against wall-clock time and share the exact stall/pause behaviour.
 
@@ -109,7 +109,7 @@ export function useTimeChartScroll(
       plugins.lineChart.drawFrame()
       // drawFrame synchronizes new GPU data. Mark the buffers clean just as
       // RenderModel.update() normally does, preventing repeat uploads.
-      for (const series of chart.options.series) series.data._synced()
+      for (const series of chart.options.series) series.data.markSynced()
     }
 
     const loop = (frameTime: number) => {

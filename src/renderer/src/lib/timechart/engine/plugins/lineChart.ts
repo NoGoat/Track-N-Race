@@ -1,9 +1,8 @@
-import { DataPoint, RenderModel } from "../core/renderModel";
+import { RenderModel } from "../core/renderModel";
 import { resolveColorRGBA, ResolvedCoreOptions, TimeChartSeriesOptions, LineType } from '../options';
-import { domainSearch } from '../utils';
 import { TimeChartPlugin } from '.';
 import { LinkedWebGLProgram, throwIfFalsy } from './webGLUtils';
-import { DataPointsBuffer } from "../core/dataPointsBuffer";
+import { SeriesData } from "../core/alignedData";
 
 
 const BUFFER_TEXTURE_WIDTH = 256;
@@ -13,7 +12,6 @@ const BUFFER_TEXTURE_WIDTH = 256;
 const BUFFER_TEXTURE_HEIGHT = 256;
 const BUFFER_POINT_CAPACITY = BUFFER_TEXTURE_WIDTH * BUFFER_TEXTURE_HEIGHT;
 const BUFFER_INTERVAL_CAPACITY = BUFFER_POINT_CAPACITY - 2;
-const dataPointX = (point: DataPoint) => point.x;
 
 class ShaderUniformData {
     readonly data: ArrayBuffer;
@@ -156,7 +154,7 @@ class SeriesSegmentVertexArray {
 
     constructor(
         private gl: WebGL2RenderingContext,
-        private dataPoints: DataPointsBuffer,
+        private dataPoints: SeriesData,
     ) {
         this.dataBuffer = throwIfFalsy(gl.createTexture());
         gl.bindTexture(gl.TEXTURE_2D, this.dataBuffer);
@@ -189,9 +187,8 @@ class SeriesSegmentVertexArray {
             for (let i = 0; i < count; i++) {
                 const texturePos = textureStart + i;
                 const dataIndex = Math.max(Math.min(start + texturePos - bufferPos, dps.length - 1), 0);
-                const point = dps[dataIndex];
-                this.uploadBuffer[i * 2] = point.x;
-                this.uploadBuffer[i * 2 + 1] = point.y;
+                this.uploadBuffer[i * 2] = dps.xAt(dataIndex);
+                this.uploadBuffer[i * 2 + 1] = dps.yAt(dataIndex);
             }
             // WebGL consumes exactly width * height * 2 floats; the unused tail
             // of the retained row buffer is ignored.
@@ -248,10 +245,10 @@ class SeriesVertexArray {
     }
 
     private popFront() {
-        if (this.series.data.poped_front === 0)
+        if (this.series.data.poppedFront === 0)
             return;
 
-        this.validStart += this.series.data.poped_front;
+        this.validStart += this.series.data.poppedFront;
 
         while (this.validStart > BUFFER_INTERVAL_CAPACITY) {
             const activeArray = this.segments[0];
@@ -262,54 +259,10 @@ class SeriesVertexArray {
 
         this.segments[0].syncPoints(0, 0, this.validStart);
     }
-    private popBack() {
-        if (this.series.data.poped_back === 0)
-            return;
-
-        this.validEnd -= this.series.data.poped_back;
-
-        while (this.validEnd < BUFFER_POINT_CAPACITY - BUFFER_INTERVAL_CAPACITY) {
-            const activeArray = this.segments[this.segments.length - 1];
-            activeArray.delete();
-            this.segments.pop();
-            this.validEnd += BUFFER_INTERVAL_CAPACITY;
-        }
-
-        this.segments[this.segments.length - 1].syncPoints(this.series.data.length, 0, this.validEnd);
-    }
-
     private newArray() {
         return new SeriesSegmentVertexArray(this.gl, this.series.data);
     }
-    private pushFront() {
-        let numDPtoAdd = this.series.data.pushed_front;
-        if (numDPtoAdd === 0)
-            return;
-
-        const newArray = () => {
-            this.segments.unshift(this.newArray());
-            this.validStart = BUFFER_POINT_CAPACITY;
-        }
-
-        if (this.segments.length === 0) {
-            newArray();
-            this.validEnd = this.validStart = BUFFER_POINT_CAPACITY - 1;
-        }
-
-        while (true) {
-            const activeArray = this.segments[0];
-            const n = Math.min(this.validStart, numDPtoAdd);
-            activeArray.syncPoints(numDPtoAdd - n, n, this.validStart - n);
-            numDPtoAdd -= this.validStart - (BUFFER_POINT_CAPACITY - BUFFER_INTERVAL_CAPACITY);
-            this.validStart -= n;
-            if (this.validStart > 0)
-                break;
-            newArray();
-        }
-    }
-
-    private pushBack() {
-        let numDPtoAdd = this.series.data.pushed_back;
+    private pushBack(numDPtoAdd = this.series.data.pushedBack) {
         if (numDPtoAdd === 0)
             return
 
@@ -346,35 +299,30 @@ class SeriesVertexArray {
 
     syncBuffer() {
         const d = this.series.data;
-        if (d.length - d.pushed_back - d.pushed_front < 2) {
+        if (d.resetPending) {
             this.deinit();
-            d.poped_front = d.poped_back = 0;
+            if (d.length >= 2) this.pushBack(d.length);
+            return;
+        }
+        if (d.length < 2) {
+            this.deinit();
+            return;
         }
         if (this.segments.length === 0) {
-            if (d.length >= 2) {
-                if (d.pushed_back > d.pushed_front) {
-                    d.pushed_back = d.length;
-                    this.pushBack();
-                } else {
-                    d.pushed_front = d.length;
-                    this.pushFront();
-                }
-            }
+            this.pushBack(d.length);
             return;
         }
         this.popFront();
-        this.popBack();
-        this.pushFront();
         this.pushBack();
     }
 
     draw(renderMin: number, renderMax: number) {
         const data = this.series.data;
-        if (this.segments.length === 0 || data[0].x > renderMax || data[data.length - 1].x < renderMin)
+        if (this.segments.length === 0 || data.xAt(0) > renderMax || data.xAt(data.length - 1) < renderMin)
             return;
 
-        const firstDP = domainSearch(data, 1, data.length, renderMin, dataPointX) - 1;
-        const lastDP = domainSearch(data, firstDP, data.length - 1, renderMax, dataPointX)
+        const firstDP = data.lowerBoundX(renderMin, 1, data.length) - 1;
+        const lastDP = data.lowerBoundX(renderMax, firstDP, data.length - 1)
         const startInterval = firstDP + this.validStart;
         const endInterval = lastDP + this.validStart;
         const startArray = Math.floor(startInterval / BUFFER_INTERVAL_CAPACITY);

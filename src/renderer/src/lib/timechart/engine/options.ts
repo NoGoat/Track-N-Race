@@ -1,6 +1,5 @@
 import { ColorCommonInstance, ColorSpaceObject, rgb } from 'd3-color';
-import { DataPointsBuffer } from './core/dataPointsBuffer';
-import { DataPoint } from './core/renderModel';
+import { SeriesData } from './core/alignedData';
 import { TimeChartPlugin } from './plugins';
 
 type ColorSpecifier = ColorSpaceObject | ColorCommonInstance | string
@@ -99,7 +98,7 @@ export enum LineType {
 };
 
 export interface TimeChartSeriesOptions {
-    data: DataPointsBuffer;
+    data: SeriesData;
     lineWidth?: number;
     name: string;
     color?: ColorSpecifier;

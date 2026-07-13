@@ -1,131 +1,83 @@
-// Bridges the telemetry store's re-published windowed row slices into the
-// mutation model TimeChart requires. uPlot let us reassign the whole
-// `AlignedData` every frame; TimeChart syncs series data to the GPU and after
-// that will only accept mutations at the *ends* of the buffer (push/pop at the
-// back, shift/unshift/splice at the front) — the DataPointsBuffer tracks those
-// deltas (pushed_back / poped_front / …) so the renderer can sync incrementally.
-//
-// The store hands us the latest window each publication (identity changes every
-// time, content overlaps the previous window as it slides). We diff against the
-// last x we pushed: append genuinely-new tail points, trim points that fell off
-// the front of the window, and — when the incoming window is not a forward-
-// contiguous continuation (playback seek / flush / session restart) — rebuild
-// the whole buffer from scratch. Only end mutations are ever issued, so the
-// GPU-sync contract holds.
+import { ALIGNED_MAX_POINTS, AlignedDataBuffer, type AlignedSeriesData } from './engine/core/alignedData'
 
 export interface DataPoint {
   x: number
   y: number
 }
 
-// The series `data` arrays handed to TimeChart are DataPointsBuffer instances
-// (an Array subclass); we only ever touch the standard Array surface here, and
-// its overridden push/shift/splice keep the GPU-sync bookkeeping correct.
-type Buffer = DataPoint[]
-
-// Out-of-window points are trimmed in batches of this many rather than every
-// publication, so the O(buffer) front-splice is amortised to O(new points).
-const TRIM_BATCH = 2048
-
-// First index i where getX(rows[i]) > x, assuming rows is sorted ascending by
-// getX. Returns rows.length if none. Strictly-greater so an equal trailing x is
-// not re-pushed.
-function firstIndexAfter<T>(rows: readonly T[], x: number, getX: (r: T) => number): number {
-  let lo = 0
-  let hi = rows.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (getX(rows[mid]) > x) hi = mid
-    else lo = mid + 1
-  }
-  return lo
-}
-
+// Reconciles the telemetry store's republished window with one aligned ring.
+// X is evaluated and stored once per row; all Y channels share that timeline.
 export class TimeChartDataBridge<T> {
+  readonly data: AlignedDataBuffer
+  readonly series: readonly AlignedSeriesData[]
   private lastX = NaN
+  private readonly yScratch: Float64Array
 
   constructor(
-    private readonly buffers: Buffer[],
     private readonly getX: (row: T) => number,
-    private readonly getYs: ((row: T) => number)[],
-  ) {}
-
-  /** The x-sorted point buffer (series 0), for cursor nearest-index search. */
-  get xBuffer(): readonly DataPoint[] {
-    return this.buffers[0]
+    private readonly getYs: readonly ((row: T) => number)[],
+  ) {
+    this.data = new AlignedDataBuffer(getYs.length)
+    this.series = this.data.series
+    this.yScratch = new Float64Array(getYs.length)
   }
 
-  /**
-   * Reconcile the buffers with the latest window. Returns true if any buffer
-   * changed (i.e. a redraw is warranted).
-   */
+  get length() { return this.data.length }
+  xAt(index: number) { return this.data.xAt(index) }
+  yAt(channel: number, index: number) { return this.data.yAt(channel, index) }
+  lowerBoundX(value: number, start = 0, end = this.length) {
+    return this.data.lowerBoundX(value, start, end)
+  }
+
   sync(rows: readonly T[]): boolean {
     const n = rows.length
     if (n === 0) {
-      if (this.buffers[0].length > 0) {
-        this.rebuild(rows)
-        this.lastX = NaN
-        return true
-      }
-      return false
+      if (this.data.length === 0) return false
+      this.data.clear()
+      this.lastX = NaN
+      return true
     }
 
     const firstX = this.getX(rows[0])
     const lastRowX = this.getX(rows[n - 1])
-    const haveData = this.buffers[0].length > 0 && !Number.isNaN(this.lastX)
-
-    // Contiguous forward continuation: the new window still overlaps our tail
-    // (firstX <= lastX) and does not go backwards (lastRowX >= lastX).
-    const contiguous = haveData && lastRowX >= this.lastX && firstX <= this.lastX
+    const contiguous = this.data.length > 0 && !Number.isNaN(this.lastX) &&
+      lastRowX >= this.lastX && firstX <= this.lastX
     if (!contiguous) {
       this.rebuild(rows)
       this.lastX = lastRowX
       return true
     }
 
-    let changed = false
-
-    // Append the genuinely-new tail points.
-    const k = firstIndexAfter(rows, this.lastX, this.getX)
-    if (k < n) {
-      for (let s = 0; s < this.buffers.length; s++) {
-        const buf = this.buffers[s]
-        const getY = this.getYs[s]
-        for (let i = k; i < n; i++) buf.push({ x: this.getX(rows[i]), y: getY(rows[i]) })
-      }
-      this.lastX = lastRowX
-      changed = true
+    let lo = 0
+    let hi = n
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (this.getX(rows[mid]) > this.lastX) hi = mid
+      else lo = mid + 1
     }
+    const appendStart = lo
+    for (let i = appendStart; i < n; i++) this.appendRow(rows[i])
+    if (appendStart < n) this.lastX = lastRowX
 
-    // Trim points that fell off the front of the window. `splice(0, k)` reindexes
-    // the whole array — O(buffer) regardless of k — so trimming every publication
-    // is O(window) per buffer per publication, which is what made large windows
-    // with many series lag. Instead let out-of-window points accumulate up to a
-    // fixed batch and trim them in one splice: the O(window) splice then happens
-    // once per TRIM_BATCH new points, amortising to O(new points) per
-    // publication. The check is O(1) (a length comparison; `n` ~= the window's
-    // point count) and the scan only runs when we actually trim. Off-window
-    // points are stored but never drawn (the renderer clips to the visible
-    // x-range) and cost only a bounded amount of extra memory.
-    const buf0 = this.buffers[0]
-    if (buf0.length > n + TRIM_BATCH) {
-      let trim = 0
-      while (trim < buf0.length && buf0[trim].x < firstX) trim++
-      if (trim > 0) {
-        for (const buf of this.buffers) buf.splice(0, trim)
-        changed = true
-      }
-    }
-
-    return changed
+    // Ring eviction advances the logical head and releases vacated pages. It
+    // does not reindex every retained point like Array.splice(0, n).
+    const trim = this.data.lowerBoundX(firstX)
+    if (trim > 0) this.data.evictFront(trim)
+    return appendStart < n || trim > 0
   }
 
-  private rebuild(rows: readonly T[]): void {
-    for (let s = 0; s < this.buffers.length; s++) {
-      const buf = this.buffers[s]
-      if (buf.length > 0) buf.splice(0, buf.length)
-      const getY = this.getYs[s]
-      for (let i = 0; i < rows.length; i++) buf.push({ x: this.getX(rows[i]), y: getY(rows[i]) })
+  private appendRow(row: T) {
+    for (let channel = 0; channel < this.getYs.length; channel++) {
+      this.yScratch[channel] = this.getYs[channel](row)
     }
+    this.data.append(this.getX(row), this.yScratch)
+  }
+
+  private rebuild(rows: readonly T[]) {
+    this.data.clear()
+    // If an input publication exceeds the hard renderer cap, retain its newest
+    // samples. Normal 10-minute/60 Hz windows remain within one 65,536 page.
+    const start = Math.max(0, rows.length - ALIGNED_MAX_POINTS)
+    for (let i = start; i < rows.length; i++) this.appendRow(rows[i])
   }
 }

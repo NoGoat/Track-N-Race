@@ -5,6 +5,7 @@ import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import type { DataPoint } from '../../lib/timechart/dataBridge'
+import { AlignedDataBuffer } from '../../lib/timechart/engine/core/alignedData'
 
 export interface SpeedRpmSeriesSet {
   reference: [DataPoint[], DataPoint[], DataPoint[]]
@@ -32,24 +33,26 @@ function referenceColors(isDark: boolean) {
     : { speed: '#b9d5b5', rpm: '#e8b9c0', ers: '#fbed97' }
 }
 
-function syncBuffer(buffer: DataPoint[], source: DataPoint[], rebuild: boolean): boolean {
-  if (rebuild || (buffer.length > 0 && source.length > 0 && source[source.length - 1].x < buffer[buffer.length - 1].x)) {
-    if (buffer.length) buffer.splice(0, buffer.length)
+function syncGroup(buffer: AlignedDataBuffer, sources: readonly DataPoint[][], rebuild: boolean, values: Float64Array): boolean {
+  const timeline = sources[0]
+  if (rebuild || (buffer.length > 0 && timeline.length > 0 && timeline[timeline.length - 1].x < buffer.lastX)) {
+    buffer.clear()
   }
-  if (source.length === 0) {
-    if (buffer.length) { buffer.splice(0, buffer.length); return true }
+  if (timeline.length === 0) {
+    if (buffer.length > 0) { buffer.clear(); return true }
     return rebuild
   }
-  const lastX = buffer.length ? buffer[buffer.length - 1].x : -Infinity
-  let lo = 0, hi = source.length
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (source[mid].x <= lastX) lo = mid + 1; else hi = mid }
-  for (let i = lo; i < source.length; i++) buffer.push(source[i])
-  if (buffer.length > source.length + 2048) {
-    let trim = 0
-    while (trim < buffer.length && buffer[trim].x < source[0].x) trim++
-    if (trim) buffer.splice(0, trim)
+  const lastX = buffer.length > 0 ? buffer.lastX : -Infinity
+  let lo = 0, hi = timeline.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (timeline[mid].x <= lastX) lo = mid + 1; else hi = mid }
+  const appendStart = lo
+  for (let i = appendStart; i < timeline.length; i++) {
+    for (let channel = 0; channel < sources.length; channel++) values[channel] = sources[channel][i]?.y ?? NaN
+    buffer.append(timeline[i].x, values)
   }
-  return rebuild || lo < source.length
+  const trim = buffer.lowerBoundX(timeline[0].x)
+  if (trim > 0) buffer.evictFront(trim)
+  return rebuild || appendStart < timeline.length || trim > 0
 }
 
 export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, windowSeconds, xTickFormat, tooltipFormat }: Props) {
@@ -57,7 +60,8 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
-  const buffersRef = useRef<DataPoint[][]>([])
+  const groupsRef = useRef<[AlignedDataBuffer, AlignedDataBuffer] | null>(null)
+  const groupScratchRef = useRef<[Float64Array, Float64Array]>([new Float64Array(3), new Float64Array(3)])
   const dirtyRef = useRef(false)
   const revisionRef = useRef('')
   const tooltipRefFn = useRef(tooltipFormat)
@@ -74,6 +78,9 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
     if (!host) return
     const axis = isDark ? '#7c8098' : '#6b7280'
     const muted = referenceColors(isDark)
+    const referenceGroup = new AlignedDataBuffer(3)
+    const currentGroup = new AlignedDataBuffer(3)
+    groupsRef.current = [referenceGroup, currentGroup]
     const axisCfg: { current: AxisConfig } = { current: {
       axisColor: axis,
       yAxisColor: SPEED,
@@ -95,17 +102,16 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
-        { name: 'Ref Speed', color: muted.speed, lineWidth: 1.5, data: [] },
-        { name: 'Ref RPM', color: muted.rpm, lineWidth: 1.5, data: [] },
-        { name: 'Ref ERS', color: muted.ers, lineWidth: 1.5, data: [] },
-        { name: 'Speed', color: SPEED, lineWidth: 1.5, data: [] },
-        { name: 'RPM', color: RPM, lineWidth: 1.5, data: [] },
-        { name: 'ERS', color: ERS, lineWidth: 1.5, data: [] },
+        { name: 'Ref Speed', color: muted.speed, lineWidth: 1.5, data: referenceGroup.series[0] },
+        { name: 'Ref RPM', color: muted.rpm, lineWidth: 1.5, data: referenceGroup.series[1] },
+        { name: 'Ref ERS', color: muted.ers, lineWidth: 1.5, data: referenceGroup.series[2] },
+        { name: 'Speed', color: SPEED, lineWidth: 1.5, data: currentGroup.series[0] },
+        { name: 'RPM', color: RPM, lineWidth: 1.5, data: currentGroup.series[1] },
+        { name: 'ERS', color: ERS, lineWidth: 1.5, data: currentGroup.series[2] },
       ],
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
     chartRef.current = chart
-    buffersRef.current = chart.options.series.map(s => s.data as unknown as DataPoint[])
     host.style.color = axis
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#ffffff')
 
@@ -120,10 +126,10 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
         const curSeries = chartSeries[i + 3]
         const refData = refSeries.data
         const curData = curSeries.data
-        referenceValues[i] = refData.length > 0 && x >= refData[0].x && x <= refData[refData.length - 1].x
+        referenceValues[i] = refData.length > 0 && x >= refData.xAt(0) && x <= refData.xAt(refData.length - 1)
           ? chart.nearestPoint.dataPoints.get(refSeries)?.y ?? NaN
           : NaN
-        currentValues[i] = curData.length > 0 && x >= curData[0].x && x <= curData[curData.length - 1].x
+        currentValues[i] = curData.length > 0 && x >= curData.xAt(0) && x <= curData.xAt(curData.length - 1)
           ? chart.nearestPoint.dataPoints.get(curSeries)?.y ?? NaN
           : NaN
       }
@@ -135,7 +141,7 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
     return () => {
       stopMove()
       stopLeave()
-      detach(); chart.dispose(); chartRef.current = null; buffersRef.current = []
+      detach(); chart.dispose(); chartRef.current = null; groupsRef.current = null
     }
     // chart lifetime is stable; live values flow through refs
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,12 +149,14 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
 
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart) return
+    const groups = groupsRef.current
+    if (!chart || !groups) return
     const sources = [...data.reference, ...data.current]
     const rebuild = revisionRef.current !== revision
     revisionRef.current = revision
     let changed = false
-    sources.forEach((source, i) => { if (syncBuffer(buffersRef.current[i], source, rebuild)) changed = true })
+    if (syncGroup(groups[0], data.reference, rebuild, groupScratchRef.current[0])) changed = true
+    if (syncGroup(groups[1], data.current, rebuild, groupScratchRef.current[1])) changed = true
     if (!changed) return
     dirtyRef.current = true
     if (!scrolling) {

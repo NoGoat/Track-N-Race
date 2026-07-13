@@ -1,11 +1,12 @@
 import { ResolvedCoreOptions, TimeChartSeriesOptions } from '../options';
-import { domainSearch, EventDispatcher } from '../utils';
+import { EventDispatcher } from '../utils';
 import { CanvasLayer } from './canvasLayer';
 import { ContentBoxDetector } from "./contentBoxDetector";
 import { DataPoint, RenderModel } from './renderModel';
 
 export class NearestPointModel {
     dataPoints = new Map<TimeChartSeriesOptions, DataPoint>();
+    private pointCache = new Map<TimeChartSeriesOptions, DataPoint>();
     lastPointerPos: null | {x: number, y: number} = null;
 
     updated = new EventDispatcher();
@@ -43,16 +44,29 @@ export class NearestPointModel {
                     this.dataPoints.delete(s);
                     continue;
                 }
-                const pos = domainSearch(s.data, 0, s.data.length, domain, d => d.x);
-                const before = pos > 0 ? s.data[pos - 1] : undefined;
-                const after = pos < s.data.length ? s.data[pos] : undefined;
-                const nearest = before === undefined ? after!
-                    : after === undefined ? before
-                        : domain - before.x <= after.x - domain ? before : after;
-                const pxX = this.model.xScale(nearest.x)!;
-                const pxY = this.model.yScale(nearest.y)!;
+                const pos = s.data.lowerBoundX(domain);
+                let nearestIndex: number;
+                if (pos === 0) nearestIndex = 0;
+                else if (pos === s.data.length) nearestIndex = pos - 1;
+                else {
+                    const beforeX = s.data.xAt(pos - 1);
+                    const afterX = s.data.xAt(pos);
+                    nearestIndex = domain - beforeX <= afterX - domain ? pos - 1 : pos;
+                }
+                const x = s.data.xAt(nearestIndex);
+                const y = s.data.yAt(nearestIndex);
+                const pxX = this.model.xScale(x)!;
+                const pxY = this.model.yScale(y)!;
 
                 if (pxX <= width && pxX >= 0 && pxY <= height && pxY >= 0) {
+                    let nearest = this.pointCache.get(s);
+                    if (!nearest) {
+                        nearest = { x, y };
+                        this.pointCache.set(s, nearest);
+                    } else {
+                        nearest.x = x;
+                        nearest.y = y;
+                    }
                     this.dataPoints.set(s, nearest);
                 } else {
                     this.dataPoints.delete(s);
