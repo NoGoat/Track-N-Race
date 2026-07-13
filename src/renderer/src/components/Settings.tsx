@@ -570,6 +570,11 @@ const Settings = memo(function Settings({
                       <span className="text-xs font-semibold font-mono text-[var(--text-primary)]">
                         {item.name}
                       </span>
+                      {item.badge && (
+                        <span className="text-[8px] font-mono font-bold uppercase tracking-wider text-[#9f7aea] border border-[#9f7aea]/40 bg-[#9f7aea]/10 px-1.5 py-0.5 rounded-full">
+                          {item.badge}
+                        </span>
+                      )}
                       {item.version && (
                         <span className="text-[9px] font-mono text-[var(--text-primary)] font-bold bg-[var(--border-muted)] px-1.5 py-0.5 rounded-full tabular-nums">
                           {item.version}

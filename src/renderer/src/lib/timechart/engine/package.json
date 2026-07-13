@@ -1,0 +1,19 @@
+{
+  "name": "@track-n-race/timechart-engine",
+  "version": "1.0.0-beta.10-tnr.1",
+  "private": true,
+  "description": "Track N Race's maintained source fork of TimeChart",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/huww98/TimeChart.git"
+  },
+  "dependencies": {
+    "d3-axis": "^3.0.0",
+    "d3-color": "^3.0.1",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "gl-matrix": "^3.3.0",
+    "tslib": "^2.4.0"
+  }
+}

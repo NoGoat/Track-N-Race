@@ -1,4 +1,4 @@
-import type { TimeChartPlugin } from 'timechart/plugins'
+import type { TimeChartPlugin } from './tc'
 
 export interface AreaFillDef {
   seriesIndex: number

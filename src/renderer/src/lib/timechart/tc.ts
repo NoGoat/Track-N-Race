@@ -1,16 +1,23 @@
-import TimeChart from 'timechart'
+import TimeChartCore from './engine/core'
+import { LineType } from './engine/options'
+import { lineChart } from './engine/plugins/lineChart'
+import { crosshair } from './engine/plugins/crosshair'
+import { nearestPoint } from './engine/plugins/nearestPoint'
 
-// We build on `TimeChart.core` (not the default `TimeChart`) so we control the
-// exact plugin set: the default export auto-injects d3Axis, legend, the zoom
-// plugin (which would enable pan/zoom — we keep it disabled to match uPlot) and
-// a built-in tooltip. We keep only lineChart + crosshair + nearestPoint and add
-// our own axis / reference-line / tooltip / profiler plugins.
-export type TChart = InstanceType<typeof TimeChart.core>
+// Local facade over the vendored TimeChart fork. Importing the engine pieces
+// directly keeps the unused upstream axis, legend, zoom and tooltip plugins out
+// of the renderer bundle while preserving the small API used by our charts.
+export type TChart = InstanceType<typeof TimeChartCore>
 
 export const corePlugins = {
-  lineChart: TimeChart.plugins.lineChart,
-  crosshair: TimeChart.plugins.crosshair,
-  nearestPoint: TimeChart.plugins.nearestPoint,
+  lineChart,
+  crosshair,
+  nearestPoint,
 }
 
-export { TimeChart }
+export const TimeChart = {
+  core: TimeChartCore,
+  LineType,
+}
+
+export type { TimeChartPlugin } from './engine/plugins'

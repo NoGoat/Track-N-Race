@@ -1,4 +1,4 @@
-import type { TimeChartPlugin } from 'timechart/plugins'
+import type { TimeChartPlugin } from './tc'
 
 // Custom axis + x-grid plugin, drawn into TimeChart's SVG overlay (shadow DOM).
 // We deliberately don't use the bundled d3Axis plugin: it offers no control over

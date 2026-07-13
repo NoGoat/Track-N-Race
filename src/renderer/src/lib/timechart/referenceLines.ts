@@ -1,4 +1,4 @@
-import type { TimeChartPlugin } from 'timechart/plugins'
+import type { TimeChartPlugin } from './tc'
 
 // Horizontal reference lines drawn into the SVG overlay (e.g. G-Force's solid
 // zero line + dashed +/-4g lines). uPlot drew these on its 2D canvas in a `draw`

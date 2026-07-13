@@ -361,9 +361,12 @@ to-be-removed package dependency.
 chart **once** and updates it imperatively (recreating a WebGL context per
 theme/resize is exactly what the migration removed):
 
-- Built on `TimeChart.core` (`lib/timechart/tc.ts`) with a hand-picked plugin
-  set — lineChart, crosshair, nearestPoint, plus custom plugins — instead of
-  the default bundle (which would inject d3Axis/legend/zoom/tooltip).
+- Built on the maintained source fork under `lib/timechart/engine/`, imported
+  from upstream `v1.0.0-beta.10` and installed as the local private package
+  `@track-n-race/timechart-engine`. `lib/timechart/tc.ts` exposes a hand-picked
+  plugin set — lineChart, crosshair, nearestPoint, plus custom plugins — instead
+  of the default bundle (which would inject d3Axis/legend/zoom/tooltip). Fork
+  provenance and local fixes are recorded in `engine/UPSTREAM.md`.
 - **`dataBridge.ts`** reconciles the store's re-published windowed slices with
   TimeChart's end-mutation-only `DataPointsBuffer` contract: append
   genuinely-new tail points, batch front-trims (one O(buffer) splice per 2048

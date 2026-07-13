@@ -1,4 +1,4 @@
-import type { TimeChartPlugin } from 'timechart/plugins'
+import type { TimeChartPlugin } from '../lib/timechart/tc'
 import { profileSync } from './useDrawProfiler'
 
 // TimeChart port of createDrawProfilerPlugin. The uPlot version bracketed

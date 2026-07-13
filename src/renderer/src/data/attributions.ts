@@ -27,6 +27,7 @@ export interface Attribution {
   homepage: string
   licenseText: string
   category: AttributionCategory
+  badge?: string
 }
 
 export const ATTRIBUTIONS: Attribution[] = [
@@ -102,6 +103,7 @@ export const ATTRIBUTIONS: Attribution[] = [
     homepage: 'https://github.com/huww98/TimeChart',
     licenseText: timechartLicense,
     category: 'app',
+    badge: 'Forked',
   },
 
   // Font
