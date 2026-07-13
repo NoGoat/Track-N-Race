@@ -1,8 +1,8 @@
 export const ALIGNED_PAGE_SIZE = 65_536;
 export const ALIGNED_MAX_POINTS = 750_000;
 
-const PAGE_COUNT = Math.ceil(ALIGNED_MAX_POINTS / ALIGNED_PAGE_SIZE);
-const PHYSICAL_CAPACITY = PAGE_COUNT * ALIGNED_PAGE_SIZE;
+export const ALIGNED_PAGE_COUNT = Math.ceil(ALIGNED_MAX_POINTS / ALIGNED_PAGE_SIZE);
+export const ALIGNED_PHYSICAL_CAPACITY = ALIGNED_PAGE_COUNT * ALIGNED_PAGE_SIZE;
 
 export interface DirtySpan {
     start: number;
@@ -11,6 +11,8 @@ export interface DirtySpan {
 
 /** Scalar series view over an aligned timeline. No {x, y} objects are stored. */
 export interface SeriesData {
+    readonly buffer: AlignedDataBuffer;
+    readonly channel: number;
     readonly length: number;
     readonly pushedBack: number;
     readonly poppedFront: number;
@@ -23,20 +25,20 @@ export interface SeriesData {
 
 export class AlignedSeriesData implements SeriesData {
     constructor(
-        private readonly owner: AlignedDataBuffer,
-        private readonly channel: number,
+        readonly buffer: AlignedDataBuffer,
+        readonly channel: number,
     ) {}
 
-    get length() { return this.owner.length; }
-    get pushedBack() { return this.owner.pushedBack; }
-    get poppedFront() { return this.owner.poppedFront; }
-    get resetPending() { return this.owner.resetPending; }
-    xAt(index: number) { return this.owner.xAt(index); }
-    yAt(index: number) { return this.owner.yAt(this.channel, index); }
+    get length() { return this.buffer.length; }
+    get pushedBack() { return this.buffer.pushedBack; }
+    get poppedFront() { return this.buffer.poppedFront; }
+    get resetPending() { return this.buffer.resetPending; }
+    xAt(index: number) { return this.buffer.xAt(index); }
+    yAt(index: number) { return this.buffer.yAt(this.channel, index); }
     lowerBoundX(value: number, start = 0, end = this.length) {
-        return this.owner.lowerBoundX(value, start, end);
+        return this.buffer.lowerBoundX(value, start, end);
     }
-    markSynced() { this.owner.markSynced(); }
+    markSynced() { this.buffer.markSynced(); }
 }
 
 /**
@@ -46,9 +48,9 @@ export class AlignedSeriesData implements SeriesData {
  */
 export class AlignedDataBuffer {
     readonly series: readonly AlignedSeriesData[];
-    private xPages: Array<Float64Array | undefined> = new Array(PAGE_COUNT);
+    private xPages: Array<Float64Array | undefined> = new Array(ALIGNED_PAGE_COUNT);
     private yPages: Array<Array<Float32Array | undefined>>;
-    private pageCounts = new Uint32Array(PAGE_COUNT);
+    private pageCounts = new Uint32Array(ALIGNED_PAGE_COUNT);
     private head = 0;
     private size = 0;
     private appended = 0;
@@ -59,7 +61,7 @@ export class AlignedDataBuffer {
         if (!Number.isInteger(channelCount) || channelCount <= 0) {
             throw new RangeError('AlignedDataBuffer requires at least one Y channel.');
         }
-        this.yPages = Array.from({ length: channelCount }, () => new Array(PAGE_COUNT));
+        this.yPages = Array.from({ length: channelCount }, () => new Array(ALIGNED_PAGE_COUNT));
         this.series = Array.from({ length: channelCount }, (_, channel) => new AlignedSeriesData(this, channel));
     }
 
@@ -74,7 +76,7 @@ export class AlignedDataBuffer {
         if (logicalIndex < 0 || logicalIndex >= this.size) {
             throw new RangeError(`Aligned data index ${logicalIndex} outside [0, ${this.size}).`);
         }
-        return (this.head + logicalIndex) % PHYSICAL_CAPACITY;
+        return (this.head + logicalIndex) % ALIGNED_PHYSICAL_CAPACITY;
     }
 
     private ensurePage(page: number) {
@@ -100,6 +102,23 @@ export class AlignedDataBuffer {
         return this.yPages[channel][Math.floor(physical / ALIGNED_PAGE_SIZE)]![physical % ALIGNED_PAGE_SIZE];
     }
 
+    /** Physical ring position for a logical sample, used by the GPU pager. */
+    physicalIndexAt(index: number) {
+        return this.physicalIndex(index);
+    }
+
+    /** Logical index for an occupied physical slot, or -1 for the ring gap. */
+    logicalIndexForPhysical(physicalIndex: number) {
+        if (physicalIndex < 0 || physicalIndex >= ALIGNED_PHYSICAL_CAPACITY) return -1;
+        const logical = (physicalIndex - this.head + ALIGNED_PHYSICAL_CAPACITY) % ALIGNED_PHYSICAL_CAPACITY;
+        return logical < this.size ? logical : -1;
+    }
+
+    /** Read-only page access for allocation-free GPU uploads. */
+    xPage(page: number) { return this.xPages[page]; }
+    yPage(channel: number, page: number) { return this.yPages[channel]?.[page]; }
+    hasPage(page: number) { return this.pageCounts[page] !== 0; }
+
     lowerBoundX(value: number, start = 0, end = this.size) {
         start = Math.max(0, start);
         end = Math.min(this.size, end);
@@ -117,7 +136,7 @@ export class AlignedDataBuffer {
         }
         if (this.size === ALIGNED_MAX_POINTS) this.evictFront(1);
 
-        const physical = (this.head + this.size) % PHYSICAL_CAPACITY;
+        const physical = (this.head + this.size) % ALIGNED_PHYSICAL_CAPACITY;
         const page = Math.floor(physical / ALIGNED_PAGE_SIZE);
         const offset = physical % ALIGNED_PAGE_SIZE;
         this.ensurePage(page)[offset] = x;
@@ -151,17 +170,17 @@ export class AlignedDataBuffer {
                     this.yPages[channel][page] = undefined;
                 }
             }
-            physical = (physical + chunk) % PHYSICAL_CAPACITY;
+            physical = (physical + chunk) % ALIGNED_PHYSICAL_CAPACITY;
             remaining -= chunk;
         }
-        this.head = (this.head + count) % PHYSICAL_CAPACITY;
+        this.head = (this.head + count) % ALIGNED_PHYSICAL_CAPACITY;
         this.size -= count;
     }
 
     clear() {
-        this.xPages = new Array(PAGE_COUNT);
-        this.yPages = Array.from({ length: this.channelCount }, () => new Array(PAGE_COUNT));
-        this.pageCounts = new Uint32Array(PAGE_COUNT);
+        this.xPages = new Array(ALIGNED_PAGE_COUNT);
+        this.yPages = Array.from({ length: this.channelCount }, () => new Array(ALIGNED_PAGE_COUNT));
+        this.pageCounts = new Uint32Array(ALIGNED_PAGE_COUNT);
         this.head = 0;
         this.size = 0;
         this.appended = 0;
@@ -172,8 +191,8 @@ export class AlignedDataBuffer {
     /** Physical spans appended since the previous GPU synchronization. */
     dirtySpans(): DirtySpan[] {
         if (this.appended === 0) return [];
-        const start = (this.head + this.size - this.appended + PHYSICAL_CAPACITY) % PHYSICAL_CAPACITY;
-        const firstCount = Math.min(this.appended, PHYSICAL_CAPACITY - start);
+        const start = (this.head + this.size - this.appended + ALIGNED_PHYSICAL_CAPACITY) % ALIGNED_PHYSICAL_CAPACITY;
+        const firstCount = Math.min(this.appended, ALIGNED_PHYSICAL_CAPACITY - start);
         return firstCount === this.appended
             ? [{ start, count: firstCount }]
             : [{ start, count: firstCount }, { start: 0, count: this.appended - firstCount }];
@@ -188,6 +207,7 @@ export class AlignedDataBuffer {
 
 export function isSeriesData(value: unknown): value is SeriesData {
     const data = value as Partial<SeriesData> | null;
-    return !!data && typeof data.xAt === 'function' && typeof data.yAt === 'function' &&
+    return !!data && data.buffer instanceof AlignedDataBuffer && Number.isInteger(data.channel) &&
+        typeof data.xAt === 'function' && typeof data.yAt === 'function' &&
         typeof data.lowerBoundX === 'function' && typeof data.markSynced === 'function';
 }

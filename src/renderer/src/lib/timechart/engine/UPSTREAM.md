@@ -35,3 +35,6 @@ the fork.
 - Replaced per-series `DataPointsBuffer` object arrays with a paged aligned
   circular store: one Float64 X timeline, Float32 Y channels, logical-head
   eviction, shared binary search, rebuild tracking, and incremental dirty spans.
+- Replaced per-series `RG32F` WebGL textures with lazy shared GPU pages: one
+  `R32F` X texture plus an `R32F` texture-array containing every aligned Y
+  channel. Uploads and drawing now follow physical ring/page boundaries.

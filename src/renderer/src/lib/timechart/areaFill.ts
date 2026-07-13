@@ -1,4 +1,5 @@
 import type { TimeChartPlugin } from './tc'
+import type { AlignedDataBuffer } from './engine/core/alignedData'
 
 export interface AreaFillDef {
   seriesIndex: number
@@ -56,12 +57,23 @@ export function createAreaFillPlugin(defs: AreaFillDef[]): TimeChartPlugin {
         ctx.rect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop)
         ctx.clip()
 
+        // Adjacent fill series normally share one aligned timeline. Resolve
+        // its visible ring interval once instead of repeating the same X
+        // binary searches for every Y channel.
+        let rangeBuffer: AlignedDataBuffer | null = null
+        let rangeStart = 0
+        let rangeEnd = -1
         for (const def of defs) {
           const data = chart.options.series[def.seriesIndex]?.data
           if (!data || data.length === 0) continue
 
-          const start = Math.max(0, data.lowerBoundX(Number(domain[0])) - 1)
-          const end = Math.min(data.length - 1, data.lowerBoundX(Number(domain[1]), start))
+          if (data.buffer !== rangeBuffer) {
+            rangeBuffer = data.buffer
+            rangeStart = Math.max(0, data.lowerBoundX(Number(domain[0])) - 1)
+            rangeEnd = Math.min(data.length - 1, data.lowerBoundX(Number(domain[1]), rangeStart))
+          }
+          const start = rangeStart
+          const end = rangeEnd
           if (end < start) continue
 
           const baselineY = Math.max(plotTop, Math.min(plotBottom, yScale(def.baseline)))
