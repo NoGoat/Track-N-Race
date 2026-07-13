@@ -217,7 +217,7 @@ LogoAndTitle.displayName = 'LogoAndTitle'
 
 const TabSelector = memo(({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) => {
   return (
-    <div style={{ WebkitAppRegion: 'no-drag' }} className="w-32">
+    <div style={{ WebkitAppRegion: 'no-drag' }} className="w-full max-w-[100px]">
       <Select
         options={TAB_OPTIONS}
         value={TAB_OPTIONS.find((o) => o.value === tab) ?? null}
