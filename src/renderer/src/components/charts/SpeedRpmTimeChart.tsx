@@ -5,7 +5,7 @@ import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import type { DataPoint } from '../../lib/timechart/dataBridge'
-import { AlignedDataBuffer } from '../../lib/timechart/engine/core/alignedData'
+import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 
 export interface SpeedRpmSeriesSet {
   reference: [DataPoint[], DataPoint[], DataPoint[]]
@@ -24,6 +24,14 @@ interface Props {
 
 const SPEED = '#37872D', RPM = '#C4162A', ERS = '#FADE2A'
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
+
+function nearestIndex(data: SeriesData, x: number): number {
+  if (data.length === 0) return -1
+  const after = data.lowerBoundX(x)
+  if (after === 0) return 0
+  if (after === data.length) return data.length - 1
+  return x - data.xAt(after - 1) <= data.xAt(after) - x ? after - 1 : after
+}
 
 function referenceColors(isDark: boolean) {
   // Pre-blended equivalents of the old 35%-opacity uPlot strokes. Encoding
@@ -121,19 +129,16 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
       const px = contentX + 44
       const x = (chart.model.xScale as any).invert(px) as number
       const chartSeries = chart.options.series
+      const referenceIndex = nearestIndex(chartSeries[0].data, x)
+      const currentIndex = nearestIndex(chartSeries[3].data, x)
       for (let i = 0; i < 3; i++) {
-        const refSeries = chartSeries[i]
-        const curSeries = chartSeries[i + 3]
-        const refData = refSeries.data
-        const curData = curSeries.data
-        referenceValues[i] = refData.length > 0 && x >= refData.xAt(0) && x <= refData.xAt(refData.length - 1)
-          ? chart.nearestPoint.dataPoints.get(refSeries)?.y ?? NaN
-          : NaN
-        currentValues[i] = curData.length > 0 && x >= curData.xAt(0) && x <= curData.xAt(curData.length - 1)
-          ? chart.nearestPoint.dataPoints.get(curSeries)?.y ?? NaN
-          : NaN
+        referenceValues[i] = referenceIndex >= 0 ? chartSeries[i].data.yAt(referenceIndex) : NaN
+        currentValues[i] = currentIndex >= 0 ? chartSeries[i + 3].data.yAt(currentIndex) : NaN
       }
-      show(tooltipRefFn.current(x, referenceValues, currentValues), px, contentY + 4, chart.clientWidth, chart.clientHeight)
+      const snappedX = currentIndex >= 0
+        ? chartSeries[3].data.xAt(currentIndex)
+        : referenceIndex >= 0 ? chartSeries[0].data.xAt(referenceIndex) : x
+      show(tooltipRefFn.current(snappedX, referenceValues, currentValues), px, contentY + 4, chart.clientWidth, chart.clientHeight)
     }
     const stopMove = chart.contentBoxDetector.moved.on(move)
     const stopLeave = chart.contentBoxDetector.left.on(hide)
