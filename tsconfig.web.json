@@ -9,6 +9,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["vite/client"],
     "jsx": "react-jsx",
     "paths": {
       "@renderer/*": ["./src/renderer/src/*"]
