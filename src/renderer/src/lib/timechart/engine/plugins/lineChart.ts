@@ -7,7 +7,10 @@ import { DataPointsBuffer } from "../core/dataPointsBuffer";
 
 
 const BUFFER_TEXTURE_WIDTH = 256;
-const BUFFER_TEXTURE_HEIGHT = 2048;
+// A 256 x 256 RG32F page holds 65,536 points (512 KiB). Track N Race's normal
+// ten-minute/60 Hz window is ~36,000 points, so one page covers the common case
+// while SeriesVertexArray can still add overlapping pages for larger buffers.
+const BUFFER_TEXTURE_HEIGHT = 256;
 const BUFFER_POINT_CAPACITY = BUFFER_TEXTURE_WIDTH * BUFFER_TEXTURE_HEIGHT;
 const BUFFER_INTERVAL_CAPACITY = BUFFER_POINT_CAPACITY - 2;
 const dataPointX = (point: DataPoint) => point.x;
@@ -49,7 +52,6 @@ uniform int uLineType;
 uniform float uStepLocation;
 
 const int TEX_WIDTH = ${BUFFER_TEXTURE_WIDTH};
-const int TEX_HEIGHT = ${BUFFER_TEXTURE_HEIGHT};
 
 vec2 dataPoint(int index) {
     int x = index % TEX_WIDTH;
@@ -147,7 +149,10 @@ void main() {
 }
 
 class SeriesSegmentVertexArray {
-    dataBuffer;
+    readonly dataBuffer: WebGLTexture;
+    // One texture-row staging area, retained for the segment lifetime. Live
+    // updates use only its first few floats for the point and endpoint padding.
+    private readonly uploadBuffer = new Float32Array(BUFFER_TEXTURE_WIDTH * 2);
 
     constructor(
         private gl: WebGL2RenderingContext,
@@ -156,7 +161,6 @@ class SeriesSegmentVertexArray {
         this.dataBuffer = throwIfFalsy(gl.createTexture());
         gl.bindTexture(gl.TEXTURE_2D, this.dataBuffer);
         gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RG32F, BUFFER_TEXTURE_WIDTH, BUFFER_TEXTURE_HEIGHT);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, BUFFER_TEXTURE_WIDTH, BUFFER_TEXTURE_HEIGHT, gl.RG, gl.FLOAT, new Float32Array(BUFFER_TEXTURE_WIDTH * BUFFER_TEXTURE_HEIGHT * 2));
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     }
@@ -167,28 +171,36 @@ class SeriesSegmentVertexArray {
 
     syncPoints(start: number, n: number, bufferPos: number) {
         const dps = this.dataPoints;
-        let rowStart = Math.floor(bufferPos / BUFFER_TEXTURE_WIDTH);
-        let rowEnd = Math.ceil((bufferPos + n) / BUFFER_TEXTURE_WIDTH);
-        // Ensure we have some padding at both ends of data.
-        if (rowStart > 0 && start === 0 && bufferPos === rowStart * BUFFER_TEXTURE_WIDTH)
-            rowStart--;
-        if (rowEnd < BUFFER_TEXTURE_HEIGHT && start + n === dps.length && bufferPos + n === rowEnd * BUFFER_TEXTURE_WIDTH)
-            rowEnd++;
+        // Upload only the changed linear span. Keep one repeated endpoint texel
+        // on either side when this span touches the beginning/end of the data;
+        // the line shaders can read that neighbour at segment boundaries.
+        let textureStart = bufferPos;
+        let textureEnd = bufferPos + n;
+        if (start === 0 && textureStart > 0) textureStart--;
+        if (start + n === dps.length && textureEnd < BUFFER_POINT_CAPACITY) textureEnd++;
+        if (textureStart === textureEnd) return;
 
-        const buffer = new Float32Array((rowEnd - rowStart) * BUFFER_TEXTURE_WIDTH * 2);
-        for (let r = rowStart; r < rowEnd; r++) {
-            for (let c = 0; c < BUFFER_TEXTURE_WIDTH; c++) {
-                const p = r * BUFFER_TEXTURE_WIDTH + c;
-                const i = Math.max(Math.min(start + p - bufferPos, dps.length - 1), 0);
-                const dp = dps[i];
-                const bufferIdx = ((r - rowStart) * BUFFER_TEXTURE_WIDTH + c) * 2;
-                buffer[bufferIdx] = dp.x;
-                buffer[bufferIdx + 1] = dp.y;
-            }
-        }
         const gl = this.gl;
         gl.bindTexture(gl.TEXTURE_2D, this.dataBuffer);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, rowStart, BUFFER_TEXTURE_WIDTH, rowEnd - rowStart, gl.RG, gl.FLOAT, buffer);
+        while (textureStart < textureEnd) {
+            const xOffset = textureStart % BUFFER_TEXTURE_WIDTH;
+            const yOffset = Math.floor(textureStart / BUFFER_TEXTURE_WIDTH);
+            const count = Math.min(textureEnd - textureStart, BUFFER_TEXTURE_WIDTH - xOffset);
+            for (let i = 0; i < count; i++) {
+                const texturePos = textureStart + i;
+                const dataIndex = Math.max(Math.min(start + texturePos - bufferPos, dps.length - 1), 0);
+                const point = dps[dataIndex];
+                this.uploadBuffer[i * 2] = point.x;
+                this.uploadBuffer[i * 2 + 1] = point.y;
+            }
+            // WebGL consumes exactly width * height * 2 floats; the unused tail
+            // of the retained row buffer is ignored.
+            gl.texSubImage2D(
+                gl.TEXTURE_2D, 0, xOffset, yOffset, count, 1,
+                gl.RG, gl.FLOAT, this.uploadBuffer,
+            );
+            textureStart += count;
+        }
     }
 
     /**

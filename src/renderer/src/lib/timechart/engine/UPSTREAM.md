@@ -27,3 +27,8 @@ the fork.
 - Cached frame-invariant WebGL line-renderer state: retained uniform views,
   resize-only projection geometry, source-aware parsed colors, allocation-free
   explicit-domain math, numeric render intervals, and consecutive shader binds.
+- Replaced texture-row-rounded series synchronization with exact partial-row
+  uploads backed by a retained staging buffer, including one endpoint padding
+  texel where shaders require a segment neighbour.
+- Reduced each RG32F series texture page from 256 x 2048 to 256 x 256 points
+  (4 MiB to 512 KiB); larger buffers continue to use overlapping pages.
