@@ -418,7 +418,13 @@ override, recording, theme, attributions). `LabelsProvider` /
 `CardColorsProvider` (from `protocol_status`) resolve all labels/colours.
 `TrackMap` renders car positions outside React via rAF on bundled per-track
 JSON outlines (`assets/maps/track_*.json`, shared with the Qt app), with
-DRS/SLM zone overlays selected by `aero_mode`.
+DRS/SLM zone overlays selected by `aero_mode`. Its Electron renderer retains
+track polylines in WebGL2 buffers and draws cars/markers as one instanced GPU
+batch; a transparent Canvas 2D overlay composites cached driver-label sprites.
+It can linearly interpolate between already-received position rows when the
+motion packet's source cadence is a stable 60 Hz; 20/40 Hz streams stay raw,
+and users can disable the persisted `mapInterpolation` setting to see raw 60 Hz
+positions as well.
 
 ## 4. Native recorder (`native_recorder/`)
 
