@@ -108,13 +108,15 @@ export interface TimeChartViewProps<T> {
   colorsFor?: (isDark: boolean) => ChartColors
   axisLook?: AxisLook
   tooltipStyle?: CSSProperties
+  /** Keep WebGL scrolling at display rate while throttling full SVG/plugin work. */
+  fastScroll?: boolean
 }
 
 export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const {
     isDark, rows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat, profilerLabel,
-    colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE,
+    colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
   } = props
 
   const look = axisLook ?? {}
@@ -175,7 +177,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const latestT = rows.length > 0 ? getX(rows[rows.length - 1]) : null
   const firstT = rows.length > 0 ? getX(rows[0]) : null
   const { attach, detach } = useTimeChartScroll(
-    true, latestT, firstT, windowSeconds, dataDirtyRef, undefined, profilerLabel,
+    true, latestT, firstT, windowSeconds, dataDirtyRef, { fastFrames: fastScroll, fullFps: 60 }, profilerLabel,
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).

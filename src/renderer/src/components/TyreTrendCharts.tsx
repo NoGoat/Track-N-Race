@@ -75,9 +75,10 @@ interface ChartProps<T extends { session_time: number }> {
   isDark: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
+  fastScroll?: boolean
 }
 
-function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30 }: ChartProps<T>) {
+function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30, fastScroll }: ChartProps<T>) {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
   // A single sample can't draw a line, so it counts as no data — otherwise the
@@ -146,6 +147,7 @@ function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, ro
             colorsFor={tyreColorsFor}
             axisLook={TYRE_AXIS_LOOK}
             tooltipStyle={TYRE_TOOLTIP_STYLE}
+            fastScroll={fastScroll}
           />
         )}
       </div>
@@ -170,9 +172,10 @@ interface Props {
   // and the Tyres page, which persist independent keys — the caller supplies the map.
   graphViews?: TyreGraphViews
   windowSeconds?: number
+  fastScroll?: boolean
 }
 
-export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30 }: Props) {
+export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll }: Props) {
   const c = cornerColors(isDark)
 
   const tempSeries = useCallback((corner: (row: TelemetryRow) => { fl: number; fr: number; rl: number; rr: number }): SeriesDef<TelemetryRow>[] => [
@@ -199,10 +202,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   // getY closures for the wear chart depend on tyreWearMode; TimeChartView
   // captures accessors at creation, so remount the wear chart when the mode
   // flips (an occasional user toggle) via a key.
-  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} />
-  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} />
-  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} />
-  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} />
+  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
+  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
+  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
+  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll={fastScroll} />
 
   if (layout === 'grid') {
     const items = [

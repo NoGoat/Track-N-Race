@@ -19,6 +19,10 @@ export interface ScrollScaleOpts {
   // restart); smaller ones hold the window until the data catches back up
   // (pause->resume), so the chart never visibly scrolls backwards.
   snapS?: number
+  /** Draw WebGL-only scroll frames between less frequent full model updates. */
+  fastFrames?: boolean
+  /** Frequency for axes/plugins during fast-frame scrolling. */
+  fullFps?: number
 }
 
 // Playback pause must stop the scroll instantly. Main pushes playback_state on
@@ -44,7 +48,7 @@ export function useTimeChartScroll(
   firstT: number | null,
   windowSeconds: number,
   dataDirtyRef: MutableRefObject<boolean>,
-  { snapS = 0.5 }: ScrollScaleOpts = {},
+  { snapS = 0.5, fastFrames = false, fullFps = 60 }: ScrollScaleOpts = {},
   profilerLabel?: string,
 ) {
   const chartRef = useRef<TChart | null>(null)
@@ -77,6 +81,7 @@ export function useTimeChartScroll(
     if (!enabled) return
     ensurePlaybackSub()
     let raf = 0
+    let lastFullAt = 0
 
     const applyDraw = (): void => {
       const chart = chartRef.current
@@ -92,7 +97,22 @@ export function useTimeChartScroll(
       }
     }
 
-    const loop = () => {
+    const applyFastDraw = (): void => {
+      const chart = chartRef.current
+      if (!chart) return
+      // TimeChart's line renderer and canvas layer are public. Updating the
+      // scale directly avoids model.updated, so SVG axes/grid and other plugins
+      // do not perform DOM work on this intermediate high-refresh frame.
+      const plugins = chart.plugins as unknown as { lineChart?: { drawFrame: () => void } }
+      if (!plugins.lineChart) { applyDraw(); return }
+      chart.canvasLayer.clear()
+      plugins.lineChart.drawFrame()
+      // drawFrame synchronizes new GPU data. Mark the buffers clean just as
+      // RenderModel.update() normally does, preventing repeat uploads.
+      for (const series of chart.options.series) series.data._synced()
+    }
+
+    const loop = (frameTime: number) => {
       raf = requestAnimationFrame(loop)
       const chart = chartRef.current
       const c = clockRef.current
@@ -117,14 +137,22 @@ export function useTimeChartScroll(
         // Window moved: reposition and draw.
         c.lastMin = min
         chart.options.xRange = { min, max: min + windowSeconds }
+        const needsFull = !fastFrames || dataDirtyRef.current || lastFullAt === 0 || frameTime - lastFullAt >= 1000 / fullFps
         dataDirtyRef.current = false
-        applyDraw()
+        if (needsFull) {
+          lastFullAt = frameTime
+          applyDraw()
+        } else {
+          chart.model.xScale.domain([min, min + windowSeconds])
+          applyFastDraw()
+        }
       } else if (dataDirtyRef.current) {
         // Window anchored (data shorter than the window) but new points landed;
         // paint them. When nothing changed, neither branch runs and the frame
         // costs nothing.
         dataDirtyRef.current = false
         chart.options.xRange = { min, max: min + windowSeconds }
+        lastFullAt = frameTime
         applyDraw()
       }
 
@@ -144,7 +172,7 @@ export function useTimeChartScroll(
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [enabled, windowSeconds, snapS, profilerLabel, dataDirtyRef])
+  }, [enabled, windowSeconds, snapS, fastFrames, fullFps, profilerLabel, dataDirtyRef])
 
   const attach = useCallback((chart: TChart) => {
     chartRef.current = chart

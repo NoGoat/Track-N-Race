@@ -239,7 +239,7 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
     <div className={compactCards ? '' : 'h-full'}>
       {view === 'graphs' ? (
         <div className="h-full">
-          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} windowSeconds={windowSeconds} />
+          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} windowSeconds={windowSeconds} fastScroll />
         </div>
       ) : (
         <div className={`flex divide-x divide-[var(--border)] ${compactCards ? '' : 'h-full'}`}>
