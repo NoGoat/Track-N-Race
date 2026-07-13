@@ -70,6 +70,10 @@ export default class TimeChart<TPlugins extends TimeChartPlugins=NoPlugin> {
     readonly nearestPoint: NearestPointModel;
     readonly plugins: TPluginStates<TPlugins>;
     disposed = false;
+    private width = -1;
+    private height = -1;
+    get clientWidth() { return this.width; }
+    get clientHeight() { return this.height; }
 
     constructor(public el: HTMLElement, options?: TimeChartOptions<TPlugins>) {
         const coreOptions = completeOptions(el, options);
@@ -95,17 +99,23 @@ export default class TimeChart<TPlugins extends TimeChartPlugins=NoPlugin> {
         ) as TPluginStates<TPlugins>;
 
         this.onResize();
-
-        const resizeHandler = () => this.onResize()
-        window.addEventListener('resize', resizeHandler);
         this.model.disposing.on(() => {
-            window.removeEventListener('resize', resizeHandler);
             shadowRoot.removeChild(style);
         })
     }
 
     onResize() {
-        this.model.resize(this.el.clientWidth, this.el.clientHeight);
+        const width = this.el.clientWidth;
+        const height = this.el.clientHeight;
+        // Track N Race observes each chart container directly. Suppress the
+        // initial ResizeObserver echo and any other duplicate notifications so
+        // plugins do not repeat SVG layout or reset the canvas backing store.
+        if (width === this.width && height === this.height) {
+            return;
+        }
+        this.width = width;
+        this.height = height;
+        this.model.resize(width, height);
     }
 
     update() {

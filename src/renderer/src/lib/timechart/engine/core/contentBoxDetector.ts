@@ -1,8 +1,16 @@
 import { ResolvedCoreOptions } from '../options';
+import { EventDispatcher } from '../utils';
 import { RenderModel } from './renderModel';
 
 export class ContentBoxDetector {
     node: HTMLElement;
+    readonly moved = new EventDispatcher<(x: number, y: number) => void>();
+    readonly entered = new EventDispatcher();
+    readonly left = new EventDispatcher();
+    private moveFrame = 0;
+    private pointerX = 0;
+    private pointerY = 0;
+
     constructor(el: HTMLElement, model: RenderModel, options: ResolvedCoreOptions) {
         this.node = document.createElement('div');
         this.node.style.position = 'absolute';
@@ -12,7 +20,31 @@ export class ContentBoxDetector {
         this.node.style.bottom = `${options.paddingBottom}px`;
         el.shadowRoot!.appendChild(this.node);
 
+        // Mouse devices can report substantially faster than the display can
+        // paint. Coalesce the chart's crosshair, nearest-point and tooltip work
+        // behind one animation-frame event instead of giving each feature its
+        // own unthrottled DOM mousemove listener.
+        const signal = model.abortController.signal;
+        this.node.addEventListener('mousemove', (ev) => {
+            this.pointerX = ev.offsetX;
+            this.pointerY = ev.offsetY;
+            if (this.moveFrame !== 0) return;
+            this.moveFrame = requestAnimationFrame(() => {
+                this.moveFrame = 0;
+                if (!signal.aborted) this.moved.dispatch(this.pointerX, this.pointerY);
+            });
+        }, { signal });
+        this.node.addEventListener('mouseenter', () => this.entered.dispatch(), { signal });
+        this.node.addEventListener('mouseleave', () => {
+            if (this.moveFrame !== 0) {
+                cancelAnimationFrame(this.moveFrame);
+                this.moveFrame = 0;
+            }
+            this.left.dispatch();
+        }, { signal });
+
         model.disposing.on(() => {
+            if (this.moveFrame !== 0) cancelAnimationFrame(this.moveFrame);
             el.shadowRoot!.removeChild(this.node);
         })
     }

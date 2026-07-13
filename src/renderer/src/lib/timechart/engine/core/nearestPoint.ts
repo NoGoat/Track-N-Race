@@ -16,15 +16,14 @@ export class NearestPointModel {
         private options: ResolvedCoreOptions,
         detector: ContentBoxDetector
     ) {
-        detector.node.addEventListener('mousemove', ev => {
-            const rect = canvas.canvas.getBoundingClientRect();
+        detector.moved.on((x, y) => {
             this.lastPointerPos = {
-                x: ev.clientX - rect.left,
-                y: ev.clientY - rect.top,
+                x: x + options.paddingLeft,
+                y: y + options.paddingTop,
             };
             this.adjustPoints();
         });
-        detector.node.addEventListener('mouseleave', ev => {
+        detector.left.on(() => {
             this.lastPointerPos = null;
             this.adjustPoints();
         });
@@ -37,28 +36,24 @@ export class NearestPointModel {
             this.dataPoints.clear();
         } else {
             const domain = this.model.xScale.invert(this.lastPointerPos.x);
+            const width = this.canvas.canvas.width / this.options.pixelRatio;
+            const height = this.canvas.canvas.height / this.options.pixelRatio;
             for (const s of this.options.series) {
                 if (s.data.length == 0 || !s.visible) {
                     this.dataPoints.delete(s);
                     continue;
                 }
                 const pos = domainSearch(s.data, 0, s.data.length, domain, d => d.x);
-                const near: DataPoint[] = [];
-                if (pos > 0) {
-                    near.push(s.data[pos - 1]);
-                }
-                if (pos < s.data.length) {
-                    near.push(s.data[pos]);
-                }
-                const sortKey = (a: typeof near[0]) => Math.abs(a.x - domain);
-                near.sort((a, b) => sortKey(a) - sortKey(b));
-                const pxPoint = this.model.pxPoint(near[0]);
-                const width = this.canvas.canvas.clientWidth;
-                const height = this.canvas.canvas.clientHeight;
+                const before = pos > 0 ? s.data[pos - 1] : undefined;
+                const after = pos < s.data.length ? s.data[pos] : undefined;
+                const nearest = before === undefined ? after!
+                    : after === undefined ? before
+                        : domain - before.x <= after.x - domain ? before : after;
+                const pxX = this.model.xScale(nearest.x)!;
+                const pxY = this.model.yScale(nearest.y)!;
 
-                if (pxPoint.x <= width && pxPoint.x >= 0 &&
-                    pxPoint.y <= height && pxPoint.y >= 0) {
-                    this.dataPoints.set(s, near[0]);
+                if (pxX <= width && pxX >= 0 && pxY <= height && pxY >= 0) {
+                    this.dataPoints.set(s, nearest);
                 } else {
                     this.dataPoints.delete(s);
                 }

@@ -16,3 +16,11 @@ the fork.
 - Fixed `makeContentBox` to position its SVG with `paddingTop` instead of
   `paddingRight`, keeping the crosshair inside the plot rectangle when chart
   padding is asymmetric.
+- Removed the engine's per-chart global window resize listener and suppress
+  duplicate container/canvas sizes; Track N Race already observes each chart's
+  actual container.
+- Added an allocation-light model update path and skipped point-extrema scans
+  when callers provide an explicit y-range.
+- Coalesced hover work behind one animation-frame pointer stream, removed
+  per-move layout reads and nearest-point allocations, and made tooltip DOM
+  updates allocation-light.

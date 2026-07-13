@@ -29,13 +29,12 @@ export const crosshair: TimeChartPlugin<void> = {
         }
 
         const detector = chart.contentBoxDetector;
-        detector.node.addEventListener('mousemove', ev => {
-            const contentRect = contentBox.getBoundingClientRect();
-            hLine.transform.baseVal.getItem(0).setTranslate(0, ev.clientY - contentRect.y);
-            vLine.transform.baseVal.getItem(0).setTranslate(ev.clientX - contentRect.x, 0);
+        detector.moved.on((x, y) => {
+            hLine.transform.baseVal.getItem(0).setTranslate(0, y);
+            vLine.transform.baseVal.getItem(0).setTranslate(x, 0);
         });
-        detector.node.addEventListener('mouseenter', ev => g.style.visibility = 'visible');
-        detector.node.addEventListener('mouseleave', ev => g.style.visibility = 'hidden');
+        detector.entered.on(() => g.style.visibility = 'visible');
+        detector.left.on(() => g.style.visibility = 'hidden');
 
         contentBox.appendChild(g);
         chart.svgLayer.svgNode.appendChild(contentBox);

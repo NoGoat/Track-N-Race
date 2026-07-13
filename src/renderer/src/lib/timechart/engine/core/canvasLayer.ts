@@ -58,8 +58,13 @@ export class CanvasLayer {
     onResize(width: number, height: number) {
         const canvas = this.canvas;
         const scale = this.options.pixelRatio;
-        canvas.width = width * scale;
-        canvas.height = height * scale;
+        const pixelWidth = Math.floor(width * scale);
+        const pixelHeight = Math.floor(height * scale);
+        if (canvas.width === pixelWidth && canvas.height === pixelHeight) {
+            return;
+        }
+        if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+        if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
         this.syncViewport();
     }
 

@@ -52,14 +52,6 @@ function syncBuffer(buffer: DataPoint[], source: DataPoint[], rebuild: boolean):
   return rebuild || lo < source.length
 }
 
-function sample(buffer: DataPoint[], x: number): number {
-  if (!buffer.length || x < buffer[0].x || x > buffer[buffer.length - 1].x) return NaN
-  let lo = 0, hi = buffer.length - 1
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (buffer[mid].x < x) lo = mid + 1; else hi = mid }
-  if (lo > 0 && Math.abs(buffer[lo - 1].x - x) <= Math.abs(buffer[lo].x - x)) lo--
-  return buffer[lo].y
-}
-
 export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, windowSeconds, xTickFormat, tooltipFormat }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -117,20 +109,32 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
     host.style.color = axis
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#ffffff')
 
-    const detector = chart.contentBoxDetector.node
-    const move = (ev: MouseEvent) => {
-      const rect = host.getBoundingClientRect()
-      const px = ev.clientX - rect.left
+    const referenceValues = [NaN, NaN, NaN]
+    const currentValues = [NaN, NaN, NaN]
+    const move = (contentX: number, contentY: number) => {
+      const px = contentX + 44
       const x = (chart.model.xScale as any).invert(px) as number
-      const b = buffersRef.current
-      show(tooltipRefFn.current(x, [sample(b[0], x), sample(b[1], x), sample(b[2], x)], [sample(b[3], x), sample(b[4], x), sample(b[5], x)]), px, ev.clientY - rect.top, host.clientWidth, host.clientHeight)
+      const chartSeries = chart.options.series
+      for (let i = 0; i < 3; i++) {
+        const refSeries = chartSeries[i]
+        const curSeries = chartSeries[i + 3]
+        const refData = refSeries.data
+        const curData = curSeries.data
+        referenceValues[i] = refData.length > 0 && x >= refData[0].x && x <= refData[refData.length - 1].x
+          ? chart.nearestPoint.dataPoints.get(refSeries)?.y ?? NaN
+          : NaN
+        currentValues[i] = curData.length > 0 && x >= curData[0].x && x <= curData[curData.length - 1].x
+          ? chart.nearestPoint.dataPoints.get(curSeries)?.y ?? NaN
+          : NaN
+      }
+      show(tooltipRefFn.current(x, referenceValues, currentValues), px, contentY + 4, chart.clientWidth, chart.clientHeight)
     }
-    detector.addEventListener('mousemove', move)
-    detector.addEventListener('mouseleave', hide)
+    const stopMove = chart.contentBoxDetector.moved.on(move)
+    const stopLeave = chart.contentBoxDetector.left.on(hide)
     attach(chart)
     return () => {
-      detector.removeEventListener('mousemove', move)
-      detector.removeEventListener('mouseleave', hide)
+      stopMove()
+      stopLeave()
       detach(); chart.dispose(); chartRef.current = null; buffersRef.current = []
     }
     // chart lifetime is stable; live values flow through refs

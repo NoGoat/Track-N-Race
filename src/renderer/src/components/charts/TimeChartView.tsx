@@ -258,14 +258,16 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
 
     // Custom HTML tooltip: snap to the nearest sample (single index across all
     // series, matching uPlot's cursor.idx), reusing the shared tooltip element.
-    const onMove = (ev: MouseEvent) => {
+    let lastPoint: DataPoint | undefined
+    let lastFormatter: typeof tooltipFormatRef.current | undefined
+    let lastHtml = ''
+    const onMove = (contentX: number, contentY: number) => {
       const bridge = bridgeRef.current
       const chart = chartRef.current
       if (!bridge || !chart) return
       const xs = bridge.xBuffer
       if (xs.length === 0) { hide(); return }
-      const rect = el.getBoundingClientRect()
-      const px = ev.clientX - rect.left
+      const px = contentX + paddingLeft
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dataX = (chart.model.xScale as any).invert(px) as number
       // nearest index by binary search on the shared x buffer
@@ -277,20 +279,28 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       }
       if (lo > 0 && Math.abs(xs[lo - 1].x - dataX) <= Math.abs(xs[lo].x - dataX)) lo -= 1
       const idx = lo
-      const bufs = seriesBuffersRef.current
-      const values = bufs.map((buf) => (buf[idx] ? buf[idx].y : NaN))
-      const xVal = xs[idx].x
-      show(tooltipFormatRef.current(xVal, values), px, ev.clientY - rect.top, el.clientWidth, el.clientHeight)
+      const point = xs[idx]
+      const formatter = tooltipFormatRef.current
+      // Pointer events frequently remain on the same telemetry sample. Only
+      // rebuild tooltip arrays/HTML when that snapped sample (or formatter)
+      // actually changes; positioning remains smooth every frame.
+      if (point !== lastPoint || formatter !== lastFormatter) {
+        const bufs = seriesBuffersRef.current
+        const values = bufs.map((buf) => (buf[idx] ? buf[idx].y : NaN))
+        lastHtml = formatter(point.x, values)
+        lastPoint = point
+        lastFormatter = formatter
+      }
+      show(lastHtml, px, contentY + paddingTop, chart.clientWidth, chart.clientHeight)
     }
-    const detector = chart.contentBoxDetector.node
-    detector.addEventListener('mousemove', onMove)
-    detector.addEventListener('mouseleave', hide)
+    const stopMove = chart.contentBoxDetector.moved.on(onMove)
+    const stopLeave = chart.contentBoxDetector.left.on(hide)
 
     attach(chart)
 
     return () => {
-      detector.removeEventListener('mousemove', onMove)
-      detector.removeEventListener('mouseleave', hide)
+      stopMove()
+      stopLeave()
       detach()
       chart.dispose()
       chartRef.current = null

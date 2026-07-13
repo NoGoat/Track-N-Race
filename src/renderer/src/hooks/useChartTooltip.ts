@@ -17,6 +17,7 @@ export const TOOLTIP_STYLE: React.CSSProperties = {
 
 export function useChartTooltip() {
   const tooltipRef = useRef<HTMLDivElement>(null)
+  const stateRef = useRef({ html: '', visible: false, left: '', right: '', top: '', bottom: '' })
 
   const show = useCallback((
     html: string,
@@ -27,25 +28,36 @@ export function useChartTooltip() {
   ) => {
     const el = tooltipRef.current
     if (!el) return
-    el.innerHTML = html
-    el.style.display = 'block'
-    const tw = el.offsetWidth
-    const th = el.offsetHeight
+    const state = stateRef.current
+    if (html !== state.html) {
+      el.innerHTML = html
+      state.html = html
+    }
+    if (!state.visible) {
+      el.style.display = 'block'
+      state.visible = true
+    }
     const GAP = 16
     const PAD = 4
-    const l = cursorLeft + GAP + tw > containerW
-      ? Math.max(PAD, cursorLeft - tw - GAP)
-      : cursorLeft + GAP
-    const t = cursorTop + GAP + th > containerH
-      ? Math.max(PAD, cursorTop - th - GAP)
-      : cursorTop + GAP
-    el.style.left = `${l}px`
-    el.style.top  = `${t}px`
+    // Anchor away from the nearest pair of container edges. This keeps the
+    // tooltip inside the chart without offsetWidth/offsetHeight reads, which
+    // forced synchronous layout on every hover update.
+    const left = cursorLeft <= containerW / 2 ? `${cursorLeft + GAP}px` : 'auto'
+    const right = cursorLeft > containerW / 2 ? `${Math.max(PAD, containerW - cursorLeft + GAP)}px` : 'auto'
+    const top = cursorTop <= containerH / 2 ? `${cursorTop + GAP}px` : 'auto'
+    const bottom = cursorTop > containerH / 2 ? `${Math.max(PAD, containerH - cursorTop + GAP)}px` : 'auto'
+    if (left !== state.left) { el.style.left = left; state.left = left }
+    if (right !== state.right) { el.style.right = right; state.right = right }
+    if (top !== state.top) { el.style.top = top; state.top = top }
+    if (bottom !== state.bottom) { el.style.bottom = bottom; state.bottom = bottom }
   }, [])
 
   const hide = useCallback(() => {
     const el = tooltipRef.current
-    if (el) el.style.display = 'none'
+    if (el && stateRef.current.visible) {
+      el.style.display = 'none'
+      stateRef.current.visible = false
+    }
   }, [])
 
   return { tooltipRef, show, hide }

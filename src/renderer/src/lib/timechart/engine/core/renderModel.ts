@@ -9,37 +9,30 @@ export interface DataPoint {
 
 export interface MinMax { min: number; max: number; }
 
-function calcMinMaxY(arr: DataPoint[], start: number, end: number): MinMax {
-    let max = -Infinity;
-    let min = Infinity;
-    for (let i = start; i < end; i++) {
-        const v = arr[i].y;
-        if (v > max) max = v;
-        if (v < min) min = v;
-    }
-    return { max, min };
-}
-
-function unionMinMax(...items: MinMax[]) {
-    return {
-        min: Math.min(...items.map(i => i.min)),
-        max: Math.max(...items.map(i => i.max)),
-    };
-}
-
 export class RenderModel {
     xScale = scaleLinear();
     yScale = scaleLinear();
     xRange: MinMax | null = null;
     yRange: MinMax | null = null;
+    private fixedYMin = NaN;
+    private fixedYMax = NaN;
 
     constructor(private options: ResolvedCoreOptions) {
         if (options.xRange !== 'auto' && options.xRange) {
             this.xScale.domain([options.xRange.min, options.xRange.max])
         }
         if (options.yRange !== 'auto' && options.yRange) {
-            this.yScale.domain([options.yRange.min, options.yRange.max])
+            this.applyFixedYRange(options.yRange.min, options.yRange.max)
         }
+    }
+
+    private applyFixedYRange(min: number, max: number) {
+        if (min === this.fixedYMin && max === this.fixedYMax) {
+            return;
+        }
+        this.fixedYMin = min;
+        this.fixedYMax = max;
+        this.yScale.domain([min, max]);
     }
 
     resized = new EventDispatcher<(width: number, height: number) => void>();
@@ -72,45 +65,61 @@ export class RenderModel {
     }
 
     updateModel() {
-        const series = this.options.series.filter(s => s.data.length > 0);
-        if (series.length === 0) {
+        const o = this.options;
+        let minDomain = Infinity;
+        let maxDomain = -Infinity;
+        let hasData = false;
+        for (const s of o.series) {
+            const d = s.data;
+            if (d.length === 0) continue;
+            hasData = true;
+            const firstX = d[0].x;
+            const lastX = d[d.length - 1].x;
+            if (firstX < minDomain) minDomain = firstX;
+            if (lastX > maxDomain) maxDomain = lastX;
+        }
+        if (!hasData) {
             return;
         }
 
-        const o = this.options;
-
-        {
-            const maxDomain = Math.max(...series.map(s => s.data[s.data.length - 1].x));
-            const minDomain = Math.min(...series.map(s => s.data[0].x));
-            this.xRange = { max: maxDomain, min: minDomain };
-            if (this.options.realTime || o.xRange === 'auto') {
-                if (this.options.realTime) {
-                    const currentDomain = this.xScale.domain();
-                    const range = currentDomain[1] - currentDomain[0];
-                    this.xScale.domain([maxDomain - range, maxDomain]);
-                } else { // Auto
-                    this.xScale.domain([minDomain, maxDomain]);
-                }
-            } else if (o.xRange) {
-                this.xScale.domain([o.xRange.min, o.xRange.max])
-            }
+        this.xRange = { max: maxDomain, min: minDomain };
+        if (o.realTime) {
+            const currentDomain = this.xScale.domain();
+            const range = currentDomain[1] - currentDomain[0];
+            this.xScale.domain([maxDomain - range, maxDomain]);
+        } else if (o.xRange === 'auto') {
+            this.xScale.domain([minDomain, maxDomain]);
+        } else if (o.xRange) {
+            this.xScale.domain([o.xRange.min, o.xRange.max])
         }
-        {
-            const minMaxY = series.flatMap(s => {
-                return [
-                    calcMinMaxY(s.data, 0, s.data.pushed_front),
-                    calcMinMaxY(s.data, s.data.length - s.data.pushed_back, s.data.length),
-                ];
-            })
-            if (this.yRange) {
-                minMaxY.push(this.yRange);
+
+        // Track N Race supplies explicit y-ranges for every chart (including
+        // its throttled auto-range implementation). Avoid scanning point deltas
+        // unless the engine's own auto mode was explicitly requested.
+        if (o.yRange === 'auto') {
+            let minY = this.yRange?.min ?? Infinity;
+            let maxY = this.yRange?.max ?? -Infinity;
+            for (const s of o.series) {
+                const d = s.data;
+                const backStart = d.length - d.pushed_back;
+                for (let i = 0; i < d.pushed_front; i++) {
+                    const y = d[i].y;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+                for (let i = backStart; i < d.length; i++) {
+                    const y = d[i].y;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
             }
-            this.yRange = unionMinMax(...minMaxY);
-            if (o.yRange === 'auto') {
-                this.yScale.domain([this.yRange.min, this.yRange.max]).nice();
-            } else if (o.yRange) {
-                this.yScale.domain([o.yRange.min, o.yRange.max])
+            if (Number.isFinite(minY) && Number.isFinite(maxY)) {
+                this.yRange = { min: minY, max: maxY };
+                this.fixedYMin = this.fixedYMax = NaN;
+                this.yScale.domain([minY, maxY]).nice();
             }
+        } else if (o.yRange) {
+            this.applyFixedYRange(o.yRange.min, o.yRange.max);
         }
     }
 
