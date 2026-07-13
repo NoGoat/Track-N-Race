@@ -592,7 +592,13 @@ function drawLabel(
 
   const cssWidth = sprite.width / dpr
   const cssHeight = sprite.height / dpr
-  ctx.drawImage(sprite, bx - LABEL_SPRITE_PAD, by - LABEL_SPRITE_PAD, cssWidth, cssHeight)
+  // Interpolated car positions are intentionally subpixel, but translating a
+  // pre-rasterized text sprite by a fractional backing-store pixel makes the
+  // compositor bilinearly resample every glyph. Snap only the label bitmap;
+  // the WebGL dot continues moving at full subpixel precision.
+  const drawX = Math.round((bx - LABEL_SPRITE_PAD) * dpr) / dpr
+  const drawY = Math.round((by - LABEL_SPRITE_PAD) * dpr) / dpr
+  ctx.drawImage(sprite, drawX, drawY, cssWidth, cssHeight)
 }
 
 function drawCarDots(
@@ -1107,6 +1113,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         const ctx = labelCanvas.getContext('2d')
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          ctx.imageSmoothingEnabled = false
 
           const baseLayout = buildLayout(prep, width, height)
           let layout = baseLayout
