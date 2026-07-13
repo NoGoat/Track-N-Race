@@ -112,6 +112,13 @@ const TAB_LABELS: Record<Tab, string> = {
 const TAB_OPTIONS = (['core', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
 const selectStyles = buildSelectStyles(true)
+const PLAYBACK_SPEED_OPTIONS = [
+  { value: 0.25, label: '0.25x' },
+  { value: 0.5, label: '0.5x' },
+  { value: 1, label: '1x' },
+  { value: 2, label: '2x' },
+  { value: 4, label: '4x' },
+]
 
 
 interface BannerItem {
@@ -528,6 +535,62 @@ const PlaybackControlsBar = memo(function PlaybackControlsBar({
   )
 })
 PlaybackControlsBar.displayName = 'PlaybackControlsBar'
+
+interface PlaybackSpeedSelectorProps {
+  speed: number
+  compact?: boolean
+}
+
+const PlaybackSpeedSelector = memo(function PlaybackSpeedSelector({
+  speed,
+  compact,
+}: PlaybackSpeedSelectorProps) {
+  const value = PLAYBACK_SPEED_OPTIONS.find(option => option.value === speed) ?? PLAYBACK_SPEED_OPTIONS[2]
+  const handleChange = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => {
+    if (option) window.playerBridge.setSpeed(option.value)
+  }, [])
+
+  return (
+    <div className={`${compact ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}>
+      <Select
+        value={value}
+        onChange={handleChange}
+        options={PLAYBACK_SPEED_OPTIONS}
+        styles={selectStyles}
+        components={selectComponents}
+        menuPlacement="top"
+        isSearchable={false}
+      />
+    </div>
+  )
+})
+PlaybackSpeedSelector.displayName = 'PlaybackSpeedSelector'
+
+interface PlaybackExportButtonProps {
+  state: 'idle' | 'busy' | 'error'
+  error: string | null
+  onExport: () => void
+  compact?: boolean
+}
+
+const PlaybackExportButton = memo(function PlaybackExportButton({
+  state,
+  error,
+  onExport,
+  compact,
+}: PlaybackExportButtonProps) {
+  return (
+    <button
+      onClick={onExport}
+      disabled={state === 'busy'}
+      title={state === 'error' ? error ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
+      className={`${compact ? 'w-6 h-6' : 'w-8 h-8'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}
+    >
+      <Download size={compact ? 14 : 16} className={state === 'busy' ? 'animate-pulse' : ''} />
+    </button>
+  )
+})
+PlaybackExportButton.displayName = 'PlaybackExportButton'
 
 interface PlaybackProgressTrackerProps {
   currentTime: number
@@ -1979,25 +2042,10 @@ export default function App() {
             totalTime={playbackState.totalTime}
             compact={compact.playbackBar}
           />
-          <div className={`${compact.playbackBar ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}>
-            <Select
-              value={{ value: playbackState.speed, label: `${playbackState.speed}x` }}
-              onChange={(option) => {
-                if (option) window.playerBridge.setSpeed(option.value)
-              }}
-              options={[
-                { value: 0.25, label: '0.25x' },
-                { value: 0.5, label: '0.5x' },
-                { value: 1, label: '1x' },
-                { value: 2, label: '2x' },
-                { value: 4, label: '4x' },
-              ]}
-              styles={selectStyles}
-              components={selectComponents}
-              menuPlacement="top"
-              isSearchable={false}
-            />
-          </div>
+          <PlaybackSpeedSelector
+            speed={playbackState.speed}
+            compact={compact.playbackBar}
+          />
           {speedRpmBlocks && speedRpmBlocks.length > 0 && (
             <PlaybackLapSelector
               speedRpmBlocks={speedRpmBlocks}
@@ -2008,14 +2056,12 @@ export default function App() {
               compact={compact.playbackBar}
             />
           )}
-          <button
-            onClick={handleExportXlsx}
-            disabled={xlsxExportState === 'busy'}
-            title={xlsxExportState === 'error' ? xlsxExportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
-            className={`${compact.playbackBar ? 'w-6 h-6' : 'w-8 h-8'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}
-          >
-            <Download size={compact.playbackBar ? 14 : 16} className={xlsxExportState === 'busy' ? 'animate-pulse' : ''} />
-          </button>
+          <PlaybackExportButton
+            state={xlsxExportState}
+            error={xlsxExportError}
+            onExport={handleExportXlsx}
+            compact={compact.playbackBar}
+          />
         </div>
       )}
 
