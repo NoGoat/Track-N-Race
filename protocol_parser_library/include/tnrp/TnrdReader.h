@@ -10,10 +10,13 @@
 #include <vector>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/TnrdFormat.h"
 
 namespace tnrp {
 
-// Reads a .tnrd file for playback. Decompresses to a temp file, builds a
+// Reads TNRD V1/gzip and TNRD V2/Zstandard files for playback. load() detects
+// the container signature; loadGzip()/loadZstd() are strict explicit paths.
+// Decompresses to a temp file, builds a
 // time/type index, and — in the same pass — builds the per-lap Speed/RPM/ERS
 // comparison blocks, the scanned lap list and the event log that the renderer
 // needs to enter true "playback mode".
@@ -30,8 +33,11 @@ public:
     ~TnrdReader();
 
     bool load(const std::string& path, HeaderRow& outHeader);
+    bool loadZstd(const std::string& path, HeaderRow& outHeader);
+    bool loadGzip(const std::string& path, HeaderRow& outHeader);
     void close();
     bool isLoaded() const { return tempFile_ != nullptr; }
+    TnrdFormat loadedFormat() const { return loadedFormat_; }
 
     // Enable the Electron binary playback fast path BEFORE load(): the index
     // pass additionally pre-encodes the hot rows (telemetry/motion/motion_ex)
@@ -127,6 +133,7 @@ private:
     float       totalTime_   = 0.0f;
     size_t      playPos_     = 0;
     bool        binaryPlayback_ = false;
+    TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
 
     // Binary-playback stores (built by buildIndex when binaryPlayback_):
     // packed hot records + per-record times/byte-offsets (hotStart_ has one
@@ -152,7 +159,7 @@ private:
     size_t upperBoundTime(float t) const;
     size_t lowerBoundTime(float t) const;
 
-    static bool decompress(const std::string& srcPath, const std::string& destPath);
+    bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
     void buildIndex(const std::string& filePath);
     std::string readLine(long offset);   // reads raw JSONL line (no parse)
 

@@ -7,7 +7,7 @@ one repository:
 
 | Component | Path | Tech | Role |
 |---|---|---|---|
-| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, XLSX export, label/colour catalogs |
+| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, XLSX export, label/colour catalogs |
 | Node addon | `node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Native recorder | `native_recorder/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
@@ -134,17 +134,18 @@ intent so the per-packet fast path can skip the whole recording pipeline
 (datagram copy + JSON enqueue + thread wakeup) when logging is off.
 
 - **Rotation**: `notePacket()` watches session packets; a new track/session id
-  closes the active gzip stream and starts a new file.
+  closes the active compressed stream and starts a new file.
 - **Flashback**: a 30 s rolling buffer absorbs in-game flashbacks — a
   session_time reversal within the window truncates the timeline and rewrites
   cleanly.
 - **Dedup**: state-row types are deduped against the last written value.
-- **Durability**: a zlib sync point every 300 rows (~5 s), so a crash leaves a
-  stream decodable up to the last flush.
+- **Durability**: a codec flush every 300 rows (~5 s), so a crash leaves a
+  stream decodable up to the last complete flushed row.
 
 ### 1.6 Playback (`TnrdReader` + `Engine::player*`)
 
-`load()` decompresses the gzip to a temp file (`tmpdir/tracknrace_*.tmp`),
+`load()` detects the container signature and decompresses either TNRD V1/gzip
+or TNRD V2/Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
 builds a time/type index in one pass, and in the same pass builds the per-lap
 blocks, scanned lap list, event log and fastest lap. Streaming reads return raw
 JSONL lines (no re-parse); block reads (`readBlock`) fetch contiguous index
@@ -211,9 +212,13 @@ overlay flows.
 
 ## 2. File format & shared conventions
 
-- **`.tnrd`**: gzip-compressed JSONL. First line is a header row
-  (`magic: "TNRD_V1"`, protocol format year, track/session ids and names,
-  start time). Every subsequent line is one typed row with `session_time`.
+- **`.tnrd`**: compressed JSONL with two supported generations. TNRD V1 uses
+  gzip and `magic: "TNRD_V1"`; TNRD V2 uses Zstandard and
+  `magic: "TNRD_V2", compression: "zstd"`. `TnrdReader::load()` detects the
+  codec from its native bytes and then validates the JSON header/container pair.
+  Normal recording writes V2. Explicit `setLoggingGzip()` retains deprecated V1
+  writing for compatibility. Every subsequent line is one typed row with
+  `session_time`; the telemetry row schema is shared by both generations.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,
@@ -531,7 +536,7 @@ only the panels. While in playback, live engine rows are dropped at
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
-  libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);
+  Zstandard v1.5.7, libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);
   a shadowed `FindZLIB.cmake` points libxlsxwriter at the fetched zlib.
 - **Release driver**: root `build.ps1` bumps the version
   (minor/major/overhaul), builds the native recorder, then

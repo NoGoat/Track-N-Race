@@ -1,9 +1,13 @@
 #include "tnrp/TnrdWriter.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
+#include "TnrdCodec.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 
 #include "protocols/protocol.h"
@@ -61,25 +65,27 @@ TnrdWriter::~TnrdWriter() {
     if (diskThread_.joinable()) diskThread_.join();
 }
 
-gzFile TnrdWriter::gzOpenPath(const std::string& utf8Path, const char* mode) {
-#ifdef _WIN32
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return nullptr;
-    std::wstring wpath(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, wpath.data(), wlen);
-    return gzopen_w(wpath.c_str(), mode);
-#else
-    return gzopen(utf8Path.c_str(), mode);
-#endif
+void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
+    setLoggingZstd(enabled, outputDir);
 }
 
-void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
+void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::ZstdV2);
+}
+
+void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::GzipV1);
+}
+
+void TnrdWriter::setLoggingForFormat(bool enabled, const std::string& outputDir,
+                                     TnrdFormat format) {
     recording_.store(enabled, std::memory_order_relaxed);
     std::unique_lock<std::mutex> lk(mu_);
     WriterEvent ev;
     ev.type = EventType::SetLogging;
     ev.enabled = enabled;
     ev.outputDir = outputDir;
+    ev.tnrdFormat = format;
     queue_.push(std::move(ev));
     cv_.notify_one();
 }
@@ -122,11 +128,13 @@ void TnrdWriter::writerLoop() {
         }
 
         if (ev.type == EventType::SetLogging) {
+            const bool formatChanged = wantRecord_ && writeFormat_ != ev.tnrdFormat;
             wantRecord_ = ev.enabled;
             outputDirectory_ = ev.outputDir;
-            if (!ev.enabled) closeActiveStream();
+            writeFormat_ = ev.tnrdFormat;
+            if (!ev.enabled || formatChanged) closeActiveStream();
         } else if (ev.type == EventType::NotePacket) {
-            if (activeGzip_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
+            if (activeStream_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime);
             else if (ev.sessionTime > lastSessionTime_)
                 lastSessionTime_ = ev.sessionTime;
@@ -135,11 +143,11 @@ void TnrdWriter::writerLoop() {
                 int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
                 uint8_t sessionType = ev.packetData[35];
                 if (wantRecord_ && (trackId != currentTrackId_ ||
-                                    sessionType != currentSessionType_ || !activeGzip_))
+                                    sessionType != currentSessionType_ || !activeStream_))
                     startNewStream(trackId, sessionType, ev.format);
             }
         } else if (ev.type == EventType::Record) {
-            if (!activeGzip_) continue;
+            if (!activeStream_) continue;
             std::string type = extractType(ev.json);
             if (isDuplicate(type, ev.json)) continue;
             std::string line = ev.json + "\n";
@@ -157,15 +165,17 @@ void TnrdWriter::writerLoop() {
 }
 
 void TnrdWriter::closeActiveStream() {
-    if (activeGzip_) {
+    if (activeStream_) {
         flushBufferToDisk(rollingBuffer_);
-        gzclose(activeGzip_);
-        activeGzip_ = nullptr;
+        if (!activeStream_->finish())
+            std::fprintf(stderr, "[tnrd] writer close failed for '%s': %s\n",
+                         activePath_.c_str(), activeStream_->error().c_str());
+        activeStream_.reset();
     }
     rollingBuffer_.clear();
     currentTrackId_     = -1;
     currentSessionType_ = -1;
-    activeGzipPath_.clear();
+    activePath_.clear();
     lastSessionTime_    = -1.0f;
     rowsSinceFlush_     = 0;
     dedupeCache_.clear();
@@ -188,12 +198,14 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     std::string filename = proto + "_" + std::to_string(trackId) + "_"
                          + tName + "_" + sName + "_" + filenameTimestamp() + ".tnrd";
 
-    activeGzipPath_ = outputDirectory_ + "/" + filename;
-    activeGzip_     = gzOpenPath(activeGzipPath_, "wb");
+    activePath_ = outputDirectory_ + "/" + filename;
+    std::string openError;
+    activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, false, &openError);
 
-    if (activeGzip_) {
+    if (activeStream_) {
         HeaderRow hdr;
-        hdr.magic        = "TNRD_V1";
+        hdr.magic        = writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2" : "TNRD_V1";
+        if (writeFormat_ == TnrdFormat::ZstdV2) hdr.compression = "zstd";
         hdr.protocol     = format;
         hdr.track_id     = trackId;
         hdr.track_name   = (itTrack != TRACK_NAMES.end()) ? itTrack->second : "Unknown";
@@ -202,27 +214,43 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
         hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         std::string hl = writeJson(hdr) + "\n";
-        gzwrite(activeGzip_, hl.c_str(), (unsigned int)hl.size());
+        if (!activeStream_->write(hl)) {
+            std::fprintf(stderr, "[tnrd] writer header failed for '%s': %s\n",
+                         activePath_.c_str(), activeStream_->error().c_str());
+            activeStream_.reset();
+            activePath_.clear();
+            return;
+        }
 
         currentTrackId_     = trackId;
         currentSessionType_ = sessionType;
         lastSessionTime_    = -1.0f;
         rowsSinceFlush_     = 0;
+    } else {
+        std::fprintf(stderr, "[tnrd] writer open failed for '%s': %s\n",
+                     activePath_.c_str(), openError.c_str());
+        activePath_.clear();
     }
 }
 
 void TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
-    if (!activeGzip_ || entries.empty()) return;
-    for (const auto& e : entries)
-        gzwrite(activeGzip_, e.line.c_str(), (unsigned int)e.line.size());
+    if (!activeStream_ || entries.empty()) return;
+    for (const auto& e : entries) {
+        if (!activeStream_->write(e.line)) {
+            std::fprintf(stderr, "[tnrd] writer data failed for '%s': %s\n",
+                         activePath_.c_str(), activeStream_->error().c_str());
+            return;
+        }
+    }
 
-    // Periodically emit a zlib sync point. Z_SYNC_FLUSH aligns output to a byte
-    // boundary and pushes all pending input to disk, so the on-disk prefix stays
-    // a decodable gzip member: a later truncation only costs rows written after
-    // the last flush, instead of making the whole recording unreadable.
+    // Periodically emit a codec-specific recoverability point. Both zlib's sync
+    // flush and Zstandard's stream flush make all complete rows supplied so far
+    // immediately decodable without ending the active member/frame.
     rowsSinceFlush_ += (int)entries.size();
     if (rowsSinceFlush_ >= FLUSH_EVERY_ROWS) {
-        gzflush(activeGzip_, Z_SYNC_FLUSH);
+        if (!activeStream_->flushRecoverable())
+            std::fprintf(stderr, "[tnrd] writer flush failed for '%s': %s\n",
+                         activePath_.c_str(), activeStream_->error().c_str());
         rowsSinceFlush_ = 0;
     }
 }
@@ -267,27 +295,72 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
             rollingBuffer_.end());
     } else {
         rollingBuffer_.clear();
-        if (!activeGzipPath_.empty() && activeGzip_) {
-            gzclose(activeGzip_); activeGzip_ = nullptr;
+        if (!activePath_.empty() && activeStream_) {
+            if (!activeStream_->finish())
+                std::fprintf(stderr, "[tnrd] writer close before flashback failed: %s\n",
+                             activeStream_->error().c_str());
+            activeStream_.reset();
+
             std::vector<std::string> kept;
-            gzFile in = gzOpenPath(activeGzipPath_, "rb");
-            if (in) {
-                char buf[16384];
-                while (gzgets(in, buf, sizeof(buf)) != nullptr) {
-                    std::string line(buf);
+            const std::string plainPath = activePath_ + ".rewrite.jsonl.tmp";
+            const std::string compressedPath = activePath_ + ".rewrite.tnrd.tmp";
+            bool partial = false;
+            std::string codecError;
+            const bool decompressed = detail::decompressTnrd(
+                activePath_, plainPath, writeFormat_, &partial, &codecError);
+            if (decompressed) {
+                std::ifstream in(std::filesystem::u8path(plainPath), std::ios::binary);
+                std::string line;
+                while (std::getline(in, line)) {
+                    line.push_back('\n');
                     SessionTimeOnly st;
                     (void)glz::read<kPartialReadW>(st, line);
                     if (st.session_time <= newSessionTime)
                         kept.push_back(line);
                 }
-                gzclose(in);
+            } else {
+                std::fprintf(stderr, "[tnrd] flashback decompress failed for '%s': %s\n",
+                             activePath_.c_str(), codecError.c_str());
             }
-            gzFile out = gzOpenPath(activeGzipPath_, "wb");
-            if (out) {
-                for (const auto& l : kept) gzwrite(out, l.c_str(), (unsigned int)l.size());
-                gzclose(out);
+
+            bool replaced = false;
+            codecError.clear();
+            auto rewritten = decompressed && !kept.empty()
+                ? detail::openTnrdOutput(compressedPath, writeFormat_, false, &codecError)
+                : nullptr;
+            if (rewritten) {
+                bool writeOk = true;
+                for (const auto& line : kept) {
+                    if (!rewritten->write(line)) { writeOk = false; break; }
+                }
+                writeOk = rewritten->finish() && writeOk;
+                rewritten.reset();
+                if (writeOk) {
+                    std::error_code ec;
+#ifdef _WIN32
+                    const auto src = std::filesystem::u8path(compressedPath).wstring();
+                    const auto dst = std::filesystem::u8path(activePath_).wstring();
+                    replaced = MoveFileExW(src.c_str(), dst.c_str(),
+                                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+                    std::filesystem::rename(compressedPath, activePath_, ec);
+                    replaced = !ec;
+#endif
+                }
             }
-            activeGzip_ = gzOpenPath(activeGzipPath_, "ab");
+            if (!replaced)
+                std::fprintf(stderr, "[tnrd] flashback rewrite failed for '%s': %s\n",
+                             activePath_.c_str(), codecError.c_str());
+
+            std::error_code cleanupError;
+            std::filesystem::remove(std::filesystem::u8path(plainPath), cleanupError);
+            std::filesystem::remove(std::filesystem::u8path(compressedPath), cleanupError);
+
+            codecError.clear();
+            activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, true, &codecError);
+            if (!activeStream_)
+                std::fprintf(stderr, "[tnrd] flashback append reopen failed for '%s': %s\n",
+                             activePath_.c_str(), codecError.c_str());
         }
     }
     dedupeCache_.clear();

@@ -10,8 +10,8 @@ option(TNRP_USE_QT "Use QUdpSocket instead of raw sockets for UDP" OFF)
 
 include(FetchContent)
 
-# All JSON (serialise + parse) goes through glaze; zlib is reused from a parent
-# project if present, otherwise fetched at the version the native recorder pins.
+# All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
+# gzip compatibility; Zstandard is the default TNRD V2 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -26,6 +26,35 @@ if(NOT TARGET zlibstatic)
         GIT_TAG v1.3.2
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(zlib)
+endif()
+
+if(NOT TARGET libzstd_static)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
+        FetchContent_Declare(zstd
+            GIT_REPOSITORY https://github.com/facebook/zstd.git
+            GIT_TAG v1.5.7
+            GIT_SHALLOW TRUE
+            SOURCE_SUBDIR build/cmake)
+        FetchContent_MakeAvailable(zstd)
+    else()
+        FetchContent_Declare(zstd
+            GIT_REPOSITORY https://github.com/facebook/zstd.git
+            GIT_TAG v1.5.7
+            GIT_SHALLOW TRUE)
+        FetchContent_GetProperties(zstd)
+        if(NOT zstd_POPULATED)
+            FetchContent_Populate(zstd)
+        endif()
+        add_subdirectory(${zstd_SOURCE_DIR}/build/cmake ${zstd_BINARY_DIR})
+    endif()
 endif()
 
 # XLSX export (raw-data dump of a recorded session). libxlsxwriter's own
@@ -57,6 +86,7 @@ add_library(tnrp STATIC
     src/CardColors.cpp
     src/Parser.cpp
     src/AnyRow.cpp
+    src/TnrdCodec.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -69,8 +99,9 @@ target_include_directories(tnrp
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# glaze is in public headers (rows/control_rows/TnrdReader); zlib is in TnrdWriter.h.
-target_link_libraries(tnrp PUBLIC zlibstatic glaze::glaze xlsxwriter)
+# glaze is in public headers. Both compression libraries are implementation
+# details, but static-library consumers still receive their link dependencies.
+target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic libzstd_static)
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
 target_include_directories(tnrp PUBLIC

@@ -40,6 +40,9 @@ public:
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
     void setLogging(bool enabled, const std::string& outputDir);
+    void setLoggingZstd(bool enabled, const std::string& outputDir);
+    [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
+    void setLoggingGzip(bool enabled, const std::string& outputDir);
 
     // ── Playback ─────────────────────────────────────────────────────────
     // Loads a .tnrd, switches the engine into playback mode (UDP ignored),

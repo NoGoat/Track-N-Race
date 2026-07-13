@@ -209,7 +209,7 @@ const LogoAndTitle = memo(({ theme }: { theme: 'dark' | 'light' }) => {
         className="h-5 w-auto select-none pointer-events-none"
         draggable="false"
       />
-      <span className="font-semibold text-sm">Track N Race</span>
+      <span className="font-semibold text-sm max-[1200px]:hidden">Track N Race</span>
     </div>
   )
 })

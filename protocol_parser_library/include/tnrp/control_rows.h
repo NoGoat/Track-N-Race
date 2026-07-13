@@ -198,6 +198,7 @@ struct ProtocolWarningRow {
 
 struct HeaderRow {
     std::string magic;
+    std::optional<std::string> compression;  // V2: "zstd"; omitted by V1
     int         protocol{};
     int         track_id{};
     std::string track_name;

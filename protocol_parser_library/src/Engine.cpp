@@ -138,10 +138,33 @@ void Engine::setOverride(Override ovr) {
 }
 
 void Engine::setLogging(bool enabled, const std::string& outputDir) {
+    setLoggingZstd(enabled, outputDir);
+}
+
+void Engine::setLoggingZstd(bool enabled, const std::string& outputDir) {
     std::lock_guard<std::mutex> lk(mutex_);
     config_.loggingEnabled  = enabled;
     config_.outputDirectory = outputDir;
-    writer_.setLogging(enabled, outputDir);
+    writer_.setLoggingZstd(enabled, outputDir);
+}
+
+void Engine::setLoggingGzip(bool enabled, const std::string& outputDir) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    config_.loggingEnabled  = enabled;
+    config_.outputDirectory = outputDir;
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable: 4996)
+#endif
+    writer_.setLoggingGzip(enabled, outputDir);
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 }
 
 // ── Playback ─────────────────────────────────────────────────────────────────

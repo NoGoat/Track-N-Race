@@ -10,13 +10,8 @@
 #include <string_view>
 #include <unordered_set>
 
-#include <zlib.h>
-
 #include "tnrp/BinaryRows.h"
-
-#ifdef _WIN32
-#  include <windows.h>
-#endif
+#include "TnrdCodec.h"
 
 namespace tnrp {
 
@@ -77,18 +72,6 @@ static uint8_t scanType(const char* d, int len) {
     return 0;
 }
 
-static gzFile gzOpenRead(const std::string& utf8Path) {
-#ifdef _WIN32
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return nullptr;
-    std::wstring wpath(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, wpath.data(), wlen);
-    return gzopen_w(wpath.c_str(), "rb");
-#else
-    return gzopen(utf8Path.c_str(), "rb");
-#endif
-}
-
 TnrdReader::~TnrdReader() { close(); }
 
 void TnrdReader::sweepStaleTempFiles() {
@@ -110,48 +93,6 @@ void TnrdReader::sweepStaleTempFiles() {
     }
     if (removed > 0)
         std::fprintf(stderr, "[tnrd] startup sweep: removed %d stale temp file(s)\n", removed);
-}
-
-bool TnrdReader::decompress(const std::string& srcPath, const std::string& destPath) {
-    gzFile gz = gzOpenRead(srcPath);
-    if (!gz) {
-        std::fprintf(stderr, "[tnrd] decompress: gzopen failed for '%s' (missing/unreadable/not-gzip)\n",
-                     srcPath.c_str());
-        return false;
-    }
-    std::FILE* out = std::fopen(destPath.c_str(), "wb");
-    if (!out) {
-        std::fprintf(stderr, "[tnrd] decompress: cannot create temp file '%s'\n", destPath.c_str());
-        gzclose(gz);
-        return false;
-    }
-    char buf[131072];
-    int n;
-    bool ok = true;
-    bool writeFailed = false;
-    unsigned long long written = 0;
-    while ((n = gzread(gz, buf, sizeof(buf))) > 0) {
-        if (std::fwrite(buf, 1, (size_t)n, out) != (size_t)n) { ok = false; writeFailed = true; break; }
-        written += (unsigned long long)n;
-    }
-    // A crash mid-recording leaves an unterminated gzip stream; gzread then
-    // returns -1 at the truncated tail. Keep everything decompressed so far
-    // instead of discarding the whole recording — buildIndex() drops the final
-    // partial line. Only a genuine fwrite failure, or a file that yielded no
-    // usable bytes at all, counts as a hard failure.
-    if (writeFailed) {
-        std::fprintf(stderr, "[tnrd] decompress: write failed to '%s' (disk full?)\n", destPath.c_str());
-        ok = false;
-    } else if (n < 0) {
-        ok = (written > 0);   // truncated tail (crash mid-record) is OK if we got some data
-        if (!ok)
-            std::fprintf(stderr, "[tnrd] decompress: gzread error and 0 bytes recovered from '%s'\n",
-                         srcPath.c_str());
-    }
-    gzclose(gz);
-    std::fclose(out);
-    if (ok) std::fprintf(stderr, "[tnrd] decompress: OK, %llu bytes\n", written);
-    return ok;
 }
 
 void TnrdReader::buildIndex(const std::string& filePath) {
@@ -349,8 +290,36 @@ void TnrdReader::buildIndex(const std::string& filePath) {
 }
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
+    std::string detectError;
+    const TnrdFormat format = detail::detectTnrdFormat(path, &detectError);
+    if (format == TnrdFormat::Unknown) {
+        close();
+        std::fprintf(stderr, "[tnrd] load FAILED: %s for '%s'\n",
+                     detectError.c_str(), path.c_str());
+        return false;
+    }
+    return loadWithFormat(path, outHeader, format);
+}
+
+bool TnrdReader::loadZstd(const std::string& path, HeaderRow& outHeader) {
+    return loadWithFormat(path, outHeader, TnrdFormat::ZstdV2);
+}
+
+bool TnrdReader::loadGzip(const std::string& path, HeaderRow& outHeader) {
+    return loadWithFormat(path, outHeader, TnrdFormat::GzipV1);
+}
+
+bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
+                                TnrdFormat format) {
     close();
-    std::fprintf(stderr, "[tnrd] load: '%s'\n", path.c_str());
+    std::string detectError;
+    const TnrdFormat detected = detail::detectTnrdFormat(path, &detectError);
+    if (detected != format) {
+        std::fprintf(stderr, "[tnrd] load FAILED: requested %s but file is %s ('%s')\n",
+                     toString(format), toString(detected), path.c_str());
+        return false;
+    }
+    std::fprintf(stderr, "[tnrd] load: '%s' (%s)\n", path.c_str(), toString(format));
     namespace fs = std::filesystem;
     // Prefix shared with the Electron app ("tracknrace_temp_") so either app's
     // startup sweep reclaims the other's leftovers (see sweepStaleTempFiles).
@@ -359,11 +328,17 @@ bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
             std::chrono::system_clock::now().time_since_epoch()).count()) + ".tmp";
     tempPath_ = (fs::temp_directory_path() / tmpName).string();
 
-    if (!decompress(path, tempPath_)) {
-        std::fprintf(stderr, "[tnrd] load FAILED: decompress step for '%s'\n", path.c_str());
+    bool partial = false;
+    std::string decompressError;
+    if (!detail::decompressTnrd(path, tempPath_, format, &partial, &decompressError)) {
+        std::fprintf(stderr, "[tnrd] load FAILED: decompress step for '%s': %s\n",
+                     path.c_str(), decompressError.c_str());
         close();
         return false;
     }
+    if (partial)
+        std::fprintf(stderr, "[tnrd] load: recovered a truncated %s stream; final partial row will be dropped\n",
+                     toString(format));
 
     {
         std::FILE* f = std::fopen(tempPath_.c_str(), "rb");
@@ -389,9 +364,15 @@ bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
             close();
             return false;
         }
-        if (outHeader.magic != "TNRD_V1") {
-            std::fprintf(stderr, "[tnrd] load FAILED: bad magic '%s' (expected 'TNRD_V1') — not a TNRD recording?\n",
-                         outHeader.magic.c_str());
+        const char* expectedMagic = format == TnrdFormat::ZstdV2 ? "TNRD_V2" : "TNRD_V1";
+        const bool compressionOk = format == TnrdFormat::ZstdV2
+            ? (outHeader.compression && *outHeader.compression == "zstd")
+            : (!outHeader.compression || *outHeader.compression == "gzip");
+        if (outHeader.magic != expectedMagic || !compressionOk) {
+            std::fprintf(stderr,
+                         "[tnrd] load FAILED: header/container mismatch: container=%s magic='%s' compression='%s'\n",
+                         toString(format), outHeader.magic.c_str(),
+                         outHeader.compression ? outHeader.compression->c_str() : "");
             close();
             return false;
         }
@@ -412,8 +393,9 @@ bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
     }
     std::fseek(tempFile_, 0, SEEK_END);
     tempFileSize_ = std::ftell(tempFile_);
-    std::fprintf(stderr, "[tnrd] load OK: rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
-                 index_.size(), startTime_, totalTime_,
+    loadedFormat_ = format;
+    std::fprintf(stderr, "[tnrd] load OK: format=%s rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
+                 toString(format), index_.size(), startTime_, totalTime_,
                  outHeader.track_name.c_str(), outHeader.session_name.c_str());
     return true;
 }
@@ -425,6 +407,7 @@ void TnrdReader::close() {
         std::filesystem::remove(tempPath_, ec);
         tempPath_.clear();
     }
+    loadedFormat_ = TnrdFormat::Unknown;
     index_.clear();
     lapBlocks_.clear();
     scannedLaps_.clear();

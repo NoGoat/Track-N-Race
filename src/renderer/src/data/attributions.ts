@@ -14,6 +14,7 @@ import uplotReactLicense from '../assets/licenses/uplot-react.txt?raw'
 import timechartLicense from '../assets/licenses/timechart.txt?raw'
 import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
 import zlibLicense from '../assets/licenses/zlib.txt?raw'
+import zstandardLicense from '../assets/licenses/zstandard.txt?raw'
 import glazeLicense from '../assets/licenses/glaze.txt?raw'
 import nodeAddonApiLicense from '../assets/licenses/node-addon-api.txt?raw'
 
@@ -120,6 +121,14 @@ export const ATTRIBUTIONS: Attribution[] = [
     license: 'Zlib',
     homepage: 'https://zlib.net',
     licenseText: zlibLicense,
+    category: 'node-addon',
+  },
+  {
+    name: 'Zstandard',
+    version: '1.5.7',
+    license: 'BSD-3-Clause',
+    homepage: 'https://facebook.github.io/zstd/',
+    licenseText: zstandardLicense,
     category: 'node-addon',
   },
   {

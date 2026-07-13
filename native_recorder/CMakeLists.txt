@@ -26,8 +26,8 @@ include(FetchContent)
 # All row (de)serialization is typed via libtnrp/glaze (tnrp/AnyRow.h); the only
 # JSON the app parses itself is the bundled track-map resources, via QJsonDocument.
 
-# zlib (.tnrd gzip) is no longer used directly by the app — it lives entirely in
-# libtnrp's TnrdWriter/TnrdReader now, which fetches and links zlibstatic itself.
+# TNRD compression is owned entirely by libtnrp: Zstandard for V2/default writes,
+# plus zlib for V1/gzip read and deprecated-write compatibility.
 
 # Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
 # OpenGL/OpenGLWidgets let QCustomPlot rasterize on the GPU — software QPainter
@@ -49,7 +49,7 @@ endif()
 # parsing, .tnrd recording + playback — the single source of truth also used by the
 # Electron node_addon. TNRP_USE_QT=ON selects its QUdpSocket backend so it integrates
 # with this app's Qt build (no raw sockets). The guard lets a parent superbuild add
-# the library first. The library fetches/links zlib (zlibstatic) and glaze itself.
+# the library first. The library fetches/links its codecs and glaze itself.
 set(TNRP_USE_QT ON CACHE BOOL "" FORCE)
 if(NOT TARGET tnrp)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol_parser_library

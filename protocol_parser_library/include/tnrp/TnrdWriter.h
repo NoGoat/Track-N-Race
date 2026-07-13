@@ -10,13 +10,16 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <memory>
 
-#include <zlib.h>
+#include "tnrp/TnrdFormat.h"
+
+namespace tnrp::detail { class TnrdOutputStream; }
 
 namespace tnrp {
 
-// Records parsed rows to gzip-compressed JSONL .tnrd files. Lifted from the
-// native MainWindow recorder; Qt types replaced with std::string. Owns:
+// Records parsed rows to compressed JSONL .tnrd files. TNRD V2/Zstandard is
+// the default; TNRD V1/gzip remains available for legacy compatibility. Owns:
 //   - per-session file rotation (new track/session => new file),
 //   - a 30s rolling buffer so in-game flashbacks (<=30s) rewrite cleanly,
 //   - rewind/flashback timeline truncation,
@@ -28,7 +31,11 @@ public:
     TnrdWriter();
     ~TnrdWriter();
 
+    // Source-compatible default recording entry point: writes TNRD V2/zstd.
     void setLogging(bool enabled, const std::string& outputDir);
+    void setLoggingZstd(bool enabled, const std::string& outputDir);
+    [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
+    void setLoggingGzip(bool enabled, const std::string& outputDir);
     bool loggingEnabled() const { return wantRecord_; }
 
     // Cheap atomic mirror of "logging enabled" intent, updated synchronously in
@@ -58,6 +65,7 @@ private:
         EventType             type;
         bool                  enabled;
         std::string           outputDir;
+        TnrdFormat            tnrdFormat{TnrdFormat::ZstdV2};
         uint16_t              format;
         uint8_t               packetId;
         float                 sessionTime;
@@ -77,15 +85,16 @@ private:
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
+    TnrdFormat  writeFormat_        = TnrdFormat::ZstdV2;
     std::string outputDirectory_;
-    gzFile      activeGzip_         = nullptr;
-    std::string activeGzipPath_;
+    std::unique_ptr<detail::TnrdOutputStream> activeStream_;
+    std::string activePath_;
     int         currentTrackId_     = -1;
     int         currentSessionType_ = -1;
     float       lastSessionTime_    = -1.0f;
 
-    // Durability: force a zlib sync point on a cadence so a crash/power-loss
-    // mid-session leaves a stream that is still decodable up to the last flush.
+    // Durability: force a codec flush on a cadence so a crash/power-loss leaves
+    // a stream that is still decodable up to the last complete flushed row.
     int         rowsSinceFlush_     = 0;
     static constexpr int FLUSH_EVERY_ROWS = 300;  // ~5 s at buffered cadence
 
@@ -100,7 +109,7 @@ private:
     void truncateTimeline(float newSessionTime);
     bool isDuplicate(const std::string& type, const std::string& json);
 
-    static gzFile gzOpenPath(const std::string& utf8Path, const char* mode);
+    void setLoggingForFormat(bool enabled, const std::string& outputDir, TnrdFormat format);
 };
 
 } // namespace tnrp

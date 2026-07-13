@@ -15,7 +15,8 @@
 #include "SessionModel.h"
 
 // Qt playback driver on top of libtnrp's tnrp::TnrdReader. The reader owns all
-// .tnrd I/O — gzip decompression, the time/type index, per-lap blocks and the
+// .tnrd I/O — V1/gzip or V2/Zstandard decompression, the time/type index,
+// per-lap blocks and the
 // snapshot/streaming reads — so this class is just the clock: it scans the whole
 // recording into a SessionData once (for the lap-aware charts), then advances a
 // QTimer-driven cursor, pulling the due rows from the reader and emitting them.

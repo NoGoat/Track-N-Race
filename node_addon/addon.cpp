@@ -109,6 +109,8 @@ public:
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
+            InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
+            InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
             InstanceMethod("playerLoad", &TNRPAddon::PlayerLoad),
             InstanceMethod("playerPlay", &TNRPAddon::PlayerPlay),
             InstanceMethod("playerPause", &TNRPAddon::PlayerPause),
@@ -352,10 +354,36 @@ private:
     }
 
     Napi::Value SetLogging(const Napi::CallbackInfo& info) {
+        return SetLoggingZstd(info);
+    }
+
+    Napi::Value SetLoggingZstd(const Napi::CallbackInfo& info) {
         if (info.Length() >= 2 && info[0].IsBoolean() && info[1].IsString()) {
             bool enabled = info[0].As<Napi::Boolean>().Value();
             std::string dir = info[1].As<Napi::String>().Utf8Value();
-            engine->setLogging(enabled, dir);
+            engine->setLoggingZstd(enabled, dir);
+        }
+        return info.Env().Undefined();
+    }
+
+    // Deprecated compatibility surface. Normal app recording never calls it.
+    Napi::Value SetLoggingGzip(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 2 && info[0].IsBoolean() && info[1].IsString()) {
+            bool enabled = info[0].As<Napi::Boolean>().Value();
+            std::string dir = info[1].As<Napi::String>().Utf8Value();
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable: 4996)
+#endif
+            engine->setLoggingGzip(enabled, dir);
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
         }
         return info.Env().Undefined();
     }
