@@ -393,6 +393,9 @@ theme/resize is exactly what the migration removed):
   WebGL-only frames between throttled full model updates (axes/SVG work at
   ~60 fps, line scroll at display rate). Hidden charts are parked through an
   `IntersectionObserver`, and rAF stops when no visible chart has pending work.
+  Sparse status/damage charts subscribe directly to the store's dense telemetry
+  session clock (outside React), so their viewport motion is independent of
+  their 2 Hz-ish sample cadence while their plotted data remains sparse.
 - Tooltip: custom HTML element snapped to the nearest sample via binary search
   on the shared x-buffer (single index across series, like uPlot's
   `cursor.idx`).

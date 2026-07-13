@@ -76,9 +76,14 @@ interface ChartProps<T extends { session_time: number }> {
   view?: 'chart' | 'table'
   windowSeconds?: number
   fastScroll?: boolean
+  followSessionClock?: boolean
+  minScrollStallS?: number
 }
 
-function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30, fastScroll }: ChartProps<T>) {
+function TyreLineChartImpl<T extends { session_time: number }>({
+  title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30,
+  fastScroll, followSessionClock, minScrollStallS,
+}: ChartProps<T>) {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
   // A single sample can't draw a line, so it counts as no data — otherwise the
@@ -148,6 +153,8 @@ function TyreLineChartImpl<T extends { session_time: number }>({ title, unit, ro
             axisLook={TYRE_AXIS_LOOK}
             tooltipStyle={TYRE_TOOLTIP_STYLE}
             fastScroll={fastScroll}
+            followSessionClock={followSessionClock}
+            minScrollStallS={minScrollStallS}
           />
         )}
       </div>
@@ -205,7 +212,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
   const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
   const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
-  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll={fastScroll} />
+  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} />
 
   if (layout === 'grid') {
     const items = [

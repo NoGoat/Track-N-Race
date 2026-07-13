@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import type { TChart } from '../lib/timechart/tc'
 import { timeChartFrameScheduler } from '../lib/timechart/engine/core/frameScheduler'
 import type { FrameScheduleHandle } from '../lib/timechart/engine/core/frameScheduler'
+import { useTelemetryStore } from '../stores/telemetryStore'
 
 export interface ScrollScaleOpts {
   snapS?: number
@@ -10,10 +11,15 @@ export interface ScrollScaleOpts {
   fastFrames?: boolean
   /** Frequency for axes/plugins during fast-frame scrolling. */
   fullFps?: number
+  /** Follow the dense session clock while rendering a sparse row series. */
+  followSessionClock?: boolean
+  /** Minimum time to coast between sparse samples before declaring a stall. */
+  minStallS?: number
 }
 
 // Playback pause must stop every scrolling chart on the same shared frame.
 let playbackHalted = false
+let playbackRate = 1
 let playbackSubscribed = false
 const playbackWakeups = new Set<() => void>()
 function ensurePlaybackSub(): void {
@@ -21,12 +27,49 @@ function ensurePlaybackSub(): void {
   playbackSubscribed = true
   window.playerBridge.onStateChange((st) => {
     playbackHalted = !!st.filename && !st.isPlaying && !st.isScanning
+    playbackRate = st.filename ? Math.max(st.speed ?? 1, 0) : 1
     for (const wake of playbackWakeups) wake()
   })
 }
 
 const STALL_PERIODS = 2
 const MIN_STALL_S = 0.05
+
+type SessionClockFollower = (sessionTime: number, wallTime: number) => void
+const sessionClockFollowers = new Set<SessionClockFollower>()
+let sessionClockUnsubscribe: (() => void) | null = null
+let sharedSessionTime = NaN
+
+function publishSessionClock(sessionTime: number): void {
+  if (!Number.isFinite(sessionTime) || sessionTime === sharedSessionTime) return
+  sharedSessionTime = sessionTime
+  const now = performance.now()
+  for (const follower of sessionClockFollowers) follower(sessionTime, now)
+}
+
+function addSessionClockFollower(follower: SessionClockFollower): () => void {
+  sessionClockFollowers.add(follower)
+  if (!sessionClockUnsubscribe) {
+    sessionClockUnsubscribe = useTelemetryStore.subscribe((state) => {
+      const latest = state.latest?.session_time
+      if (latest != null) publishSessionClock(latest)
+    })
+  }
+  const latest = useTelemetryStore.getState().latest?.session_time
+  if (latest != null) {
+    if (latest === sharedSessionTime) follower(latest, performance.now())
+    else publishSessionClock(latest)
+  }
+  else if (Number.isFinite(sharedSessionTime)) follower(sharedSessionTime, performance.now())
+  return () => {
+    sessionClockFollowers.delete(follower)
+    if (sessionClockFollowers.size === 0) {
+      sessionClockUnsubscribe?.()
+      sessionClockUnsubscribe = null
+      sharedSessionTime = NaN
+    }
+  }
+}
 
 interface ScrollClock {
   lastT: number
@@ -45,15 +88,18 @@ export function useTimeChartScroll(
   firstT: number | null,
   windowSeconds: number,
   dataDirtyRef: MutableRefObject<boolean>,
-  { snapS = 0.5, fastFrames = false, fullFps = 60 }: ScrollScaleOpts = {},
+  {
+    snapS = 0.5, fastFrames = false, fullFps = 60,
+    followSessionClock = false, minStallS = MIN_STALL_S,
+  }: ScrollScaleOpts = {},
   profilerLabel?: string,
 ) {
   const chartRef = useRef<TChart | null>(null)
   const registrationRef = useRef<FrameScheduleHandle | null>(null)
   const enabledRef = useRef(enabled)
   enabledRef.current = enabled
-  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, profilerLabel })
-  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, profilerLabel }
+  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel })
+  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel }
   const clockRef = useRef<ScrollClock>({
     lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN,
     periodS: NaN, lastMin: NaN, gaps: [], gapIdx: 0,
@@ -70,14 +116,12 @@ export function useTimeChartScroll(
 
     if (Number.isNaN(c.est)) c.est = c.lastT
     const age = Math.max(0, (frameTime - c.wallAtT) / 1000)
-    const stallS = Math.max(Number.isNaN(c.periodS) ? 0 : c.periodS * STALL_PERIODS, MIN_STALL_S)
+    const stallS = Math.max(Number.isNaN(c.periodS) ? 0 : c.periodS * STALL_PERIODS, config.minStallS)
     if (playbackHalted) {
       c.est = c.lastT
     } else if (age < stallS) {
-      const target = c.lastT + age
+      const target = c.lastT + age * playbackRate
       if (target > c.est || !(c.est - target < config.snapS)) c.est = target
-    } else {
-      c.est = c.lastT
     }
 
     let min = c.est - config.windowSeconds
@@ -150,24 +194,41 @@ export function useTimeChartScroll(
     registrationRef.current.wake()
   }, [])
 
+  const acceptLatest = useCallback((value: number, now: number) => {
+    const c = clockRef.current
+    if (value < c.lastT) {
+      c.est = value
+      c.periodS = NaN
+      c.gaps.length = 0
+      c.gapIdx = 0
+      c.lastMin = NaN
+    }
+    if (value === c.lastT) return
+    if (!Number.isNaN(c.lastT) && value > c.lastT) {
+      const gap = (now - c.wallAtT) / 1000
+      c.gaps[c.gapIdx % 5] = gap
+      c.gapIdx++
+      const sorted = [...c.gaps].sort((a, b) => a - b)
+      c.periodS = sorted[sorted.length >> 1]
+    }
+    c.lastT = value
+    c.wallAtT = now
+    registrationRef.current?.wake()
+  }, [])
+
   useEffect(() => {
     if (latestT == null) return
     const c = clockRef.current
     c.firstT = firstT ?? NaN
-    if (latestT !== c.lastT) {
-      const now = performance.now()
-      if (!Number.isNaN(c.lastT) && latestT > c.lastT) {
-        const gap = (now - c.wallAtT) / 1000
-        c.gaps[c.gapIdx % 5] = gap
-        c.gapIdx++
-        const sorted = [...c.gaps].sort((a, b) => a - b)
-        c.periodS = sorted[sorted.length >> 1]
-      }
-      c.lastT = latestT
-      c.wallAtT = now
+    if (!followSessionClock || !Number.isFinite(sharedSessionTime)) {
+      acceptLatest(latestT, performance.now())
     }
-    registrationRef.current?.wake()
-  }, [latestT, firstT])
+  }, [latestT, firstT, followSessionClock, acceptLatest])
+
+  useEffect(() => {
+    if (!followSessionClock) return
+    return addSessionClockFollower(acceptLatest)
+  }, [followSessionClock, acceptLatest])
 
   useEffect(() => {
     ensurePlaybackSub()
@@ -182,7 +243,7 @@ export function useTimeChartScroll(
     clockRef.current.lastMin = NaN
     lastFullAtRef.current = 0
     registrationRef.current?.wake()
-  }, [windowSeconds, snapS, fastFrames, fullFps])
+  }, [windowSeconds, snapS, fastFrames, fullFps, minStallS])
 
   useEffect(() => {
     const wake = () => registrationRef.current?.wake()

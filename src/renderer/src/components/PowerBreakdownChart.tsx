@@ -110,6 +110,9 @@ function PowerLineChart({
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
             profilerLabel={profilerLabel}
+            fastScroll
+            followSessionClock
+            minScrollStallS={1}
           />
         )}
       </div>

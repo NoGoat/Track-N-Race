@@ -41,5 +41,8 @@ the fork.
 - Added one visibility-aware frame scheduler for scrolling, deferred model
   redraws, and hover coalescing. Active charts share a frame timestamp, hidden
   charts are parked, and animation frames stop when no chart needs work.
+- Sparse status/damage charts can follow the dense shared session clock without
+  a React subscription; stall handling holds its last estimate instead of
+  rewinding, and playback extrapolation respects the selected playback speed.
 - Removed the legacy point-array ingestion path, per-chart animation loops,
   the unused uPlot scrolling hook, and the obsolete domain-search helper.
