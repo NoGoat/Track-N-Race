@@ -151,6 +151,8 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       : yRange.kind === 'fixed' ? { lower: yRange.min, upper: yRange.max }
         : { lower: 0, upper: 1 },
   )
+  const fixedMin = yRange.kind === 'fixed' ? yRange.min : null
+  const fixedMax = yRange.kind === 'fixed' ? yRange.max : null
 
   const initColors = colorsFor(isDark)
   // Plugin configs live in mutable refs so theme changes update colors in place
@@ -367,6 +369,20 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, wake])
+
+  // Fixed bounds may be data-derived (for example the Fuel chart's session
+  // ceiling). Apply changes in place so the WebGL chart is never recreated.
+  useEffect(() => {
+    if (fixedMin === null || fixedMax === null) return
+    const chart = chartRef.current
+    if (!chart) return
+    const b = boundsRef.current
+    if (b.lower === fixedMin && b.upper === fixedMax) return
+    b.lower = fixedMin
+    b.upper = fixedMax
+    chart.options.yRange = { min: fixedMin, max: fixedMax }
+    dataDirtyRef.current = true
+  }, [fixedMin, fixedMax])
 
   // --- expand-only y-range (Ride Height): only look at the newest sample and
   // push a bound outward if exceeded; never rescans, never shrinks. ---

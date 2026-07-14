@@ -271,6 +271,7 @@ struct PlaybackLapBlocksRow {
     std::string                type{"playback_lap_blocks"};
     std::vector<LapBlockMeta>  blocks;
     int                        fastestLapNum{};
+    double                     initialFuelKg{-1.0};
     std::vector<glz::raw_json> events;
     std::vector<LapMeta>       laps;
 };

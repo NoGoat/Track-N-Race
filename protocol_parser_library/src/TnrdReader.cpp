@@ -25,9 +25,10 @@ struct LapScanFields {
     int current_lap_ms{};
     int last_lap_ms{};
 };
-// Partial read of a "status" row for the slim ERS chart points (binary playback).
+// Partial read of a "status" row for Electron-only load-time chart metadata.
 struct StatusScanFields {
     double ers_pct{};
+    double fuel_kg{};
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
@@ -109,6 +110,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     coldLap_.clear();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
+    initialFuelKg_ = -1.0;
     startTime_ = 0.0f;
     totalTime_ = 0.0f;
     playPos_   = 0;
@@ -154,6 +156,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         // and keep the sparse cold rows whole for seek flushes. hotCum_ tracks
         // the store record count per index position for range slicing.
         TelemetryRow telRow;   // parsed once for the hot store, reused for slim points
+        StatusScanFields statusRow;
         if (binaryPlayback_) {
             std::string_view sv(ld, (size_t)ll);
             if (tid == 1) {
@@ -174,6 +177,8 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                 hotTimes_.push_back(t);
                 bin::encodeMotionEx(hotBin_, r);
             } else if (tid == 2) {
+                (void)glz::read<kPartialRead>(statusRow, sv);
+                if (initialFuelKg_ < 0.0) initialFuelKg_ = statusRow.fuel_kg;
                 coldStatus_.push_back({ t, std::string(ld, ll) });
             } else if (tid == 3) {
                 coldDamage_.push_back({ t, std::string(ld, ll) });
@@ -224,9 +229,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                     it->second.slimTelemetry.push_back(
                         { "telemetry", t, telRow.speed_kph, telRow.rpm });
                 } else if (tid == 2) {
-                    StatusScanFields sf;
-                    (void)glz::read<kPartialRead>(sf, std::string_view(ld, (size_t)ll));
-                    it->second.slimStatus.push_back({ "status", t, sf.ers_pct });
+                    it->second.slimStatus.push_back({ "status", t, statusRow.ers_pct });
                 }
             }
         }
@@ -424,6 +427,7 @@ void TnrdReader::close() {
     scratch_.shrink_to_fit();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
+    initialFuelKg_ = -1.0;
     startTime_ = totalTime_ = 0.0f;
     tempFileSize_ = 0;
     playPos_ = 0;
@@ -549,6 +553,7 @@ std::string TnrdReader::lapBlocksMessage() const {
                                b.slimTelemetry, b.slimStatus });
     }
     msg.fastestLapNum = fastestLapNum_;
+    msg.initialFuelKg = initialFuelKg_;
     msg.events.reserve(scannedEvents_.size());
     for (const auto& s : scannedEvents_) msg.events.push_back(glz::raw_json{ s });
     for (const auto& l : scannedLaps_)   msg.laps.push_back({ l.lapNum, l.lapTimeMs });

@@ -155,6 +155,7 @@ private:
     std::vector<std::string> scannedEvents_;   // raw race_event JSONL lines
     int                      fastestLapNum_ = 0;
     int                      fastestLapMs_  = 0;
+    double                   initialFuelKg_ = -1.0;
 
     size_t upperBoundTime(float t) const;
     size_t lowerBoundTime(float t) const;

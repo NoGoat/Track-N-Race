@@ -4,7 +4,7 @@ import type { StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
 
-interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
+interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null }
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
@@ -145,8 +145,9 @@ function ERSStoreChart(props: CP) {
 }
 
 function FuelHistoryChart(props: CP) {
+  const upperLimit = props.fuelUpperLimit ?? Math.max(1, props.data[0]?.fuel_kg ?? 1)
   return <PowerLineChart {...props} title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
-    yRange={{ kind: 'auto' }} yFormat={v => `${v}kg`} profilerLabel="FuelHistory" />
+    yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} profilerLabel="FuelHistory" />
 }
 
 interface VisibleCharts { powerSplit: boolean; ersHarvest: boolean; ersStore: boolean; fuelHistory: boolean }
@@ -155,12 +156,12 @@ export interface PowerViews {
   ersStore?: 'chart' | 'table'; fuelHistory?: 'chart' | 'table'
 }
 
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30 }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null }) {
   const items = [
     { key: 'powerSplit', el: <PowerSplitChart data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
     { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} /> },
     { key: 'ersStore', el: <ERSStoreChart data={data} isDark={isDark} view={views?.ersStore} windowSeconds={windowSeconds} /> },
-    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} /> },
+    { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} fuelUpperLimit={fuelUpperLimit} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])
   const odd = items.length % 2 !== 0
 

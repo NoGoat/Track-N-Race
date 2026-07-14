@@ -113,6 +113,7 @@ export interface TelemetryStoreState {
   error: string | null
   protocolStatus: ProtocolStatusMsg | null
   protocolWarning: ProtocolWarningMsg | null
+  fuelUpperLimit: number | null
   seconds: number
 }
 
@@ -123,7 +124,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, lapHistory: [], fastestLap: null, lapTelemetry: [], lapStatusHistory: [],
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
-  protocolStatus: null, protocolWarning: null, seconds: 30,
+  protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
 }))
 
 const set = useTelemetryStore.setState
@@ -154,6 +155,7 @@ let fastestLapTime = Infinity
 let fastestLapSet = false
 const sessionHistoryBest = new Map<number, number>()
 let isPlaybackFlag = false
+let fuelMaxReceived = -Infinity
 
 let lapHistoryBuf: LapData[] = []
 let fastestLapVal: LapData | null = null
@@ -178,10 +180,11 @@ function resetSession(): void {
   lapHistoryBuf = []; fastestLapVal = null; raceEventsArr = []
   speedRpmBlocksVal = null; fastestLapNum = 0
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
+  fuelMaxReceived = -Infinity
   set({
     status: null, damage: null, lap: null, timing: null, allStatus: null,
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null,
-    lapHistory: [], fastestLap: null, speedRpmBlocks: null, raceEvents: [],
+    lapHistory: [], fastestLap: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
   })
 }
 
@@ -254,10 +257,18 @@ function handleMsg(msg: GatewayMsg): void {
     case 'motion_ex':
       appendRow(motExBufRef, msg, MAX_ROWS)
       break
-    case 'status':
-      set({ status: msg })
+    case 'status': {
+      const next: Partial<TelemetryStoreState> = { status: msg }
+      if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
+        fuelMaxReceived = msg.fuel_kg
+        // Five percent, rounded up to a whole kilogram, keeps the live trace
+        // clear of the top edge while preserving a stable zero baseline.
+        next.fuelUpperLimit = Math.max(1, Math.ceil(fuelMaxReceived * 1.05))
+      }
+      set(next)
       appendRow(stsBufRef, msg, MAX_ROWS)
       break
+    }
     case 'damage':
       set({ damage: msg })
       appendRow(dmgBufRef, msg, MAX_ROWS)
@@ -373,6 +384,7 @@ function handleMsg(msg: GatewayMsg): void {
     case 'playback_lap_blocks': {
       isPlaybackFlag = true
       const data = msg as any
+      fuelMaxReceived = -Infinity
       speedRpmBlocksVal = data.blocks
       fastestLapNum = data.fastestLapNum
       playbackEvents = data.events ?? []
@@ -381,7 +393,13 @@ function handleMsg(msg: GatewayMsg): void {
         if (l.lapTimeMs > 0) map[l.lapNum] = l.lapTimeMs
       }
       playbackLapTimes = map
-      set({ speedRpmBlocks: speedRpmBlocksVal })
+      const initialFuelKg = Number(data.initialFuelKg)
+      set({
+        speedRpmBlocks: speedRpmBlocksVal,
+        fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
+          ? Math.max(1, initialFuelKg)
+          : null,
+      })
       break
     }
   }

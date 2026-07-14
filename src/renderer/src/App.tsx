@@ -792,6 +792,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
   const lapTimesByNum    = useTelemetryStore(s => s.lapTimesByNum)
   const isConnected      = useTelemetryStore(s => s.isConnected)
   const protocolStatus   = useTelemetryStore(s => s.protocolStatus)
+  const fuelUpperLimit   = useTelemetryStore(s => s.fuelUpperLimit)
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
   const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
@@ -930,7 +931,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={isDark} compact={compact.powerCards} />
           </div>
           <div className="flex-1 min-h-0">
-            <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} />
+            <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} />
           </div>
         </div>
       )}
