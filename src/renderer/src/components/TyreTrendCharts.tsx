@@ -2,8 +2,10 @@ import { memo, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import type uPlot from 'uplot'
 import type { TelemetryRow, DamageRow } from '../types'
+import type { TyreYAxisState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
-import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook } from './charts/TimeChartView'
+import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
+import { niceTicks } from '../lib/timechart/ticks'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -66,6 +68,16 @@ function fmtTime(s: number) {
 }
 
 const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0)]
+const DYNAMIC_Y_RANGE: YRangeSpec = { kind: 'auto' }
+const TEMP_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 125, lowerPad: 0, upperPad: 0, expandLower: false }
+const BRAKE_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 1200, lowerPad: 0, upperPad: 0, expandLower: false }
+const WEAR_FIXED_Y_RANGE: YRangeSpec = { kind: 'fixed', min: 0, max: 100 }
+const tyreYTicks = (min: number, max: number) => {
+  const ticks = niceTicks(min, max, 6)
+  if (ticks.length === 0 || ticks[0] !== min) ticks.unshift(min)
+  if (ticks[ticks.length - 1] !== max) ticks.push(max)
+  return ticks
+}
 
 interface ChartProps<T extends { session_time: number }> {
   title: string
@@ -78,11 +90,12 @@ interface ChartProps<T extends { session_time: number }> {
   fastScroll?: boolean
   followSessionClock?: boolean
   minScrollStallS?: number
+  yRange: YRangeSpec
 }
 
 function TyreLineChartImpl<T extends { session_time: number }>({
   title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30,
-  fastScroll, followSessionClock, minScrollStallS,
+  fastScroll, followSessionClock, minScrollStallS, yRange,
 }: ChartProps<T>) {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
@@ -144,8 +157,9 @@ function TyreLineChartImpl<T extends { session_time: number }>({
             getX={(d) => d.session_time}
             series={series}
             windowSeconds={windowSeconds}
-            yRange={{ kind: 'auto' }}
+            yRange={yRange}
             yAxisSize={42}
+            yTickValues={tyreYTicks}
             yTickFormat={(v) => `${v}${unit}`}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
@@ -180,9 +194,10 @@ interface Props {
   graphViews?: TyreGraphViews
   windowSeconds?: number
   fastScroll?: boolean
+  yAxis: TyreYAxisState
 }
 
-export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll }: Props) {
+export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis }: Props) {
   const c = cornerColors(isDark)
 
   const tempSeries = useCallback((corner: (row: TelemetryRow) => { fl: number; fr: number; rl: number; rr: number }): SeriesDef<TelemetryRow>[] => [
@@ -209,10 +224,10 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   // getY closures for the wear chart depend on tyreWearMode; TimeChartView
   // captures accessors at creation, so remount the wear chart when the mode
   // flips (an occasional user toggle) via a key.
-  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
-  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
-  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} />
-  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} />
+  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.surfaceTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.innerTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 
   if (layout === 'grid') {
     const items = [

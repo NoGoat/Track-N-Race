@@ -1,8 +1,9 @@
-// Shared metadata for the two native_recorder features ported to the Electron app:
+// Shared Settings metadata. The first two features mirror native_recorder; the
+// tyre Y-axis behavior below is intentionally Electron-only:
 //   • per-graph Chart/Table view mode  (mirrors native GraphViewSettings.h)
 //   • per-section compact density       (mirrors native CompactSettings.h)
 //
-// The section unions, defaults and Settings grouping live here so App.tsx (which
+// The unions, defaults and Settings grouping live here so App.tsx (which
 // owns the persisted state) and Settings.tsx (which renders the controls) agree on
 // the same keys — the same single-source-of-truth pattern the native headers use.
 
@@ -68,6 +69,26 @@ export const ALL_GRAPH_SECTIONS: GraphSection[] =
 
 export const DEFAULT_GRAPH_VIEW: GraphViewState =
   Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, 'chart'])) as GraphViewState
+
+// ── Tyre chart Y axes ──────────────────────────────────────────────────────────
+
+export type TyreYAxisBehavior = 'fixed' | 'dynamic'
+export type TyreYAxisKey = 'surfaceTemp' | 'innerTemp' | 'brakeTemp' | 'tyreLife'
+export type TyreYAxisState = Record<TyreYAxisKey, TyreYAxisBehavior>
+
+export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRange: string }[] = [
+  { key: 'surfaceTemp', label: 'Surface Temp',     fixedRange: '0–125°C; expands above 125°C when needed' },
+  { key: 'innerTemp',   label: 'Inner Temp',       fixedRange: '0–125°C; expands above 125°C when needed' },
+  { key: 'brakeTemp',   label: 'Brake Temp',       fixedRange: '0–1200°C; expands above 1200°C when needed' },
+  { key: 'tyreLife',    label: 'Tyre Wear / Life', fixedRange: 'Always 0–100%' },
+]
+
+export const DEFAULT_TYRE_Y_AXIS: TyreYAxisState = {
+  surfaceTemp: 'fixed',
+  innerTemp:   'fixed',
+  brakeTemp:   'fixed',
+  tyreLife:    'fixed',
+}
 
 // ── Compact density ─────────────────────────────────────────────────────────
 

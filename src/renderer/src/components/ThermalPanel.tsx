@@ -4,6 +4,7 @@ import type { TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
+import type { TyreYAxisState } from '../lib/graphSections'
 
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 export type TyreCardViews = { fl?: 'chart' | 'table'; fr?: 'chart' | 'table'; rl?: 'chart' | 'table'; rr?: 'chart' | 'table' }
@@ -24,6 +25,7 @@ interface Props {
   graphViews?: TyreGraphViews
   cardViews?: TyreCardViews
   windowSeconds?: number
+  yAxis: TyreYAxisState
 }
 
 // Tyre-card density levels, ported from native TyreCardsWidget::Level:
@@ -219,7 +221,7 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record
   }, [telemetry, enabled])
 }
 
-const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews, cardViews, windowSeconds = 30 }: Props) {
+const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews, cardViews, windowSeconds = 30, yAxis }: Props) {
   const sf = { fl: latest?.tyre_temp_surface_fl ?? 0, fr: latest?.tyre_temp_surface_fr ?? 0, rl: latest?.tyre_temp_surface_rl ?? 0, rr: latest?.tyre_temp_surface_rr ?? 0 }
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
@@ -239,7 +241,7 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
     <div className={compactCards ? '' : 'h-full'}>
       {view === 'graphs' ? (
         <div className="h-full">
-          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} windowSeconds={windowSeconds} fastScroll />
+          <TyreTrendCharts telemetry={telemetry} damageHistory={damageHistory} tyreWearMode={tyreWearMode} visibleGraphs={thermalGraphs} isDark={isDark} graphViews={graphViews} windowSeconds={windowSeconds} fastScroll yAxis={yAxis} />
         </div>
       ) : (
         <div className={`flex divide-x divide-[var(--border)] ${compactCards ? '' : 'h-full'}`}>

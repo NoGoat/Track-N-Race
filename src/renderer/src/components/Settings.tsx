@@ -1,9 +1,10 @@
 import { useState, memo } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS,
-  type GraphViewState, type GraphView, type CompactState,
+  TYRE_Y_AXIS_SECTIONS,
+  type GraphViewState, type GraphView, type CompactState, type TyreYAxisState,
 } from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
@@ -44,6 +45,8 @@ interface Props {
   onGraphViewChange: (v: GraphViewState) => void
   compact: CompactState
   onCompactChange: (v: CompactState) => void
+  tyreYAxis: TyreYAxisState
+  onTyreYAxisChange: (v: TyreYAxisState) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -142,8 +145,10 @@ const Settings = memo(function Settings({
   onGraphViewChange,
   compact,
   onCompactChange,
+  tyreYAxis,
+  onTyreYAxisChange,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   
@@ -204,6 +209,7 @@ const Settings = memo(function Settings({
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
     { id: 'graphs' as const, label: 'Graphs', icon: <LineChart size={14} />, color: '#0ea5e9' },
+    { id: 'yAxis' as const, label: 'Y Axis Behavior', icon: <MoveVertical size={14} />, color: '#6366f1' },
     { id: 'compact' as const, label: 'Compact', icon: <Shrink size={14} />, color: '#14b8a6' },
     { id: 'notifications' as const, label: 'Notifications', icon: <Clock size={14} />, color: '#8b5cf6' },
     { id: 'map' as const, label: 'Map', icon: <Map size={14} />, color: '#10b981' },
@@ -354,6 +360,33 @@ const Settings = memo(function Settings({
               </Row>
             )}
           </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderYAxis = () => {
+    const anyDynamic = TYRE_Y_AXIS_SECTIONS.some(s => tyreYAxis[s.key] === 'dynamic')
+    const setAll = (value: 'fixed' | 'dynamic') =>
+      onTyreYAxisChange(Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as TyreYAxisState)
+    return (
+      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+        <div className="flex items-center justify-between px-4 py-3">
+          <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each tyre graph to its visible data.</p>
+          <BulkButton
+            label={anyDynamic ? 'Set All Fixed' : 'Set All Dynamic'}
+            onClick={() => setAll(anyDynamic ? 'fixed' : 'dynamic')}
+          />
+        </div>
+        <GroupLabel>Tyres</GroupLabel>
+        {TYRE_Y_AXIS_SECTIONS.map(section => (
+          <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
+            <SegmentedControl
+              options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
+              value={tyreYAxis[section.key]}
+              onChange={(value) => onTyreYAxisChange({ ...tyreYAxis, [section.key]: value })}
+            />
+          </Row>
         ))}
       </div>
     )
@@ -655,6 +688,8 @@ const Settings = memo(function Settings({
         return renderAppearance()
       case 'graphs':
         return renderGraphs()
+      case 'yAxis':
+        return renderYAxis()
       case 'compact':
         return renderCompact()
       case 'notifications':

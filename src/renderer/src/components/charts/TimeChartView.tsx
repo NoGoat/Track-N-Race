@@ -85,7 +85,7 @@ export interface SeriesDef<T> {
 
 export type YRangeSpec =
   | { kind: 'fixed'; min: number; max: number }
-  | { kind: 'expand'; initialLower: number; initialUpper: number; lowerPad: number; upperPad: number }
+  | { kind: 'expand'; initialLower: number; initialUpper: number; lowerPad: number; upperPad: number; expandLower?: boolean }
   // Fit to the visible window each update (matches uPlot's auto-range), with
   // padding and nice round ticks.
   | { kind: 'auto'; padFraction?: number; tickCount?: number; fixedMin?: number }
@@ -153,8 +153,11 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       : yRange.kind === 'fixed' ? { lower: yRange.min, upper: yRange.max }
         : { lower: 0, upper: 1 },
   )
-  const fixedMin = yRange.kind === 'fixed' ? yRange.min : null
-  const fixedMax = yRange.kind === 'fixed' ? yRange.max : null
+  const yRangeKey = yRange.kind === 'fixed'
+    ? `fixed:${yRange.min}:${yRange.max}`
+    : yRange.kind === 'expand'
+      ? `expand:${yRange.initialLower}:${yRange.initialUpper}:${yRange.lowerPad}:${yRange.upperPad}:${yRange.expandLower !== false}`
+      : `auto:${yRange.padFraction ?? 0.1}:${yRange.tickCount ?? 5}:${yRange.fixedMin ?? ''}`
   const visibilityKey = series.map(s => s.visible !== false ? '1' : '0').join('')
   const visibilityRef = useRef(series.map(s => s.visible !== false))
 
@@ -403,19 +406,52 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, wake])
 
-  // Fixed bounds may be data-derived (for example the Fuel chart's session
-  // ceiling). Apply changes in place so the WebGL chart is never recreated.
+  // Apply Y-axis policy changes in place so a Settings toggle never recreates
+  // the WebGL chart. Fixed bounds may also be data-derived (for example Fuel).
+  // Expand and auto policies immediately account for the currently visible
+  // buffers, so changing the policy works even while playback is paused.
   useEffect(() => {
-    if (fixedMin === null || fixedMax === null) return
     const chart = chartRef.current
     if (!chart) return
     const b = boundsRef.current
-    if (b.lower === fixedMin && b.upper === fixedMax) return
-    b.lower = fixedMin
-    b.upper = fixedMax
-    chart.options.yRange = { min: fixedMin, max: fixedMax }
+    if (yRange.kind === 'fixed') {
+      b.lower = yRange.min
+      b.upper = yRange.max
+      chart.options.yRange = { min: yRange.min, max: yRange.max }
+    } else {
+      const bufs = seriesBuffersRef.current
+      let lo = Infinity, hi = -Infinity
+      for (let k = 0; k < bufs.length; k++) {
+        if (!visibilityRef.current[k]) continue
+        const buf = bufs[k]
+        const start = buf.length > 0 ? buf.lowerBoundX(buf.xAt(buf.length - 1) - windowSeconds) : 0
+        for (let i = start; i < buf.length; i++) {
+          const v = buf.yAt(i)
+          if (v < lo) lo = v
+          if (v > hi) hi = v
+        }
+      }
+
+      if (yRange.kind === 'expand') {
+        b.lower = yRange.initialLower
+        b.upper = yRange.initialUpper
+        if (Number.isFinite(hi) && hi > b.upper - yRange.upperPad) b.upper = Math.ceil(hi + yRange.upperPad)
+        if (yRange.expandLower !== false && Number.isFinite(lo) && lo < b.lower + yRange.lowerPad) b.lower = Math.floor(lo - yRange.lowerPad)
+        chart.options.yRange = { min: b.lower, max: b.upper }
+      } else {
+        autoRef.current = { min: lo, max: hi, lastFull: performance.now() }
+        if (Number.isFinite(lo) && Number.isFinite(hi)) {
+          const pad = hi === lo ? Math.abs(hi) * 0.05 + 1 : (hi - lo) * padFraction
+          chart.options.yRange = { min: yRange.fixedMin ?? lo - pad, max: hi + pad }
+        }
+      }
+    }
     dataDirtyRef.current = true
-  }, [fixedMin, fixedMax])
+    wake()
+    // `yRangeKey` contains every policy primitive; objects are deliberately not
+    // dependencies because thin consumers often construct them during render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yRangeKey, wake])
 
   // --- expand-only y-range (Ride Height): only look at the newest sample and
   // push a bound outward if exceeded; never rescans, never shrinks. ---
@@ -430,7 +466,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     const b = boundsRef.current
     let changed = false
     if (maxVal > b.upper - yRange.upperPad) { b.upper = Math.ceil(maxVal + yRange.upperPad); changed = true }
-    if (minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); changed = true }
+    if (yRange.expandLower !== false && minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); changed = true }
     if (changed) {
       chart.options.yRange = { min: b.lower, max: b.upper }
       dataDirtyRef.current = true

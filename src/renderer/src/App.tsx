@@ -25,7 +25,7 @@ import PowerStatsBar from './components/PowerStatsBar'
 import TyresPanel from './components/TyresPanel'
 import SessionPanel, { SESSION_TYPES, sessionAccent } from './components/SessionPanel'
 import StrategyPanel from './components/StrategyPanel'
-import { DEFAULT_GRAPH_VIEW, DEFAULT_COMPACT, type GraphViewState, type CompactState } from './lib/graphSections'
+import { DEFAULT_GRAPH_VIEW, DEFAULT_COMPACT, DEFAULT_TYRE_Y_AXIS, type GraphViewState, type CompactState, type TyreYAxisState } from './lib/graphSections'
 import type { RaceEventMsg, ParticipantsMsg } from './types'
 import iconTransparent from './assets/icon_transparent.png'
 import iconTransparentLight from './assets/icon_transparent_light.png'
@@ -748,6 +748,7 @@ interface TabContentProps {
   miscLayout: MiscLayout
   graphView: GraphViewState
   compact: CompactState
+  tyreYAxis: TyreYAxisState
   tyreView: 'cards' | 'graphs'
   tyreWearMode: 'wear' | 'life'
   speedRpmMode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
@@ -764,7 +765,7 @@ interface TabContentProps {
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
   tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
-  graphView, compact, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
+  graphView, compact, tyreYAxis, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
 }: TabContentProps) {
@@ -837,7 +838,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             )}
             {showThermalPanel && (
               <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} />
+                <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} yAxis={tyreYAxis} />
               </div>
             )}
             {visibleDamageCount > 0 && (
@@ -950,6 +951,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
             sessionType={session?.session_type ?? null}
             windowSeconds={seconds}
+            yAxis={tyreYAxis}
           />
         </div>
       )}
@@ -1157,6 +1159,8 @@ export default function App() {
   const graphView = useMemo((): GraphViewState => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
   const [rawCompact, setCompact] = useAppConfig<CompactState>('compact', DEFAULT_COMPACT)
   const compact = useMemo((): CompactState => ({ ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }), [rawCompact])
+  const [rawTyreYAxis, setTyreYAxis] = useAppConfig<TyreYAxisState>('tyreYAxis', DEFAULT_TYRE_Y_AXIS)
+  const tyreYAxis = useMemo((): TyreYAxisState => ({ ...DEFAULT_TYRE_Y_AXIS, ...(rawTyreYAxis ?? {}) }), [rawTyreYAxis])
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
@@ -2006,6 +2010,8 @@ export default function App() {
           onGraphViewChange={setGraphView}
           compact={compact}
           onCompactChange={setCompact}
+          tyreYAxis={tyreYAxis}
+          onTyreYAxisChange={setTyreYAxis}
         />
       )}
 
@@ -2023,6 +2029,7 @@ export default function App() {
           miscLayout={miscLayout}
           graphView={graphView}
           compact={compact}
+          tyreYAxis={tyreYAxis}
           tyreView={tyreView}
           tyreWearMode={tyreWearMode}
           speedRpmMode={speedRpmMode}

@@ -7,6 +7,7 @@ import TyreTrendCharts from './TyreTrendCharts'
 import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
+import type { TyreYAxisState } from '../lib/graphSections'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -21,6 +22,7 @@ interface Props {
   cardViews?:    TyreCardViews
   sessionType:   number | null
   windowSeconds?: number
+  yAxis:          TyreYAxisState
 }
 
 const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]
@@ -235,7 +237,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30 }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis }: Props) {
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
@@ -295,6 +297,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             isDark={isDark}
             layout="grid"
             windowSeconds={windowSeconds}
+            yAxis={yAxis}
           />
         </div>
       </div>
