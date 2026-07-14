@@ -170,3 +170,8 @@ body {
 .analyze-color-picker .w-color-editable-input input:focus {
   border-color: var(--border-focus) !important;
 }
+
+.analyze-color-picker svg[viewBox="0 0 1024 1024"] {
+  width: 32px !important;
+  height: 32px !important;
+}
