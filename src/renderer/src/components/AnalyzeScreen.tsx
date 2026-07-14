@@ -176,8 +176,6 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
       comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
     />
-    {selected.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-[var(--text-secondary)] pointer-events-none">Add a metric from the panel to begin analyzing</div>}
-    {selected.length > 0 && current.telemetry.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-[var(--text-secondary)] pointer-events-none">{fixedMode ? 'Select Lap A and Lap B to compare' : 'No lap data — start driving or load a recording'}</div>}
   </div>
 })
 
