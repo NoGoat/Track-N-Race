@@ -413,6 +413,11 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    // The tick generator is part of the Y-axis policy too. In particular,
+    // fixed tyre ranges include their exact endpoints, while auto ranges must
+    // show only rounded nice ticks; retaining the fixed generator would print
+    // long, noisy dynamic min/max labels at the top and bottom of the axis.
+    axisCfgRef.current = { ...axisCfgRef.current, yTickValues: effYTickValues }
     const b = boundsRef.current
     if (yRange.kind === 'fixed') {
       b.lower = yRange.min

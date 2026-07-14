@@ -83,7 +83,7 @@ export interface TyreYAxisState {
 export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRange: string }[] = [
   { key: 'surfaceTemp', label: 'Surface Temp',     fixedRange: '0–125°C; expands above 125°C when needed' },
   { key: 'innerTemp',   label: 'Inner Temp',       fixedRange: '0–125°C; expands above 125°C when needed' },
-  { key: 'brakeTemp',   label: 'Brake Temp',       fixedRange: '0–1200°C; expands above 1200°C when needed' },
+  { key: 'brakeTemp',   label: 'Brake Temp',       fixedRange: '0–1250°C; expands above 1250°C when needed' },
   { key: 'tyreLife',    label: 'Tyre Wear / Life', fixedRange: 'Always 0–100%' },
 ]
 

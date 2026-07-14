@@ -70,13 +70,21 @@ function fmtTime(s: number) {
 const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0)]
 const DYNAMIC_Y_RANGE: YRangeSpec = { kind: 'auto' }
 const TEMP_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 125, lowerPad: 0, upperPad: 0, expandLower: false }
-const BRAKE_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 1200, lowerPad: 0, upperPad: 0, expandLower: false }
+const BRAKE_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 1250, lowerPad: 0, upperPad: 0, expandLower: false }
 const WEAR_FIXED_Y_RANGE: YRangeSpec = { kind: 'fixed', min: 0, max: 100 }
 const tyreYTicks = (min: number, max: number) => {
   const ticks = niceTicks(min, max, 6)
   if (ticks.length === 0 || ticks[0] !== min) ticks.unshift(min)
   if (ticks[ticks.length - 1] !== max) ticks.push(max)
   return ticks
+}
+const temperatureYTicks = (min: number, max: number) => {
+  const ticks = tyreYTicks(min, max)
+  if (ticks.length < 3) return ticks
+  // Add one tick halfway through each of the first two intervals. Because the
+  // source ticks are derived from the current domain, these labels keep their
+  // midpoint positions and values when an expand-range ceiling changes.
+  return [ticks[0], (ticks[0] + ticks[1]) / 2, ticks[1], (ticks[1] + ticks[2]) / 2, ...ticks.slice(2)]
 }
 
 interface ChartProps<T extends { session_time: number }> {
@@ -91,11 +99,12 @@ interface ChartProps<T extends { session_time: number }> {
   followSessionClock?: boolean
   minScrollStallS?: number
   yRange: YRangeSpec
+  yTickValues?: (min: number, max: number) => number[]
 }
 
 function TyreLineChartImpl<T extends { session_time: number }>({
   title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30,
-  fastScroll, followSessionClock, minScrollStallS, yRange,
+  fastScroll, followSessionClock, minScrollStallS, yRange, yTickValues = tyreYTicks,
 }: ChartProps<T>) {
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
@@ -159,7 +168,7 @@ function TyreLineChartImpl<T extends { session_time: number }>({
             windowSeconds={windowSeconds}
             yRange={yRange}
             yAxisSize={42}
-            yTickValues={tyreYTicks}
+            yTickValues={yTickValues}
             yTickFormat={(v) => `${v}${unit}`}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
@@ -224,9 +233,9 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   // getY closures for the wear chart depend on tyreWearMode; TimeChartView
   // captures accessors at creation, so remount the wear chart when the mode
   // flips (an occasional user toggle) via a key.
-  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.surfaceTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
-  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.innerTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
-  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.surfaceTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
+  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.innerTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
+  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
   const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 
   if (layout === 'grid') {
