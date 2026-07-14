@@ -20,6 +20,14 @@ interface Props {
   currentLapNum: number | null
   compareLapNum: number | null
   onCompareLapChange: (lapNum: number | null) => void
+  fixedLapMode: AnalyzeFixedLapMode
+  onFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
+}
+
+export interface AnalyzeFixedLapMode {
+  enabled: boolean
+  lapA: number | null
+  lapB: number | null
 }
 
 interface LapBlock { lapNum: number; startSessionTime: number; endSessionTime: number }
@@ -97,6 +105,7 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
     {open && createPortal(
       <div ref={pickerRef} role="dialog" aria-label={`${label} color picker`} className="fixed z-[10000]" style={position}>
         <Chrome
+          className="analyze-color-picker"
           color={color}
           inputType={ChromeInputType.HEXA}
           showAlpha={false}
@@ -111,23 +120,25 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
 }
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
-  isDark, selected, showYAxis, currentLapNum, comparison,
+  isDark, selected, showYAxis, currentLapNum, comparison, fixedMode, primaryOverride,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
   showYAxis: boolean
   currentLapNum: number | null
   comparison: AnalyzeLapData | null
+  fixedMode: boolean
+  primaryOverride: AnalyzeLapData | null
 }) {
-  const telemetry = useTelemetryStore(s => s.analyzeLapTelemetry)
-  const motion = useTelemetryStore(s => s.analyzeLapMotion)
-  const motionEx = useTelemetryStore(s => s.analyzeLapMotionEx)
-  const statusHistory = useTelemetryStore(s => s.analyzeLapStatusHistory)
-  const damageHistory = useTelemetryStore(s => s.analyzeLapDamageHistory)
-  const startSessionTime = useTelemetryStore(s => s.analyzeLapStartTime)
-  const currentRevision = useTelemetryStore(s => s.analyzeLapRevision)
+  const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
+  const motion = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotion)
+  const motionEx = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotionEx)
+  const statusHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapStatusHistory)
+  const damageHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapDamageHistory)
+  const startSessionTime = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapStartTime)
+  const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
 
-  const current = useMemo<AnalyzeLapData>(() => {
+  const liveCurrent = useMemo<AnalyzeLapData>(() => {
     const ends = [telemetry, motion, motionEx, statusHistory, damageHistory]
       .flatMap(rows => rows.length ? [rows[rows.length - 1].session_time] : [])
     return {
@@ -137,15 +148,33 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       telemetry, motion, motionEx, statusHistory, damageHistory,
     }
   }, [currentLapNum, damageHistory, motion, motionEx, startSessionTime, statusHistory, telemetry])
+  const current = fixedMode ? primaryOverride ?? EMPTY_ANALYZE_LAP : liveCurrent
+  const currentRevision = fixedMode
+    ? `fixed:${current.lapNum}:${current.startSessionTime}:${current.endSessionTime}`
+    : liveRevision
 
   return <div className="absolute inset-0">
-    <AnalyzeTimeChart isDark={isDark} current={current} currentRevision={currentRevision} comparison={comparison} selected={selected} showYAxis={showYAxis} />
+    <AnalyzeTimeChart
+      isDark={isDark} current={current} currentRevision={currentRevision} comparison={comparison}
+      selected={selected} showYAxis={showYAxis}
+      primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
+      comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
+    />
     {selected.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-[var(--text-secondary)] pointer-events-none">Add a metric from the panel to begin analyzing</div>}
-    {selected.length > 0 && telemetry.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-[var(--text-secondary)] pointer-events-none">No lap data — start driving or load a recording</div>}
+    {selected.length > 0 && current.telemetry.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-[var(--text-secondary)] pointer-events-none">{fixedMode ? 'Select Lap A and Lap B to compare' : 'No lap data — start driving or load a recording'}</div>}
   </div>
 })
 
-export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange }: Props) {
+const EMPTY_ROWS: never[] = []
+const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
+  lapNum: 0, startSessionTime: 0, endSessionTime: 0,
+  telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
+}
+
+export default function AnalyzeScreen({
+  isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
+  fixedLapMode, onFixedLapModeChange,
+}: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
@@ -153,7 +182,7 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
   const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
-  const requestedRef = useRef<number | null>(null)
+  const requestedRef = useRef(new Set<number>())
   const selectStyles = useMemo(() => buildSelectStyles(isDark, { solidBg: true, controlHeight: 32 }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
@@ -170,17 +199,35 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
     ...(blocks ?? []).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })),
   ], [blocks])
   const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
-  const comparison = compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+  const lapOptions = useMemo(() => (blocks ?? []).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })), [blocks])
+  const lapAValue = lapOptions.find(option => option.value === fixedLapMode.lapA) ?? null
+  const lapBValue = lapOptions.find(option => option.value === fixedLapMode.lapB) ?? null
+  const fixedPrimary = fixedLapMode.lapA !== null ? lapCache[fixedLapMode.lapA] ?? null : null
+  const fixedComparison = fixedLapMode.lapB !== null ? lapCache[fixedLapMode.lapB] ?? null : null
+  const comparison = fixedLapMode.enabled
+    ? fixedComparison
+    : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
 
   useEffect(() => {
-    if (!playbackFilename || compareLapNum === null || lapCache[compareLapNum]) {
-      requestedRef.current = null
-      return
+    requestedRef.current.clear()
+  }, [playbackFilename])
+
+  useEffect(() => {
+    if (!playbackFilename) return
+    const targets = fixedLapMode.enabled
+      ? [fixedLapMode.lapA, fixedLapMode.lapB]
+      : [compareLapNum]
+    for (const lapNum of targets) {
+      if (lapNum === null) continue
+      if (lapCache[lapNum]) {
+        requestedRef.current.delete(lapNum)
+        continue
+      }
+      if (requestedRef.current.has(lapNum)) continue
+      requestedRef.current.add(lapNum)
+      window.playerBridge.getLapData(lapNum)
     }
-    if (requestedRef.current === compareLapNum) return
-    requestedRef.current = compareLapNum
-    window.playerBridge.getLapData(compareLapNum)
-  }, [compareLapNum, lapCache, playbackFilename])
+  }, [compareLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapCache, playbackFilename])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
@@ -231,16 +278,50 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
                 />
               </div>
               <div>
-                <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Compare lap</label>
-                <Select
-                  value={compareValue} options={compareOptions}
-                  onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
-                  styles={selectStyles} components={selectComponents} isSearchable={false}
-                  isDisabled={!playbackFilename || !blocks} menuPortalTarget={document.body}
-                />
-                {!playbackFilename && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Load a recording to compare laps</div>}
-                {playbackFilename && compareLapNum !== null && !comparison && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Loading comparison lap…</div>}
+                <button
+                  role="switch" aria-checked={fixedLapMode.enabled} disabled={!playbackFilename || !blocks}
+                  onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
+                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span>Disable playback mode</span>
+                  <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${fixedLapMode.enabled ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${fixedLapMode.enabled ? 'translate-x-4' : ''}`} /></span>
+                </button>
+                {!playbackFilename && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Load a recording to select fixed laps</div>}
               </div>
+              {fixedLapMode.enabled ? (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap A</label>
+                    <Select
+                      value={lapAValue} options={lapOptions} placeholder="Select Lap A…"
+                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.value ?? null })}
+                      styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
+                      menuPortalTarget={document.body}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap B</label>
+                    <Select
+                      value={lapBValue} options={lapOptions} placeholder="Select Lap B…"
+                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
+                      styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
+                      menuPortalTarget={document.body}
+                    />
+                  </div>
+                  {((fixedLapMode.lapA !== null && !fixedPrimary) || (fixedLapMode.lapB !== null && !fixedComparison)) && <div className="text-[9px] text-[var(--text-secondary)]">Loading selected lap data…</div>}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Compare lap</label>
+                  <Select
+                    value={compareValue} options={compareOptions}
+                    onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
+                    styles={selectStyles} components={selectComponents} isSearchable={false}
+                    isDisabled={!playbackFilename || !blocks} menuPortalTarget={document.body}
+                  />
+                  {playbackFilename && compareLapNum !== null && !comparison && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Loading comparison lap…</div>}
+                </div>
+              )}
               <button
                 role="switch" aria-checked={config.showYAxis}
                 onClick={() => save({ ...config, showYAxis: !config.showYAxis })}
@@ -295,15 +376,23 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
           >
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
-          <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Current {effectiveCurrentLapNum ? `L${effectiveCurrentLapNum}` : 'lap'}</span>
+          <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">
+            {fixedLapMode.enabled ? `Lap A ${fixedLapMode.lapA !== null ? `L${fixedLapMode.lapA}` : '—'}` : `Current ${effectiveCurrentLapNum ? `L${effectiveCurrentLapNum}` : 'lap'}`}
+          </span>
           {config.series.map(item => {
             const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
             return def ? <span key={item.metricId} className="text-[10px] whitespace-nowrap" style={{ color: item.color }}>— {def.label}</span> : null
           })}
-          {compareLapNum !== null && <span className="ml-auto text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Muted lines · Compare L{compareLapNum}</span>}
+          {fixedLapMode.enabled
+            ? <span className="ml-auto text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Muted lines · Lap B {fixedLapMode.lapB !== null ? `L${fixedLapMode.lapB}` : '—'}</span>
+            : compareLapNum !== null && <span className="ml-auto text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Muted lines · Compare L{compareLapNum}</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
-          <AnalyzeChartSubscriber isDark={isDark} selected={config.series} showYAxis={config.showYAxis} currentLapNum={effectiveCurrentLapNum} comparison={comparison} />
+          <AnalyzeChartSubscriber
+            isDark={isDark} selected={config.series} showYAxis={config.showYAxis}
+            currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
+            comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
+          />
         </div>
       </section>
     </div>

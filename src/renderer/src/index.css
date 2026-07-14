@@ -150,3 +150,23 @@ body {
 .uplot, .u-wrap, .u-under, .u-over { background: transparent !important; }
 .u-legend { display: none !important; }
 .u-cursor-x, .u-cursor-y { border-color: var(--u-cursor) !important; }
+
+/* Match the Chrome color picker's editable fields to Settings inputs. */
+.analyze-color-picker .w-color-editable-input input {
+  height: 2rem !important;
+  padding: 0 0.75rem !important;
+  border: 1px solid var(--border-muted) !important;
+  border-radius: 0.5rem !important;
+  outline: none !important;
+  background: var(--bg-input) !important;
+  box-shadow: none !important;
+  color: var(--text-primary) !important;
+  font-family: inherit !important;
+  font-size: 0.75rem !important;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 150ms ease;
+}
+
+.analyze-color-picker .w-color-editable-input input:focus {
+  border-color: var(--border-focus) !important;
+}

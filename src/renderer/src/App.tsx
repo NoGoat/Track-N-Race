@@ -25,7 +25,7 @@ import PowerStatsBar from './components/PowerStatsBar'
 import TyresPanel from './components/TyresPanel'
 import SessionPanel, { SESSION_TYPES, sessionAccent } from './components/SessionPanel'
 import StrategyPanel from './components/StrategyPanel'
-import AnalyzeScreen from './components/AnalyzeScreen'
+import AnalyzeScreen, { type AnalyzeFixedLapMode } from './components/AnalyzeScreen'
 import { DEFAULT_GRAPH_VIEW, DEFAULT_COMPACT, DEFAULT_TYRE_Y_AXIS, type GraphViewState, type CompactState, type TyreYAxisState, type TyreYAxisGroupState } from './lib/graphSections'
 import type { RaceEventMsg, ParticipantsMsg } from './types'
 import iconTransparent from './assets/icon_transparent.png'
@@ -765,6 +765,8 @@ interface TabContentProps {
   playbackFilename: string | null
   analyzeCompareLapNum: number | null
   onAnalyzeCompareLapChange: (lapNum: number | null) => void
+  analyzeFixedLapMode: AnalyzeFixedLapMode
+  onAnalyzeFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
@@ -1012,6 +1014,8 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
       currentLapNum={props.currentPlaybackLapNum}
       compareLapNum={props.analyzeCompareLapNum}
       onCompareLapChange={props.onAnalyzeCompareLapChange}
+      fixedLapMode={props.analyzeFixedLapMode}
+      onFixedLapModeChange={props.onAnalyzeFixedLapModeChange}
     />
   }
   if (props.tab === 'misc') {
@@ -1222,12 +1226,14 @@ export default function App() {
   const capturedForBlocksRef = useRef<any[] | null>(null)
   const [currentPlaybackLapNum, setCurrentPlaybackLapNum] = useState<number | null>(null)
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
+  const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
   const currentPlaybackLapNumRef = useRef<number | null>(null)
   const speedRpmBlocksRef = useRef<any[] | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
 
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
+    setAnalyzeFixedLapMode({ enabled: false, lapA: null, lapB: null })
     currentPlaybackLapNumRef.current = null
     setCurrentPlaybackLapNum(null)
   }, [playbackState?.filename])
@@ -2087,6 +2093,8 @@ export default function App() {
           playbackFilename={playbackState?.filename ?? null}
           analyzeCompareLapNum={analyzeCompareLapNum}
           onAnalyzeCompareLapChange={setAnalyzeCompareLapNum}
+          analyzeFixedLapMode={analyzeFixedLapMode}
+          onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
         />
       </main>
 

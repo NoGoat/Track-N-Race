@@ -10,10 +10,12 @@ import type { AnalyzeLapData } from '../../types'
 interface Props {
   isDark: boolean
   current: AnalyzeLapData
-  currentRevision: number
+  currentRevision: string | number
   comparison: AnalyzeLapData | null
   selected: AnalyzeSeriesConfig[]
   showYAxis: boolean
+  primaryLabel?: string
+  comparisonLabel?: string
 }
 
 type Role = 'comparison' | 'current'
@@ -120,7 +122,7 @@ function fmtLapTime(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}`
 }
 
-export default function AnalyzeTimeChart({ isDark, current, currentRevision, comparison, selected, showYAxis }: Props) {
+export default function AnalyzeTimeChart({ isDark, current, currentRevision, comparison, selected, showYAxis, primaryLabel, comparisonLabel }: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
@@ -132,6 +134,8 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
   const isDarkRef = useRef(isDark)
   const currentRef = useRef(current)
   const comparisonRef = useRef(comparison)
+  const primaryLabelRef = useRef(primaryLabel)
+  const comparisonLabelRef = useRef(comparisonLabel)
   const revisionsRef = useRef<Record<string, string>>({})
   const originsRef = useRef<Record<string, number>>({})
   const scratchRef = useRef<Record<AnalyzeSource, Float64Array>>(Object.fromEntries(SOURCES.map(source => [source, new Float64Array(METRICS_BY_SOURCE[source].length)])) as Record<AnalyzeSource, Float64Array>)
@@ -139,6 +143,8 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
   isDarkRef.current = isDark
   currentRef.current = current
   comparisonRef.current = comparison
+  primaryLabelRef.current = primaryLabel
+  comparisonLabelRef.current = comparisonLabel
 
   useEffect(() => {
     const host = hostRef.current
@@ -197,8 +203,8 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
           rows.push(`<div><span style="color:${color}">${def.label}</span>: ${display}</div>`)
         }
       }
-      appendRole('current', currentRef.current, `CURRENT L${currentRef.current.lapNum || '—'}`)
-      appendRole('comparison', comparisonRef.current, comparisonRef.current ? `COMPARE L${comparisonRef.current.lapNum}` : '')
+      appendRole('current', currentRef.current, primaryLabelRef.current ?? `CURRENT L${currentRef.current.lapNum || '—'}`)
+      appendRole('comparison', comparisonRef.current, comparisonRef.current ? comparisonLabelRef.current ?? `COMPARE L${comparisonRef.current.lapNum}` : '')
       show(rows.join(''), contentX + chart.options.paddingLeft, contentY + 4, chart.clientWidth, chart.clientHeight)
     }
     const stopMove = chart.contentBoxDetector.moved.on(move)
