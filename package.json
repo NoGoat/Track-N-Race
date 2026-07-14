@@ -61,6 +61,7 @@
   },
   "dependencies": {
     "@track-n-race/timechart-engine": "file:src/renderer/src/lib/timechart/engine",
+    "@uiw/react-color": "^2.10.3",
     "electron-store": "^8.2.0",
     "lucide-react": "^1.16.0",
     "react": "^18.3.1",

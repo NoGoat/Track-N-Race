@@ -1233,12 +1233,6 @@ export default function App() {
   }, [playbackState?.filename])
 
   useEffect(() => {
-    if (analyzeCompareLapNum !== null && analyzeCompareLapNum === currentPlaybackLapNum) {
-      setAnalyzeCompareLapNum(null)
-    }
-  }, [analyzeCompareLapNum, currentPlaybackLapNum])
-
-  useEffect(() => {
     configureChartFrameRates(fpsInFocus, fpsOutOfFocus)
   }, [fpsInFocus, fpsOutOfFocus])
 

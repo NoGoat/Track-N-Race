@@ -1,5 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import Select, { type SingleValue } from 'react-select'
+import { Chrome, ChromeInputType } from '@uiw/react-color'
 import { ChevronLeft, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
@@ -22,6 +24,91 @@ interface Props {
 
 interface LapBlock { lapNum: number; startSessionTime: number; endSessionTime: number }
 interface SelectOption { value: string; label: string }
+
+function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState({ left: 8, top: 8 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const place = () => {
+      const rect = buttonRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const pickerWidth = 230
+      const pickerHeight = 260
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - pickerWidth - 8))
+      const below = rect.bottom + 6
+      const top = below + pickerHeight <= window.innerHeight
+        ? below
+        : Math.max(8, rect.top - pickerHeight - 6)
+      setPosition({ left, top })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (!buttonRef.current?.contains(target) && !pickerRef.current?.contains(target)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  const chromeStyle = {
+    '--github-background-color': 'var(--bg-menu)',
+    '--github-border': '1px solid var(--border)',
+    '--github-box-shadow': '0 14px 36px rgba(0, 0, 0, 0.38)',
+    '--github-arrow-border-color': 'var(--border)',
+    '--editable-input-label-color': 'var(--text-secondary)',
+    '--editable-input-box-shadow': 'var(--border) 0 0 0 1px inset',
+    '--editable-input-color': 'var(--text-primary)',
+    '--chrome-arrow-fill': 'var(--text-secondary)',
+    '--chrome-arrow-background-color': 'var(--bg-hover)',
+    width: 230,
+    borderRadius: 6,
+    fontFamily: '"Cascadia Code", ui-monospace, monospace',
+  } as CSSProperties
+
+  return <>
+    <button
+      ref={buttonRef}
+      type="button"
+      draggable={false}
+      aria-label={`${label} color`}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={() => setOpen(value => !value)}
+      className="w-5 h-5 rounded border border-[var(--border)] cursor-pointer shrink-0 shadow-inner"
+      style={{ backgroundColor: color }}
+    />
+    {open && createPortal(
+      <div ref={pickerRef} role="dialog" aria-label={`${label} color picker`} className="fixed z-[10000]" style={position}>
+        <Chrome
+          color={color}
+          inputType={ChromeInputType.HEXA}
+          showAlpha={false}
+          showTriangle={false}
+          style={chromeStyle}
+          onChange={result => onChange(result.hex)}
+        />
+      </div>,
+      document.body,
+    )}
+  </>
+}
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, showYAxis, currentLapNum, comparison,
@@ -80,8 +167,8 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
 
   const compareOptions = useMemo(() => [
     { value: 0, label: 'None' },
-    ...(blocks ?? []).filter(block => block.lapNum !== effectiveCurrentLapNum).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })),
-  ], [blocks, effectiveCurrentLapNum])
+    ...(blocks ?? []).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })),
+  ], [blocks])
   const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
   const comparison = compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
 
@@ -94,10 +181,6 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
     requestedRef.current = compareLapNum
     window.playerBridge.getLapData(compareLapNum)
   }, [compareLapNum, lapCache, playbackFilename])
-
-  useEffect(() => {
-    if (compareLapNum !== null && compareLapNum === effectiveCurrentLapNum) onCompareLapChange(null)
-  }, [compareLapNum, effectiveCurrentLapNum, onCompareLapChange])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
@@ -186,10 +269,10 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
                     className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === item.metricId ? 'opacity-40' : ''}`}
                   >
                     <GripVertical size={13} className="text-[var(--text-secondary)] cursor-grab shrink-0" />
-                    <input
-                      aria-label={`${def.label} color`} type="color" value={item.color}
-                      onChange={event => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color: event.target.value } : entry))}
-                      className="w-5 h-5 rounded border-0 bg-transparent p-0 cursor-pointer shrink-0"
+                    <AnalyzeColorPicker
+                      label={def.label}
+                      color={item.color}
+                      onChange={color => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color } : entry))}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="text-[10px] text-[var(--text-primary)] truncate">{def.label}</div>
