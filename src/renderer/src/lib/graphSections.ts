@@ -74,7 +74,11 @@ export const DEFAULT_GRAPH_VIEW: GraphViewState =
 
 export type TyreYAxisBehavior = 'fixed' | 'dynamic'
 export type TyreYAxisKey = 'surfaceTemp' | 'innerTemp' | 'brakeTemp' | 'tyreLife'
-export type TyreYAxisState = Record<TyreYAxisKey, TyreYAxisBehavior>
+export type TyreYAxisGroupState = Record<TyreYAxisKey, TyreYAxisBehavior>
+export interface TyreYAxisState {
+  overview: TyreYAxisGroupState
+  tyres: TyreYAxisGroupState
+}
 
 export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRange: string }[] = [
   { key: 'surfaceTemp', label: 'Surface Temp',     fixedRange: '0–125°C; expands above 125°C when needed' },
@@ -83,11 +87,16 @@ export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRang
   { key: 'tyreLife',    label: 'Tyre Wear / Life', fixedRange: 'Always 0–100%' },
 ]
 
-export const DEFAULT_TYRE_Y_AXIS: TyreYAxisState = {
+const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {
   surfaceTemp: 'fixed',
   innerTemp:   'fixed',
   brakeTemp:   'fixed',
   tyreLife:    'fixed',
+}
+
+export const DEFAULT_TYRE_Y_AXIS: TyreYAxisState = {
+  overview: { ...DEFAULT_TYRE_Y_AXIS_GROUP },
+  tyres:    { ...DEFAULT_TYRE_Y_AXIS_GROUP },
 }
 
 // ── Compact density ─────────────────────────────────────────────────────────

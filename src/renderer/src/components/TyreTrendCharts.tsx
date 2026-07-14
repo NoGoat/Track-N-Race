@@ -2,7 +2,7 @@ import { memo, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import type uPlot from 'uplot'
 import type { TelemetryRow, DamageRow } from '../types'
-import type { TyreYAxisState } from '../lib/graphSections'
+import type { TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
 import { niceTicks } from '../lib/timechart/ticks'
@@ -194,7 +194,7 @@ interface Props {
   graphViews?: TyreGraphViews
   windowSeconds?: number
   fastScroll?: boolean
-  yAxis: TyreYAxisState
+  yAxis: TyreYAxisGroupState
 }
 
 export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis }: Props) {

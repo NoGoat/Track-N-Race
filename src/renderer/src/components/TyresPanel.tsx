@@ -7,7 +7,7 @@ import TyreTrendCharts from './TyreTrendCharts'
 import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
-import type { TyreYAxisState } from '../lib/graphSections'
+import type { TyreYAxisGroupState } from '../lib/graphSections'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -22,7 +22,7 @@ interface Props {
   cardViews?:    TyreCardViews
   sessionType:   number | null
   windowSeconds?: number
-  yAxis:          TyreYAxisState
+  yAxis:          TyreYAxisGroupState
 }
 
 const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]

@@ -366,9 +366,17 @@ const Settings = memo(function Settings({
   }
 
   const renderYAxis = () => {
-    const anyDynamic = TYRE_Y_AXIS_SECTIONS.some(s => tyreYAxis[s.key] === 'dynamic')
-    const setAll = (value: 'fixed' | 'dynamic') =>
-      onTyreYAxisChange(Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as TyreYAxisState)
+    const groups = [
+      { key: 'overview' as const, label: 'Overview' },
+      { key: 'tyres' as const, label: 'Tyres' },
+    ]
+    const anyDynamic = groups.some(group =>
+      TYRE_Y_AXIS_SECTIONS.some(section => tyreYAxis[group.key][section.key] === 'dynamic'),
+    )
+    const setAll = (value: 'fixed' | 'dynamic') => {
+      const group = Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as TyreYAxisState['overview']
+      onTyreYAxisChange({ overview: { ...group }, tyres: { ...group } })
+    }
     return (
       <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
         <div className="flex items-center justify-between px-4 py-3">
@@ -378,15 +386,22 @@ const Settings = memo(function Settings({
             onClick={() => setAll(anyDynamic ? 'fixed' : 'dynamic')}
           />
         </div>
-        <GroupLabel>Tyres</GroupLabel>
-        {TYRE_Y_AXIS_SECTIONS.map(section => (
-          <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
-            <SegmentedControl
-              options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
-              value={tyreYAxis[section.key]}
-              onChange={(value) => onTyreYAxisChange({ ...tyreYAxis, [section.key]: value })}
-            />
-          </Row>
+        {groups.map(group => (
+          <div key={group.key}>
+            <GroupLabel>{group.label}</GroupLabel>
+            {TYRE_Y_AXIS_SECTIONS.map(section => (
+              <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
+                <SegmentedControl
+                  options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
+                  value={tyreYAxis[group.key][section.key]}
+                  onChange={(value) => onTyreYAxisChange({
+                    ...tyreYAxis,
+                    [group.key]: { ...tyreYAxis[group.key], [section.key]: value },
+                  })}
+                />
+              </Row>
+            ))}
+          </div>
         ))}
       </div>
     )

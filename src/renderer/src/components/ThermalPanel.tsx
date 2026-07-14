@@ -4,7 +4,7 @@ import type { TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
-import type { TyreYAxisState } from '../lib/graphSections'
+import type { TyreYAxisGroupState } from '../lib/graphSections'
 
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 export type TyreCardViews = { fl?: 'chart' | 'table'; fr?: 'chart' | 'table'; rl?: 'chart' | 'table'; rr?: 'chart' | 'table' }
@@ -25,7 +25,7 @@ interface Props {
   graphViews?: TyreGraphViews
   cardViews?: TyreCardViews
   windowSeconds?: number
-  yAxis: TyreYAxisState
+  yAxis: TyreYAxisGroupState
 }
 
 // Tyre-card density levels, ported from native TyreCardsWidget::Level:
