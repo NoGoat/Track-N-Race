@@ -139,7 +139,7 @@ function ERSHarvestChart(props: CP) {
   const details = useCallback((v: number[], ac: string) =>
     `<div style="color:${ac}">Total: ${(v[0] + (hasMguh ? v[1] : 0)).toFixed(1)} kJ</div>`, [hasMguh])
   return <PowerLineChart {...props} title="ERS Harvest" series={series} columns={COLS_HARVEST}
-    yRange={{ kind: 'auto' }} yFormat={v => `${v}kJ`} note="resets each lap"
+    yRange={{ kind: 'auto', fixedMin: 0 }} yFormat={v => `${v}kJ`} note="resets each lap"
     tooltipDetails={details} profilerLabel="ERSHarvest" />
 }
 
@@ -152,7 +152,7 @@ function ERSStoreChart(props: CP) {
 }
 
 function FuelHistoryChart(props: CP) {
-  const upperLimit = props.fuelUpperLimit ?? Math.max(1, props.data[0]?.fuel_kg ?? 1)
+  const upperLimit = props.fuelUpperLimit ?? Math.max(1, (props.data[0]?.fuel_kg ?? 0) + 1)
   return <PowerLineChart {...props} title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
     yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} profilerLabel="FuelHistory" />
 }

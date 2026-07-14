@@ -261,9 +261,9 @@ function handleMsg(msg: GatewayMsg): void {
       const next: Partial<TelemetryStoreState> = { status: msg }
       if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
         fuelMaxReceived = msg.fuel_kg
-        // Five percent, rounded up to a whole kilogram, keeps the live trace
-        // clear of the top edge while preserving a stable zero baseline.
-        next.fuelUpperLimit = Math.max(1, Math.ceil(fuelMaxReceived * 1.05))
+        // Keep exactly one kilogram of breathing room above the highest value
+        // received in this live session.
+        next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
       appendRow(stsBufRef, msg, MAX_ROWS)
@@ -397,7 +397,7 @@ function handleMsg(msg: GatewayMsg): void {
       set({
         speedRpmBlocks: speedRpmBlocksVal,
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
-          ? Math.max(1, initialFuelKg)
+          ? initialFuelKg + 1
           : null,
       })
       break

@@ -88,7 +88,7 @@ export type YRangeSpec =
   | { kind: 'expand'; initialLower: number; initialUpper: number; lowerPad: number; upperPad: number }
   // Fit to the visible window each update (matches uPlot's auto-range), with
   // padding and nice round ticks.
-  | { kind: 'auto'; padFraction?: number; tickCount?: number }
+  | { kind: 'auto'; padFraction?: number; tickCount?: number; fixedMin?: number }
 
 export interface TimeChartViewProps<T> {
   isDark: boolean
@@ -393,7 +393,10 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       }
       if (Number.isFinite(a.min) && Number.isFinite(a.max)) {
         const pad = a.max === a.min ? Math.abs(a.max) * 0.05 + 1 : (a.max - a.min) * padFraction
-        chart.options.yRange = { min: a.min - pad, max: a.max + pad }
+        chart.options.yRange = {
+          min: yRange.fixedMin ?? a.min - pad,
+          max: a.max + pad,
+        }
         dataDirtyRef.current = true
       }
     }
