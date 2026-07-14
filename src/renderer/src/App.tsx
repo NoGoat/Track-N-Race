@@ -13,6 +13,7 @@ import GearChart from './components/GearChart'
 import InputsChart from './components/InputsChart'
 import GForceChart from './components/GForceChart'
 import RideHeightChart from './components/RideHeightChart'
+import { configureChartFrameRates, type ChartFrameRate } from './lib/timechart/frameRate'
 import SteeringChart from './components/SteeringChart'
 import RacePanel from './components/RacePanel'
 import TimingTower from './components/TimingTower'
@@ -1160,6 +1161,8 @@ export default function App() {
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
   const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
+  const [fpsInFocus, setFpsInFocus] = useAppConfig<ChartFrameRate>('chartFpsInFocus', 'display')
+  const [fpsOutOfFocus, setFpsOutOfFocus] = useAppConfig<ChartFrameRate>('chartFpsOutOfFocus', 30)
   const [driversMode, setDriversMode]   = useAppConfig<'dots' | 'both' | 'labels'>('driversMode', (() => {
     const legacy = window.electronStore.get('showLabels', null) as boolean | null
     if (legacy === true) return 'both'
@@ -1181,6 +1184,10 @@ export default function App() {
   const currentPlaybackLapNumRef = useRef<number | null>(null)
   const speedRpmBlocksRef = useRef<any[] | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
+
+  useEffect(() => {
+    configureChartFrameRates(fpsInFocus, fpsOutOfFocus)
+  }, [fpsInFocus, fpsOutOfFocus])
 
   useEffect(() => {
     return window.playerBridge.onRequestOpenConfirm((filePath) => {
@@ -1988,6 +1995,10 @@ export default function App() {
           onNativeTitlebarChange={setNativeTitlebar}
           reduceAnimations={reduceAnimations}
           onReduceAnimationsChange={setReduceAnimations}
+          fpsInFocus={fpsInFocus}
+          onFpsInFocusChange={setFpsInFocus}
+          fpsOutOfFocus={fpsOutOfFocus}
+          onFpsOutOfFocusChange={setFpsOutOfFocus}
           mapDimmed={mapDimmed}
           onMapDimmedChange={setMapDimmed}
           graphView={graphView}

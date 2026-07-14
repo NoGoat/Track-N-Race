@@ -3,6 +3,8 @@ export interface FrameScheduleHandle {
     unregister(): void;
 }
 
+export type TimeChartFrameRate = 0 | 1 | 10 | 30 | 60 | 120 | 'display';
+
 interface FrameEntry {
     readonly element: HTMLElement;
     readonly frame: (timestamp: number) => boolean;
@@ -21,6 +23,11 @@ class TimeChartFrameScheduler {
     private entriesByElement = new Map<HTMLElement, Set<FrameEntry>>();
     private visible = new Map<HTMLElement, boolean>();
     private raf = 0;
+    private frameTimer: ReturnType<typeof setTimeout> | null = null;
+    private focused = document.hasFocus();
+    private focusedFrameRate: TimeChartFrameRate = 'display';
+    private unfocusedFrameRate: TimeChartFrameRate = 30;
+    private lastFrameAt = 0;
     private readonly observer: IntersectionObserver | null;
 
     constructor() {
@@ -45,6 +52,18 @@ class TimeChartFrameScheduler {
             this.stopIfIdle();
         });
         document.addEventListener('visibilitychange', () => this.onPageVisibility());
+        window.addEventListener('focus', () => this.onWindowFocusChanged(true));
+        window.addEventListener('blur', () => this.onWindowFocusChanged(false));
+    }
+
+    configureFrameRates(focused: TimeChartFrameRate, unfocused: TimeChartFrameRate) {
+        this.focusedFrameRate = focused;
+        this.unfocusedFrameRate = unfocused;
+        // Apply a changed cap immediately instead of inheriting cadence from
+        // the previous rate (particularly when switching back to display FPS).
+        this.lastFrameAt = 0;
+        this.cancelFrameTimer();
+        this.ensureFrame();
     }
 
     register(element: HTMLElement, frame: (timestamp: number) => boolean): FrameScheduleHandle {
@@ -102,9 +121,23 @@ class TimeChartFrameScheduler {
     }
 
     private ensureFrame() {
-        if (this.raf === 0 && this.active.size > 0) {
-            this.raf = requestAnimationFrame((timestamp) => this.run(timestamp));
+        if (this.raf !== 0 || this.frameTimer !== null || this.active.size === 0) return;
+
+        const frameRate = this.focused ? this.focusedFrameRate : this.unfocusedFrameRate;
+        if (frameRate === 0) return;
+        if (frameRate !== 'display' && this.lastFrameAt !== 0) {
+            const remaining = 1000 / frameRate - (performance.now() - this.lastFrameAt);
+            if (remaining > 1) {
+                // Sleep until the next permitted presentation window. The rAF
+                // requested afterwards aligns the actual draw with the display.
+                this.frameTimer = setTimeout(() => {
+                    this.frameTimer = null;
+                    this.ensureFrame();
+                }, remaining - 1);
+                return;
+            }
         }
+        this.raf = requestAnimationFrame((timestamp) => this.run(timestamp));
     }
 
     private stopIfIdle() {
@@ -112,10 +145,38 @@ class TimeChartFrameScheduler {
             cancelAnimationFrame(this.raf);
             this.raf = 0;
         }
+        if (this.active.size === 0) this.cancelFrameTimer();
     }
 
     private run(timestamp: number) {
         this.raf = 0;
+        const frameRate = this.focused ? this.focusedFrameRate : this.unfocusedFrameRate;
+        // Zero is the explicit Pause policy. Keep the active work registered
+        // so changing focus or FPS can resume every chart immediately, but do
+        // not execute or reschedule any chart callbacks while it applies.
+        if (frameRate === 0) return;
+        if (frameRate !== 'display') {
+            const interval = 1000 / frameRate;
+            // rAF timestamps can land a fraction below an exact cadence on
+            // displays whose refresh rate is a multiple of the requested cap.
+            // A small tolerance avoids turning 60 FPS into 45 FPS at 180 Hz.
+            if (this.lastFrameAt !== 0 && timestamp - this.lastFrameAt < interval - 0.25) {
+                this.ensureFrame();
+                return;
+            }
+            if (this.lastFrameAt === 0 || timestamp - this.lastFrameAt > interval * 4) {
+                this.lastFrameAt = timestamp;
+            } else {
+                // Retain fractional cadence instead of resetting to the latest
+                // display frame. This alternates gaps correctly when, for
+                // example, 60 FPS is requested on a 144 Hz monitor.
+                const elapsed = timestamp - this.lastFrameAt;
+                this.lastFrameAt += Math.max(1, Math.floor((elapsed + 0.25) / interval)) * interval;
+            }
+        } else {
+            this.lastFrameAt = timestamp;
+        }
+
         const current = this.active;
         this.active = this.spare;
         this.active.clear();
@@ -150,6 +211,8 @@ class TimeChartFrameScheduler {
             this.stopIfIdle();
             return;
         }
+        this.focused = document.hasFocus();
+        this.lastFrameAt = 0;
         for (const entry of this.dormant) {
             if (this.visible.get(entry.element) !== false) {
                 this.dormant.delete(entry);
@@ -157,6 +220,20 @@ class TimeChartFrameScheduler {
             }
         }
         this.ensureFrame();
+    }
+
+    private onWindowFocusChanged(focused: boolean) {
+        if (this.focused === focused) return;
+        this.focused = focused;
+        this.lastFrameAt = 0;
+        this.cancelFrameTimer();
+        this.ensureFrame();
+    }
+
+    private cancelFrameTimer() {
+        if (this.frameTimer === null) return;
+        clearTimeout(this.frameTimer);
+        this.frameTimer = null;
     }
 }
 

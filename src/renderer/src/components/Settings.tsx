@@ -8,6 +8,7 @@ import {
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
+import type { ChartFrameRate } from '../lib/timechart/frameRate'
 
 interface Props {
   isOpen: boolean
@@ -33,6 +34,10 @@ interface Props {
   onNativeTitlebarChange: (v: boolean) => void
   reduceAnimations: boolean
   onReduceAnimationsChange: (v: boolean) => void
+  fpsInFocus: ChartFrameRate
+  onFpsInFocusChange: (v: ChartFrameRate) => void
+  fpsOutOfFocus: ChartFrameRate
+  onFpsOutOfFocusChange: (v: ChartFrameRate) => void
   mapDimmed: boolean
   onMapDimmedChange: (v: boolean) => void
   graphView: GraphViewState
@@ -127,6 +132,10 @@ const Settings = memo(function Settings({
   onNativeTitlebarChange,
   reduceAnimations,
   onReduceAnimationsChange,
+  fpsInFocus,
+  onFpsInFocusChange,
+  fpsOutOfFocus,
+  onFpsOutOfFocusChange,
   mapDimmed,
   onMapDimmedChange,
   graphView,
@@ -235,6 +244,36 @@ const Settings = memo(function Settings({
         description="Disable motion effects across the app, including position-swap transitions and flashes in the Standings table."
       >
         <Toggle value={reduceAnimations} onChange={onReduceAnimationsChange} />
+      </Row>
+      <Row label="FPS in focus" description="Maximum chart frame rate while the application window is focused.">
+        <SegmentedControl<ChartFrameRate>
+          options={[
+            { value: 0, label: 'Pause' },
+            { value: 1, label: '1' },
+            { value: 10, label: '10' },
+            { value: 30, label: '30' },
+            { value: 60, label: '60' },
+            { value: 120, label: '120' },
+            { value: 'display', label: 'Match display' },
+          ]}
+          value={fpsInFocus}
+          onChange={onFpsInFocusChange}
+        />
+      </Row>
+      <Row label="FPS out of focus" description="Maximum chart frame rate while the application window is not focused.">
+        <SegmentedControl<ChartFrameRate>
+          options={[
+            { value: 0, label: 'Pause' },
+            { value: 1, label: '1' },
+            { value: 10, label: '10' },
+            { value: 30, label: '30' },
+            { value: 60, label: '60' },
+            { value: 120, label: '120' },
+            { value: 'display', label: 'Match display' },
+          ]}
+          value={fpsOutOfFocus}
+          onChange={onFpsOutOfFocusChange}
+        />
       </Row>
     </div>
   )
