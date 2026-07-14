@@ -1,8 +1,8 @@
 import { ResolvedCoreOptions } from '../options';
 import { EventDispatcher } from '../utils';
 import { RenderModel } from './renderModel';
-import { timeChartFrameScheduler } from './frameScheduler';
 import type { FrameScheduleHandle } from './frameScheduler';
+import { timeChartInteractionFrameScheduler } from './interactionFrameScheduler';
 
 export class ContentBoxDetector {
     node: HTMLElement;
@@ -22,7 +22,7 @@ export class ContentBoxDetector {
         this.node.style.top = `${options.paddingTop}px`;
         this.node.style.bottom = `${options.paddingBottom}px`;
         el.shadowRoot!.appendChild(this.node);
-        this.frameHandle = timeChartFrameScheduler.register(el, () => {
+        this.frameHandle = timeChartInteractionFrameScheduler.register(() => {
             if (!this.movePending || model.abortController.signal.aborted) return false;
             this.movePending = false;
             this.moved.dispatch(this.pointerX, this.pointerY);
@@ -31,8 +31,9 @@ export class ContentBoxDetector {
 
         // Mouse devices can report substantially faster than the display can
         // paint. Coalesce the chart's crosshair, nearest-point and tooltip work
-        // behind one animation-frame event instead of giving each feature its
-        // own unthrottled DOM mousemove listener.
+        // behind one display-rate animation-frame event instead of giving each
+        // feature its own unthrottled DOM mousemove listener. This interaction
+        // lane deliberately stays independent from the chart presentation cap.
         const signal = model.abortController.signal;
         this.node.addEventListener('mousemove', (ev) => {
             this.pointerX = ev.offsetX;

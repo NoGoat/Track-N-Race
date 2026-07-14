@@ -38,9 +38,10 @@ the fork.
 - Replaced per-series `RG32F` WebGL textures with lazy shared GPU pages: one
   `R32F` X texture plus an `R32F` texture-array containing every aligned Y
   channel. Uploads and drawing now follow physical ring/page boundaries.
-- Added one visibility-aware frame scheduler for scrolling, deferred model
-  redraws, and hover coalescing. Active charts share a frame timestamp, hidden
-  charts are parked, and animation frames stop when no chart needs work.
+- Added a visibility-aware presentation scheduler for scrolling and deferred
+  model redraws, plus a separate display-rate interaction scheduler for hover
+  coalescing. Active charts share a frame timestamp, hidden charts are parked,
+  and animation frames stop when no chart or pointer interaction needs work.
 - Sparse status/damage charts can follow the dense shared session clock without
   a React subscription; stall handling holds its last estimate instead of
   rewinding, and playback extrapolation respects the selected playback speed.
