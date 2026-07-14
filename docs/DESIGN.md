@@ -244,6 +244,8 @@ F1 game ──UDP:20777──> tnrp::Engine (in-process via node_addon)
                           ▼                          ▼
 main: bridgeManager.ts  'telemetry-batch' IPC   HotRowSmoother → 'telemetry-binary' IPC
                           │  (visibility-gated)     │  (paced to measured frame period)
+                          └──── bounded hidden-window cache ────┘
+                                      'telemetry-resume' IPC
 preload (contextBridge)   ▼                          ▼
 renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
                                         └─ TimeChartView (WebGL) per chart
@@ -296,10 +298,14 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   setTimeout rounding can't drift the cadence. Fills are display-only;
   recording happened upstream in C++.
 - **Visibility gating** (`setRendererVisible`, fed by the renderer's
-  `document.visibilityState` over IPC): while hidden, hot channels are dropped
-  in main (the smoother still drains so nothing accumulates); on refocus the
-  cached `protocol_status` is re-pushed. `requestStatus()` lets a renderer
-  pull the cached status on demand (e.g. after mounting with fallback labels).
+  `document.visibilityState` over IPC): while hidden, normal IPC forwarding
+  stops and main retains only the selected chart window (hot chart records plus
+  status/damage history; position records are excluded). On refocus this is
+  coalesced into one `telemetry-resume` payload, bulk-applied by the renderer,
+  and the cached `protocol_status` is re-pushed. The cache is time-bounded and
+  compacted in chunks, so Chromium never accumulates a per-frame IPC backlog.
+  `requestStatus()` lets a renderer pull the cached status on demand (e.g.
+  after mounting with fallback labels).
 - **Playback glue**: `playerLoad` closes any open clip first, tracks the
   active file path, resets the smoother, and adapts the engine's
   `playback_state` (relative time → absolute, adds filename/isScanning) for
@@ -318,7 +324,7 @@ export with progress relay). `stopBridge()` on `will-quit` closes the player
 and destroys the engine.
 
 **`preload/index.ts`** exposes narrow bridges via `contextBridge`:
-`electronStore`, `telemetryBridge` (`on`/`onBatch`/`onBinary`),
+`electronStore`, `telemetryBridge` (`on`/`onBatch`/`onBinary`/`onResume`),
 `windowControls`, `udpBridge`, `protocolBridge`, `fsBridge`, `playerBridge`.
 
 ### 3.4 Renderer state (`stores/telemetryStore.ts`)
@@ -341,6 +347,10 @@ re-render the whole tree. Now IPC ingestion writes to module-level buffers
   (Telemetry/Motion/MotionEx/Status/Damage/Derived) and only the touched
   window groups are recomputed — unchanged groups keep their array identity so
   their subscribers stay cold.
+- **Resume backfill**: the single `telemetry-resume` payload appends retained
+  hot and cold chart histories directly to their monotonic buffers, publishes
+  current status/damage once, and recomputes affected slices once. This restores
+  the selected window without a per-row Zustand/render storm.
 - **Lap state**: lap-number changes snapshot the completed lap (last 3 kept +
   fastest), maintaining live lap times; in playback the same derived slices are
   served from the engine's `playback_lap_blocks` slim blocks instead, filtered

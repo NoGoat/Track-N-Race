@@ -23,6 +23,11 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-binary', listener)
     return () => ipcRenderer.removeListener('telemetry-binary', listener)
   },
+  onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { binary: Uint8Array; coldJson: string }) => callback(payload)
+    ipcRenderer.on('telemetry-resume', listener)
+    return () => ipcRenderer.removeListener('telemetry-resume', listener)
+  },
 }
 
 const windowControls = {

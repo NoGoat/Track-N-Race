@@ -80,6 +80,7 @@ declare global {
       on: (callback: (row: unknown) => void) => (() => void)
       onBatch: (callback: (batch: string) => void) => (() => void)
       onBinary: (callback: (batch: Uint8Array) => void) => (() => void)
+      onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void) => (() => void)
     }
   }
 }
@@ -549,6 +550,57 @@ export function startTelemetryBridge(): void {
         handleMsg(msg)
       }
     } catch (e) { console.error('Failed to decode binary batch:', e) }
+    recompute(dirty)
+  })
+
+  window.telemetryBridge.onResume(({ binary, coldJson }) => {
+    let dirty = DirtySlice.None
+    try {
+      for (const row of decodeBinaryBatch(binary)) {
+        const msg = row as GatewayMsg
+        dirty |= dirtySliceFor(msg)
+        handleMsg(msg)
+      }
+    } catch (e) { console.error('Failed to decode resume binary batch:', e) }
+
+    let latestStatus: StatusRow | null = null
+    let latestDamage: DamageRow | null = null
+    let start = 0
+    while (start < coldJson.length) {
+      let end = coldJson.indexOf('\n', start)
+      if (end === -1) end = coldJson.length
+      if (end > start) {
+        try {
+          const msg = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow
+          if (msg.type === 'status') {
+            latestStatus = msg
+            if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
+              fuelMaxReceived = msg.fuel_kg
+            }
+            appendRow(stsBufRef, msg, MAX_ROWS)
+            dirty |= DirtySlice.Status | DirtySlice.Derived
+          } else if (msg.type === 'damage') {
+            latestDamage = msg
+            appendRow(dmgBufRef, msg, MAX_ROWS)
+            dirty |= DirtySlice.Damage
+          }
+        }
+        catch (e) { console.error('Failed to parse resume JSON:', e) }
+      }
+      start = end + 1
+    }
+
+    // Publish cold current-state values once after the bulk history append;
+    // per-row Zustand writes here would turn a long resume window into a render
+    // storm. Each source buffer is independently chronological, so the hot and
+    // cold channels do not need a combined O(n log n) sort.
+    const current: Partial<TelemetryStoreState> = {}
+    if (latestStatus) current.status = latestStatus
+    if (latestDamage) current.damage = latestDamage
+    if (!isPlaybackFlag && fuelMaxReceived > -Infinity) current.fuelUpperLimit = fuelMaxReceived + 1
+    if (Object.keys(current).length > 0) {
+      set(current)
+    }
     recompute(dirty)
   })
 }

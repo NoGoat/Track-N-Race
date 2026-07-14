@@ -26,6 +26,22 @@ function recordLen(batch: Buffer, o: number): number {
   }
 }
 
+// Keep only the time-series records needed to reconstruct chart history after
+// a hidden renderer resumes. Positions are intentionally excluded: the track
+// map only needs the next/latest frame, while retaining every 24-car position
+// record for a long chart window would dominate the bounded resume cache.
+export function chartHistoryRecords(batch: Buffer): Buffer {
+  const parts: Buffer[] = []
+  let o = 0
+  while (o < batch.length) {
+    const len = recordLen(batch, o)
+    if (len < 0 || o + len > batch.length) break
+    if (batch[o] !== 3) parts.push(Buffer.from(batch.subarray(o, o + len)))
+    o += len
+  }
+  return parts.length === 0 ? Buffer.alloc(0) : Buffer.concat(parts)
+}
+
 // Walk a batch and return the LAST record of each fixed-size hot type, as a tight
 // copy. Used to hold-and-advance the last sample when a tick has no fresh data.
 export function lastHotRecords(batch: Buffer): { tel?: Buffer; mot?: Buffer; motEx?: Buffer } {

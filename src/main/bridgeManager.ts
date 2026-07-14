@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import * as path from 'path'
 import { HotRowSmoother } from './binaryForwardFill'
+import { chartHistoryRecords } from './binaryRows'
 
 const store = new Store()
 
@@ -26,6 +27,65 @@ let lastStatusRow: Record<string, unknown> | null = null
 // We pause forwarding the hot channels while hidden; the engine/recording keep
 // running unaffected.
 let rendererVisible = true
+
+interface TimedBinary { at: number; data: Buffer }
+interface TimedJson { at: number; data: string }
+let resumeWindowMs = 30_000
+let hiddenBinary: TimedBinary[] = []
+let hiddenJson: TimedJson[] = []
+let hiddenBinaryStart = 0
+let hiddenJsonStart = 0
+
+function clearResumeCache(): void {
+  hiddenBinary = []
+  hiddenJson = []
+  hiddenBinaryStart = 0
+  hiddenJsonStart = 0
+}
+
+function trimResumeCache(now: number): void {
+  const cutoff = now - resumeWindowMs
+  while (hiddenBinaryStart < hiddenBinary.length && hiddenBinary[hiddenBinaryStart].at < cutoff) hiddenBinaryStart++
+  while (hiddenJsonStart < hiddenJson.length && hiddenJson[hiddenJsonStart].at < cutoff) hiddenJsonStart++
+  // Compact in chunks rather than slicing a long window on every 60 Hz tick.
+  if (hiddenBinaryStart >= 4096) {
+    hiddenBinary = hiddenBinary.slice(hiddenBinaryStart)
+    hiddenBinaryStart = 0
+  }
+  if (hiddenJsonStart >= 512) {
+    hiddenJson = hiddenJson.slice(hiddenJsonStart)
+    hiddenJsonStart = 0
+  }
+}
+
+function cacheResumeJson(batch: string, now: number): void {
+  let start = 0
+  while (start < batch.length) {
+    let end = batch.indexOf('\n', start)
+    if (end === -1) end = batch.length
+    if (end > start) {
+      const row = batch.slice(start, end)
+      // Only cold chart histories need backfilling. Other panels receive their
+      // next current-state row normally, without replaying stale banners/events.
+      if (row.includes('"type":"status"') || row.includes('"type":"damage"')) {
+        hiddenJson.push({ at: now, data: row })
+      }
+    }
+    start = end + 1
+  }
+  trimResumeCache(now)
+}
+
+function sendResumeCache(): void {
+  if (hiddenBinaryStart === hiddenBinary.length && hiddenJsonStart === hiddenJson.length) return
+  const binary = hiddenBinaryStart === hiddenBinary.length
+    ? Buffer.alloc(0)
+    : Buffer.concat(hiddenBinary.slice(hiddenBinaryStart).map(entry => entry.data))
+  const coldJson = hiddenJson.slice(hiddenJsonStart).map(entry => entry.data).join('\n')
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('telemetry-resume', { binary, coldJson })
+  }
+}
 
 let engine: any = null
 let unsubLogging: Array<() => void> = []
@@ -87,6 +147,10 @@ function flushBinary(): void {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
     }
+  } else if (batch) {
+    const history = chartHistoryRecords(batch)
+    if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
+    trimResumeCache(performance.now())
   }
   // Re-schedule against an absolute deadline rather than the rounded period:
   // setTimeout delay is integer-ms, so scheduling "period from now" makes a
@@ -145,6 +209,7 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
     activeFilePath = null
     smoother.reset()
     binPending = []
+    clearResumeCache()
     emitPlaybackState({})   // paused, no file
   }
 }
@@ -193,6 +258,8 @@ export function startBridge(): void {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
         }
+      } else {
+        cacheResumeJson(batch, performance.now())
       }
 
       // Control-row interception (always runs, visible or not): protocol_status
@@ -226,6 +293,7 @@ export function startBridge(): void {
       // renderer the backfill in the shape the TS engine used.
       smoother.reset()
       binPending = []
+      clearResumeCache()
       broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum })
     })
 
@@ -250,6 +318,7 @@ export function stopBridge(): void {
   if (binFlushTimer) { clearTimeout(binFlushTimer); binFlushTimer = null }
   binPending = []
   smoother.reset()
+  clearResumeCache()
   activeFilePath = null
   if (engine) {
     engine.playerClose()
@@ -332,15 +401,25 @@ export function requestStatus(): void {
   if (lastStatusRow) broadcast(lastStatusRow)
 }
 
-// Renderer visibility gate: pause the hot telemetry channels while the window is
-// hidden/minimized/occluded so a background-throttled renderer doesn't buffer a
-// backlog that janks on refocus. On becoming visible again, re-push the cached
-// protocol_status so labels/colours are current even if the format changed while
-// paused (the hot rows resume on their own from the next packet).
+// Renderer visibility gate: pause IPC while the window is hidden/minimized/
+// occluded. Main retains one bounded chart window (not an IPC queue), sends it
+// as a single resume payload on return, and refreshes the protocol catalog.
 export function setRendererVisible(visible: boolean): void {
   const wasVisible = rendererVisible
+  if (!visible && wasVisible) {
+    const selectedSeconds = Number(store.get('timeWindow', 30))
+    resumeWindowMs = Math.min(600, Math.max(15, Number.isFinite(selectedSeconds) ? selectedSeconds : 30)) * 1000
+    clearResumeCache()
+  }
   rendererVisible = visible
-  if (visible && !wasVisible && lastStatusRow) broadcast(lastStatusRow)
+  if (visible && !wasVisible) {
+    trimResumeCache(performance.now())
+    // Send one bounded catch-up before normal live forwarding can resume. The
+    // renderer applies it as a single store publication, avoiding an IPC burst.
+    sendResumeCache()
+    clearResumeCache()
+    if (lastStatusRow) broadcast(lastStatusRow)
+  }
 }
 
 export function isRendererVisible(): boolean { return rendererVisible }
