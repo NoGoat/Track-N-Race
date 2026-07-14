@@ -25,6 +25,7 @@ import PowerStatsBar from './components/PowerStatsBar'
 import TyresPanel from './components/TyresPanel'
 import SessionPanel, { SESSION_TYPES, sessionAccent } from './components/SessionPanel'
 import StrategyPanel from './components/StrategyPanel'
+import AnalyzeScreen from './components/AnalyzeScreen'
 import { DEFAULT_GRAPH_VIEW, DEFAULT_COMPACT, DEFAULT_TYRE_Y_AXIS, type GraphViewState, type CompactState, type TyreYAxisState, type TyreYAxisGroupState } from './lib/graphSections'
 import type { RaceEventMsg, ParticipantsMsg } from './types'
 import iconTransparent from './assets/icon_transparent.png'
@@ -39,7 +40,7 @@ const WINDOWS: { label: string; value: number }[] = [
   { label: '10m', value: 600 },
 ]
 
-type Tab = 'core' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
+type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
 
 interface CoreLayout {
   showStats:      boolean
@@ -107,10 +108,10 @@ const DEFAULT_TYRES_LAYOUT: TyresLayout = {
 }
 
 const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
+  core: 'Overview', analyze: 'Analyze', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
 }
 
-const TAB_OPTIONS = (['core', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
+const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[]).map(t => ({ value: t, label: TAB_LABELS[t] }))
 const WINDOW_OPTIONS = WINDOWS.map(w => ({ value: w.value, label: w.label }))
 const selectStyles = buildSelectStyles(true)
 const PLAYBACK_SPEED_OPTIONS = [
@@ -761,6 +762,9 @@ interface TabContentProps {
   mapTimeout: number
   mapDimmed: boolean
   currentPlaybackLapNum: number | null
+  playbackFilename: string | null
+  analyzeCompareLapNum: number | null
+  onAnalyzeCompareLapChange: (lapNum: number | null) => void
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
@@ -1001,6 +1005,15 @@ const MiscTabContent = memo(function MiscTabContent({
 })
 
 const TabContent = memo(function TabContent(props: TabContentProps) {
+  if (props.tab === 'analyze') {
+    return <AnalyzeScreen
+      isDark={props.isDark}
+      playbackFilename={props.playbackFilename}
+      currentLapNum={props.currentPlaybackLapNum}
+      compareLapNum={props.analyzeCompareLapNum}
+      onCompareLapChange={props.onAnalyzeCompareLapChange}
+    />
+  }
   if (props.tab === 'misc') {
     return <MiscTabContent isDark={props.isDark} seconds={props.seconds} miscLayout={props.miscLayout} graphView={props.graphView} />
   }
@@ -1208,9 +1221,22 @@ export default function App() {
   const sessionFileStartRef = useRef(0)
   const capturedForBlocksRef = useRef<any[] | null>(null)
   const [currentPlaybackLapNum, setCurrentPlaybackLapNum] = useState<number | null>(null)
+  const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const currentPlaybackLapNumRef = useRef<number | null>(null)
   const speedRpmBlocksRef = useRef<any[] | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
+
+  useEffect(() => {
+    setAnalyzeCompareLapNum(null)
+    currentPlaybackLapNumRef.current = null
+    setCurrentPlaybackLapNum(null)
+  }, [playbackState?.filename])
+
+  useEffect(() => {
+    if (analyzeCompareLapNum !== null && analyzeCompareLapNum === currentPlaybackLapNum) {
+      setAnalyzeCompareLapNum(null)
+    }
+  }, [analyzeCompareLapNum, currentPlaybackLapNum])
 
   useEffect(() => {
     configureChartFrameRates(fpsInFocus, fpsOutOfFocus)
@@ -2064,6 +2090,9 @@ export default function App() {
           mapTimeout={mapTimeout}
           mapDimmed={mapDimmed}
           currentPlaybackLapNum={currentPlaybackLapNum}
+          playbackFilename={playbackState?.filename ?? null}
+          analyzeCompareLapNum={analyzeCompareLapNum}
+          onAnalyzeCompareLapChange={setAnalyzeCompareLapNum}
         />
       </main>
 

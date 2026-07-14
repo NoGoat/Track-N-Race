@@ -281,6 +281,29 @@ export interface LapData {
   statusHistory: StatusRow[]
 }
 
+export interface AnalyzeLapData {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: TelemetryRow[]
+  motion: MotionRow[]
+  motionEx: MotionExRow[]
+  statusHistory: StatusRow[]
+  damageHistory: DamageRow[]
+}
+
+export interface PlaybackLapDataMsg {
+  type: 'playback_lap_data'
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: TelemetryRow[]
+  statusHistory: StatusRow[]
+  motionHistory: MotionRow[]
+  motionExHistory: MotionExRow[]
+  damageHistory: DamageRow[]
+}
+
 export interface PlaybackFastestLapMsg {
   type: 'playback_fastest_lap'
   data: LapData
@@ -322,6 +345,7 @@ export type GatewayMsg =
   | PlaybackFastestLapMsg
   | PlaybackPreviousLapMsg
   | PlaybackSeekFlushMsg
+  | PlaybackLapDataMsg
 
 export interface ProtocolCapabilities {
   gameYear:        24 | 25 | 26 | null  // null = no packets received yet
@@ -388,6 +412,7 @@ declare global {
       pause: () => void
       seek: (pct: number) => void
       setSpeed: (mult: number) => void
+      getLapData: (lapNum: number) => void
       close: () => void
       exportXlsx: () => Promise<{ ok: boolean; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void

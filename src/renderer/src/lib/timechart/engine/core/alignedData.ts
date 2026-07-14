@@ -148,6 +148,25 @@ export class AlignedDataBuffer {
         this.appended++;
     }
 
+    /** Replace the newest sample in place and include it in the next GPU upload. */
+    replaceLast(ys: ArrayLike<number>) {
+        if (ys.length !== this.channelCount) {
+            throw new RangeError(`Expected ${this.channelCount} Y values, received ${ys.length}.`);
+        }
+        if (this.size === 0) throw new RangeError('Cannot replace a sample in an empty aligned data buffer.');
+
+        const physical = (this.head + this.size - 1) % ALIGNED_PHYSICAL_CAPACITY;
+        const page = Math.floor(physical / ALIGNED_PAGE_SIZE);
+        const offset = physical % ALIGNED_PAGE_SIZE;
+        for (let channel = 0; channel < this.channelCount; channel++) {
+            this.yPages[channel][page]![offset] = ys[channel];
+        }
+        // dirtySpans represents one contiguous dirty tail. Marking the final
+        // point dirty works whether it was already synchronized or appended in
+        // the current frame.
+        this.appended = Math.max(this.appended, 1);
+    }
+
     evictFront(count: number) {
         count = Math.min(Math.max(Math.trunc(count), 0), this.size);
         if (count === 0) return;

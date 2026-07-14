@@ -14,13 +14,17 @@ export class ContentBoxDetector {
     private pointerY = 0;
     private readonly frameHandle: FrameScheduleHandle;
 
+    setPadding(left: number, right: number, top: number, bottom: number) {
+        this.node.style.left = `${left}px`;
+        this.node.style.right = `${right}px`;
+        this.node.style.top = `${top}px`;
+        this.node.style.bottom = `${bottom}px`;
+    }
+
     constructor(el: HTMLElement, model: RenderModel, options: ResolvedCoreOptions) {
         this.node = document.createElement('div');
         this.node.style.position = 'absolute';
-        this.node.style.left = `${options.paddingLeft}px`;
-        this.node.style.right = `${options.paddingRight}px`;
-        this.node.style.top = `${options.paddingTop}px`;
-        this.node.style.bottom = `${options.paddingBottom}px`;
+        this.setPadding(options.paddingLeft, options.paddingRight, options.paddingTop, options.paddingBottom);
         el.shadowRoot!.appendChild(this.node);
         this.frameHandle = timeChartInteractionFrameScheduler.register(() => {
             if (!this.movePending || model.abortController.signal.aborted) return false;

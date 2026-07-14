@@ -28,6 +28,8 @@ export function makeContentBox(model: RenderModel, options: ResolvedCoreOptions)
     contentSvg.y.baseVal.value = options.paddingTop
 
     model.resized.on((width, height) => {
+        contentSvg.x.baseVal.value = options.paddingLeft;
+        contentSvg.y.baseVal.value = options.paddingTop;
         contentSvg.width.baseVal.value = width - options.paddingRight - options.paddingLeft;
         contentSvg.height.baseVal.value = height - options.paddingTop - options.paddingBottom;
     })

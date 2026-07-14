@@ -3,6 +3,7 @@ import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
+  AnalyzeLapData, PlaybackLapDataMsg,
 } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 
@@ -23,6 +24,7 @@ import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 const MAX_ROWS = 750000
 const RETENTION_S = 600 // 10 minutes
 const MAX_RACE_EVENTS = 1000
+const MAX_ANALYZE_LAP_CACHE = 6
 // Rows older than the retention window are only dropped once this many have
 // accumulated, so trimming is one slice every ~30s instead of work on every row.
 const TRIM_CHUNK = 4096
@@ -108,6 +110,14 @@ export interface TelemetryStoreState {
   fastestLap: LapData | null
   lapTelemetry: TelemetryRow[]
   lapStatusHistory: StatusRow[]
+  analyzeLapTelemetry: TelemetryRow[]
+  analyzeLapMotion: MotionRow[]
+  analyzeLapMotionEx: MotionExRow[]
+  analyzeLapStatusHistory: StatusRow[]
+  analyzeLapDamageHistory: DamageRow[]
+  analyzeLapStartTime: number
+  analyzeLapRevision: number
+  playbackLapDataCache: Record<number, AnalyzeLapData>
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
   isConnected: boolean
@@ -124,6 +134,10 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   lap: null, timing: null, participants: null, allStatus: null,
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, lapHistory: [], fastestLap: null, lapTelemetry: [], lapStatusHistory: [],
+  analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+  analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapStartTime: 0,
+  analyzeLapRevision: 0,
+  playbackLapDataCache: {},
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
 }))
@@ -145,6 +159,11 @@ const pools = {
   dmg:    makeWindowPool<DamageRow>(),
   lapTel: makeWindowPool<TelemetryRow>(),
   lapSts: makeWindowPool<StatusRow>(),
+  analyzeTel:   makeWindowPool<TelemetryRow>(),
+  analyzeMot:   makeWindowPool<MotionRow>(),
+  analyzeMotEx: makeWindowPool<MotionExRow>(),
+  analyzeSts:   makeWindowPool<StatusRow>(),
+  analyzeDmg:   makeWindowPool<DamageRow>(),
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
@@ -166,10 +185,13 @@ let fastestLapNum = 0
 let playbackEvents: RaceEventMsg[] = []
 let playbackLapTimes: Record<number, number> = {}
 let liveLapTimes: Record<number, number> = {}
+let playbackLapCacheOrder: number[] = []
+let analyzeLapRevisionVal = 0
 
 let secondsVal = 30
 
 function resetSession(): void {
+  analyzeLapRevisionVal++
   telBufRef.current = []
   motBufRef.current = []
   motExBufRef.current = []
@@ -181,11 +203,16 @@ function resetSession(): void {
   lapHistoryBuf = []; fastestLapVal = null; raceEventsArr = []
   speedRpmBlocksVal = null; fastestLapNum = 0
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
+  playbackLapCacheOrder = []
   fuelMaxReceived = -Infinity
   set({
     status: null, damage: null, lap: null, timing: null, allStatus: null,
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null,
     lapHistory: [], fastestLap: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
+    analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+    analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapStartTime: 0,
+    analyzeLapRevision: analyzeLapRevisionVal,
+    playbackLapDataCache: {},
   })
 }
 
@@ -201,9 +228,14 @@ function onLap(lap: LapRow): void {
     const buf = telBufRef.current
     const latestST = buf[buf.length - 1]?.session_time ?? 0
     lapStartTime = lap.current_lap_ms > 0 ? latestST - lap.current_lap_ms / 1000 : latestST
+    // Initial lap metadata (including metadata re-emitted after a playback
+    // backfill) establishes the lap origin; it is not a chart reset boundary.
+    // Recording load/seek/session reset already publish an explicit revision.
     return
   }
   if (lap.lap_num === prevLapNum) return
+
+  analyzeLapRevisionVal++
 
   const prevLapStart = lapStartTime
   const buf = telBufRef.current
@@ -240,6 +272,10 @@ function handleMsg(msg: GatewayMsg): void {
       const buf = telBufRef.current
       const last = buf[buf.length - 1]
       if (last && msg.session_time < last.session_time) {
+        // Playback can deliver a slightly older hot row around a seek/backfill
+        // boundary. appendRow reconciles the renderer history below, but this
+        // must not clear the Analyze GPU buffers. Explicit seek flushes carry
+        // the revision that identifies a real timeline reset.
         lapHistoryBuf = lapHistoryBuf.filter(l => l.startSessionTime < msg.session_time)
         if (!(fastestLapVal && fastestLapVal.startSessionTime < msg.session_time)) {
           fastestLapTime = Infinity
@@ -312,6 +348,29 @@ function handleMsg(msg: GatewayMsg): void {
       set({ protocolWarning: (pw.detected_format === null || pw.detected_format === undefined) ? null : pw })
       break
     }
+    case 'playback_lap_data': {
+      const payload = msg as PlaybackLapDataMsg
+      const lapData: AnalyzeLapData = {
+        lapNum: payload.lapNum,
+        startSessionTime: payload.startSessionTime,
+        endSessionTime: payload.endSessionTime,
+        telemetry: payload.telemetry ?? [],
+        motion: payload.motionHistory ?? [],
+        motionEx: payload.motionExHistory ?? [],
+        statusHistory: payload.statusHistory ?? [],
+        damageHistory: payload.damageHistory ?? [],
+      }
+      playbackLapCacheOrder = [...playbackLapCacheOrder.filter(lapNum => lapNum !== lapData.lapNum), lapData.lapNum]
+      set(state => {
+        const cache = { ...state.playbackLapDataCache, [lapData.lapNum]: lapData }
+        while (playbackLapCacheOrder.length > MAX_ANALYZE_LAP_CACHE) {
+          const evicted = playbackLapCacheOrder.shift()
+          if (evicted !== undefined) delete cache[evicted]
+        }
+        return { playbackLapDataCache: cache }
+      })
+      break
+    }
     case 'playback_fastest_lap_raw':
     case 'playback_previous_lap_raw': {
       const payload = msg as any
@@ -347,6 +406,7 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'playback_seek_flush_bin': {
       const payload = msg as any
+      analyzeLapRevisionVal++
       lapStartTime = payload.currentLapStart
       lapNum = payload.lapNum
       const tel: any[] = [], mot: any[] = [], motEx: any[] = []
@@ -384,8 +444,10 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'playback_lap_blocks': {
       isPlaybackFlag = true
+      analyzeLapRevisionVal++
       const data = msg as any
       fuelMaxReceived = -Infinity
+      playbackLapCacheOrder = []
       speedRpmBlocksVal = data.blocks
       fastestLapNum = data.fastestLapNum
       playbackEvents = data.events ?? []
@@ -397,6 +459,7 @@ function handleMsg(msg: GatewayMsg): void {
       const initialFuelKg = Number(data.initialFuelKg)
       set({
         speedRpmBlocks: speedRpmBlocksVal,
+        playbackLapDataCache: {},
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1
           : null,
@@ -424,7 +487,7 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'motion_ex': return DirtySlice.MotionEx
     case 'status': return DirtySlice.Status | DirtySlice.Derived
     case 'damage': return DirtySlice.Damage
-    case 'lap':
+    case 'lap': return DirtySlice.All
     case 'race_event':
     case 'playback_fastest_lap_raw':
     case 'playback_previous_lap_raw':
@@ -454,22 +517,27 @@ function recompute(dirty: DirtySlice): void {
   if (dirty & DirtySlice.Telemetry) {
     next.telemetry = fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
     next.latest = telBuf.length > 0 ? telBuf[telBuf.length - 1] : null
+    next.analyzeLapTelemetry = fillRange(pools.analyzeTel, telBuf, lowerBound(telBuf, lapStartSessionTime, true), telBuf.length)
   }
   if (dirty & DirtySlice.Motion) {
     const buf = motBufRef.current
     next.motion = fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.analyzeLapMotion = fillRange(pools.analyzeMot, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.MotionEx) {
     const buf = motExBufRef.current
     next.motionEx = fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Status) {
     const buf = stsBufRef.current
     next.statusHistory = fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Damage) {
     const buf = dmgBufRef.current
     next.damageHistory = fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Derived) {
     next.lapHistory = isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf
@@ -487,6 +555,8 @@ function recompute(dirty: DirtySlice): void {
     next.raceEvents = isPlayback
       ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
       : raceEventsArr
+    next.analyzeLapStartTime = lapStartSessionTime
+    next.analyzeLapRevision = analyzeLapRevisionVal
   }
   set(next)
 }
