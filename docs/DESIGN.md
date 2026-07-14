@@ -93,7 +93,9 @@ no persistence (the host persists the last detected format; Electron uses
   (cleared with a null-field warning when the mismatch ends).
 - **Rate limiting** (fixed arrays indexed by packet id): motion / car
   telemetry / motion_ex dedupe on `frameId`; session and event packets are
-  unlimited; participants 5000 ms; everything else 500 ms.
+  unlimited; participants 5000 ms; everything else is published live at most
+  every 500 ms. While recording, intervening Car Status packets are still parsed
+  and written to `.tnrd`; they are only suppressed from the live sinks.
 - **Dispatch**: `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are parallel ~500-line
   versioned parsers behind a shared `protocol.h` (header layout, byte readers).
   2026 adds `slm` (Straight Line Mode, the active-aero DRS replacement) and an

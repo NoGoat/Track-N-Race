@@ -284,6 +284,8 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
         }
 
         // ── CAR_STATUS (2 Hz, glaze) ───────────────────────────────────────
+        // The parser caps live publication at 2 Hz but preserves every sample
+        // for recording at the game's configured menu rate.
         case PID_CAR_STATUS: {
             int statusSize = 55;
             int base = HEADER_SIZE + hdr.playerCarIndex * statusSize;

@@ -104,7 +104,10 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // hot rows as JSON (config_.hotRowsAsJson), in which case we also need them.
     const bool recording   = writer_.isRecording();
     const bool wantHotJson = recording || config_.hotRowsAsJson;
-    Parser::Result r = parser_.feed(data, length, ts, wantHotJson);
+    // While recording, preserve packets that the parser would normally suppress
+    // from the low-frequency live JSON path. They are marked liveSuppressed so
+    // recording keeps the game's configured cadence without making either UI hot.
+    Parser::Result r = parser_.feed(data, length, ts, wantHotJson, recording);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -114,6 +117,8 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         for (const auto& row : r.rows)    writer_.record(row, r.sessionTime);
         for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
     }
+
+    if (r.liveSuppressed) return;
 
     // Cold rows always go to the live JSON channel. Hot rows go either to the
     // live binary channel (default) or, for an in-process JSON-only consumer, to

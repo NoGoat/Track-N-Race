@@ -44,7 +44,7 @@ static std::string extractType(const std::string& json) {
 
 const std::unordered_set<std::string>& TnrdWriter::dedupeTypes() {
     static const std::unordered_set<std::string> kTypes = {
-        "session", "tyre_sets", "participants", "all_status", "status", "timing", "damage"
+        "session", "tyre_sets", "participants", "all_status", "timing", "damage"
     };
     return kTypes;
 }
@@ -269,7 +269,9 @@ void TnrdWriter::flushOldBufferEntries() {
 
 bool TnrdWriter::isDuplicate(const std::string& type, const std::string& json) {
     if (!dedupeTypes().count(type)) return false;
-    // Parse only for dedup types (≤2 Hz) to strip volatile fields before hashing.
+    // Parse only for deduped state types to strip volatile fields before hashing.
+    // Player status is intentionally not deduped: its menu-rate sample timestamps
+    // are chart history and must survive recording even when values hold steady.
     glz::generic doc;
     if (glz::read_json(doc, json)) return false;
     if (doc.is_object()) {

@@ -133,7 +133,8 @@ std::string Parser::statusRowForFormat(uint16_t format) {
     return writeJsonNullable(row);
 }
 
-Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts, bool wantHotJson) {
+Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts,
+                            bool wantHotJson, bool preserveStatusForRecording) {
     Result r;
     if (length < HEADER_SIZE) { r.dropped = true; return r; }
 
@@ -203,9 +204,16 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
                 // lastSlowMs_ starts at 0; (now - 0) always exceeds rateMs, so the
                 // first packet of each type is never spuriously dropped.
                 if (lastSlowMs_[packetId] != 0 && (now - lastSlowMs_[packetId]) < (uint64_t)rateMs) {
-                    r.dropped = true; return r;
+                    if (!preserveStatusForRecording || packetId != PID_CAR_STATUS) {
+                        r.dropped = true; return r;
+                    }
+                    // Recording needs the game's full menu-rate stream, but the
+                    // live JSON/UI path deliberately remains capped. Do not move
+                    // the live deadline here: only a live-accepted row advances it.
+                    r.liveSuppressed = true;
+                } else {
+                    lastSlowMs_[packetId] = now;
                 }
-                lastSlowMs_[packetId] = now;
             }
         }
     }

@@ -29,7 +29,8 @@ public:
     uint16_t activeFormat() const { return activeFormat_; }
 
     struct Result {
-        bool                     dropped    = false;  // rate-limited / unknown format
+        bool                     dropped    = false;  // invalid / duplicate / live-rate-limited
+        bool                     liveSuppressed = false; // parsed for recording, hidden from live sinks
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
         float                    sessionTime = -1.0f;
@@ -42,8 +43,12 @@ public:
     // Decode one raw UDP datagram. `ts` is the ISO timestamp to stamp on rows.
     // `wantHotJson` (true == logging on) makes the hot 60 Hz rows additionally
     // serialised to JSON in `hotJson` so they can be recorded; the binary form is
-    // always produced for the live channel.
-    Result feed(const uint8_t* data, int length, const std::string& ts, bool wantHotJson);
+    // always produced for the live channel. When `preserveStatusForRecording`
+    // is true, Car Status packets inside their live-publication interval are
+    // still parsed and returned with `liveSuppressed` set so the engine can
+    // record them without increasing the dashboard update rate.
+    Result feed(const uint8_t* data, int length, const std::string& ts,
+                bool wantHotJson, bool preserveStatusForRecording = false);
 
     // The current protocol_status control row as a serialised JSON string.
     // The engine emits this on construction and after setOverride.

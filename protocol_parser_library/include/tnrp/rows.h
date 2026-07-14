@@ -263,6 +263,8 @@ struct glz::meta<TimingRow> {
 
 // ── status / all_status (2 Hz) ─────────────────────────────────────────────
 
+// Live sinks publish this family at ~2 Hz; recording preserves the player's
+// status row at the game's configured menu rate.
 struct StatusRow {
     std::string type{"status"};
     std::string ts;

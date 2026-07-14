@@ -45,7 +45,7 @@ public:
     // identical to before whenever logging is on (no dropped packets at session start).
     bool isRecording() const { return recording_.load(std::memory_order_relaxed); }
 
-    // Called for every accepted (non-rate-limited) packet BEFORE its rows are
+    // Called for every parsed packet selected for recording BEFORE its rows are
     // recorded. Handles flashback truncation and starts a new file when the
     // session packet reports a new track/session.
     void notePacket(uint16_t format, uint8_t packetId, float sessionTime,
