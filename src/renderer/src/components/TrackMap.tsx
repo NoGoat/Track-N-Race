@@ -5,7 +5,6 @@ import { selectComponents } from '../lib/selectComponents'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
-import { TrackMapWebGLRenderer } from '../lib/trackMapWebGL'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import type { CarPosition, ParticipantsMsg } from '../types'
 
@@ -45,125 +44,6 @@ const ACCENT_W   = 3   // left livery-color bar width
 const LABEL_SPRITE_PAD = 8
 const LABEL_SPRITE_CACHE_MAX = 256
 const labelSpriteCache = new Map<string, HTMLCanvasElement>()
-
-// Position interpolation is deliberately limited to the game's 60 Hz stream.
-// The latest interval must also be in-band so switching to 40/20 Hz disables it
-// immediately instead of waiting for the rolling median to catch up.
-const POSITION_CADENCE_WINDOW       = 12
-const POSITION_CADENCE_MIN_SAMPLES  = 8
-const POSITION_60HZ_MIN_PERIOD_MS   = 14
-const POSITION_60HZ_MAX_PERIOD_MS   = 20
-const POSITION_CADENCE_RESET_MS     = 250
-const POSITION_TELEPORT_DISTANCE_SQ = 30 * 30
-
-type PositionSample = { cars: CarPosition[]; at: number }
-
-interface PositionInterpolationState {
-  previous: PositionSample | null
-  latest: PositionSample | null
-  lastCadenceAt: number | null
-  deltas: number[]
-  periodMs: number
-  lastDeltaMs: number
-}
-
-function createPositionInterpolationState(): PositionInterpolationState {
-  return { previous: null, latest: null, lastCadenceAt: null, deltas: [], periodMs: 0, lastDeltaMs: 0 }
-}
-
-function resetPositionInterpolation(state: PositionInterpolationState): void {
-  state.previous = null
-  state.latest = null
-  state.lastCadenceAt = null
-  state.deltas.length = 0
-  state.periodMs = 0
-  state.lastDeltaMs = 0
-}
-
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = sorted.length >> 1
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-}
-
-function pushPositionSample(
-  state: PositionInterpolationState,
-  cars: CarPosition[],
-  at: number,
-  cadenceAt: number = at,
-): void {
-  if (state.lastCadenceAt !== null) {
-    const delta = cadenceAt - state.lastCadenceAt
-    if (delta <= 0 || delta > POSITION_CADENCE_RESET_MS) {
-      state.previous = null
-      state.latest = null
-      state.deltas.length = 0
-      state.periodMs = 0
-      state.lastDeltaMs = 0
-    } else {
-      state.lastDeltaMs = delta
-      state.deltas.push(delta)
-      if (state.deltas.length > POSITION_CADENCE_WINDOW) state.deltas.shift()
-      state.periodMs = median(state.deltas)
-    }
-  }
-
-  state.lastCadenceAt = cadenceAt
-  state.previous = state.latest
-  state.latest = { cars, at }
-}
-
-function isStable60Hz(state: PositionInterpolationState): boolean {
-  return state.deltas.length >= POSITION_CADENCE_MIN_SAMPLES
-    && state.periodMs >= POSITION_60HZ_MIN_PERIOD_MS
-    && state.periodMs <= POSITION_60HZ_MAX_PERIOD_MS
-    && state.lastDeltaMs >= POSITION_60HZ_MIN_PERIOD_MS
-    && state.lastDeltaMs <= POSITION_60HZ_MAX_PERIOD_MS
-}
-
-/** Render one source frame behind, filling the display-refresh frames between
- * two positions the game has already reported. Linear interpolation cannot
- * overshoot; discontinuities and missing cars snap straight to the latest row. */
-function interpolatedCars(
-  state: PositionInterpolationState,
-  now: number,
-  out: CarPosition[],
-): CarPosition[] | null {
-  const previous = state.previous
-  const latest = state.latest
-  if (!latest) return null
-  if (!previous || !isStable60Hz(state)) return latest.cars
-
-  const span = latest.at - previous.at
-  if (span <= 0) return latest.cars
-  const alpha = Math.max(0, Math.min(1, (now - state.periodMs - previous.at) / span))
-  if (alpha >= 1) return latest.cars
-
-  out.length = latest.cars.length
-  for (let i = 0; i < latest.cars.length; i++) {
-    const next = latest.cars[i]
-    const prevAtIndex = previous.cars[i]
-    const prev = prevAtIndex?.idx === next.idx
-      ? prevAtIndex
-      : previous.cars.find(car => car.idx === next.idx)
-    let target = out[i]
-    if (!target) target = out[i] = { idx: next.idx, x: next.x, z: next.z }
-    target.idx = next.idx
-
-    const snap = !prev
-      || (prev.x === 0 && prev.z === 0)
-      || (next.x === 0 && next.z === 0)
-      || ((next.x - prev.x) ** 2 + (next.z - prev.z) ** 2 > POSITION_TELEPORT_DISTANCE_SQ)
-    if (snap) {
-      target.x = next.x
-      target.z = next.z
-    } else {
-      target.x = prev.x + (next.x - prev.x) * alpha
-      target.z = prev.z + (next.z - prev.z) * alpha
-    }
-  }
-  return out
-}
 
 function abbrev(name: string): string {
   const parts = name.trim().split(/\s+/)
@@ -592,10 +472,10 @@ function drawLabel(
 
   const cssWidth = sprite.width / dpr
   const cssHeight = sprite.height / dpr
-  // Interpolated car positions are intentionally subpixel, but translating a
-  // pre-rasterized text sprite by a fractional backing-store pixel makes the
-  // compositor bilinearly resample every glyph. Snap only the label bitmap;
-  // the WebGL dot continues moving at full subpixel precision.
+  // Car positions can be subpixel, but translating a pre-rasterized text
+  // sprite by a fractional backing-store pixel makes the compositor bilinearly
+  // resample every glyph. Snap only the label bitmap; the Canvas 2D dot keeps
+  // its full subpixel precision.
   const drawX = Math.round((bx - LABEL_SPRITE_PAD) * dpr) / dpr
   const drawY = Math.round((by - LABEL_SPRITE_PAD) * dpr) / dpr
   ctx.drawImage(sprite, drawX, drawY, cssWidth, cssHeight)
@@ -644,16 +524,12 @@ function drawCarDots(
 
 // ── Main render ───────────────────────────────────────────────────────────────
 
-function renderFrame(
+function renderBackgroundFrame(
   ctx: CanvasRenderingContext2D,
   cw: number, ch: number,
   prep: PreparedMap,
-  map: TrackMapData,
-  cars: CarPosition[] | null,
-  participants: ParticipantsMsg | null,
   isDark: boolean,
   sectorColors: boolean,
-  driversMode: 'dots' | 'both' | 'labels',
   layout: { scale: number; ox: number; oy: number },
   effectiveZoom: number = 1,
   mapDimmed: boolean = false,
@@ -707,127 +583,23 @@ function renderFrame(
   if (prep.startFinish) {
     drawStartFinish(ctx, prep.startFinish, prep.s1pts, prep.sfIdx, scale, ox, oy, zoomFactor, trackZoomFactor, sectorColors ? trackColor : undefined)
   }
-
-  if (cars) {
-    drawCarDots(ctx, cars, participants, map, prep, scale, ox, oy, driversMode, isDark)
-  }
 }
 
-function renderWebGLFrame(
-  renderer: TrackMapWebGLRenderer,
-  labelCtx: CanvasRenderingContext2D,
+function renderForegroundFrame(
+  ctx: CanvasRenderingContext2D,
   cw: number, ch: number,
   prep: PreparedMap,
   map: TrackMapData,
   cars: CarPosition[] | null,
   participants: ParticipantsMsg | null,
   isDark: boolean,
-  sectorColors: boolean,
   driversMode: 'dots' | 'both' | 'labels',
   layout: { scale: number; ox: number; oy: number },
-  effectiveZoom: number = 1,
-  mapDimmed: boolean = false,
-  aeroMode: 'drs' | 'slm' = 'drs',
-  slmTrackStatus: number = -1,
 ): void {
-  labelCtx.clearRect(0, 0, cw, ch)
-  renderer.beginFrame(cw, ch)
+  ctx.clearRect(0, 0, cw, ch)
+  if (!cars) return
   const { scale, ox, oy } = layout
-  const zoomFactor = Math.sqrt(effectiveZoom)
-  const trackZoomFactor = Math.pow(effectiveZoom, 0.8)
-  const trackColor = isDark ? '#ffffff' : '#000000'
-  const colors = isDark ? SECTOR_COLORS_DARK : SECTOR_COLORS_LIGHT
-
-  for (const sector of prep.sectors) {
-    const color = sectorColors ? (colors[sector.index - 1] ?? trackColor) : trackColor
-    renderer.drawPolyline(sector.points, layout, color, TRACK_PX * trackZoomFactor, {
-      alpha: mapDimmed ? 0.4 : 1,
-    })
-  }
-
-  for (let idx = 0; idx < prep.junctions.length; idx++) {
-    const junction = prep.junctions[idx]
-    const color = sectorColors ? trackColor : (colors[idx + 1] ?? trackColor)
-    const [cx, cy] = toCanvas(junction.pt, scale, ox, oy)
-    const half = Math.max(JUNC_HALF * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
-    const x0 = cx - junction.nx * half
-    const y0 = cy - junction.ny * half
-    const x1 = cx + junction.nx * half
-    const y1 = cy + junction.ny * half
-    renderer.drawScreenSegment(
-      x0, y0, x1, y1,
-      color, 3 * zoomFactor,
-    )
-    renderer.queueCircle(x0, y0, 1.5 * zoomFactor, color)
-    renderer.queueCircle(x1, y1, 1.5 * zoomFactor, color)
-  }
-
-  const offset = Math.max(DRS_OFFSET * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 8 * zoomFactor)
-  const drawZones = (zones: Array<{ track_points: [number, number][] }>, color: string) => {
-    for (const zone of zones) {
-      renderer.drawPolyline(zone.track_points, layout, color, DRS_PX * zoomFactor, {
-        dashed: true,
-        dashSize: 3 * zoomFactor,
-        normalOffset: -offset,
-      })
-    }
-  }
-  if (aeroMode === 'slm') {
-    const partial = slmTrackStatus === 1
-    drawZones(partial ? prep.slmWet : prep.slmDry, partial ? SLM_WET_COLOR : SLM_DRY_COLOR)
-  } else {
-    drawZones(prep.drsZones, DRS_COLOR)
-  }
-
-  const trapLineWidth = 2 * zoomFactor
-  for (const trap of prep.speedTraps) {
-    const [cx, cy] = toCanvas(trap, scale, ox, oy)
-    const trapR = Math.max(TRAP_R * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
-    for (const radius of [trapR, trapR + 5 * zoomFactor, trapR + 10 * zoomFactor]) {
-      renderer.queueCircle(cx, cy, radius, TRAP_COLOR, Math.max(0, (radius - trapLineWidth) / radius))
-    }
-  }
-
-  if (prep.startFinish) {
-    const [nx, ny] = perp(prep.s1pts, prep.sfIdx)
-    const [cx, cy] = toCanvas(prep.startFinish, scale, ox, oy)
-    const half = Math.max(SF_HALF * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
-    const color = sectorColors ? trackColor : SF_COLOR
-    const x0 = cx - nx * half
-    const y0 = cy - ny * half
-    const x1 = cx + nx * half
-    const y1 = cy + ny * half
-    renderer.drawScreenSegment(
-      x0, y0, x1, y1, color, 2.5 * zoomFactor,
-    )
-    renderer.queueCircle(x0, y0, 1.25 * zoomFactor, color)
-    renderer.queueCircle(x1, y1, 1.25 * zoomFactor, color)
-  }
-
-  if (cars) {
-    for (const car of cars) {
-      if (car.x === 0 && car.z === 0) continue
-      const driver = participants?.drivers.find(value => value.idx === car.idx)
-      if (!driver) continue
-      const vx = (car.x - map.transform.min_x) * map.transform.scale + map.transform.off_x
-      const vy = (car.z - map.transform.min_z) * map.transform.scale + map.transform.off_z
-      const dx = vx - prep.rotCx
-      const dy = vy - prep.rotCy
-      const rx = prep.rotCos * dx - prep.rotSin * dy + prep.rotCx
-      const ry = prep.rotSin * dx + prep.rotCos * dy + prep.rotCy
-      const cx = rx * scale + ox
-      const cy = ry * scale + oy
-      if (driversMode === 'dots' || driversMode === 'both') {
-        renderer.queueCircle(cx, cy, DOT_R, driver.livery_color)
-      }
-      if (driversMode === 'both' || driversMode === 'labels') {
-        const text = driver.name.trim() ? abbrev(driver.name) : String(driver.race_number)
-        drawLabel(labelCtx, cx, cy, text, driver.livery_color, driversMode === 'labels', isDark)
-      }
-    }
-  }
-
-  renderer.flushCircles()
+  drawCarDots(ctx, cars, participants, map, prep, scale, ox, oy, driversMode, isDark)
 }
 
 // ── Module-level position cache (survives component remounts) ─────────────────
@@ -898,7 +670,6 @@ interface Props {
   sectorColors?:       boolean
   driversMode?:        'dots' | 'both' | 'labels'
   mapTimeout?:         number
-  mapInterpolation?:   boolean
   isFullscreen?:       boolean
   onToggleFullscreen?: () => void
   reduceAnimations?:   boolean
@@ -907,19 +678,17 @@ interface Props {
   slmTrackStatus?:     number   // 2026 SLM track status: 0 = Full, 1 = Partial
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, mapInterpolation = true, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1 }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1 }: Props) {
   const { ref: wrapRef, width, height } = useSize()
-  const canvasRef       = useRef<HTMLCanvasElement>(null)
-  const labelCanvasRef  = useRef<HTMLCanvasElement>(null)
-  const webglRef        = useRef<TrackMapWebGLRenderer | null>(null)
+  const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
+  const foregroundCanvasRef = useRef<HTMLCanvasElement>(null)
+  const backgroundDirtyRef = useRef(true)
+  const backgroundLayoutRef = useRef<{ scale: number; ox: number; oy: number } | null>(null)
   const prepRef         = useRef<PreparedMap | null>(null)
   const carsRef         = useRef<CarPosition[] | null>(_cachedCars)
   const playerIdxRef    = useRef<number>(_cachedPlayerIdx)
   const participantsRef = useRef<ParticipantsMsg | null>(null)
   const rafRef          = useRef<number>(0)
-  const interpolationRef = useRef<PositionInterpolationState>(createPositionInterpolationState())
-  const interpolatedCarsRef = useRef<CarPosition[]>([])
-  const mapInterpolationRef = useRef<boolean>(mapInterpolation)
   const isDarkRef         = useRef<boolean>(isDark)
   const sectorColorsRef   = useRef<boolean>(sectorColors)
   const driversModeRef    = useRef<'dots' | 'both' | 'labels'>(driversMode)
@@ -943,7 +712,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   // Precompute rotated geometry whenever the map changes
   useEffect(() => {
     prepRef.current = map ? prepareMap(map) : null
-    resetPositionInterpolation(interpolationRef.current)
+    backgroundDirtyRef.current = true
   }, [map])
 
   const lastPosRef = useRef<Record<number, { x: number; z: number; lastMovedTime: number }>>({})
@@ -952,7 +721,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   // Subscribe to position updates directly — bypasses React state to avoid 60 Hz re-renders
   useEffect(() => {
-    const handleMsg = (msg: any, cadenceAt?: number) => {
+    const handleMsg = (msg: any) => {
       if (msg.type === 'positions' && msg.cars) {
         const now = Date.now()
         const timeoutMs = mapTimeoutRef.current * 1000
@@ -986,7 +755,6 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         _cachedPlayerIdx = playerIdx
         carsRef.current      = _cachedCars
         playerIdxRef.current = _cachedPlayerIdx
-        pushPositionSample(interpolationRef.current, filteredCars, performance.now(), cadenceAt)
       }
     }
 
@@ -1015,16 +783,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       try {
         const rows = decodeBinaryBatch(batch)
         let lastPositions: any = null
-        let lastMotionTime: number | undefined
-        let positionMotionTime: number | undefined
         for (const row of rows) {
-          if (row.type === 'motion') lastMotionTime = row.session_time * 1000
-          if (row.type === 'positions') {
-            lastPositions = row
-            positionMotionTime = lastMotionTime
-          }
+          if (row.type === 'positions') lastPositions = row
         }
-        if (lastPositions) handleMsg(lastPositions, positionMotionTime)
+        if (lastPositions) handleMsg(lastPositions)
       } catch (e) {
         console.error('TrackMap: failed to decode binary batch:', e)
       }
@@ -1044,58 +806,46 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   aeroModeRef.current          = aeroMode
   slmTrackStatusRef.current    = slmTrackStatus
   mapTimeoutRef.current        = mapTimeout
-  mapInterpolationRef.current  = mapInterpolation
   const reduceAnimationsRef    = useRef(reduceAnimations)
   reduceAnimationsRef.current  = reduceAnimations
 
-  // The WebGL context, shader programs and retained geometry buffers live for
-  // the component lifetime. Canvas 2D remains only as a transparent text layer
-  // (and as a graceful fallback when WebGL2 is unavailable).
+  // Track geometry lives on a separate Canvas 2D layer. In overview mode it is
+  // redrawn only when its inputs change; the foreground cars and labels remain
+  // on the display-rate rAF path. Following a driver invalidates the background
+  // as the camera moves.
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    try {
-      webglRef.current = new TrackMapWebGLRenderer(canvas)
-    } catch (error) {
-      webglRef.current = null
-      console.error('TrackMap: failed to initialize WebGL2, using Canvas 2D fallback:', error)
-    }
-    return () => {
-      webglRef.current?.dispose()
-      webglRef.current = null
-    }
-  }, [])
+    backgroundDirtyRef.current = true
+  }, [isDark, sectorColors, mapDimmed, aeroMode, slmTrackStatus])
 
   useEffect(() => {
     if (map) return
-    webglRef.current?.beginFrame(Math.max(width, 1), Math.max(height, 1))
-    const labelCanvas = labelCanvasRef.current
-    const ctx = labelCanvas?.getContext('2d')
-    if (labelCanvas && ctx) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0)
-      ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height)
+    for (const canvas of [backgroundCanvasRef.current, foregroundCanvasRef.current]) {
+      const ctx = canvas?.getContext('2d')
+      if (canvas && ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+      }
     }
+    backgroundLayoutRef.current = null
   }, [map, width, height])
 
-  // Resize canvas physical pixels when the container changes
+  // Resize both Canvas 2D layers when the container changes. Assigning the
+  // backing dimensions clears their contexts, so the background must redraw.
   useEffect(() => {
-    const canvas = canvasRef.current
-    const labelCanvas = labelCanvasRef.current
-    if (!canvas || !labelCanvas || width === 0 || height === 0) return
+    const backgroundCanvas = backgroundCanvasRef.current
+    const foregroundCanvas = foregroundCanvasRef.current
+    if (!backgroundCanvas || !foregroundCanvas || width === 0 || height === 0) return
     const dpr = window.devicePixelRatio || 1
     const pixelWidth = Math.round(width * dpr)
     const pixelHeight = Math.round(height * dpr)
-    webglRef.current?.resize(pixelWidth, pixelHeight)
-    if (!webglRef.current) {
+    for (const canvas of [backgroundCanvas, foregroundCanvas]) {
       canvas.width = pixelWidth
       canvas.height = pixelHeight
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
     }
-    labelCanvas.width = pixelWidth
-    labelCanvas.height = pixelHeight
-    canvas.style.width  = `${width}px`
-    canvas.style.height = `${height}px`
-    labelCanvas.style.width = `${width}px`
-    labelCanvas.style.height = `${height}px`
+    backgroundDirtyRef.current = true
+    backgroundLayoutRef.current = null
   }, [width, height])
 
   // rAF render loop
@@ -1103,25 +853,25 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     if (!map || width === 0 || height === 0) return
     let active = true
 
-    const loop = (timestamp: number) => {
+    const loop = () => {
       if (!active) return
-      const canvas = canvasRef.current
-      const labelCanvas = labelCanvasRef.current
+      const backgroundCanvas = backgroundCanvasRef.current
+      const foregroundCanvas = foregroundCanvasRef.current
       const prep   = prepRef.current
-      if (canvas && labelCanvas && prep) {
+      if (backgroundCanvas && foregroundCanvas && prep) {
         const dpr = window.devicePixelRatio || 1
-        const ctx = labelCanvas.getContext('2d')
-        if (ctx) {
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-          ctx.imageSmoothingEnabled = false
+        const backgroundCtx = backgroundCanvas.getContext('2d')
+        const foregroundCtx = foregroundCanvas.getContext('2d')
+        if (backgroundCtx && foregroundCtx) {
+          backgroundCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          foregroundCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          foregroundCtx.imageSmoothingEnabled = false
 
           const baseLayout = buildLayout(prep, width, height)
           let layout = baseLayout
 
           const followIdx = selectedDriverIdxRef.current
-          const cars = mapInterpolationRef.current
-            ? interpolatedCars(interpolationRef.current, timestamp, interpolatedCarsRef.current)
-            : carsRef.current
+          const cars = carsRef.current
           if (followIdx !== null && cars) {
             const car = cars.find(c => c.idx === followIdx)
             if (car && (car.x !== 0 || car.z !== 0)) {
@@ -1159,12 +909,17 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
           }
 
           const effectiveZoom = layout.scale / baseLayout.scale
-          const renderer = webglRef.current
-          if (renderer) {
-            renderWebGLFrame(renderer, ctx, width, height, prep, map, cars, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current)
-          } else {
-            renderFrame(ctx, width, height, prep, map, cars, participantsRef.current, isDarkRef.current, sectorColorsRef.current, driversModeRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current)
+          const previousLayout = backgroundLayoutRef.current
+          const layoutChanged = !previousLayout
+            || previousLayout.scale !== layout.scale
+            || previousLayout.ox !== layout.ox
+            || previousLayout.oy !== layout.oy
+          if (backgroundDirtyRef.current || layoutChanged) {
+            renderBackgroundFrame(backgroundCtx, width, height, prep, isDarkRef.current, sectorColorsRef.current, layout, effectiveZoom, mapDimmedRef.current, aeroModeRef.current, slmTrackStatusRef.current)
+            backgroundLayoutRef.current = { ...layout }
+            backgroundDirtyRef.current = false
           }
+          renderForegroundFrame(foregroundCtx, width, height, prep, map, cars, participantsRef.current, isDarkRef.current, driversModeRef.current, layout)
         }
       }
       rafRef.current = requestAnimationFrame(loop)
@@ -1202,8 +957,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   return (
     <div ref={wrapRef} className="relative w-full h-full">
-      <canvas ref={canvasRef} className="absolute inset-0" />
-      <canvas ref={labelCanvasRef} className="absolute inset-0 pointer-events-none" />
+      <canvas ref={backgroundCanvasRef} className="absolute inset-0" />
+      <canvas ref={foregroundCanvasRef} className="absolute inset-0 pointer-events-none" />
       {!map && (
         <div className="absolute inset-0 flex items-center justify-center">
           <span className="text-[11px] uppercase tracking-widest text-[var(--text-secondary)]">

@@ -26,8 +26,6 @@ interface Props {
   onDriversModeChange: (v: 'dots' | 'both' | 'labels') => void
   mapTimeout: number
   onMapTimeoutChange: (v: number) => void
-  mapInterpolation: boolean
-  onMapInterpolationChange: (v: boolean) => void
   detectedGameLabel: string
   detectedWarningFormat: number | null
   forcedWarningFormat: number | null
@@ -122,7 +120,6 @@ const Settings = memo(function Settings({
   sectorColors, onSectorColorsChange,
   driversMode, onDriversModeChange,
   mapTimeout, onMapTimeoutChange,
-  mapInterpolation, onMapInterpolationChange,
   detectedGameLabel,
   detectedWarningFormat,
   forcedWarningFormat,
@@ -336,9 +333,6 @@ const Settings = memo(function Settings({
 
   const renderMap = () => (
     <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-      <Row label="Map Interpolation" description="Smooth 60 Hz car positions on high-refresh displays. 20 Hz and 40 Hz position streams remain raw.">
-        <Toggle value={mapInterpolation} onChange={onMapInterpolationChange} />
-      </Row>
       <Row label="Map Opacity" description="Dims the track outline to 40% opacity so driver dots and labels stand out.">
         <Toggle value={mapDimmed} onChange={onMapDimmedChange} />
       </Row>

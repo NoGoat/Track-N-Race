@@ -321,7 +321,6 @@ interface Props {
   sectorColors: boolean
   driversMode: 'dots' | 'both' | 'labels'
   mapTimeout: number
-  mapInterpolation: boolean
   reduceAnimations: boolean
   mapDimmed?: boolean
   aeroMode: 'drs' | 'slm'
@@ -330,7 +329,7 @@ interface Props {
   compactWeather?: boolean
 }
 
-const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, mapInterpolation, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
 
@@ -373,7 +372,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             sectorColors={sectorColors}
             driversMode={driversMode}
             mapTimeout={mapTimeout}
-            mapInterpolation={mapInterpolation}
             reduceAnimations={reduceAnimations}
             mapDimmed={mapDimmed}
             aeroMode={aeroMode}
@@ -478,7 +476,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
           {/* Track map */}
           <div className="flex-1 min-h-0">
             <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-            driversMode={driversMode} mapTimeout={mapTimeout} mapInterpolation={mapInterpolation} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
+            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
           </div>
 
           {/* Now + forecast strip — pinned to bottom. Compact: each cell is a single

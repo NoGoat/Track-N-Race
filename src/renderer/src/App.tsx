@@ -757,7 +757,6 @@ interface TabContentProps {
   sectorColors: boolean
   driversMode: 'dots' | 'both' | 'labels'
   mapTimeout: number
-  mapInterpolation: boolean
   mapDimmed: boolean
   currentPlaybackLapNum: number | null
 }
@@ -765,7 +764,7 @@ interface TabContentProps {
 const SubscribedTabContent = memo(function SubscribedTabContent({
   tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
   graphView, compact, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
-  selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout, mapInterpolation,
+  selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
 }: TabContentProps) {
   // Hot + cold slices this subtree needs. Only components that render these
@@ -879,7 +878,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       )}
       {tab === 'session' && (
         <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} mapInterpolation={mapInterpolation} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
+          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
         </div>
       )}
       {tab === 'input' && (
@@ -1036,7 +1035,6 @@ export default function App() {
 
   const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
   const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
-  const [mapInterpolation, setMapInterpolation] = useAppConfig<boolean>('mapInterpolation', true)
   const [tab, setTab] = useState<Tab>('core')
 
   // Temporary diagnostic: logs any main-thread task >50ms, tagged with the
@@ -1983,8 +1981,6 @@ export default function App() {
           onDriversModeChange={setDriversMode}
           mapTimeout={mapTimeout}
           onMapTimeoutChange={setMapTimeout}
-          mapInterpolation={mapInterpolation}
-          onMapInterpolationChange={setMapInterpolation}
           detectedGameLabel={detectedGameLabel}
           detectedWarningFormat={detectedWarningFormat}
           forcedWarningFormat={forcedWarningFormat}
@@ -2025,7 +2021,6 @@ export default function App() {
           sectorColors={sectorColors}
           driversMode={driversMode}
           mapTimeout={mapTimeout}
-          mapInterpolation={mapInterpolation}
           mapDimmed={mapDimmed}
           currentPlaybackLapNum={currentPlaybackLapNum}
         />
