@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import Select, { type SingleValue } from 'react-select'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { ChevronLeft, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowDownUp, ChevronLeft, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG, sanitizeAnalyzeConfig,
@@ -36,6 +36,7 @@ interface SelectOption { value: string; label: string }
 function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 8, top: 8 })
+  const [formatIconHost, setFormatIconHost] = useState<HTMLElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
 
@@ -56,6 +57,15 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
     place()
     window.addEventListener('resize', place)
     return () => window.removeEventListener('resize', place)
+  }, [open])
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setFormatIconHost(null)
+      return
+    }
+    const nativeIcon = pickerRef.current?.querySelector<SVGElement>('svg[viewBox="0 0 1024 1024"]')
+    setFormatIconHost(nativeIcon?.parentElement ?? null)
   }, [open])
 
   useEffect(() => {
@@ -113,6 +123,12 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
           style={chromeStyle}
           onChange={result => onChange(result.hex)}
         />
+        {formatIconHost?.isConnected && createPortal(
+          <span className="w-8 h-8 flex items-center justify-center pointer-events-none text-[var(--text-secondary)]">
+            <ArrowDownUp size={16} strokeWidth={1.75} className="analyze-color-format-icon" />
+          </span>,
+          formatIconHost,
+        )}
       </div>,
       document.body,
     )}

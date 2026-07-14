@@ -172,6 +172,11 @@ body {
 }
 
 .analyze-color-picker svg[viewBox="0 0 1024 1024"] {
-  width: 32px !important;
-  height: 32px !important;
+  display: none !important;
+}
+
+.analyze-color-format-icon {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 16px;
 }
