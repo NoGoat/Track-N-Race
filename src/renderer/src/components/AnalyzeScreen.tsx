@@ -213,19 +213,13 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
 
   return (
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
-      <aside className={`${config.collapsed ? 'w-11' : 'w-72'} shrink-0 border-r border-[var(--border)] transition-[width] duration-200 overflow-hidden bg-[var(--bg-panel)]`}>
-        {config.collapsed ? (
-          <button title="Open Analyze controls" onClick={() => save({ ...config, collapsed: false })} className="w-11 h-11 flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">
-            <PanelLeftOpen size={16} />
-          </button>
-        ) : (
-          <div className="w-72 h-full flex flex-col">
-            <div className="h-11 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0">
+      <aside className={`${config.collapsed ? 'w-0 border-r-0' : 'w-72 border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)] transition-[width] duration-200 ease-out`}>
+          <div className={`w-72 h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
+            <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analyze</div>
                 <div className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Overlay configuration</div>
               </div>
-              <button title="Collapse controls" onClick={() => save({ ...config, collapsed: true })} className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"><PanelLeftClose size={15} /></button>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -289,11 +283,18 @@ export default function AnalyzeScreen({ isDark, playbackFilename, currentLapNum,
               })}
             </div>
           </div>
-        )}
       </aside>
 
       <section className="flex-1 min-w-0 flex flex-col">
-        <div className="min-h-10 px-3 py-2 border-b border-[var(--border)] flex items-center gap-x-4 gap-y-1 flex-wrap shrink-0">
+        <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-x-3 shrink-0 overflow-hidden">
+          <button
+            title={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
+            aria-label={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
+            onClick={() => save({ ...config, collapsed: !config.collapsed })}
+            className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+          >
+            {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+          </button>
           <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Current {effectiveCurrentLapNum ? `L${effectiveCurrentLapNum}` : 'lap'}</span>
           {config.series.map(item => {
             const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
