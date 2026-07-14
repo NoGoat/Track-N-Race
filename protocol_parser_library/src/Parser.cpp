@@ -7,6 +7,7 @@
 #include "tnrp/Labels.h"
 #include "tnrp/CardColors.h"
 #include "tnrp/AeroMode.h"
+#include "tnrp/Capabilities.h"
 
 #include "protocols/protocol.h"
 #include "protocols/f1_24.h"
@@ -101,6 +102,7 @@ std::string Parser::statusRow() const {
     row.capabilities.hasBlisters     = isF125OrLater;
     row.capabilities.hasLiveryColors = isF125OrLater;
     row.capabilities.hasLapPositions = isF125OrLater;
+    row.capabilities.hasMguh         = hasMguh(activeFormat_);
     if (detectedFormat_) row.detected_format = detectedFormat_;
     if (activeFormat_)   row.active_format   = activeFormat_;
     row.override_ = toString(override_v_);
@@ -123,6 +125,7 @@ std::string Parser::statusRowForFormat(uint16_t format) {
     row.capabilities.hasBlisters     = isF125OrLater;
     row.capabilities.hasLiveryColors = isF125OrLater;
     row.capabilities.hasLapPositions = isF125OrLater;
+    row.capabilities.hasMguh         = hasMguh(format);
     row.detected_format = format;
     row.active_format   = format;
     row.override_ = toString(Override::Auto);

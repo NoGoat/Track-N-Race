@@ -71,6 +71,8 @@ export interface SeriesDef<T> {
   label: string
   color: string
   getY: (row: T) => number
+  /** Toggle a series in place without rebuilding the WebGL chart. */
+  visible?: boolean
   lineWidth?: number
   /** TimeChart line type: 0 = line, 1 = step. */
   lineType?: 0 | 1
@@ -153,6 +155,8 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   )
   const fixedMin = yRange.kind === 'fixed' ? yRange.min : null
   const fixedMax = yRange.kind === 'fixed' ? yRange.max : null
+  const visibilityKey = series.map(s => s.visible !== false ? '1' : '0').join('')
+  const visibilityRef = useRef(series.map(s => s.visible !== false))
 
   const initColors = colorsFor(isDark)
   // Plugin configs live in mutable refs so theme changes update colors in place
@@ -247,6 +251,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
         lineWidth: s.lineWidth ?? 1.5,
         lineType: s.lineType ?? TimeChart.LineType.Line,
         stepLocation: s.stepLocation ?? 1,
+        visible: s.visible !== false,
         data: bridge.series[index],
       })),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,6 +316,27 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Series topology stays fixed; capability changes only toggle the existing
+  // GPU series in place (for example MGU-H when switching protocol format).
+  useEffect(() => {
+    const chart = chartRef.current
+    const visibility = series.map(s => s.visible !== false)
+    visibilityRef.current = visibility
+    if (!chart) return
+    let changed = false
+    chart.options.series.forEach((s, i) => {
+      if (s.visible !== visibility[i]) { s.visible = visibility[i]; changed = true }
+    })
+    if (changed) {
+      autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
+      dataDirtyRef.current = true
+      wake()
+    }
+    // `visibilityKey` is the stable primitive dependency; series arrays are
+    // commonly rebuilt by thin chart consumers on ordinary telemetry renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibilityKey, wake])
+
   // --- feed new data ---
   useEffect(() => {
     const bridge = bridgeRef.current
@@ -334,7 +360,9 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       const a = autoRef.current
       if (rows.length > 0) {
         const last = rows[rows.length - 1]
-        for (const s of seriesDefs.current) {
+        for (let i = 0; i < seriesDefs.current.length; i++) {
+          if (!visibilityRef.current[i]) continue
+          const s = seriesDefs.current[i]
           const v = s.getY(last)
           if (v < a.min) a.min = v
           if (v > a.max) a.max = v
@@ -344,14 +372,16 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       if (now - a.lastFull >= AUTO_RANGE_FULL_MS) {
         a.lastFull = now
         const bufs = seriesBuffersRef.current
-        const b0 = bufs[0]
+        const b0 = bufs.find((_, i) => visibilityRef.current[i])
         if (b0 && b0.length > 0) {
           // Scan only the visible window. Binary-searching the aligned X ring
           // also keeps this correct when a caller retains a wider source span.
           const startX = b0.xAt(b0.length - 1) - windowSeconds
           const lb = b0.lowerBoundX(startX)
           let lo = Infinity, hi = -Infinity
-          for (const buf of bufs) {
+          for (let k = 0; k < bufs.length; k++) {
+            if (!visibilityRef.current[k]) continue
+            const buf = bufs[k]
             for (let i = lb; i < buf.length; i++) {
               const v = buf.yAt(i)
               if (v < lo) lo = v

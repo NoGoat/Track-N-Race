@@ -328,6 +328,7 @@ export interface ProtocolCapabilities {
   hasBlisters:     boolean
   hasLiveryColors: boolean
   hasLapPositions: boolean
+  hasMguh:         boolean
 }
 
 export interface ColorRuleSpec {

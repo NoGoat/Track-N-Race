@@ -267,6 +267,11 @@ void PowerPage::applyHarvestScale(uint16_t format)
     if (charts_) charts_->applyHarvestScale(format);
 }
 
+void PowerPage::setMguhVisible(bool visible)
+{
+    if (charts_) charts_->setMguhVisible(visible);
+}
+
 void PowerPage::setPlaybackMode(bool on, float currentTime)
 {
     if (charts_) charts_->setPlaybackMode(on);

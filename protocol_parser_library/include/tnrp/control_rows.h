@@ -168,6 +168,7 @@ struct Capabilities {
     bool hasBlisters{};
     bool hasLiveryColors{};
     bool hasLapPositions{};
+    bool hasMguh{};
 };
 
 struct ProtocolStatusRow {

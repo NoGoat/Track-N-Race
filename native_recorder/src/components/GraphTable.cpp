@@ -64,6 +64,15 @@ public:
         else if (newN < oldN) { beginRemoveRows(QModelIndex(), newN, oldN - 1); rows_ = newN; endRemoveRows(); }
     }
 
+    void setColumns(QVector<GraphTable::Column> cols) {
+        beginResetModel();
+        cols_ = std::move(cols);
+        data_.clear();
+        rows_ = 0;
+        fill_ = 0;
+        endResetModel();
+    }
+
 private:
     static QString format(double v, GraphTable::Fmt f) {
         switch (f) {
@@ -120,6 +129,10 @@ QString GraphTable::fmtTime(float t) {
         .arg(mins)
         .arg(secs, 2, 10, QChar('0'))
         .arg(millis, 3, 10, QChar('0'));
+}
+
+void GraphTable::setColumns(const QVector<Column>& columns) {
+    model_->setColumns(columns);
 }
 
 void GraphTable::beginRebuild() { model_->begin(); }

@@ -105,6 +105,25 @@ void PowerChartsWidget::applyHarvestScale(uint16_t format) {
         chart_->setXRange(harvYId_, 0.0, format >= 2026 ? 8000.0 : 4000.0);
 }
 
+void PowerChartsWidget::setMguhVisible(bool visible) {
+    if (mguhVisible_ == visible) return;
+    mguhVisible_ = visible;
+    if (chart_ && harvHId_ >= 0) {
+        chart_->setSeriesVisible(harvHId_, visible);
+        chart_->clear(harvHId_);
+    }
+    if (table_[HARVEST]) {
+        QVector<GraphTable::Column> cols = {
+            { "Time", GraphTable::Time }, { "MGU-K (kJ)", GraphTable::Fixed1 }
+        };
+        if (visible) cols.append(GraphTable::Column{ "MGU-H (kJ)", GraphTable::Fixed1 });
+        table_[HARVEST]->setColumns(cols);
+    }
+    prevEndTime_ = -9999.0f;
+    lastAddedTime_ = -9999.0f;
+    requestRefresh();
+}
+
 void PowerChartsWidget::setSectionVisible(int section, bool on) {
     if (section < 0 || section >= SECTIONS) return;
     if (visible_[section] == on) return;
@@ -126,8 +145,10 @@ void PowerChartsWidget::ensureTable(int section) {
     switch (section) {
         case SPLIT:   cols = { { "Time", GraphTable::Time }, { "ICE (kW)", GraphTable::Fixed1 },
                                { "MGU-K (kW)", GraphTable::Fixed1 } }; break;
-        case HARVEST: cols = { { "Time", GraphTable::Time }, { "MGU-K (kJ)", GraphTable::Fixed1 },
-                               { "MGU-H (kJ)", GraphTable::Fixed1 } }; break;
+        case HARVEST:
+            cols = { { "Time", GraphTable::Time }, { "MGU-K (kJ)", GraphTable::Fixed1 } };
+            if (mguhVisible_) cols.append(GraphTable::Column{ "MGU-H (kJ)", GraphTable::Fixed1 });
+            break;
         case STORE:   cols = { { "Time", GraphTable::Time }, { "ERS (%)", GraphTable::Fixed1 } }; break;
         case FUEL:    cols = { { "Time", GraphTable::Time }, { "Fuel (kg)", GraphTable::Fixed2 } }; break;
     }
@@ -187,7 +208,7 @@ void PowerChartsWidget::refresh() {
         chart_->appendPoint(splitIceId_,  s.t, s.ice_kw);
         chart_->appendPoint(splitMgukId_, s.t, s.mguk_kw);
         chart_->appendPoint(harvKId_, s.t, s.mguk_harvest_j / 1000.0f);   // J → kJ
-        chart_->appendPoint(harvHId_, s.t, s.mguh_harvest_j / 1000.0f);
+        if (mguhVisible_) chart_->appendPoint(harvHId_, s.t, s.mguh_harvest_j / 1000.0f);
         chart_->appendPoint(storeId_, s.t, s.ers);                        // ERS %
         chart_->appendPoint(fuelId_,  s.t, s.fuel_kg);
         lastAddedTime_ = s.t;
@@ -215,8 +236,12 @@ void PowerChartsWidget::refresh() {
             if (s.t < left)    break;
             if (tSplit && !tSplit->full())
                 tSplit->addRow(s.t, s.ice_kw, s.mguk_kw);
-            if (tHarvest && !tHarvest->full())
-                tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f, s.mguh_harvest_j / 1000.0f);
+            if (tHarvest && !tHarvest->full()) {
+                if (mguhVisible_)
+                    tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f, s.mguh_harvest_j / 1000.0f);
+                else
+                    tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f);
+            }
             if (tStore && !tStore->full())
                 tStore->addRow(s.t, s.ers);
             if (tFuel && !tFuel->full())

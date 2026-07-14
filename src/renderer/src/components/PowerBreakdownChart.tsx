@@ -4,7 +4,7 @@ import type { StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
 
-interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null }
+interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean }
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
@@ -54,28 +54,32 @@ function PowerLineChart({
   title, data, isDark, view = 'chart', windowSeconds = 30, series, columns,
   yRange, yFormat, note, profilerLabel, tooltipDetails,
 }: PowerLineProps) {
+  const visibleEntries = useMemo(() => series
+    .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
+    .filter(({ series: s }) => s.visible !== false), [columns, series])
+  const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
   const uData = useMemo((): uPlot.AlignedData => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length)
-    const values = series.map(() => new Float64Array(data.length))
+    const values = visibleEntries.map(() => new Float64Array(data.length))
     data.forEach((row, i) => {
       ts[i] = row.session_time
-      series.forEach((s, k) => { values[k][i] = s.getY(row) })
+      visibleEntries.forEach((e, k) => { values[k][i] = e.series.getY(row) })
     })
     return [ts, ...values]
-  }, [data, series, view])
+  }, [data, view, visibleEntries])
 
   const axisColor = isDark ? '#7c8098' : '#6b7280'
   const tooltipFormat = useCallback((x: number, values: number[]) => {
-    const rows = series.map((s, i) =>
-      `<div><span style="color:${s.color}">${s.label}</span>: ${columns[i].format(values[i])}</div>`,
+    const rows = visibleEntries.map(e =>
+      `<div><span style="color:${e.series.color}">${e.series.label}</span>: ${e.column.format(values[e.sourceIndex])}</div>`,
     )
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${fmtTime(x)}</div>`,
       ...rows,
       tooltipDetails?.(values, axisColor) ?? '',
     ].join('')
-  }, [axisColor, columns, series, tooltipDetails])
+  }, [axisColor, tooltipDetails, visibleEntries])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -83,7 +87,7 @@ function PowerLineChart({
         <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
         {view !== 'table' && (
           <div className="flex gap-4 text-xs">
-            {series.map(s => <span key={s.label} style={{ color: s.color }}>— {s.label}</span>)}
+            {visibleEntries.map(({ series: s }) => <span key={s.label} style={{ color: s.color }}>— {s.label}</span>)}
             {note && <span className="text-[var(--text-secondary)]">{note}</span>}
           </div>
         )}
@@ -92,7 +96,7 @@ function PowerLineChart({
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={columns} data={uData} />
+          <GraphTable columns={visibleColumns} data={uData} />
         ) : (
           <TimeChartView<StatusRow>
             isDark={isDark}
@@ -129,9 +133,12 @@ function PowerSplitChart(props: CP) {
 }
 
 function ERSHarvestChart(props: CP) {
+  const hasMguh = props.hasMguh ?? false
+  const series = useMemo(() => SERIES_HARVEST.map((s, i) =>
+    i === 1 ? { ...s, visible: hasMguh } : s), [hasMguh])
   const details = useCallback((v: number[], ac: string) =>
-    `<div style="color:${ac}">Total: ${(v[0] + v[1]).toFixed(1)} kJ</div>`, [])
-  return <PowerLineChart {...props} title="ERS Harvest" series={SERIES_HARVEST} columns={COLS_HARVEST}
+    `<div style="color:${ac}">Total: ${(v[0] + (hasMguh ? v[1] : 0)).toFixed(1)} kJ</div>`, [hasMguh])
+  return <PowerLineChart {...props} title="ERS Harvest" series={series} columns={COLS_HARVEST}
     yRange={{ kind: 'auto' }} yFormat={v => `${v}kJ`} note="resets each lap"
     tooltipDetails={details} profilerLabel="ERSHarvest" />
 }
@@ -156,10 +163,10 @@ export interface PowerViews {
   ersStore?: 'chart' | 'table'; fuelHistory?: 'chart' | 'table'
 }
 
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean }) {
   const items = [
     { key: 'powerSplit', el: <PowerSplitChart data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
-    { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} /> },
+    { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} hasMguh={hasMguh} /> },
     { key: 'ersStore', el: <ERSStoreChart data={data} isDark={isDark} view={views?.ersStore} windowSeconds={windowSeconds} /> },
     { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} fuelUpperLimit={fuelUpperLimit} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])

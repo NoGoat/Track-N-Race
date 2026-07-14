@@ -28,6 +28,7 @@ public:
 
     // 4 MJ → 8 MJ harvest axis in 2026; forwarded to the harvest chart.
     void applyHarvestScale(uint16_t format);
+    void setMguhVisible(bool visible);
 
     // "Edit Layout" dialog reads/writes through these (immediate-apply).
     PowerLayout loadLayout();

@@ -38,6 +38,10 @@ public:
 
     explicit GraphTable(const QVector<Column>& columns, QWidget* parent = nullptr);
 
+    // Replace the visible schema in place (used when protocol capabilities
+    // enable/disable a chart series).
+    void setColumns(const QVector<Column>& columns);
+
     // Format a session time (seconds) as "m:ss.mmm".
     static QString fmtTime(float t);
 

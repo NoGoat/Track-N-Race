@@ -25,6 +25,7 @@
 #include "components/XlsxExportWorker.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
+#include <tnrp/Capabilities.h>
 
 #include <QApplication>
 #include <QStackedWidget>
@@ -323,6 +324,7 @@ MainWindow::MainWindow(QWidget* parent)
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
+            if (powerPage_) powerPage_->setMguhVisible(tnrp::hasMguh(fmt));
             // Overtaking-aid overlay follows the clip's format: DRS (F1 24/25) vs
             // SLM (F1 26). The live protocol_status handler is skipped in playback.
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
@@ -855,6 +857,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
+            if (powerPage_) powerPage_->setMguhVisible(ps->capabilities.hasMguh);
             // Overtaking-aid overlay follows the format: DRS (F1 24/25) vs SLM (F1 26).
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
                 map->setAeroMode(tnrp::aeroMode(fmt) == "slm");

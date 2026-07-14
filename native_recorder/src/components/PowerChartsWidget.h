@@ -28,6 +28,8 @@ public:
     void setSectionViewMode(int section, bool table);
     // 4 MJ → 8 MJ harvest Y-axis cap in 2026 (no-op for the other panels).
     void applyHarvestScale(uint16_t format);
+    // Show/hide the MGU-H series and its table column from backend capability data.
+    void setMguhVisible(bool visible);
 
 public slots:
     void setCurrentTime(float t);
@@ -66,4 +68,5 @@ private:
     int storeId_     = -1;
     int fuelId_      = -1;
     int harvYId_     = -1;   // harvest Y axis, retargeted by applyHarvestScale
+    bool mguhVisible_ = true;
 };
