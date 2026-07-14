@@ -326,12 +326,13 @@ interface Props {
   aeroMode: 'drs' | 'slm'
   compactHeader?: boolean
   compactCards?: boolean
-  compactWeather?: boolean
+  compactWeather?: number
 }
 
 const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
+  const weatherLevel = Math.max(0, Math.min(2, compactWeather ?? 0))
 
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
@@ -479,16 +480,26 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
             driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
           </div>
 
-          {/* Now + forecast strip — pinned to bottom. Compact: each cell is a single
-              horizontal row (time · weather · rain %), matching native's compact strip. */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: compactWeather ? 32 : 90 }}>
+          {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
+              in the horizontal row; Compact 2 is the original icon-free strip. */}
+          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 1 ? 58 : 90 }}>
 
             {/* Now card — same width as the forecast cards either way */}
-            {compactWeather ? (
+            {weatherLevel === 2 ? (
               <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
                 <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
                 <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: session ? weatherColor(session.weather, isDark) : 'var(--text-secondary)' }}>
                   {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                </span>
+              </div>
+            ) : weatherLevel === 1 ? (
+              <div className="flex-1 flex items-center px-3 gap-2 min-w-0">
+                <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
+                <span className="flex flex-1 items-center justify-center gap-2 min-w-0">
+                  <span className="shrink-0"><WeatherIcon id={session?.weather ?? 2} size={26} isDark={isDark} /></span>
+                  <span className={`text-sm font-semibold truncate ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                    {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                  </span>
                 </span>
               </div>
             ) : (
@@ -510,11 +521,20 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
             {/* Forecast cards — skeleton when no data */}
             {noData
-              ? [1, 2, 3, 4, 5].map(i => compactWeather ? (
+              ? [1, 2, 3, 4, 5].map(i => weatherLevel === 2 ? (
                 <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
                   <span className="flex-1 text-center text-xs text-[var(--text-secondary)]">—</span>
                   <span className="text-[10px] font-bold tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
+                </div>
+              ) : weatherLevel === 1 ? (
+                <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
+                  <span className="text-xs tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
+                  <span className="flex flex-1 items-center justify-center gap-1.5 min-w-0 text-[var(--text-secondary)]">
+                    <span className="shrink-0"><WeatherIcon id={2} size={26} isDark={isDark} /></span>
+                    <span className="text-sm font-semibold truncate">—</span>
+                  </span>
+                  <span className="text-xs font-bold tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
                 </div>
               ) : (
                 <div key={i} className="flex-1 flex items-center justify-center gap-3 px-2 py-2 min-w-0">
@@ -529,13 +549,24 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               : forecast.map((s, i) => {
                 const rainColor = s.rain_percentage > 50 ? '#5794F2'
                   : s.rain_percentage > 20 ? '#73BF69' : 'var(--text-secondary)'
-                return compactWeather ? (
+                return weatherLevel === 2 ? (
                   <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
                     <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: weatherColor(s.weather, isDark) }}>
                       {WEATHER_LABELS[s.weather] ?? '—'}
                     </span>
                     <span className="text-[10px] font-bold tabular-nums shrink-0" style={{ color: rainColor }}>
+                      {s.rain_percentage}%
+                    </span>
+                  </div>
+                ) : weatherLevel === 1 ? (
+                  <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
+                    <span className="text-xs tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
+                    <span className="flex flex-1 items-center justify-center gap-1.5 min-w-0 text-[var(--text-primary)]">
+                      <span className="shrink-0"><WeatherIcon id={s.weather} size={26} isDark={isDark} /></span>
+                      <span className="text-sm font-semibold truncate">{WEATHER_LABELS[s.weather] ?? '—'}</span>
+                    </span>
+                    <span className="text-xs font-bold tabular-nums shrink-0" style={{ color: rainColor }}>
                       {s.rain_percentage}%
                     </span>
                   </div>

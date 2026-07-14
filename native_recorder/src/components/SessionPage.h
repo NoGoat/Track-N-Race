@@ -44,7 +44,7 @@ public:
     // Per-section compact density (each rebuilds its part in place; MainWindow
     // re-feeds the latest session row to repaint). Driven independently by Settings.
     void setCardsCompact(bool on);
-    void setWeatherCompact(bool on);
+    void setWeatherCompactLevel(int level);
     void setHeaderCompact(bool on);
 
 private:
@@ -61,7 +61,7 @@ private:
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
     QWidget*     sp_weatherStrip_ = nullptr;   // weather strip container, repopulated on compact toggle
     bool         cardsCompact_    = false;     // per-section compact density (ui/compact/session*)
-    bool         weatherCompact_  = false;
+    int          weatherCompactLevel_ = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2
     bool         headerCompact_   = false;
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;

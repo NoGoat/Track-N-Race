@@ -2,9 +2,9 @@
 
 // Per-section compact-density settings. The single global "compact mode" was split
 // into one setting per compact-able section so the user can pick and choose. Each
-// section is Normal (false) or Compact (true) for now; a future "Ultra Compact"
-// level may be added to select sections, which is why the Settings UI uses a
-// segmented control rather than a checkbox.
+// Most sections are Normal (false) or Compact (true). Tyre cards and the weather
+// strip use integer density levels, which is why Settings uses segmented controls
+// rather than checkboxes.
 //
 // The enum + key mapping live here so the pages (which read their own state at
 // construction), MainWindow (which persists changes) and the Settings dialog all
@@ -17,7 +17,7 @@ enum class CompactSection {
     OverviewDamage,    // Overview damage cards
     OverviewTyres,     // Overview tyre cards
     SessionCards,      // Session info/stat cards
-    SessionWeather,    // Session weather strip
+    SessionWeather,    // Session weather strip (0 Normal, 1 Compact 1, 2 Compact 2)
     SessionHeader,     // Session header (GP name, zones, clock)
     PowerCards,        // Power info cards
     StrategySummary,   // Strategy summary header (lap / tyre bar / cliff)

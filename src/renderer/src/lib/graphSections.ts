@@ -101,15 +101,17 @@ export const DEFAULT_TYRE_Y_AXIS: TyreYAxisState = {
 
 // ── Compact density ─────────────────────────────────────────────────────────
 
-// 7 boolean sections + overviewTyres, a 6-level integer:
+// 6 boolean sections + two integer density controls. overviewTyres has six levels:
 //   0 Normal, 1–4 native Compact 1–4, 5 = the app's existing height-derived
 //   compact tyre-card layout, kept as a selectable level.
+// sessionWeather has three levels: 0 Normal, 1 Compact 1 (icons), and
+// 2 Compact 2 (the original icon-free single-line compact layout).
 export interface CompactState {
   overviewStats:   boolean
   overviewDamage:  boolean
   overviewTyres:   number
   sessionCards:    boolean
-  sessionWeather:  boolean
+  sessionWeather:  number
   sessionHeader:   boolean
   powerCards:      boolean
   strategySummary: boolean
@@ -121,16 +123,16 @@ export const DEFAULT_COMPACT: CompactState = {
   overviewDamage:  false,
   overviewTyres:   0,
   sessionCards:    false,
-  sessionWeather:  false,
+  sessionWeather:  0,
   sessionHeader:   false,
   powerCards:      false,
   strategySummary: false,
   playbackBar:     false,
 }
 
-// Boolean (Normal/Compact) compact sections — overviewTyres is handled separately
-// because it is the 6-level control.
-export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres'>
+// Boolean (Normal/Compact) compact sections — the integer controls are handled
+// separately because they expose more than two density levels.
+export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather'>
 
 export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; label: string }[] }[] = [
   { group: 'Overview', sections: [
@@ -140,7 +142,6 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
   ] },
   { group: 'Session', sections: [
     { key: 'sessionCards',   label: 'Info Cards' },
-    { key: 'sessionWeather', label: 'Weather Strip' },
     { key: 'sessionHeader',  label: 'Header' },
   ] },
   { group: 'Power', sections: [
@@ -164,4 +165,10 @@ export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
   { value: 3, label: 'Compact 3' },
   { value: 4, label: 'Compact 4' },
   { value: 5, label: 'Compact 5' },
+]
+
+export const WEATHER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'Normal' },
+  { value: 1, label: 'Compact 1' },
+  { value: 2, label: 'Compact 2' },
 ]

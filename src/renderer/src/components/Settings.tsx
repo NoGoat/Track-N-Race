@@ -1,8 +1,8 @@
-import { useState, memo } from 'react'
+import { Fragment, useState, memo } from 'react'
 import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
-  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS,
+  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS,
   type GraphViewState, type GraphView, type CompactState, type TyreYAxisState,
 } from '../lib/graphSections'
@@ -326,9 +326,9 @@ const Settings = memo(function Settings({
   }
 
   const renderCompact = () => {
-    const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0
+    const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0 || compact.sessionWeather > 0
     const setAll = (on: boolean) => {
-      const next = { ...compact, overviewTyres: on ? 1 : 0 }
+      const next = { ...compact, overviewTyres: on ? 1 : 0, sessionWeather: on ? 1 : 0 }
       for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = on
       onCompactChange(next)
     }
@@ -342,13 +342,24 @@ const Settings = memo(function Settings({
           <div key={group.group}>
             <GroupLabel>{group.group}</GroupLabel>
             {group.sections.map(s => (
-              <Row key={s.key} label={s.label} description="">
-                <SegmentedControl
-                  options={[{ value: false, label: 'Normal' }, { value: true, label: 'Compact' }]}
-                  value={compact[s.key]}
-                  onChange={(v) => onCompactChange({ ...compact, [s.key]: v })}
-                />
-              </Row>
+              <Fragment key={s.key}>
+                <Row label={s.label} description="">
+                  <SegmentedControl
+                    options={[{ value: false, label: 'Normal' }, { value: true, label: 'Compact' }]}
+                    value={compact[s.key]}
+                    onChange={(v) => onCompactChange({ ...compact, [s.key]: v })}
+                  />
+                </Row>
+                {s.key === 'sessionCards' && (
+                  <Row label="Weather Strip" description="">
+                    <SegmentedControl
+                      options={WEATHER_LEVEL_OPTIONS}
+                      value={compact.sessionWeather}
+                      onChange={(v) => onCompactChange({ ...compact, sessionWeather: v })}
+                    />
+                  </Row>
+                )}
+              </Fragment>
             ))}
             {group.group === 'Overview' && (
               <Row label="Tyre Cards" description="">

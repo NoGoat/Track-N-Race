@@ -43,6 +43,8 @@
 #include <QStyleHints>
 #include <QCoreApplication>
 #include <QTimer>
+#include <QMetaType>
+#include <QVariant>
 #include <QResizeEvent>
 #include <QCloseEvent>
 #include <QMoveEvent>
@@ -707,7 +709,32 @@ void MainWindow::setToolbarLabels(bool checked) {
         map->setShowLabels(checked);
 }
 
+int MainWindow::weatherCompactLevel() const {
+    const QVariant value = settings.value(
+        tnr::compactKey(tnr::CompactSection::SessionWeather), 0);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const bool legacyBool = value.metaType().id() == QMetaType::Bool;
+#else
+    const bool legacyBool = value.type() == QVariant::Bool;
+#endif
+    // The former boolean Compact layout is now named Compact 2.
+    if (legacyBool) return value.toBool() ? 2 : 0;
+    return qBound(0, value.toInt(), 2);
+}
+
+void MainWindow::setWeatherCompactLevel(int level) {
+    level = qBound(0, level, 2);
+    settings.setValue(tnr::compactKey(tnr::CompactSection::SessionWeather), level);
+    if (sessionPage_) sessionPage_->setWeatherCompactLevel(level);
+    dirtySession_ = true;
+    scheduleUiRefresh();
+}
+
 void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
+    if (s == tnr::CompactSection::SessionWeather) {
+        setWeatherCompactLevel(on ? 1 : 0);
+        return;
+    }
     settings.setValue(tnr::compactKey(s), on);
     // Rebuild only the affected section, then repaint. Overview stats/damage repaint
     // themselves in their setters (their cards refresh per-packet, not on the dirty
@@ -719,7 +746,7 @@ void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
         case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageCompact(on); break;
         case CS::OverviewTyres:   setTyresCompactLevel(on ? 1 : 0); return;   // tyres use the int-level path
         case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsCompact(on);   dirtySession_  = true; break;
-        case CS::SessionWeather:  if (sessionPage_)  sessionPage_->setWeatherCompact(on); dirtySession_  = true; break;
+        case CS::SessionWeather:  break; // handled by the integer-level path above
         case CS::SessionHeader:   if (sessionPage_)  sessionPage_->setHeaderCompact(on);  dirtySession_  = true; break;
         case CS::PowerCards:      if (powerPage_)    powerPage_->setCompactMode(on);      dirtyPower_    = true; break;
         case CS::StrategySummary: if (strategyPage_) strategyPage_->setCompactMode(on);   dirtyStrategy_ = true; break;

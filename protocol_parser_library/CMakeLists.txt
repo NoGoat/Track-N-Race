@@ -21,6 +21,13 @@ if(NOT TARGET glaze::glaze)
 endif()
 
 if(NOT TARGET zlibstatic)
+    # libxlsxwriter links the canonical ZLIB::ZLIB target. zlib 1.3.2 maps
+    # that name to its shared target when shared builds are enabled, which
+    # makes Windows consumers import z.dll even though tnrp itself requests
+    # zlibstatic. Build only the static variant so our FindZLIB shim below can
+    # consistently expose ZLIB::ZLIB as zlibstatic.
+    set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
     FetchContent_Declare(zlib
         GIT_REPOSITORY https://github.com/madler/zlib.git
         GIT_TAG v1.3.2

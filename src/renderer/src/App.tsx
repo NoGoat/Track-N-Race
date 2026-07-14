@@ -1158,7 +1158,16 @@ export default function App() {
   const [rawGraphView, setGraphView] = useAppConfig<GraphViewState>('graphView', DEFAULT_GRAPH_VIEW)
   const graphView = useMemo((): GraphViewState => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
   const [rawCompact, setCompact] = useAppConfig<CompactState>('compact', DEFAULT_COMPACT)
-  const compact = useMemo((): CompactState => ({ ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }), [rawCompact])
+  const compact = useMemo((): CompactState => {
+    const merged = { ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }
+    // The old two-way weather control stored a boolean. Its compact layout is
+    // now Compact 2, so preserve that exact appearance when upgrading.
+    const legacyWeather = (rawCompact as unknown as { sessionWeather?: unknown } | null)?.sessionWeather
+    merged.sessionWeather = typeof legacyWeather === 'boolean'
+      ? (legacyWeather ? 2 : 0)
+      : Math.max(0, Math.min(2, Number(merged.sessionWeather) || 0))
+    return merged
+  }, [rawCompact])
   const [rawTyreYAxis, setTyreYAxis] = useAppConfig<TyreYAxisState>('tyreYAxis', DEFAULT_TYRE_Y_AXIS)
   const tyreYAxis = useMemo((): TyreYAxisState => {
     // Builds that predate separate Overview/Tyres controls stored one flat
