@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import { useSize } from '../../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig, type AnalyzeSource } from '../../lib/analyzeMetrics'
@@ -16,6 +16,16 @@ interface Props {
   showYAxis: boolean
   primaryLabel?: string
   comparisonLabel?: string
+  zoomEnabled: boolean
+  controlsRef: MutableRefObject<AnalyzeChartControls | null>
+}
+
+export interface AnalyzeChartControls {
+  zoomIn: () => void
+  zoomOut: () => void
+  panLeft: () => void
+  panRight: () => void
+  reset: () => void
 }
 
 type Role = 'comparison' | 'current'
@@ -25,6 +35,7 @@ type SeriesRecord = Record<Role, Map<string, any>>
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 const TOP_PADDING = 16
+const MIN_ZOOM_SECONDS = 0.5
 const METRICS_BY_SOURCE = Object.fromEntries(SOURCES.map(source => [source, ANALYZE_METRICS.filter(metric => metric.source === source)])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>
 
 function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
@@ -123,7 +134,10 @@ function fmtLapTime(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}`
 }
 
-export default function AnalyzeTimeChart({ isDark, current, currentRevision, comparison, selected, showYAxis, primaryLabel, comparisonLabel }: Props) {
+export default function AnalyzeTimeChart({
+  isDark, current, currentRevision, comparison, selected, showYAxis, primaryLabel, comparisonLabel,
+  zoomEnabled, controlsRef,
+}: Props) {
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
@@ -137,6 +151,8 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
   const comparisonRef = useRef(comparison)
   const primaryLabelRef = useRef(primaryLabel)
   const comparisonLabelRef = useRef(comparisonLabel)
+  const zoomEnabledRef = useRef(zoomEnabled)
+  const fullXRangeRef = useRef({ min: 0, max: 1 })
   const revisionsRef = useRef<Record<string, string>>({})
   const originsRef = useRef<Record<string, number>>({})
   const scratchRef = useRef<Record<AnalyzeSource, Float64Array>>(Object.fromEntries(SOURCES.map(source => [source, new Float64Array(METRICS_BY_SOURCE[source].length)])) as Record<AnalyzeSource, Float64Array>)
@@ -146,6 +162,7 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
   comparisonRef.current = comparison
   primaryLabelRef.current = primaryLabel
   comparisonLabelRef.current = comparisonLabel
+  zoomEnabledRef.current = zoomEnabled
 
   useEffect(() => {
     const host = hostRef.current
@@ -179,6 +196,92 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
     chartRef.current = chart
+
+    const applyXDomain = (requestedMin: number, requestedMax: number) => {
+      if (!zoomEnabledRef.current) return
+      const full = fullXRangeRef.current
+      const fullExtent = Math.max(0, full.max - full.min)
+      if (fullExtent <= 0) return
+      const minExtent = Math.min(MIN_ZOOM_SECONDS, fullExtent)
+      const extent = Math.min(fullExtent, Math.max(minExtent, requestedMax - requestedMin))
+      let min = requestedMin - (extent - (requestedMax - requestedMin)) / 2
+      min = Math.max(full.min, Math.min(min, full.max - extent))
+      chart.options.xRange = null
+      chart.model.xScale.domain([min, min + extent])
+      chart.model.requestRedraw()
+    }
+    const zoomBy = (factor: number, anchor?: number) => {
+      if (!zoomEnabledRef.current) return
+      const [min, max] = chart.model.xScale.domain().map(Number)
+      const center = anchor ?? (min + max) / 2
+      applyXDomain(center + (min - center) * factor, center + (max - center) * factor)
+    }
+    const panBy = (fraction: number) => {
+      if (!zoomEnabledRef.current) return
+      const [min, max] = chart.model.xScale.domain().map(Number)
+      const delta = (max - min) * fraction
+      applyXDomain(min + delta, max + delta)
+    }
+    const resetZoom = () => {
+      const full = fullXRangeRef.current
+      chart.options.xRange = { ...full }
+      chart.model.xScale.domain([full.min, full.max])
+      chart.model.requestRedraw()
+    }
+    const controls: AnalyzeChartControls = {
+      zoomIn: () => zoomBy(0.7),
+      zoomOut: () => zoomBy(1 / 0.7),
+      panLeft: () => panBy(-0.2),
+      panRight: () => panBy(0.2),
+      reset: resetZoom,
+    }
+    controlsRef.current = controls
+
+    const interactionNode = chart.contentBoxDetector.node
+    let dragPointer: number | null = null
+    let dragX = 0
+    let dragDomain: [number, number] = [0, 1]
+    const onWheel = (event: WheelEvent) => {
+      if (!zoomEnabledRef.current) return
+      event.preventDefault()
+      const rect = interactionNode.getBoundingClientRect()
+      if (event.ctrlKey || event.metaKey) {
+        const [min, max] = chart.model.xScale.domain().map(Number)
+        const ratio = rect.width > 0 ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 0.5
+        const anchor = min + (max - min) * ratio
+        zoomBy(Math.max(0.5, Math.min(2, Math.exp(event.deltaY * 0.002))), anchor)
+      } else if (rect.width > 0) {
+        const [min, max] = chart.model.xScale.domain().map(Number)
+        const delta = (event.deltaX + event.deltaY) * (max - min) / rect.width
+        applyXDomain(min + delta, max + delta)
+      }
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (!zoomEnabledRef.current || event.button !== 0) return
+      dragPointer = event.pointerId
+      dragX = event.clientX
+      dragDomain = chart.model.xScale.domain().map(Number) as [number, number]
+      interactionNode.setPointerCapture(event.pointerId)
+      interactionNode.style.cursor = 'grabbing'
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId || interactionNode.clientWidth <= 0) return
+      const extent = dragDomain[1] - dragDomain[0]
+      const delta = -(event.clientX - dragX) * extent / interactionNode.clientWidth
+      applyXDomain(dragDomain[0] + delta, dragDomain[1] + delta)
+    }
+    const stopDrag = (event: PointerEvent) => {
+      if (dragPointer !== event.pointerId) return
+      dragPointer = null
+      if (interactionNode.hasPointerCapture(event.pointerId)) interactionNode.releasePointerCapture(event.pointerId)
+      interactionNode.style.cursor = zoomEnabledRef.current ? 'grab' : ''
+    }
+    interactionNode.addEventListener('wheel', onWheel, { passive: false })
+    interactionNode.addEventListener('pointerdown', onPointerDown)
+    interactionNode.addEventListener('pointermove', onPointerMove)
+    interactionNode.addEventListener('pointerup', stopDrag)
+    interactionNode.addEventListener('pointercancel', stopDrag)
+    interactionNode.addEventListener('dblclick', resetZoom)
     const records: SeriesRecord = { comparison: new Map(), current: new Map() }
     for (const option of chart.options.series) {
       const [role, id] = option.name.split(':') as [Role, string]
@@ -212,6 +315,13 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
     const stopMove = chart.contentBoxDetector.moved.on(move)
     const stopLeave = chart.contentBoxDetector.left.on(hide)
     return () => {
+      interactionNode.removeEventListener('wheel', onWheel)
+      interactionNode.removeEventListener('pointerdown', onPointerDown)
+      interactionNode.removeEventListener('pointermove', onPointerMove)
+      interactionNode.removeEventListener('pointerup', stopDrag)
+      interactionNode.removeEventListener('pointercancel', stopDrag)
+      interactionNode.removeEventListener('dblclick', resetZoom)
+      if (controlsRef.current === controls) controlsRef.current = null
       stopMove(); stopLeave(); chart.dispose()
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
     }
@@ -334,8 +444,15 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
       }
     }
     chart.options.xRange = { min: 0, max }
+    fullXRangeRef.current = { min: 0, max }
     chart.model.requestRedraw()
   }, [comparison, current, currentRevision])
+
+  useEffect(() => {
+    const node = chartRef.current?.contentBoxDetector.node
+    if (node) node.style.cursor = zoomEnabled ? 'grab' : ''
+    if (!zoomEnabled) controlsRef.current?.reset()
+  }, [controlsRef, zoomEnabled])
 
   useEffect(() => {
     const chart = chartRef.current

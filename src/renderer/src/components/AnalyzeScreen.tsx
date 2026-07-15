@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import Select, { type SingleValue } from 'react-select'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { ArrowDownUp, ChevronLeft, ChevronRight, Eye, EyeOff, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowDownUp, ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Eye, EyeOff, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG, sanitizeAnalyzeConfig,
@@ -13,7 +13,7 @@ import { selectComponents } from '../lib/selectComponents'
 import { useLabels } from '../lib/labels'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
-import AnalyzeTimeChart from './charts/AnalyzeTimeChart'
+import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 
 interface Props {
   isDark: boolean
@@ -199,7 +199,7 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
 }
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
-  isDark, selected, showYAxis, currentLapNum, comparison, fixedMode, primaryOverride,
+  isDark, selected, showYAxis, currentLapNum, comparison, fixedMode, primaryOverride, controlsRef,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -208,6 +208,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   comparison: AnalyzeLapData | null
   fixedMode: boolean
   primaryOverride: AnalyzeLapData | null
+  controlsRef: MutableRefObject<AnalyzeChartControls | null>
 }) {
   const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
   const motion = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotion)
@@ -238,6 +239,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       selected={selected} showYAxis={showYAxis}
       primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
       comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
+      zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
     />
   </div>
 })
@@ -262,6 +264,7 @@ export default function AnalyzeScreen({
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
   const requestedRef = useRef(new Set<number>())
+  const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
   const selectStyles = useMemo(() => buildSelectStyles(isDark, { solidBg: true, controlHeight: 32 }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
@@ -355,18 +358,11 @@ export default function AnalyzeScreen({
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
       <aside className={`${config.collapsed ? 'w-0 border-r-0' : 'w-72 border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)] transition-[width] duration-200 ease-out`}>
           <div className={`w-72 h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
-            <div className="h-11 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0">
+            <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analyze</div>
                 <div className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Overlay configuration</div>
               </div>
-              <button
-                title="Collapse Analyze controls" aria-label="Collapse Analyze controls"
-                onClick={() => save({ ...config, collapsed: true })}
-                className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-              >
-                <PanelLeftClose size={15} />
-              </button>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -465,19 +461,33 @@ export default function AnalyzeScreen({
           </div>
       </aside>
 
-      <section className="flex-1 min-w-0 relative">
-        {config.collapsed && <button
-          title="Open Analyze controls" aria-label="Open Analyze controls"
-          onClick={() => save({ ...config, collapsed: false })}
-          className="absolute z-10 top-2 left-2 w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] bg-[var(--bg-panel)] border border-[var(--border)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-        >
-          <PanelLeftOpen size={15} />
-        </button>}
-        <div className="absolute inset-0">
+      <section className="flex-1 min-w-0 flex flex-col">
+        <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-1 shrink-0">
+          <button
+            title={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
+            aria-label={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
+            onClick={() => save({ ...config, collapsed: !config.collapsed })}
+            className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+          >
+            {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+          </button>
+          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
+          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => chartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
+          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => chartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
+          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
+          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => chartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
+          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
+          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
+          {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
+        </div>
+        <div className="flex-1 min-h-0 relative">
           <AnalyzeChartSubscriber
             isDark={isDark} selected={config.series} showYAxis={config.showYAxis}
             currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
             comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
+            controlsRef={chartControlsRef}
           />
         </div>
       </section>
