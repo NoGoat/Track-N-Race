@@ -25,6 +25,8 @@ public:
     AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* parent = nullptr);
 
     void setEditLayoutEnabled(bool on);
+    void setAnalyzeControlsVisible(bool on);
+    void setAnalyzeControlsEnabled(bool on);
     void setShowLabels(bool on);        // icon-only ↔ text-beside-icon
     // Forces the toolbar to the palette's Button shade with a hairline bottom
     // border; recomputed on theme/style changes so it re-themes correctly.
@@ -41,6 +43,11 @@ signals:
     void openRecordingRequested();
     void editLayoutRequested();
     void settingsRequested();
+    void analyzeZoomInRequested();
+    void analyzeZoomOutRequested();
+    void analyzePanLeftRequested();
+    void analyzePanRightRequested();
+    void analyzeResetZoomRequested();
 
 protected:
     void resizeEvent(QResizeEvent* e) override;   // collapse/expand for the new width
@@ -59,6 +66,13 @@ private:
     QButtonGroup* pageGroup_    = nullptr;   // exclusive page tabs
     QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
+    QAction*      analyzeAct_   = nullptr;   // Analyze-only zoom/pan controls
+    QWidget*      analyzeControls_ = nullptr;
+    QToolButton*  analyzeZoomIn_ = nullptr;
+    QToolButton*  analyzeZoomOut_ = nullptr;
+    QToolButton*  analyzePanLeft_ = nullptr;
+    QToolButton*  analyzePanRight_ = nullptr;
+    QToolButton*  analyzeReset_ = nullptr;
     QToolButton*  overflowBtn_  = nullptr;   // "⋯" menu button (hidden until needed)
     QAction*      overflowAct_  = nullptr;   // its toolbar action (toggle visibility)
     QMenu*        overflowMenu_ = nullptr;
@@ -66,6 +80,7 @@ private:
     std::vector<QToolButton*> pageButtons_;  // the page-tab buttons
     int           windowIdx_    = 1;         // selected window-size option (default 30s)
     int           currentPage_  = 0;         // active tab — kept inline during overflow
+    bool          analyzeVisible_ = false;
 
     QAction*  openAct_       = nullptr;
     QAction*  editLayoutAct_ = nullptr;

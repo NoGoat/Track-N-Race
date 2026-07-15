@@ -92,6 +92,11 @@ QIcon overflowIcon(QWidget* w) {
         w->style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton));
 }
 
+QIcon toolbarIcon(QWidget* w, const char* name, QStyle::StandardPixmap fallback) {
+    return adaptThemeIcon(QIcon::fromTheme(QString::fromLatin1(name)),
+        w->palette().color(QPalette::WindowText), w->style()->standardIcon(fallback));
+}
+
 } // namespace
 
 AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* parent)
@@ -189,6 +194,30 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     spacerLay->addWidget(timerLabel_);
     addWidget(spacer);
 
+    // Analyze owns a lap-relative X axis, so its navigation controls replace the
+    // rolling chart-window selector while that page is active.
+    analyzeControls_ = new QWidget;
+    auto* analyzeLayout = new QHBoxLayout(analyzeControls_);
+    analyzeLayout->setContentsMargins(2, 0, 2, 0);
+    analyzeLayout->setSpacing(2);
+    auto addAnalyzeButton = [&](QToolButton*& button, const QString& tip, auto signal) {
+        button = new QToolButton(analyzeControls_);
+        button->setAutoRaise(true);
+        button->setFixedSize(32, 32);
+        button->setToolTip(tip);
+        analyzeLayout->addWidget(button);
+        connect(button, &QToolButton::clicked, this, signal);
+    };
+    addAnalyzeButton(analyzeZoomOut_, "Zoom out", &AppToolbar::analyzeZoomOutRequested);
+    addAnalyzeButton(analyzeZoomIn_, "Zoom in", &AppToolbar::analyzeZoomInRequested);
+    addAnalyzeButton(analyzePanLeft_, "Pan left", &AppToolbar::analyzePanLeftRequested);
+    addAnalyzeButton(analyzePanRight_, "Pan right", &AppToolbar::analyzePanRightRequested);
+    addAnalyzeButton(analyzeReset_, "Reset zoom", &AppToolbar::analyzeResetZoomRequested);
+    analyzeAct_ = addWidget(analyzeControls_);
+    analyzeAct_->setVisible(false);
+    setAnalyzeControlsEnabled(false);
+    refreshThemedIcons();
+
     // Window-size selector: a frameless combo box showing the current window,
     // with the options as its dropdown list.
     windowBtn_ = new QComboBox;
@@ -251,6 +280,17 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
 
 void AppToolbar::setEditLayoutEnabled(bool on) {
     if (editLayoutAct_) editLayoutAct_->setEnabled(on);
+}
+
+void AppToolbar::setAnalyzeControlsVisible(bool on) {
+    analyzeVisible_ = on;
+    relayout();
+}
+
+void AppToolbar::setAnalyzeControlsEnabled(bool on) {
+    for (auto* button : {analyzeZoomIn_, analyzeZoomOut_, analyzePanLeft_,
+                         analyzePanRight_, analyzeReset_})
+        if (button) button->setEnabled(on);
 }
 
 void AppToolbar::setShowLabels(bool on) {
@@ -334,6 +374,11 @@ void AppToolbar::refreshThemedIcons() {
     if (editLayoutAct_) editLayoutAct_->setIcon(editLayoutIcon(this));
     if (settingsAct_)   settingsAct_->setIcon(settingsIcon(this));
     if (overflowBtn_)   overflowBtn_->setIcon(overflowIcon(this));
+    if (analyzeZoomOut_) analyzeZoomOut_->setIcon(toolbarIcon(this, "zoom-out", QStyle::SP_TitleBarMinButton));
+    if (analyzeZoomIn_) analyzeZoomIn_->setIcon(toolbarIcon(this, "zoom-in", QStyle::SP_TitleBarMaxButton));
+    if (analyzePanLeft_) analyzePanLeft_->setIcon(toolbarIcon(this, "go-previous", QStyle::SP_ArrowLeft));
+    if (analyzePanRight_) analyzePanRight_->setIcon(toolbarIcon(this, "go-next", QStyle::SP_ArrowRight));
+    if (analyzeReset_) analyzeReset_->setIcon(toolbarIcon(this, "view-refresh", QStyle::SP_BrowserReload));
 }
 
 void AppToolbar::applyChartWindow(int idx) {
@@ -376,7 +421,8 @@ void AppToolbar::relayout() {
     std::vector<int> tabW(n);
     int sumTabs = 0;
     for (int i = 0; i < n; ++i) { tabW[i] = pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
-    const int wSeg   = windowBtn_->sizeHint().width();
+    const int wSeg   = analyzeVisible_ ? analyzeControls_->sizeHint().width()
+                                       : windowBtn_->sizeHint().width();
     const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = overflowBtn_->sizeHint().width();
     // The session timer lives inside the (otherwise collapsible) spacer, so the
@@ -391,7 +437,8 @@ void AppToolbar::relayout() {
     const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 5 + spacing * (n - 1);
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
-        if (windowAct_) windowAct_->setVisible(true);
+        if (windowAct_) windowAct_->setVisible(!analyzeVisible_);
+        if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_);
         setIconsVisible(true);
         for (auto* b : pageButtons_) b->setVisible(true);
         overflowAct_->setVisible(false);
@@ -406,14 +453,15 @@ void AppToolbar::relayout() {
     bool segIn = true, iconsIn = true;
     std::vector<bool> tabIn(n, true);
     if (inlineW > budget && iconsIn) { iconsIn = false; inlineW -= wIcons + spacing; }
-    if (inlineW > budget && segIn)   { segIn   = false; inlineW -= wSeg + spacing; }
+    if (inlineW > budget && segIn && !analyzeVisible_) { segIn = false; inlineW -= wSeg + spacing; }
     for (int i = n - 1; i >= 0 && inlineW > budget; --i) {
         if (i == currentPage_) continue;          // always keep the active tab inline
         tabIn[i] = false;
         inlineW -= tabW[i] + spacing;
     }
 
-    if (windowAct_) windowAct_->setVisible(segIn);
+    if (windowAct_) windowAct_->setVisible(!analyzeVisible_ && segIn);
+    if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_);
     setIconsVisible(iconsIn);
     for (int i = 0; i < n; ++i) pageButtons_[i]->setVisible(tabIn[i]);
 
@@ -427,7 +475,7 @@ void AppToolbar::relayout() {
             if (pageGroup_) if (auto* b = pageGroup_->button(i)) b->click();
         });
     }
-    if (!segIn) {
+    if (!segIn && !analyzeVisible_) {
         overflowMenu_->addSection("Chart Window");
         for (int i = 0; i < kWindowOptionCount; ++i) {
             QAction* a = overflowMenu_->addAction(kWindowOptions[i].label);

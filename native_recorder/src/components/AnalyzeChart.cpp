@@ -39,6 +39,8 @@ double tyreValue(const TyreSample& s,const QString& f){
     return p[c];
 }
 double damageValue(const DamageSample& s,const QString& f){const float* p=&s.wearFl;const double w=p[corner(f)];return f.startsWith("life")?100.0-w:w;}
+float lapStart(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.first().t;if(!lap.sts.isEmpty())return lap.sts.first().t;return lap.startSessionTime;}
+float lapEnd(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.last().t;if(!lap.sts.isEmpty())return lap.sts.last().t;return lap.endSessionTime;}
 }
 
 AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
@@ -79,7 +81,7 @@ void AnalyzeChart::requestRefresh(){dirty_=true;if(isVisible()&&!refreshTimer_->
 void AnalyzeChart::refresh(){
     if(!model_||!dirty_||!isVisible())return;dirty_=false;const SessionData&d=model_->data();
     const LapBlock* primary=nullptr;const LapBlock* compare=nullptr;float primaryEnd=0;
-    if(fixed_){primary=d.lapByNum(lapA_);compare=d.lapByNum(lapB_);if(primary)primaryEnd=primary->endSessionTime;}
+    if(fixed_){primary=d.lapByNum(lapA_);compare=d.lapByNum(lapB_);if(primary)primaryEnd=lapEnd(*primary);}
     else {const float now=playback_?currentTime_:d.latestTime;primary=playback_?d.lapAtTime(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=d.lapByNum(compareLap_);}
     const auto& defs=analyzeMetrics();QSet<QString> visibleScales;double fullMax=1;
     for(int i=0;i<defs.size();++i){const auto&m=defs[i];auto it=std::find_if(selected_.cbegin(),selected_.cend(),[&](const auto&s){return s.metricId==m.id;});const bool vis=it!=selected_.cend()&&it->visible;
@@ -88,14 +90,21 @@ void AnalyzeChart::refresh(){
         setSeriesVisible(handles_[i].current,vis&&primary);setSeriesVisible(handles_[i].comparison,vis&&compare);
         const QColor color=it!=selected_.cend()?it->color:m.defaultColor;setSeriesColor(handles_[i].current,color);setSeriesColor(handles_[i].comparison,muted(color,palette().color(QPalette::Window)));
         if(vis)visibleScales.insert(m.scaleKey);
-        auto fill=[&](const LapBlock* lap,float end,int sid){QVector<double>xs,ys;if(!lap){clear(sid);return;}const float a=lap->startSessionTime,b=lap->endSessionTime>a?qMin(end,lap->endSessionTime):end;
-            switch(m.source){case AnalyzeSource::Telemetry:collect(d.telBuf,a,b,xs,ys,[&](const auto&s){return telValue(s,m.field);});break;case AnalyzeSource::Status:collect(d.stsBuf,a,b,xs,ys,[&](const auto&s){return statusValue(s,m.field);});break;case AnalyzeSource::Motion:collect(d.motionBuf,a,b,xs,ys,[&](const auto&s){return motionValue(s,m.field);});break;case AnalyzeSource::MotionEx:collect(d.motionExBuf,a,b,xs,ys,[&](const auto&s){return motionExValue(s,m.field);});break;case AnalyzeSource::Tyre:collect(d.tyreBuf,a,b,xs,ys,[&](const auto&s){return tyreValue(s,m.field);});break;case AnalyzeSource::Damage:collect(d.damageBuf,a,b,xs,ys,[&](const auto&s){return damageValue(s,m.field);});break;}setSeriesData(sid,xs,ys);if(!xs.isEmpty())fullMax=qMax(fullMax,xs.last());};
-        fill(primary,primaryEnd,handles_[i].current);fill(compare,compare?compare->endSessionTime:0,handles_[i].comparison);
+        auto fill=[&](const LapBlock* lap,float end,int sid){QVector<double>xs,ys;if(!lap){clear(sid);return;}const float a=lapStart(*lap),last=lapEnd(*lap),b=qMin(end,last);
+            if(b<a){clear(sid);return;}
+            switch(m.source){case AnalyzeSource::Telemetry:collect(lap->tel,a,b,xs,ys,[&](const auto&s){return telValue(s,m.field);});break;case AnalyzeSource::Status:collect(lap->sts,a,b,xs,ys,[&](const auto&s){return statusValue(s,m.field);});break;case AnalyzeSource::Motion:collect(d.motionBuf,a,b,xs,ys,[&](const auto&s){return motionValue(s,m.field);});break;case AnalyzeSource::MotionEx:collect(d.motionExBuf,a,b,xs,ys,[&](const auto&s){return motionExValue(s,m.field);});break;case AnalyzeSource::Tyre:collect(d.tyreBuf,a,b,xs,ys,[&](const auto&s){return tyreValue(s,m.field);});break;case AnalyzeSource::Damage:collect(d.damageBuf,a,b,xs,ys,[&](const auto&s){return damageValue(s,m.field);});break;}setSeriesData(sid,xs,ys);if(!xs.isEmpty())fullMax=qMax(fullMax,xs.last());};
+        fill(primary,primaryEnd,handles_[i].current);fill(compare,compare?lapEnd(*compare):0,handles_[i].comparison);
     }
     QVector<int> order;for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].comparison;}}for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].current;}}setSeriesOrder(order);
     QString firstScale;
     for(const auto&s:selected_)if(s.visible){if(const auto*m=analyzeMetric(s.metricId)){firstScale=m->scaleKey;break;}}
     for(auto it=axes_.cbegin();it!=axes_.cend();++it){setAxisVisible(it.value(),showYAxis_&&visibleScales.contains(it.key()));setAxisGridVisible(it.value(),showYAxis_&&it.key()==firstScale);}
     QSet<QString> styledScales;for(const auto&s:selected_)if(s.visible){if(const auto*m=analyzeMetric(s.metricId))if(axes_.contains(m->scaleKey)&&!styledScales.contains(m->scaleKey)){setAxisColor(axes_[m->scaleKey],s.color);styledScales.insert(m->scaleKey);}}
-    setXNavigation(xAxis_,fixed_&&primary,0,fullMax,0.5);if(!(fixed_&&primary))setXRange(xAxis_,0,fullMax);requestReplot();
+    const bool fixedNavigation=fixed_&&primary;
+    setXNavigation(xAxis_,fixedNavigation,0,fullMax,0.5);
+    if(fixedNavigation){
+        const QString key=QString("%1:%2:%3:%4").arg(lapA_).arg(lapB_).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);
+        if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}
+    }else{fixedDomainKey_.clear();setXRange(xAxis_,0,fullMax);}
+    requestReplot();
 }

@@ -20,6 +20,16 @@ public:
     void setCurrentTime(float t);
     void resetPlaybackSelections();
 
+public slots:
+    void zoomIn();
+    void zoomOut();
+    void panLeft();
+    void panRight();
+    void resetZoom();
+
+signals:
+    void navigationEnabledChanged(bool enabled);
+
 private:
     SessionModel* model_ = nullptr;
     AnalyzeChart* chart_ = nullptr;
@@ -32,11 +42,9 @@ private:
     QComboBox* lapB_ = nullptr;
     QListWidget* seriesList_ = nullptr;
     QPushButton* collapse_ = nullptr;
-    QPushButton* zoomIn_ = nullptr;
-    QPushButton* zoomOut_ = nullptr;
-    QPushButton* panLeft_ = nullptr;
-    QPushButton* panRight_ = nullptr;
-    QPushButton* resetZoom_ = nullptr;
+    QPushButton* expand_ = nullptr;
+    QWidget* collapsedBar_ = nullptr;
+    QPushButton* compareClear_ = nullptr;
     QVector<AnalyzeSeriesSetting> series_;
     QSettings settings_{"TrackNRace","NativeRecorder"};
     bool playback_ = false;
@@ -50,4 +58,3 @@ private:
     void applyState();
     void moveSeries(int from, int to);
 };
-

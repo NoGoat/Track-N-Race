@@ -4,6 +4,7 @@
 #include "AnalyzeMetrics.h"
 
 #include <QPointer>
+#include <QString>
 #include <QVector>
 
 class SessionModel;
@@ -45,8 +46,8 @@ private:
     bool fixed_ = false;
     int lapA_ = -1, lapB_ = -1;
     bool dirty_ = true;
+    QString fixedDomainKey_;
 
     void requestRefresh();
     void refresh();
 };
-

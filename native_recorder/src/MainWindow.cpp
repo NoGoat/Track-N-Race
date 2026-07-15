@@ -274,10 +274,18 @@ MainWindow::MainWindow(QWidget* parent)
     exportOverlay_->hide();
 
     connect(toolbar_, &AppToolbar::pageSelected, stack, &QStackedWidget::setCurrentIndex);
+    connect(toolbar_, &AppToolbar::analyzeZoomInRequested, analyzePage_, &AnalyzePage::zoomIn);
+    connect(toolbar_, &AppToolbar::analyzeZoomOutRequested, analyzePage_, &AnalyzePage::zoomOut);
+    connect(toolbar_, &AppToolbar::analyzePanLeftRequested, analyzePage_, &AnalyzePage::panLeft);
+    connect(toolbar_, &AppToolbar::analyzePanRightRequested, analyzePage_, &AnalyzePage::panRight);
+    connect(toolbar_, &AppToolbar::analyzeResetZoomRequested, analyzePage_, &AnalyzePage::resetZoom);
+    connect(analyzePage_, &AnalyzePage::navigationEnabledChanged,
+            toolbar_, &AppToolbar::setAnalyzeControlsEnabled);
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
                                        currentPage_ == Power || currentPage_ == Misc);
+        toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
         flushUiRefresh();
     });
 
