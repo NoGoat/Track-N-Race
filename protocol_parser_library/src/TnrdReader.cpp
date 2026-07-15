@@ -533,14 +533,22 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
 }
 
 bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
-    for (const auto& l : scannedLaps_) {
-        if (t >= l.startSessionTime && t <= l.endSessionTime) {
-            startOut = l.startSessionTime;
-            numOut   = l.lapNum;
-            return true;
+    // lapBlocks_ includes the final lap closed at EOF; scannedLaps_ only gains
+    // an entry when the following lap begins, so it can never resolve the last
+    // lap in a recording. At a shared boundary, prefer the block with the
+    // latest start so seeking exactly to Lap N does not resolve to Lap N - 1.
+    const LapBlock* match = nullptr;
+    for (const auto& entry : lapBlocks_) {
+        const LapBlock& block = entry.second;
+        if (t >= block.startSessionTime && t <= block.endSessionTime &&
+            (!match || block.startSessionTime > match->startSessionTime)) {
+            match = &block;
         }
     }
-    return false;
+    if (!match) return false;
+    startOut = match->startSessionTime;
+    numOut   = match->lapNum;
+    return true;
 }
 
 std::string TnrdReader::lapBlocksMessage() const {
