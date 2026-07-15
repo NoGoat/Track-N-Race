@@ -11,9 +11,15 @@ void SessionData::onTelemetry(float t, float speed, int rpm, int gear, float thr
     trim();
 }
 
-void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
-    stsBuf.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j });
-    if (curLapNum >= 0) curLap.sts.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j });
+void SessionData::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
+                           int tyre_compound, int visual_compound) {
+    stsBuf.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound });
+    if (curLapNum >= 0) curLap.sts.push_back({ t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound });
+    trim();
+}
+
+void SessionData::onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr) {
+    damageBuf.push_back({ t, wearFl, wearFr, wearRl, wearRr });
     trim();
 }
 
@@ -104,6 +110,7 @@ void SessionData::truncateAfter(float newTime) {
     cutTail(motionBuf);
     cutTail(motionExBuf);
     cutTail(tyreBuf);
+    cutTail(damageBuf);
 
     // Drop completed laps recorded at/after the rewind point.
     while (!laps.isEmpty() && laps.last().startSessionTime >= newTime)
@@ -133,6 +140,7 @@ void SessionData::clear() {
     motionBuf.clear();
     motionExBuf.clear();
     tyreBuf.clear();
+    damageBuf.clear();
     laps.clear();
     curLap = LapBlock{};
     curLapNum = -1;
@@ -156,6 +164,8 @@ void SessionData::trim() {
     if (dmx > 0) motionExBuf.remove(0, dmx);
     int dty = 0; while (dty < tyreBuf.size() && tyreBuf[dty].t < cutoff) ++dty;
     if (dty > 0) tyreBuf.remove(0, dty);
+    int dd = 0; while (dd < damageBuf.size() && damageBuf[dd].t < cutoff) ++dd;
+    if (dd > 0) damageBuf.remove(0, dd);
 }
 
 const LapBlock* SessionData::lapByNum(int n) const {
@@ -206,8 +216,15 @@ void SessionModel::onTelemetry(float t, float speed, int rpm, int gear, float th
     scheduleFlush();
 }
 
-void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j) {
-    d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j);
+void SessionModel::onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
+                            int tyre_compound, int visual_compound) {
+    d_.onStatus(t, ers, fuel_kg, ice_kw, mguk_kw, mguk_harvest_j, mguh_harvest_j, tyre_compound, visual_compound);
+    telemetryDirty_ = true;
+    scheduleFlush();
+}
+
+void SessionModel::onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr) {
+    d_.onDamage(t, wearFl, wearFr, wearRl, wearRr);
     telemetryDirty_ = true;
     scheduleFlush();
 }

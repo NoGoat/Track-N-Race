@@ -23,7 +23,10 @@ struct StsSample {
     float mguk_kw = 0;
     float mguk_harvest_j = 0;
     float mguh_harvest_j = 0;
+    int tyre_compound = 0;
+    int visual_compound = 0;
 };
+struct DamageSample { float t = 0; float wearFl=0, wearFr=0, wearRl=0, wearRr=0; };
 struct MotionSample { float t = 0; float g_lat = 0; float g_long = 0; };
 struct MotionExSample { float t = 0; float front_aero = 0; float rear_aero = 0; };
 
@@ -52,6 +55,7 @@ struct SessionData {
     QVector<MotionSample> motionBuf;
     QVector<MotionExSample> motionExBuf;
     QVector<TyreSample> tyreBuf;
+    QVector<DamageSample> damageBuf;
 
     QVector<LapBlock>  laps;       // completed (and, after load, the final) laps
     LapBlock           curLap;     // in-progress lap (live only)
@@ -66,7 +70,9 @@ struct SessionData {
     static constexpr float BUFFER_S = 600.0f;   // 10 min, matches Electron MAX_ROWS
 
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
-    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
+    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
+                  int tyre_compound = 0, int visual_compound = 0);
+    void onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr);
     void onMotion(float t, float g_lat, float g_long);
     void onMotionEx(float t, float front_aero, float rear_aero);
     void onTyre(float t,
@@ -99,7 +105,9 @@ public:
 
     // Live ingest.
     void onTelemetry(float t, float speed, int rpm, int gear, float throttle, float brake, float steering);
-    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j);
+    void onStatus(float t, float ers, float fuel_kg, float ice_kw, float mguk_kw, float mguk_harvest_j, float mguh_harvest_j,
+                  int tyre_compound = 0, int visual_compound = 0);
+    void onDamage(float t, float wearFl, float wearFr, float wearRl, float wearRr);
     void onMotion(float t, float g_lat, float g_long);
     void onMotionEx(float t, float front_aero, float rear_aero);
     void onTyre(float t,

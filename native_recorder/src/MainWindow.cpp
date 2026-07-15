@@ -9,6 +9,7 @@
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
 #include "components/OverviewPage.h"
+#include "components/AnalyzePage.h"
 #include "components/StandingsPage.h"
 #include "components/SessionPage.h"
 #include "components/TyresPage.h"
@@ -136,7 +137,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Open/Edit Layout/Settings actions, ⋯ overflow. Page names must match the
     // Page enum and the stack->addWidget() order below.
     toolbar_ = new AppToolbar(
-        { "Overview", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" },
+        { "Overview", "Analyze", "Standings", "Session", "Tyres", "Strategy", "Input", "Power", "Misc" },
         settings.value("ui/toolbarShowLabels", false).toBool(), this);
     addToolBar(Qt::TopToolBarArea, toolbar_);
     // QMainWindow draws its own separator line between the toolbar area and the
@@ -183,6 +184,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Order must match the Page enum and the AppToolbar page-name list above.
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(overviewPage_ = new OverviewPage(model_));   // Overview
+    stack->addWidget(analyzePage_ = new AnalyzePage(model_));     // Analyze
     stack->addWidget(standingsPage_ = new StandingsPage);   // Standings
     // A row click changed the selection; re-feed the cached rows immediately
     // (same synchronous rebuild as the old in-page click handler).
@@ -335,6 +337,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Clear any frozen live value; the first replayed packet sets it afresh.
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(true, currentTime);
+        if (analyzePage_) { analyzePage_->resetPlaybackSelections(); analyzePage_->setPlaybackMode(true, currentTime); }
         if (tyresPage_) tyresPage_->setPlaybackMode(true, currentTime);
         if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
         if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
@@ -359,6 +362,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::timeChanged, this, [this](float t) {
         if (overviewPage_) overviewPage_->setCurrentTime(t);
+        if (analyzePage_) analyzePage_->setCurrentTime(t);
         if (tyresPage_) tyresPage_->setCurrentTime(t);
         if (inputPage_) inputPage_->setCurrentTime(t);
         if (powerPage_) powerPage_->setCurrentTime(t);
@@ -372,6 +376,7 @@ MainWindow::MainWindow(QWidget* parent)
         // Drop the playback timer value; live packets (if any) repopulate it.
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(false);
+        if (analyzePage_) analyzePage_->setPlaybackMode(false);
         if (tyresPage_) tyresPage_->setPlaybackMode(false);
         if (inputPage_) inputPage_->setPlaybackMode(false);
         if (powerPage_) powerPage_->setPlaybackMode(false);
@@ -1118,7 +1123,12 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
                          (float)s->engine_power_ice_kw,
                          (float)s->engine_power_mguk_kw,
                          (float)s->ers_harvested_mguk_j,
-                         (float)s->ers_harvested_mguh_j);
+                         (float)s->ers_harvested_mguh_j,
+                         s->tyre_compound, s->visual_compound);
+    else if (const auto* d = std::get_if<DamageRow>(&row))
+        model_->onDamage(d->session_time,
+                         (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
+                         (float)d->tyre_wear_rl, (float)d->tyre_wear_rr);
     else if (const auto* l = std::get_if<LapRow>(&row))
         model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
     else if (const auto* m = std::get_if<MotionRow>(&row))

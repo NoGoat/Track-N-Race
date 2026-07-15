@@ -102,6 +102,12 @@ set(SOURCES
     src/components/EditPowerLayoutDialog.cpp
     src/components/OverviewPage.h
     src/components/OverviewPage.cpp
+    src/components/AnalyzeMetrics.h
+    src/components/AnalyzeMetrics.cpp
+    src/components/AnalyzeChart.h
+    src/components/AnalyzeChart.cpp
+    src/components/AnalyzePage.h
+    src/components/AnalyzePage.cpp
     src/components/SettingsDialog.h
     src/components/SettingsDialog.cpp
     src/components/TyresPage.h
@@ -141,7 +147,7 @@ set(SOURCES
 if(WIN32)
     list(APPEND SOURCES resources.rc)
     add_executable(native_recorder WIN32 ${SOURCES})
-    target_compile_options(native_recorder PRIVATE /utf-8 /FI"windows.h")
+    target_compile_options(native_recorder PRIVATE /utf-8 /FIwindows.h)
     # NOMINMAX prevents windows.h min/max macros from shadowing std::min/std::max.
     # The /FI force-include ensures tagMSG is fully defined before Qt forward-declares
     # it, so type-trait-heavy templates compile cleanly under MSVC.

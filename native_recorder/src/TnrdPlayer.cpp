@@ -238,12 +238,14 @@ void TnrdPlayer::scanIntoSessionData() {
                               (float)st->engine_power_ice_kw,
                               (float)st->engine_power_mguk_kw,
                               (float)st->ers_harvested_mguk_j,
-                              (float)st->ers_harvested_mguh_j);
+                              (float)st->ers_harvested_mguh_j,
+                              st->tyre_compound, st->visual_compound);
         } else if (const DamageRow* d = std::get_if<DamageRow>(&*parsed)) {
             lastDmg[0] = (float)d->tyre_wear_fl;
             lastDmg[1] = (float)d->tyre_wear_fr;
             lastDmg[2] = (float)d->tyre_wear_rl;
             lastDmg[3] = (float)d->tyre_wear_rr;
+            scanned_.onDamage(d->session_time, lastDmg[0], lastDmg[1], lastDmg[2], lastDmg[3]);
         } else if (const LapRow* l = std::get_if<LapRow>(&*parsed)) {
             scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
         } else if (const MotionRow* m = std::get_if<MotionRow>(&*parsed)) {
@@ -264,6 +266,7 @@ void TnrdPlayer::scanIntoSessionData() {
     std::sort(scanned_.motionBuf.begin(),   scanned_.motionBuf.end(),   byT);
     std::sort(scanned_.motionExBuf.begin(), scanned_.motionExBuf.end(), byT);
     std::sort(scanned_.tyreBuf.begin(),     scanned_.tyreBuf.end(),     byT);
+    std::sort(scanned_.damageBuf.begin(),   scanned_.damageBuf.end(),   byT);
     for (LapBlock& l : scanned_.laps) {
         std::sort(l.tel.begin(), l.tel.end(), byT);
         std::sort(l.sts.begin(), l.sts.end(), byT);

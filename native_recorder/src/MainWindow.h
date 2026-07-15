@@ -16,6 +16,7 @@
 #include "components/OverviewLayout.h"
 
 class OverviewPage;
+class AnalyzePage;
 class StandingsPage;
 class SessionPage;
 class StrategyPage;
@@ -42,7 +43,7 @@ public:
     // the QStackedWidget index, so inserting a page here (and in the matching
     // AppToolbar page-name list and stack->addWidget() list) renumbers everything
     // for free. PageCount is the tab count — keep it last.
-    enum Page { Overview, Standings, Session, Tyres, Strategy, Input, Power, Misc, PageCount };
+    enum Page { Overview, Analyze, Standings, Session, Tyres, Strategy, Input, Power, Misc, PageCount };
 
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
@@ -117,6 +118,7 @@ private:
     // damage rows); fed rows synchronously via on*() from emitLiveData and
     // playback state via its setters.
     OverviewPage*   overviewPage_ = nullptr;
+    AnalyzePage*    analyzePage_  = nullptr;
     SessionModel*   model_        = nullptr;
 
     // ── Standings page ────────────────────────────────────────────

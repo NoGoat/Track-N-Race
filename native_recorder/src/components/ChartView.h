@@ -106,6 +106,13 @@ public:
     // Hide a series (and its legend entry) — used to switch between single-lap
     // and two-lap overlay layouts without rebuilding the chart.
     void setSeriesVisible(int seriesId, bool visible);
+    void setSeriesColor(int seriesId, const QColor& color);
+    void setSeriesName(int seriesId, const QString& name);
+    void setSeriesWidth(int seriesId, double width);
+    void setSeriesOrder(const QVector<int>& bottomToTop);
+    void setAxisVisible(int axisId, bool visible);
+    void setAxisColor(int axisId, const QColor& color);
+    void setAxisGridVisible(int axisId, bool visible);
 
     // Format an axis's tick labels as time (QCPAxisTickerTime, e.g. "%m:%s").
     void setAxisTimeTicker(int axisId, const QString& format);
@@ -127,10 +134,15 @@ public:
 
     // View. requestReplot() coalesces multiple updates in a frame into one paint.
     void setXRange(int axisId, double min, double max);
+    void setXNavigation(int axisId, bool enabled, double fullMin, double fullMax, double minSpan = 0.5);
+    void zoomX(double factor);
+    void panX(double fraction);
+    void resetX();
     void requestReplot();
 
 protected:
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void applyPaletteText();

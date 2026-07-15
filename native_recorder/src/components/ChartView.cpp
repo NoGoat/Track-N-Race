@@ -8,6 +8,7 @@
 #include <QLabel>
 #include <QLocale>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QSet>
 #include <QSettings>
 #include <QVBoxLayout>
@@ -114,6 +115,7 @@ struct ChartView::Impl {
     QVector<bool>        axisInheritColor;
     QVector<QCPGraph*>   graphs;          // by series id
     QVector<SeriesMeta>  meta;            // by series id
+    QVector<QCPLayer*>   orderLayers;     // lazily allocated by setSeriesOrder
 
     QVector<Panel>       panels;          // panels[0] == default rect/legend
     int                  panelCols = 1;   // grid columns (see layoutPanels)
@@ -126,6 +128,12 @@ struct ChartView::Impl {
     QCPAxis*      keyAxis   = nullptr;    // panel 0's Bottom axis (alias for addBand)
     bool          hoverOn   = false;
     QLabel*       tooltip   = nullptr;    // floating, cursor-following value readout
+    int navAxis = -1;
+    bool navEnabled = false;
+    double navMin = 0.0, navMax = 1.0, navMinSpan = 0.5;
+    bool navDragging = false;
+    QPoint navDragStart;
+    QCPRange navDragRange;
 
     // Panel index owning a given rect/axis (falls back to 0 — the default panel).
     int panelOf(QCPAxisRect* r) const {
@@ -206,6 +214,7 @@ ChartView::ChartView(QWidget* parent)
     setMinimumHeight(120);
 
     d_->plot = new QCustomPlot(this);
+    d_->plot->installEventFilter(this);
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->addWidget(d_->plot);
@@ -471,6 +480,57 @@ void ChartView::setSeriesVisible(int seriesId, bool visible)
     // Unnamed series (e.g. muted reference traces) never clutter the legend.
     if (visible && !g->name().isEmpty()) g->addToLegend();
     else                                 g->removeFromLegend();
+}
+
+void ChartView::setSeriesColor(int seriesId, const QColor& color)
+{
+    if (seriesId < 0 || seriesId >= d_->graphs.size()) return;
+    QPen p = d_->graphs[seriesId]->pen(); p.setColor(color); d_->graphs[seriesId]->setPen(p);
+}
+
+void ChartView::setSeriesName(int seriesId, const QString& name)
+{
+    if (seriesId < 0 || seriesId >= d_->graphs.size()) return;
+    d_->graphs[seriesId]->setName(name);
+}
+
+void ChartView::setSeriesWidth(int seriesId, double width)
+{
+    if (seriesId < 0 || seriesId >= d_->graphs.size()) return;
+    QPen p = d_->graphs[seriesId]->pen(); p.setWidthF(width); d_->graphs[seriesId]->setPen(p);
+}
+
+void ChartView::setSeriesOrder(const QVector<int>& bottomToTop)
+{
+    while (d_->orderLayers.size() < bottomToTop.size()) {
+        const QString name = QString("series-order-%1-%2").arg(quintptr(this),0,16).arg(d_->orderLayers.size());
+        QCPLayer* below = d_->orderLayers.isEmpty() ? d_->plot->layer("main") : d_->orderLayers.last();
+        if (!d_->plot->addLayer(name, below, QCustomPlot::limAbove)) break;
+        d_->orderLayers.push_back(d_->plot->layer(name));
+    }
+    for (int i=0;i<bottomToTop.size() && i<d_->orderLayers.size();++i) {
+        const int id=bottomToTop[i]; if(id>=0&&id<d_->graphs.size())d_->graphs[id]->setLayer(d_->orderLayers[i]);
+    }
+}
+
+void ChartView::setAxisVisible(int axisId, bool visible)
+{
+    if (axisId < 0 || axisId >= d_->axes.size()) return;
+    d_->axes[axisId]->setVisible(visible);
+}
+
+void ChartView::setAxisColor(int axisId, const QColor& color)
+{
+    if (axisId < 0 || axisId >= d_->axes.size()) return;
+    QCPAxis* ax = d_->axes[axisId];
+    ax->setTickLabelColor(color); ax->setLabelColor(color);
+    d_->axisInheritColor[axisId] = false;
+}
+
+void ChartView::setAxisGridVisible(int axisId, bool visible)
+{
+    if (axisId < 0 || axisId >= d_->axes.size()) return;
+    d_->axes[axisId]->grid()->setVisible(visible);
 }
 
 void ChartView::setLegendVisible(bool on)
@@ -748,11 +808,12 @@ void ChartView::setHoverReadout(bool on)
 
             // Time header (m:ss), then one coloured line per named visible series in
             // the hovered panel.
-            const int totalSec = qMax(0, (int)(key + 0.5));
+            const int tenths = qMax(0, int(std::llround(key * 10.0)));
+            const int totalSec = tenths / 10;
             const QColor t = palette().color(QPalette::ToolTipText);
-            QString html = QString("<div style='color:rgba(%1,%2,%3,0.6)'>%4:%5</div>")
+            QString html = QString("<div style='color:rgba(%1,%2,%3,0.6)'>%4:%5.%6</div>")
                 .arg(t.red()).arg(t.green()).arg(t.blue())
-                .arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0'));
+                .arg(totalSec / 60).arg(totalSec % 60, 2, 10, QChar('0')).arg(tenths % 10);
             const QLocale loc;
             for (int i = 0; i < d_->graphs.size(); ++i) {
                 QCPGraph* g = d_->graphs[i];
@@ -760,6 +821,10 @@ void ChartView::setHoverReadout(bool on)
                 if (!g->visible() || g->name().isEmpty() || g->data()->isEmpty()) continue;
                 auto it = g->data()->findBegin(key);
                 if (it == g->data()->constEnd()) --it;
+                else if (it != g->data()->constBegin()) {
+                    auto before = it; --before;
+                    if (key - before->key <= it->key - key) it = before;
+                }
                 const Impl::SeriesMeta& m = d_->meta[i];
                 QString val = m.group ? loc.toString(it->value, 'f', m.precision)
                                       : QString::number(it->value, 'f', m.precision);
@@ -818,6 +883,69 @@ void ChartView::setXRange(int axisId, double min, double max)
                 g->setAdaptiveSampling(decimate);
         break;
     }
+}
+
+static QCPRange boundedNavRange(double navMin, double navMax, double minSpan, double lo, double hi)
+{
+    const double full = qMax(0.0, navMax - navMin);
+    double span = qBound(qMin(minSpan, full), hi - lo, full);
+    if (span <= 0) return QCPRange(navMin, navMax);
+    double lower = qBound(navMin, lo - (span - (hi - lo)) * 0.5, navMax - span);
+    return QCPRange(lower, lower + span);
+}
+
+void ChartView::setXNavigation(int axisId, bool enabled, double fullMin, double fullMax, double minSpan)
+{
+    d_->navAxis = axisId; d_->navEnabled = enabled;
+    d_->navMin = fullMin; d_->navMax = qMax(fullMin + 0.001, fullMax); d_->navMinSpan = minSpan;
+    if (!enabled) resetX();
+}
+
+void ChartView::zoomX(double factor)
+{
+    if (!d_->navEnabled || d_->navAxis < 0 || d_->navAxis >= d_->axes.size()) return;
+    QCPAxis* ax = d_->axes[d_->navAxis]; const QCPRange r = ax->range(); const double c = r.center();
+    const QCPRange n = boundedNavRange(d_->navMin,d_->navMax,d_->navMinSpan,c + (r.lower-c)*factor, c + (r.upper-c)*factor);
+    setXRange(d_->navAxis, n.lower, n.upper); requestReplot();
+}
+
+void ChartView::panX(double fraction)
+{
+    if (!d_->navEnabled || d_->navAxis < 0 || d_->navAxis >= d_->axes.size()) return;
+    const QCPRange r = d_->axes[d_->navAxis]->range(); const double dx = r.size()*fraction;
+    const QCPRange n = boundedNavRange(d_->navMin,d_->navMax,d_->navMinSpan,r.lower+dx, r.upper+dx);
+    setXRange(d_->navAxis, n.lower, n.upper); requestReplot();
+}
+
+void ChartView::resetX()
+{
+    if (d_->navAxis < 0 || d_->navAxis >= d_->axes.size()) return;
+    setXRange(d_->navAxis, d_->navMin, d_->navMax); requestReplot();
+}
+
+bool ChartView::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == d_->plot && d_->navEnabled && d_->navAxis >= 0 && d_->navAxis < d_->axes.size()) {
+        if (event->type() == QEvent::Wheel) {
+            auto* w = static_cast<QWheelEvent*>(event);
+            if (w->modifiers() & Qt::ControlModifier) zoomX(std::exp(-w->angleDelta().y()/1200.0));
+            else panX(-(w->angleDelta().x()+w->angleDelta().y())/1200.0);
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) { resetX(); return true; }
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* m = static_cast<QMouseEvent*>(event);
+            if (m->button() == Qt::LeftButton) { d_->navDragging=true; d_->navDragStart=m->pos(); d_->navDragRange=d_->axes[d_->navAxis]->range(); return true; }
+        }
+        if (event->type() == QEvent::MouseMove && d_->navDragging) {
+            auto* m = static_cast<QMouseEvent*>(event); QCPAxis* ax=d_->axes[d_->navAxis];
+            const double dx = -double(m->pos().x()-d_->navDragStart.x()) * d_->navDragRange.size()/qMax(1,d_->plot->width());
+            const QCPRange n=boundedNavRange(d_->navMin,d_->navMax,d_->navMinSpan,d_->navDragRange.lower+dx,d_->navDragRange.upper+dx);
+            setXRange(d_->navAxis,n.lower,n.upper); requestReplot(); return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease) d_->navDragging=false;
+    }
+    return QWidget::eventFilter(watched,event);
 }
 
 void ChartView::requestReplot()
