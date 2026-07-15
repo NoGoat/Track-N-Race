@@ -1,5 +1,5 @@
 // Shared Settings metadata. The first two features mirror native_recorder; the
-// tyre Y-axis behavior below is intentionally Electron-only:
+// chart Y-axis behavior below is intentionally Electron-only:
 //   • per-graph Chart/Table view mode  (mirrors native GraphViewSettings.h)
 //   • per-section compact density       (mirrors native CompactSettings.h)
 //
@@ -70,14 +70,17 @@ export const ALL_GRAPH_SECTIONS: GraphSection[] =
 export const DEFAULT_GRAPH_VIEW: GraphViewState =
   Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, 'chart'])) as GraphViewState
 
-// ── Tyre chart Y axes ──────────────────────────────────────────────────────────
+// ── Chart Y axes ───────────────────────────────────────────────────────────────
 
-export type TyreYAxisBehavior = 'fixed' | 'dynamic'
+export type YAxisBehavior = 'fixed' | 'dynamic'
 export type TyreYAxisKey = 'surfaceTemp' | 'innerTemp' | 'brakeTemp' | 'tyreLife'
-export type TyreYAxisGroupState = Record<TyreYAxisKey, TyreYAxisBehavior>
-export interface TyreYAxisState {
+export type TyreYAxisGroupState = Record<TyreYAxisKey, YAxisBehavior>
+export type PowerYAxisKey = 'ersHarvest'
+export type PowerYAxisState = Record<PowerYAxisKey, YAxisBehavior>
+export interface ChartYAxisState {
   overview: TyreYAxisGroupState
   tyres: TyreYAxisGroupState
+  power: PowerYAxisState
 }
 
 export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRange: string }[] = [
@@ -87,6 +90,10 @@ export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRang
   { key: 'tyreLife',    label: 'Tyre Wear / Life', fixedRange: 'Always 0–100%' },
 ]
 
+export const POWER_Y_AXIS_SECTIONS: { key: PowerYAxisKey; label: string; fixedRange: string }[] = [
+  { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–8000 kJ; expands above 8000 kJ when needed' },
+]
+
 const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {
   surfaceTemp: 'fixed',
   innerTemp:   'fixed',
@@ -94,9 +101,10 @@ const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {
   tyreLife:    'fixed',
 }
 
-export const DEFAULT_TYRE_Y_AXIS: TyreYAxisState = {
+export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
   overview: { ...DEFAULT_TYRE_Y_AXIS_GROUP },
   tyres:    { ...DEFAULT_TYRE_Y_AXIS_GROUP },
+  power:    { ersHarvest: 'fixed' },
 }
 
 // ── Compact density ─────────────────────────────────────────────────────────

@@ -3,8 +3,8 @@ import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, Scr
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS,
-  TYRE_Y_AXIS_SECTIONS,
-  type GraphViewState, type GraphView, type CompactState, type TyreYAxisState,
+  TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
+  type GraphViewState, type GraphView, type CompactState, type ChartYAxisState, type YAxisBehavior,
 } from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
@@ -45,8 +45,8 @@ interface Props {
   onGraphViewChange: (v: GraphViewState) => void
   compact: CompactState
   onCompactChange: (v: CompactState) => void
-  tyreYAxis: TyreYAxisState
-  onTyreYAxisChange: (v: TyreYAxisState) => void
+  chartYAxis: ChartYAxisState
+  onChartYAxisChange: (v: ChartYAxisState) => void
 }
 
 type Option<T> = { value: T; label: string }
@@ -145,8 +145,8 @@ const Settings = memo(function Settings({
   onGraphViewChange,
   compact,
   onCompactChange,
-  tyreYAxis,
-  onTyreYAxisChange,
+  chartYAxis,
+  onChartYAxisChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
@@ -377,43 +377,59 @@ const Settings = memo(function Settings({
   }
 
   const renderYAxis = () => {
-    const groups = [
+    const tyreGroups = [
       { key: 'overview' as const, label: 'Overview' },
       { key: 'tyres' as const, label: 'Tyres' },
     ]
-    const anyDynamic = groups.some(group =>
-      TYRE_Y_AXIS_SECTIONS.some(section => tyreYAxis[group.key][section.key] === 'dynamic'),
-    )
-    const setAll = (value: 'fixed' | 'dynamic') => {
-      const group = Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as TyreYAxisState['overview']
-      onTyreYAxisChange({ overview: { ...group }, tyres: { ...group } })
+    const anyDynamic = tyreGroups.some(group =>
+      TYRE_Y_AXIS_SECTIONS.some(section => chartYAxis[group.key][section.key] === 'dynamic'),
+    ) || POWER_Y_AXIS_SECTIONS.some(section => chartYAxis.power[section.key] === 'dynamic')
+    const setAll = (value: YAxisBehavior) => {
+      const tyres = Object.fromEntries(TYRE_Y_AXIS_SECTIONS.map(s => [s.key, value])) as ChartYAxisState['overview']
+      const power = Object.fromEntries(POWER_Y_AXIS_SECTIONS.map(s => [s.key, value])) as ChartYAxisState['power']
+      onChartYAxisChange({ overview: { ...tyres }, tyres: { ...tyres }, power })
     }
     return (
       <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
         <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each tyre graph to its visible data.</p>
+          <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each graph to its visible data.</p>
           <BulkButton
             label={anyDynamic ? 'Set All Fixed' : 'Set All Dynamic'}
             onClick={() => setAll(anyDynamic ? 'fixed' : 'dynamic')}
           />
         </div>
-        {groups.map(group => (
+        {tyreGroups.map(group => (
           <div key={group.key}>
             <GroupLabel>{group.label}</GroupLabel>
             {TYRE_Y_AXIS_SECTIONS.map(section => (
               <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
                 <SegmentedControl
                   options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
-                  value={tyreYAxis[group.key][section.key]}
-                  onChange={(value) => onTyreYAxisChange({
-                    ...tyreYAxis,
-                    [group.key]: { ...tyreYAxis[group.key], [section.key]: value },
+                  value={chartYAxis[group.key][section.key]}
+                  onChange={(value) => onChartYAxisChange({
+                    ...chartYAxis,
+                    [group.key]: { ...chartYAxis[group.key], [section.key]: value },
                   })}
                 />
               </Row>
             ))}
           </div>
         ))}
+        <div>
+          <GroupLabel>Power</GroupLabel>
+          {POWER_Y_AXIS_SECTIONS.map(section => (
+            <Row key={section.key} label={section.label} description={`Fixed: ${section.fixedRange}`}>
+              <SegmentedControl
+                options={[{ value: 'fixed' as const, label: 'Fixed' }, { value: 'dynamic' as const, label: 'Dynamic' }]}
+                value={chartYAxis.power[section.key]}
+                onChange={(value) => onChartYAxisChange({
+                  ...chartYAxis,
+                  power: { ...chartYAxis.power, [section.key]: value },
+                })}
+              />
+            </Row>
+          ))}
+        </div>
       </div>
     )
   }

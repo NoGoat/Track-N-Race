@@ -5,6 +5,13 @@ export interface DataPoint {
   y: number
 }
 
+export interface DataSyncResult {
+  changed: boolean
+  // First source-row index copied into the aligned buffer during this sync.
+  // Null means the update only trimmed existing points (or changed nothing).
+  syncedFrom: number | null
+}
+
 // Reconciles the telemetry store's republished window with one aligned ring.
 // X is evaluated and stored once per row; all Y channels share that timeline.
 export class TimeChartDataBridge<T> {
@@ -29,13 +36,13 @@ export class TimeChartDataBridge<T> {
     return this.data.lowerBoundX(value, start, end)
   }
 
-  sync(rows: readonly T[]): boolean {
+  sync(rows: readonly T[]): DataSyncResult {
     const n = rows.length
     if (n === 0) {
-      if (this.data.length === 0) return false
+      if (this.data.length === 0) return { changed: false, syncedFrom: null }
       this.data.clear()
       this.lastX = NaN
-      return true
+      return { changed: true, syncedFrom: null }
     }
 
     const firstX = this.getX(rows[0])
@@ -51,9 +58,9 @@ export class TimeChartDataBridge<T> {
     const contiguous = this.data.length > 0 && !Number.isNaN(this.lastX) &&
       lastRowX >= this.lastX && firstX <= this.lastX && !needsBackfill
     if (!contiguous) {
-      this.rebuild(rows)
+      const syncedFrom = this.rebuild(rows)
       this.lastX = lastRowX
-      return true
+      return { changed: true, syncedFrom }
     }
 
     let lo = 0
@@ -71,7 +78,10 @@ export class TimeChartDataBridge<T> {
     // does not reindex every retained point like Array.splice(0, n).
     const trim = this.data.lowerBoundX(firstX)
     if (trim > 0) this.data.evictFront(trim)
-    return appendStart < n || trim > 0
+    return {
+      changed: appendStart < n || trim > 0,
+      syncedFrom: appendStart < n ? appendStart : null,
+    }
   }
 
   private appendRow(row: T) {
@@ -81,11 +91,12 @@ export class TimeChartDataBridge<T> {
     this.data.append(this.getX(row), this.yScratch)
   }
 
-  private rebuild(rows: readonly T[]) {
+  private rebuild(rows: readonly T[]): number {
     this.data.clear()
     // If an input publication exceeds the hard renderer cap, retain its newest
     // samples. Normal 10-minute/60 Hz windows remain within one 65,536 page.
     const start = Math.max(0, rows.length - ALIGNED_MAX_POINTS)
     for (let i = start; i < rows.length; i++) this.appendRow(rows[i])
+    return start
   }
 }

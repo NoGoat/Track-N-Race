@@ -345,7 +345,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     const bridge = bridgeRef.current
     const chart = chartRef.current
     if (!bridge) return
-    const changed = bridge.sync(rows)
+    const { changed, syncedFrom } = bridge.sync(rows)
     if (changed) {
       dataDirtyRef.current = true
       wake()
@@ -403,6 +403,32 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
         dataDirtyRef.current = true
       }
     }
+
+    // Expanding ranges normally inspect only newly synchronized source rows.
+    // This remains O(new data) during live use, while also covering playback
+    // seeks that append a whole batch whose peak may be in the middle rather
+    // than at the newest sample.
+    if (changed && chart && yRange.kind === 'expand' && syncedFrom !== null) {
+      let minVal = Infinity
+      let maxVal = -Infinity
+      for (let rowIndex = syncedFrom; rowIndex < rows.length; rowIndex++) {
+        const row = rows[rowIndex]
+        for (let seriesIndex = 0; seriesIndex < seriesDefs.current.length; seriesIndex++) {
+          if (!visibilityRef.current[seriesIndex]) continue
+          const value = seriesDefs.current[seriesIndex].getY(row)
+          if (value < minVal) minVal = value
+          if (value > maxVal) maxVal = value
+        }
+      }
+      const b = boundsRef.current
+      let rangeChanged = false
+      if (maxVal > b.upper - yRange.upperPad) { b.upper = Math.ceil(maxVal + yRange.upperPad); rangeChanged = true }
+      if (yRange.expandLower !== false && minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); rangeChanged = true }
+      if (rangeChanged) {
+        chart.options.yRange = { min: b.lower, max: b.upper }
+        dataDirtyRef.current = true
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, wake])
 
@@ -457,27 +483,6 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     // dependencies because thin consumers often construct them during render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yRangeKey, wake])
-
-  // --- expand-only y-range (Ride Height): only look at the newest sample and
-  // push a bound outward if exceeded; never rescans, never shrinks. ---
-  useEffect(() => {
-    if (yRange.kind !== 'expand') return
-    const chart = chartRef.current
-    if (!chart || rows.length === 0) return
-    const last = rows[rows.length - 1]
-    const ys = seriesDefs.current.map((s) => s.getY(last))
-    const maxVal = Math.max(...ys)
-    const minVal = Math.min(...ys)
-    const b = boundsRef.current
-    let changed = false
-    if (maxVal > b.upper - yRange.upperPad) { b.upper = Math.ceil(maxVal + yRange.upperPad); changed = true }
-    if (yRange.expandLower !== false && minVal < b.lower + yRange.lowerPad) { b.lower = Math.floor(minVal - yRange.lowerPad); changed = true }
-    if (changed) {
-      chart.options.yRange = { min: b.lower, max: b.upper }
-      dataDirtyRef.current = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows])
 
   // --- resize ---
   useEffect(() => {
