@@ -38,7 +38,7 @@ interface LapBlock {
   statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
 }
 interface SelectOption { value: string; label: string }
-interface LapOption { value: number; label: string; compound: string | null; compoundColor: string | null }
+interface LapOption { value: number; label: string; compound: string | null; compoundColor: string | null; isFastest: boolean }
 
 const COMPOUND_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
@@ -55,9 +55,20 @@ function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | nu
   return null
 }
 
+function FastestLapChip() {
+  return <span
+    className="ml-2 text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0"
+    style={{ backgroundColor: '#BF5FFF22', color: '#BF5FFF' }}
+  >FL</span>
+}
+
 function formatLapOption(option: LapOption) {
-  if (!option.compound) return option.label
-  return <span><span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span> · Lap {option.value}</span>
+  if (!option.compound) return <span className="inline-flex items-center min-w-0">{option.value === 0 ? 'None' : `Lap ${option.value}`}{option.isFastest && <FastestLapChip />}</span>
+  return <span className="inline-flex items-center min-w-0">
+    <span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span>
+    <span>&nbsp;· Lap {option.value}</span>
+    {option.isFastest && <FastestLapChip />}
+  </span>
 }
 
 function AnalyzeLapSelector({
@@ -246,6 +257,7 @@ export default function AnalyzeScreen({
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
   const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
+  const fastestLapNum = useTelemetryStore(s => s.fastestLap?.lapNum ?? null)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
@@ -263,18 +275,20 @@ export default function AnalyzeScreen({
 
   const lapOption = useCallback((block: LapBlock): LapOption => {
     const status = lastTyreStatus(block)
-    if (!status) return { value: block.lapNum, label: `Lap ${block.lapNum}`, compound: null, compoundColor: null }
+    const isFastest = block.lapNum === fastestLapNum
+    if (!status) return { value: block.lapNum, label: `Lap ${block.lapNum}${isFastest ? ' · FL' : ''}`, compound: null, compoundColor: null, isFastest }
     const actual = tn('tyre.actual', status.tyre_compound)
     return {
       value: block.lapNum,
-      label: `${actual} · Lap ${block.lapNum}`,
+      label: `${actual} · Lap ${block.lapNum}${isFastest ? ' · FL' : ''}`,
       compound: actual,
       compoundColor: COMPOUND_COLORS[status.visual_compound] ?? null,
+      isFastest,
     }
-  }, [tn])
+  }, [fastestLapNum, tn])
 
   const compareOptions = useMemo<LapOption[]>(() => [
-    { value: 0, label: 'None', compound: null, compoundColor: null },
+    { value: 0, label: 'None', compound: null, compoundColor: null, isFastest: false },
     ...(blocks ?? []).map(lapOption),
   ], [blocks, lapOption])
   const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
