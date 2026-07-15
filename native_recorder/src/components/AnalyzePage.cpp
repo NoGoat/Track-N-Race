@@ -1,5 +1,6 @@
 #include "AnalyzePage.h"
 #include "AnalyzeChart.h"
+#include "PageUiHelpers.h"
 #include "../SessionModel.h"
 #include "../Labels.h"
 #include "../IconUtils.h"
@@ -64,11 +65,9 @@ AnalyzePage::AnalyzePage(SessionModel* model,QWidget* parent):QWidget(parent),mo
         " background: transparent; color: palette(text); }");
     side->addWidget(seriesList_,1);
     root->addWidget(sidebar_);
-    auto* separator=new QFrame;
-    separator->setFrameShape(QFrame::NoFrame);
-    separator->setFixedWidth(1);
-    separator->setStyleSheet("background: palette(mid); border: none;");
-    root->addWidget(separator);
+    // Use the same style-painted sunken divider as the rest of the native UI.
+    // Hard-coding palette(mid) here produces an almost-black line in Breeze.
+    root->addWidget(tnrui::vline());
     auto* right=new QWidget;auto* rv=new QVBoxLayout(right);rv->setContentsMargins(0,0,0,0);rv->setSpacing(0);
     collapsedBar_=new QWidget;collapsedBar_->setFixedHeight(collapsed_?34:0);auto* bh=new QHBoxLayout(collapsedBar_);bh->setContentsMargins(6,3,6,3);
     expand_=tinyButton("Open Analyze controls",analyzeIcon(collapsedBar_,"go-next",QStyle::SP_ArrowRight),collapsedBar_);expand_->setVisible(collapsed_);bh->addWidget(expand_);bh->addStretch();rv->addWidget(collapsedBar_);

@@ -267,7 +267,11 @@ export default function AnalyzeScreen({
   const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
-  const selectStyles = useMemo(() => buildSelectStyles(isDark, { solidBg: true, controlHeight: 32 }), [isDark])
+  const selectStyles = useMemo(() => buildSelectStyles(isDark, {
+    solidBg: true,
+    controlHeight: 32,
+    labelStyleGroupHeadings: true,
+  }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
   const updateSeries = useCallback((series: AnalyzeSeriesConfig[]) => save({ ...config, series }), [config, save])

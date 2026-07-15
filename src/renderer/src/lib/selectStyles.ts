@@ -1,6 +1,6 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28 } = {}): StylesConfig<any, false> {
+export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false } = {}): StylesConfig<any, false> {
   return {
     container: (base) => ({
       ...base,
@@ -51,6 +51,21 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
     }),
     menuPortal: (base) => ({ ...base, zIndex: 9999 }),
     menuList:   (base) => ({ ...base, padding: 4 }),
+    group: (base) => labelStyleGroupHeadings ? ({
+      ...base,
+      paddingTop: 2,
+      paddingBottom: 2,
+    }) : base,
+    groupHeading: (base) => labelStyleGroupHeadings ? ({
+      ...base,
+      color: 'var(--text-secondary)',
+      fontSize: 9,
+      fontWeight: 400,
+      letterSpacing: '0.1em',
+      textTransform: 'uppercase',
+      margin: 0,
+      padding: '2px 8px',
+    }) : base,
     option: (base, state) => ({
       ...base,
       background: state.isSelected ? 'var(--border-focus)' : state.isFocused ? (isDark ? 'rgba(255,255,255,0.12)' : 'var(--bg-hover)') : 'transparent',
