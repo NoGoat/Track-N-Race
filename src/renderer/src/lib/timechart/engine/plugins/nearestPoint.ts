@@ -45,12 +45,18 @@ export class NearestPoint {
             if (!this.intersectPoints.has(s)) {
                 const intersect = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
                 intersect.transform.baseVal.initialize(initTrans);
-                intersect.style.stroke = (s.color ?? this.options.color).toString();
-                intersect.style.strokeWidth = `${s.lineWidth ?? this.options.lineWidth}px`;
                 this.container.appendChild(intersect);
                 this.intersectPoints.set(s, intersect);
             }
             const intersect = this.intersectPoints.get(s)!;
+            // Series options are mutable: consumers recolour traces in place to
+            // avoid recreating the WebGL chart. Keep the SVG hover marker in
+            // sync with the same live options instead of retaining its initial
+            // colour and width for the lifetime of the chart.
+            const stroke = (s.color ?? this.options.color).toString();
+            const strokeWidth = `${s.lineWidth ?? this.options.lineWidth}px`;
+            if (intersect.style.stroke !== stroke) intersect.style.stroke = stroke;
+            if (intersect.style.strokeWidth !== strokeWidth) intersect.style.strokeWidth = strokeWidth;
             const point = this.pModel.dataPoints.get(s);
             if (!point) {
                 intersect.style.visibility = 'hidden';

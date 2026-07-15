@@ -29,6 +29,8 @@ struct LapScanFields {
 struct StatusScanFields {
     double ers_pct{};
     double fuel_kg{};
+    int tyre_compound{};
+    int visual_compound{};
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
@@ -229,7 +231,10 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                     it->second.slimTelemetry.push_back(
                         { "telemetry", t, telRow.speed_kph, telRow.rpm });
                 } else if (tid == 2) {
-                    it->second.slimStatus.push_back({ "status", t, statusRow.ers_pct });
+                    it->second.slimStatus.push_back({
+                        "status", t, statusRow.ers_pct,
+                        statusRow.tyre_compound, statusRow.visual_compound
+                    });
                 }
             }
         }

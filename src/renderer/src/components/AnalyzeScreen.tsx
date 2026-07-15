@@ -10,6 +10,7 @@ import {
 } from '../lib/analyzeMetrics'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
+import { useLabels } from '../lib/labels'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart from './charts/AnalyzeTimeChart'
@@ -30,8 +31,34 @@ export interface AnalyzeFixedLapMode {
   lapB: number | null
 }
 
-interface LapBlock { lapNum: number; startSessionTime: number; endSessionTime: number }
+interface LapBlock {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
+}
 interface SelectOption { value: string; label: string }
+interface LapOption { value: number; label: string; compound: string | null; compoundColor: string | null }
+
+const COMPOUND_COLORS: Record<number, string> = {
+  16: 'var(--compound-soft)',
+  17: 'var(--compound-medium)',
+  18: 'var(--compound-hard)',
+  7: 'var(--compound-inter)',
+  8: 'var(--compound-wet)',
+}
+
+function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | null {
+  for (let index = block.statusHistory.length - 1; index >= 0; index--) {
+    if (block.statusHistory[index].tyre_compound > 0) return block.statusHistory[index]
+  }
+  return null
+}
+
+function formatLapOption(option: LapOption) {
+  if (!option.compound) return option.label
+  return <span><span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span> · Lap {option.value}</span>
+}
 
 function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
   const [open, setOpen] = useState(false)
@@ -194,6 +221,7 @@ export default function AnalyzeScreen({
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
   const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
+  const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
   const requestedRef = useRef(new Set<number>())
@@ -208,12 +236,24 @@ export default function AnalyzeScreen({
     options: ANALYZE_METRICS.filter(metric => metric.group === group && !selectedIds.has(metric.id)).map(metric => ({ value: metric.id, label: metric.label })),
   })).filter(group => group.options.length), [selectedIds])
 
-  const compareOptions = useMemo(() => [
-    { value: 0, label: 'None' },
-    ...(blocks ?? []).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })),
-  ], [blocks])
+  const lapOption = useCallback((block: LapBlock): LapOption => {
+    const status = lastTyreStatus(block)
+    if (!status) return { value: block.lapNum, label: `Lap ${block.lapNum}`, compound: null, compoundColor: null }
+    const actual = tn('tyre.actual', status.tyre_compound)
+    return {
+      value: block.lapNum,
+      label: `${actual} · Lap ${block.lapNum}`,
+      compound: actual,
+      compoundColor: COMPOUND_COLORS[status.visual_compound] ?? null,
+    }
+  }, [tn])
+
+  const compareOptions = useMemo<LapOption[]>(() => [
+    { value: 0, label: 'None', compound: null, compoundColor: null },
+    ...(blocks ?? []).map(lapOption),
+  ], [blocks, lapOption])
   const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
-  const lapOptions = useMemo(() => (blocks ?? []).map(block => ({ value: block.lapNum, label: `Lap ${block.lapNum}` })), [blocks])
+  const lapOptions = useMemo<LapOption[]>(() => (blocks ?? []).map(lapOption), [blocks, lapOption])
   const lapAValue = lapOptions.find(option => option.value === fixedLapMode.lapA) ?? null
   const lapBValue = lapOptions.find(option => option.value === fixedLapMode.lapB) ?? null
   const fixedPrimary = fixedLapMode.lapA !== null ? lapCache[fixedLapMode.lapA] ?? null : null
@@ -276,11 +316,18 @@ export default function AnalyzeScreen({
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
       <aside className={`${config.collapsed ? 'w-0 border-r-0' : 'w-72 border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)] transition-[width] duration-200 ease-out`}>
           <div className={`w-72 h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
-            <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
+            <div className="h-11 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analyze</div>
                 <div className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Overlay configuration</div>
               </div>
+              <button
+                title="Collapse Analyze controls" aria-label="Collapse Analyze controls"
+                onClick={() => save({ ...config, collapsed: true })}
+                className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+              >
+                <PanelLeftClose size={15} />
+              </button>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -306,18 +353,20 @@ export default function AnalyzeScreen({
                 <div className="space-y-2">
                   <div>
                     <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap A</label>
-                    <Select
+                    <Select<LapOption, false>
                       value={lapAValue} options={lapOptions} placeholder="Select Lap A…"
                       onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.value ?? null })}
+                      formatOptionLabel={formatLapOption}
                       styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
                       menuPortalTarget={document.body}
                     />
                   </div>
                   <div>
                     <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap B</label>
-                    <Select
+                    <Select<LapOption, false>
                       value={lapBValue} options={lapOptions} placeholder="Select Lap B…"
                       onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
+                      formatOptionLabel={formatLapOption}
                       styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
                       menuPortalTarget={document.body}
                     />
@@ -327,9 +376,10 @@ export default function AnalyzeScreen({
               ) : (
                 <div>
                   <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Compare lap</label>
-                  <Select
+                  <Select<LapOption, false>
                     value={compareValue} options={compareOptions}
                     onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
+                    formatOptionLabel={formatLapOption}
                     styles={selectStyles} components={selectComponents} isSearchable={false}
                     isDisabled={!playbackFilename || !blocks} menuPortalTarget={document.body}
                   />
@@ -380,28 +430,15 @@ export default function AnalyzeScreen({
           </div>
       </aside>
 
-      <section className="flex-1 min-w-0 flex flex-col">
-        <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-x-3 shrink-0 overflow-hidden">
-          <button
-            title={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
-            aria-label={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
-            onClick={() => save({ ...config, collapsed: !config.collapsed })}
-            className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-          >
-            {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-          </button>
-          <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">
-            {fixedLapMode.enabled ? `Lap A ${fixedLapMode.lapA !== null ? `L${fixedLapMode.lapA}` : '—'}` : `Current ${effectiveCurrentLapNum ? `L${effectiveCurrentLapNum}` : 'lap'}`}
-          </span>
-          {config.series.map(item => {
-            const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
-            return def ? <span key={item.metricId} className="text-[10px] whitespace-nowrap" style={{ color: item.color }}>— {def.label}</span> : null
-          })}
-          {fixedLapMode.enabled
-            ? <span className="ml-auto text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Muted lines · Lap B {fixedLapMode.lapB !== null ? `L${fixedLapMode.lapB}` : '—'}</span>
-            : compareLapNum !== null && <span className="ml-auto text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Muted lines · Compare L{compareLapNum}</span>}
-        </div>
-        <div className="flex-1 min-h-0 relative">
+      <section className="flex-1 min-w-0 relative">
+        {config.collapsed && <button
+          title="Open Analyze controls" aria-label="Open Analyze controls"
+          onClick={() => save({ ...config, collapsed: false })}
+          className="absolute z-10 top-2 left-2 w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] bg-[var(--bg-panel)] border border-[var(--border)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+        >
+          <PanelLeftOpen size={15} />
+        </button>}
+        <div className="absolute inset-0">
           <AnalyzeChartSubscriber
             isDark={isDark} selected={config.series} showYAxis={config.showYAxis}
             currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}

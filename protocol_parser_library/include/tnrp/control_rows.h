@@ -253,6 +253,8 @@ struct SlimStatusPoint {
     std::string type{"status"};
     float       session_time{};
     double      ers_pct{};
+    int         tyre_compound{};
+    int         visual_compound{};
 };
 
 struct LapBlockMeta {
