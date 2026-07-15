@@ -265,6 +265,8 @@ export default function AnalyzeScreen({
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
   const requestedRef = useRef(new Set<number>())
   const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const previousCollapsedRef = useRef(config.collapsed)
   const selectStyles = useMemo(() => buildSelectStyles(isDark, { solidBg: true, controlHeight: 32 }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
@@ -307,6 +309,36 @@ export default function AnalyzeScreen({
   useEffect(() => {
     requestedRef.current.clear()
   }, [playbackFilename])
+
+  useLayoutEffect(() => {
+    const sidebar = sidebarRef.current
+    if (!sidebar) return
+
+    const targetWidth = config.collapsed ? 0 : 288
+    if (previousCollapsedRef.current === config.collapsed) {
+      sidebar.style.width = `${targetWidth}px`
+      return
+    }
+    previousCollapsedRef.current = config.collapsed
+
+    const startWidth = sidebar.getBoundingClientRect().width
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || startWidth === targetWidth) {
+      sidebar.style.width = `${targetWidth}px`
+      return
+    }
+
+    const duration = 200
+    const startedAt = performance.now()
+    let animationFrame = 0
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      sidebar.style.width = `${startWidth + (targetWidth - startWidth) * eased}px`
+      if (progress < 1) animationFrame = requestAnimationFrame(animate)
+    }
+    animationFrame = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(animationFrame)
+  }, [config.collapsed])
 
   useEffect(() => {
     if (!playbackFilename) return
@@ -356,7 +388,10 @@ export default function AnalyzeScreen({
 
   return (
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
-      <aside className={`${config.collapsed ? 'w-0 border-r-0' : 'w-72 border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)] transition-[width] duration-200 ease-out`}>
+      <aside
+        ref={sidebarRef}
+        className={`${config.collapsed ? 'border-r-0' : 'border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)]`}
+      >
           <div className={`w-72 h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
               <div>

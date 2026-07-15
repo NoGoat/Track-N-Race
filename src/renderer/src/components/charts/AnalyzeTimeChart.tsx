@@ -1,5 +1,4 @@
 import { useEffect, useRef, type MutableRefObject } from 'react'
-import { useSize } from '../../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig, type AnalyzeSource } from '../../lib/analyzeMetrics'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
@@ -138,8 +137,8 @@ export default function AnalyzeTimeChart({
   isDark, current, currentRevision, comparison, selected, showYAxis, primaryLabel, comparisonLabel,
   zoomEnabled, controlsRef,
 }: Props) {
-  const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
+  const containerRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
   const buffersRef = useRef<Buffers | null>(null)
@@ -455,9 +454,22 @@ export default function AnalyzeTimeChart({
   }, [controlsRef, zoomEnabled])
 
   useEffect(() => {
-    const chart = chartRef.current
-    if (chart && width > 0 && height > 0) chart.onResize()
-  }, [width, height])
+    const container = containerRef.current
+    if (!container) return
+    let animationFrame = 0
+    const observer = new ResizeObserver(() => {
+      if (animationFrame) return
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0
+        chartRef.current?.onResize()
+      })
+    })
+    observer.observe(container)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(animationFrame)
+    }
+  }, [])
 
-  return <div className="absolute inset-0" ref={sizeRef}><div ref={hostRef} className="absolute inset-0" /><div ref={tooltipRef} style={TOOLTIP_STYLE} /></div>
+  return <div className="absolute inset-0" ref={containerRef}><div ref={hostRef} className="absolute inset-0" /><div ref={tooltipRef} style={TOOLTIP_STYLE} /></div>
 }
