@@ -24,6 +24,7 @@ type SeriesRecord = Record<Role, Map<string, any>>
 
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
+const TOP_PADDING = 16
 const METRICS_BY_SOURCE = Object.fromEntries(SOURCES.map(source => [source, ANALYZE_METRICS.filter(metric => metric.source === source)])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>
 
 function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
@@ -172,8 +173,8 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
       }
     }
     const chart = new TimeChart.core(host, {
-      paddingTop: 8, paddingRight: 12, paddingBottom: 24, paddingLeft: 12,
-      renderPaddingTop: 8, renderPaddingRight: 12, renderPaddingBottom: 24, renderPaddingLeft: 12,
+      paddingTop: TOP_PADDING, paddingRight: 12, paddingBottom: 24, paddingLeft: 12,
+      renderPaddingTop: TOP_PADDING, renderPaddingRight: 12, renderPaddingBottom: 24, renderPaddingLeft: 12,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5, series: rawSeries,
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
@@ -192,6 +193,7 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
         if (!lap) return
         rows.push(`<div style="color:var(--text-secondary);font-size:10px;margin:${rows.length > 1 ? '5px' : '0'} 0 2px">${heading}</div>`)
         for (const item of selectedRef.current) {
+          if (!item.visible) continue
           const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
           const option = seriesRef.current?.[role].get(item.metricId)
           if (!def || !option) continue
@@ -226,24 +228,30 @@ export default function AnalyzeTimeChart({ isDark, current, currentRevision, com
       const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
       return def ? [{ item, def }] : []
     })
-    const selectedIds = new Set(selectedDefs.map(({ def }) => def.id))
+    const visibleDefs = selectedDefs.filter(({ item }) => item.visible)
+    const visibleIds = new Set(visibleDefs.map(({ def }) => def.id))
     for (const def of ANALYZE_METRICS) {
       const item = selectedDefs.find(candidate => candidate.def.id === def.id)?.item
-      const visible = selectedIds.has(def.id)
+      const visible = visibleIds.has(def.id)
       const currentOption = records.current.get(def.id)
       const comparisonOption = records.comparison.get(def.id)
       if (currentOption) { currentOption.visible = visible; currentOption.color = item?.color ?? def.defaultColor }
       if (comparisonOption) { comparisonOption.visible = visible && !!comparison; comparisonOption.color = blendColor(item?.color ?? def.defaultColor, isDark) }
     }
-    const visibleComparison = selectedDefs.map(({ def }) => records.comparison.get(def.id)).filter(Boolean)
-    const visibleCurrent = selectedDefs.map(({ def }) => records.current.get(def.id)).filter(Boolean)
+    // WebGL paints later series over earlier ones, so reverse the sidebar order:
+    // the first metric in the sidebar is drawn last and remains visually on top.
+    const drawOrder = [...visibleDefs].reverse()
+    const visibleComparison = drawOrder.map(({ def }) => records.comparison.get(def.id)).filter(Boolean)
+    const visibleCurrent = drawOrder.map(({ def }) => records.current.get(def.id)).filter(Boolean)
     const hidden = chart.options.series.filter(option => {
       const id = option.name.slice(option.name.indexOf(':') + 1)
-      return !selectedIds.has(id)
+      return !visibleIds.has(id)
     })
-    chart.options.series = [...visibleComparison, ...visibleCurrent, ...hidden]
+    // Keep the array identity stable for every plugin/renderer that received it
+    // at chart construction while still updating the live GPU draw order.
+    chart.options.series.splice(0, chart.options.series.length, ...visibleComparison, ...visibleCurrent, ...hidden)
 
-    const scales = selectedDefs.filter(({ def }, index, all) => all.findIndex(candidate => candidate.def.scaleKey === def.scaleKey) === index)
+    const scales = visibleDefs.filter(({ def }, index, all) => all.findIndex(candidate => candidate.def.scaleKey === def.scaleKey) === index)
     const leftCount = showYAxis ? Math.ceil(scales.length / 2) : 0
     const rightCount = showYAxis ? Math.floor(scales.length / 2) : 0
     const left = showYAxis ? Math.max(44, 12 + leftCount * 54) : 12

@@ -22,6 +22,7 @@ export interface AnalyzeMetricDefinition {
 export interface AnalyzeSeriesConfig {
   metricId: AnalyzeMetricId
   color: string
+  visible: boolean
 }
 
 export interface AnalyzeConfig {
@@ -80,6 +81,7 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   series: ['speed', 'rpm', 'ers'].map(metricId => ({
     metricId,
     color: ANALYZE_METRIC_BY_ID.get(metricId)!.defaultColor,
+    visible: true,
   })),
 }
 
@@ -91,7 +93,7 @@ export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | und
     if (!def || seen.has(def.id)) return []
     seen.add(def.id)
     const color = /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color : def.defaultColor
-    return [{ metricId: def.id, color }]
+    return [{ metricId: def.id, color, visible: item.visible !== false }]
   }) : []
   return {
     version: 1,

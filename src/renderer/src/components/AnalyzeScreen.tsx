@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import Select, { type SingleValue } from 'react-select'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { ArrowDownUp, ChevronLeft, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowDownUp, ChevronLeft, ChevronRight, Eye, EyeOff, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2 } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG, sanitizeAnalyzeConfig,
@@ -58,6 +58,31 @@ function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | nu
 function formatLapOption(option: LapOption) {
   if (!option.compound) return option.label
   return <span><span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span> · Lap {option.value}</span>
+}
+
+function AnalyzeLapSelector({
+  id, label, value, options, placeholder, onChange, styles, isClearable = true, isDisabled = false,
+}: {
+  id: string
+  label: string
+  value: LapOption | null
+  options: LapOption[]
+  placeholder: string
+  onChange: (option: SingleValue<LapOption>) => void
+  styles: ReturnType<typeof buildSelectStyles>
+  isClearable?: boolean
+  isDisabled?: boolean
+}) {
+  return <div className="flex items-center gap-3">
+    <label htmlFor={id} className="w-20 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+    <div className="flex-1 min-w-0">
+      <Select<LapOption, false>
+        inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
+        formatOptionLabel={formatLapOption} styles={styles} components={selectComponents}
+        isSearchable={false} isClearable={isClearable} isDisabled={isDisabled} menuPortalTarget={document.body}
+      />
+    </div>
+  </div>
 }
 
 function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
@@ -287,7 +312,7 @@ export default function AnalyzeScreen({
     if (!option) return
     const def = ANALYZE_METRIC_BY_ID.get(option.value)
     if (!def || config.series.some(item => item.metricId === def.id)) return
-    updateSeries([...config.series, { metricId: def.id, color: def.defaultColor }])
+    updateSeries([...config.series, { metricId: def.id, color: def.defaultColor, visible: true }])
   }, [config.series, updateSeries])
 
   const moveMetric = useCallback((metricId: string, delta: number) => {
@@ -331,12 +356,14 @@ export default function AnalyzeScreen({
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
-              <div>
-                <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Add metric</label>
-                <Select<SelectOption, false>
-                  value={null} options={metricOptions} onChange={addMetric} placeholder="Choose a value…"
-                  styles={selectStyles} components={selectComponents} isSearchable menuPortalTarget={document.body}
-                />
+              <div className="flex items-center gap-3">
+                <label htmlFor="analyze-add-metric" className="w-20 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Add metric</label>
+                <div className="flex-1 min-w-0">
+                  <Select<SelectOption, false>
+                    inputId="analyze-add-metric" value={null} options={metricOptions} onChange={addMetric} placeholder="Choose a value…"
+                    styles={selectStyles} components={selectComponents} isSearchable menuPortalTarget={document.body}
+                  />
+                </div>
               </div>
               <div>
                 <button
@@ -351,37 +378,24 @@ export default function AnalyzeScreen({
               </div>
               {fixedLapMode.enabled ? (
                 <div className="space-y-2">
-                  <div>
-                    <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap A</label>
-                    <Select<LapOption, false>
-                      value={lapAValue} options={lapOptions} placeholder="Select Lap A…"
-                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.value ?? null })}
-                      formatOptionLabel={formatLapOption}
-                      styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
-                      menuPortalTarget={document.body}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap B</label>
-                    <Select<LapOption, false>
-                      value={lapBValue} options={lapOptions} placeholder="Select Lap B…"
-                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
-                      formatOptionLabel={formatLapOption}
-                      styles={selectStyles} components={selectComponents} isSearchable={false} isClearable
-                      menuPortalTarget={document.body}
-                    />
-                  </div>
+                  <AnalyzeLapSelector
+                    id="analyze-lap-a" label="Lap A" value={lapAValue} options={lapOptions} placeholder="Select Lap A…"
+                    onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.value ?? null })}
+                    styles={selectStyles}
+                  />
+                  <AnalyzeLapSelector
+                    id="analyze-lap-b" label="Lap B" value={lapBValue} options={lapOptions} placeholder="Select Lap B…"
+                    onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
+                    styles={selectStyles}
+                  />
                   {((fixedLapMode.lapA !== null && !fixedPrimary) || (fixedLapMode.lapB !== null && !fixedComparison)) && <div className="text-[9px] text-[var(--text-secondary)]">Loading selected lap data…</div>}
                 </div>
               ) : (
                 <div>
-                  <label className="block text-[9px] uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Compare lap</label>
-                  <Select<LapOption, false>
-                    value={compareValue} options={compareOptions}
+                  <AnalyzeLapSelector
+                    id="analyze-compare-lap" label="Compare Lap" value={compareValue} options={compareOptions} placeholder="Select lap…"
                     onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
-                    formatOptionLabel={formatLapOption}
-                    styles={selectStyles} components={selectComponents} isSearchable={false}
-                    isDisabled={!playbackFilename || !blocks} menuPortalTarget={document.body}
+                    styles={selectStyles} isClearable={false} isDisabled={!playbackFilename || !blocks}
                   />
                   {playbackFilename && compareLapNum !== null && !comparison && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Loading comparison lap…</div>}
                 </div>
@@ -420,6 +434,13 @@ export default function AnalyzeScreen({
                     <div className="flex items-center shrink-0">
                       <button disabled={index === 0} title="Move up" onClick={() => moveMetric(item.metricId, -1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronLeft size={12} className="rotate-90" /></button>
                       <button disabled={index === config.series.length - 1} title="Move down" onClick={() => moveMetric(item.metricId, 1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronRight size={12} className="rotate-90" /></button>
+                      <button
+                        title={item.visible ? 'Hide series' : 'Show series'} aria-label={item.visible ? `Hide ${def.label}` : `Show ${def.label}`}
+                        onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, visible: !entry.visible } : entry))}
+                        className={`p-1 hover:text-[var(--text-primary)] ${item.visible ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}
+                      >
+                        {item.visible ? <Eye size={11} /> : <EyeOff size={11} />}
+                      </button>
                       <button title="Reset color" onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color: def.defaultColor } : entry))} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><RotateCcw size={11} /></button>
                       <button title="Remove metric" onClick={() => updateSeries(config.series.filter(entry => entry.metricId !== item.metricId))} className="p-1 text-[var(--text-secondary)] hover:text-[#e10600]"><Trash2 size={11} /></button>
                     </div>

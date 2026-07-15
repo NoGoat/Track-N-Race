@@ -152,6 +152,10 @@ body {
 .u-cursor-x, .u-cursor-y { border-color: var(--u-cursor) !important; }
 
 /* Match the Chrome color picker's editable fields to Settings inputs. */
+.analyze-color-picker .w-color-interactive.w-color-saturation {
+  border-radius: 6px 6px 0 0 !important;
+}
+
 .analyze-color-picker .w-color-editable-input input {
   height: 2rem !important;
   padding: 0 0.75rem !important;
