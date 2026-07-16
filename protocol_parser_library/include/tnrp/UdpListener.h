@@ -28,7 +28,7 @@ public:
     void stop();
 
     bool isRunning() const { return running_.load(); }
-    const std::string& lastError() const { return lastError_; }
+    std::string lastError() const { return lastError_; }
 
 private:
     std::atomic<bool> running_{false};

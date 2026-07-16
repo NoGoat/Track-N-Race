@@ -89,6 +89,7 @@ add_library(tnrp STATIC
     src/protocols/f1_25.cpp
     src/protocols/f1_26.cpp
     src/TimeUtils.cpp
+    src/DisplayNames.cpp
     src/Labels.cpp
     src/CardColors.cpp
     src/Parser.cpp

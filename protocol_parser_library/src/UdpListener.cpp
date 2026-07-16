@@ -16,6 +16,7 @@ UdpListener::~UdpListener() { stop(); }
 
 bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler) {
     stop();
+    lastError_.clear();
     running_.store(true);
     // Probe-bind on the calling thread so start() can report failure synchronously.
     {
@@ -90,6 +91,7 @@ UdpListener::~UdpListener() { stop(); }
 bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler) {
     TRACE("UdpListener::start: entry");
     stop();
+    lastError_.clear();
     TRACE("UdpListener::start: stop() done");
 #ifdef _WIN32
     WSADATA wsa;
@@ -115,13 +117,19 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(port);
-    if (bindAddress.empty() || bindAddress == "0.0.0.0")
+    if (bindAddress.empty() || bindAddress == "0.0.0.0") {
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    else
-        addr.sin_addr.s_addr = inet_addr(bindAddress.c_str());
+    } else if (::inet_pton(AF_INET, bindAddress.c_str(), &addr.sin_addr) != 1) {
+        lastError_ = "Invalid IPv4 bind address: " + bindAddress;
+        closeSock(s);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return false;
+    }
 
     if (::bind(s, (sockaddr*)&addr, sizeof(addr)) != 0) {
-        lastError_ = "bind() failed on UDP port " + std::to_string(port);
+        lastError_ = "bind() failed for " + bindAddress + ":" + std::to_string(port);
         closeSock(s);
 #ifdef _WIN32
         WSACleanup();

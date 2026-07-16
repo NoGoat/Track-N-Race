@@ -80,7 +80,7 @@ bool Engine::startUdp() {
     return ok;
 }
 
-void Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
+bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
     udp_.stop();
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -88,7 +88,13 @@ void Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         config_.bindAddress = bindAddress;
         parser_.reset();
     }
-    udp_.start(port, bindAddress, [this](const uint8_t* d, int n) { onDatagram(d, n); });
+    return udp_.start(port, bindAddress,
+                      [this](const uint8_t* d, int n) { onDatagram(d, n); });
+}
+
+std::string Engine::udpLastError() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return udp_.lastError();
 }
 
 void Engine::onDatagram(const uint8_t* data, int length) {

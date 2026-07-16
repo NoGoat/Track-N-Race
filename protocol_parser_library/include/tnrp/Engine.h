@@ -35,7 +35,8 @@ public:
 
     // ── Live ─────────────────────────────────────────────────────────────
     bool startUdp();                       // bind + begin receiving
-    void restartUdp(uint16_t port, const std::string& bindAddress);
+    bool restartUdp(uint16_t port, const std::string& bindAddress);
+    std::string udpLastError() const;
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
@@ -63,7 +64,7 @@ private:
     TnrdReader    reader_;
     UdpListener   udp_;
 
-    std::mutex    mutex_;                  // guards all mutable state below
+    mutable std::mutex mutex_;             // guards all mutable state below
 
     // Playback clock state.
     std::atomic<bool> inPlayback_{false};
