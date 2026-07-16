@@ -349,7 +349,7 @@ app.whenReady().then(() => {
   sweepTempFiles()
 
   console.log('[main] calling startBridge()')
-  startBridge()   // spawns the native protocol_parser; owns UDP + recording
+  startBridge()   // starts the in-process libtnrp addon; owns UDP + recording
   console.log('[main] calling createWindow()')
   createWindow()
 

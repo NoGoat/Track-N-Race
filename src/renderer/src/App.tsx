@@ -1552,7 +1552,9 @@ export default function App() {
 
       {/* Header — floats above content in fullscreen, normal flow otherwise */}
       <div
-        className={isFullscreen ? 'absolute top-0 left-0 right-0 z-50 h-10' : ''}
+        className={isFullscreen
+          ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}`
+          : ''}
         onMouseEnter={() => { if (isFullscreen) setHeaderVisible(true) }}
         onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
       >

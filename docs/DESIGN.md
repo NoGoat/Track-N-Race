@@ -1,6 +1,6 @@
 # Track N Race — Architecture & Design
 
-_Last updated: 2026-07-13 (branch `feature/opengl-charts`)._
+_Last updated: 2026-07-16 (branch `feature/opengl-charts`)._
 
 Track N Race is an F1 24/25/26 telemetry suite consisting of four components in
 one repository:
@@ -11,7 +11,6 @@ one repository:
 | Node addon | `node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Native recorder | `native_recorder/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Headless pipe bridge | `protocol_parser/` | C++ CLI | **Legacy.** Former out-of-process bridge (named pipe/UDS). Superseded by the N-API addon. |
 
 Both apps have feature parity and read/write the same `.tnrd` files.
 
@@ -578,9 +577,9 @@ dependencies, the type-only `import type uPlot` lines (`GraphTable`'s
 `uPlot.AlignedData` prop type), and the retained `hooks/useDrawProfiler.ts`
 profiling helper once the current performance investigation ends.
 
-### P1 — Delete or clearly retire `protocol_parser/`
-Its README claims Electron spawns it over a pipe; `bridgeManager.ts` actually
-loads the N-API addon in-process. Dead code + wrong docs mislead contributors.
+### ~~P1 — Delete the legacy headless pipe bridge~~ (done)
+The obsolete `protocol_parser/` executable and its misleading README have been
+deleted. Electron uses the N-API addon in-process.
 
 ### P2 — De-duplicate the smoothing/forward-fill logic
 Two ports of the same algorithm: `native_recorder/src/HotRowSmoother.h`
