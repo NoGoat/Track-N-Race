@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, memo, use
 import Select, { type SingleValue } from 'react-select'
 import { buildSelectStyles } from './lib/selectStyles'
 import { selectComponents } from './lib/selectComponents'
-import { Settings2, Pencil, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2, Download } from 'lucide-react'
+import { Settings2, Pencil, Maximize, Shrink, X, Upload, Play, Pause, ChevronLeft, ChevronRight, AlertTriangle, PictureInPicture2, Download } from 'lucide-react'
 import { useTelemetryStore, setTelemetrySeconds, subscribeRaceEvent } from './stores/telemetryStore'
 import { LabelsProvider } from './lib/labels'
 import { CardColorsProvider } from './lib/cards'
@@ -251,15 +251,13 @@ interface PlaybackControlProps {
 const PlaybackControl = memo(({ filename, onClose, onSelectFile }: PlaybackControlProps) => {
   if (filename) {
     return (
-      <div
-        className="flex items-center gap-1.5 shrink-0"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      >
+      <div className="flex items-center gap-1.5 shrink-0">
         <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">
           {filename}
         </span>
         <button
           onClick={onClose}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           className="p-1 text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
         >
           <X size={14} />
@@ -352,7 +350,7 @@ CentreBanner.displayName = 'CentreBanner'
 const TimeWindowSelector = memo(
   ({ seconds, setSeconds }: { seconds: number; setSeconds: (s: number) => void }) => {
     return (
-      <div style={{ WebkitAppRegion: 'no-drag' }} className="w-20">
+      <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3.8rem]">
         <Select
           options={WINDOW_OPTIONS}
           value={WINDOW_OPTIONS.find((o) => o.value === seconds) ?? null}
@@ -374,10 +372,11 @@ interface HeaderButtonsProps {
   editOpen: boolean
   setEditOpen: React.Dispatch<React.SetStateAction<boolean>>
   tab: Tab
+  isFullscreen: boolean
 }
 
 const HeaderButtons = memo(
-  ({ settingsOpen, setSettingsOpen, editOpen, setEditOpen, tab }: HeaderButtonsProps) => {
+  ({ settingsOpen, setSettingsOpen, editOpen, setEditOpen, tab, isFullscreen }: HeaderButtonsProps) => {
     const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
     return (
       <>
@@ -420,6 +419,16 @@ const HeaderButtons = memo(
         >
           <PictureInPicture2 size={13} />
         </button>
+
+        {/* Fullscreen button */}
+        <button
+          onClick={() => window.windowControls.fullscreen()}
+          title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"
+        >
+          {isFullscreen ? <Shrink size={13} /> : <Maximize size={13} />}
+        </button>
       </>
     )
   }
@@ -427,72 +436,49 @@ const HeaderButtons = memo(
 HeaderButtons.displayName = 'HeaderButtons'
 
 interface WindowControlsProps {
-  isFullscreen: boolean
   isMaximized: boolean
-  showOnlyFullscreen?: boolean
 }
 
-const WindowControls = memo(({ isFullscreen, isMaximized, showOnlyFullscreen }: WindowControlsProps) => {
+const WindowControls = memo(({ isMaximized }: WindowControlsProps) => {
   return (
     <div
       className="flex self-stretch ml-2 -mr-4 shrink-0"
       style={{ WebkitAppRegion: 'no-drag' }}
     >
       <button
-        onClick={() => window.windowControls.fullscreen()}
-        title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+        onClick={() => window.windowControls.minimize()}
+        title="Minimize"
         className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
       >
-        {isFullscreen ? (
-          <Shrink size={13} />
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
+      </button>
+
+      <button
+        onClick={() => window.windowControls.maximize()}
+        title={isMaximized ? 'Restore' : 'Maximize'}
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
+      >
+        {isMaximized ? (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+            <polyline points="3,0.5 9.5,0.5 9.5,7"/>
+            <rect x="0.5" y="3" width="6.5" height="6.5"/>
+          </svg>
         ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
-            <polyline points="0,3 0,0 3,0"/>
-            <polyline points="7,0 10,0 10,3"/>
-            <polyline points="10,7 10,10 7,10"/>
-            <polyline points="3,10 0,10 0,7"/>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+            <rect x="0.5" y="0.5" width="9" height="9"/>
           </svg>
         )}
       </button>
 
-      {!showOnlyFullscreen && !isFullscreen && (
-        <>
-          <button
-            onClick={() => window.windowControls.minimize()}
-            title="Minimize"
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1"/></svg>
-          </button>
-
-          <button
-            onClick={() => window.windowControls.maximize()}
-            title={isMaximized ? 'Restore' : 'Maximize'}
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"
-          >
-            {isMaximized ? (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-                <polyline points="3,0.5 9.5,0.5 9.5,7"/>
-                <rect x="0.5" y="3" width="6.5" height="6.5"/>
-              </svg>
-            ) : (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-                <rect x="0.5" y="0.5" width="9" height="9"/>
-              </svg>
-            )}
-          </button>
-
-          <button
-            onClick={() => window.windowControls.close()}
-            title="Close"
-            className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
-              <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
-            </svg>
-          </button>
-        </>
-      )}
+      <button
+        onClick={() => window.windowControls.close()}
+        title="Close"
+        className="h-full px-4 text-[var(--text-secondary)] hover:text-white hover:bg-[#e10600] transition-colors flex items-center justify-center"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+          <line x1="0" y1="0" x2="10" y2="10"/><line x1="10" y1="0" x2="0" y2="10"/>
+        </svg>
+      </button>
     </div>
   )
 })
@@ -1233,6 +1219,7 @@ export default function App() {
   const currentPlaybackLapNumRef = useRef<number | null>(null)
   const speedRpmBlocksRef = useRef<any[] | null>(null)
   const [confirmOpenFilePath, setConfirmOpenFilePath] = useState<string | null>(null)
+  const [playbackLoadError, setPlaybackLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
@@ -1248,6 +1235,12 @@ export default function App() {
   useEffect(() => {
     return window.playerBridge.onRequestOpenConfirm((filePath) => {
       setConfirmOpenFilePath(filePath)
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.playerBridge.onLoadFailed((reason) => {
+      setPlaybackLoadError(reason || 'The file could not be read.')
     })
   }, [])
 
@@ -1595,9 +1588,10 @@ export default function App() {
           editOpen={editOpen}
           setEditOpen={setEditOpen}
           tab={tab}
+          isFullscreen={isFullscreen}
         />
 
-        <WindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} showOnlyFullscreen={actualNativeTitlebar} />
+        {!actualNativeTitlebar && !isFullscreen && <WindowControls isMaximized={isMaximized} />}
 
       </header>
       </div>
@@ -2200,6 +2194,55 @@ export default function App() {
                 className="px-4 h-8 rounded-lg text-xs font-semibold font-mono bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] shadow-sm transition-all active:scale-95 cursor-pointer outline-none"
               >
                 Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {playbackLoadError && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="playback-load-error-title"
+        >
+          <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
+              <div
+                id="playback-load-error-title"
+                className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2"
+              >
+                <AlertTriangle size={15} className="text-[#e10600]" />
+                <span>Recording Load Failed</span>
+              </div>
+              <button
+                onClick={() => setPlaybackLoadError(null)}
+                aria-label="Close error"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="p-6 flex flex-col gap-3">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                Could not open the recording file.
+              </p>
+              <div className="p-3 rounded-lg bg-[#e10600]/[0.06] border border-[#e10600]/30">
+                <p className="text-xs font-mono text-[var(--text-secondary)] leading-relaxed break-words">
+                  {playbackLoadError}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
+              <button
+                autoFocus
+                onClick={() => setPlaybackLoadError(null)}
+                className="px-5 h-8 rounded-lg text-xs font-semibold font-mono bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] shadow-sm transition-all active:scale-95 cursor-pointer outline-none"
+              >
+                OK
               </button>
             </div>
           </div>

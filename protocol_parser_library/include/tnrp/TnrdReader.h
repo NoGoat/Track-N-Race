@@ -38,6 +38,7 @@ public:
     void close();
     bool isLoaded() const { return tempFile_ != nullptr; }
     TnrdFormat loadedFormat() const { return loadedFormat_; }
+    const std::string& lastError() const { return lastError_; }
 
     // Enable the Electron binary playback fast path BEFORE load(): the index
     // pass additionally pre-encodes the hot rows (telemetry/motion/motion_ex)
@@ -134,6 +135,7 @@ private:
     size_t      playPos_     = 0;
     bool        binaryPlayback_ = false;
     TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
+    std::string lastError_;
 
     // Binary-playback stores (built by buildIndex when binaryPlayback_):
     // packed hot records + per-record times/byte-offsets (hotStart_ has one

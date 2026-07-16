@@ -47,7 +47,7 @@ public:
     // ── Playback ─────────────────────────────────────────────────────────
     // Loads a .tnrd, switches the engine into playback mode (UDP ignored),
     // emits the initial reconstructed snapshot, and stays paused.
-    bool playerLoad(const std::string& path);
+    bool playerLoad(const std::string& path, std::string* errorOut = nullptr);
     void playerPlay();
     void playerPause();
     void playerSeek(float pct);            // 0..1 of the recording duration

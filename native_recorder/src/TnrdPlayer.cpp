@@ -55,22 +55,29 @@ void TnrdPlayer::load(const QString& path) {
     // Joined (not detached) in the destructor / next load, so the reader can't be
     // torn down while this thread is still using it.
     loadThread_ = std::thread([this, src] {
-        auto fail = [this] {
-            QMetaObject::invokeMethod(this, [this] {
+        auto fail = [this](const QString& reason) {
+            QMetaObject::invokeMethod(this, [this, reason] {
                 loading_ = false;
-                emit loadFailed();
+                emit loadFailed(reason);
             }, Qt::QueuedConnection);
         };
 
         qInfo("[player] load requested: %s", src.c_str());
-        if (cancelled_) { qInfo("[player] load cancelled before start"); fail(); return; }
+        if (cancelled_) {
+            qInfo("[player] load cancelled before start");
+            fail(QStringLiteral("Loading was cancelled."));
+            return;
+        }
 
         tnrp::HeaderRow header;
         if (!reader_.load(src, header) || cancelled_) {
+            const QString reason = cancelled_
+                ? QStringLiteral("Loading was cancelled.")
+                : QString::fromStdString(reader_.lastError());
             qWarning("[player] reader load failed%s for: %s (see [tnrd] logs above for the reason)",
                      cancelled_ ? " (cancelled)" : "", src.c_str());
             reader_.close();
-            fail();
+            fail(reason.isEmpty() ? QStringLiteral("The file could not be read.") : reason);
             return;
         }
 
@@ -81,7 +88,11 @@ void TnrdPlayer::load(const QString& path) {
               startTime_, totalTime_, totalTime_ - startTime_);
 
         scanIntoSessionData();
-        if (cancelled_) { reader_.close(); fail(); return; }
+        if (cancelled_) {
+            reader_.close();
+            fail(QStringLiteral("Loading was cancelled."));
+            return;
+        }
 
         reader_.setCursor(startTime_);   // rewind the stream cursor for playback
 

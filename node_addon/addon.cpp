@@ -69,10 +69,10 @@ private:
 
 // Runs Engine::playerLoad (gzip decompress + full index scan — seconds for a
 // long session) off the JS thread so the Electron main process stays
-// responsive during the load, resolving Promise<boolean>. The engine is held
+// responsive during the load, resolving Promise<{ok, error?}>. The engine is held
 // by shared_ptr so a destroy() racing a pending load can't free it out from
 // under the worker; `busy` serializes loads (a second concurrent load resolves
-// false instead of racing stopPlaybackThread).
+// with an explanatory failure instead of racing stopPlaybackThread).
 class PlayerLoadWorker : public Napi::AsyncWorker {
 public:
     PlayerLoadWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
@@ -81,11 +81,14 @@ public:
           busy_(std::move(busy)), deferred_(Napi::Promise::Deferred::New(env)) {}
 
     void Execute() override {   // libuv worker thread — no Napi/JS access here
-        ok_ = engine_->playerLoad(path_);
+        ok_ = engine_->playerLoad(path_, &error_);
     }
     void OnOK() override {
         busy_->store(false);
-        deferred_.Resolve(Napi::Boolean::New(Env(), ok_));
+        Napi::Object result = Napi::Object::New(Env());
+        result.Set("ok", ok_);
+        if (!ok_) result.Set("error", error_);
+        deferred_.Resolve(result);
     }
     void OnError(const Napi::Error& e) override {
         busy_->store(false);
@@ -98,6 +101,7 @@ private:
     std::string path_;
     std::shared_ptr<std::atomic<bool>> busy_;
     bool ok_ = false;
+    std::string error_;
     Napi::Promise::Deferred deferred_;
 };
 
@@ -388,17 +392,22 @@ private:
         return info.Env().Undefined();
     }
 
-    // Async: resolves Promise<boolean>. The load (decompress + index scan) runs
+    // Async: resolves Promise<{ok, error?}>. The load (decompress + index scan) runs
     // on the libuv threadpool so the Electron main thread stays responsive.
     Napi::Value PlayerLoad(const Napi::CallbackInfo& info) {
         Napi::Env env = info.Env();
-        auto resolveFalse = [&env]() {
+        auto resolveFailure = [&env](const char* error) {
             auto d = Napi::Promise::Deferred::New(env);
-            d.Resolve(Napi::Boolean::New(env, false));
+            Napi::Object result = Napi::Object::New(env);
+            result.Set("ok", false);
+            result.Set("error", error);
+            d.Resolve(result);
             return d.Promise();
         };
-        if (info.Length() < 1 || !info[0].IsString() || !engine) return resolveFalse();
-        if (loadBusy_->exchange(true)) return resolveFalse();   // a load is already in flight
+        if (info.Length() < 1 || !info[0].IsString() || !engine)
+            return resolveFailure("The playback engine is not available.");
+        if (loadBusy_->exchange(true))
+            return resolveFailure("Another recording is already being opened.");
         auto* worker = new PlayerLoadWorker(env, engine,
                                             info[0].As<Napi::String>().Utf8Value(), loadBusy_);
         Napi::Promise p = worker->GetPromise();

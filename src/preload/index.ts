@@ -75,7 +75,7 @@ const fsBridge = {
 
 const playerBridge = {
   setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
-  load: (filePath: string): Promise<boolean> => ipcRenderer.invoke('player:load', filePath),
+  load: (filePath: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
   pause: () => ipcRenderer.send('player:pause'),
   seek: (pct: number) => ipcRenderer.send('player:seek', pct),
@@ -97,6 +97,11 @@ const playerBridge = {
     const handler = (_e: any, filePath: string) => cb(filePath)
     ipcRenderer.on('player:request-open-confirm', handler)
     return () => { ipcRenderer.removeListener('player:request-open-confirm', handler) }
+  },
+  onLoadFailed: (cb: (reason: string) => void) => {
+    const handler = (_e: any, reason: string) => cb(reason)
+    ipcRenderer.on('player:load-failed', handler)
+    return () => { ipcRenderer.removeListener('player:load-failed', handler) }
   }
 }
 

@@ -174,7 +174,7 @@ void Engine::setLoggingGzip(bool enabled, const std::string& outputDir) {
 
 // ── Playback ─────────────────────────────────────────────────────────────────
 
-bool Engine::playerLoad(const std::string& path) {
+bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     stopPlaybackThread();
 
     bool ok = false;
@@ -187,6 +187,7 @@ bool Engine::playerLoad(const std::string& path) {
         std::lock_guard<std::mutex> lk(mutex_);
         reader_.setBinaryPlayback(config_.binaryPlayback);
         ok = reader_.load(path, header);
+        if (!ok && errorOut) *errorOut = reader_.lastError();
         if (ok) {
             inPlayback_.store(true);
             playing_     = false;

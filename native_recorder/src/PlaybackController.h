@@ -42,7 +42,7 @@ public:
 
 signals:
     void loadingStarted();                         // show the loading overlay
-    void loadFailed();                             // hide overlay + warn
+    void loadFailed(const QString& reason);        // hide overlay + warn
     // Recording opened: model loaded, bar shown. `header` is the .tnrd header
     // (protocol/track_name/session_name), `currentTime` the initial playhead.
     void entered(const tnrp::HeaderRow& header, float currentTime);

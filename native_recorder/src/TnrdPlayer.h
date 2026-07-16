@@ -49,7 +49,7 @@ public:
 signals:
     void loadingStarted();
     void loaded(const tnrp::HeaderRow& header);
-    void loadFailed();
+    void loadFailed(const QString& reason);
     void packetReady(const tnrp::AnyRow& packet);
     void stateChanged(bool playing, float currentTime, float totalTime, float speed);
     void seeked();

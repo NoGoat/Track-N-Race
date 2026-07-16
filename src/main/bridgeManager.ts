@@ -333,8 +333,10 @@ export function setOnPlaybackState(cb: (state: PlaybackState) => void): void {
   onPlaybackState = cb
 }
 
-export async function playerLoad(filePath: string): Promise<boolean> {
-  if (!engine) return false
+export interface PlayerLoadResult { ok: boolean; error?: string }
+
+export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
+  if (!engine) return { ok: false, error: 'The playback engine is not available.' }
   // Loading over an already-open clip: close it first so the renderer clears
   // its playback buffers (playback_close) before the new clip's rows arrive.
   if (activeFilePath) engine.playerClose()
@@ -342,21 +344,22 @@ export async function playerLoad(filePath: string): Promise<boolean> {
   smoother.reset()
   binPending = []
   emitPlaybackState({ isScanning: true })
-  let ok = false
+  let result: PlayerLoadResult = { ok: false, error: 'The recording could not be opened.' }
   try {
-    ok = await engine.playerLoad(filePath)   // async: decompress+index off-thread
+    result = await engine.playerLoad(filePath)   // async: decompress+index off-thread
   } catch (err) {
     console.error('[bridge] playerLoad failed:', err)
+    result = { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  if (!ok) {
+  if (!result.ok) {
     activeFilePath = null
     emitPlaybackState({})
-    return false
+    return result
   }
   // The engine's own playback_state row (intercepted above) follows with the
   // real duration; this one just clears the scanning flag deterministically.
   emitPlaybackState({ isScanning: false })
-  return true
+  return result
 }
 
 export function playerPlay(): void { engine?.playerPlay() }

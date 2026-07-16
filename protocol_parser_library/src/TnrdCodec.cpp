@@ -295,7 +295,9 @@ bool decompressZstd(const std::string& srcPath, std::FILE* output,
 TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
     std::FILE* file = openFile(path, "rb");
     if (!file) {
-        setError(errorOut, "cannot open TNRD file");
+        const int openError = errno;
+        setError(errorOut, std::string("Cannot open the recording file: ") +
+            (openError ? std::strerror(openError) : "unknown file-system error"));
         return TnrdFormat::Unknown;
     }
     unsigned char magic[4]{};

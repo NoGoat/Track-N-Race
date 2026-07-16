@@ -407,7 +407,7 @@ declare global {
       selectTNRDFile: () => Promise<string | null>
     }
     playerBridge: {
-      load: (filePath: string) => Promise<boolean>
+      load: (filePath: string) => Promise<{ ok: boolean; error?: string }>
       play: () => void
       pause: () => void
       seek: (pct: number) => void
@@ -418,6 +418,7 @@ declare global {
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
+      onLoadFailed: (cb: (reason: string) => void) => () => void
     }
 
   }

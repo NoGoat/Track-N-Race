@@ -298,12 +298,14 @@ void TnrdReader::buildIndex(const std::string& filePath) {
 }
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
+    lastError_.clear();
     std::string detectError;
     const TnrdFormat format = detail::detectTnrdFormat(path, &detectError);
     if (format == TnrdFormat::Unknown) {
+        lastError_ = detectError.empty() ? "The file format could not be identified." : detectError;
         close();
         std::fprintf(stderr, "[tnrd] load FAILED: %s for '%s'\n",
-                     detectError.c_str(), path.c_str());
+                     lastError_.c_str(), path.c_str());
         return false;
     }
     return loadWithFormat(path, outHeader, format);
@@ -320,9 +322,13 @@ bool TnrdReader::loadGzip(const std::string& path, HeaderRow& outHeader) {
 bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                                 TnrdFormat format) {
     close();
+    lastError_.clear();
     std::string detectError;
     const TnrdFormat detected = detail::detectTnrdFormat(path, &detectError);
     if (detected != format) {
+        lastError_ = detected == TnrdFormat::Unknown
+            ? (detectError.empty() ? "The file format could not be identified." : detectError)
+            : std::string("Expected ") + toString(format) + " but found " + toString(detected) + ".";
         std::fprintf(stderr, "[tnrd] load FAILED: requested %s but file is %s ('%s')\n",
                      toString(format), toString(detected), path.c_str());
         return false;
@@ -339,8 +345,9 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     bool partial = false;
     std::string decompressError;
     if (!detail::decompressTnrd(path, tempPath_, format, &partial, &decompressError)) {
+        lastError_ = decompressError.empty() ? "The recording could not be decompressed." : decompressError;
         std::fprintf(stderr, "[tnrd] load FAILED: decompress step for '%s': %s\n",
-                     path.c_str(), decompressError.c_str());
+                     path.c_str(), lastError_.c_str());
         close();
         return false;
     }
@@ -351,6 +358,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     {
         std::FILE* f = std::fopen(tempPath_.c_str(), "rb");
         if (!f) {
+            lastError_ = "The decompressed temporary file could not be opened.";
             std::fprintf(stderr, "[tnrd] load FAILED: cannot reopen decompressed temp '%s'\n",
                          tempPath_.c_str());
             close();
@@ -367,6 +375,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         outHeader = HeaderRow{};
         auto ec = glz::read<kPartialRead>(outHeader, line);
         if (ec) {
+            lastError_ = "The recording header is missing or contains invalid JSON.";
             std::fprintf(stderr, "[tnrd] load FAILED: header JSON parse error (first line, %zu bytes)\n",
                          line.size());
             close();
@@ -377,6 +386,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             ? (outHeader.compression && *outHeader.compression == "zstd")
             : (!outHeader.compression || *outHeader.compression == "gzip");
         if (outHeader.magic != expectedMagic || !compressionOk) {
+            lastError_ = "The recording header does not match its compression format.";
             std::fprintf(stderr,
                          "[tnrd] load FAILED: header/container mismatch: container=%s magic='%s' compression='%s'\n",
                          toString(format), outHeader.magic.c_str(),
@@ -388,6 +398,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
 
     buildIndex(tempPath_);
     if (index_.empty()) {
+        lastError_ = "The recording contains no readable telemetry rows.";
         std::fprintf(stderr, "[tnrd] load FAILED: index empty (no indexable rows) for '%s'\n", path.c_str());
         close();
         return false;
@@ -395,6 +406,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
 
     tempFile_ = std::fopen(tempPath_.c_str(), "rb");
     if (!tempFile_) {
+        lastError_ = "The decompressed recording could not be opened for playback.";
         std::fprintf(stderr, "[tnrd] load FAILED: final reopen of temp '%s' failed\n", tempPath_.c_str());
         close();
         return false;

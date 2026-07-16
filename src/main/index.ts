@@ -22,7 +22,8 @@ import {
   playerClose,
   setOnPlaybackState,
   getActiveFilePath,
-  sweepTempFiles
+  sweepTempFiles,
+  type PlayerLoadResult
 } from './bridgeManager'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
@@ -73,10 +74,21 @@ function showWindow(): void {
   mainWindow.focus()
 }
 
-async function openTelemetryFile(filePath: string): Promise<boolean> {
+async function openTelemetryFile(filePath: string): Promise<PlayerLoadResult> {
   // The bridge switches to playback mode itself (it ignores live UDP while a clip
   // is loaded), so there's no separate live-suspend step here.
-  return playerLoad(filePath)
+  const result = await playerLoad(filePath)
+  if (!result.ok) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(
+          'player:load-failed',
+          result.error || 'The file could not be read.'
+        )
+      }
+    }
+  }
+  return result
 }
 
 // Single Instance Lock

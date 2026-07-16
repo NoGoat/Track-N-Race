@@ -317,10 +317,13 @@ MainWindow::MainWindow(QWidget* parent)
         loadingOverlay_->show();
     });
 
-    connect(playback_, &PlaybackController::loadFailed, this, [this] {
+    connect(playback_, &PlaybackController::loadFailed, this, [this](const QString& reason) {
         qWarning("[open] load failed — surfacing 'Load Failed' dialog (see [player]/[tnrd] logs above)");
         loadingOverlay_->hide();
-        QMessageBox::warning(this, "Load Failed", "Could not open the recording file.");
+        QMessageBox::critical(
+            this, "Load Failed",
+            QStringLiteral("Could not open the recording file.\n\n") +
+                (reason.isEmpty() ? QStringLiteral("The file could not be read.") : reason));
     });
 
     connect(playback_, &PlaybackController::exportRequested, this, &MainWindow::onExportXlsxRequested);
