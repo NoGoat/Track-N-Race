@@ -29,6 +29,38 @@ if [[ -z "$QMAKE" ]]; then
     exit 1
 fi
 
+QT_VERSION="$($QMAKE -query QT_VERSION)"
+REAL_PLUGINS="$($QMAKE -query QT_INSTALL_PLUGINS)"
+CURATED_PLUGINS="$TOOLS_DIR/qt-plugins-curated"
+rm -rf "$CURATED_PLUGINS"
+mkdir -p "$CURATED_PLUGINS/imageformats"
+# Preserve the desktop/platform integration categories, but avoid deploying
+# every image codec installed on the build host. Some KDE codecs have optional
+# runtime dependencies and can abort linuxdeploy even though this app never
+# uses them.
+for directory in "$REAL_PLUGINS"/*; do
+    name="$(basename "$directory")"
+    [[ "$name" == imageformats ]] && continue
+    ln -s "$directory" "$CURATED_PLUGINS/$name"
+done
+for plugin in libqico.so libqsvg.so libqjpeg.so libqgif.so; do
+    [[ -e "$REAL_PLUGINS/imageformats/$plugin" ]] && \
+        ln -s "$REAL_PLUGINS/imageformats/$plugin" "$CURATED_PLUGINS/imageformats/$plugin"
+done
+
+REAL_QMAKE="$QMAKE"
+QMAKE_WRAPPER="$TOOLS_DIR/qmake-curated"
+cat > "$QMAKE_WRAPPER" <<EOF
+#!/usr/bin/env bash
+out="\$("$REAL_QMAKE" "\$@")"; rc=\$?
+printf '%s\n' "\$out" \\
+  | sed -e "s|^QT_INSTALL_PLUGINS:.*\$|QT_INSTALL_PLUGINS:$CURATED_PLUGINS|" \\
+        -e "s|^$REAL_PLUGINS\$|$CURATED_PLUGINS|"
+exit \$rc
+EOF
+chmod +x "$QMAKE_WRAPPER"
+export QMAKE="$QMAKE_WRAPPER"
+
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr
@@ -39,6 +71,14 @@ DESTDIR="$APPDIR" cmake --install "$BUILD_DIR" --config Release
 
 export ARCH=x86_64
 export APPIMAGE_EXTRACT_AND_RUN=1
+export NO_STRIP=1
+# Bundle native Wayland alongside XCB. The Qt deployment plugin also pulls in
+# the Wayland shell/decoration integrations required by that platform plugin.
+if [[ "$QT_VERSION" == 5.* ]]; then
+    export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so"
+else
+    export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
+fi
 export OUTPUT="Track_N_Race_Minimal_Recorder-x86_64.AppImage"
 (
     cd "$OUTPUT_DIR"

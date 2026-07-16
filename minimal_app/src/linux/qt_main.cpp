@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QFrame>
@@ -18,6 +19,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QStyle>
 #include <QTableWidget>
 #include <QTextBrowser>
@@ -25,14 +27,51 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtGlobal>
 
 #include <memory>
+#include <array>
+#include <cstdio>
 #include <string>
 
 namespace {
 
 QString text(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<int>(value.size()));
+}
+
+// AppImage qt.conf restricts plugin lookup to the bundled runtime. Add the
+// host's Qt plugin directory before QApplication is constructed so installed
+// desktop styles (Breeze, Kvantum, Adwaita, etc.) remain available.
+void addHostQtPluginPath() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QString qtpaths = QStandardPaths::findExecutable("qtpaths6");
+    if (qtpaths.isEmpty()) qtpaths = QStandardPaths::findExecutable("qtpaths");
+#else
+    QString qtpaths = QStandardPaths::findExecutable("qtpaths-qt5");
+    if (qtpaths.isEmpty()) qtpaths = QStandardPaths::findExecutable("qtpaths");
+#endif
+    if (qtpaths.isEmpty()) return;
+
+    QString escaped = qtpaths;
+    escaped.replace(QLatin1String("'"), QLatin1String("'\\''"));
+    const QString command = QLatin1Char('\'') + escaped
+        + QLatin1String("' -query QT_INSTALL_PLUGINS 2>/dev/null");
+
+    FILE* pipe = popen(command.toLocal8Bit().constData(), "r");
+    if (!pipe) return;
+    std::array<char, 512> buffer{};
+    QString output;
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe))
+        output += QString::fromLocal8Bit(buffer.data());
+    pclose(pipe);
+
+    const QString hostPlugins = output.trimmed();
+    if (hostPlugins.isEmpty() || !QDir(hostPlugins).exists()) return;
+    const QByteArray existing = qgetenv("QT_PLUGIN_PATH");
+    qputenv("QT_PLUGIN_PATH", existing.isEmpty()
+        ? hostPlugins.toLocal8Bit()
+        : hostPlugins.toLocal8Bit() + ':' + existing);
 }
 
 AppSettings loadSettings(QSettings& settings) {
@@ -356,6 +395,13 @@ private:
 } // namespace
 
 int main(int argc, char** argv) {
+    // The bundled portal platform theme follows the host desktop and supplies
+    // native file dialogs on both X11 and Wayland. It gracefully falls back
+    // when the desktop portal service is unavailable.
+    if (qgetenv("QT_QPA_PLATFORMTHEME").isEmpty())
+        qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    addHostQtPluginPath();
+
     QApplication application(argc, argv);
     QApplication::setOrganizationName("TrackNRace");
     QApplication::setApplicationName("MinimalRecorder");
