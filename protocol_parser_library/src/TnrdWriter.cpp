@@ -185,7 +185,7 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     closeActiveStream();
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
-    std::string proto = (format == 2024) ? "f1_24" : "f1_25";
+    const std::string proto = RecordingFilenamePrefix(format);
 
     auto itTrack = TRACK_NAMES.find(trackId);
     std::string tName = (itTrack != TRACK_NAMES.end())

@@ -20,6 +20,8 @@ static const int PID_SESSION_HISTORY  = 11;
 static const int PID_TYRE_SETS        = 12;
 static const int PID_MOTION_EX        = 13;
 
+const char* F1_25::RecordingFilenamePrefix() { return "f1_25"; }
+
 static AllStatusCar ParseStatusF125(const uint8_t* data, int base) {
     AllStatusCar c;
     int o = base;

@@ -1,5 +1,17 @@
 #include "protocol.h"
+#include "f1_24.h"
+#include "f1_25.h"
+#include "f1_26.h"
 #include <cctype>
+
+std::string RecordingFilenamePrefix(uint16_t format) {
+    switch (format) {
+        case 2024: return F1_24::RecordingFilenamePrefix();
+        case 2025: return F1_25::RecordingFilenamePrefix();
+        case 2026: return F1_26::RecordingFilenamePrefix();
+        default:   return "f1_unknown";
+    }
+}
 
 std::string ReadString(const uint8_t* data, int offset, int length) {
     std::string str(reinterpret_cast<const char*>(data + offset), length);

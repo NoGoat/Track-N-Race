@@ -24,6 +24,8 @@ static const int PID_TYRE_SETS        = 12;
 static const int PID_MOTION_EX        = 13;
 static const int PID_CAR_TEL2         = 16;
 
+const char* F1_26::RecordingFilenamePrefix() { return "f1_26"; }
+
 // 2026 moves the player's wing state out of Car Telemetry's m_drs (which stays 0
 // under the new regs) and into Car Telemetry 2's m_activeAeroMode (0 = Corner /
 // high-downforce, 1 = Straight / low-drag = "wing open"). The engine parses on a

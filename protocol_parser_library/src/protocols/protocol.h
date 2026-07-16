@@ -64,3 +64,7 @@ std::string ReadString(const uint8_t* data, int offset, int length);
 
 extern const std::unordered_map<int, std::string> TRACK_NAMES;
 extern const std::unordered_map<int, std::string> SESSION_NAMES;
+
+// Recording filenames are protocol-owned. Callers use this generic dispatch
+// instead of duplicating format-to-prefix knowledge outside the protocol layer.
+std::string RecordingFilenamePrefix(uint16_t format);

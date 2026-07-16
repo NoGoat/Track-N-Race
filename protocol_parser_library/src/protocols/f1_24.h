@@ -5,5 +5,6 @@
 #include "protocol.h"
 
 namespace F1_24 {
+    const char* RecordingFilenamePrefix();
     std::vector<std::string> ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot);
 }

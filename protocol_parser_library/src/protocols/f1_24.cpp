@@ -19,6 +19,8 @@ static const int PID_SESSION_HISTORY  = 11;
 static const int PID_TYRE_SETS        = 12;
 static const int PID_MOTION_EX        = 13;
 
+const char* F1_24::RecordingFilenamePrefix() { return "f1_24"; }
+
 static const std::unordered_map<int, std::string> F1_24_TEAM_COLORS = {
     {0, "#27f4d2"}, {1, "#e80020"}, {2, "#3671c6"}, {3, "#64c4ff"},
     {4, "#229971"}, {5, "#0093cc"}, {6, "#6692ff"}, {7, "#e6002b"},
