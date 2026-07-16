@@ -1,7 +1,8 @@
 # Track N Race Minimal Recorder
 
 A deliberately small automatic TNRD recorder. The Windows front end is plain
-Win32; the Linux front end uses GTK 4. Both use libtnrp's raw socket backend
+Win32; the Linux front end uses Qt Widgets. It prefers Qt 6 and falls back to
+Qt 5 when Qt 6 is unavailable. Both use libtnrp's raw socket backend
 and record TNRD V2/Zstandard files whenever a valid folder is selected.
 
 ## Windows
@@ -30,8 +31,8 @@ standalone binary does not need a neighboring license directory.
 
 ## Linux system build
 
-Prerequisites: CMake, a C++20 compiler, `pkg-config`, GTK 4.6 development files,
-`glib-compile-schemas`, and network access for libtnrp's pinned FetchContent
+Prerequisites: CMake, a C++20 compiler, Qt 6 Widgets development files (or Qt 5
+Widgets as a fallback), and network access for libtnrp's pinned FetchContent
 dependencies on the first configure.
 
 ```bash
@@ -40,13 +41,13 @@ chmod +x minimal_app/build.sh minimal_app/build-appimage.sh
 ```
 
 The system-linked tree is written to `minimal_app/dist/linux`. Install that tree
-under a normal prefix, or run its binary directly; the executable also discovers
-the staged GSettings schema beside the build/install tree.
+under a normal prefix, or run its binary directly. Settings are stored through
+Qt's platform-native `QSettings` backend.
 
 ## Linux AppImage
 
 The AppImage script additionally requires `curl`. It downloads the pinned
-linuxdeploy release `1-alpha-20250213-2`, stages GTK and the application files,
+linuxdeploy release and its Qt plugin, bundles Qt and the application files,
 and writes the result under `minimal_app/dist/appimage`.
 
 ```bash

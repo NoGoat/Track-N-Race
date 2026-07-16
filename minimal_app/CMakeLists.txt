@@ -28,7 +28,7 @@ file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/MIT-glaze.txt 
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/Zlib.txt ZLIB_LICENSE_TEXT)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/BSD-3-Clause-Zstandard.txt ZSTD_BSD3_TEXT)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/BSD-2-Clause-libxlsxwriter.txt LIBXLSXWRITER_BSD2_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/LGPL-2.1.txt LGPL21_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/LGPL-3.0.txt LGPL3_TEXT)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
 configure_file(src/Attributions.cpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/generated/Attributions.cpp @ONLY)
@@ -66,45 +66,27 @@ if(NOT UNIX OR APPLE)
     message(FATAL_ERROR "minimal_app supports Windows and desktop Linux only")
 endif()
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4>=4.6)
-find_program(GLIB_COMPILE_SCHEMAS glib-compile-schemas REQUIRED)
+find_package(Qt6 QUIET COMPONENTS Widgets)
+if(Qt6_FOUND)
+    set(MINIMAL_QT_TARGET Qt6::Widgets)
+    message(STATUS "Using Qt6 for the minimal recorder")
+else()
+    find_package(Qt5 REQUIRED COMPONENTS Widgets)
+    set(MINIMAL_QT_TARGET Qt5::Widgets)
+    message(STATUS "Using Qt5 for the minimal recorder (Qt6 not found)")
+endif()
 
-set(SCHEMA_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/schemas)
-file(MAKE_DIRECTORY ${SCHEMA_BUILD_DIR})
-configure_file(data/in.nogoat.tracknrace.gschema.xml
-               ${SCHEMA_BUILD_DIR}/in.nogoat.tracknrace.gschema.xml COPYONLY)
-add_custom_command(
-    OUTPUT ${SCHEMA_BUILD_DIR}/gschemas.compiled
-    COMMAND ${GLIB_COMPILE_SCHEMAS} --strict ${SCHEMA_BUILD_DIR}
-    DEPENDS ${SCHEMA_BUILD_DIR}/in.nogoat.tracknrace.gschema.xml
-    COMMENT "Compiling minimal recorder GSettings schema")
-add_custom_target(minimal_app_schemas ALL DEPENDS ${SCHEMA_BUILD_DIR}/gschemas.compiled)
-
-add_executable(minimal_app ${COMMON_SOURCES} src/linux/gtk_main.cpp)
-add_dependencies(minimal_app minimal_app_schemas)
-target_link_libraries(minimal_app PRIVATE tnrp PkgConfig::GTK4)
-target_compile_definitions(minimal_app PRIVATE TNR_MINIMAL_GTK)
+add_executable(minimal_app ${COMMON_SOURCES} src/linux/qt_main.cpp)
+target_link_libraries(minimal_app PRIVATE tnrp ${MINIMAL_QT_TARGET})
+target_compile_definitions(minimal_app PRIVATE TNR_MINIMAL_QT)
 set_target_properties(minimal_app PROPERTIES OUTPUT_NAME track-n-race-minimal)
 
 target_include_directories(minimal_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 include(GNUInstallDirs)
 install(TARGETS minimal_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES data/in.nogoat.tracknrace.gschema.xml
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/glib-2.0/schemas)
 install(FILES data/track-n-race-minimal.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../icon_transparent.png
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/linux/track-n-race-minimal.png
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
         RENAME track-n-race-minimal.png)
-install(CODE "
-    set(_schema_dir \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_DATADIR}/glib-2.0/schemas\")
-    if(EXISTS \"\${_schema_dir}\")
-        execute_process(COMMAND \"${GLIB_COMPILE_SCHEMAS}\" \"\${_schema_dir}\"
-                        RESULT_VARIABLE _schema_result)
-        if(NOT _schema_result EQUAL 0)
-            message(FATAL_ERROR \"glib-compile-schemas failed during install\")
-        endif()
-    endif()
-")

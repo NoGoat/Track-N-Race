@@ -2,6 +2,10 @@
 
 #include <iterator>
 
+#ifdef TNR_MINIMAL_QT
+#include <QtGlobal>
+#endif
+
 namespace {
 
 constexpr char kGpl3[] = R"TNR_GPL3(@GPL3_TEXT@)TNR_GPL3";
@@ -9,8 +13,8 @@ constexpr char kGlazeMit[] = R"TNR_GLAZE(@GLAZE_MIT_TEXT@)TNR_GLAZE";
 constexpr char kZlib[] = R"TNR_ZLIB(@ZLIB_LICENSE_TEXT@)TNR_ZLIB";
 constexpr char kZstandardBsd3[] = R"TNR_ZSTD(@ZSTD_BSD3_TEXT@)TNR_ZSTD";
 constexpr char kLibxlsxwriterBsd2[] = R"TNR_XLSX(@LIBXLSXWRITER_BSD2_TEXT@)TNR_XLSX";
-#ifdef TNR_MINIMAL_GTK
-constexpr char kLgpl21[] = R"TNR_LGPL21(@LGPL21_TEXT@)TNR_LGPL21";
+#ifdef TNR_MINIMAL_QT
+constexpr char kLgpl3[] = R"TNR_LGPL3(@LGPL3_TEXT@)TNR_LGPL3";
 #endif
 
 constexpr Attribution kAttributions[] = {
@@ -29,13 +33,10 @@ constexpr Attribution kAttributions[] = {
     {"libxlsxwriter", "1.2.4", "BSD 2-Clause",
      "Copyright © 2014-2026 John McNamara",
      "https://libxlsxwriter.github.io", kLibxlsxwriterBsd2},
-#ifdef TNR_MINIMAL_GTK
-    {"GTK", "4 (system)", "LGPL-2.1-or-later",
-     "Copyright © The GTK Development Team",
-     "https://www.gtk.org", kLgpl21},
-    {"GLib / GIO", "2 (system)", "LGPL-2.1-or-later",
-     "Copyright © The GLib Development Team",
-     "https://docs.gtk.org/glib/", kLgpl21},
+#ifdef TNR_MINIMAL_QT
+    {"Qt", QT_VERSION_STR, "LGPL v3",
+     "Copyright © The Qt Company Ltd. and other contributors",
+     "https://www.qt.io", kLgpl3},
 #endif
 };
 
