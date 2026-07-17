@@ -275,7 +275,10 @@ public:
         setWindowTitle("Track N Race Minimal Recorder");
         setWindowIcon(QIcon::fromTheme("track-n-race-minimal"));
         setWindowFlag(Qt::WindowMaximizeButtonHint, false);
-        setFixedSize(777, 450);
+        // Qt sizes top-level widgets in device-independent pixels. At 125%
+        // display scaling this produces an approximately 777x450 decorated
+        // window in physical pixels (the target size used for this frontend).
+        setFixedSize(620, 330);
 
         auto* grid = new QGridLayout(this);
         grid->setContentsMargins(20, 20, 20, 20);
@@ -396,6 +399,20 @@ private:
 } // namespace
 
 int main(int argc, char** argv) {
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Qt 5 treats widget geometry as physical pixels unless high-DPI scaling
+    // is enabled before QApplication is created. Keep the fixed 777x450 size
+    // in device-independent pixels so Qt scales it for the active screen.
+    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#endif
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    // Preserve fractional scale factors instead of rounding (for example,
+    // turning a desktop's 125% scale into 100% or 200%).
+    QApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
+
     // The bundled portal platform theme follows the host desktop and supplies
     // native file dialogs on both X11 and Wayland. It gracefully falls back
     // when the desktop portal service is unavailable.
