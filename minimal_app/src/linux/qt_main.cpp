@@ -274,7 +274,8 @@ public:
         : settings_(settings), controller_(controller) {
         setWindowTitle("Track N Race Minimal Recorder");
         setWindowIcon(QIcon::fromTheme("track-n-race-minimal"));
-        resize(620, 330);
+        setWindowFlag(Qt::WindowMaximizeButtonHint, false);
+        setFixedSize(777, 450);
 
         auto* grid = new QGridLayout(this);
         grid->setContentsMargins(20, 20, 20, 20);
