@@ -276,9 +276,9 @@ public:
         setWindowIcon(QIcon::fromTheme("track-n-race-minimal"));
         setWindowFlag(Qt::WindowMaximizeButtonHint, false);
         // Qt sizes top-level widgets in device-independent pixels. At 125%
-        // display scaling this produces an approximately 777x450 decorated
+        // display scaling this produces an approximately 777x525 decorated
         // window in physical pixels (the target size used for this frontend).
-        setFixedSize(620, 330);
+        setFixedSize(620, 390);
 
         auto* grid = new QGridLayout(this);
         grid->setContentsMargins(20, 20, 20, 20);
@@ -311,6 +311,10 @@ public:
         session_ = new QLabel("Unavailable");
         auto* attributions = new QPushButton("Attributions...");
         addRow(grid, 6, "Session", session_, attributions);
+        recording_ = new QLabel("Not recording");
+        addRow(grid, 7, "Recording status", recording_);
+        error_ = new QLabel("None");
+        addRow(grid, 8, "Error", error_);
 
         const AppSettings& current = controller_->settings();
         folderEntry_->setText(QString::fromStdString(current.outputFolder));
@@ -339,6 +343,17 @@ public:
             QMetaObject::invokeMethod(this, [this, circuitText, sessionText] {
                 circuit_->setText(circuitText);
                 session_->setText(sessionText);
+            }, Qt::QueuedConnection);
+        });
+        controller_->setRecordingCallback([this](std::string status, std::string error) {
+            const QString statusText = QString::fromStdString(status);
+            const QString errorText = error.empty() ? QStringLiteral("None")
+                                                    : QString::fromStdString(error);
+            QMetaObject::invokeMethod(this, [this, statusText, errorText] {
+                recording_->setText(statusText);
+                error_->setText(errorText);
+                error_->setStyleSheet(errorText == QStringLiteral("None")
+                    ? QString{} : QStringLiteral("color: #ef5350;"));
             }, Qt::QueuedConnection);
         });
 
@@ -394,6 +409,8 @@ private:
     QSpinBox* port_{};
     QLabel* circuit_{};
     QLabel* session_{};
+    QLabel* recording_{};
+    QLabel* error_{};
 };
 
 } // namespace
@@ -432,6 +449,7 @@ int main(int argc, char** argv) {
     const int result = application.exec();
 
     controller->setSessionCallback({});
+    controller->setRecordingCallback({});
     controller.reset();
     settings.sync();
     return result;

@@ -19,7 +19,15 @@
 #endif
 
 MinimalController::MinimalController(AppSettings settings)
-    : settings_(std::move(settings)) {}
+    : settings_(std::move(settings)) {
+    // A path cannot legally contain NUL. Trim malformed persisted data at the
+    // controller boundary as well as in the platform settings loader so the UI
+    // and the filesystem always validate the same visible path.
+    if (const size_t terminator = settings_.outputFolder.find('\0');
+        terminator != std::string::npos) {
+        settings_.outputFolder.resize(terminator);
+    }
+}
 
 MinimalController::~MinimalController() = default;
 
@@ -28,18 +36,34 @@ void MinimalController::setSessionCallback(SessionCallback callback) {
     sessionCallback_ = std::move(callback);
 }
 
+void MinimalController::setRecordingCallback(RecordingCallback callback) {
+    std::string status;
+    std::string error;
+    RecordingCallback installed;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        recordingCallback_ = std::move(callback);
+        installed = recordingCallback_;
+        status = recordingStatus_;
+        error = recordingError_;
+    }
+    if (installed) installed(std::move(status), std::move(error));
+}
+
 bool MinimalController::start(std::string& error) {
     if (engine_) return true;
 
-    std::string folderError;
-    const bool canRecord = validateOutputFolder(settings_.outputFolder, folderError);
+    if (!validateOutputFolder(settings_.outputFolder, error)) {
+        publishRecordingState("Not recording", error);
+        return false;
+    }
 
     tnrp::Config config;
     config.port = settings_.port;
     config.bindAddress = settings_.bindAddress;
     config.protocol = settings_.protocol;
-    config.loggingEnabled = canRecord;
-    config.outputDirectory = canRecord ? settings_.outputFolder : std::string{};
+    config.loggingEnabled = true;
+    config.outputDirectory = settings_.outputFolder;
     config.binaryPlayback = false;
     config.hotRowsAsJson = false;
 
@@ -48,20 +72,30 @@ bool MinimalController::start(std::string& error) {
     // standard-library template, where the private base is inaccessible on MSVC.
     auto* sink = static_cast<tnrp::Sink*>(this);
     engine_ = std::make_unique<tnrp::Engine>(config, sink);
+    beginRecordingWatch();
     if (!engine_->startUdp()) {
         error = engine_->udpLastError();
         engine_.reset();
+        publishRecordingState("Not recording", error);
         return false;
     }
     return true;
 }
 
 bool MinimalController::setOutputFolder(const std::string& folder, std::string& error) {
-    if (!validateOutputFolder(folder, error)) return false;
+    if (!validateOutputFolder(folder, error)) {
+        publishError(error);
+        return false;
+    }
 
     if (engine_) engine_->setLogging(false, settings_.outputFolder);
     settings_.outputFolder = folder;
-    if (engine_) engine_->setLogging(true, settings_.outputFolder);
+    if (engine_) {
+        beginRecordingWatch();
+        engine_->setLogging(true, settings_.outputFolder);
+    } else if (!start(error)) {
+        return false;
+    }
     return true;
 }
 
@@ -74,10 +108,12 @@ bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t po
                                      std::string& error) {
     if (!validateIpv4(bindAddress)) {
         error = "Enter a valid IPv4 address, for example 0.0.0.0 or 127.0.0.1.";
+        publishError(error);
         return false;
     }
     if (port == 0) {
         error = "The UDP port must be between 1 and 65535.";
+        publishError(error);
         return false;
     }
 
@@ -100,11 +136,13 @@ bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t po
             error += " The previous UDP endpoint could not be restored: "
                   + engine_->udpLastError();
         }
+        publishError(error);
         return false;
     }
 
     settings_.bindAddress = bindAddress;
     settings_.port = port;
+    publishError({});
     return true;
 }
 
@@ -154,6 +192,8 @@ void MinimalController::onRow(const std::string& json) {
     const auto* session = std::get_if<tnrp::SessionRow>(&*row);
     if (!session) return;
 
+    checkRecordingFile();
+
     SessionCallback callback;
     {
         std::lock_guard<std::mutex> lock(callbackMutex_);
@@ -163,4 +203,98 @@ void MinimalController::onRow(const std::string& json) {
         callback(std::string(tnrp::circuitName(session->track_id)),
                  std::string(tnrp::sessionName(session->session_type)));
     }
+}
+
+void MinimalController::beginRecordingWatch() {
+    std::unordered_set<std::string> recordings;
+    std::error_code ec;
+    const std::filesystem::path directory(
+        std::u8string(settings_.outputFolder.begin(), settings_.outputFolder.end()));
+    for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (it->is_regular_file(ec) && it->path().extension() == ".tnrd") {
+            const auto u8path = it->path().u8string();
+            recordings.emplace(u8path.begin(), u8path.end());
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        knownRecordings_ = std::move(recordings);
+        sessionSeen_ = false;
+        recordingFileSeen_ = false;
+    }
+    publishRecordingState("Ready - waiting for session");
+}
+
+void MinimalController::checkRecordingFile() {
+    bool firstSession = false;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (recordingFileSeen_) return;
+        if (!sessionSeen_) {
+            sessionSeen_ = true;
+            firstSessionSeen_ = std::chrono::steady_clock::now();
+            firstSession = true;
+        }
+    }
+
+    std::error_code ec;
+    bool found = false;
+    const std::filesystem::path directory(
+        std::u8string(settings_.outputFolder.begin(), settings_.outputFolder.end()));
+    for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (!it->is_regular_file(ec) || it->path().extension() != ".tnrd") continue;
+        const auto u8path = it->path().u8string();
+        const std::string path(u8path.begin(), u8path.end());
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (!knownRecordings_.contains(path)) {
+            recordingFileSeen_ = true;
+            found = true;
+            break;
+        }
+    }
+
+    if (found) {
+        publishRecordingState("Recording");
+        return;
+    }
+    if (ec) {
+        publishRecordingState("Not recording",
+            "The recording folder could not be checked: " + ec.message());
+        return;
+    }
+
+    std::chrono::steady_clock::time_point firstSeen;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        firstSeen = firstSessionSeen_;
+    }
+    if (!firstSession && std::chrono::steady_clock::now() - firstSeen > std::chrono::seconds(3)) {
+        publishRecordingState("Not recording",
+            "Telemetry was received, but libtnrp did not create a recording file.");
+    }
+}
+
+void MinimalController::publishRecordingState(std::string status, std::string error) {
+    RecordingCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        if (recordingStatus_ == status && recordingError_ == error) return;
+        recordingStatus_ = std::move(status);
+        recordingError_ = std::move(error);
+        callback = recordingCallback_;
+        status = recordingStatus_;
+        error = recordingError_;
+    }
+    if (callback) callback(std::move(status), std::move(error));
+}
+
+void MinimalController::publishError(const std::string& error) {
+    std::string status;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        status = recordingStatus_;
+    }
+    publishRecordingState(std::move(status), error);
 }

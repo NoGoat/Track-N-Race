@@ -29,7 +29,8 @@ constexpr wchar_t kWindowClass[] = L"TrackNRaceMinimalRecorderWindow";
 constexpr wchar_t kAttributionWindowClass[] = L"TrackNRaceMinimalRecorderAttributions";
 constexpr wchar_t kRegistryPath[] = L"Software\\Track N Race\\Minimal App";
 constexpr UINT kSessionUpdated = WM_APP + 1;
-constexpr UINT kSystemThemeChanged = WM_APP + 2;
+constexpr UINT kRecordingUpdated = WM_APP + 2;
+constexpr UINT kSystemThemeChanged = WM_APP + 3;
 constexpr COLORREF kDarkWindowColor = RGB(32, 32, 32);
 constexpr COLORREF kDarkControlColor = RGB(43, 43, 43);
 constexpr COLORREF kDarkTextColor = RGB(240, 240, 240);
@@ -43,6 +44,8 @@ enum ControlId : int {
     ApplyButton,
     CircuitValue,
     SessionValue,
+    RecordingValue,
+    ErrorValue,
     AttributionButton,
 };
 
@@ -89,7 +92,12 @@ std::wstring readRegistryString(const wchar_t* name, const wchar_t* fallback) {
                      nullptr, value.data(), &bytes) != ERROR_SUCCESS) {
         return fallback;
     }
-    if (!value.empty() && value.back() == L'\0') value.pop_back();
+    // REG_SZ should contain one final NUL, but older/malformed values can carry
+    // extra terminators or stale data. Edit controls hide everything after the
+    // first NUL while std::filesystem still receives it as part of the string,
+    // making a path look correct in the UI but fail startup validation.
+    const size_t terminator = value.find(L'\0');
+    if (terminator != std::wstring::npos) value.resize(terminator);
     return value;
 }
 
@@ -101,8 +109,11 @@ DWORD readRegistryDword(const wchar_t* name, DWORD fallback) {
 }
 
 void writeRegistryString(const wchar_t* name, std::wstring_view value) {
-    RegSetKeyValueW(HKEY_CURRENT_USER, kRegistryPath, name, REG_SZ, value.data(),
-                    static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    // Own the buffer so the byte beyond string_view::size() is guaranteed to
+    // be the one and only terminator written to the REG_SZ value.
+    const std::wstring terminated(value);
+    RegSetKeyValueW(HKEY_CURRENT_USER, kRegistryPath, name, REG_SZ, terminated.c_str(),
+                    static_cast<DWORD>((terminated.size() + 1) * sizeof(wchar_t)));
 }
 
 void writeRegistryDword(const wchar_t* name, DWORD value) {
@@ -157,6 +168,8 @@ struct AppState {
     HWND port{};
     HWND circuit{};
     HWND session{};
+    HWND recording{};
+    HWND error{};
     HWND attributionWindow{};
     HFONT font{};
     UINT dpi{96};
@@ -164,6 +177,8 @@ struct AppState {
     std::mutex sessionMutex;
     std::wstring pendingCircuit;
     std::wstring pendingSession;
+    std::wstring pendingRecording;
+    std::wstring pendingError;
     winrt::Windows::UI::ViewManagement::UISettings uiSettings;
     winrt::event_token colorValuesChangedToken{};
     HBRUSH darkWindowBrush{};
@@ -750,13 +765,15 @@ void layout(AppState& state) {
                         margin + 2 * (rowHeight + rowGap),
                         margin + 3 * (rowHeight + rowGap),
                         margin + 5 * (rowHeight + rowGap),
-                        margin + 6 * (rowHeight + rowGap)};
+                        margin + 6 * (rowHeight + rowGap),
+                        margin + 7 * (rowHeight + rowGap),
+                        margin + 8 * (rowHeight + rowGap)};
 
     auto move = [](HWND control, int x, int y, int width, int height) {
         SetWindowPos(control, nullptr, x, y, width, height,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     };
-    const int labels[] = {200, 201, 202, 203, 204, 205};
+    const int labels[] = {200, 201, 202, 203, 204, 205, 206, 207};
     for (size_t i = 0; i < std::size(labels); ++i) {
         move(GetDlgItem(state.window, labels[i]), margin, rows[i],
              labelWidth - gap, rowHeight);
@@ -773,6 +790,8 @@ void layout(AppState& state) {
     move(state.session, valueX, rows[5], fieldWidth - buttonWidth - gap, rowHeight);
     move(GetDlgItem(state.window, AttributionButton), right - buttonWidth, rows[5],
          buttonWidth, rowHeight);
+    move(state.recording, valueX, rows[6], fieldWidth, rowHeight);
+    move(state.error, valueX, rows[7], fieldWidth, rowHeight);
 }
 
 void showError(HWND owner, std::string_view error) {
@@ -857,6 +876,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             addControl(*state, L"STATIC", L"UDP port", SS_CENTERIMAGE, 203);
             addControl(*state, L"STATIC", L"Circuit name", SS_CENTERIMAGE, 204);
             addControl(*state, L"STATIC", L"Session", SS_CENTERIMAGE, 205);
+            addControl(*state, L"STATIC", L"Recording status", SS_CENTERIMAGE, 206);
+            addControl(*state, L"STATIC", L"Error", SS_CENTERIMAGE, 207);
 
             state->folder = addControl(*state, L"EDIT", L"",
                 WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, FolderEdit);
@@ -879,6 +900,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                               reinterpret_cast<DWORD_PTR>(state));
             state->circuit = addControl(*state, L"STATIC", L"Unavailable", SS_CENTERIMAGE, CircuitValue);
             state->session = addControl(*state, L"STATIC", L"Unavailable", SS_CENTERIMAGE, SessionValue);
+            state->recording = addControl(*state, L"STATIC", L"Not recording",
+                                          SS_CENTERIMAGE, RecordingValue);
+            state->error = addControl(*state, L"STATIC", L"None",
+                                      SS_CENTERIMAGE, ErrorValue);
             HWND attributionButton = addControl(*state, L"BUTTON", L"Attributions...",
                                                 WS_TABSTOP | BS_OWNERDRAW,
                                                 AttributionButton);
@@ -907,6 +932,15 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 }
                 PostMessageW(state->window, kSessionUpdated, 0, 0);
             });
+            state->controller.setRecordingCallback(
+                [state](std::string status, std::string error) {
+                    {
+                        std::lock_guard<std::mutex> lock(state->sessionMutex);
+                        state->pendingRecording = wide(status);
+                        state->pendingError = error.empty() ? L"None" : wide(error);
+                    }
+                    PostMessageW(state->window, kRecordingUpdated, 0, 0);
+                });
             std::string error;
             if (!state->controller.start(error)) showError(window, error);
             return 0;
@@ -942,7 +976,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 const bool isReadOnlyEdit = _wcsicmp(className, L"EDIT") == 0;
                 const COLORREF background = isReadOnlyEdit
                     ? kDarkControlColor : kDarkWindowColor;
-                SetTextColor(dc, kDarkTextColor);
+                SetTextColor(dc, control == state->error && windowText(control) != L"None"
+                    ? RGB(255, 110, 110) : kDarkTextColor);
                 SetBkColor(dc, background);
                 return reinterpret_cast<LRESULT>(isReadOnlyEdit
                     ? state->darkControlBrush : state->darkWindowBrush);
@@ -998,6 +1033,14 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 SetWindowTextW(state->session, state->pendingSession.c_str());
             }
             return 0;
+        case kRecordingUpdated:
+            if (state) {
+                std::lock_guard<std::mutex> lock(state->sessionMutex);
+                SetWindowTextW(state->recording, state->pendingRecording.c_str());
+                SetWindowTextW(state->error, state->pendingError.c_str());
+                InvalidateRect(state->error, nullptr, TRUE);
+            }
+            return 0;
         case kSystemThemeChanged:
             if (state) applySystemThemeHints(*state);
             return 0;
@@ -1005,6 +1048,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (state) {
                 state->uiSettings.ColorValuesChanged(state->colorValuesChangedToken);
                 state->controller.setSessionCallback({});
+                state->controller.setRecordingCallback({});
             }
             PostQuitMessage(0);
             return 0;
@@ -1045,7 +1089,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     auto state = std::make_unique<AppState>(loadSettings());
     const UINT dpi = GetDpiForSystem();
     const int width = MulDiv(646, static_cast<int>(dpi), 96);
-    const int height = MulDiv(268, static_cast<int>(dpi), 96);
+    const int height = MulDiv(332, static_cast<int>(dpi), 96);
     HWND window = CreateWindowExW(0, kWindowClass, L"Track N Race Minimal Recorder",
                                   WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                   CW_USEDEFAULT, CW_USEDEFAULT,
