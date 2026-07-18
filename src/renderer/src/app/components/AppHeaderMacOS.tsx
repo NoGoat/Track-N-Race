@@ -51,14 +51,12 @@ export default memo(function AppHeader({
 
   return (
     <div
-      className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
-      onMouseEnter={() => { if (isFullscreen) setHeaderVisible(true) }}
-      onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
+      className={isFullscreen ? 'h-10 shrink-0' : ''}
     >
       <header
         className={`relative flex items-center gap-3 ${actualNativeTitlebar ? 'pl-2 pr-4' : isFullscreen ? 'px-4' : 'pl-20 pr-4'} h-10 select-none ${
           isFullscreen
-            ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
+            ? 'opacity-100 translate-y-0'
             : 'sticky top-0 z-10 transition-colors duration-500'
         }`}
         style={activeBanner
