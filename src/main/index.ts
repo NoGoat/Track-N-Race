@@ -425,7 +425,11 @@ app.whenReady().then(() => {
 
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    } else {
+      showWindow()
+    }
   })
 }).catch((err) => {
   console.error('[main] app.whenReady() rejected:', err)
@@ -433,9 +437,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   console.log('[main] window-all-closed')
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  app.quit()
 })
 
 app.on('quit', (_event, exitCode) => {

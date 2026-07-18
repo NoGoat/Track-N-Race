@@ -98,7 +98,9 @@ export default function AppShell() {
   const appTree = (
     <React.Profiler id="app" onRender={onAppRender}>
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
-      <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
+      {window.platform !== 'darwin' && (
+        <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
+      )}
 
       <Header
         actualNativeTitlebar={actualNativeTitlebar}
