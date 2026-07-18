@@ -1,3 +1,5 @@
+export type AlignedTable = Float64Array[]
+
 export interface TelemetryRow {
   type: 'telemetry'
   ts: string

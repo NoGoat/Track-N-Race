@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import type uPlot from 'uplot'
-import type { TelemetryRow } from '../types'
+import type { AlignedTable, TelemetryRow } from '../types'
 import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -20,13 +19,13 @@ const SERIES: SeriesDef<TelemetryRow>[] = [{
 }]
 const TABLE_COLS: GraphTableColumn[] = [{ header: 'Gear', color: COLOR_GEAR, format: v => String(Math.round(v)) }]
 const GEAR_TICKS = [1, 2, 3, 4, 5, 6, 7, 8]
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0), new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0), new Float64Array(0)]
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
 
 export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
   useChartDataProfiler('Gear', data)
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), gear = new Float64Array(data.length)
     data.forEach((d, i) => { ts[i] = d.session_time; gear[i] = d.gear })
@@ -42,7 +41,7 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
     <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest mb-3 shrink-0">Gear</h2>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={uData} />
+        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
           : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
               windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}

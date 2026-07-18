@@ -1,6 +1,6 @@
 import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
-import type uPlot from 'uplot'
+import type { AlignedTable } from '../types'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from native_recorder's GraphTable). One leading time column + one column
@@ -27,7 +27,7 @@ function fmtTime(s: number): string {
 
 export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop = false }: {
   columns: GraphTableColumn[]
-  data: uPlot.AlignedData
+  data: AlignedTable
   // How far (in rem) the table should break out of its container's padding on the
   // left/right/bottom so it sits flush against the panel edge/border instead of
   // floating with a gap — matches the parent's own p-* padding (defaults to p-4's 1rem).

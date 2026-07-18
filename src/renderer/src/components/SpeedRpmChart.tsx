@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type uPlot from 'uplot'
 import Select, { type SingleValue } from 'react-select'
-import type { TelemetryRow, StatusRow, LapData } from '../types'
+import type { AlignedTable, TelemetryRow, StatusRow, LapData } from '../types'
 import type { DataPoint } from '../lib/timechart/dataBridge'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
@@ -26,7 +25,7 @@ const TABLE_COLS: GraphTableColumn[] = [
   { header: 'RPM', color: COLOR_RPM, format: v => Math.round(v).toLocaleString() },
   { header: 'ERS', color: COLOR_ERS, format: v => `${Math.round(v)}%` },
 ]
-const EMPTY_TABLE: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_TABLE: AlignedTable = [new Float64Array(0)]
 const EMPTY_TRIPLE: [DataPoint[], DataPoint[], DataPoint[]] = [[], [], []]
 
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
@@ -124,7 +123,7 @@ export default function SpeedRpmChart({ data, statusHistory, lapData, lapStatusH
     ].join('')
   }, [overlay, scrolling, refLabel])
 
-  const tableData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (overlay || data.length === 0) return EMPTY_TABLE
     const source = mode === 'CL' ? lapData : data
     const statuses = mode === 'CL' ? lapStatusHistory : statusHistory

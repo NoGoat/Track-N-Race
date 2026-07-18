@@ -1,10 +1,9 @@
 import { useCallback, useMemo } from 'react'
-import type uPlot from 'uplot'
 import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
-import type { MotionExRow } from '../types'
+import type { AlignedTable, MotionExRow } from '../types'
 
 interface Props {
   isDark: boolean
@@ -34,7 +33,7 @@ const SERIES: SeriesDef<MotionExRow>[] = [
   { label: 'Rear',  color: COLOR_REAR,  getY: d => d.rear_aero_height_mm },
 ]
 
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0), new Float64Array(0), new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0), new Float64Array(0), new Float64Array(0)]
 
 function fmtTime(s: number) {
   const m = Math.floor(s / 60)
@@ -54,7 +53,7 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
   const data = useTelemetryStore(s => s.motionEx)
   useChartDataProfiler('RideHeight', data)
 
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts    = new Float64Array(data.length)
     const front = new Float64Array(data.length)
@@ -90,7 +89,7 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={TABLE_COLS} data={uData} />
+          <GraphTable columns={TABLE_COLS} data={tableData} />
         ) : (
           <TimeChartView<MotionExRow>
             isDark={isDark}

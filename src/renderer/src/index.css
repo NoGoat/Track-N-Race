@@ -52,7 +52,6 @@
   --chart-ref: rgba(255,255,255,0.08);
   --chart-axis: #7c8098;
   --chart-zero: rgba(255,255,255,0.2);
-  --u-cursor: rgba(255,255,255,0.18);
 }
 
 [data-theme='light'] {
@@ -86,7 +85,6 @@
   --chart-ref: rgba(0,0,0,0.1);
   --chart-axis: #6b7280;
   --chart-zero: rgba(0,0,0,0.18);
-  --u-cursor: rgba(0,0,0,0.2);
 }
 
 * {
@@ -147,11 +145,6 @@ body {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
-
-/* uPlot: transparent backgrounds so panel containers control the look */
-.uplot, .u-wrap, .u-under, .u-over { background: transparent !important; }
-.u-legend { display: none !important; }
-.u-cursor-x, .u-cursor-y { border-color: var(--u-cursor) !important; }
 
 /* Match the Chrome color picker's editable fields to Settings inputs. */
 .analyze-color-picker .w-color-interactive.w-color-saturation {

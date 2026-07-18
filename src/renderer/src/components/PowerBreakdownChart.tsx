@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import type uPlot from 'uplot'
-import type { StatusRow } from '../types'
+import type { AlignedTable, StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
 import type { YAxisBehavior } from '../lib/graphSections'
@@ -34,7 +33,7 @@ const SERIES_HARVEST: SeriesDef<StatusRow>[] = [
 ]
 const SERIES_STORE: SeriesDef<StatusRow>[] = [{ label: 'ERS', color: C_ICE, getY: d => d.ers_pct }]
 const SERIES_FUEL: SeriesDef<StatusRow>[] = [{ label: 'Fuel', color: C_FUEL, getY: d => d.fuel_kg }]
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0)]
 
 function fmtTime(s: number) {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
@@ -59,7 +58,7 @@ function PowerLineChart({
     .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
     .filter(({ series: s }) => s.visible !== false), [columns, series])
   const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length)
     const values = visibleEntries.map(() => new Float64Array(data.length))
@@ -97,7 +96,7 @@ function PowerLineChart({
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={visibleColumns} data={uData} />
+          <GraphTable columns={visibleColumns} data={tableData} />
         ) : (
           <TimeChartView<StatusRow>
             isDark={isDark}

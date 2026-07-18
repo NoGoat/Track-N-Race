@@ -69,6 +69,51 @@ Has an Electron version and a Qt version. Both apps have feature parity and are 
 - Custom frameless window with minimize, maximize, fullscreen, and close controls
 - All settings (UDP port, bind address, appearance, map options) live in a dedicated settings tab and persist across restarts
 
+## Attributions
+I would like to thank all the projects listed under here for making Track N Race possible.
+
+### Shared and native components
+
+- [Glaze](https://github.com/stephenberry/glaze)
+- [libxlsxwriter](https://libxlsxwriter.github.io)
+- [zlib](https://zlib.net)
+- [Zstandard](https://facebook.github.io/zstd/)
+
+### Electron app
+
+- [Electron](https://www.electronjs.org/)
+- [React](https://react.dev/)
+- [React DOM](https://react.dev/)
+- [electron-store](https://github.com/sindresorhus/electron-store)
+- [lucide-react](https://lucide.dev/)
+- [react-select](https://react-select.com/)
+- [@uiw/react-color](https://github.com/uiwjs/react-color)
+- [Zustand](https://zustand-demo.pmnd.rs/)
+- [Tailwind CSS](https://tailwindcss.com/)
+- [TimeChart](https://github.com/huww98/TimeChart) — maintained source fork
+- [D3](https://d3js.org/) (`d3-axis`, `d3-color`, `d3-scale`, and `d3-selection`)
+- [glMatrix](https://glmatrix.net/)
+- [node-addon-api](https://github.com/nodejs/node-addon-api)
+- [Cascadia Code](https://github.com/microsoft/cascadia-code)
+
+### Native app
+
+- [Qt](https://www.qt.io/)
+- [QCustomPlot](https://www.qcustomplot.com/)
+- [qt-toast](https://github.com/niklashenning/qt-toast) — maintained fork
+- [Noto Sans](https://fonts.google.com/noto/specimen/Noto+Sans)
+- [Breeze](https://invent.kde.org/plasma/breeze)
+- [Breeze Icons](https://invent.kde.org/frameworks/breeze-icons)
+- [KDE Frameworks](https://develop.kde.org/products/frameworks/)
+
+## Past attributions
+While not in use anymore, I would like to thank all the projects listed under here for serving me well at one point of this project.
+
+- [uPlot](https://github.com/leeoniya/uPlot)
+- [JSON for Modern C++ (nlohmann/json)](https://github.com/nlohmann/json)
+
+I would also like to make a special shoutout to the [Telemetry Scan](https://github.com/alisezisli/Telemetry-Scan) project by [alisezisli](https://github.com/alisezisli). Track N Race originally started off as me trying to build an UI wrapper around their Python backend before evolving into the project it is today. Without Telemetry Scan, Track N Race wouldn't exist.
+
 ## License
 
 This project is licensed under the terms of the [GPLv3 License](LICENSE).

@@ -1,7 +1,6 @@
 import { useState, useMemo, memo } from 'react'
-import type uPlot from 'uplot'
 import { Maximize2, Minimize2 } from 'lucide-react'
-import type { TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
+import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
 import TyreTrendCharts from './TyreTrendCharts'
 import { WheelCard, type TyreCardViews } from './ThermalPanel'
@@ -25,12 +24,12 @@ interface Props {
   yAxis:          TyreYAxisGroupState
 }
 
-const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]
-const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> = {
+const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
+const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = {
   fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
+function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> {
   return useMemo(() => {
     if (!enabled) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length

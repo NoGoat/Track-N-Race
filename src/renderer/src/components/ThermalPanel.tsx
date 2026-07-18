@@ -1,6 +1,5 @@
 import { memo, useMemo } from 'react'
-import type uPlot from 'uplot'
-import type { TelemetryRow, DamageRow } from '../types'
+import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
@@ -88,7 +87,7 @@ export const WheelCard = memo(function WheelCard({
 }: {
   pos: string; surface: number; inner: number; brake: number
   wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; level?: number; isDark?: boolean
-  view?: 'chart' | 'table'; history?: uPlot.AlignedData
+  view?: 'chart' | 'table'; history?: AlignedTable
 }) {
   const ramp = useColorFn(null, null, isDark)
 
@@ -193,12 +192,12 @@ export const WheelCard = memo(function WheelCard({
 })
 
 
-const EMPTY_HISTORY: uPlot.AlignedData = [new Float64Array(0)]
-const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> = {
+const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
+const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = {
   fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', uPlot.AlignedData> {
+function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> {
   return useMemo(() => {
     if (!enabled) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length

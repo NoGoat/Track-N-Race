@@ -10,9 +10,13 @@ import electronStoreLicense from '../assets/licenses/electron-store.txt?raw'
 import lucideReactLicense from '../assets/licenses/lucide-react.txt?raw'
 import reactSelectLicense from '../assets/licenses/react-select.txt?raw'
 import uiwReactColorLicense from '../assets/licenses/uiw-react-color.txt?raw'
-import uplotLicense from '../assets/licenses/uplot.txt?raw'
-import uplotReactLicense from '../assets/licenses/uplot-react.txt?raw'
 import timechartLicense from '../assets/licenses/timechart.txt?raw'
+import d3AxisLicense from '../assets/licenses/d3-axis.txt?raw'
+import d3ColorLicense from '../assets/licenses/d3-color.txt?raw'
+import d3ScaleLicense from '../assets/licenses/d3-scale.txt?raw'
+import d3SelectionLicense from '../assets/licenses/d3-selection.txt?raw'
+import glMatrixLicense from '../assets/licenses/gl-matrix.txt?raw'
+import tslibLicense from '../assets/licenses/tslib.txt?raw'
 import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
 import zlibLicense from '../assets/licenses/zlib.txt?raw'
 import zstandardLicense from '../assets/licenses/zstandard.txt?raw'
@@ -90,22 +94,6 @@ export const ATTRIBUTIONS: Attribution[] = [
     category: 'app',
   },
   {
-    name: 'uPlot',
-    version: '1.6.32',
-    license: 'MIT',
-    homepage: 'https://github.com/leeoniya/uPlot',
-    licenseText: uplotLicense,
-    category: 'app',
-  },
-  {
-    name: 'uplot-react',
-    version: '1.2.4',
-    license: 'MIT',
-    homepage: 'https://github.com/skalinichev/uplot-react',
-    licenseText: uplotReactLicense,
-    category: 'app',
-  },
-  {
     name: 'TimeChart',
     version: '1.0.0-beta.10',
     license: 'MIT',
@@ -113,6 +101,54 @@ export const ATTRIBUTIONS: Attribution[] = [
     licenseText: timechartLicense,
     category: 'app',
     badge: 'Forked',
+  },
+  {
+    name: 'd3-axis',
+    version: '3.0.0',
+    license: 'ISC',
+    homepage: 'https://d3js.org/d3-axis/',
+    licenseText: d3AxisLicense,
+    category: 'app',
+  },
+  {
+    name: 'd3-color',
+    version: '3.1.0',
+    license: 'ISC',
+    homepage: 'https://d3js.org/d3-color/',
+    licenseText: d3ColorLicense,
+    category: 'app',
+  },
+  {
+    name: 'd3-scale',
+    version: '4.0.2',
+    license: 'ISC',
+    homepage: 'https://d3js.org/d3-scale/',
+    licenseText: d3ScaleLicense,
+    category: 'app',
+  },
+  {
+    name: 'd3-selection',
+    version: '3.0.0',
+    license: 'ISC',
+    homepage: 'https://d3js.org/d3-selection/',
+    licenseText: d3SelectionLicense,
+    category: 'app',
+  },
+  {
+    name: 'gl-matrix',
+    version: '3.4.4',
+    license: 'MIT',
+    homepage: 'https://glmatrix.net/',
+    licenseText: glMatrixLicense,
+    category: 'app',
+  },
+  {
+    name: 'tslib',
+    version: '2.8.1',
+    license: '0BSD',
+    homepage: 'https://github.com/microsoft/tslib',
+    licenseText: tslibLicense,
+    category: 'app',
   },
 
   // Font

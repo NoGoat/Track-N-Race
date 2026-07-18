@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import type uPlot from 'uplot'
-import type { TelemetryRow } from '../types'
+import type { AlignedTable, TelemetryRow } from '../types'
 import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -11,7 +10,7 @@ const COLOR_STEER = '#BF5FFF'
 const Y_TICKS = [-1, -0.5, 0, 0.5, 1]
 const SERIES: SeriesDef<TelemetryRow>[] = [{ label: 'Steering', color: COLOR_STEER, getY: d => d.steering }]
 const TABLE_COLS: GraphTableColumn[] = [{ header: 'Steering', color: COLOR_STEER, format: v => `${Math.round(v * 100)}%` }]
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0), new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0), new Float64Array(0)]
 
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
 function fmtSteer(v: number) {
@@ -22,7 +21,7 @@ function fmtSteer(v: number) {
 export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
   useChartDataProfiler('Steering', data)
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), steer = new Float64Array(data.length)
     data.forEach((d, i) => { ts[i] = d.session_time; steer[i] = d.steering })
@@ -41,7 +40,7 @@ export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={uData} />
+        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
           : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
             windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
             yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}

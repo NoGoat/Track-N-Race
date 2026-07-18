@@ -364,9 +364,8 @@ re-render the whole tree. Now IPC ingestion writes to module-level buffers
 ### 3.5 Charts — TimeChart WebGL layer
 
 The chart stack was migrated from uPlot (canvas 2D, destroy+recreate via
-uplot-react) to **TimeChart** (WebGL) behind one reusable component. uPlot
-survives only as type imports (`uPlot.AlignedData` in table helpers) and a
-to-be-removed package dependency.
+uplot-react) to **TimeChart** (WebGL) behind one reusable component. The old
+chart packages and migration scaffolding have been removed.
 
 **`components/charts/TimeChartView.tsx`** — the generic chart. Creates the
 chart **once** and updates it imperatively (recreating a WebGL context per
@@ -571,11 +570,8 @@ only the panels. While in playback, live engine rows are dropped at
 API with `Config::binaryPlayback`. One engine, two hosts — see §1.6.
 
 ### ~~P1 — uPlot → TimeChart (WebGL) chart migration~~ (done on this branch)
-All chart leaves render through `TimeChartView`; the unused uPlot scrolling
-hook has been removed. Remaining cleanup: drop the `uplot`/`uplot-react`
-dependencies, the type-only `import type uPlot` lines (`GraphTable`'s
-`uPlot.AlignedData` prop type), and the retained `hooks/useDrawProfiler.ts`
-profiling helper once the current performance investigation ends.
+All chart leaves render through `TimeChartView`; the old chart dependencies,
+types, stylesheet, scrolling hook, and diagnostic plugin have been removed.
 
 ### ~~P1 — Delete the legacy headless pipe bridge~~ (done)
 The obsolete `protocol_parser/` executable and its misleading README have been

@@ -1,7 +1,6 @@
 import { memo, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
-import type uPlot from 'uplot'
-import type { TelemetryRow, DamageRow } from '../types'
+import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
@@ -67,7 +66,7 @@ function fmtTime(s: number) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0)]
 const DYNAMIC_Y_RANGE: YRangeSpec = { kind: 'auto' }
 const TEMP_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 125, lowerPad: 0, upperPad: 0, expandLower: false }
 const BRAKE_FIXED_Y_RANGE: YRangeSpec = { kind: 'expand', initialLower: 0, initialUpper: 1250, lowerPad: 0, upperPad: 0, expandLower: false }
@@ -113,7 +112,7 @@ function TyreLineChartImpl<T extends { session_time: number }>({
   const hasData = rows.length > 1
 
   // AlignedData only for the table view.
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(rows.length)
     const cols = series.map(() => new Float64Array(rows.length))
@@ -158,7 +157,7 @@ function TyreLineChartImpl<T extends { session_time: number }>({
         {!hasData ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableCols} data={uData} edgePadRem={0.75} />
+          <GraphTable columns={tableCols} data={tableData} edgePadRem={0.75} />
         ) : (
           <TimeChartView<T>
             isDark={isDark}

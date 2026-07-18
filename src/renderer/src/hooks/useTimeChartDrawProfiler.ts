@@ -1,11 +1,9 @@
 import type { TimeChartPlugin } from '../lib/timechart/tc'
-import { profileSync } from './useDrawProfiler'
+import { profileSync } from '../lib/profileSync'
 
-// TimeChart port of createDrawProfilerPlugin. The uPlot version bracketed
-// drawClear->draw (uPlot's real canvas draw span) and wrapped setData. TimeChart
-// does all of its work — model recompute + WebGL draw + buffer sync — inside a
-// single synchronous `model.update()`, so we wrap that one call: it is the exact
-// analogue of the uPlot draw span. Logs per-chart avg/max/fps every 2s, and
+// TimeChart does all of its work — model recompute + WebGL draw + buffer sync —
+// inside a single synchronous `model.update()`, so we wrap that call. Logs
+// per-chart avg/max/fps every 2s, and
 // records a `tc-update:<label>` performance measure so the longtask observer in
 // App can attribute a main-thread block to it. Remove with the rest of the perf
 // scaffolding once the Misc-tab render cost is settled.

@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import type uPlot from 'uplot'
-import type { TelemetryRow } from '../types'
+import type { AlignedTable, TelemetryRow } from '../types'
 import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -17,13 +16,13 @@ const TABLE_COLS: GraphTableColumn[] = [
   { header: 'Throttle', color: COLOR_THROTTLE, format: v => `${Math.round(v * 100)}%` },
   { header: 'Brake', color: COLOR_BRAKE, format: v => `${Math.round(Math.abs(v) * 100)}%` },
 ]
-const EMPTY_ALIGNED: uPlot.AlignedData = [new Float64Array(0)]
+const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0)]
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
 
 export default function InputsChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
   useChartDataProfiler('Inputs', data)
-  const uData = useMemo((): uPlot.AlignedData => {
+  const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), throttle = new Float64Array(data.length), brake = new Float64Array(data.length)
     data.forEach((d, i) => { ts[i] = d.session_time; throttle[i] = d.throttle; brake[i] = -d.brake })
@@ -43,7 +42,7 @@ export default function InputsChart({ isDark, view = 'chart', windowSeconds = 30
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={uData} />
+        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
           : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
             windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={40}
             yTickValues={() => Y_TICKS} yTickFormat={v => `${Math.round(Math.abs(v) * 100)}%`} xTickFormat={fmtTime}
