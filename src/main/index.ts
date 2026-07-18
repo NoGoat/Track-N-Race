@@ -323,7 +323,7 @@ function createWindow(): void {
     }
   })
 
-  if (process.env['ELECTRON_RENDERER_URL']) {
+  // if (process.env['ELECTRON_RENDERER_URL']) {
     win.webContents.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown' && input.control && input.shift && input.key === 'I') {
         if (win.webContents.isDevToolsOpened()) {
@@ -334,7 +334,7 @@ function createWindow(): void {
         event.preventDefault()
       }
     })
-  }
+  // }
 
   // In dev, electron-vite sets ELECTRON_RENDERER_URL
   if (process.env['ELECTRON_RENDERER_URL']) {

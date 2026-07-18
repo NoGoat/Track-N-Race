@@ -22,23 +22,24 @@
     "productName": "Track N Race",
     "files": [
       "**/*",
-      "!native_recorder${/*}"
-    ],
-    "fileAssociations": [
-      {
-        "ext": "tnrd",
-        "name": "Track N Race Session Data",
-        "description": "Track N Race Recorded Telemetry Session Data",
-        "role": "Viewer",
-        "icon": "build/icon_transparent.ico"
-      }
+      "!native_recorder${/*}",
+      "!dist${/*}"
     ],
     "directories": {
       "output": "dist"
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon_transparent.ico"
+      "icon": "build/icon_transparent.ico",
+      "fileAssociations": [
+        {
+          "ext": "tnrd",
+          "name": "Track N Race Session Data",
+          "description": "Track N Race Recorded Telemetry Session Data",
+          "role": "Viewer",
+          "icon": "build/icon_transparent.ico"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -56,7 +57,36 @@
       "target": "AppImage"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "build/icon.png",
+      "fileAssociations": [
+        {
+          "ext": "tnrd",
+          "name": "Track N Race Session Data",
+          "role": "Viewer"
+        }
+      ]
+    },
+    "dmg": {
+      "title": "${productName} ${version}",
+      "iconSize": 96,
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 150,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 390,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   },
   "dependencies": {

@@ -378,8 +378,8 @@ class SeriesGpuView {
 }
 
 export class LineChartRenderer {
-    private lineProgram = new LineProgram(this.gl, this.options.debugWebGL);
-    private nativeLineProgram = new NativeLineProgram(this.gl, this.options.debugWebGL);
+    private lineProgram: LineProgram;
+    private nativeLineProgram: NativeLineProgram;
     private uniformBuffer: ShaderUniformData;
     private buffers = new Map<AlignedDataBuffer, SharedGpuBuffer>();
     private seriesViews = new Map<TimeChartSeriesOptions, SeriesGpuView>();
@@ -403,6 +403,11 @@ export class LineChartRenderer {
         private gl: WebGL2RenderingContext,
         private options: ResolvedCoreOptions,
     ) {
+        // Native class fields run before constructor parameter properties are
+        // assigned. Initialize these here so production ES2022 builds do not
+        // read this.options while it is still undefined.
+        this.lineProgram = new LineProgram(gl, options.debugWebGL);
+        this.nativeLineProgram = new NativeLineProgram(gl, options.debugWebGL);
         const uboSize = gl.getActiveUniformBlockParameter(this.lineProgram.program, 0, gl.UNIFORM_BLOCK_DATA_SIZE);
         this.uniformBuffer = new ShaderUniformData(this.gl, uboSize);
         model.updated.on(() => this.drawFrame());
