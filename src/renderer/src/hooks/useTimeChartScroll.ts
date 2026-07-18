@@ -94,18 +94,19 @@ export function useTimeChartScroll(
   }: ScrollScaleOpts = {},
   profilerLabel?: string,
 ) {
+  const activeProfilerLabel = import.meta.env.DEV ? profilerLabel : undefined
   const chartRef = useRef<TChart | null>(null)
   const registrationRef = useRef<FrameScheduleHandle | null>(null)
   const enabledRef = useRef(enabled)
   enabledRef.current = enabled
-  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel })
-  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel }
+  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel: activeProfilerLabel })
+  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel: activeProfilerLabel }
   const clockRef = useRef<ScrollClock>({
     lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN,
     periodS: NaN, lastMin: NaN, gaps: [], gapIdx: 0,
   })
   const lastFullAtRef = useRef(0)
-  const perfRef = useRef({ startedAt: performance.now(), calls: 0, total: 0, max: 0 })
+  const perfRef = useRef({ startedAt: import.meta.env.DEV ? performance.now() : 0, calls: 0, total: 0, max: 0 })
   const frameCallbackRef = useRef<(frameTime: number) => boolean>(() => false)
 
   frameCallbackRef.current = (frameTime: number) => {
@@ -128,15 +129,17 @@ export function useTimeChartScroll(
     if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
 
     const applyDraw = (): void => {
+      if (!import.meta.env.DEV || !config.profilerLabel) {
+        chart.model.update()
+        return
+      }
       const started = performance.now()
       chart.model.update()
-      if (config.profilerLabel) {
-        const duration = performance.now() - started
-        const perf = perfRef.current
-        perf.calls++
-        perf.total += duration
-        if (duration > perf.max) perf.max = duration
-      }
+      const duration = performance.now() - started
+      const perf = perfRef.current
+      perf.calls++
+      perf.total += duration
+      if (duration > perf.max) perf.max = duration
     }
 
     const applyFastDraw = (): void => {
@@ -167,7 +170,7 @@ export function useTimeChartScroll(
       applyDraw()
     }
 
-    if (config.profilerLabel) {
+    if (import.meta.env.DEV && config.profilerLabel) {
       const perf = perfRef.current
       const now = performance.now()
       const elapsed = now - perf.startedAt

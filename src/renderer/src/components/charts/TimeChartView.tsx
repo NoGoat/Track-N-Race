@@ -224,7 +224,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       stepLocation: s.stepLocation,
     }] : [])
     if (fillDefs.length > 0) plugins.areaFill = createAreaFillPlugin(fillDefs)
-    if (profilerLabel) {
+    if (import.meta.env.DEV && profilerLabel) {
       plugins.profiler = createTimeChartDrawProfilerPlugin(profilerLabel)
     }
 

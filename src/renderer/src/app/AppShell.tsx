@@ -95,8 +95,7 @@ export default function AppShell() {
   // reconciles/commits. `sync:app-body` vs `sync:react-render+commit` splits
   // "App rebuilding its giant tree every render" from "the DOM commit". App is
   // the parent of React.Profiler, so this body cost is invisible to that.
-  const appTree = (
-    <React.Profiler id="app" onRender={onAppRender}>
+  const appContent = (
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       {window.platform !== 'darwin' && (
         <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
@@ -249,8 +248,10 @@ export default function AppShell() {
       />
 
     </div>
-    </React.Profiler>
   )
+  const appTree = import.meta.env.DEV
+    ? <React.Profiler id="app" onRender={onAppRender}>{appContent}</React.Profiler>
+    : appContent
   measureAppBody()
   return appTree
 }

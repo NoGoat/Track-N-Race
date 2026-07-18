@@ -2,10 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { Tab } from '../appConfig'
 
 export function useAppPerformanceDiagnostics(tab: Tab) {
+  const enabled = import.meta.env.DEV
   const tabRef = useRef(tab)
   tabRef.current = tab
 
   useEffect(() => {
+    if (!enabled) return
     if (typeof PerformanceObserver === 'undefined') return
     let observer: PerformanceObserver | null = null
     try {
@@ -27,16 +29,17 @@ export function useAppPerformanceDiagnostics(tab: Tab) {
       observer.observe({ entryTypes: ['longtask'] })
     } catch { /* longtask not supported */ }
     return () => observer?.disconnect()
-  }, [])
+  }, [enabled])
 
   const renderStartRef = useRef(0)
-  renderStartRef.current = performance.now()
+  if (enabled) renderStartRef.current = performance.now()
   const renderCountRef = useRef(0)
   const renderCostRef = useRef(0)
-  const renderLogRef = useRef(performance.now())
-  renderCountRef.current++
+  const renderLogRef = useRef(enabled ? performance.now() : 0)
+  if (enabled) renderCountRef.current++
 
   useLayoutEffect(() => {
+    if (!enabled) return
     const duration = performance.now() - renderStartRef.current
     renderCostRef.current += duration
     if (duration >= 1 && typeof performance.measure === 'function') {
@@ -53,19 +56,21 @@ export function useAppPerformanceDiagnostics(tab: Tab) {
   })
 
   const onAppRender = useCallback((_id: string, phase: string, actualDuration: number, baseDuration: number) => {
+    if (!enabled) return
     if (actualDuration >= 5) {
       console.log(`[perf] react-render-phase ${phase} actual=${actualDuration.toFixed(1)}ms base=${baseDuration.toFixed(1)}ms tab="${tabRef.current}"`)
     }
-  }, [])
+  }, [enabled])
 
   const measureAppBody = useCallback(() => {
+    if (!enabled) return
     if (typeof performance !== 'undefined' && typeof performance.measure === 'function') {
       const duration = performance.now() - renderStartRef.current
       if (duration >= 1) {
         try { performance.measure('sync:app-body', { start: renderStartRef.current, duration }) } catch { /* ignore */ }
       }
     }
-  }, [])
+  }, [enabled])
 
   return { onAppRender, measureAppBody }
 }

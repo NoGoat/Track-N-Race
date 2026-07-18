@@ -7,13 +7,14 @@ interface TimedSample { session_time: number }
 export function useChartDataProfiler(label: string, data: readonly TimedSample[]): void {
   const initialLastTime = data.length > 0 ? data[data.length - 1].session_time : Number.NEGATIVE_INFINITY
   const statsRef = useRef({
-    startedAt: performance.now(),
+    startedAt: import.meta.env.DEV ? performance.now() : 0,
     updates: 0,
     newTimestamps: 0,
     previousLastTime: initialLastTime,
   })
 
   useEffect(() => {
+    if (!import.meta.env.DEV) return
     const stats = statsRef.current
     stats.updates++
 
