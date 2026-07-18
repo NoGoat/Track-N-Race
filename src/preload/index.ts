@@ -106,10 +106,10 @@ const playerBridge = {
 }
 
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
+contextBridge.exposeInMainWorld('platform', process.platform)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
-

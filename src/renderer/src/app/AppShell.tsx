@@ -9,6 +9,7 @@ import { useWindowState } from './hooks/useWindowState'
 import { usePlayback } from './hooks/usePlayback'
 import { useRaceBanners } from './hooks/useRaceBanners'
 import AppHeader from './components/AppHeader'
+import AppHeaderMacOS from './components/AppHeaderMacOS'
 import PlaybackBar from './components/PlaybackBar'
 import TabContent from './components/TabContent'
 import FullscreenBanner from './components/FullscreenBanner'
@@ -18,6 +19,7 @@ import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 
 export default function AppShell() {
+  const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
     actualNativeTitlebar, bannerDuration, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
@@ -98,7 +100,7 @@ export default function AppShell() {
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
 
-      <AppHeader
+      <Header
         actualNativeTitlebar={actualNativeTitlebar}
         activeBanner={activeBanner}
         editOpen={editOpen}

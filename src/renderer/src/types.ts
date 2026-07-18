@@ -385,6 +385,7 @@ export interface ProtocolWarningMsg {
 
 declare global {
   interface Window {
+    platform: string
     windowControls: {
       minimize:   () => void
       maximize:   () => void

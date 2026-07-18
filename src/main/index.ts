@@ -240,6 +240,7 @@ function createWindow(): void {
   const taskbarTheme = getWindowsTaskbarThemeSync()
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
+  const isMacOS = process.platform === 'darwin'
 
   // Size the window to 60% of the primary display's work area. workAreaSize is
   // in DIPs, so this already accounts for the display's scale factor.
@@ -253,7 +254,11 @@ function createWindow(): void {
     minWidth: 1200,
     minHeight: 700,
     backgroundColor: '#0f172a',
-    frame: useNativeTitlebar,
+    frame: useNativeTitlebar || isMacOS,
+    ...(isMacOS && !useNativeTitlebar ? {
+      titleBarStyle: 'hidden' as const,
+      trafficLightPosition: { x: 14, y: 14 },
+    } : {}),
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
