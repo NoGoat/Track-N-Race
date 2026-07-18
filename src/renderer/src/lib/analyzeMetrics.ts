@@ -87,8 +87,9 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
 
 export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | undefined): AnalyzeConfig {
   const seen = new Set<string>()
-  const hasSeries = Array.isArray(value?.series)
-  const series = hasSeries ? value!.series.flatMap(item => {
+  const inputSeries = Array.isArray(value?.series) ? value.series : null
+  const hasSeries = inputSeries !== null
+  const series = inputSeries ? inputSeries.flatMap(item => {
     const def = item && ANALYZE_METRIC_BY_ID.get(item.metricId)
     if (!def || seen.has(def.id)) return []
     seen.add(def.id)

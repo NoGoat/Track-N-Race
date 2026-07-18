@@ -324,6 +324,15 @@ export interface PlaybackSeekFlushMsg {
   lapNum: number
 }
 
+export interface PlaybackControlMsg {
+  type:
+    | 'playback_close'
+    | 'playback_fastest_lap_raw'
+    | 'playback_previous_lap_raw'
+    | 'playback_seek_flush_bin'
+    | 'playback_lap_blocks'
+}
+
 export type GatewayMsg =
   | TelemetryRow
   | MotionRow
@@ -346,6 +355,7 @@ export type GatewayMsg =
   | PlaybackPreviousLapMsg
   | PlaybackSeekFlushMsg
   | PlaybackLapDataMsg
+  | PlaybackControlMsg
 
 export interface ProtocolCapabilities {
   gameYear:        24 | 25 | 26 | null  // null = no packets received yet
@@ -408,6 +418,7 @@ declare global {
       selectTNRDFile: () => Promise<string | null>
     }
     playerBridge: {
+      setPageVisible: (visible: boolean) => void
       load: (filePath: string) => Promise<{ ok: boolean; error?: string }>
       play: () => void
       pause: () => void

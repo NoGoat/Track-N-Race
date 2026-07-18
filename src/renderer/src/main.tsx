@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { scan } from 'react-scan'
 import 'uplot/dist/uPlot.min.css'
 import './index.css'
-import App from './App.tsx'
+import App from './App'
 
 if (import.meta.env.DEV) {
   scan({ enabled: true })

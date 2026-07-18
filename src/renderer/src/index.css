@@ -1,6 +1,8 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --font-mono: 'Cascadia Code', ui-monospace, monospace;
+}
 
 /* Bundled so the UI renders in Cascadia Code even where it isn't installed (e.g. Linux). */
 @font-face {

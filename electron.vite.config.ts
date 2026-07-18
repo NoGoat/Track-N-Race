@@ -1,5 +1,5 @@
 import { resolve } from 'path'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react-swc'
 import { readFileSync } from 'fs'
 
@@ -7,11 +7,12 @@ const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    // electron-store is ESM-only, so bundle it into the CommonJS main process.
+    build: {
+      externalizeDeps: { exclude: ['electron-store'] }
+    }
   },
-  preload: {
-    plugins: [externalizeDepsPlugin()]
-  },
+  preload: {},
   renderer: {
     resolve: {
       alias: {

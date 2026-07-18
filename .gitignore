@@ -75,5 +75,4 @@ fable_analysis
 opus_analysis
 .claude
 
-tsconfig.node.tsbuildinfo
-tsconfig.web.tsbuildinfo
+*.tsbuildinfo

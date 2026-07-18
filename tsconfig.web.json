@@ -2,6 +2,7 @@
   "include": ["src/renderer/src/**/*"],
   "compilerOptions": {
     "composite": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.web.tsbuildinfo",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ES2022",
