@@ -10,16 +10,6 @@ try {
     $env:RC_VERSION = $RcVersion
     Write-Host "Building release candidate labeled as $RcVersion (package.json version is left untouched)..." -ForegroundColor Cyan
 
-    Write-Host "Building Native Telemetry Recorder..." -ForegroundColor Cyan
-    Push-Location native_recorder
-    & .\build.ps1 -NoLaunch
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Native recorder build failed!" -ForegroundColor Red
-        Pop-Location
-        exit $LASTEXITCODE
-    }
-    Pop-Location
-
     Write-Host "Building application..." -ForegroundColor Cyan
     Write-Host "> npm run build"
     npm run build

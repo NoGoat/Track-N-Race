@@ -18,7 +18,7 @@ struct ToastSpec {
 };
 
 // Pure mapping from telemetry rows to a toast, mirroring the Electron app's
-// buildBanner() (src/renderer/src/App.tsx:161).
+// buildBanner() (electron-frontend/src/renderer/src/App.tsx:161).
 
 // race_event row → toast, or nullopt for codes that shouldn't notify (SCAR is
 // driven by the session packet; OVTK/SPTP are intentionally silent). `participants`

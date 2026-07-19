@@ -8,9 +8,9 @@ one repository:
 | Component | Path | Tech | Role |
 |---|---|---|---|
 | Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, XLSX export, label/colour catalogs |
-| Node addon | `node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
-| Electron dashboard | `src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
-| Native recorder | `native_recorder/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
+| Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
+| Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
+| Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
 
 Both apps have feature parity and read/write the same `.tnrd` files.
 
@@ -73,8 +73,8 @@ Three decoders exist and **must stay in lockstep** with the single C++ encoder:
 | Decoder | Used by |
 |---|---|
 | `tnrp::bin::decodeBatch` (BinaryRows.h) | Qt recorder (typed structs, in-process) |
-| `src/main/binaryRows.ts` | Electron main (record lengths + session_time only, for the smoother) |
-| `src/renderer/src/lib/decodeBinaryBatch.ts` | Electron renderer (full decode to row objects) |
+| `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths + session_time only, for the smoother) |
+| `electron-frontend/src/renderer/src/lib/decodeBinaryBatch.ts` | Electron renderer (full decode to row objects) |
 
 A schema drift here is silent corruption; treat any field change in
 `BinaryRows.h` as a three-file change.
@@ -233,7 +233,7 @@ overlay flows.
   Electron app; opening a file while an instance runs routes through the
   `second-instance` handler to an in-app confirm dialog.
 
-## 3. Electron app (`src/`)
+## 3. Electron app (`electron-frontend/`)
 
 ### 3.1 Process architecture
 
@@ -250,7 +250,7 @@ renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
                                         └─ TimeChartView (WebGL) per chart
 ```
 
-### 3.2 node_addon (`node_addon/addon.cpp`)
+### 3.2 node addon (`electron-frontend/node_addon/addon.cpp`)
 
 `TNRPAddon` is an `ObjectWrap` that is itself the `tnrp::Sink`. The constructor
 takes `(config, jsonCb, binCb?, seekCb?)` and creates up to three
@@ -272,7 +272,7 @@ load resolve `false` instead of racing the playback thread) and
 the JS progress callback). Module-level exports: `labelsJson(format)`,
 `cardColorsJson()`, `sweepTempFiles()`.
 
-### 3.3 Main process (`src/main/`)
+### 3.3 Main process (`electron-frontend/src/main/`)
 
 **`bridgeManager.ts`** owns the engine instance and all row routing:
 
@@ -434,7 +434,7 @@ dimensions or the follow-driver camera changes, while cars and cached
 driver-label sprites render the latest received positions on the display-rate
 foreground layer.
 
-## 4. Native recorder (`native_recorder/`)
+## 4. Qt frontend (`qt_frontend/`)
 
 A single-window QWidget app (`MainWindow`) with a `QStackedWidget` of
 self-contained pages — Overview, Standings, Session, Tyres, Strategy, Input,
@@ -458,7 +458,7 @@ MainWindow::onEngineBinary — tnrp::bin::decodeBatch → typed rows directly
 - **Typed rows everywhere**: the UI never touches dynamic JSON. Cold rows are
   glaze-parsed once into `AnyRow`; hot rows never round-trip through JSON at
   all (the engine is constructed with `hotRowsAsJson = false`).
-- **`HotRowSmoother` (`src/HotRowSmoother.h`)** — a C++ port of the Electron
+- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a C++ port of the Electron
   smoother, driven by `hotFillTimer_` at the measured cadence
   (`periodMs()` re-applied each tick): on an interval with no fresh telemetry
   it re-emits the last telemetry/motion/motion_ex one frame forward (capped at
@@ -578,8 +578,8 @@ The obsolete `protocol_parser/` executable and its misleading README have been
 deleted. Electron uses the N-API addon in-process.
 
 ### P2 — De-duplicate the smoothing/forward-fill logic
-Two ports of the same algorithm: `native_recorder/src/HotRowSmoother.h`
-(typed rows, Qt timer) and `src/main/binaryForwardFill.ts` (packed bytes,
+Two ports of the same algorithm: `qt_frontend/src/HotRowSmoother.h`
+(typed rows, Qt timer) and `electron-frontend/src/main/binaryForwardFill.ts` (packed bytes,
 absolute-deadline timer). Candidate for a libtnrp-owned implementation behind
 the Sink.
 

@@ -41,8 +41,9 @@ hs_err_pid*
 build/
 out/
 
-# Native recorder build artifacts
-native_recorder/build*/
+# Frontend build artifacts
+qt_frontend/build*/
+minimal_frontend/build*/
 
 # Generated/project assets
 dashboard/dist/

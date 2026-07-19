@@ -12,7 +12,7 @@
 // widening to UTF-16 across the N-API boundary and JSON.parse-ing them in the
 // renderer, the engine packs them into fixed-layout little-endian records and
 // ships the raw bytes. The renderer decodes them with a DataView (see
-// src/renderer/src/lib/decodeBinaryBatch.ts — keep the two in sync).
+// electron-frontend/src/renderer/src/lib/decodeBinaryBatch.ts — keep the two in sync).
 //
 // Layout: a batch is a concatenation of records, each `u8 tag` + fixed fields.
 // `ts` is intentionally omitted (the live charts key off session_time; the only

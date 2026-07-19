@@ -26,7 +26,6 @@
     "productName": "Track N Race",
     "files": [
       "**/*",
-      "!native_recorder${/*}",
       "!dist${/*}"
     ],
     "directories": {

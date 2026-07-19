@@ -1,4 +1,0 @@
-#include <windows.h>
-
-1 ICON "..\\..\\..\\native_recorder\\assets\\icon_transparent.ico"
-1 RT_MANIFEST "app.manifest"

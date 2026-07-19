@@ -1,4 +1,4 @@
-// Shared Settings metadata. The first two features mirror native_recorder; the
+// Shared Settings metadata. The first two features mirror qt_frontend; the
 // chart Y-axis behavior below is intentionally Electron-only:
 //   • per-graph Chart/Table view mode  (mirrors native GraphViewSettings.h)
 //   • per-section compact density       (mirrors native CompactSettings.h)

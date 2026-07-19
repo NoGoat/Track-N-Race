@@ -7,7 +7,7 @@
 // QThread, and invoke run() (e.g. from the thread's started() signal): progress()
 // and finished() are emitted across the thread boundary (queued to the GUI thread),
 // so the caller can drive a progress overlay without blocking. Mirrors the Electron
-// ExportXlsxWorker (node_addon/addon.cpp), which runs the same library call
+// ExportXlsxWorker (electron-frontend/node_addon/addon.cpp), which runs the same library call
 // off the JS thread and marshals {pct, stage} back.
 class XlsxExportWorker : public QObject {
     Q_OBJECT

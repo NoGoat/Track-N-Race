@@ -12,13 +12,13 @@ with C++ workload, a recent Windows SDK, CMake, and network access on the first
 build.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\minimal_app\build.ps1
+powershell -ExecutionPolicy Bypass -File .\minimal_frontend\build.ps1
 ```
 
 The script builds the Win32 frontend, libtnrp, and its native dependencies as
 one statically linked executable through CMake. It clears the old Windows
 staging directory and installs `Track N Race Minimal Recorder.exe` under
-`minimal_app\dist\windows`. The executable launches directly
+`minimal_frontend\dist\windows`. The executable launches directly
 with no framework runtime, package restore, DLL bundle, self-extractor,
 PowerShell launcher, or terminal window. The embedded standard Win32 manifest
 enables Common Controls v6 and Per-Monitor V2 DPI behavior. The application
@@ -36,11 +36,11 @@ Widgets as a fallback), and network access for libtnrp's pinned FetchContent
 dependencies on the first configure.
 
 ```bash
-chmod +x minimal_app/build.sh minimal_app/build-appimage.sh
-./minimal_app/build.sh
+chmod +x minimal_frontend/build.sh minimal_frontend/build-appimage.sh
+./minimal_frontend/build.sh
 ```
 
-The system-linked tree is written to `minimal_app/dist/linux`. Install that tree
+The system-linked tree is written to `minimal_frontend/dist/linux`. Install that tree
 under a normal prefix, or run its binary directly. Settings are stored through
 Qt's platform-native `QSettings` backend.
 
@@ -48,10 +48,10 @@ Qt's platform-native `QSettings` backend.
 
 The AppImage script additionally requires `curl`. It downloads the pinned
 linuxdeploy release and its Qt plugin, bundles Qt and the application files,
-and writes the result under `minimal_app/dist/appimage`.
+and writes the result under `minimal_frontend/dist/appimage`.
 
 ```bash
-./minimal_app/build-appimage.sh
+./minimal_frontend/build-appimage.sh
 ```
 
 These commands are provided for handoff. The implementing agent did not invoke

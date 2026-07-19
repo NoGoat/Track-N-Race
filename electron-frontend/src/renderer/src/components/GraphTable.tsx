@@ -3,7 +3,7 @@ import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
-// ported from native_recorder's GraphTable). One leading time column + one column
+// ported from qt_frontend's GraphTable). One leading time column + one column
 // per series, oldest at the top / newest at the bottom, holding every sample in the
 // data the chart already built. Auto-scrolls to the newest row unless the user has
 // scrolled up to inspect history. Only the handful of on-screen rows are rendered

@@ -24,11 +24,11 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol_parser_library
 # attribution viewers read these string literals from the executable; no loose
 # license files are required beside a distributed binary.
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE GPL3_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/MIT-glaze.txt GLAZE_MIT_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/Zlib.txt ZLIB_LICENSE_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/BSD-3-Clause-Zstandard.txt ZSTD_BSD3_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/BSD-2-Clause-libxlsxwriter.txt LIBXLSXWRITER_BSD2_TEXT)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../native_recorder/licenses/LGPL-3.0.txt LGPL3_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/MIT-glaze.txt GLAZE_MIT_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/Zlib.txt ZLIB_LICENSE_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/BSD-3-Clause-Zstandard.txt ZSTD_BSD3_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/BSD-2-Clause-libxlsxwriter.txt LIBXLSXWRITER_BSD2_TEXT)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../qt_frontend/licenses/LGPL-3.0.txt LGPL3_TEXT)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
 configure_file(src/Attributions.cpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/generated/Attributions.cpp @ONLY)

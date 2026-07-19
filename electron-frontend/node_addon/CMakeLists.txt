@@ -13,7 +13,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Define tnrp library without Qt
 set(TNRP_USE_QT OFF CACHE BOOL "" FORCE)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol_parser_library ${CMAKE_BINARY_DIR}/tnrp_build)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../protocol_parser_library ${CMAKE_BINARY_DIR}/tnrp_build)
 
 # Ensure cmake-js provides CMAKE_JS_INC and CMAKE_JS_LIB
 include_directories(${CMAKE_JS_INC})

@@ -47,7 +47,7 @@ endif()
 
 # Shared telemetry engine (libtnrp / target `tnrp`): UDP receive, F1 24/25 packet
 # parsing, .tnrd recording + playback — the single source of truth also used by the
-# Electron node_addon. TNRP_USE_QT=ON selects its QUdpSocket backend so it integrates
+# Electron node addon. TNRP_USE_QT=ON selects its QUdpSocket backend so it integrates
 # with this app's Qt build (no raw sockets). The guard lets a parent superbuild add
 # the library first. The library fetches/links its codecs and glaze itself.
 set(TNRP_USE_QT ON CACHE BOOL "" FORCE)

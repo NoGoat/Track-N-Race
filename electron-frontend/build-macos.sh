@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Build the Electron application and package it as a macOS DMG.
-# The standalone native_recorder application is intentionally not built here.
+# The standalone qt_frontend application is intentionally not built here.
 
 set -euo pipefail
 

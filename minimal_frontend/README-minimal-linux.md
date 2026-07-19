@@ -65,9 +65,9 @@ The first configure downloads and statically builds these pinned dependencies:
 Build from the repository root:
 
 ```bash
-bash minimal_app/build-minimal-linux.sh
+bash minimal_frontend/build-minimal-linux.sh
 ```
 
 The script writes only the executable and this README to
-`minimal_app/dist/minimal-linux`. Set `BUILD_DIR`, `OUTPUT_DIR`, or `JOBS` to
+`minimal_frontend/dist/minimal-linux`. Set `BUILD_DIR`, `OUTPUT_DIR`, or `JOBS` to
 override the defaults.
