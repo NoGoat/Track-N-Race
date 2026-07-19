@@ -437,7 +437,6 @@ export default function AnalyzeScreen({
                     onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
                     styles={selectStyles}
                   />
-                  {((fixedLapMode.lapA !== null && !fixedPrimary) || (fixedLapMode.lapB !== null && !fixedComparison)) && <div className="text-[9px] text-[var(--text-secondary)]">Loading selected lap data…</div>}
                 </div>
               ) : (
                 <div>
