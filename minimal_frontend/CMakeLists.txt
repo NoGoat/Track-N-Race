@@ -62,8 +62,124 @@ if(WIN32)
     return()
 endif()
 
-if(NOT UNIX OR APPLE)
-    message(FATAL_ERROR "minimal_app supports Windows and desktop Linux only")
+if(APPLE)
+    enable_language(OBJCXX)
+
+    set(MINIMAL_MACOS_DEPLOYMENT_TARGET "13.0" CACHE STRING
+        "Oldest macOS version supported by the SwiftUI frontend")
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "${MINIMAL_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
+    endif()
+    if(NOT CMAKE_OSX_ARCHITECTURES)
+        set(CMAKE_OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}" CACHE STRING "" FORCE)
+    endif()
+    list(LENGTH CMAKE_OSX_ARCHITECTURES MINIMAL_MACOS_ARCH_COUNT)
+    if(NOT MINIMAL_MACOS_ARCH_COUNT EQUAL 1)
+        message(FATAL_ERROR
+            "The SwiftUI build accepts one CMAKE_OSX_ARCHITECTURES value at a time. "
+            "Build arm64 and x86_64 separately before combining distribution artifacts.")
+    endif()
+    list(GET CMAKE_OSX_ARCHITECTURES 0 MINIMAL_MACOS_ARCH)
+
+    find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_program(XCRUN_EXECUTABLE xcrun REQUIRED)
+    execute_process(
+        COMMAND "${XCRUN_EXECUTABLE}" --sdk macosx --show-sdk-path
+        OUTPUT_VARIABLE MINIMAL_MACOS_SDK
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(
+        COMMAND "${XCRUN_EXECUTABLE}" --find swiftc
+        OUTPUT_VARIABLE MINIMAL_SWIFTC
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
+
+    # CMake's Swift language backend requires Ninja or full Xcode. Build the
+    # small SwiftUI module with the Swift driver directly so Apple's standalone
+    # Command Line Tools are sufficient. The Objective-C++ bridge is a private
+    # dylib containing the recorder and all of its static native dependencies.
+    add_library(minimal_macos_bridge SHARED
+        ${COMMON_SOURCES}
+        src/macos/TNRRecorderBridge.h
+        src/macos/TNRRecorderBridge.mm)
+    target_include_directories(minimal_macos_bridge PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/macos)
+    target_compile_options(minimal_macos_bridge PRIVATE -fobjc-arc)
+    target_link_libraries(minimal_macos_bridge PRIVATE
+        tnrp ${APPKIT_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+    set_target_properties(minimal_macos_bridge PROPERTIES
+        OUTPUT_NAME TrackNRaceMinimalBridge
+        MACOSX_RPATH TRUE
+        INSTALL_NAME_DIR "@rpath")
+
+    set(MINIMAL_MACOS_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/MacRecorderApp.swift
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/RecorderViewModel.swift
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/ContentView.swift
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/AttributionsView.swift)
+    set(MINIMAL_MACOS_BUNDLE_NAME "Track N Race Minimal Recorder")
+    set(MINIMAL_MACOS_APP
+        "${CMAKE_CURRENT_BINARY_DIR}/${MINIMAL_MACOS_BUNDLE_NAME}.app")
+    set(MINIMAL_MACOS_EXECUTABLE
+        "${MINIMAL_MACOS_APP}/Contents/MacOS/${MINIMAL_MACOS_BUNDLE_NAME}")
+    set(MINIMAL_MACOS_INFO_PLIST
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/Info.plist")
+    configure_file(src/macos/Info.plist.in "${MINIMAL_MACOS_INFO_PLIST}" @ONLY)
+
+    add_custom_command(
+        OUTPUT "${MINIMAL_MACOS_EXECUTABLE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${MINIMAL_MACOS_APP}/Contents/MacOS"
+            "${MINIMAL_MACOS_APP}/Contents/Frameworks"
+            "${MINIMAL_MACOS_APP}/Contents/Resources"
+            "${CMAKE_CURRENT_BINARY_DIR}/swift-module-cache"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MINIMAL_MACOS_INFO_PLIST}"
+            "${MINIMAL_MACOS_APP}/Contents/Info.plist"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/macos/TrackNRace.icns"
+            "${MINIMAL_MACOS_APP}/Contents/Resources/TrackNRace.icns"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:minimal_macos_bridge>"
+            "${MINIMAL_MACOS_APP}/Contents/Frameworks/$<TARGET_FILE_NAME:minimal_macos_bridge>"
+        COMMAND "${MINIMAL_SWIFTC}"
+            -parse-as-library
+            -O
+            -whole-module-optimization
+            -sdk "${MINIMAL_MACOS_SDK}"
+            -target "${MINIMAL_MACOS_ARCH}-apple-macos${CMAKE_OSX_DEPLOYMENT_TARGET}"
+            -module-cache-path "${CMAKE_CURRENT_BINARY_DIR}/swift-module-cache"
+            -module-name TrackNRaceMinimalRecorder
+            -import-objc-header "${CMAKE_CURRENT_SOURCE_DIR}/src/macos/TNRRecorderBridge.h"
+            ${MINIMAL_MACOS_SOURCES}
+            -L "$<TARGET_FILE_DIR:minimal_macos_bridge>"
+            -lTrackNRaceMinimalBridge
+            -framework SwiftUI
+            -framework AppKit
+            -framework Foundation
+            -Xlinker -rpath
+            -Xlinker "@executable_path/../Frameworks"
+            -o "${MINIMAL_MACOS_EXECUTABLE}"
+        DEPENDS
+            minimal_macos_bridge
+            "$<TARGET_FILE:minimal_macos_bridge>"
+            ${MINIMAL_MACOS_SOURCES}
+            src/macos/TNRRecorderBridge.h
+            "${MINIMAL_MACOS_INFO_PLIST}"
+            assets/macos/TrackNRace.icns
+        COMMAND_EXPAND_LISTS
+        VERBATIM)
+    add_custom_target(minimal_app ALL DEPENDS "${MINIMAL_MACOS_EXECUTABLE}")
+
+    install(DIRECTORY "${MINIMAL_MACOS_APP}" DESTINATION .
+            USE_SOURCE_PERMISSIONS COMPONENT MinimalApp)
+    return()
+endif()
+
+if(NOT UNIX)
+    message(FATAL_ERROR "minimal_app supports Windows, macOS, and desktop Linux only")
 endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets)
