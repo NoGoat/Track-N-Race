@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
 import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
 import type { Tab } from './appConfig'
-import { useAppPerformanceDiagnostics } from './hooks/useAppPerformanceDiagnostics'
 import { useAppConfiguration } from './hooks/useAppConfiguration'
 import { useWindowState } from './hooks/useWindowState'
 import { usePlayback } from './hooks/usePlayback'
@@ -31,7 +30,6 @@ export default function AppShell() {
     theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
-  const { onAppRender, measureAppBody } = useAppPerformanceDiagnostics(tab)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL' | 'compare'>('default')
@@ -90,12 +88,7 @@ export default function AppShell() {
     setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
-  // Diagnostic: build the tree into a const first so we can measure App's own
-  // function-body cost (hooks + createElement for the whole JSX) BEFORE React
-  // reconciles/commits. `sync:app-body` vs `sync:react-render+commit` splits
-  // "App rebuilding its giant tree every render" from "the DOM commit". App is
-  // the parent of React.Profiler, so this body cost is invisible to that.
-  const appContent = (
+  return (
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       {window.platform !== 'darwin' && (
         <FullscreenBanner banner={activeBanner} headerVisible={headerVisible} isFullscreen={isFullscreen} />
@@ -249,9 +242,4 @@ export default function AppShell() {
 
     </div>
   )
-  const appTree = import.meta.env.DEV
-    ? <React.Profiler id="app" onRender={onAppRender}>{appContent}</React.Profiler>
-    : appContent
-  measureAppBody()
-  return appTree
 }

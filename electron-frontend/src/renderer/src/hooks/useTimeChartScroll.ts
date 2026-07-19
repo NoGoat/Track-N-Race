@@ -92,21 +92,18 @@ export function useTimeChartScroll(
     snapS = 0.5, fastFrames = false, fullFps = 60,
     followSessionClock = false, minStallS = MIN_STALL_S,
   }: ScrollScaleOpts = {},
-  profilerLabel?: string,
 ) {
-  const activeProfilerLabel = import.meta.env.DEV ? profilerLabel : undefined
   const chartRef = useRef<TChart | null>(null)
   const registrationRef = useRef<FrameScheduleHandle | null>(null)
   const enabledRef = useRef(enabled)
   enabledRef.current = enabled
-  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel: activeProfilerLabel })
-  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, profilerLabel: activeProfilerLabel }
+  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS })
+  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS }
   const clockRef = useRef<ScrollClock>({
     lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN,
     periodS: NaN, lastMin: NaN, gaps: [], gapIdx: 0,
   })
   const lastFullAtRef = useRef(0)
-  const perfRef = useRef({ startedAt: import.meta.env.DEV ? performance.now() : 0, calls: 0, total: 0, max: 0 })
   const frameCallbackRef = useRef<(frameTime: number) => boolean>(() => false)
 
   frameCallbackRef.current = (frameTime: number) => {
@@ -128,19 +125,7 @@ export function useTimeChartScroll(
     let min = c.est - config.windowSeconds
     if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
 
-    const applyDraw = (): void => {
-      if (!import.meta.env.DEV || !config.profilerLabel) {
-        chart.model.update()
-        return
-      }
-      const started = performance.now()
-      chart.model.update()
-      const duration = performance.now() - started
-      const perf = perfRef.current
-      perf.calls++
-      perf.total += duration
-      if (duration > perf.max) perf.max = duration
-    }
+    const applyDraw = (): void => chart.model.update()
 
     const applyFastDraw = (): void => {
       const plugins = chart.plugins as unknown as { lineChart?: { drawFrame: () => void } }
@@ -168,20 +153,6 @@ export function useTimeChartScroll(
       chart.options.xRange = { min, max: min + config.windowSeconds }
       lastFullAtRef.current = frameTime
       applyDraw()
-    }
-
-    if (import.meta.env.DEV && config.profilerLabel) {
-      const perf = perfRef.current
-      const now = performance.now()
-      const elapsed = now - perf.startedAt
-      if (elapsed >= 2000 && perf.calls > 0) {
-        // eslint-disable-next-line no-console
-        console.log(`[perf:scroll] ${config.profilerLabel}: avg=${(perf.total / perf.calls).toFixed(2)}ms max=${perf.max.toFixed(2)}ms calls=${perf.calls} (${(perf.calls / elapsed * 1000).toFixed(1)}/s over ${(elapsed / 1000).toFixed(1)}s)`)
-        perf.startedAt = now
-        perf.calls = 0
-        perf.total = 0
-        perf.max = 0
-      }
     }
 
     return !playbackHalted && age < stallS

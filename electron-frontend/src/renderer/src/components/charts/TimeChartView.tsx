@@ -7,7 +7,6 @@ import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
 import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
-import { createTimeChartDrawProfilerPlugin } from '../../hooks/useTimeChartDrawProfiler'
 import { niceTicks } from '../../lib/timechart/ticks'
 import { createAreaFillPlugin } from '../../lib/timechart/areaFill'
 import type { CSSProperties } from 'react'
@@ -106,7 +105,6 @@ export interface TimeChartViewProps<T> {
   refLines?: RefLine[]
   /** builds the tooltip HTML from the cursor's x and the per-series y values. */
   tooltipFormat: (x: number, values: number[]) => string
-  profilerLabel?: string
   /** theme colour resolver; defaults to the Misc-page palette. */
   colorsFor?: (isDark: boolean) => ChartColors
   axisLook?: AxisLook
@@ -122,7 +120,7 @@ export interface TimeChartViewProps<T> {
 export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const {
     isDark, rows, getX, series, windowSeconds, yRange, yAxisSize,
-    yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat, profilerLabel,
+    yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
     followSessionClock, minScrollStallS,
   } = props
@@ -193,7 +191,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const firstT = rows.length > 0 ? getX(rows[0]) : null
   const { attach, detach, wake } = useTimeChartScroll(
     true, latestT, firstT, windowSeconds, dataDirtyRef,
-    { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS }, profilerLabel,
+    { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS },
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
@@ -224,10 +222,6 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       stepLocation: s.stepLocation,
     }] : [])
     if (fillDefs.length > 0) plugins.areaFill = createAreaFillPlugin(fillDefs)
-    if (import.meta.env.DEV && profilerLabel) {
-      plugins.profiler = createTimeChartDrawProfilerPlugin(profilerLabel)
-    }
-
     const b = boundsRef.current
     const paddingTop = 4
     const paddingRight = look.paddingRight ?? 16

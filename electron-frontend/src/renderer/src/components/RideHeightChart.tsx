@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from 'react'
-import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -51,7 +50,6 @@ function computeYSplits(lower: number, upper: number): number[] {
 
 export default function RideHeightChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.motionEx)
-  useChartDataProfiler('RideHeight', data)
 
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -109,7 +107,6 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
             yTickFormat={v => `${v}mm`}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
-            profilerLabel="RideHeight"
           />
         )}
       </div>

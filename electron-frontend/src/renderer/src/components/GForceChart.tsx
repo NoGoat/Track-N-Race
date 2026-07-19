@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from 'react'
-import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -36,7 +35,6 @@ function fmtTime(s: number) {
 
 export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.motion)
-  useChartDataProfiler('GForce', data)
 
   // Only the table view needs the columnar AlignedData; the chart feeds rows
   // straight into TimeChartView.
@@ -91,7 +89,6 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
             xTickFormat={fmtTime}
             refLines={[{ y: 0, dashed: false }, { y: 4, dashed: true }, { y: -4, dashed: true }]}
             tooltipFormat={tooltipFormat}
-            profilerLabel="GForce"
           />
         )}
       </div>

@@ -1,10 +1,15 @@
 import { createRoot } from 'react-dom/client'
-import { scan } from 'react-scan'
 import './index.css'
 import App from './App'
 
+// React 19's development build emits User Timing measures for component
+// renders. This 60–120 Hz UI can otherwise retain tens of thousands of
+// structured PerformanceEntry details in Chromium and exhaust renderer memory.
 if (import.meta.env.DEV) {
-  scan({ enabled: true })
+  window.setInterval(() => {
+    performance.clearMeasures()
+    performance.clearMarks()
+  }, 250)
 }
 
 document.addEventListener('visibilitychange', () => {

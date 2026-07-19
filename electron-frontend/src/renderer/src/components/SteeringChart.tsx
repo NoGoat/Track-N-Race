@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
-import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -20,7 +19,6 @@ function fmtSteer(v: number) {
 
 export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
-  useChartDataProfiler('Steering', data)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), steer = new Float64Array(data.length)
@@ -44,7 +42,7 @@ export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 
           : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
             windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
             yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
-            tooltipFormat={tooltipFormat} profilerLabel="Steering" />}
+            tooltipFormat={tooltipFormat} />}
     </div>
   </div>
 }

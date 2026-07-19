@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
-import { useChartDataProfiler } from '../hooks/useChartDataProfiler'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -24,7 +23,6 @@ function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(
 
 export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const data = useTelemetryStore(s => s.telemetry)
-  useChartDataProfiler('Gear', data)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), gear = new Float64Array(data.length)
@@ -45,7 +43,7 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
           : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
               windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
-              refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} profilerLabel="Gear" />}
+              refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} />}
     </div>
   </div>
 }

@@ -79,7 +79,7 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
 
   const latestT = scrolling && data.current[0].length ? data.current[0][data.current[0].length - 1].x : null
   const firstT = scrolling && data.current[0].length ? data.current[0][0].x : null
-  const { attach, detach, wake } = useTimeChartScroll(scrolling, latestT, firstT, windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60 }, 'SpeedRpm')
+  const { attach, detach, wake } = useTimeChartScroll(scrolling, latestT, firstT, windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60 })
 
   useEffect(() => {
     const host = hostRef.current

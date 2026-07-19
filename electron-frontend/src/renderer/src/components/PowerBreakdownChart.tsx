@@ -46,13 +46,12 @@ interface PowerLineProps extends CP {
   yRange: YRangeSpec
   yFormat: (v: number) => string
   note?: string
-  profilerLabel: string
   tooltipDetails?: (values: number[], axisColor: string) => string
 }
 
 function PowerLineChart({
   title, data, isDark, view = 'chart', windowSeconds = 30, series, columns,
-  yRange, yFormat, note, profilerLabel, tooltipDetails,
+  yRange, yFormat, note, tooltipDetails,
 }: PowerLineProps) {
   const visibleEntries = useMemo(() => series
     .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
@@ -113,7 +112,6 @@ function PowerLineChart({
             yTickFormat={yFormat}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
-            profilerLabel={profilerLabel}
             fastScroll
             followSessionClock
             minScrollStallS={1}
@@ -129,7 +127,7 @@ function PowerSplitChart(props: CP) {
     `<div style="color:${ac}">Total: ${(v[0] + v[1]).toFixed(1)} kW</div>`, [])
   return <PowerLineChart {...props} title="Power Split" series={SERIES_SPLIT} columns={COLS_SPLIT}
     yRange={{ kind: 'fixed', min: 0, max: 1000 }} yFormat={v => `${v}kW`}
-    tooltipDetails={details} profilerLabel="PowerSplit" />
+    tooltipDetails={details} />
 }
 
 function ERSHarvestChart(props: CP) {
@@ -143,7 +141,7 @@ function ERSHarvestChart(props: CP) {
       ? { kind: 'auto' }
       : { kind: 'expand', initialLower: 0, initialUpper: 8000, lowerPad: 0, upperPad: 0, expandLower: false }}
     yFormat={v => `${v}kJ`} note="resets each lap"
-    tooltipDetails={details} profilerLabel="ERSHarvest" />
+    tooltipDetails={details} />
 }
 
 function ERSStoreChart(props: CP) {
@@ -151,13 +149,13 @@ function ERSStoreChart(props: CP) {
     `<div style="color:${ac}">${(v[0] / 100 * 4).toFixed(2)} / 4.00 MJ</div>`, [])
   return <PowerLineChart {...props} title="ERS Store" series={SERIES_STORE} columns={COLS_STORE}
     yRange={{ kind: 'fixed', min: 0, max: 100 }} yFormat={v => `${v}%`} note="max 4.0 MJ"
-    tooltipDetails={details} profilerLabel="ERSStore" />
+    tooltipDetails={details} />
 }
 
 function FuelHistoryChart(props: CP) {
   const upperLimit = props.fuelUpperLimit ?? Math.max(1, (props.data[0]?.fuel_kg ?? 0) + 1)
   return <PowerLineChart {...props} title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
-    yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} profilerLabel="FuelHistory" />
+    yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} />
 }
 
 interface VisibleCharts { powerSplit: boolean; ersHarvest: boolean; ersStore: boolean; fuelHistory: boolean }
