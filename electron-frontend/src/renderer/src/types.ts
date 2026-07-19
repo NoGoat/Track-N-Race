@@ -396,6 +396,8 @@ export interface ProtocolWarningMsg {
 }
 
 declare global {
+  const __ENABLE_REACT_SCAN__: boolean
+
   interface Window {
     platform: string
     windowControls: {

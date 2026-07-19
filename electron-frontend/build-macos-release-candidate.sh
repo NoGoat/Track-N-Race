@@ -9,6 +9,7 @@ cd "$SCRIPT_DIR"
 
 cleanup() {
     unset RC_VERSION 2>/dev/null || true
+    unset INCLUDE_REACT_SCAN 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -30,7 +31,16 @@ fi
 
 export RC_VERSION
 
-echo "Building macOS release candidate '$RC_VERSION' (package.json is left untouched)..."
+read -r -p "Include React Scan? (y/N) " REACT_SCAN_CHOICE
+if [[ "$REACT_SCAN_CHOICE" =~ ^[Yy]$ ]]; then
+    export INCLUDE_REACT_SCAN=1
+    REACT_SCAN_STATUS="enabled"
+else
+    export INCLUDE_REACT_SCAN=0
+    REACT_SCAN_STATUS="disabled"
+fi
+
+echo "Building macOS release candidate '$RC_VERSION' with React Scan $REACT_SCAN_STATUS (package.json is left untouched)..."
 
 echo "Building the Electron application..."
 echo "> npm run build"
