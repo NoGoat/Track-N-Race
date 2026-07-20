@@ -6,14 +6,14 @@ if ([string]::IsNullOrWhiteSpace($RcVersion)) {
     exit 1
 }
 
-$ReactScanChoice = Read-Host "Include React Scan? (y/N)"
-$IncludeReactScan = if ($ReactScanChoice -match '^[Yy]$') { "1" } else { "0" }
-$ReactScanStatus = if ($IncludeReactScan -eq "1") { "enabled" } else { "disabled" }
+$DiagnosticsChoice = Read-Host "Include performance diagnostics (React Scan + stats-gl)? (y/N)"
+$IncludeDiagnostics = if ($DiagnosticsChoice -match '^[Yy]$') { "1" } else { "0" }
+$DiagnosticsStatus = if ($IncludeDiagnostics -eq "1") { "enabled" } else { "disabled" }
 
 try {
     $env:RC_VERSION = $RcVersion
-    $env:INCLUDE_REACT_SCAN = $IncludeReactScan
-    Write-Host "Building release candidate labeled as $RcVersion with React Scan $ReactScanStatus (package.json version is left untouched)..." -ForegroundColor Cyan
+    $env:INCLUDE_PERFORMANCE_DIAGNOSTICS = $IncludeDiagnostics
+    Write-Host "Building release candidate labeled as $RcVersion with performance diagnostics $DiagnosticsStatus (package.json version is left untouched)..." -ForegroundColor Cyan
 
     Write-Host "Building application..." -ForegroundColor Cyan
     Write-Host "> npm run build"
@@ -35,5 +35,5 @@ try {
 }
 finally {
     Remove-Item Env:\RC_VERSION -ErrorAction SilentlyContinue
-    Remove-Item Env:\INCLUDE_REACT_SCAN -ErrorAction SilentlyContinue
+    Remove-Item Env:\INCLUDE_PERFORMANCE_DIAGNOSTICS -ErrorAction SilentlyContinue
 }

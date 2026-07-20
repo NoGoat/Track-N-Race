@@ -396,9 +396,17 @@ export interface ProtocolWarningMsg {
 }
 
 declare global {
-  const __ENABLE_REACT_SCAN__: boolean
+  const __ENABLE_PERFORMANCE_DIAGNOSTICS__: boolean
+
+  interface TimeChartStatsBridge {
+    register(element: HTMLElement, canvas: HTMLCanvasElement): void
+    unregister(element: HTMLElement): void
+    begin(element: HTMLElement): void
+    end(element: HTMLElement): void
+  }
 
   interface Window {
+    __timeChartStats?: TimeChartStatsBridge
     platform: string
     windowControls: {
       minimize:   () => void

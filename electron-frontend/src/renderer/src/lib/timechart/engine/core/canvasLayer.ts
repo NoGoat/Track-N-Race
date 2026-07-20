@@ -22,6 +22,7 @@ export class CanvasLayer {
         el.shadowRoot!.appendChild(canvas);
 
         this.gl = getContext(canvas);
+        window.__timeChartStats?.register(el, canvas);
 
         const bgColor = resolveColorRGBA(options.backgroundColor);
         this.gl.clearColor(...bgColor);
@@ -34,6 +35,7 @@ export class CanvasLayer {
         });
         model.resized.on((w, h) => this.onResize(w, h));
         model.disposing.on(() => {
+            window.__timeChartStats?.unregister(el);
             el.shadowRoot!.removeChild(canvas);
             canvas.width = 0;
             canvas.height = 0;

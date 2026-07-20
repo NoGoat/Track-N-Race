@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 
 cleanup() {
     unset RC_VERSION 2>/dev/null || true
-    unset INCLUDE_REACT_SCAN 2>/dev/null || true
+    unset INCLUDE_PERFORMANCE_DIAGNOSTICS 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -31,16 +31,16 @@ fi
 
 export RC_VERSION
 
-read -r -p "Include React Scan? (y/N) " REACT_SCAN_CHOICE
-if [[ "$REACT_SCAN_CHOICE" =~ ^[Yy]$ ]]; then
-    export INCLUDE_REACT_SCAN=1
-    REACT_SCAN_STATUS="enabled"
+read -r -p "Include performance diagnostics (React Scan + stats-gl)? (y/N) " DIAGNOSTICS_CHOICE
+if [[ "$DIAGNOSTICS_CHOICE" =~ ^[Yy]$ ]]; then
+    export INCLUDE_PERFORMANCE_DIAGNOSTICS=1
+    DIAGNOSTICS_STATUS="enabled"
 else
-    export INCLUDE_REACT_SCAN=0
-    REACT_SCAN_STATUS="disabled"
+    export INCLUDE_PERFORMANCE_DIAGNOSTICS=0
+    DIAGNOSTICS_STATUS="disabled"
 fi
 
-echo "Building macOS release candidate '$RC_VERSION' with React Scan $REACT_SCAN_STATUS (package.json is left untouched)..."
+echo "Building macOS release candidate '$RC_VERSION' with performance diagnostics $DIAGNOSTICS_STATUS (package.json is left untouched)..."
 
 echo "Building the Electron application..."
 echo "> npm run build"

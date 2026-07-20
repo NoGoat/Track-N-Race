@@ -21,7 +21,7 @@ export class RenderModel {
     private redrawRequested = false;
     private readonly frameHandle: FrameScheduleHandle;
 
-    constructor(private options: ResolvedCoreOptions, element: HTMLElement) {
+    constructor(private options: ResolvedCoreOptions, private element: HTMLElement) {
         this.frameHandle = timeChartFrameScheduler.register(element, () => {
             if (!this.redrawRequested || this.abortController.signal.aborted) return false;
             this.redrawRequested = false;
@@ -72,7 +72,13 @@ export class RenderModel {
         // redraw that was already waiting for this chart.
         this.redrawRequested = false;
         this.updateModel();
-        this.updated.dispatch();
+        const stats = window.__timeChartStats;
+        stats?.begin(this.element);
+        try {
+            this.updated.dispatch();
+        } finally {
+            stats?.end(this.element);
+        }
         for (const s of this.options.series) {
             s.data.markSynced();
         }
