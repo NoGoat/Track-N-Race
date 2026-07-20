@@ -53,15 +53,14 @@
       "installerIcon": "build/icon_transparent_light.ico",
       "uninstallerIcon": "build/icon_transparent_light.ico",
       "installerHeaderIcon": "build/icon_transparent_light.ico",
-      "runAfterFinish": true,
-      "include": "build/installer.nsh"
+      "runAfterFinish": true
     },
     "linux": {
       "target": "AppImage"
     },
     "mac": {
       "target": "dmg",
-      "icon": "build/icon.png",
+      "icon": "build/icon_transparent.ico",
       "fileAssociations": [
         {
           "ext": "tnrd",
