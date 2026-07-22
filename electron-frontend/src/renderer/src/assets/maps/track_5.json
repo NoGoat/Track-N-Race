@@ -5672,5 +5672,13 @@
   "start_finish": [
     150.62,
     672.84
+  ],
+  "overtake_detection_point": [
+    239.52,
+    859.48
+  ],
+  "overtake_activation_point": [
+    274.31,
+    947.29
   ]
 }

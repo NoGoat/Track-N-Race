@@ -1,7 +1,7 @@
 {
   "track_id": 20,
   "track_name": "Azerbaijan Grand Prix",
-  "circuit_name": "Baku City Circuit",
+  "circuit_name": "Baku City Street Circuit",
   "track_length_m": 5994,
   "pit_time": 19.0,
   "inlap_pit_time": 7.42,
@@ -9782,5 +9782,57 @@
   "start_finish": [
     823.17,
     370.51
+  ],
+  "slm_dry": [
+    {
+      "start": [
+        848.64,
+        193.31
+      ],
+      "end": [
+        555.82,
+        314.33
+      ]
+    },
+    {
+      "start": [
+        353.42,
+        590.98
+      ],
+      "end": [
+        939.48,
+        323.1
+      ]
+    }
+  ],
+  "slm_wet": [
+    {
+      "start": [
+        827.01,
+        201.4
+      ],
+      "end": [
+        555.82,
+        314.33
+      ]
+    },
+    {
+      "start": [
+        468.86,
+        512.61
+      ],
+      "end": [
+        939.48,
+        323.1
+      ]
+    }
+  ],
+  "overtake_detection_point": [
+    160.54,
+    809.47
+  ],
+  "overtake_activation_point": [
+    202.41,
+    806.81
   ]
 }

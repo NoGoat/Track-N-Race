@@ -17,7 +17,7 @@ document.addEventListener('visibilitychange', () => {
 async function bootstrap(): Promise<void> {
   // React Scan is always available while developing. Production bundles only
   // include it when the release-candidate build explicitly opts in.
-  if (import.meta.env.DEV || __ENABLE_PERFORMANCE_DIAGNOSTICS__) {
+  if (__ENABLE_PERFORMANCE_DIAGNOSTICS__) {
     const [{ scan }, { installStatsGlDiagnostics }] = await Promise.all([
       import('react-scan'),
       import('./diagnostics/statsGlDiagnostics'),
