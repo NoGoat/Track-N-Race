@@ -28,9 +28,12 @@
 namespace {
 constexpr double TRACK_PX  = 5.0;
 constexpr double DOT_R     = 7.0;
-constexpr double MAP_PAD   = 24.0;
+constexpr double MAP_PAD   = 24.0;  // visible padding outside every rendered map element
 constexpr double DRS_PX    = 6.0;
 constexpr double DRS_OFFSET= 18.0;
+// Reserve room for the outward DRS/SLM overlay plus half its stroke so MAP_PAD
+// remains visible beyond the dashes rather than only beyond the centerline.
+constexpr double MAP_FIT_PAD = MAP_PAD + DRS_OFFSET + DRS_PX / 2.0;
 constexpr double SF_HALF   = 14.0;
 constexpr double JUNC_HALF = 10.0;
 const char* DRS_COLOR     = "#39B54A";
@@ -99,6 +102,55 @@ std::vector<QPointF> sliceZone(const std::vector<QPointF>& cl,
         i = (i + 1) % N;
     }
     return out;
+}
+
+// Even-odd containment works for ordinary circuits and for separate lobes of
+// a self-intersecting circuit such as Suzuka.
+bool pointInPolygon(const QPointF& point, const std::vector<QPointF>& polygon) {
+    bool inside = false;
+    for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        const QPointF& pi = polygon[i];
+        const QPointF& pj = polygon[j];
+        if ((pi.y() > point.y()) != (pj.y() > point.y()) &&
+            point.x() < (pj.x() - pi.x()) * (point.y() - pi.y()) /
+                            (pj.y() - pi.y()) + pi.x()) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+// Pick which local normal points outside the closed circuit. Voting per zone
+// lets a figure-eight's two lobes choose opposite sides while keeping each
+// individual overlay stable instead of flipping at boundary-precision noise.
+int findOutwardSign(const std::vector<QPointF>& zone,
+                    const std::vector<QPointF>& centerline) {
+    constexpr double PROBE_DISTANCE = 2.0;
+    constexpr size_t MAX_PROBES = 128;
+    const size_t step = std::max(size_t(1), zone.size() / MAX_PROBES);
+    int positiveVotes = 0;
+    int negativeVotes = 0;
+
+    for (size_t i = 0; i < zone.size(); i += step) {
+        const QPointF n = perpAt(zone.data(), (int)zone.size(), (int)i);
+        const QPointF& p = zone[i];
+        const bool positiveInside = pointInPolygon(p + n * PROBE_DISTANCE, centerline);
+        const bool negativeInside = pointInPolygon(p - n * PROBE_DISTANCE, centerline);
+        if (positiveInside == negativeInside) continue;
+        if (positiveInside) ++negativeVotes;
+        else                ++positiveVotes;
+    }
+
+    if (positiveVotes != negativeVotes)
+        return positiveVotes > negativeVotes ? 1 : -1;
+
+    // Degenerate/ambiguous fallback: positive signed area is counter-clockwise,
+    // whose outside is the right side of travel.
+    double twiceArea = 0.0;
+    for (size_t i = 0, j = centerline.size() - 1; i < centerline.size(); j = i)
+        twiceArea += centerline[j].x() * centerline[i].y()
+                   - centerline[i].x() * centerline[j].y();
+    return twiceArea >= 0.0 ? -1 : 1;
 }
 
 constexpr double SEAM_ANGLE_DEG   = 6.0;   // turn angle that flags the start/finish seam kink
@@ -385,14 +437,20 @@ void TrackMapWidget::rebuildPrepared() {
     // slice between its {start,end}, relax the start/finish seam, then rotate.
     // Bounds intentionally exclude these, as in the reference.
     const std::vector<QPointF> centerline = buildCenterline(rawSectors_);
+    std::vector<QPointF> rotatedCenterline;
+    rotatedCenterline.reserve(centerline.size());
+    for (const QPointF& p : centerline) rotatedCenterline.push_back(rot(p));
     const auto reconstruct = [&](const std::vector<std::pair<QPointF, QPointF>>& zones) {
-        std::vector<std::vector<QPointF>> out;
+        std::vector<OffsetZone> out;
         out.reserve(zones.size());
         for (const auto& z : zones) {
             std::vector<QPointF> slice = smoothSeam(sliceZone(centerline, z.first, z.second));
             std::vector<QPointF> rotated; rotated.reserve(slice.size());
             for (const QPointF& p : slice) rotated.push_back(rot(p));
-            if (rotated.size() >= 2) out.push_back(std::move(rotated));
+            if (rotated.size() >= 2) {
+                const int outwardSign = findOutwardSign(rotated, rotatedCenterline);
+                out.push_back({ std::move(rotated), outwardSign });
+            }
         }
         return out;
     };
@@ -428,7 +486,8 @@ void TrackMapWidget::rebuildPrepared() {
 TrackMapWidget::Layout TrackMapWidget::buildLayout(double cw, double ch) const {
     Layout l{1.0, 0.0, 0.0};
     if (prep_.w <= 0 || prep_.h <= 0) return l;
-    l.scale = std::min((cw - 2 * MAP_PAD) / prep_.w, (ch - 2 * MAP_PAD) / prep_.h);
+    l.scale = std::min((cw - 2 * MAP_FIT_PAD) / prep_.w,
+                       (ch - 2 * MAP_FIT_PAD) / prep_.h);
     l.ox = (cw - prep_.w * l.scale) / 2.0 - prep_.minX * l.scale;
     l.oy = (ch - prep_.h * l.scale) / 2.0 - prep_.minY * l.scale;
     return l;
@@ -495,11 +554,10 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     }
 
     // Overtaking-aid overlay: a dashed line running alongside the track, offset
-    // perpendicular toward the *outside* of the circuit (the inward normal points
-    // at the enclosed interior for a consistently-wound loop, so we negate it).
+    // toward the outside selected once during map preparation.
     // DRS zones (F1 24/25, green) or the 2026 SLM overlay: slm_wet on a Partial
     // track status (cyan), otherwise slm_dry (pink).
-    const auto drawOffsetZones = [&](const std::vector<std::vector<QPointF>>& zones,
+    const auto drawOffsetZones = [&](const std::vector<OffsetZone>& zones,
                                      const QColor& color) {
         const double offset = std::max(DRS_OFFSET * zf, (TRACK_PX * tzf) / 2 + 8 * zf);
         QPen pen(color);
@@ -507,14 +565,15 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
         pen.setCapStyle(Qt::FlatCap);
         pen.setJoinStyle(Qt::MiterJoin);
         pen.setDashPattern({ 3.0 / DRS_PX, 3.0 / DRS_PX });  // 3px dash / 3px gap
-        for (const std::vector<QPointF>& zone : zones) {
-            if (zone.size() < 2) continue;
+        for (const OffsetZone& zone : zones) {
+            if (zone.points.size() < 2) continue;
             QPolygonF poly;
-            poly.reserve((int)zone.size());
-            for (int i = 0; i < (int)zone.size(); ++i) {
-                const QPointF n = perpAt(zone.data(), (int)zone.size(), i);
-                const QPointF c = tc(zone[i]);
-                poly << QPointF(c.x() - n.x() * offset, c.y() - n.y() * offset);
+            poly.reserve((int)zone.points.size());
+            for (int i = 0; i < (int)zone.points.size(); ++i) {
+                const QPointF n = perpAt(zone.points.data(), (int)zone.points.size(), i);
+                const QPointF c = tc(zone.points[i]);
+                poly << QPointF(c.x() + n.x() * offset * zone.outwardSign,
+                                c.y() + n.y() * offset * zone.outwardSign);
             }
             p.setPen(pen);
             p.setBrush(Qt::NoBrush);

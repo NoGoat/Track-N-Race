@@ -69,11 +69,15 @@ private:
 
     // ── Prepared (rotated) geometry, computed once per track load ──────────
     struct Junction { QPointF pt; double nx, ny; };  // boundary point + unit perpendicular
+    struct OffsetZone {
+        std::vector<QPointF> points;
+        int outwardSign = -1;
+    };
     struct Prepared {
         std::vector<QPolygonF> sectors;          // rotated sector polylines (index 0..2)
-        std::vector<std::vector<QPointF>> drsZones;  // rotated DRS overlay polylines
-        std::vector<std::vector<QPointF>> slmDry;    // 2026 SLM overlay — Full-status zones
-        std::vector<std::vector<QPointF>> slmWet;    // 2026 SLM overlay — Partial-status zones
+        std::vector<OffsetZone> drsZones;        // rotated DRS overlay polylines
+        std::vector<OffsetZone> slmDry;          // 2026 SLM overlay — Full-status zones
+        std::vector<OffsetZone> slmWet;          // 2026 SLM overlay — Partial-status zones
         std::vector<Junction> junctions;         // starts of sectors 2 & 3
         bool    hasSF = false;                   // start/finish (start of sector 1)
         QPointF sfPt;

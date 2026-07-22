@@ -53,7 +53,10 @@ const TRAP_R     = 9
 const SF_HALF    = 14
 const JUNC_HALF  = 10
 const DOT_R      = 7
-const MAP_PAD    = 24  // CSS-pixel padding around the tight track bounds
+const MAP_PAD    = 24  // CSS-pixel padding outside every rendered map element
+// The fitted centerline needs enough additional room for an outward DRS/SLM
+// overlay and half its stroke, leaving MAP_PAD visible beyond the dashes.
+const MAP_FIT_PAD = MAP_PAD + DRS_OFFSET + DRS_PX / 2
 const LABEL_W    = 38
 const LABEL_H    = 16
 const LABEL_GAP  = 5
@@ -365,7 +368,7 @@ function prepareMap(map: TrackMapData): PreparedMap {
 /** Compute scale + offset so the tight track bounds fill the canvas with padding. */
 function buildLayout(prep: PreparedMap, cw: number, ch: number) {
   const { minX, minY, w, h } = prep.bounds
-  const scale = Math.min((cw - 2 * MAP_PAD) / w, (ch - 2 * MAP_PAD) / h)
+  const scale = Math.min((cw - 2 * MAP_FIT_PAD) / w, (ch - 2 * MAP_FIT_PAD) / h)
   const ox = (cw - w * scale) / 2 - minX * scale
   const oy = (ch - h * scale) / 2 - minY * scale
   return { scale, ox, oy }
