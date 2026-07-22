@@ -338,6 +338,7 @@ MainWindow::MainWindow(QWidget* parent)
             const uint16_t fmt = (uint16_t)hdr.protocol;
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(tnrp::hasMguh(fmt));
             // Overtaking-aid overlay follows the clip's format: DRS (F1 24/25) vs
@@ -899,6 +900,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             const uint16_t fmt = (uint16_t)*ps->active_format;
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
+            if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
             if (powerPage_) powerPage_->applyHarvestScale(fmt);  // 4 MJ → 8 MJ in 2026
             if (powerPage_) powerPage_->setMguhVisible(ps->capabilities.hasMguh);
             // Overtaking-aid overlay follows the format: DRS (F1 24/25) vs SLM (F1 26).

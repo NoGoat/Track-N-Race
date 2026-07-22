@@ -321,6 +321,9 @@ void TrackMapWidget::setShowLabels(bool on) {
 bool TrackMapWidget::setTrack(int trackId) {
     if (trackId == trackId_ && loaded_) return true;
 
+    trackName_.clear();
+    circuitName_.clear();
+
     QFile f(QString(":/maps/track_%1.json").arg(trackId));
     if (!f.open(QIODevice::ReadOnly)) {
         loaded_ = false; trackId_ = trackId;
@@ -336,6 +339,9 @@ bool TrackMapWidget::setTrack(int trackId) {
         return false;
     }
     const QJsonObject j = doc.object();
+
+    trackName_   = j.value("track_name").toString();
+    circuitName_ = j.value("circuit_name").toString();
 
     const QJsonObject tf = j.value("transform").toObject();
     transform_.minX  = tf.value("min_x").toDouble(0.0);

@@ -4,6 +4,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QElapsedTimer>
+#include <QString>
 #include <vector>
 #include <unordered_map>
 
@@ -38,6 +39,8 @@ public:
     void setMapOpacity(double a);     // 0.0–1.0, track outline only
     void setIdleTimeout(int secs);    // 0 = disabled (never hide for inactivity)
     bool hasTrack() const { return loaded_; }
+    const QString& trackName() const { return trackName_; }
+    const QString& circuitName() const { return circuitName_; }
 
     // External render gate (driven by MainWindow when the app window is
     // hidden/minimized/occluded). The 60fps animation timer runs only when the
@@ -109,6 +112,8 @@ private:
     double      viewBoxW_     = 1000.0;
     double      viewBoxH_     = 1000.0;
     double      rotationDeg_  = 0.0;
+    QString     trackName_;             // defaults loaded from the map JSON
+    QString     circuitName_;
     std::vector<std::vector<QPointF>> rawSectors_;  // viewBox-space (pre-rotation)
     // Overtaking-aid zones as {start,end} endpoints (viewBox-space); the polyline
     // is re-derived from the centerline at prepare time (see rebuildPrepared).

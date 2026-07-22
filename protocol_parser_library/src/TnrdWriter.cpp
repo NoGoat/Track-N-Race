@@ -1,4 +1,5 @@
 #include "tnrp/TnrdWriter.h"
+#include "tnrp/Labels.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
@@ -188,8 +189,13 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     const std::string proto = RecordingFilenamePrefix(format);
 
     auto itTrack = TRACK_NAMES.find(trackId);
-    std::string tName = (itTrack != TRACK_NAMES.end())
-        ? sanitizeName(itTrack->second) : "track_" + std::to_string(trackId);
+    const std::string trackNameKey = "track." + std::to_string(trackId) + ".track_name";
+    const std::string trackNameOverride = labelsFor((uint16_t)format).get(trackNameKey);
+    const std::string resolvedTrackName = trackNameOverride != trackNameKey
+        ? trackNameOverride
+        : (itTrack != TRACK_NAMES.end() ? itTrack->second : "Unknown");
+    std::string tName = resolvedTrackName != "Unknown"
+        ? sanitizeName(resolvedTrackName) : "track_" + std::to_string(trackId);
 
     auto itSess = SESSION_NAMES.find(sessionType);
     std::string sName = (itSess != SESSION_NAMES.end())
@@ -208,7 +214,7 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
         if (writeFormat_ == TnrdFormat::ZstdV2) hdr.compression = "zstd";
         hdr.protocol     = format;
         hdr.track_id     = trackId;
-        hdr.track_name   = (itTrack != TRACK_NAMES.end()) ? itTrack->second : "Unknown";
+        hdr.track_name   = resolvedTrackName;
         hdr.session_type = sessionType;
         hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
         hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(

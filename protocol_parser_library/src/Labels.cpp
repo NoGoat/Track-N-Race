@@ -177,6 +177,11 @@ static std::unordered_map<std::string, std::string> baseLayer() {
 static std::unordered_map<std::string, std::string> overrideLayer(uint16_t format) {
     if (format >= 2026) {
         return {
+            // Track display-name overrides. Both UIs read defaults from their
+            // bundled map JSON and consult only these format-specific deltas.
+            // `track_name` and `circuit_name` can be overridden independently.
+            {"track.4.track_name", "Barcelona-Catalunya Grand Prix"},
+            {"track.42.track_name", "Spanish Grand Prix"},
             // ERS deploy mode 3: "Overtake" → "Boost" (2026 spec, Car Status).
             {"ers.mode.3", "Boost"},
             // 2026 active-aero / overtake concept replaces the DRS framing.

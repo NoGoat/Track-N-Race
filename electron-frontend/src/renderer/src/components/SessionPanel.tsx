@@ -3,38 +3,10 @@ import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type Luc
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
 import TrackMap from './TrackMap'
 import { useColorFn } from '../lib/cards'
+import { useLabels } from '../lib/labels'
+import { TRACK_MAPS } from '../lib/trackMaps'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
-
-const TRACK_INFO: Record<number, { gp: string; circuit: string }> = {
-  0:  { gp: 'Australian Grand Prix',      circuit: 'Albert Park Circuit' },
-  2:  { gp: 'Chinese Grand Prix',         circuit: 'Shanghai International Circuit' },
-  3:  { gp: 'Bahrain Grand Prix',         circuit: 'Bahrain International Circuit' },
-  4:  { gp: 'Spanish Grand Prix',         circuit: 'Circuit de Barcelona-Catalunya' },
-  5:  { gp: 'Monaco Grand Prix',          circuit: 'Circuit de Monaco' },
-  6:  { gp: 'Canadian Grand Prix',        circuit: 'Circuit Gilles Villeneuve' },
-  7:  { gp: 'British Grand Prix',         circuit: 'Silverstone Circuit' },
-  9:  { gp: 'Hungarian Grand Prix',       circuit: 'Hungaroring' },
-  10: { gp: 'Belgian Grand Prix',         circuit: 'Circuit de Spa-Francorchamps' },
-  11: { gp: 'Italian Grand Prix',         circuit: 'Autodromo Nazionale Monza' },
-  12: { gp: 'Singapore Grand Prix',       circuit: 'Marina Bay Street Circuit' },
-  13: { gp: 'Japanese Grand Prix',        circuit: 'Suzuka International Racing Course' },
-  14: { gp: 'Abu Dhabi Grand Prix',       circuit: 'Yas Marina Circuit' },
-  15: { gp: 'United States Grand Prix',   circuit: 'Circuit of the Americas' },
-  16: { gp: 'São Paulo Grand Prix',       circuit: 'Autódromo José Carlos Pace' },
-  17: { gp: 'Austrian Grand Prix',        circuit: 'Red Bull Ring' },
-  19: { gp: 'Mexico City Grand Prix',     circuit: 'Autódromo Hermanos Rodríguez' },
-  20: { gp: 'Azerbaijan Grand Prix',      circuit: 'Baku City Circuit' },
-  26: { gp: 'Dutch Grand Prix',           circuit: 'Circuit Zandvoort' },
-  27: { gp: 'Emilia Romagna Grand Prix',  circuit: 'Autodromo Enzo e Dino Ferrari' },
-  29: { gp: 'Saudi Arabian Grand Prix',   circuit: 'Jeddah Corniche Circuit' },
-  30: { gp: 'Miami Grand Prix',           circuit: 'Miami International Autodrome' },
-  31: { gp: 'Las Vegas Grand Prix',       circuit: 'Las Vegas Street Circuit' },
-  32: { gp: 'Qatar Grand Prix',           circuit: 'Losail International Circuit' },
-  39: { gp: 'British Grand Prix',         circuit: 'Silverstone Circuit (Reverse)' },
-  40: { gp: 'Austrian Grand Prix',        circuit: 'Red Bull Ring (Reverse)' },
-  41: { gp: 'Dutch Grand Prix',           circuit: 'Circuit Zandvoort (Reverse)' },
-}
 
 export const SESSION_TYPES: Record<number, string> = {
   0: 'Unknown', 1: 'Practice 1', 2: 'Practice 2', 3: 'Practice 3',
@@ -332,14 +304,21 @@ interface Props {
 const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
+  const { t } = useLabels()
   const weatherLevel = Math.max(0, Math.min(2, compactWeather ?? 0))
 
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
   const accent  = session ? sessionAccent(session.session_type, isDark) : (isDark ? '#a0a8b8' : '#565B70')
-  const info    = session ? TRACK_INFO[session.track_id] : null
-  const gpName  = info?.gp ?? (session ? `Track ${session.track_id}` : '—')
-  const circuit = info?.circuit ?? ''
+  const info    = session ? TRACK_MAPS[session.track_id] : null
+  const gpKey   = session ? `track.${session.track_id}.track_name` : ''
+  const circuitKey = session ? `track.${session.track_id}.circuit_name` : ''
+  const gpOverride = gpKey ? t(gpKey) : ''
+  const circuitOverride = circuitKey ? t(circuitKey) : ''
+  const gpName  = gpOverride && gpOverride !== gpKey
+    ? gpOverride : (info?.track_name ?? (session ? `Track ${session.track_id}` : '—'))
+  const circuit = circuitOverride && circuitOverride !== circuitKey
+    ? circuitOverride : (info?.circuit_name ?? '')
   const sType   = session ? SESSION_TYPES[session.session_type] ?? 'Unknown' : null
 
   const playerCar = timing?.cars.find(c => c.idx === timing.player_idx && c.result_status === 2)

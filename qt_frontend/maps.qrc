@@ -28,5 +28,6 @@
     <file alias="maps/track_39.json">assets/maps/track_39.json</file>
     <file alias="maps/track_40.json">assets/maps/track_40.json</file>
     <file alias="maps/track_41.json">assets/maps/track_41.json</file>
+    <file alias="maps/track_42.json">assets/maps/track_42.json</file>
 </qresource>
 </RCC>

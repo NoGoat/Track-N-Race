@@ -6,6 +6,7 @@ import { Maximize2, Minimize2 } from 'lucide-react'
 import { useSize } from '../hooks/useSize'
 import { TRACK_MAPS, type TrackMapData } from '../lib/trackMaps'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
+import { useLabels } from '../lib/labels'
 import type { CarPosition, ParticipantsMsg } from '../types'
 
 type DriverOption = { value: number; label: string }
@@ -21,7 +22,7 @@ const ZOOM_OPTIONS: ZoomOption[] = [
   { value: 16, label: '16x' },
 ]
 
-const MAP_OPTIONS: MapOption[] = Object.values(TRACK_MAPS)
+const BASE_MAP_OPTIONS: MapOption[] = Object.values(TRACK_MAPS)
   .sort((a, b) => a.track_name.localeCompare(b.track_name))
   .map(map => ({ value: map.track_id, label: map.track_name }))
 
@@ -738,14 +739,15 @@ ZoomSelector.displayName = 'ZoomSelector'
 interface TestMapControlsProps {
   trackId: number | null
   aeroOverlay: AeroOverlay
+  mapOptions: MapOption[]
   onTrackChange: (opt: SingleValue<MapOption>) => void
   onAeroChange: (opt: SingleValue<AeroOption>) => void
   isDark: boolean
 }
 
-const TestMapControls = memo(({ trackId, aeroOverlay, onTrackChange, onAeroChange, isDark }: TestMapControlsProps) => {
+const TestMapControls = memo(({ trackId, aeroOverlay, mapOptions, onTrackChange, onAeroChange, isDark }: TestMapControlsProps) => {
   const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
-  const mapValue = useMemo(() => MAP_OPTIONS.find(o => o.value === trackId) ?? null, [trackId])
+  const mapValue = useMemo(() => mapOptions.find(o => o.value === trackId) ?? null, [mapOptions, trackId])
   const aeroValue = useMemo(() => AERO_OPTIONS.find(o => o.value === aeroOverlay) ?? AERO_OPTIONS[2], [aeroOverlay])
 
   return (
@@ -754,7 +756,7 @@ const TestMapControls = memo(({ trackId, aeroOverlay, onTrackChange, onAeroChang
         <Select<MapOption>
           aria-label="Test map"
           value={mapValue}
-          options={MAP_OPTIONS}
+          options={mapOptions}
           onChange={onTrackChange}
           isSearchable
           placeholder="Select map…"
@@ -797,6 +799,7 @@ interface Props {
 
 export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1 }: Props) {
   const { ref: wrapRef, width, height } = useSize()
+  const { raw: labels } = useLabels()
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
   const foregroundCanvasRef = useRef<HTMLCanvasElement>(null)
   const backgroundDirtyRef = useRef(true)
@@ -824,6 +827,10 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   const [previewTrackId, setPreviewTrackId] = useState<number | null>(trackId)
   const [previewAeroOverlay, setPreviewAeroOverlay] = useState<AeroOverlay>(() => aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
+  const mapOptions = useMemo(() => BASE_MAP_OPTIONS.map(option => ({
+    ...option,
+    label: labels[`track.${option.value}.track_name`] ?? option.label,
+  })).sort((a, b) => a.label.localeCompare(b.label)), [labels])
   const map = previewTrackId != null ? TRACK_MAPS[previewTrackId] ?? null : null
   const effectiveAeroMode = previewAeroOverlay === 'drs' ? 'drs' : 'slm'
   const effectiveSlmTrackStatus = previewAeroOverlay === 'slm-wet' ? 1 : 0
@@ -1100,6 +1107,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         <TestMapControls
           trackId={previewTrackId}
           aeroOverlay={previewAeroOverlay}
+          mapOptions={mapOptions}
           onTrackChange={handleTrackChange}
           onAeroChange={handleAeroChange}
           isDark={isDark}

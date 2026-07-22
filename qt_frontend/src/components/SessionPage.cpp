@@ -98,53 +98,6 @@ protected:
 
 // ── Lookup tables ─────────────────────────────────────────────────────────
 
-// Track id → { full GP name, full circuit name }. Ported verbatim from the
-// Electron app's TRACK_INFO (SessionPanel.tsx) so the displayed strings match
-// exactly. F1 track ids are sparse, so this is a keyed map — NOT a positional
-// array (the old array was abbreviated and mis-indexed for ids ≥ 25).
-const std::unordered_map<int, std::pair<const char*, const char*>>& trackInfo() {
-    static const std::unordered_map<int, std::pair<const char*, const char*>> m = {
-        { 0,  { "Australian Grand Prix",     "Albert Park Circuit" } },
-        { 2,  { "Chinese Grand Prix",        "Shanghai International Circuit" } },
-        { 3,  { "Bahrain Grand Prix",        "Bahrain International Circuit" } },
-        { 4,  { "Spanish Grand Prix",        "Circuit de Barcelona-Catalunya" } },
-        { 5,  { "Monaco Grand Prix",         "Circuit de Monaco" } },
-        { 6,  { "Canadian Grand Prix",       "Circuit Gilles Villeneuve" } },
-        { 7,  { "British Grand Prix",        "Silverstone Circuit" } },
-        { 9,  { "Hungarian Grand Prix",      "Hungaroring" } },
-        { 10, { "Belgian Grand Prix",        "Circuit de Spa-Francorchamps" } },
-        { 11, { "Italian Grand Prix",        "Autodromo Nazionale Monza" } },
-        { 12, { "Singapore Grand Prix",      "Marina Bay Street Circuit" } },
-        { 13, { "Japanese Grand Prix",       "Suzuka International Racing Course" } },
-        { 14, { "Abu Dhabi Grand Prix",      "Yas Marina Circuit" } },
-        { 15, { "United States Grand Prix",  "Circuit of the Americas" } },
-        { 16, { "São Paulo Grand Prix",      "Autódromo José Carlos Pace" } },
-        { 17, { "Austrian Grand Prix",       "Red Bull Ring" } },
-        { 19, { "Mexico City Grand Prix",    "Autódromo Hermanos Rodríguez" } },
-        { 20, { "Azerbaijan Grand Prix",     "Baku City Circuit" } },
-        { 26, { "Dutch Grand Prix",          "Circuit Zandvoort" } },
-        { 27, { "Emilia Romagna Grand Prix", "Autodromo Enzo e Dino Ferrari" } },
-        { 29, { "Saudi Arabian Grand Prix",  "Jeddah Corniche Circuit" } },
-        { 30, { "Miami Grand Prix",          "Miami International Autodrome" } },
-        { 31, { "Las Vegas Grand Prix",      "Las Vegas Street Circuit" } },
-        { 32, { "Qatar Grand Prix",          "Losail International Circuit" } },
-        { 39, { "British Grand Prix",        "Silverstone Circuit (Reverse)" } },
-        { 40, { "Austrian Grand Prix",       "Red Bull Ring (Reverse)" } },
-        { 41, { "Dutch Grand Prix",          "Circuit Zandvoort (Reverse)" } },
-    };
-    return m;
-}
-
-const char* trackGpName(int id) {
-    auto it = trackInfo().find(id);
-    return it != trackInfo().end() ? it->second.first : "Grand Prix";
-}
-
-const char* trackCircuitName(int id) {
-    auto it = trackInfo().find(id);
-    return it != trackInfo().end() ? it->second.second : "—";
-}
-
 const char* weatherLabel(int w) {
     static const char* l[] = { "Clear", "Light Cloud", "Overcast", "Light Rain", "Heavy Rain", "Storm" };
     if (w >= 0 && w < 6) return l[w];
@@ -791,8 +744,25 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
     int trackLenM = session->track_length_m;
     uint32_t todS = (uint32_t)session->time_of_day;
 
-    sp_gpName->setText(trackGpName(trackId));
-    if (sp_circuitName) sp_circuitName->setText(trackCircuitName(trackId));   // dropped in compact
+    // The bundled map JSON is the default source for both display names. The
+    // library catalog contains only per-format overrides for names that change
+    // between game years (track.<id>.track_name / circuit_name).
+    if (trackMap_ && trackId >= 0 && trackId != mapTrackId_) {
+        trackMap_->setTrack(trackId);
+        mapTrackId_ = trackId;
+    }
+    const auto resolvedMapName = [trackId](const char* field, const QString& fallback) {
+        const QString key = QString("track.%1.%2").arg(trackId).arg(field);
+        const QString overridden = tnr::L(key);
+        return overridden == key ? fallback : overridden;
+    };
+    const QString mapTrackName = trackMap_ && trackMap_->hasTrack()
+        ? trackMap_->trackName() : QStringLiteral("Grand Prix");
+    const QString mapCircuitName = trackMap_ && trackMap_->hasTrack()
+        ? trackMap_->circuitName() : QStringLiteral("—");
+    sp_gpName->setText(resolvedMapName("track_name", mapTrackName));
+    if (sp_circuitName)
+        sp_circuitName->setText(resolvedMapName("circuit_name", mapCircuitName));
 
     sp_timeLeft->setText(QString("%1:%2")
         .arg(timeLeft / 60, 2, 10, QChar('0'))
