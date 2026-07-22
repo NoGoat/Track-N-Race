@@ -10,6 +10,9 @@ import type { CarPosition, ParticipantsMsg } from '../types'
 
 type DriverOption = { value: number; label: string }
 type ZoomOption = { value: number; label: string }
+type MapOption = { value: number; label: string }
+type AeroOverlay = 'drs' | 'slm-dry' | 'slm-wet'
+type AeroOption = { value: AeroOverlay; label: string }
 
 const ZOOM_OPTIONS: ZoomOption[] = [
   { value: 2, label: '2x' },
@@ -17,6 +20,21 @@ const ZOOM_OPTIONS: ZoomOption[] = [
   { value: 8, label: '8x' },
   { value: 16, label: '16x' },
 ]
+
+const MAP_OPTIONS: MapOption[] = Object.values(TRACK_MAPS)
+  .sort((a, b) => a.track_name.localeCompare(b.track_name))
+  .map(map => ({ value: map.track_id, label: map.track_name }))
+
+const AERO_OPTIONS: AeroOption[] = [
+  { value: 'slm-dry', label: 'SLM-Dry' },
+  { value: 'slm-wet', label: 'SLM-Wet' },
+  { value: 'drs', label: 'DRS' },
+]
+
+function aeroOverlayFromTelemetry(aeroMode: 'drs' | 'slm', slmTrackStatus: number): AeroOverlay {
+  if (aeroMode === 'drs') return 'drs'
+  return slmTrackStatus === 1 ? 'slm-wet' : 'slm-dry'
+}
 
 
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
@@ -146,6 +164,52 @@ function sliceZone(
   return sliceZoneIdx(centerline, start, end).map(i => centerline[i])
 }
 
+/** Even-odd containment works for ordinary circuits and for separate lobes of
+ *  a self-intersecting circuit such as Suzuka. */
+function pointInPolygon(point: [number, number], polygon: [number, number][]): boolean {
+  const [x, y] = point
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i]
+    const [xj, yj] = polygon[j]
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+/** Pick which local normal points outside the closed circuit. The vote is made
+ *  per zone so a figure-eight's two lobes can use opposite sides, while a single
+ *  zone keeps a stable offset and cannot zig-zag due to boundary precision. */
+function findOutwardSign(zone: [number, number][], centerline: [number, number][]): 1 | -1 {
+  const PROBE_DISTANCE = 2
+  const MAX_PROBES = 128
+  const step = Math.max(1, Math.floor(zone.length / MAX_PROBES))
+  let positiveVotes = 0
+  let negativeVotes = 0
+
+  for (let i = 0; i < zone.length; i += step) {
+    const [nx, ny] = perp(zone, i)
+    const [x, y] = zone[i]
+    const positiveInside = pointInPolygon([x + nx * PROBE_DISTANCE, y + ny * PROBE_DISTANCE], centerline)
+    const negativeInside = pointInPolygon([x - nx * PROBE_DISTANCE, y - ny * PROBE_DISTANCE], centerline)
+    if (positiveInside === negativeInside) continue
+    if (positiveInside) negativeVotes++
+    else                positiveVotes++
+  }
+
+  if (positiveVotes !== negativeVotes) return positiveVotes > negativeVotes ? 1 : -1
+
+  // Degenerate/ambiguous fallback: use the loop winding. Positive signed area
+  // is counter-clockwise in these coordinates, whose outside is the right side.
+  let twiceArea = 0
+  for (let i = 0, j = centerline.length - 1; i < centerline.length; j = i++) {
+    twiceArea += centerline[j][0] * centerline[i][1] - centerline[i][0] * centerline[j][1]
+  }
+  return twiceArea >= 0 ? -1 : 1
+}
+
 // Where a DRS zone wraps the start/finish line, the last-sector→first-sector
 // seam introduces a tiny lateral drift that kinks the local tangent by tens of
 // degrees. Drawn as a perpendicular offset, that kink becomes a visible chevron.
@@ -213,11 +277,16 @@ interface SectorJunction {
   color: string
 }
 
+interface OffsetZone {
+  track_points: [number, number][]
+  outwardSign: 1 | -1
+}
+
 interface PreparedMap {
   sectors:     Array<{ index: number; points: [number, number][] }>
-  drsZones:    Array<{ track_points: [number, number][] }>
-  slmDry:      Array<{ track_points: [number, number][] }>   // 2026 SLM — Full-status zones
-  slmWet:      Array<{ track_points: [number, number][] }>   // 2026 SLM — Partial-status zones
+  drsZones:    OffsetZone[]
+  slmDry:      OffsetZone[]   // 2026 SLM — Full-status zones
+  slmWet:      OffsetZone[]   // 2026 SLM — Partial-status zones
   speedTraps:  [number, number][]
   startFinish: [number, number] | null
   s1pts:       [number, number][]
@@ -253,8 +322,12 @@ function prepareMap(map: TrackMapData): PreparedMap {
   })
 
   const centerline = buildCenterline(map)
+  const rotatedCenterline = centerline.map(rot)
   const reconstruct = (zones: Array<{ start: [number, number]; end: [number, number] }>) =>
-    zones.map(z => ({ track_points: smoothSeam(sliceZone(centerline, z.start, z.end)).map(rot) }))
+    zones.map(z => {
+      const track_points = smoothSeam(sliceZone(centerline, z.start, z.end)).map(rot)
+      return { track_points, outwardSign: findOutwardSign(track_points, rotatedCenterline) }
+    })
 
   const drsZones = reconstruct(map.drs_zones as Array<{ start: [number, number]; end: [number, number] }>)
   const slmDry   = reconstruct(map.slm_dry ?? [])
@@ -321,14 +394,12 @@ function drawPolyline(
   ctx.stroke()
 }
 
-/** A line running alongside the track, offset perpendicular toward the *outside*
- *  of the circuit from each point (the inward normal points at the enclosed
- *  interior for a consistently-wound loop, so we negate it). Used for both the
- *  DRS zone (green, dashed) and the SLM overlay (purple; solid where wet applies,
- *  dashed where dry-only). */
+/** A line running alongside the track, offset perpendicular toward the outside
+ *  selected during map preparation. */
 function drawOffsetLine(
   ctx: CanvasRenderingContext2D,
   pts: [number, number][],
+  outwardSign: 1 | -1,
   scale: number, ox: number, oy: number,
   color: string, dashed: boolean,
   zoomFactor: number = 1,
@@ -345,8 +416,8 @@ function drawOffsetLine(
     const [nx, ny] = perp(pts, i)
     const [cx2, cy2] = toCanvas(pts[i], scale, ox, oy)
     const offset = Math.max(DRS_OFFSET * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 8 * zoomFactor)
-    const px = cx2 - nx * offset
-    const py = cy2 - ny * offset
+    const px = cx2 + nx * offset * outwardSign
+    const py = cy2 + ny * offset * outwardSign
     if (i === 0) ctx.moveTo(px, py)
     else         ctx.lineTo(px, py)
   }
@@ -568,11 +639,11 @@ function renderBackgroundFrame(
     const zones = partial ? prep.slmWet : prep.slmDry
     const color = partial ? SLM_WET_COLOR : SLM_DRY_COLOR
     for (const zone of zones) {
-      drawOffsetLine(ctx, zone.track_points, scale, ox, oy, color, true, zoomFactor, trackZoomFactor)
+      drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, color, true, zoomFactor, trackZoomFactor)
     }
   } else {
     for (const zone of prep.drsZones) {
-      drawOffsetLine(ctx, zone.track_points, scale, ox, oy, DRS_COLOR, true, zoomFactor, trackZoomFactor)
+      drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, DRS_COLOR, true, zoomFactor, trackZoomFactor)
     }
   }
 
@@ -661,6 +732,49 @@ const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) =
 })
 ZoomSelector.displayName = 'ZoomSelector'
 
+interface TestMapControlsProps {
+  trackId: number | null
+  aeroOverlay: AeroOverlay
+  onTrackChange: (opt: SingleValue<MapOption>) => void
+  onAeroChange: (opt: SingleValue<AeroOption>) => void
+  isDark: boolean
+}
+
+const TestMapControls = memo(({ trackId, aeroOverlay, onTrackChange, onAeroChange, isDark }: TestMapControlsProps) => {
+  const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
+  const mapValue = useMemo(() => MAP_OPTIONS.find(o => o.value === trackId) ?? null, [trackId])
+  const aeroValue = useMemo(() => AERO_OPTIONS.find(o => o.value === aeroOverlay) ?? AERO_OPTIONS[2], [aeroOverlay])
+
+  return (
+    <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className="w-56 shrink-0">
+        <Select<MapOption>
+          aria-label="Test map"
+          value={mapValue}
+          options={MAP_OPTIONS}
+          onChange={onTrackChange}
+          isSearchable
+          placeholder="Select map…"
+          styles={styles}
+          components={selectComponents}
+        />
+      </div>
+      <div className="w-32 shrink-0">
+        <Select<AeroOption>
+          aria-label="Test overtaking aid"
+          value={aeroValue}
+          options={AERO_OPTIONS}
+          onChange={onAeroChange}
+          isSearchable={false}
+          styles={styles}
+          components={selectComponents}
+        />
+      </div>
+    </div>
+  )
+})
+TestMapControls.displayName = 'TestMapControls'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -705,7 +819,19 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const zoomLevelRef = useRef<number>(4)
   zoomLevelRef.current = zoomLevel
 
-  const map = trackId != null ? TRACK_MAPS[trackId] ?? null : null
+  const [previewTrackId, setPreviewTrackId] = useState<number | null>(trackId)
+  const [previewAeroOverlay, setPreviewAeroOverlay] = useState<AeroOverlay>(() => aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
+  const map = previewTrackId != null ? TRACK_MAPS[previewTrackId] ?? null : null
+  const effectiveAeroMode = previewAeroOverlay === 'drs' ? 'drs' : 'slm'
+  const effectiveSlmTrackStatus = previewAeroOverlay === 'slm-wet' ? 1 : 0
+
+  useEffect(() => {
+    setPreviewTrackId(trackId)
+  }, [trackId])
+
+  useEffect(() => {
+    setPreviewAeroOverlay(aeroOverlayFromTelemetry(aeroMode, slmTrackStatus))
+  }, [aeroMode, slmTrackStatus])
 
   participantsRef.current = participants
 
@@ -803,8 +929,8 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   sectorColorsRef.current      = sectorColors
   driversModeRef.current       = driversMode
   mapDimmedRef.current         = mapDimmed
-  aeroModeRef.current          = aeroMode
-  slmTrackStatusRef.current    = slmTrackStatus
+  aeroModeRef.current          = effectiveAeroMode
+  slmTrackStatusRef.current    = effectiveSlmTrackStatus
   mapTimeoutRef.current        = mapTimeout
   const reduceAnimationsRef    = useRef(reduceAnimations)
   reduceAnimationsRef.current  = reduceAnimations
@@ -815,7 +941,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   // as the camera moves.
   useEffect(() => {
     backgroundDirtyRef.current = true
-  }, [isDark, sectorColors, mapDimmed, aeroMode, slmTrackStatus])
+  }, [isDark, sectorColors, mapDimmed, effectiveAeroMode, effectiveSlmTrackStatus])
 
   useEffect(() => {
     if (map) return
@@ -955,10 +1081,27 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     setZoomLevel(opt?.value ?? 4)
   }, [])
 
+  const handleTrackChange = useCallback((opt: SingleValue<MapOption>) => {
+    setPreviewTrackId(opt?.value ?? null)
+  }, [])
+
+  const handleAeroChange = useCallback((opt: SingleValue<AeroOption>) => {
+    setPreviewAeroOverlay(opt?.value ?? 'drs')
+  }, [])
+
   return (
     <div ref={wrapRef} className="relative w-full h-full">
       <canvas ref={backgroundCanvasRef} className="absolute inset-0" />
       <canvas ref={foregroundCanvasRef} className="absolute inset-0 pointer-events-none" />
+      {import.meta.env.MODE === 'debug' && (
+        <TestMapControls
+          trackId={previewTrackId}
+          aeroOverlay={previewAeroOverlay}
+          onTrackChange={handleTrackChange}
+          onAeroChange={handleAeroChange}
+          isDark={isDark}
+        />
+      )}
       {!map && (
         <div className="absolute inset-0 flex items-center justify-center">
           <span className="text-[11px] uppercase tracking-widest text-[var(--text-secondary)]">

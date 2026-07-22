@@ -10,8 +10,10 @@
   "scripts": {
     "build:bridge": "node scripts/build-bridge.mjs",
     "predev": "node scripts/gen-icon.mjs && node scripts/build-bridge.mjs",
+    "predev:debug": "npm run predev",
     "prebuild": "node scripts/gen-icon.mjs && node scripts/build-bridge.mjs",
     "dev": "electron-vite dev",
+    "dev:debug": "electron-vite dev --mode debug",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "build": "electron-vite build",
     "start": "electron-vite preview",
