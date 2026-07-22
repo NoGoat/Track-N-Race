@@ -34,7 +34,7 @@ constexpr double DRS_OFFSET= 18.0;
 constexpr double SF_HALF   = 14.0;
 constexpr double JUNC_HALF = 10.0;
 const char* DRS_COLOR     = "#39B54A";
-const char* SLM_DRY_COLOR = "#FF9500";   // SLM Normal grip  (slm_dry / Full status)   — orange
+const char* SLM_DRY_COLOR = "#46E396";   // SLM Normal grip  (slm_dry / Full status)   — bright green
 const char* SLM_WET_COLOR = "#22D3EE";   // SLM Reduced grip (slm_wet / Partial status) — cyan
 constexpr int    LABEL_W   = 38;
 constexpr int    LABEL_H   = 16;
@@ -498,7 +498,7 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     // perpendicular toward the *outside* of the circuit (the inward normal points
     // at the enclosed interior for a consistently-wound loop, so we negate it).
     // DRS zones (F1 24/25, green) or the 2026 SLM overlay: slm_wet on a Partial
-    // track status (cyan), otherwise slm_dry (orange).
+    // track status (cyan), otherwise slm_dry (pink).
     const auto drawOffsetZones = [&](const std::vector<std::vector<QPointF>>& zones,
                                      const QColor& color) {
         const double offset = std::max(DRS_OFFSET * zf, (TRACK_PX * tzf) / 2 + 8 * zf);
