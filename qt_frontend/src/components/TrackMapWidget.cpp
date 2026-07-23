@@ -37,10 +37,16 @@ constexpr double TRAP_R    = 9.0;
 constexpr double MAP_FIT_PAD = MAP_PAD + DRS_OFFSET + DRS_PX / 2.0;
 constexpr double SF_HALF   = 14.0;
 constexpr double JUNC_HALF = 10.0;
-const char* DRS_COLOR     = "#39B54A";
-const char* SLM_DRY_COLOR = "#46E396";   // SLM Normal grip  (slm_dry / Full status)   — bright green
-const char* SLM_WET_COLOR = "#22D3EE";   // SLM Reduced grip (slm_wet / Partial status) — cyan
-const char* TRAP_COLOR    = "#8881DE";
+const char* DRS_COLOR_DARK      = "#39B54A";
+const char* DRS_COLOR_LIGHT     = "#237A32";
+const char* SLM_DRY_COLOR_DARK  = "#46E396"; // SLM Normal grip  (slm_dry / Full status)   — bright green
+const char* SLM_DRY_COLOR_LIGHT = "#16804A";
+const char* SLM_WET_COLOR_DARK  = "#22D3EE"; // SLM Reduced grip (slm_wet / Partial status) — cyan
+const char* SLM_WET_COLOR_LIGHT = "#087F9C";
+const char* TRAP_COLOR_DARK     = "#8881DE";
+const char* TRAP_COLOR_LIGHT    = "#5B54B4";
+const char* OVERTAKE_COLOR_DARK  = "#95E7F0";
+const char* OVERTAKE_COLOR_LIGHT = "#397F88";
 constexpr int    LABEL_W   = 38;
 constexpr int    LABEL_H   = 16;
 constexpr int    LABEL_GAP = 5;
@@ -401,6 +407,17 @@ bool TrackMapWidget::setTrack(int trackId) {
             rawSpeedTraps_.emplace_back(trap[0].toDouble(), trap[1].toDouble());
     }
 
+    const auto parsePoint = [&](const char* key, bool& present, QPointF& point) {
+        present = false;
+        const QJsonArray arr = j.value(QLatin1String(key)).toArray();
+        if (arr.size() >= 2) {
+            present = true;
+            point = QPointF(arr[0].toDouble(), arr[1].toDouble());
+        }
+    };
+    parsePoint("overtake_detection_point", rawHasOvertakeDetection_, rawOvertakeDetection_);
+    parsePoint("overtake_activation_point", rawHasOvertakeActivation_, rawOvertakeActivation_);
+
     rawHasSF_ = false;
     {
         const QJsonArray sf = j.value("start_finish").toArray();
@@ -476,6 +493,21 @@ void TrackMapWidget::rebuildPrepared() {
     prep_.speedTraps.reserve(rawSpeedTraps_.size());
     for (const QPointF& trap : rawSpeedTraps_)
         prep_.speedTraps.push_back(rot(trap));
+
+    prep_.hasOvertakeDetection = rawHasOvertakeDetection_;
+    if (rawHasOvertakeDetection_)
+        prep_.overtakeDetection = rot(rawOvertakeDetection_);
+
+    prep_.hasOvertakeActivation = false;
+    if (rawHasOvertakeActivation_ && rotatedCenterline.size() > 1) {
+        const QPointF activation = rot(rawOvertakeActivation_);
+        const int activationIdx = nearestIdx(rotatedCenterline, activation);
+        const QPointF n = perpAt(rotatedCenterline.data(),
+                                 (int)rotatedCenterline.size(),
+                                 activationIdx);
+        prep_.hasOvertakeActivation = true;
+        prep_.overtakeActivation = { activation, n.x(), n.y() };
+    }
 
     // Junctions: perpendicular tick at the end of each sector except the last
     // (= start of sectors 2 and 3).
@@ -575,7 +607,12 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     // Overtaking-aid overlay: a dashed line running alongside the track, offset
     // toward the outside selected once during map preparation.
     // DRS zones (F1 24/25, green) or the 2026 SLM overlay: slm_wet on a Partial
-    // track status (cyan), otherwise slm_dry (pink).
+    // track status (cyan), otherwise slm_dry (green).
+    const QColor drsColor(dark_ ? DRS_COLOR_DARK : DRS_COLOR_LIGHT);
+    const QColor slmDryColor(dark_ ? SLM_DRY_COLOR_DARK : SLM_DRY_COLOR_LIGHT);
+    const QColor slmWetColor(dark_ ? SLM_WET_COLOR_DARK : SLM_WET_COLOR_LIGHT);
+    const QColor trapColor(dark_ ? TRAP_COLOR_DARK : TRAP_COLOR_LIGHT);
+    const QColor overtakeColor(dark_ ? OVERTAKE_COLOR_DARK : OVERTAKE_COLOR_LIGHT);
     const auto drawOffsetZones = [&](const std::vector<OffsetZone>& zones,
                                      const QColor& color) {
         const double offset = std::max(DRS_OFFSET * zf, (TRACK_PX * tzf) / 2 + 8 * zf);
@@ -602,15 +639,36 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     if (aeroSlm_) {
         const bool partial = (slmTrackStatus_ == 1);
         drawOffsetZones(partial ? prep_.slmWet : prep_.slmDry,
-                        QColor(partial ? SLM_WET_COLOR : SLM_DRY_COLOR));
+                        partial ? slmWetColor : slmDryColor);
+
+        // Detection is a filled dot matching the speed-trap size; activation is
+        // a perpendicular tick. Both belong only to the active 2026 SLM overlay.
+        if (prep_.hasOvertakeDetection) {
+            const double markerR = std::max(TRAP_R * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
+            p.setPen(Qt::NoPen);
+            p.setBrush(overtakeColor);
+            p.drawEllipse(tc(prep_.overtakeDetection), markerR, markerR);
+        }
+        if (prep_.hasOvertakeActivation) {
+            const Junction& jc = prep_.overtakeActivation;
+            const QPointF c = tc(jc.pt);
+            const double half = std::max(JUNC_HALF * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
+            QPen pen(overtakeColor);
+            pen.setWidthF(3.0 * zf);
+            pen.setCapStyle(Qt::RoundCap);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawLine(QPointF(c.x() - jc.nx * half, c.y() - jc.ny * half),
+                       QPointF(c.x() + jc.nx * half, c.y() + jc.ny * half));
+        }
     } else {
-        drawOffsetZones(prep_.drsZones, QColor(DRS_COLOR));
+        drawOffsetZones(prep_.drsZones, drsColor);
     }
 
     // Speed traps are simple filled dots, matching the Electron map.
     const double trapR = std::max(TRAP_R * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(TRAP_COLOR));
+    p.setBrush(trapColor);
     for (const QPointF& trap : prep_.speedTraps)
         p.drawEllipse(tc(trap), trapR, trapR);
 

@@ -82,6 +82,10 @@ private:
         std::vector<OffsetZone> slmDry;          // 2026 SLM overlay — Full-status zones
         std::vector<OffsetZone> slmWet;          // 2026 SLM overlay — Partial-status zones
         std::vector<QPointF> speedTraps;          // rotated speed-trap marker positions
+        bool    hasOvertakeDetection = false;     // 2026 SLM detection marker
+        QPointF overtakeDetection;
+        bool    hasOvertakeActivation = false;    // 2026 SLM activation tick
+        Junction overtakeActivation;
         std::vector<Junction> junctions;         // starts of sectors 2 & 3
         bool    hasSF = false;                   // start/finish (start of sector 1)
         QPointF sfPt;
@@ -120,6 +124,10 @@ private:
     // is re-derived from the centerline at prepare time (see rebuildPrepared).
     std::vector<std::pair<QPointF, QPointF>> rawDrs_, rawSlmDry_, rawSlmWet_;
     std::vector<QPointF> rawSpeedTraps_;
+    bool        rawHasOvertakeDetection_ = false;
+    QPointF     rawOvertakeDetection_;
+    bool        rawHasOvertakeActivation_ = false;
+    QPointF     rawOvertakeActivation_;
     bool        rawHasSF_ = false;
     QPointF     rawSF_;
     Prepared    prep_{};
