@@ -3,7 +3,7 @@ node_modules/
 **/node_modules/
 
 dist/
-/release-*/
+/release/
 reference_docs/
 
 .agents

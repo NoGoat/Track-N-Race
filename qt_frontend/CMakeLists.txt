@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
-project(NativeRecorder VERSION 1.0.0 LANGUAGES CXX)
+
+if(NOT DEFINED TNR_APP_VERSION)
+    if(DEFINED ENV{TNR_APP_VERSION} AND NOT "$ENV{TNR_APP_VERSION}" STREQUAL "")
+        set(TNR_APP_VERSION "$ENV{TNR_APP_VERSION}")
+    else()
+        set(TNR_APP_VERSION "1.0.0")
+    endif()
+endif()
+project(NativeRecorder VERSION "${TNR_APP_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
