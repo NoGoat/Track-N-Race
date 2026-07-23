@@ -64,7 +64,8 @@
     },
     "linux": {
       "target": "AppImage",
-      "artifactName": "Track-N-Race - Electron.${ext}"
+      "artifactName": "Track-N-Race - Electron.${ext}",
+      "icon": "build/icon_transparent.png"
     },
     "mac": {
       "target": "dmg",
