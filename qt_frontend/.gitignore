@@ -1,0 +1,6 @@
+
+# AppImage build artifacts
+/AppDir/
+/build-appimage/
+/.appimage-tools/
+/*.AppImage

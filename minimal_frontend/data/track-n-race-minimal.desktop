@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Track N Race Minimal Recorder
+Comment=Automatically record F1 telemetry to TNRD files
+Exec=track-n-race-minimal
+Icon=track-n-race-minimal
+Terminal=false
+Categories=Utility;

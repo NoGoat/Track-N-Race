@@ -1,0 +1,68 @@
+#include "Attributions.h"
+
+#include <iterator>
+
+#ifdef TNR_MINIMAL_QT
+#include <QtGlobal>
+#endif
+
+namespace {
+
+constexpr char kGpl3[] = R"TNR_GPL3(@GPL3_TEXT@)TNR_GPL3";
+constexpr char kGlazeMit[] = R"TNR_GLAZE(@GLAZE_MIT_TEXT@)TNR_GLAZE";
+constexpr char kZlib[] = R"TNR_ZLIB(@ZLIB_LICENSE_TEXT@)TNR_ZLIB";
+constexpr char kZstandardBsd3[] = R"TNR_ZSTD(@ZSTD_BSD3_TEXT@)TNR_ZSTD";
+constexpr char kLibxlsxwriterBsd2[] = R"TNR_XLSX(@LIBXLSXWRITER_BSD2_TEXT@)TNR_XLSX";
+#ifdef TNR_MINIMAL_QT
+constexpr char kLgpl3[] = R"TNR_LGPL3(@LGPL3_TEXT@)TNR_LGPL3";
+#endif
+
+constexpr Attribution kAttributions[] = {
+    {"Track N Race Minimal Recorder", "@PROJECT_VERSION@", "GPL v3",
+     "Copyright © 2026 Track N Race",
+     "https://github.com/nogoat/track-n-race", kGpl3},
+    {"glaze", "7.8.3", "MIT",
+     "Copyright © 2019-present Stephen Berry",
+     "https://github.com/stephenberry/glaze", kGlazeMit},
+    {"zlib", "1.3.2", "zlib",
+     "Copyright © 1995-2026 Jean-loup Gailly and Mark Adler",
+     "https://zlib.net", kZlib},
+    {"Zstandard", "1.5.7", "BSD 3-Clause",
+     "Copyright © Meta Platforms, Inc. and affiliates",
+     "https://facebook.github.io/zstd/", kZstandardBsd3},
+    {"libxlsxwriter", "1.2.4", "BSD 2-Clause",
+     "Copyright © 2014-2026 John McNamara",
+     "https://libxlsxwriter.github.io", kLibxlsxwriterBsd2},
+#ifdef TNR_MINIMAL_QT
+    {"Qt", QT_VERSION_STR, "LGPL v3",
+     "Copyright © The Qt Company Ltd. and other contributors",
+     "https://www.qt.io", kLgpl3},
+#endif
+};
+
+} // namespace
+
+std::span<const Attribution> minimalAppAttributions() {
+    return kAttributions;
+}
+
+std::string minimalAppAttributionDocument() {
+    std::string document;
+    for (const Attribution& item : kAttributions) {
+        if (!document.empty()) {
+            document += "\n\n============================================================\n\n";
+        }
+        document += item.name;
+        document += " ";
+        document += item.version;
+        document += "\nLicense: ";
+        document += item.license;
+        document += "\n";
+        document += item.copyright;
+        document += "\n";
+        document += item.website;
+        document += "\n\n";
+        document += item.licenseText;
+    }
+    return document;
+}

@@ -1,0 +1,5 @@
+/build-*/
+/dist/
+/AppDir/
+/.appimage-tools/
+/windows/obj/

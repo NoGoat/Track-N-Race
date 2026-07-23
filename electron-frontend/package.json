@@ -1,0 +1,141 @@
+{
+  "name": "track-n-race",
+  "version": "1.2.0",
+  "description": "Track N Race",
+  "author": "NoGoat",
+  "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "predev": "node scripts/gen-icon.mjs && node scripts/build-bridge.mjs",
+    "predev:debug": "npm run predev",
+    "prebuild": "node scripts/gen-icon.mjs && node scripts/build-bridge.mjs",
+    "dev": "electron-vite dev",
+    "dev:debug": "electron-vite dev --mode debug",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "prepack": "node scripts/build-bridge.mjs",
+    "pack": "electron-builder --dir",
+    "predist": "node scripts/build-bridge.mjs",
+    "dist": "electron-builder",
+    "dist:win:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.tracknrace.app",
+    "productName": "Track N Race",
+    "files": [
+      "**/*",
+      "!dist${/*}"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "executableName": "Track-N-Race - Electron",
+      "icon": "build/icon_transparent.ico",
+      "fileAssociations": [
+        {
+          "ext": "tnrd",
+          "name": "Track N Race Session Data",
+          "description": "Track N Race Recorded Telemetry Session Data",
+          "role": "Viewer",
+          "icon": "build/icon_transparent.ico"
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Track-N-Race - Electron - Installer.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Track N Race",
+      "installerIcon": "build/icon_transparent_light.ico",
+      "uninstallerIcon": "build/icon_transparent_light.ico",
+      "installerHeaderIcon": "build/icon_transparent_light.ico",
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "Track-N-Race - Electron - Portable.${ext}"
+    },
+    "linux": {
+      "target": "AppImage",
+      "artifactName": "Track-N-Race - Electron.${ext}",
+      "icon": "build/icon_transparent.png"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon_transparent.ico",
+      "fileAssociations": [
+        {
+          "ext": "tnrd",
+          "name": "Track N Race Session Data",
+          "role": "Viewer"
+        }
+      ]
+    },
+    "dmg": {
+      "artifactName": "Track-N-Race - Electron.${ext}",
+      "title": "${productName} ${version}",
+      "iconSize": 96,
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 150,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 390,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@track-n-race/timechart-engine": "file:src/renderer/src/lib/timechart/engine",
+    "@uiw/react-color": "^2.10.3",
+    "electron-store": "^11.0.2",
+    "lucide-react": "^1.25.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-select": "^5.10.2",
+    "zustand": "^5.0.14"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/d3-axis": "^3.0.6",
+    "@types/d3-color": "^3.1.3",
+    "@types/d3-scale": "^4.0.9",
+    "@types/d3-selection": "^3.0.11",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react-swc": "^4.3.1",
+    "cmake-js": "^8.0.0",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "node-addon-api": "^8.9.0",
+    "png-to-ico": "^3.0.2",
+    "postcss": "^8.5.19",
+    "react-scan": "^0.5.7",
+    "stats-gl": "^4.2.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6"
+  }
+}
