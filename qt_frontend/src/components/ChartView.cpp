@@ -339,6 +339,17 @@ ChartView::ChartView(QWidget* parent)
 
 ChartView::~ChartView() { liveCharts().remove(this); }
 
+void ChartView::suspendOpenGlForStyleChange()
+{
+#ifdef QCUSTOMPLOT_USE_OPENGL
+    for (ChartView* v : liveCharts()) {
+        QCustomPlot* plot = v->d_->plot;
+        if (plot->openGl())
+            plot->setOpenGl(false);
+    }
+#endif
+}
+
 void ChartView::reapplyRenderSettings()
 {
     for (ChartView* v : liveCharts()) {

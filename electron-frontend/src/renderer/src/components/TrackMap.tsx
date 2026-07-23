@@ -44,8 +44,9 @@ const SECTOR_COLORS       = SECTOR_COLORS_DARK
 const DRS_COLOR     = '#39B54A'
 const SLM_DRY_COLOR = '#46E396'   // SLM Normal grip  (slm_dry / Full status)   — bright green
 const SLM_WET_COLOR = '#22D3EE'   // SLM Reduced grip (slm_wet / Partial status) — cyan
-const TRAP_COLOR    = '#C77DFF'
+const TRAP_COLOR    = '#8881DE'
 const SF_COLOR      = '#E8002D'
+const OVERTAKE_COLOR = '#F06A3B'
 
 const TRACK_PX   = 5
 const DRS_PX     = 6
@@ -293,6 +294,8 @@ interface PreparedMap {
   slmWet:      OffsetZone[]   // 2026 SLM — Partial-status zones
   speedTraps:  [number, number][]
   startFinish: [number, number] | null
+  overtakeDetection: [number, number] | null
+  overtakeActivation: SectorJunction | null
   s1pts:       [number, number][]
   sfIdx:       number
   junctions:   SectorJunction[]
@@ -338,6 +341,18 @@ function prepareMap(map: TrackMapData): PreparedMap {
   const slmWet   = reconstruct(map.slm_wet ?? [])
   const speedTraps = (map.speed_traps as [number, number][]).map(rot)
   const startFinish = map.start_finish ? rot(map.start_finish as [number, number]) : null
+  const overtakeDetection = map.overtake_detection_point
+    ? rot(map.overtake_detection_point)
+    : null
+  const overtakeActivationPt = map.overtake_activation_point
+    ? rot(map.overtake_activation_point)
+    : null
+  let overtakeActivation: SectorJunction | null = null
+  if (overtakeActivationPt && rotatedCenterline.length > 1) {
+    const activationIdx = nearestIdx(rotatedCenterline, overtakeActivationPt)
+    const [nx, ny] = perp(rotatedCenterline, activationIdx)
+    overtakeActivation = { pt: overtakeActivationPt, nx, ny, color: OVERTAKE_COLOR }
+  }
 
   const s1pts = sectors[0]?.points ?? []
   let sfIdx = 0
@@ -360,7 +375,8 @@ function prepareMap(map: TrackMapData): PreparedMap {
   }
 
   return {
-    sectors, drsZones, slmDry, slmWet, speedTraps, startFinish, s1pts, sfIdx, junctions,
+    sectors, drsZones, slmDry, slmWet, speedTraps, startFinish,
+    overtakeDetection, overtakeActivation, s1pts, sfIdx, junctions,
     bounds: { minX, minY, w: maxX - minX, h: maxY - minY },
     rotCos: cos, rotSin: sin, rotCx: cx, rotCy: cy,
   }
@@ -437,14 +453,11 @@ function drawSpeedTrap(
   trackZoomFactor: number = 1,
 ) {
   const [cx2, cy2] = toCanvas(pt, scale, ox, oy)
-  ctx.strokeStyle = TRAP_COLOR
-  ctx.lineWidth   = 2 * zoomFactor
   const trapR = Math.max(TRAP_R * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
-  for (const r of [trapR, trapR + 5 * zoomFactor, trapR + 10 * zoomFactor]) {
-    ctx.beginPath()
-    ctx.arc(cx2, cy2, r, 0, Math.PI * 2)
-    ctx.stroke()
-  }
+  ctx.beginPath()
+  ctx.arc(cx2, cy2, trapR, 0, Math.PI * 2)
+  ctx.fillStyle = TRAP_COLOR
+  ctx.fill()
 }
 
 function drawStartFinish(
@@ -486,6 +499,19 @@ function drawSectorJunction(
   ctx.moveTo(cx2 - j.nx * juncHalf, cy2 - j.ny * juncHalf)
   ctx.lineTo(cx2 + j.nx * juncHalf, cy2 + j.ny * juncHalf)
   ctx.stroke()
+}
+
+function drawOvertakeDetection(
+  ctx: CanvasRenderingContext2D,
+  pt: [number, number],
+  scale: number, ox: number, oy: number,
+  zoomFactor: number = 1,
+) {
+  const [cx2, cy2] = toCanvas(pt, scale, ox, oy)
+  ctx.beginPath()
+  ctx.arc(cx2, cy2, 5 * zoomFactor, 0, Math.PI * 2)
+  ctx.fillStyle = OVERTAKE_COLOR
+  ctx.fill()
 }
 
 function drawLabel(
@@ -644,6 +670,25 @@ function renderBackgroundFrame(
     const color = partial ? SLM_WET_COLOR : SLM_DRY_COLOR
     for (const zone of zones) {
       drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, color, true, zoomFactor, trackZoomFactor)
+    }
+
+    // The overtake detection/activation markers are part of the 2026 SLM rules.
+    // Keep them coupled to the active SLM overlay so they never appear with DRS.
+    if (prep.overtakeDetection) {
+      drawOvertakeDetection(ctx, prep.overtakeDetection, scale, ox, oy, zoomFactor)
+    }
+
+    if (prep.overtakeActivation) {
+      drawSectorJunction(
+        ctx,
+        prep.overtakeActivation,
+        scale,
+        ox,
+        oy,
+        OVERTAKE_COLOR,
+        zoomFactor,
+        trackZoomFactor,
+      )
     }
   } else {
     for (const zone of prep.drsZones) {

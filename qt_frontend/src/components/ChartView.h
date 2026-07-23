@@ -68,6 +68,11 @@ public:
     // setting to re-apply to all live charts and repaint, no restart needed.
     static void reapplyRenderSettings();
 
+    // Release every live chart's QCustomPlot OpenGL context and offscreen surface
+    // before a live style change that repolishes the existing widget tree. Call
+    // reapplyRenderSettings on the next event-loop turn to recreate them.
+    static void suspendOpenGlForStyleChange();
+
     // Declare the chart. addAxis/addSeries return opaque ids used by the data
     // calls below. Series are drawn in creation order (later draws on top).
     // addAxis targets a panel (default panel 0 — see the multi-panel section).

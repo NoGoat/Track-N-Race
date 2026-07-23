@@ -25,6 +25,8 @@ export interface TrackMapData {
   slm_wet?:       Array<{ start: [number, number]; end: [number, number] }>
   speed_traps:    [number, number][]
   start_finish:   [number, number] | null
+  overtake_detection_point?:  [number, number] | null
+  overtake_activation_point?: [number, number] | null
 }
 
 // Vite expands this glob at dev-server startup/build time, so newly generated

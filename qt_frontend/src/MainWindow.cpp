@@ -696,6 +696,13 @@ void MainWindow::setStyleName(const QString& name) {
         restoreDefaultIconTheme();
     }
 
+    // Breeze reloads its animation/window/shadow machinery when its application
+    // palette is installed below. Release QCustomPlot's offscreen GL surfaces
+    // before that synchronous repolish/palette pass; queued palette replots then
+    // use software buffers until the GL resources are recreated next turn.
+    if (breeze)
+        ChartView::suspendOpenGlForStyleChange();
+
     if (name == "system") {
         const QString def = qApp->property("defaultStyleName").toString();
         if (!def.isEmpty())
@@ -712,6 +719,11 @@ void MainWindow::setStyleName(const QString& name) {
         applyBreezePalette(currentTheme());
         applyBreezeFont();
         applyBreezeIconTheme();
+    }
+    if (breeze) {
+        QTimer::singleShot(0, qApp, [] {
+            ChartView::reapplyRenderSettings();
+        });
     }
     // The toolbar override only applies under Breeze, so re-evaluate on style change.
     if (toolbar_) toolbar_->updateColorScheme();

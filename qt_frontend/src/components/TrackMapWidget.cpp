@@ -31,6 +31,7 @@ constexpr double DOT_R     = 7.0;
 constexpr double MAP_PAD   = 24.0;  // visible padding outside every rendered map element
 constexpr double DRS_PX    = 6.0;
 constexpr double DRS_OFFSET= 18.0;
+constexpr double TRAP_R    = 9.0;
 // Reserve room for the outward DRS/SLM overlay plus half its stroke so MAP_PAD
 // remains visible beyond the dashes rather than only beyond the centerline.
 constexpr double MAP_FIT_PAD = MAP_PAD + DRS_OFFSET + DRS_PX / 2.0;
@@ -39,6 +40,7 @@ constexpr double JUNC_HALF = 10.0;
 const char* DRS_COLOR     = "#39B54A";
 const char* SLM_DRY_COLOR = "#46E396";   // SLM Normal grip  (slm_dry / Full status)   — bright green
 const char* SLM_WET_COLOR = "#22D3EE";   // SLM Reduced grip (slm_wet / Partial status) — cyan
+const char* TRAP_COLOR    = "#8881DE";
 constexpr int    LABEL_W   = 38;
 constexpr int    LABEL_H   = 16;
 constexpr int    LABEL_GAP = 5;
@@ -392,6 +394,13 @@ bool TrackMapWidget::setTrack(int trackId) {
     rawSlmDry_ = parseZones(j.value("slm_dry").toArray());
     rawSlmWet_ = parseZones(j.value("slm_wet").toArray());
 
+    rawSpeedTraps_.clear();
+    for (const QJsonValue& tv : j.value("speed_traps").toArray()) {
+        const QJsonArray trap = tv.toArray();
+        if (trap.size() >= 2)
+            rawSpeedTraps_.emplace_back(trap[0].toDouble(), trap[1].toDouble());
+    }
+
     rawHasSF_ = false;
     {
         const QJsonArray sf = j.value("start_finish").toArray();
@@ -463,6 +472,10 @@ void TrackMapWidget::rebuildPrepared() {
     prep_.drsZones = reconstruct(rawDrs_);
     prep_.slmDry   = reconstruct(rawSlmDry_);
     prep_.slmWet   = reconstruct(rawSlmWet_);
+    prep_.speedTraps.clear();
+    prep_.speedTraps.reserve(rawSpeedTraps_.size());
+    for (const QPointF& trap : rawSpeedTraps_)
+        prep_.speedTraps.push_back(rot(trap));
 
     // Junctions: perpendicular tick at the end of each sector except the last
     // (= start of sectors 2 and 3).
@@ -593,6 +606,13 @@ void TrackMapWidget::drawTrack(QPainter& p, const Layout& l, double effZoom) con
     } else {
         drawOffsetZones(prep_.drsZones, QColor(DRS_COLOR));
     }
+
+    // Speed traps are simple filled dots, matching the Electron map.
+    const double trapR = std::max(TRAP_R * zf, (TRACK_PX * tzf) / 2 + 4 * zf);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(TRAP_COLOR));
+    for (const QPointF& trap : prep_.speedTraps)
+        p.drawEllipse(tc(trap), trapR, trapR);
 
     // … and the start/finish line (start of sector 1).
     if (prep_.hasSF && !prep_.sectors.empty()) {
