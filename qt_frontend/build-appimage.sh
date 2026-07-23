@@ -9,7 +9,8 @@
 # runtime and pack the AppImage. Because the breeze layout is already relative to
 # the executable's directory, it survives the move into AppDir/usr/bin unchanged.
 #
-# Usage: ./build-appimage.sh [--qt-prefix /path/to/Qt/6.x.x/gcc_64]
+# Usage: ./build-appimage.sh [--version major.minor.patch]
+#                            [--qt-prefix /path/to/Qt/6.x.x/gcc_64]
 #                            [--breeze-prefix /path/to/breeze_stack/prefix]
 set -euo pipefail
 
@@ -19,14 +20,21 @@ APPDIR="$SCRIPT_DIR/AppDir"
 TOOLS_DIR="$SCRIPT_DIR/.appimage-tools"
 
 QT_PREFIX="${QT_PREFIX:-}"
+APP_VERSION="${TNR_APP_VERSION:-1.0.0}"
 BREEZE_PREFIX=""   # empty => build.sh's default ($BUILD_DIR/breeze_stack/prefix)
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --version)       APP_VERSION="$2"; shift 2 ;;
         --qt-prefix)     QT_PREFIX="$2"; shift 2 ;;
         --breeze-prefix) BREEZE_PREFIX="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: version must use major.minor.patch format (for example, 1.2.0)." >&2
+    exit 2
+fi
+export TNR_APP_VERSION="$APP_VERSION"
 
 echo "============================================="
 echo "   TNRD Background Recorder - AppImage Build"
@@ -96,6 +104,8 @@ mkdir -p "$TOOLS_DIR"
 LD="$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
 LDQT="$TOOLS_DIR/linuxdeploy-plugin-qt-x86_64.AppImage"
 APPIMAGETOOL="$TOOLS_DIR/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_ROOT="$TOOLS_DIR/appimagetool-root"
+APPIMAGE_RUNTIME="$TOOLS_DIR/runtime-x86_64"
 fetch() { # url dest
     [[ -f "$2" ]] && return 0
     echo "Downloading $(basename "$2")..."
@@ -105,6 +115,23 @@ fetch() { # url dest
 fetch "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage" "$LD"
 fetch "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage" "$LDQT"
 fetch "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" "$APPIMAGETOOL"
+
+# Do not execute appimagetool through its AppRun wrapper.  The wrapper calls
+# readlink -f on itself, which crashes on some newer kernels/filesystems and
+# makes the AppImage exit silently with status 127.  Extract it and invoke the
+# real, static binary instead.  appimagetool normally obtains its runtime from
+# the outer AppImage launcher, so also extract that prefix and pass it
+# explicitly.
+rm -rf "$APPIMAGETOOL_ROOT"
+mkdir -p "$APPIMAGETOOL_ROOT"
+(
+    cd "$APPIMAGETOOL_ROOT"
+    "$APPIMAGETOOL" --appimage-extract >/dev/null
+)
+APPIMAGE_OFFSET="$("$APPIMAGETOOL" --appimage-offset)"
+dd if="$APPIMAGETOOL" of="$APPIMAGE_RUNTIME" bs=1 count="$APPIMAGE_OFFSET" status=none
+APPIMAGETOOL_BIN="$APPIMAGETOOL_ROOT/squashfs-root/usr/bin/appimagetool"
+APPIMAGETOOL_BIN_DIR="$APPIMAGETOOL_ROOT/squashfs-root/usr/bin"
 
 # extract-and-run avoids needing FUSE on the build host; plugins are found on PATH.
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -277,7 +304,9 @@ fi
 echo ""
 echo "[4/4] Packing AppImage..."
 export OUTPUT="Track-N-Race - Qt.AppImage"
-"$APPIMAGETOOL" "$APPDIR" "$SCRIPT_DIR/$OUTPUT"
+PATH="$APPIMAGETOOL_BIN_DIR:$PATH" \
+    "$APPIMAGETOOL_BIN" --runtime-file "$APPIMAGE_RUNTIME" \
+    "$APPDIR" "$SCRIPT_DIR/$OUTPUT"
 
 echo ""
 echo "============================================="

@@ -2,6 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ $# -ne 2 || "$1" != "--version" ]]; then
+    echo "Usage: $0 --version <major.minor.patch>" >&2
+    exit 2
+fi
+APP_VERSION="$2"
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: version must use major.minor.patch format (for example, 1.2.0)." >&2
+    exit 2
+fi
+
 BUILD_DIR="${BUILD_DIR:-$SCRIPT_DIR/build-appimage}"
 APPDIR="${APPDIR:-$SCRIPT_DIR/AppDir}"
 TOOLS_DIR="${TOOLS_DIR:-$SCRIPT_DIR/.appimage-tools}"
@@ -12,6 +23,10 @@ LINUXDEPLOY="$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
 LINUXDEPLOY_QT="$TOOLS_DIR/linuxdeploy-plugin-qt-x86_64.AppImage"
 LINUXDEPLOY_QT_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+APPIMAGETOOL="$TOOLS_DIR/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_ROOT="$TOOLS_DIR/appimagetool-root"
+APPIMAGE_RUNTIME="$TOOLS_DIR/runtime-x86_64"
 
 mkdir -p "$TOOLS_DIR" "$OUTPUT_DIR"
 if [[ ! -x "$LINUXDEPLOY" ]]; then
@@ -21,6 +36,10 @@ fi
 if [[ ! -x "$LINUXDEPLOY_QT" ]]; then
     curl --fail --location --retry 3 "$LINUXDEPLOY_QT_URL" --output "$LINUXDEPLOY_QT"
     chmod +x "$LINUXDEPLOY_QT"
+fi
+if [[ ! -x "$APPIMAGETOOL" ]]; then
+    curl --fail --location --retry 3 "$APPIMAGETOOL_URL" --output "$APPIMAGETOOL"
+    chmod +x "$APPIMAGETOOL"
 fi
 
 export QMAKE="${QMAKE:-$(command -v qmake6 || command -v qmake || command -v qmake-qt5 || true)}"
@@ -63,7 +82,8 @@ export QMAKE="$QMAKE_WRAPPER"
 
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DTNR_APP_VERSION="$APP_VERSION"
 cmake --build "$BUILD_DIR" --config Release --parallel "$(nproc)"
 
 rm -rf "$APPDIR"
@@ -80,15 +100,28 @@ else
     export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
 fi
 export OUTPUT="Track-N-Race - Minimal.AppImage"
+"$LINUXDEPLOY" \
+    --appdir "$APPDIR" \
+    --executable "$APPDIR/usr/bin/track-n-race-minimal" \
+    --desktop-file "$APPDIR/usr/share/applications/track-n-race-minimal.desktop" \
+    --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/track-n-race-minimal.png" \
+    --plugin qt
+
+# The current appimagetool AppRun wrapper crashes on some newer
+# kernels/filesystems. Extract the AppImage and invoke its static binary
+# directly, supplying the embedded runtime explicitly.
+rm -rf "$APPIMAGETOOL_ROOT"
+mkdir -p "$APPIMAGETOOL_ROOT"
 (
-    cd "$OUTPUT_DIR"
-    "$LINUXDEPLOY" \
-        --appdir "$APPDIR" \
-        --executable "$APPDIR/usr/bin/track-n-race-minimal" \
-        --desktop-file "$APPDIR/usr/share/applications/track-n-race-minimal.desktop" \
-        --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/track-n-race-minimal.png" \
-        --plugin qt \
-        --output appimage
+    cd "$APPIMAGETOOL_ROOT"
+    "$APPIMAGETOOL" --appimage-extract >/dev/null
 )
+APPIMAGE_OFFSET="$("$APPIMAGETOOL" --appimage-offset)"
+dd if="$APPIMAGETOOL" of="$APPIMAGE_RUNTIME" bs=1 count="$APPIMAGE_OFFSET" status=none
+APPIMAGETOOL_BIN="$APPIMAGETOOL_ROOT/squashfs-root/usr/bin/appimagetool"
+APPIMAGETOOL_BIN_DIR="$APPIMAGETOOL_ROOT/squashfs-root/usr/bin"
+PATH="$APPIMAGETOOL_BIN_DIR:$PATH" \
+    "$APPIMAGETOOL_BIN" --runtime-file "$APPIMAGE_RUNTIME" \
+    "$APPDIR" "$OUTPUT_DIR/$OUTPUT"
 
 echo "AppImage written to: $OUTPUT_DIR/$OUTPUT"
