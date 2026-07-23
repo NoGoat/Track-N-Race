@@ -69,7 +69,7 @@
     },
     "mac": {
       "target": "dmg",
-      "icon": "build/icon_transparent.ico",
+      "icon": "build/icon_transparent.png",
       "fileAssociations": [
         {
           "ext": "tnrd",
