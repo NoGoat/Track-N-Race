@@ -10,6 +10,7 @@ import electronStoreLicense from '../assets/licenses/electron-store.txt?raw'
 import lucideReactLicense from '../assets/licenses/lucide-react.txt?raw'
 import reactSelectLicense from '../assets/licenses/react-select.txt?raw'
 import uiwReactColorLicense from '../assets/licenses/uiw-react-color.txt?raw'
+import zustandLicense from '../assets/licenses/zustand.txt?raw'
 import timechartLicense from '../assets/licenses/timechart.txt?raw'
 import d3AxisLicense from '../assets/licenses/d3-axis.txt?raw'
 import d3ColorLicense from '../assets/licenses/d3-color.txt?raw'
@@ -21,6 +22,7 @@ import cascadiaLicense from '../assets/licenses/cascadia-code.txt?raw'
 import zlibLicense from '../assets/licenses/zlib.txt?raw'
 import zstandardLicense from '../assets/licenses/zstandard.txt?raw'
 import glazeLicense from '../assets/licenses/glaze.txt?raw'
+import libxlsxwriterLicense from '../assets/licenses/libxlsxwriter.txt?raw'
 import nodeAddonApiLicense from '../assets/licenses/node-addon-api.txt?raw'
 
 export type AttributionCategory = 'app' | 'font' | 'node-addon'
@@ -39,7 +41,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   // Application libraries
   {
     name: 'Electron',
-    version: '42.2.0',
+    version: '43.1.1',
     license: 'MIT',
     homepage: 'https://electronjs.org',
     licenseText: electronLicense,
@@ -47,7 +49,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   },
   {
     name: 'React',
-    version: '18.3.1',
+    version: '19.2.7',
     license: 'MIT',
     homepage: 'https://react.dev',
     licenseText: reactLicense,
@@ -55,7 +57,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   },
   {
     name: 'React DOM',
-    version: '18.3.1',
+    version: '19.2.7',
     license: 'MIT',
     homepage: 'https://react.dev',
     licenseText: reactDomLicense,
@@ -63,7 +65,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   },
   {
     name: 'electron-store',
-    version: '8.2.0',
+    version: '11.0.2',
     license: 'MIT',
     homepage: 'https://github.com/sindresorhus/electron-store',
     licenseText: electronStoreLicense,
@@ -71,7 +73,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   },
   {
     name: 'lucide-react',
-    version: '1.16.0',
+    version: '1.25.0',
     license: 'ISC',
     homepage: 'https://lucide.dev',
     licenseText: lucideReactLicense,
@@ -94,8 +96,16 @@ export const ATTRIBUTIONS: Attribution[] = [
     category: 'app',
   },
   {
+    name: 'zustand',
+    version: '5.0.14',
+    license: 'MIT',
+    homepage: 'https://zustand.docs.pmnd.rs/',
+    licenseText: zustandLicense,
+    category: 'app',
+  },
+  {
     name: 'TimeChart',
-    version: '1.0.0-beta.10',
+    version: '1.0.0-beta.10-tnr.1',
     license: 'MIT',
     homepage: 'https://github.com/huww98/TimeChart',
     licenseText: timechartLicense,
@@ -164,7 +174,7 @@ export const ATTRIBUTIONS: Attribution[] = [
   // Node addon native libraries
   {
     name: 'zlib',
-    version: '',
+    version: '1.3.2',
     license: 'Zlib',
     homepage: 'https://zlib.net',
     licenseText: zlibLicense,
@@ -180,15 +190,23 @@ export const ATTRIBUTIONS: Attribution[] = [
   },
   {
     name: 'Glaze',
-    version: '',
+    version: '7.8.3',
     license: 'MIT',
     homepage: 'https://github.com/stephenberry/glaze',
     licenseText: glazeLicense,
     category: 'node-addon',
   },
   {
+    name: 'libxlsxwriter',
+    version: '1.2.4',
+    license: 'BSD-2-Clause',
+    homepage: 'https://libxlsxwriter.github.io',
+    licenseText: libxlsxwriterLicense,
+    category: 'node-addon',
+  },
+  {
     name: 'node-addon-api',
-    version: '',
+    version: '8.9.0',
     license: 'MIT',
     homepage: 'https://github.com/nodejs/node-addon-api',
     licenseText: nodeAddonApiLicense,

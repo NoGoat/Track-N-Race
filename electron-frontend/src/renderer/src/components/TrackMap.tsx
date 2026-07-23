@@ -41,12 +41,17 @@ function aeroOverlayFromTelemetry(aeroMode: 'drs' | 'slm', slmTrackStatus: numbe
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
 const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']
 const SECTOR_COLORS       = SECTOR_COLORS_DARK
-const DRS_COLOR     = '#39B54A'
-const SLM_DRY_COLOR = '#46E396'   // SLM Normal grip  (slm_dry / Full status)   — bright green
-const SLM_WET_COLOR = '#22D3EE'   // SLM Reduced grip (slm_wet / Partial status) — cyan
-const TRAP_COLOR    = '#8881DE'
+const DRS_COLOR_DARK      = '#39B54A'
+const DRS_COLOR_LIGHT     = '#237A32'
+const SLM_DRY_COLOR_DARK  = '#46E396' // SLM Normal grip  (slm_dry / Full status)   — bright green
+const SLM_DRY_COLOR_LIGHT = '#16804A'
+const SLM_WET_COLOR_DARK  = '#22D3EE' // SLM Reduced grip (slm_wet / Partial status) — cyan
+const SLM_WET_COLOR_LIGHT = '#087F9C'
+const TRAP_COLOR_DARK     = '#8881DE'
+const TRAP_COLOR_LIGHT    = '#5B54B4'
 const SF_COLOR      = '#E8002D'
-const OVERTAKE_COLOR = '#F06A3B'
+const OVERTAKE_COLOR_DARK  = '#95E7F0'
+const OVERTAKE_COLOR_LIGHT = '#397F88'
 
 const TRACK_PX   = 5
 const DRS_PX     = 6
@@ -351,7 +356,7 @@ function prepareMap(map: TrackMapData): PreparedMap {
   if (overtakeActivationPt && rotatedCenterline.length > 1) {
     const activationIdx = nearestIdx(rotatedCenterline, overtakeActivationPt)
     const [nx, ny] = perp(rotatedCenterline, activationIdx)
-    overtakeActivation = { pt: overtakeActivationPt, nx, ny, color: OVERTAKE_COLOR }
+    overtakeActivation = { pt: overtakeActivationPt, nx, ny, color: OVERTAKE_COLOR_DARK }
   }
 
   const s1pts = sectors[0]?.points ?? []
@@ -449,6 +454,7 @@ function drawSpeedTrap(
   ctx: CanvasRenderingContext2D,
   pt: [number, number],
   scale: number, ox: number, oy: number,
+  color: string,
   zoomFactor: number = 1,
   trackZoomFactor: number = 1,
 ) {
@@ -456,7 +462,7 @@ function drawSpeedTrap(
   const trapR = Math.max(TRAP_R * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
   ctx.beginPath()
   ctx.arc(cx2, cy2, trapR, 0, Math.PI * 2)
-  ctx.fillStyle = TRAP_COLOR
+  ctx.fillStyle = color
   ctx.fill()
 }
 
@@ -505,12 +511,15 @@ function drawOvertakeDetection(
   ctx: CanvasRenderingContext2D,
   pt: [number, number],
   scale: number, ox: number, oy: number,
+  color: string,
   zoomFactor: number = 1,
+  trackZoomFactor: number = 1,
 ) {
   const [cx2, cy2] = toCanvas(pt, scale, ox, oy)
+  const markerR = Math.max(TRAP_R * zoomFactor, (TRACK_PX * trackZoomFactor) / 2 + 4 * zoomFactor)
   ctx.beginPath()
-  ctx.arc(cx2, cy2, 5 * zoomFactor, 0, Math.PI * 2)
-  ctx.fillStyle = OVERTAKE_COLOR
+  ctx.arc(cx2, cy2, markerR, 0, Math.PI * 2)
+  ctx.fillStyle = color
   ctx.fill()
 }
 
@@ -645,6 +654,11 @@ function renderBackgroundFrame(
 
   const trackColor = isDark ? '#ffffff' : '#000000'
   const colors = isDark ? SECTOR_COLORS_DARK : SECTOR_COLORS_LIGHT
+  const drsColor = isDark ? DRS_COLOR_DARK : DRS_COLOR_LIGHT
+  const slmDryColor = isDark ? SLM_DRY_COLOR_DARK : SLM_DRY_COLOR_LIGHT
+  const slmWetColor = isDark ? SLM_WET_COLOR_DARK : SLM_WET_COLOR_LIGHT
+  const trapColor = isDark ? TRAP_COLOR_DARK : TRAP_COLOR_LIGHT
+  const overtakeColor = isDark ? OVERTAKE_COLOR_DARK : OVERTAKE_COLOR_LIGHT
 
   if (mapDimmed) ctx.globalAlpha = 0.4
 
@@ -667,7 +681,7 @@ function renderBackgroundFrame(
   if (aeroMode === 'slm') {
     const partial = slmTrackStatus === 1
     const zones = partial ? prep.slmWet : prep.slmDry
-    const color = partial ? SLM_WET_COLOR : SLM_DRY_COLOR
+    const color = partial ? slmWetColor : slmDryColor
     for (const zone of zones) {
       drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, color, true, zoomFactor, trackZoomFactor)
     }
@@ -675,7 +689,7 @@ function renderBackgroundFrame(
     // The overtake detection/activation markers are part of the 2026 SLM rules.
     // Keep them coupled to the active SLM overlay so they never appear with DRS.
     if (prep.overtakeDetection) {
-      drawOvertakeDetection(ctx, prep.overtakeDetection, scale, ox, oy, zoomFactor)
+      drawOvertakeDetection(ctx, prep.overtakeDetection, scale, ox, oy, overtakeColor, zoomFactor, trackZoomFactor)
     }
 
     if (prep.overtakeActivation) {
@@ -685,19 +699,19 @@ function renderBackgroundFrame(
         scale,
         ox,
         oy,
-        OVERTAKE_COLOR,
+        overtakeColor,
         zoomFactor,
         trackZoomFactor,
       )
     }
   } else {
     for (const zone of prep.drsZones) {
-      drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, DRS_COLOR, true, zoomFactor, trackZoomFactor)
+      drawOffsetLine(ctx, zone.track_points, zone.outwardSign, scale, ox, oy, drsColor, true, zoomFactor, trackZoomFactor)
     }
   }
 
   for (const trap of prep.speedTraps) {
-    drawSpeedTrap(ctx, trap, scale, ox, oy, zoomFactor, trackZoomFactor)
+    drawSpeedTrap(ctx, trap, scale, ox, oy, trapColor, zoomFactor, trackZoomFactor)
   }
 
   if (prep.startFinish) {
