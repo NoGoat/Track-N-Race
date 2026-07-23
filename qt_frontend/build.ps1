@@ -4,8 +4,7 @@ param(
     # to the app. $BreezeRuntimeDir is where libintl/iconv live (the gettext bin).
     [switch]$WithBreeze,
     [string]$BreezePrefix = "",
-    [string]$BreezeRuntimeDir = "C:\vcpkg\installed\x64-windows\bin",
-    [switch]$NoLaunch
+    [string]$BreezeRuntimeDir = "C:\vcpkg\installed\x64-windows\bin"
 )
 
 # build.ps1 - Build the Track N Race Background Recorder on Windows
@@ -83,7 +82,7 @@ $jobs = $env:NUMBER_OF_PROCESSORS
 & $cmakePath --build $buildDir --config Release --parallel $jobs
 
 # 5. Verify output
-$exePath = Join-Path $buildDir "Release\Track N Race Background Recorder.exe"
+$exePath = Join-Path $buildDir "Release\Track-N-Race - Qt.exe"
 if (-not (Test-Path $exePath)) {
     Write-Error "Build failed: output executable not found at $exePath"
     exit 1
@@ -102,12 +101,4 @@ if (Test-Path $windeployqt) {
     Write-Host "Qt DLLs deployed." -ForegroundColor Green
 } else {
     Write-Warning "windeployqt not found at $windeployqt — Qt DLLs not copied. The exe may fail to launch."
-}
-
-if (-not $NoLaunch) {
-    $choice = Read-Host "`nLaunch the application now? (Y/N)"
-    if ($choice -eq "Y" -or $choice -eq "y") {
-        Write-Host "Launching..." -ForegroundColor Cyan
-        Start-Process $exePath
-    }
 }

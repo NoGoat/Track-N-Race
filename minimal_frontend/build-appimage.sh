@@ -79,7 +79,7 @@ if [[ "$QT_VERSION" == 5.* ]]; then
 else
     export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
 fi
-export OUTPUT="Track_N_Race_Minimal_Recorder-x86_64.AppImage"
+export OUTPUT="Track-N-Race - Minimal.AppImage"
 (
     cd "$OUTPUT_DIR"
     "$LINUXDEPLOY" \

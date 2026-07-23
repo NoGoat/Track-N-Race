@@ -1,9 +1,13 @@
 param(
     [string]$BuildDir = "$PSScriptRoot\build-windows",
-    [string]$DistDir = "$PSScriptRoot\dist\windows"
+    [string]$DistDir = "$PSScriptRoot\dist\windows",
+    [switch]$WithBreeze
 )
 
 $ErrorActionPreference = "Stop"
+
+# The native Win32 frontend is statically linked and has no Breeze dependency.
+# This switch keeps its packaging entry points consistent with the Qt scripts.
 
 $BuildDir = [System.IO.Path]::GetFullPath($BuildDir)
 $DistDir = [System.IO.Path]::GetFullPath($DistDir)

@@ -41,7 +41,7 @@ echo ""
 echo "[1/4] Building (build.sh ${BUILD_ARGS[*]})..."
 "$SCRIPT_DIR/build.sh" "${BUILD_ARGS[@]}"
 
-BIN="$BUILD_DIR/Track N Race Background Recorder"
+BIN="$BUILD_DIR/Track-N-Race - Qt"
 if [[ ! -f "$BIN" ]]; then
     echo "ERROR: built binary not found at: $BIN" >&2
     exit 1
@@ -276,7 +276,7 @@ fi
 # Pack the finished AppDir.
 echo ""
 echo "[4/4] Packing AppImage..."
-export OUTPUT="Track_N_Race_Background_Recorder-x86_64.AppImage"
+export OUTPUT="Track-N-Race - Qt.AppImage"
 "$APPIMAGETOOL" "$APPDIR" "$SCRIPT_DIR/$OUTPUT"
 
 echo ""

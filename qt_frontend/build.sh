@@ -68,7 +68,7 @@ echo "[2/2] Compiling..."
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 cmake --build "$SCRIPT_DIR/build" --config Release -j"$JOBS"
 
-BINARY="$SCRIPT_DIR/build/Track N Race Background Recorder"
+BINARY="$SCRIPT_DIR/build/Track-N-Race - Qt"
 if [ -f "$BINARY" ]; then
     echo ""
     echo "============================================="

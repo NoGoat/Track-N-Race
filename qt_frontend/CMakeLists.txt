@@ -156,7 +156,7 @@ else()
     add_executable(native_recorder ${SOURCES})
 endif()
 
-set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track N Race Background Recorder")
+set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track-N-Race - Qt")
 # Single source of truth for the version shown in Settings → About (read at
 # runtime via QApplication::applicationVersion()).
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")

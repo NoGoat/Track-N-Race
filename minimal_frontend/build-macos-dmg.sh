@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${DIST_DIR:-$SCRIPT_DIR/dist/macos}"
 DMG_DIR="${DMG_DIR:-$SCRIPT_DIR/dist/dmg}"
-DMG_NAME="Track-N-Race-Minimal-Recorder.dmg"
+DMG_NAME="Track-N-Race - Minimal.dmg"
 
 "$SCRIPT_DIR/build-macos.sh"
 

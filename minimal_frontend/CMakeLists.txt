@@ -56,7 +56,7 @@ if(WIN32)
     # a second one with the same resource id.
     target_link_options(minimal_app PRIVATE /MANIFEST:NO)
     set_target_properties(minimal_app PROPERTIES
-        OUTPUT_NAME "Track N Race Minimal Recorder")
+        OUTPUT_NAME "Track-N-Race - Minimal")
 
     install(TARGETS minimal_app RUNTIME DESTINATION .)
     return()
