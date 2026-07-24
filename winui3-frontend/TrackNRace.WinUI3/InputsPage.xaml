@@ -32,7 +32,6 @@
             x:Key="ChartTooltipStyle"
             TargetType="Border">
             <Setter Property="Padding" Value="8,6" />
-            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}" />
             <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="4" />
@@ -41,7 +40,7 @@
         </Style>
     </Page.Resources>
 
-    <Grid Background="{ThemeResource LayerFillColorDefaultBrush}">
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="1" />

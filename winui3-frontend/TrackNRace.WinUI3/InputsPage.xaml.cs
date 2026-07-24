@@ -19,10 +19,6 @@ public sealed partial class InputsPage : Page
     private static readonly ScottPlot.Color SteeringColor =
         ScottPlot.Color.FromHex("#BF5FFF");
 
-    private readonly DispatcherTimer _refreshTimer = new()
-    {
-        Interval = TimeSpan.FromMilliseconds(33),
-    };
     private readonly List<double> _times = [];
     private readonly List<double> _gear = [];
     private readonly List<double> _throttle = [];
@@ -32,7 +28,6 @@ public sealed partial class InputsPage : Page
     private int _storeCount;
     private long _bufferEpoch = -1;
     private long _timelineRevision = -1;
-    private int _dirty = 1;
     private bool _isLoaded;
     private int _windowSeconds;
 
@@ -41,7 +36,6 @@ public sealed partial class InputsPage : Page
         InitializeComponent();
         _windowSeconds = ((App)Application.Current).ChartWindowSeconds;
         ConfigurePlots();
-        _refreshTimer.Tick += OnRefreshTick;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs args)
@@ -61,8 +55,6 @@ public sealed partial class InputsPage : Page
         }
         app.ChartWindowChanged += OnChartWindowChanged;
         ApplyTheme();
-        Interlocked.Exchange(ref _dirty, 1);
-        _refreshTimer.Start();
         RefreshFromStore();
     }
 
@@ -74,7 +66,6 @@ public sealed partial class InputsPage : Page
         }
 
         _isLoaded = false;
-        _refreshTimer.Stop();
         if (_store is not null)
         {
             _store.InputTelemetryChanged -= OnInputTelemetryChanged;
@@ -86,45 +77,29 @@ public sealed partial class InputsPage : Page
 
     private void ConfigurePlots()
     {
-        var gear = GearPlot.Plot.Add.Scatter(_times, _gear);
+        var gear = GearPlot.Plot.Add.SignalXY(_times, _gear);
         StyleSeries(gear, GearColor, ConnectStyle.StepHorizontal);
         gear.LineWidth = 2;
-        gear.FillY = true;
-        gear.FillYValue = 0.5;
-        gear.FillYColor = GearColor.WithAlpha(.2);
         ConfigurePlot(
             GearPlot,
             0.5,
             8.5,
             [1, 2, 3, 4, 5, 6, 7, 8],
             value => $"{value:0}");
-        foreach (var y in new[] { 2d, 4d, 6d })
-        {
-            var line = GearPlot.Plot.Add.HorizontalLine(y);
-            line.LinePattern = LinePattern.Dashed;
-            line.LineWidth = 1;
-        }
 
-        var throttle = ThrottleBrakePlot.Plot.Add.Scatter(_times, _throttle);
+        var throttle = ThrottleBrakePlot.Plot.Add.SignalXY(_times, _throttle);
         StyleSeries(throttle, ThrottleColor, ConnectStyle.StepVertical);
-        throttle.FillY = true;
-        throttle.FillYValue = 0;
-        throttle.FillYColor = ThrottleColor.WithAlpha(.2);
 
-        var brake = ThrottleBrakePlot.Plot.Add.Scatter(_times, _brake);
+        var brake = ThrottleBrakePlot.Plot.Add.SignalXY(_times, _brake);
         StyleSeries(brake, BrakeColor, ConnectStyle.StepVertical);
-        brake.FillY = true;
-        brake.FillYValue = 0;
-        brake.FillYColor = BrakeColor.WithAlpha(.2);
         ConfigurePlot(
             ThrottleBrakePlot,
             -1,
             1,
             [-1, -0.5, 0, 0.5, 1],
             value => $"{Math.Abs(value) * 100:0}%");
-        ThrottleBrakePlot.Plot.Add.HorizontalLine(0).LineWidth = 1;
 
-        var steering = SteeringPlot.Plot.Add.Scatter(_times, _steering);
+        var steering = SteeringPlot.Plot.Add.SignalXY(_times, _steering);
         StyleSeries(steering, SteeringColor, ConnectStyle.Straight);
         ConfigurePlot(
             SteeringPlot,
@@ -132,7 +107,6 @@ public sealed partial class InputsPage : Page
             1,
             [-1, -0.5, 0, 0.5, 1],
             FormatSteering);
-        SteeringPlot.Plot.Add.HorizontalLine(0).LineWidth = 1;
 
 #if DEBUG
         AttachRenderProbe(GearPlot, "Input/Gear");
@@ -177,7 +151,7 @@ public sealed partial class InputsPage : Page
 #endif
 
     private static void StyleSeries(
-        Scatter series,
+        SignalXY series,
         ScottPlot.Color color,
         ConnectStyle connectStyle)
     {
@@ -195,6 +169,7 @@ public sealed partial class InputsPage : Page
         Func<double, string> yFormatter)
     {
         var plot = plotControl.Plot;
+        plotControl.UserInputProcessor.Disable();
         plot.Axes.SetLimits(0, 30, yMin, yMax);
         plot.Axes.Left.SetTicks(
             yTicks,
@@ -210,20 +185,30 @@ public sealed partial class InputsPage : Page
         plot.Axes.Margins(0, 0, 0, 0);
     }
 
-    private void OnInputTelemetryChanged() => Interlocked.Exchange(ref _dirty, 1);
+    private void OnInputTelemetryChanged()
+    {
+        if (!_isLoaded)
+        {
+            return;
+        }
 
-    private void OnTimelineReset(TimelineResetReason reason) =>
-        Interlocked.Exchange(ref _dirty, 1);
+        DispatcherQueue.TryEnqueue(RefreshFromStore);
+    }
+
+    private void OnTimelineReset(TimelineResetReason reason)
+    {
+        if (!_isLoaded)
+        {
+            return;
+        }
+
+        DispatcherQueue.TryEnqueue(RefreshFromStore);
+    }
 
     private void OnChartWindowChanged(int seconds)
     {
         _windowSeconds = seconds;
-        Interlocked.Exchange(ref _dirty, 1);
-    }
-
-    private void OnRefreshTick(object? sender, object args)
-    {
-        if (Interlocked.Exchange(ref _dirty, 0) != 0)
+        if (_isLoaded)
         {
             RefreshFromStore();
         }
@@ -265,9 +250,9 @@ public sealed partial class InputsPage : Page
         var latest = hasData ? _times[^1] : 0;
         var xMin = Math.Max(0, latest - _windowSeconds);
         var xMax = Math.Max(_windowSeconds, latest);
-        SetTimeLimits(GearPlot, xMin, xMax);
-        SetTimeLimits(ThrottleBrakePlot, xMin, xMax);
-        SetTimeLimits(SteeringPlot, xMin, xMax);
+        SetPlotLimits(GearPlot, xMin, xMax, 0.5, 8.5);
+        SetPlotLimits(ThrottleBrakePlot, xMin, xMax, -1, 1);
+        SetPlotLimits(SteeringPlot, xMin, xMax, -1, 1);
         GearPlot.Refresh();
         ThrottleBrakePlot.Refresh();
         SteeringPlot.Refresh();
@@ -284,12 +269,14 @@ public sealed partial class InputsPage : Page
         HideTooltips();
     }
 
-    private static void SetTimeLimits(
+    private static void SetPlotLimits(
         WinUIPlot plotControl,
         double xMin,
-        double xMax)
+        double xMax,
+        double yMin,
+        double yMax)
     {
-        plotControl.Plot.Axes.SetLimitsX(xMin, xMax);
+        plotControl.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
     }
 
     private void OnActualThemeChanged(FrameworkElement sender, object args)
@@ -311,7 +298,7 @@ public sealed partial class InputsPage : Page
         }
 
         var dark = ActualTheme == ElementTheme.Dark;
-        var background = ScottPlot.Color.FromHex(dark ? "#20232B" : "#F9F9F9");
+        var transparent = ScottPlot.Color.FromHex("#00000000");
         var axes = ScottPlot.Color.FromHex(dark ? "#7C8098" : "#6B7280");
         var grid = ScottPlot.Color.FromHex(dark ? "#FFFFFF" : "#000000")
             .WithAlpha(dark ? .08 : .07);
@@ -321,8 +308,8 @@ public sealed partial class InputsPage : Page
                  })
         {
             var plot = control.Plot;
-            plot.FigureBackground.Color = background;
-            plot.DataBackground.Color = background;
+            plot.FigureBackground.Color = transparent;
+            plot.DataBackground.Color = transparent;
             plot.Axes.Color(axes);
             plot.Grid.MajorLineColor = grid;
             plot.Grid.MinorLineColor = grid.WithAlpha(.5);
