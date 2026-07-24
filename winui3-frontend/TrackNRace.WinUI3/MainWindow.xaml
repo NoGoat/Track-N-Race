@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="TrackNRace.WinUI3.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:icons="using:FluentIcons.WinUI"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Track N Race"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootLayout">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TitleBar
+            x:Name="AppTitleBar"
+            Height="48"
+            Subtitle="Telemetry Dashboard"
+            Title="Track N Race">
+            <TitleBar.IconSource>
+                <ImageIconSource x:Name="TitleBarIconSource" ImageSource="Assets/icon_transparent.png" />
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <NavigationView
+            x:Name="AppNavigationView"
+            Grid.Row="1"
+            AlwaysShowHeader="False"
+            CompactModeThresholdWidth="641"
+            CompactPaneLength="48"
+            ExpandedModeThresholdWidth="1008"
+            IsBackButtonVisible="Collapsed"
+            IsPaneOpen="True"
+            IsPaneToggleButtonVisible="True"
+            IsSettingsVisible="True"
+            OpenPaneLength="220"
+            PaneDisplayMode="Left"
+            SelectionChanged="OnNavigationSelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Name="OverviewNavigationItem" Content="Overview" Tag="Overview">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE80F;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Analyze" Tag="Analyze">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE9D2;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Session" Tag="Session">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE787;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Strategy" Tag="Strategy">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xEA80;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Standings" Tag="Standings">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xECA7;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Input" Tag="Input">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE7FC;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Power" Tag="Power">
+                    <NavigationViewItem.Icon>
+                        <icons:FluentIcon
+                            Icon="Engine"
+                            IconSize="Size20"
+                            IconVariant="Regular" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Tyres" Tag="Tyres">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xEE94;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Misc" Tag="Misc">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE712;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Frame x:Name="RootFrame" />
+        </NavigationView>
+    </Grid>
+</Window>

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "TrackNRace.WinUI3 (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "TrackNRace.WinUI3 (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
