@@ -94,6 +94,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (pageName == "Input")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(InputsPage))
+            {
+                RootFrame.Navigate(typeof(InputsPage));
+            }
+            return;
+        }
+
         RootFrame.Navigate(typeof(DashboardPage), pageName);
     }
 

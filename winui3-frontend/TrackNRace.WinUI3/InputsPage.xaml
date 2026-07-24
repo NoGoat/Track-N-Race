@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="TrackNRace.WinUI3.InputsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:scottPlot="using:ScottPlot.WinUI"
+    ActualThemeChanged="OnActualThemeChanged"
+    Loaded="OnLoaded"
+    Unloaded="OnUnloaded"
+    mc:Ignorable="d">
+    <Page.Resources>
+        <Style
+            x:Key="ChartHeadingStyle"
+            BasedOn="{StaticResource BodyStrongTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontStyle" Value="Normal" />
+            <Setter Property="CharacterSpacing" Value="120" />
+        </Style>
+        <Style
+            x:Key="ChartLegendStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style
+            x:Key="ChartTooltipStyle"
+            TargetType="Border">
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="IsHitTestVisible" Value="False" />
+            <Setter Property="Visibility" Value="Collapsed" />
+        </Style>
+    </Page.Resources>
+
+    <Grid Background="{ThemeResource LayerFillColorDefaultBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="1" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="1" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0" Padding="16,12,12,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="28" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock
+                    AutomationProperties.HeadingLevel="Level2"
+                    Style="{StaticResource ChartHeadingStyle}"
+                    Text="GEAR" />
+                <Grid Grid.Row="1">
+                    <scottPlot:WinUIPlot
+                        x:Name="GearPlot"
+                        PointerExited="OnPlotPointerExited"
+                        PointerMoved="OnGearPointerMoved" />
+                    <TextBlock
+                        x:Name="GearNoData"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="No data" />
+                    <Canvas IsHitTestVisible="False">
+                        <Border
+                            x:Name="GearTooltip"
+                            Style="{StaticResource ChartTooltipStyle}">
+                            <TextBlock x:Name="GearTooltipText" />
+                        </Border>
+                    </Canvas>
+                </Grid>
+            </Grid>
+
+            <Border
+                Grid.Column="1"
+                Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Grid Grid.Column="2" Padding="12,12,16,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="28" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid>
+                    <TextBlock
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource ChartHeadingStyle}"
+                        Text="THROTTLE" />
+                    <StackPanel
+                        HorizontalAlignment="Right"
+                        Orientation="Horizontal"
+                        Spacing="16">
+                        <TextBlock
+                            Foreground="#37872D"
+                            Style="{StaticResource ChartLegendStyle}"
+                            Text="▲ Throttle" />
+                        <TextBlock
+                            Foreground="#C4162A"
+                            Style="{StaticResource ChartLegendStyle}"
+                            Text="▼ Brake" />
+                    </StackPanel>
+                </Grid>
+                <Grid Grid.Row="1">
+                    <scottPlot:WinUIPlot
+                        x:Name="ThrottleBrakePlot"
+                        PointerExited="OnPlotPointerExited"
+                        PointerMoved="OnThrottleBrakePointerMoved" />
+                    <TextBlock
+                        x:Name="ThrottleBrakeNoData"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="No data" />
+                    <Canvas IsHitTestVisible="False">
+                        <Border
+                            x:Name="ThrottleBrakeTooltip"
+                            Style="{StaticResource ChartTooltipStyle}">
+                            <TextBlock x:Name="ThrottleBrakeTooltipText" />
+                        </Border>
+                    </Canvas>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Border
+            Grid.Row="1"
+            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+        <Grid Grid.Row="2" Padding="16,12,16,8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="28" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid>
+                <TextBlock
+                    AutomationProperties.HeadingLevel="Level2"
+                    Style="{StaticResource ChartHeadingStyle}"
+                    Text="STEERING" />
+                <StackPanel
+                    HorizontalAlignment="Right"
+                    Orientation="Horizontal"
+                    Spacing="16">
+                    <TextBlock
+                        Foreground="#BF5FFF"
+                        Style="{StaticResource ChartLegendStyle}"
+                        Text="— Input" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Style="{StaticResource ChartLegendStyle}"
+                        Text="L = left / R = right" />
+                </StackPanel>
+            </Grid>
+            <Grid Grid.Row="1">
+                <scottPlot:WinUIPlot
+                    x:Name="SteeringPlot"
+                    PointerExited="OnPlotPointerExited"
+                    PointerMoved="OnSteeringPointerMoved" />
+                <TextBlock
+                    x:Name="SteeringNoData"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="No data" />
+                <Canvas IsHitTestVisible="False">
+                    <Border
+                        x:Name="SteeringTooltip"
+                        Style="{StaticResource ChartTooltipStyle}">
+                        <TextBlock x:Name="SteeringTooltipText" />
+                    </Border>
+                </Canvas>
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

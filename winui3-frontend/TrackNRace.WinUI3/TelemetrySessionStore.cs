@@ -174,6 +174,19 @@ internal sealed record WeatherForecastData
 
 internal sealed record CarPositionData(int Idx, double X, double Z);
 internal sealed record PositionsRowData(int PlayerIdx, CarPositionData[] Cars);
+internal sealed record InputTelemetrySample(
+    float SessionTime,
+    int Gear,
+    float Throttle,
+    float Brake,
+    double Steering);
+
+internal sealed record InputTelemetryReadResult(
+    InputTelemetrySample[] Samples,
+    int TotalCount,
+    long BufferEpoch,
+    long TimelineRevision,
+    bool Reset);
 
 internal sealed record RaceEventData
 {
@@ -220,6 +233,9 @@ internal sealed record SessionSnapshot(
 internal sealed class TelemetrySessionStore : IDisposable
 {
     private const int MaxRaceEvents = 1000;
+    private const int MaxHotRows = 750_000;
+    private const int HotRowTrimChunk = 4096;
+    private const float HotRowRetentionSeconds = 600;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -261,11 +277,13 @@ internal sealed class TelemetrySessionStore : IDisposable
     private SessionData? _session;
     private PositionsRowData? _positions;
     private readonly List<RaceEventData> _raceEvents = [];
+    private readonly List<InputTelemetrySample> _inputTelemetry = [];
     private RaceEventData[] _playbackEvents = [];
     private bool _hasExplicitFastestLap;
     private bool _isPlayback;
     private long _revision;
     private long _timelineRevision;
+    private long _inputBufferEpoch;
     private bool _disposed;
 
     public TelemetrySessionStore(TelemetryEngine engine)
@@ -281,6 +299,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     }
 
     public event Action? SnapshotChanged;
+    public event Action? InputTelemetryChanged;
     public event Action<TimelineResetReason>? TimelineReset;
 
     public StandingsSnapshot Snapshot
@@ -323,6 +342,32 @@ internal sealed class TelemetrySessionStore : IDisposable
                     _revision,
                     _timelineRevision);
             }
+        }
+    }
+
+    public InputTelemetryReadResult ReadInputTelemetry(
+        int knownCount,
+        long knownBufferEpoch,
+        long knownTimelineRevision)
+    {
+        lock (_gate)
+        {
+            var reset =
+                knownBufferEpoch != _inputBufferEpoch ||
+                knownTimelineRevision != _timelineRevision ||
+                knownCount < 0 ||
+                knownCount > _inputTelemetry.Count;
+            var start = reset ? 0 : knownCount;
+            var samples = new InputTelemetrySample[
+                _inputTelemetry.Count - start];
+            _inputTelemetry.CopyTo(
+                start, samples, 0, samples.Length);
+            return new InputTelemetryReadResult(
+                samples,
+                _inputTelemetry.Count,
+                _inputBufferEpoch,
+                _timelineRevision,
+                reset);
         }
     }
 
@@ -390,18 +435,31 @@ internal sealed class TelemetrySessionStore : IDisposable
 
     private void OnBinaryBatchReceived(ReadOnlySpan<byte> data)
     {
-        if (_disposed || !TryDecodeLatestPositions(data, out var positions) ||
-            positions is null)
+        if (_disposed ||
+            !TryDecodeHotBatch(data, out var telemetry, out var positions))
         {
             return;
         }
 
+        var positionsChanged = positions is not null;
+        var telemetryChanged = telemetry.Count > 0;
         lock (_gate)
         {
-            _positions = positions;
-            _revision++;
+            if (positionsChanged)
+            {
+                _positions = positions;
+                _revision++;
+            }
+            AppendInputTelemetryLocked(telemetry);
         }
-        SnapshotChanged?.Invoke();
+        if (positionsChanged)
+        {
+            SnapshotChanged?.Invoke();
+        }
+        if (telemetryChanged)
+        {
+            InputTelemetryChanged?.Invoke();
+        }
     }
 
     private void OnSeekFlushReceived(
@@ -422,6 +480,7 @@ internal sealed class TelemetrySessionStore : IDisposable
             _lap = null;
             _playerStatus = null;
             _positions = null;
+            ClearInputTelemetryLocked();
             _timelineRevision++;
             _revision++;
         }
@@ -641,19 +700,22 @@ internal sealed class TelemetrySessionStore : IDisposable
         return true;
     }
 
-    private bool SetPlayback(bool value)
-    {
-        lock (_gate)
-        {
-            _isPlayback = value;
-        }
-        return false;
-    }
-
     private bool SetPlaybackLoaded(JsonElement root)
     {
         var loaded = root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True;
-        return SetPlayback(loaded);
+        lock (_gate)
+        {
+            _isPlayback = loaded;
+            if (loaded)
+            {
+                ClearInputTelemetryLocked();
+            }
+        }
+        if (loaded)
+        {
+            InputTelemetryChanged?.Invoke();
+        }
+        return false;
     }
 
     private bool HandleRaceEvent(JsonElement root)
@@ -707,6 +769,7 @@ internal sealed class TelemetrySessionStore : IDisposable
             _playerStatus = null;
             _session = null;
             _positions = null;
+            ClearInputTelemetryLocked();
             _fastestLapCarIndex = null;
             _sessionHistoryBest.Clear();
             _raceEvents.Clear();
@@ -732,11 +795,74 @@ internal sealed class TelemetrySessionStore : IDisposable
         _revision,
         _timelineRevision);
 
-    private static bool TryDecodeLatestPositions(
-        ReadOnlySpan<byte> data,
-        out PositionsRowData? latest)
+    private void AppendInputTelemetryLocked(
+        IReadOnlyList<InputTelemetrySample> samples)
     {
-        latest = null;
+        foreach (var sample in samples)
+        {
+            if (_inputTelemetry.Count > 0 &&
+                sample.SessionTime < _inputTelemetry[^1].SessionTime)
+            {
+                var keep = LowerBoundInput(sample.SessionTime);
+                if (keep < _inputTelemetry.Count)
+                {
+                    _inputTelemetry.RemoveRange(
+                        keep, _inputTelemetry.Count - keep);
+                    _inputBufferEpoch++;
+                }
+            }
+
+            _inputTelemetry.Add(sample);
+        }
+
+        if (_inputTelemetry.Count == 0)
+        {
+            return;
+        }
+
+        var cutoff = _inputTelemetry[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundInput(cutoff);
+        var excess = Math.Max(0, _inputTelemetry.Count - MaxHotRows);
+        var removeCount = Math.Max(firstValid, excess);
+        if (removeCount >= HotRowTrimChunk || excess > 0)
+        {
+            _inputTelemetry.RemoveRange(0, removeCount);
+            _inputBufferEpoch++;
+        }
+    }
+
+    private int LowerBoundInput(float sessionTime)
+    {
+        var low = 0;
+        var high = _inputTelemetry.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (_inputTelemetry[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        return low;
+    }
+
+    private void ClearInputTelemetryLocked()
+    {
+        _inputTelemetry.Clear();
+        _inputBufferEpoch++;
+    }
+
+    private static bool TryDecodeHotBatch(
+        ReadOnlySpan<byte> data,
+        out List<InputTelemetrySample> telemetry,
+        out PositionsRowData? latestPositions)
+    {
+        telemetry = [];
+        latestPositions = null;
         var offset = 0;
         while (offset < data.Length)
         {
@@ -744,9 +870,21 @@ internal sealed class TelemetrySessionStore : IDisposable
             switch (tag)
             {
                 case 1:
-                    // telemetry: 45 bytes after the tag; mirrored from
-                    // BinaryRows.h and electron main's 46-byte record length.
-                    if (!Advance(data, ref offset, 45)) return false;
+                    if (!TryReadSingle(data, ref offset, out var sessionTime) ||
+                        !Advance(data, ref offset, 4) ||
+                        !TryReadSByte(data, ref offset, out var gear) ||
+                        !Advance(data, ref offset, 1) ||
+                        !TryReadSingle(data, ref offset, out var throttle) ||
+                        !TryReadSingle(data, ref offset, out var brake) ||
+                        !TryReadDouble(data, ref offset, out var steering) ||
+                        !Advance(data, ref offset, 19))
+                    {
+                        telemetry = [];
+                        latestPositions = null;
+                        return false;
+                    }
+                    telemetry.Add(new InputTelemetrySample(
+                        sessionTime, gear, throttle, brake, steering));
                     break;
                 case 2:
                     // motion: f32 + 3*f64.
@@ -775,12 +913,62 @@ internal sealed class TelemetrySessionStore : IDisposable
                             BitConverter.Int64BitsToDouble(xBits),
                             BitConverter.Int64BitsToDouble(zBits));
                     }
-                    latest = new PositionsRowData(playerIdx, cars);
+                    latestPositions = new PositionsRowData(playerIdx, cars);
                     break;
                 default:
+                    telemetry = [];
+                    latestPositions = null;
                     return false;
             }
         }
+        return true;
+    }
+
+    private static bool TryReadSByte(
+        ReadOnlySpan<byte> data,
+        ref int offset,
+        out sbyte value)
+    {
+        if (offset >= data.Length)
+        {
+            value = 0;
+            return false;
+        }
+        value = unchecked((sbyte)data[offset++]);
+        return true;
+    }
+
+    private static bool TryReadSingle(
+        ReadOnlySpan<byte> data,
+        ref int offset,
+        out float value)
+    {
+        if (offset + sizeof(int) > data.Length)
+        {
+            value = 0;
+            return false;
+        }
+        value = BitConverter.Int32BitsToSingle(
+            BinaryPrimitives.ReadInt32LittleEndian(
+                data.Slice(offset, sizeof(int))));
+        offset += sizeof(int);
+        return true;
+    }
+
+    private static bool TryReadDouble(
+        ReadOnlySpan<byte> data,
+        ref int offset,
+        out double value)
+    {
+        if (offset + sizeof(long) > data.Length)
+        {
+            value = 0;
+            return false;
+        }
+        value = BitConverter.Int64BitsToDouble(
+            BinaryPrimitives.ReadInt64LittleEndian(
+                data.Slice(offset, sizeof(long))));
+        offset += sizeof(long);
         return true;
     }
 
