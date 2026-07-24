@@ -38,39 +38,16 @@
                         VerticalAlignment="Center"
                         Style="{StaticResource CaptionTextBlockStyle}"
                         Text="Track N Race" />
-                    <Grid Margin="8,0,0,0">
-                        <Button
-                            x:Name="LoadTnrdButton"
-                            Height="30"
-                            Padding="6,0"
-                            VerticalAlignment="Center"
-                            AutomationProperties.Name="Load TNRD recording"
-                            Background="Transparent"
-                            BorderThickness="0"
-                            Click="OnLoadTnrdClicked"
-                            ToolTipService.ToolTip="Load Session Data File (.tnrd)">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon
-                                    FontFamily="Segoe Fluent Icons"
-                                    FontSize="13"
-                                    Glyph="&#xE8E5;" />
-                                <TextBlock
-                                    x:Name="LoadTnrdButtonLabel"
-                                    VerticalAlignment="Center"
-                                    Style="{StaticResource CaptionTextBlockStyle}"
-                                    Text="Load TNRD" />
-                            </StackPanel>
-                        </Button>
-                        <TextBlock
-                            x:Name="LoadedFileNameText"
-                            MaxWidth="280"
-                            VerticalAlignment="Center"
-                            AutomationProperties.Name="Loaded TNRD filename"
-                            FontSize="11"
-                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            TextTrimming="CharacterEllipsis"
-                            Visibility="Collapsed" />
-                    </Grid>
+                    <TextBlock
+                        x:Name="LoadedFileNameText"
+                        Margin="12,0,0,0"
+                        MaxWidth="280"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Loaded TNRD filename"
+                        FontSize="11"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextTrimming="CharacterEllipsis"
+                        Visibility="Collapsed" />
                 </StackPanel>
             </TitleBar.LeftHeader>
             <TitleBar.RightHeader>
@@ -169,6 +146,21 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
+
+            <NavigationView.PaneFooter>
+                <NavigationViewItem
+                    x:Name="LoadTnrdNavigationItem"
+                    AutomationProperties.Name="Load TNRD file"
+                    Content="Load TNRD File"
+                    SelectsOnInvoked="False"
+                    Tag="LoadTnrd"
+                    Tapped="OnLoadTnrdClicked"
+                    ToolTipService.ToolTip="Load Session Data File (.tnrd)">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8E5;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.PaneFooter>
 
             <Grid>
                 <Grid.RowDefinitions>

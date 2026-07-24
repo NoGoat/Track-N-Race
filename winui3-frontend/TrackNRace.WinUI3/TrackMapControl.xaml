@@ -7,6 +7,20 @@
         x:Name="MapRoot"
         Background="Transparent"
         SizeChanged="OnMapSizeChanged">
+        <Grid.Resources>
+            <StaticResource
+                x:Key="ButtonBackgroundPointerOver"
+                ResourceKey="SolidBackgroundFillColorQuarternaryBrush" />
+            <StaticResource
+                x:Key="ButtonBackgroundPressed"
+                ResourceKey="SolidBackgroundFillColorSecondaryBrush" />
+            <StaticResource
+                x:Key="ComboBoxBackgroundPointerOver"
+                ResourceKey="SolidBackgroundFillColorQuarternaryBrush" />
+            <StaticResource
+                x:Key="ComboBoxBackgroundPressed"
+                ResourceKey="SolidBackgroundFillColorSecondaryBrush" />
+        </Grid.Resources>
         <Canvas x:Name="SceneCanvas" IsHitTestVisible="False">
             <Canvas x:Name="StaticCanvas" />
         </Canvas>

@@ -1,6 +1,7 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
@@ -96,7 +97,7 @@ public sealed partial class MainWindow : Window
         RootFrame.Navigate(typeof(DashboardPage), pageName);
     }
 
-    private async void OnLoadTnrdClicked(object sender, RoutedEventArgs args)
+    private async void OnLoadTnrdClicked(object sender, TappedRoutedEventArgs args)
     {
         var picker = new FileOpenPicker
         {
@@ -120,6 +121,12 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (_loadedTnrdPath is not null)
+        {
+            telemetry.CloseRecording();
+            ResetClosedRecordingState();
+        }
+
         ShowRecordingLoading(file.Path, file.Name);
         try
         {
@@ -141,7 +148,8 @@ public sealed partial class MainWindow : Window
             }
 
             ToolTipService.SetToolTip(
-                LoadTnrdButton, $"Loaded {file.Name} · click to choose another recording");
+                LoadTnrdNavigationItem,
+                $"Loaded {file.Name} · click to choose another recording");
             ShowLoadedRecording(file.Path, file.Name);
         }
         catch (Exception exception)
@@ -161,7 +169,7 @@ public sealed partial class MainWindow : Window
         LoadedFileNameText.Text = fileName;
         LoadedFileNameText.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(LoadedFileNameText, path);
-        LoadTnrdButton.Visibility = Visibility.Collapsed;
+        LoadTnrdNavigationItem.IsEnabled = false;
         RecordingLoadOverlay.Visibility = Visibility.Visible;
     }
 
@@ -170,9 +178,9 @@ public sealed partial class MainWindow : Window
         LoadedFileNameText.Text = string.Empty;
         LoadedFileNameText.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(LoadedFileNameText, null);
-        LoadTnrdButton.Visibility = Visibility.Visible;
+        LoadTnrdNavigationItem.IsEnabled = true;
         ToolTipService.SetToolTip(
-            LoadTnrdButton, "Load Session Data File (.tnrd)");
+            LoadTnrdNavigationItem, "Load Session Data File (.tnrd)");
     }
 
     private void ShowLoadedRecording(string path, string fileName)
@@ -181,7 +189,7 @@ public sealed partial class MainWindow : Window
         LoadedFileNameText.Text = fileName;
         LoadedFileNameText.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(LoadedFileNameText, path);
-        LoadTnrdButton.Visibility = Visibility.Collapsed;
+        LoadTnrdNavigationItem.IsEnabled = true;
         PlaybackBar.Visibility = Visibility.Visible;
         RefreshPlaybackControls();
     }
@@ -473,6 +481,11 @@ public sealed partial class MainWindow : Window
     private void OnCloseRecordingClicked(object sender, RoutedEventArgs args)
     {
         ((App)Application.Current).Telemetry?.CloseRecording();
+        ResetClosedRecordingState();
+    }
+
+    private void ResetClosedRecordingState()
+    {
         _loadedTnrdPath = null;
         _displayedLaps = null;
         PlaybackBar.Visibility = Visibility.Collapsed;

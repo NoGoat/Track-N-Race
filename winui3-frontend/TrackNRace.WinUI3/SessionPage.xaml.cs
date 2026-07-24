@@ -215,8 +215,8 @@ public sealed partial class SessionPage : Page
             ("REJOIN", rejoin, "", (double?)null, "session.rejoin"),
             ("TRACK TEMP", session is null ? "—" : $"{session.TrackTemp}°C", "", (double?)session?.TrackTemp, "session.trackTemp"),
             ("AIR TEMP", session is null ? "—" : $"{session.AirTemp}°C", "", (double?)session?.AirTemp, "session.airTemp"),
-            ("TRACK LENGTH", session is null ? "—" : $"{session.TrackLengthM / 1000.0:0.000}", session is null ? "" : "km", (double?)null, ""),
-            ("TIME OF DAY", session is null ? "—" : FormatTimeOfDay(session.TimeOfDay), "", (double?)null, ""),
+            (settings.CompactCards ? "LENGTH" : "TRACK LENGTH", session is null ? "—" : $"{session.TrackLengthM / 1000.0:0.000}", session is null ? "" : "km", (double?)null, ""),
+            (settings.CompactCards ? "TIME" : "TIME OF DAY", session is null ? "—" : FormatTimeOfDay(session.TimeOfDay), "", (double?)null, ""),
         };
         for (var index = 0; index < values.Length; index++)
         {
@@ -240,9 +240,11 @@ public sealed partial class SessionPage : Page
                         {
                             Text = item.Item1,
                             Style = (Style)Resources["SessionSectionLabelStyle"],
+                            FontSize = 10,
                             TextTrimming = TextTrimming.CharacterEllipsis,
+                            VerticalAlignment = VerticalAlignment.Center,
                         },
-                        CreateInlineValue(item.Item2, item.Item3, 17, valueBrush, 1),
+                        CreateInlineValue(item.Item2, item.Item3, 15, valueBrush, 1),
                     },
                 };
             }
@@ -302,18 +304,22 @@ public sealed partial class SessionPage : Page
     {
         WeatherGrid.Children.Clear();
         WeatherGrid.ColumnDefinitions.Clear();
-        for (var index = 0; index < 6; index++)
-        {
-            WeatherGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
         var session = snapshot.Session;
-        AddWeatherCard(0, "NOW", session?.Weather, null, null,
-            session is null ? null : session.ForecastAccuracy == 0 ? "Exact" : "Approx", settings);
         var forecast = session?.WeatherForecastSamples
             .Where(value => value.TimeOffset > 0)
             .Take(5)
             .ToArray() ?? [];
-        for (var index = 0; index < 5; index++)
+        var forecastCardCount = session is null ? 5 : forecast.Length;
+        for (var index = 0; index < forecastCardCount + 1; index++)
+        {
+            WeatherGrid.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star),
+            });
+        }
+        AddWeatherCard(0, "NOW", session?.Weather, null, null,
+            session is null ? null : session.ForecastAccuracy == 0 ? "Exact" : "Approx", settings);
+        for (var index = 0; index < forecastCardCount; index++)
         {
             var sample = index < forecast.Length ? forecast[index] : null;
             AddWeatherCard(index + 1,
@@ -341,34 +347,34 @@ public sealed partial class SessionPage : Page
         var glyph = weather is int glyphId && glyphId >= 0 && glyphId < WeatherGlyphs.Length
             ? WeatherGlyphs[glyphId]
             : WeatherGlyphs[2];
+        if (settings.WeatherDensity != SessionWeatherDensity.Normal)
+        {
+            AddCompactWeatherCard(
+                column,
+                time,
+                weather,
+                rain,
+                label,
+                glyph,
+                settings.WeatherDensity == SessionWeatherDensity.CompactWithIcons);
+            return;
+        }
         var panel = new StackPanel
         {
-            Padding = settings.WeatherDensity == SessionWeatherDensity.Normal
-                ? new Thickness(8, 9, 8, 7)
-                : new Thickness(7, 5, 7, 5),
+            Padding = new Thickness(8, 9, 8, 7),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
         };
-        if (settings.WeatherDensity != SessionWeatherDensity.CompactWithoutIcons)
+        panel.Children.Add(new FontIcon
         {
-            panel.Orientation = Orientation.Horizontal;
-            panel.Spacing = 8;
-            panel.Children.Add(new FontIcon
-            {
-                FontFamily = new FontFamily("Segoe Fluent Icons"),
-                Glyph = glyph,
-                FontSize = settings.WeatherDensity == SessionWeatherDensity.Normal ? 27 : 21,
-                Foreground = WeatherBrush(weather),
-            });
-        }
+            FontFamily = new FontFamily("Segoe Fluent Icons"),
+            Glyph = glyph,
+            FontSize = 27,
+            Foreground = WeatherBrush(weather),
+        });
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        if (settings.WeatherDensity == SessionWeatherDensity.CompactWithoutIcons)
-        {
-            panel.Orientation = Orientation.Horizontal;
-            panel.Spacing = 7;
-            text.Orientation = Orientation.Horizontal;
-            text.Spacing = 7;
-        }
         var timeLabel = new TextBlock { Text = time };
         if (time == "NOW")
         {
@@ -383,38 +389,126 @@ public sealed partial class SessionPage : Page
         text.Children.Add(new TextBlock
         {
             Text = label,
-            FontSize = settings.WeatherDensity == SessionWeatherDensity.Normal ? 12 : 11,
+            FontSize = 12,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = WeatherBrush(weather),
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
-        if (settings.WeatherDensity == SessionWeatherDensity.Normal)
+        text.Children.Add(new TextBlock
         {
-            text.Children.Add(new TextBlock
+            Text = rain is int percent ? $"{percent}%" : detail ?? "—",
+            FontSize = 9,
+            Foreground = rain is int value ? RainBrush(value) : SecondaryBrush(),
+        });
+        panel.Children.Add(text);
+        AddWeatherWrapper(column, panel);
+    }
+
+    private void AddCompactWeatherCard(
+        int column,
+        string time,
+        int? weather,
+        int? rain,
+        string label,
+        string glyph,
+        bool showIcon)
+    {
+        var card = new Grid
+        {
+            Padding = showIcon
+                ? new Thickness(time == "NOW" ? 12 : 8, 0, time == "NOW" ? 12 : 8, 0)
+                : new Thickness(time == "NOW" ? 16 : 8, 0, time == "NOW" ? 16 : 8, 0),
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ColumnDefinitions =
             {
-                Text = rain is int percent ? $"{percent}%" : detail ?? "—",
-                FontSize = 9,
-                Foreground = rain is int value ? RainBrush(value) : SecondaryBrush(),
-            });
-        }
-        else if (rain is int percent)
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+        var timeLabel = new TextBlock
         {
-            text.Children.Add(new TextBlock
+            Text = time,
+            FontSize = showIcon && time != "NOW" ? 12 : 9,
+            FontWeight = time == "NOW"
+                ? Microsoft.UI.Text.FontWeights.Medium
+                : Microsoft.UI.Text.FontWeights.Normal,
+            CharacterSpacing = time == "NOW" ? 120 : 0,
+            Foreground = SecondaryBrush(),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(timeLabel, 0);
+        card.Children.Add(timeLabel);
+
+        if (showIcon)
+        {
+            var condition = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            condition.Children.Add(new FontIcon
+            {
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                Glyph = glyph,
+                FontSize = 26,
+                Foreground = WeatherBrush(weather),
+            });
+            condition.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = weather is null ? SecondaryBrush() : PrimaryBrush(),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            Grid.SetColumn(condition, 1);
+            card.Children.Add(condition);
+        }
+        else
+        {
+            var condition = new TextBlock
+            {
+                Text = label,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = WeatherBrush(weather),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(condition, 1);
+            card.Children.Add(condition);
+        }
+
+        if (rain is int percent)
+        {
+            var rainLabel = new TextBlock
             {
                 Text = $"{percent}%",
-                FontSize = 9,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                FontSize = showIcon ? 12 : 10,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
                 Foreground = RainBrush(percent),
-            });
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(rainLabel, 2);
+            card.Children.Add(rainLabel);
         }
-        panel.Children.Add(text);
+        AddWeatherWrapper(column, card);
+    }
+
+    private void AddWeatherWrapper(int column, UIElement content)
+    {
         var wrapper = new Border
         {
             BorderBrush = DividerBrush(),
-            BorderThickness = column < 5
+            BorderThickness = column < WeatherGrid.ColumnDefinitions.Count - 1
                 ? new Thickness(0, 0, 1, 0)
                 : new Thickness(0, 0, 0, 0),
-            Child = panel,
+            Child = content,
         };
         Grid.SetColumn(wrapper, column);
         WeatherGrid.Children.Add(wrapper);
@@ -598,13 +692,17 @@ public sealed partial class SessionPage : Page
         TimeLeftLabel.Visibility = settings.CompactHeader ? Visibility.Collapsed : Visibility.Visible;
         TimeLeftText.FontSize = settings.CompactHeader ? 20 : 28;
         StatsGrid.MinHeight = settings.CompactCards ? 42 : 72;
-        WeatherRow.Height = new GridLength(settings.WeatherDensity switch
-        {
-            SessionWeatherDensity.CompactWithoutIcons => 38,
-            SessionWeatherDensity.CompactWithIcons => 58,
-            _ => 90,
-        });
-        RailColumn.Width = new GridLength(ActualWidth > 1100 ? 288 : 230);
+        WeatherRow.Height = _mapFullscreen
+            ? new GridLength(0)
+            : new GridLength(settings.WeatherDensity switch
+            {
+                SessionWeatherDensity.CompactWithoutIcons => 38,
+                SessionWeatherDensity.CompactWithIcons => 58,
+                _ => 90,
+            });
+        RailColumn.Width = _mapFullscreen
+            ? new GridLength(0)
+            : new GridLength(ActualWidth > 1100 ? 288 : 230);
     }
 
     private void OnMapFullscreenRequested()
