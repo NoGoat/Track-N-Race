@@ -15,28 +15,46 @@
             x:Key="ChartHeadingStyle"
             BasedOn="{StaticResource BodyStrongTextBlockStyle}"
             TargetType="TextBlock">
-            <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontStyle" Value="Normal" />
-            <Setter Property="CharacterSpacing" Value="120" />
+            <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
         <Style
             x:Key="ChartLegendStyle"
             BasedOn="{StaticResource CaptionTextBlockStyle}"
             TargetType="TextBlock">
             <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
         </Style>
         <Style
             x:Key="ChartTooltipStyle"
             TargetType="Border">
-            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Background" Value="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}" />
             <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="CornerRadius" Value="6" />
             <Setter Property="IsHitTestVisible" Value="False" />
             <Setter Property="Visibility" Value="Collapsed" />
+        </Style>
+        <Style
+            x:Key="ChartTooltipTimeStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Style>
+        <Style
+            x:Key="ChartTooltipValueStyle"
+            BasedOn="{StaticResource BodyTextBlockStyle}"
+            TargetType="TextBlock" />
+        <Style
+            x:Key="ChartEmptyStateStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
         </Style>
     </Page.Resources>
 
@@ -47,140 +65,203 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="1" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Grid Grid.Column="0" Padding="16,12,12,8">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="28" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <TextBlock
-                    AutomationProperties.HeadingLevel="Level2"
-                    Style="{StaticResource ChartHeadingStyle}"
-                    Text="GEAR" />
-                <Grid Grid.Row="1">
-                    <scottPlot:WinUIPlot
-                        x:Name="GearPlot"
-                        PointerExited="OnPlotPointerExited"
-                        PointerMoved="OnGearPointerMoved" />
+            <Border>
+                <Grid Padding="16,12,12,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
                     <TextBlock
-                        x:Name="GearNoData"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="No data" />
-                    <Canvas IsHitTestVisible="False">
-                        <Border
-                            x:Name="GearTooltip"
-                            Style="{StaticResource ChartTooltipStyle}">
-                            <TextBlock x:Name="GearTooltipText" />
-                        </Border>
-                    </Canvas>
+                        Margin="0,0,0,8"
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource ChartHeadingStyle}"
+                        Text="GEAR" />
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="GearPlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnGearPointerMoved" />
+                        <TextBlock
+                            x:Name="GearNoData"
+                            Style="{StaticResource ChartEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border
+                                x:Name="GearTooltip"
+                                Style="{StaticResource ChartTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock
+                                        x:Name="GearTooltipTimeText"
+                                        Style="{StaticResource ChartTooltipTimeStyle}" />
+                                    <TextBlock
+                                        Style="{StaticResource ChartTooltipValueStyle}">
+                                        <Run Foreground="#5794F2" Text="Gear" />
+                                        <Run
+                                            x:Name="GearTooltipValueRun"
+                                            FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
                 </Grid>
-            </Grid>
+            </Border>
 
             <Border
                 Grid.Column="1"
                 Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-            <Grid Grid.Column="2" Padding="12,12,16,8">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="28" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <Grid>
-                    <TextBlock
-                        AutomationProperties.HeadingLevel="Level2"
-                        Style="{StaticResource ChartHeadingStyle}"
-                        Text="THROTTLE" />
-                    <StackPanel
-                        HorizontalAlignment="Right"
-                        Orientation="Horizontal"
-                        Spacing="16">
+            <Border Grid.Column="2">
+                <Grid Padding="12,12,16,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
                         <TextBlock
-                            Foreground="#37872D"
-                            Style="{StaticResource ChartLegendStyle}"
-                            Text="▲ Throttle" />
+                            AutomationProperties.HeadingLevel="Level2"
+                            Style="{StaticResource ChartHeadingStyle}"
+                            Text="THROTTLE / BRAKE" />
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="12">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle
+                                    Width="12"
+                                    Height="2"
+                                    VerticalAlignment="Center"
+                                    Fill="#37872D"
+                                    RadiusX="1"
+                                    RadiusY="1" />
+                                <TextBlock
+                                    Style="{StaticResource ChartLegendStyle}"
+                                    Text="Throttle" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle
+                                    Width="12"
+                                    Height="2"
+                                    VerticalAlignment="Center"
+                                    Fill="#C4162A"
+                                    RadiusX="1"
+                                    RadiusY="1" />
+                                <TextBlock
+                                    Style="{StaticResource ChartLegendStyle}"
+                                    Text="Brake" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="ThrottleBrakePlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnThrottleBrakePointerMoved" />
                         <TextBlock
-                            Foreground="#C4162A"
-                            Style="{StaticResource ChartLegendStyle}"
-                            Text="▼ Brake" />
-                    </StackPanel>
+                            x:Name="ThrottleBrakeNoData"
+                            Style="{StaticResource ChartEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border
+                                x:Name="ThrottleBrakeTooltip"
+                                Style="{StaticResource ChartTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock
+                                        x:Name="ThrottleBrakeTooltipTimeText"
+                                        Style="{StaticResource ChartTooltipTimeStyle}" />
+                                    <TextBlock
+                                        Style="{StaticResource ChartTooltipValueStyle}">
+                                        <Run Foreground="#37872D" Text="Throttle:" />
+                                        <Run
+                                            x:Name="ThrottleBrakeTooltipThrottleValueRun"
+                                            FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource ChartTooltipValueStyle}">
+                                        <Run Foreground="#C4162A" Text="Brake:" />
+                                        <Run
+                                            x:Name="ThrottleBrakeTooltipBrakeValueRun"
+                                            FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
                 </Grid>
-                <Grid Grid.Row="1">
-                    <scottPlot:WinUIPlot
-                        x:Name="ThrottleBrakePlot"
-                        PointerExited="OnPlotPointerExited"
-                        PointerMoved="OnThrottleBrakePointerMoved" />
-                    <TextBlock
-                        x:Name="ThrottleBrakeNoData"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="No data" />
-                    <Canvas IsHitTestVisible="False">
-                        <Border
-                            x:Name="ThrottleBrakeTooltip"
-                            Style="{StaticResource ChartTooltipStyle}">
-                            <TextBlock x:Name="ThrottleBrakeTooltipText" />
-                        </Border>
-                    </Canvas>
-                </Grid>
-            </Grid>
+            </Border>
         </Grid>
 
         <Border
             Grid.Row="1"
             Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-        <Grid Grid.Row="2" Padding="16,12,16,8">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="28" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-            <Grid>
-                <TextBlock
-                    AutomationProperties.HeadingLevel="Level2"
-                    Style="{StaticResource ChartHeadingStyle}"
-                    Text="STEERING" />
-                <StackPanel
-                    HorizontalAlignment="Right"
-                    Orientation="Horizontal"
-                    Spacing="16">
+        <Border Grid.Row="2">
+            <Grid Padding="16,12,16,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Margin="0,0,0,8">
                     <TextBlock
-                        Foreground="#BF5FFF"
-                        Style="{StaticResource ChartLegendStyle}"
-                        Text="— Input" />
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource ChartHeadingStyle}"
+                        Text="STEERING" />
+                    <StackPanel
+                        HorizontalAlignment="Right"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Rectangle
+                                Width="12"
+                                Height="2"
+                                VerticalAlignment="Center"
+                                Fill="#BF5FFF"
+                                RadiusX="1"
+                                RadiusY="1" />
+                            <TextBlock
+                                Style="{StaticResource ChartLegendStyle}"
+                                Text="Steering" />
+                        </StackPanel>
+                        <TextBlock
+                            Style="{StaticResource ChartLegendStyle}"
+                            Text="L = left · R = right" />
+                    </StackPanel>
+                </Grid>
+                <Grid Grid.Row="1">
+                    <scottPlot:WinUIPlot
+                        x:Name="SteeringPlot"
+                        PointerExited="OnPlotPointerExited"
+                        PointerMoved="OnSteeringPointerMoved" />
                     <TextBlock
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Style="{StaticResource ChartLegendStyle}"
-                        Text="L = left / R = right" />
-                </StackPanel>
+                        x:Name="SteeringNoData"
+                        Style="{StaticResource ChartEmptyStateStyle}"
+                        Text="Waiting for telemetry" />
+                    <Canvas IsHitTestVisible="False">
+                        <Border
+                            x:Name="SteeringTooltip"
+                            Style="{StaticResource ChartTooltipStyle}">
+                            <StackPanel Spacing="2">
+                                <TextBlock
+                                    x:Name="SteeringTooltipTimeText"
+                                    Style="{StaticResource ChartTooltipTimeStyle}" />
+                                <TextBlock
+                                    Style="{StaticResource ChartTooltipValueStyle}">
+                                    <Run Foreground="#BF5FFF" Text="Steering:" />
+                                    <Run
+                                        x:Name="SteeringTooltipValueRun"
+                                        FontWeight="SemiBold" />
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                    </Canvas>
+                </Grid>
             </Grid>
-            <Grid Grid.Row="1">
-                <scottPlot:WinUIPlot
-                    x:Name="SteeringPlot"
-                    PointerExited="OnPlotPointerExited"
-                    PointerMoved="OnSteeringPointerMoved" />
-                <TextBlock
-                    x:Name="SteeringNoData"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="No data" />
-                <Canvas IsHitTestVisible="False">
-                    <Border
-                        x:Name="SteeringTooltip"
-                        Style="{StaticResource ChartTooltipStyle}">
-                        <TextBlock x:Name="SteeringTooltipText" />
-                    </Border>
-                </Canvas>
-            </Grid>
-        </Grid>
+        </Border>
     </Grid>
 </Page>
