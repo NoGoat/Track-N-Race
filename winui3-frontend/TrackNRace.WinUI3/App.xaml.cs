@@ -14,12 +14,24 @@ public partial class App : Application
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
     public TelemetryEngine? Telemetry { get; private set; }
+    internal TelemetrySessionStore? TelemetryState { get; private set; }
     public string TelemetryStartError { get; private set; } = string.Empty;
     public ushort TelemetryPort { get; private set; }
     public string TelemetryBindAddress { get; private set; }
     public TelemetryProtocol SelectedProtocol { get; private set; }
     public int ChartWindowSeconds { get; private set; }
     public event Action<int>? ChartWindowChanged;
+    private int _selectedDriverIndex = -1;
+
+    internal int? SelectedDriverIndex
+    {
+        get
+        {
+            var value = Volatile.Read(ref _selectedDriverIndex);
+            return value < 0 ? null : value;
+        }
+        set => Volatile.Write(ref _selectedDriverIndex, value ?? -1);
+    }
 
     public App()
     {
@@ -60,6 +72,8 @@ public partial class App : Application
         {
             Telemetry = new TelemetryEngine(
                 TelemetryPort, TelemetryBindAddress, SelectedProtocol);
+            TelemetryState = new TelemetrySessionStore(Telemetry);
+            TelemetryState.TimelineReset += OnTimelineReset;
             if (!Telemetry.TryStart(out var error))
             {
                 TelemetryStartError = error;
@@ -109,8 +123,22 @@ public partial class App : Application
 
     public void ShutdownTelemetry()
     {
+        if (TelemetryState is not null)
+        {
+            TelemetryState.TimelineReset -= OnTimelineReset;
+            TelemetryState.Dispose();
+            TelemetryState = null;
+        }
         Telemetry?.Dispose();
         Telemetry = null;
+    }
+
+    private void OnTimelineReset(TimelineResetReason reason)
+    {
+        if (reason == TimelineResetReason.PlaybackClosed)
+        {
+            SelectedDriverIndex = null;
+        }
     }
 
     public void SetChartWindow(int seconds)

@@ -75,6 +75,15 @@ public sealed partial class MainWindow : Window
 
     private void NavigateToDashboard(string pageName)
     {
+        if (pageName == "Standings")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(StandingsPage))
+            {
+                RootFrame.Navigate(typeof(StandingsPage));
+            }
+            return;
+        }
+
         RootFrame.Navigate(typeof(DashboardPage), pageName);
     }
 
@@ -102,8 +111,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        LoadTnrdButton.IsEnabled = false;
-        LoadTnrdButtonLabel.Text = "Loading…";
+        ShowRecordingLoading(file.Path, file.Name);
         try
         {
             var result = await Task.Run(() =>
@@ -114,6 +122,8 @@ public sealed partial class MainWindow : Window
 
             if (!result.Loaded)
             {
+                ShowLoadRecordingButton();
+                RecordingLoadOverlay.Visibility = Visibility.Collapsed;
                 await ShowTnrdLoadErrorAsync(
                     result.Error.Length > 0
                         ? result.Error
@@ -125,11 +135,35 @@ public sealed partial class MainWindow : Window
                 LoadTnrdButton, $"Loaded {file.Name} · click to choose another recording");
             ShowLoadedRecording(file.Path, file.Name);
         }
+        catch (Exception exception)
+        {
+            ShowLoadRecordingButton();
+            RecordingLoadOverlay.Visibility = Visibility.Collapsed;
+            await ShowTnrdLoadErrorAsync(exception.Message);
+        }
         finally
         {
-            LoadTnrdButtonLabel.Text = "Load TNRD";
-            LoadTnrdButton.IsEnabled = true;
+            RecordingLoadOverlay.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private void ShowRecordingLoading(string path, string fileName)
+    {
+        LoadedFileNameText.Text = fileName;
+        LoadedFileNameText.Visibility = Visibility.Visible;
+        ToolTipService.SetToolTip(LoadedFileNameText, path);
+        LoadTnrdButton.Visibility = Visibility.Collapsed;
+        RecordingLoadOverlay.Visibility = Visibility.Visible;
+    }
+
+    private void ShowLoadRecordingButton()
+    {
+        LoadedFileNameText.Text = string.Empty;
+        LoadedFileNameText.Visibility = Visibility.Collapsed;
+        ToolTipService.SetToolTip(LoadedFileNameText, null);
+        LoadTnrdButton.Visibility = Visibility.Visible;
+        ToolTipService.SetToolTip(
+            LoadTnrdButton, "Load Session Data File (.tnrd)");
     }
 
     private void ShowLoadedRecording(string path, string fileName)
@@ -433,11 +467,7 @@ public sealed partial class MainWindow : Window
         _loadedTnrdPath = null;
         _displayedLaps = null;
         PlaybackBar.Visibility = Visibility.Collapsed;
-        LoadedFileNameText.Text = string.Empty;
-        LoadedFileNameText.Visibility = Visibility.Collapsed;
-        LoadTnrdButton.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(
-            LoadTnrdButton, "Load Session Data File (.tnrd)");
+        ShowLoadRecordingButton();
         _displayedSessionSecond = -1;
         SessionTimerText.Text = "--:--";
     }
@@ -475,12 +505,29 @@ public sealed partial class MainWindow : Window
 
     private void OnRootLayoutLoaded(object sender, RoutedEventArgs args)
     {
+        UpdateTitleBarTheme();
         UpdateTitleBarIcon();
     }
 
     private void OnActualThemeChanged(FrameworkElement sender, object args)
     {
+        UpdateTitleBarTheme();
         UpdateTitleBarIcon();
+    }
+
+    private void UpdateTitleBarTheme()
+    {
+        if (!AppWindowTitleBar.IsCustomizationSupported())
+        {
+            return;
+        }
+
+        var titleBar = AppWindow.TitleBar;
+        titleBar.PreferredTheme = RootLayout.ActualTheme == ElementTheme.Dark
+            ? TitleBarTheme.Dark
+            : TitleBarTheme.Light;
+        titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
     }
 
     private void UpdateTitleBarIcon()
