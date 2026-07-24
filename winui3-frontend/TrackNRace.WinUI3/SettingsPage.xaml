@@ -41,15 +41,75 @@
                         <toolkit:SettingsCard.HeaderIcon>
                             <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE790;" />
                         </toolkit:SettingsCard.HeaderIcon>
-                        <RadioButtons
-                            x:Name="ThemeRadioButtons"
+                        <ComboBox
+                            x:Name="ThemeComboBox"
                             AutomationProperties.Name="App theme"
-                            MaxColumns="2"
                             SelectionChanged="OnThemeSelectionChanged">
-                            <x:String>Light</x:String>
-                            <x:String>Dark</x:String>
-                        </RadioButtons>
+                            <ComboBoxItem Content="Light" Tag="Light" />
+                            <ComboBoxItem Content="Dark" Tag="Dark" />
+                            <ComboBoxItem Content="Use system setting" Tag="Default" />
+                        </ComboBox>
                     </toolkit:SettingsCard>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Telemetry" />
+
+                    <toolkit:SettingsCard
+                        HorizontalAlignment="Stretch"
+                        Description="The local address and UDP port libtnrp listens on."
+                        Header="UDP listener">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE968;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox
+                                x:Name="BindAddressTextBox"
+                                Width="150"
+                                AutomationProperties.Name="Bind address"
+                                Header="Bind address" />
+                            <NumberBox
+                                x:Name="UdpPortNumberBox"
+                                Width="130"
+                                AutomationProperties.Name="UDP port"
+                                Header="UDP port"
+                                Maximum="65535"
+                                Minimum="1"
+                                SpinButtonPlacementMode="Compact" />
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        HorizontalAlignment="Stretch"
+                        Description="Auto detects the game year, or forces a specific packet format."
+                        Header="Protocol">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE8D4;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ComboBox
+                            x:Name="ProtocolComboBox"
+                            Width="160"
+                            AutomationProperties.Name="Telemetry protocol">
+                            <x:String>Auto detect</x:String>
+                            <x:String>F1 24</x:String>
+                            <x:String>F1 25</x:String>
+                            <x:String>F1 26</x:String>
+                        </ComboBox>
+                    </toolkit:SettingsCard>
+
+                    <Button
+                        HorizontalAlignment="Right"
+                        Click="OnApplyTelemetrySettings"
+                        Content="Apply telemetry settings"
+                        Style="{StaticResource AccentButtonStyle}" />
+
+                    <InfoBar
+                        x:Name="TelemetrySettingsInfo"
+                        IsClosable="True"
+                        IsOpen="False" />
                 </StackPanel>
             </StackPanel>
         </Grid>

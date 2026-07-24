@@ -7,7 +7,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
     <Grid Padding="32">
-        <StackPanel Spacing="8">
+        <StackPanel Spacing="12">
             <TextBlock
                 x:Name="PageTitle"
                 AutomationProperties.HeadingLevel="Level1"
@@ -16,6 +16,19 @@
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                 Text="Page scaffold ready for telemetry content."
                 TextWrapping="Wrap" />
+            <InfoBar
+                x:Name="EngineInfo"
+                IsClosable="False"
+                IsOpen="True"
+                Severity="Informational"
+                Title="libtnrp telemetry engine">
+                <StackPanel Spacing="4">
+                    <TextBlock x:Name="EngineStatusText" TextWrapping="Wrap" />
+                    <TextBlock
+                        x:Name="PacketCountText"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </InfoBar>
         </StackPanel>
     </Grid>
 </Page>

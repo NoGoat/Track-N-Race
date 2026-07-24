@@ -20,12 +20,90 @@
 
         <TitleBar
             x:Name="AppTitleBar"
-            Height="48"
-            Subtitle="Telemetry Dashboard"
-            Title="Track N Race">
-            <TitleBar.IconSource>
-                <ImageIconSource x:Name="TitleBarIconSource" ImageSource="Assets/icon_transparent.png" />
-            </TitleBar.IconSource>
+            Height="48">
+            <TitleBar.LeftHeader>
+                <StackPanel
+                    Margin="16,0,0,0"
+                    VerticalAlignment="Center"
+                    Orientation="Horizontal"
+                    Spacing="0">
+                    <Image
+                        x:Name="TitleBarIconImage"
+                        Width="20"
+                        Height="20"
+                        Source="Assets/icon_transparent.png"
+                        Stretch="Uniform" />
+                    <TextBlock
+                        Margin="16,0,0,0"
+                        VerticalAlignment="Center"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="Track N Race" />
+                    <Grid Margin="8,0,0,0">
+                        <Button
+                            x:Name="LoadTnrdButton"
+                            Height="30"
+                            Padding="6,0"
+                            VerticalAlignment="Center"
+                            AutomationProperties.Name="Load TNRD recording"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            Click="OnLoadTnrdClicked"
+                            ToolTipService.ToolTip="Load Session Data File (.tnrd)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon
+                                    FontFamily="Segoe Fluent Icons"
+                                    FontSize="13"
+                                    Glyph="&#xE8E5;" />
+                                <TextBlock
+                                    x:Name="LoadTnrdButtonLabel"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="Load TNRD" />
+                            </StackPanel>
+                        </Button>
+                        <TextBlock
+                            x:Name="LoadedFileNameText"
+                            MaxWidth="280"
+                            VerticalAlignment="Center"
+                            AutomationProperties.Name="Loaded TNRD filename"
+                            FontSize="11"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextTrimming="CharacterEllipsis"
+                            Visibility="Collapsed" />
+                    </Grid>
+                </StackPanel>
+            </TitleBar.LeftHeader>
+            <TitleBar.RightHeader>
+                <StackPanel
+                    Margin="8,0,8,0"
+                    VerticalAlignment="Center"
+                    Orientation="Horizontal"
+                    Spacing="8">
+                    <TextBlock
+                        x:Name="SessionTimerText"
+                        MinWidth="44"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Session time"
+                        Text="--:--"
+                        TextAlignment="Right"
+                        ToolTipService.ToolTip="Session time" />
+                    <ComboBox
+                        x:Name="ChartWindowComboBox"
+                        Width="72"
+                        Height="32"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Chart window"
+                        SelectionChanged="OnChartWindowSelectionChanged"
+                        ToolTipService.ToolTip="Chart window">
+                        <x:String>15s</x:String>
+                        <x:String>30s</x:String>
+                        <x:String>1m</x:String>
+                        <x:String>2m</x:String>
+                        <x:String>5m</x:String>
+                        <x:String>10m</x:String>
+                    </ComboBox>
+                </StackPanel>
+            </TitleBar.RightHeader>
         </TitleBar>
 
         <NavigationView
@@ -36,11 +114,10 @@
             CompactPaneLength="48"
             ExpandedModeThresholdWidth="1008"
             IsBackButtonVisible="Collapsed"
-            IsPaneOpen="True"
+            IsPaneOpen="False"
             IsPaneToggleButtonVisible="True"
             IsSettingsVisible="True"
             OpenPaneLength="220"
-            PaneDisplayMode="Left"
             SelectionChanged="OnNavigationSelectionChanged">
             <NavigationView.MenuItems>
                 <NavigationViewItem x:Name="OverviewNavigationItem" Content="Overview" Tag="Overview">
@@ -93,7 +170,157 @@
                 </NavigationViewItem>
             </NavigationView.MenuItems>
 
-            <Frame x:Name="RootFrame" />
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Frame x:Name="RootFrame" />
+
+                <Border
+            x:Name="PlaybackBar"
+            Grid.Row="1"
+            Height="54"
+            Padding="8,6"
+            Background="{ThemeResource LayerFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+            BorderThickness="0,1,0,0"
+            Visibility="Collapsed">
+            <Border.Resources>
+                <SolidColorBrush x:Key="ButtonBackground" Color="Transparent" />
+                <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent" />
+                <SolidColorBrush x:Key="ComboBoxBackground" Color="Transparent" />
+                <SolidColorBrush x:Key="ComboBoxBorderBrush" Color="Transparent" />
+            </Border.Resources>
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button
+                    Grid.Column="0"
+                    Width="34"
+                    Height="34"
+                    Padding="0"
+                    AutomationProperties.Name="Seek backward five seconds"
+                    Click="OnSeekBackwardClicked"
+                    ToolTipService.ToolTip="Back 5 seconds">
+                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="15" Glyph="&#xE76B;" />
+                </Button>
+                <Button
+                    x:Name="PlayPauseButton"
+                    Grid.Column="1"
+                    Width="34"
+                    Height="34"
+                    Padding="0"
+                    AutomationProperties.Name="Play recording"
+                    Click="OnPlayPauseClicked"
+                    ToolTipService.ToolTip="Play">
+                    <FontIcon
+                        x:Name="PlayPauseIcon"
+                        FontFamily="Segoe Fluent Icons"
+                        FontSize="15"
+                        Glyph="&#xE768;" />
+                </Button>
+                <Button
+                    Grid.Column="2"
+                    Width="34"
+                    Height="34"
+                    Padding="0"
+                    AutomationProperties.Name="Seek forward five seconds"
+                    Click="OnSeekForwardClicked"
+                    ToolTipService.ToolTip="Forward 5 seconds">
+                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="15" Glyph="&#xE76C;" />
+                </Button>
+
+                <TextBlock
+                    x:Name="PlaybackCurrentTimeText"
+                    Grid.Column="3"
+                    MinWidth="72"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="0:00.000"
+                    TextAlignment="Right" />
+                <Slider
+                    x:Name="PlaybackProgressSlider"
+                    Grid.Column="4"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="Playback position"
+                    IsThumbToolTipEnabled="True"
+                    Maximum="1"
+                    Minimum="0"
+                    PointerReleased="OnPlaybackSliderPointerReleased"
+                    StepFrequency="0.001"
+                    ValueChanged="OnPlaybackSliderValueChanged" />
+                <TextBlock
+                    x:Name="PlaybackTotalTimeText"
+                    Grid.Column="5"
+                    MinWidth="72"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="0:00.000" />
+
+                <ComboBox
+                    x:Name="PlaybackSpeedComboBox"
+                    Grid.Column="6"
+                    Width="78"
+                    Height="34"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="Playback speed"
+                    SelectionChanged="OnPlaybackSpeedSelectionChanged"
+                    ToolTipService.ToolTip="Playback speed">
+                    <x:String>0.25x</x:String>
+                    <x:String>0.5x</x:String>
+                    <x:String>1x</x:String>
+                    <x:String>2x</x:String>
+                    <x:String>4x</x:String>
+                </ComboBox>
+                <ComboBox
+                    x:Name="PlaybackLapComboBox"
+                    Grid.Column="7"
+                    Width="66"
+                    Height="34"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="Current lap"
+                    DisplayMemberPath="LapNumber"
+                    PlaceholderText="Lap"
+                    SelectionChanged="OnPlaybackLapSelectionChanged"
+                    ToolTipService.ToolTip="Jump to lap"
+                    Visibility="Collapsed" />
+                <Button
+                    x:Name="ExportRecordingButton"
+                    Grid.Column="8"
+                    Width="34"
+                    Height="34"
+                    Padding="0"
+                    AutomationProperties.Name="Export recording to Excel"
+                    Click="OnExportRecordingClicked"
+                    ToolTipService.ToolTip="Export session to Excel (.xlsx)">
+                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="15" Glyph="&#xE74E;" />
+                </Button>
+                <Button
+                    Grid.Column="9"
+                    Width="34"
+                    Height="34"
+                    Padding="0"
+                    AutomationProperties.Name="Close recording"
+                    Click="OnCloseRecordingClicked"
+                    ToolTipService.ToolTip="Close file">
+                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="14" Glyph="&#xE711;" />
+                </Button>
+            </Grid>
+                </Border>
+            </Grid>
         </NavigationView>
     </Grid>
 </Window>

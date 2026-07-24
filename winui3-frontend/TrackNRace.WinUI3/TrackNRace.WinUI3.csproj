@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>TrackNRace.WinUI3</RootNamespace>
-    <AssemblyName>TrackNRace.WinUI3</AssemblyName>
+    <AssemblyName>Track-N-Race-WinUI3</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
@@ -15,6 +15,8 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NativeBridgeOutput>$(MSBuildProjectDirectory)\..\native\build\$(Configuration)\TrackNRace.EngineBridge.dll</NativeBridgeOutput>
   </PropertyGroup>
 
   <ItemGroup>
@@ -38,6 +40,11 @@
     <Content Include="Assets\icon_transparent_light.png" />
     <Content Include="Assets\Licenses\MIT-FluentIcons.txt" />
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
+    <Content
+        Include="$(NativeBridgeOutput)"
+        Link="TrackNRace.EngineBridge.dll"
+        CopyToOutputDirectory="PreserveNewest"
+        CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -65,4 +72,11 @@
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
     <PublishTrimmed>False</PublishTrimmed>
   </PropertyGroup>
+
+  <Target
+      Name="BuildNativeTelemetryBridge"
+      BeforeTargets="PrepareForBuild"
+      Condition="'$(DesignTimeBuild)' != 'true' and '$(SkipNativeTelemetryBridge)' != 'true'">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\build-native.ps1&quot; -Configuration $(Configuration)" />
+  </Target>
 </Project>
