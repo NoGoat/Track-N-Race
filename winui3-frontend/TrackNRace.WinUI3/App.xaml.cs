@@ -10,6 +10,14 @@ public partial class App : Application
     private const string BindAddressSettingKey = "TelemetryBindAddress";
     private const string ProtocolSettingKey = "TelemetryProtocol";
     private const string ChartWindowSettingKey = "ChartWindowSeconds";
+    private const string SessionCompactHeaderKey = "SessionCompactHeader";
+    private const string SessionCompactCardsKey = "SessionCompactCards";
+    private const string SessionWeatherDensityKey = "SessionWeatherDensity";
+    private const string SessionSectorColorsKey = "SessionSectorColors";
+    private const string SessionMapDimmedKey = "SessionMapDimmed";
+    private const string SessionDriverModeKey = "SessionDriverMode";
+    private const string SessionStaleTimeoutKey = "SessionStaleTimeoutSeconds";
+    private const string SessionReduceAnimationsKey = "SessionReduceAnimations";
 
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
@@ -20,7 +28,9 @@ public partial class App : Application
     public string TelemetryBindAddress { get; private set; }
     public TelemetryProtocol SelectedProtocol { get; private set; }
     public int ChartWindowSeconds { get; private set; }
+    public SessionDisplaySettings SessionDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
+    public event Action? SessionDisplayChanged;
     private int _selectedDriverIndex = -1;
 
     internal int? SelectedDriverIndex
@@ -43,6 +53,7 @@ public partial class App : Application
             ?? "0.0.0.0";
         SelectedProtocol = ReadProtocol();
         ChartWindowSeconds = ReadChartWindow();
+        SessionDisplay = ReadSessionDisplay();
     }
 
     public void SetTheme(ElementTheme theme)
@@ -154,6 +165,30 @@ public partial class App : Application
         ChartWindowChanged?.Invoke(seconds);
     }
 
+    public void SetSessionDisplay(SessionDisplaySettings settings)
+    {
+        settings = settings with
+        {
+            StaleCarTimeoutSeconds = Math.Clamp(settings.StaleCarTimeoutSeconds, 0, 120),
+        };
+        if (settings == SessionDisplay)
+        {
+            return;
+        }
+
+        SessionDisplay = settings;
+        var values = ApplicationData.Current.LocalSettings.Values;
+        values[SessionCompactHeaderKey] = settings.CompactHeader;
+        values[SessionCompactCardsKey] = settings.CompactCards;
+        values[SessionWeatherDensityKey] = settings.WeatherDensity.ToString();
+        values[SessionSectorColorsKey] = settings.SectorColors;
+        values[SessionMapDimmedKey] = settings.MapDimmed;
+        values[SessionDriverModeKey] = settings.DriverDisplayMode.ToString();
+        values[SessionStaleTimeoutKey] = settings.StaleCarTimeoutSeconds;
+        values[SessionReduceAnimationsKey] = settings.ReduceAnimations;
+        SessionDisplayChanged?.Invoke();
+    }
+
     private static ushort ReadUdpPort()
     {
         var value = ApplicationData.Current.LocalSettings.Values[UdpPortSettingKey];
@@ -178,5 +213,30 @@ public partial class App : Application
             seconds is 15 or 30 or 60 or 120 or 300 or 600
                 ? seconds
                 : 30;
+    }
+
+    private static SessionDisplaySettings ReadSessionDisplay()
+    {
+        var values = ApplicationData.Current.LocalSettings.Values;
+        var weatherText = values[SessionWeatherDensityKey] as string;
+        var driverText = values[SessionDriverModeKey] as string;
+        var weather = Enum.TryParse<SessionWeatherDensity>(weatherText, out var parsedWeather)
+            ? parsedWeather
+            : SessionWeatherDensity.Normal;
+        var driver = Enum.TryParse<TrackDriverDisplayMode>(driverText, out var parsedDriver)
+            ? parsedDriver
+            : TrackDriverDisplayMode.DotsAndLabels;
+        var timeout = values[SessionStaleTimeoutKey] is int storedTimeout
+            ? Math.Clamp(storedTimeout, 0, 120)
+            : 10;
+        return new SessionDisplaySettings(
+            values[SessionCompactHeaderKey] is true,
+            values[SessionCompactCardsKey] is true,
+            weather,
+            values[SessionSectorColorsKey] is true,
+            values[SessionMapDimmedKey] is true,
+            driver,
+            timeout,
+            values[SessionReduceAnimationsKey] is true);
     }
 }

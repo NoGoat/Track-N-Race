@@ -20,7 +20,45 @@ public sealed partial class SettingsPage : Page
         BindAddressTextBox.Text = app.TelemetryBindAddress;
         UdpPortNumberBox.Value = app.TelemetryPort;
         ProtocolComboBox.SelectedIndex = (int)app.SelectedProtocol;
+        var display = app.SessionDisplay;
+        CompactSessionHeaderToggle.IsOn = display.CompactHeader;
+        CompactSessionCardsToggle.IsOn = display.CompactCards;
+        SessionWeatherDensityComboBox.SelectedIndex = (int)display.WeatherDensity;
+        SessionSectorColorsToggle.IsOn = display.SectorColors;
+        SessionMapDimmedToggle.IsOn = display.MapDimmed;
+        SessionDriverModeComboBox.SelectedIndex = (int)display.DriverDisplayMode;
+        SessionStaleTimeoutNumberBox.Value = display.StaleCarTimeoutSeconds;
+        SessionReduceAnimationsToggle.IsOn = display.ReduceAnimations;
         _isInitialized = true;
+    }
+
+    private void OnSessionDisplaySettingChanged(object sender, RoutedEventArgs args) =>
+        SaveSessionDisplaySettings();
+
+    private void OnSessionDisplayNumberChanged(
+        NumberBox sender,
+        NumberBoxValueChangedEventArgs args) =>
+        SaveSessionDisplaySettings();
+
+    private void SaveSessionDisplaySettings()
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        var timeout = double.IsNaN(SessionStaleTimeoutNumberBox.Value)
+            ? 10
+            : (int)Math.Round(SessionStaleTimeoutNumberBox.Value);
+        ((App)Application.Current).SetSessionDisplay(new SessionDisplaySettings(
+            CompactSessionHeaderToggle.IsOn,
+            CompactSessionCardsToggle.IsOn,
+            (SessionWeatherDensity)Math.Max(0, SessionWeatherDensityComboBox.SelectedIndex),
+            SessionSectorColorsToggle.IsOn,
+            SessionMapDimmedToggle.IsOn,
+            (TrackDriverDisplayMode)Math.Max(0, SessionDriverModeComboBox.SelectedIndex),
+            timeout,
+            SessionReduceAnimationsToggle.IsOn));
     }
 
     private void OnThemeSelectionChanged(object sender, SelectionChangedEventArgs args)

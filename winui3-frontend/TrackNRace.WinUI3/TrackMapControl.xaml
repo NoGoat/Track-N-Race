@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="TrackNRace.WinUI3.TrackMapControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid
+        x:Name="MapRoot"
+        Background="Transparent"
+        SizeChanged="OnMapSizeChanged">
+        <Canvas x:Name="SceneCanvas" IsHitTestVisible="False">
+            <Canvas x:Name="StaticCanvas" />
+        </Canvas>
+        <!-- Driver markers stay in viewport coordinates so follow zoom scales
+             the circuit without scaling dots or label typography. -->
+        <Canvas x:Name="CarsCanvas" IsHitTestVisible="False" />
+
+        <TextBlock
+            x:Name="NoMapText"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+            Style="{StaticResource CaptionTextBlockStyle}"
+            Text="NO MAP DATA"
+            Visibility="Collapsed" />
+
+        <StackPanel
+            x:Name="DebugControls"
+            Margin="8"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Top"
+            Spacing="6"
+            Visibility="Collapsed">
+            <ComboBox
+                x:Name="DebugTrackComboBox"
+                Width="230"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                IsEditable="True"
+                IsTextSearchEnabled="True"
+                PlaceholderText="Preview track…"
+                SelectionChanged="OnDebugTrackChanged" />
+            <ComboBox
+                x:Name="DebugAeroComboBox"
+                Width="130"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                SelectionChanged="OnDebugAeroChanged">
+                <x:String>SLM-Dry</x:String>
+                <x:String>SLM-Wet</x:String>
+                <x:String>DRS</x:String>
+            </ComboBox>
+        </StackPanel>
+
+        <StackPanel
+            Margin="8"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            Orientation="Horizontal"
+            Spacing="6">
+            <ComboBox
+                x:Name="ZoomComboBox"
+                Width="72"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                PlaceholderText="Zoom"
+                SelectionChanged="OnZoomChanged"
+                Visibility="Collapsed">
+                <x:String>2x</x:String>
+                <x:String>4x</x:String>
+                <x:String>8x</x:String>
+                <x:String>16x</x:String>
+            </ComboBox>
+            <ComboBox
+                x:Name="FollowDriverComboBox"
+                Width="170"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                IsEditable="True"
+                IsTextSearchEnabled="True"
+                PlaceholderText="Follow driver…"
+                SelectionChanged="OnFollowDriverChanged" />
+            <Button
+                x:Name="ClearFollowButton"
+                Width="32"
+                Height="32"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                Padding="0"
+                Click="OnClearFollowClicked"
+                ToolTipService.ToolTip="Clear followed driver"
+                Visibility="Collapsed">
+                <FontIcon
+                    FontFamily="Segoe Fluent Icons"
+                    FontSize="12"
+                    Glyph="&#xE711;" />
+            </Button>
+            <Button
+                x:Name="FullscreenButton"
+                Width="32"
+                Height="32"
+                Background="{ThemeResource SolidBackgroundFillColorTertiaryBrush}"
+                Padding="0"
+                Click="OnFullscreenClicked"
+                ToolTipService.ToolTip="Fullscreen map">
+                <FontIcon
+                    x:Name="FullscreenIcon"
+                    FontFamily="Segoe Fluent Icons"
+                    FontSize="13"
+                    Glyph="&#xE740;" />
+            </Button>
+        </StackPanel>
+    </Grid>
+</UserControl>

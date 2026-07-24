@@ -41,6 +41,11 @@
     <Content Include="Assets\Licenses\MIT-FluentIcons.txt" />
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
     <Content
+        Include="..\..\electron-frontend\src\renderer\src\assets\maps\track_*.json"
+        Link="Assets\Maps\%(Filename)%(Extension)"
+        CopyToOutputDirectory="PreserveNewest"
+        CopyToPublishDirectory="PreserveNewest" />
+    <Content
         Include="$(NativeBridgeOutput)"
         Link="TrackNRace.EngineBridge.dll"
         CopyToOutputDirectory="PreserveNewest"

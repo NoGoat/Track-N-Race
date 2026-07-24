@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text.Json;
 
 namespace TrackNRace.WinUI3;
@@ -136,8 +137,89 @@ internal sealed record StandingsSnapshot(
     long Revision,
     long TimelineRevision);
 
+internal sealed record SessionData
+{
+    public int Weather { get; init; }
+    public int TrackTemp { get; init; }
+    public int AirTemp { get; init; }
+    public int TrackLengthM { get; init; }
+    public int TrackId { get; init; }
+    public int SessionType { get; init; }
+    public int TotalLaps { get; init; }
+    public int SessionTimeLeft { get; init; }
+    public int SessionDuration { get; init; }
+    public int PitSpeedLimit { get; init; }
+    public int PitStopWindowIdealLap { get; init; }
+    public int PitStopWindowLatestLap { get; init; }
+    public int PitStopRejoinPosition { get; init; }
+    public MarshalZoneData[] MarshalZones { get; init; } = [];
+    public WeatherForecastData[] WeatherForecastSamples { get; init; } = [];
+    public int ForecastAccuracy { get; init; }
+    public int TimeOfDay { get; init; }
+    public int ActiveAeroTrackStatus { get; init; } = -1;
+}
+
+internal sealed record MarshalZoneData
+{
+    public double ZoneStart { get; init; }
+    public int Flag { get; init; }
+}
+
+internal sealed record WeatherForecastData
+{
+    public int TimeOffset { get; init; }
+    public int Weather { get; init; }
+    public int RainPercentage { get; init; }
+}
+
+internal sealed record CarPositionData(int Idx, double X, double Z);
+internal sealed record PositionsRowData(int PlayerIdx, CarPositionData[] Cars);
+
+internal sealed record RaceEventData
+{
+    public float? SessionTime { get; init; }
+    public string Code { get; init; } = string.Empty;
+    public int? CarIdx { get; init; }
+    public double? LapTimeS { get; init; }
+    public int? SafetyCarType { get; init; }
+    public int? EventType { get; init; }
+    public int? PenaltyType { get; init; }
+    public int? InfringementType { get; init; }
+    public int? PenaltyTimeS { get; init; }
+    public int? OvertakingCarIdx { get; init; }
+    public int? BeingOvertakenCarIdx { get; init; }
+}
+
+internal sealed record CardColorRuleData
+{
+    public string On { get; init; } = string.Empty;
+    public string Op { get; init; } = string.Empty;
+    public double Value { get; init; }
+    public string Color { get; init; } = string.Empty;
+}
+
+internal sealed record CardColorSpecData
+{
+    public string Default { get; init; } = "neutral";
+    public CardColorRuleData[] Rules { get; init; } = [];
+}
+
+internal sealed record SessionSnapshot(
+    SessionData? Session,
+    TimingRowData? Timing,
+    ParticipantsRowData? Participants,
+    PositionsRowData? Positions,
+    IReadOnlyList<RaceEventData> RaceEvents,
+    IReadOnlyDictionary<string, string> Labels,
+    IReadOnlyDictionary<string, CardColorSpecData> CardColors,
+    string AeroMode,
+    bool IsPlayback,
+    long Revision,
+    long TimelineRevision);
+
 internal sealed class TelemetrySessionStore : IDisposable
 {
+    private const int MaxRaceEvents = 1000;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -173,6 +255,13 @@ internal sealed class TelemetrySessionStore : IDisposable
     private PlayerStatusData? _playerStatus;
     private int? _fastestLapCarIndex;
     private IReadOnlyDictionary<string, string> _labels = FallbackLabels;
+    private IReadOnlyDictionary<string, CardColorSpecData> _cardColors =
+        new Dictionary<string, CardColorSpecData>();
+    private string _aeroMode = "drs";
+    private SessionData? _session;
+    private PositionsRowData? _positions;
+    private readonly List<RaceEventData> _raceEvents = [];
+    private RaceEventData[] _playbackEvents = [];
     private bool _hasExplicitFastestLap;
     private bool _isPlayback;
     private long _revision;
@@ -183,6 +272,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     {
         _engine = engine;
         _engine.RowReceived += OnRowReceived;
+        _engine.BinaryBatchReceived += OnBinaryBatchReceived;
         _engine.SeekFlushReceived += OnSeekFlushReceived;
         if (_engine.ProtocolStatusJson is { Length: > 0 } protocolStatus)
         {
@@ -204,6 +294,38 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
+    public SessionSnapshot SessionSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                IReadOnlyList<RaceEventData> events = _raceEvents.ToArray();
+                if (_isPlayback)
+                {
+                    var playhead = _engine.LatestSessionTime ?? float.MaxValue;
+                    events = _playbackEvents
+                        .Where(value => value.SessionTime is null ||
+                            value.SessionTime.Value <= playhead)
+                        .ToArray();
+                }
+
+                return new SessionSnapshot(
+                    _session,
+                    _timing,
+                    _participants,
+                    _positions,
+                    events,
+                    _labels,
+                    _cardColors,
+                    _aeroMode,
+                    _isPlayback,
+                    _revision,
+                    _timelineRevision);
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -213,6 +335,7 @@ internal sealed class TelemetrySessionStore : IDisposable
 
         _disposed = true;
         _engine.RowReceived -= OnRowReceived;
+        _engine.BinaryBatchReceived -= OnBinaryBatchReceived;
         _engine.SeekFlushReceived -= OnSeekFlushReceived;
     }
 
@@ -239,11 +362,13 @@ internal sealed class TelemetrySessionStore : IDisposable
                 "participants" => SetParticipants(Deserialize<ParticipantsRowData>(json)),
                 "all_status" => SetAllStatus(Deserialize<AllStatusRowData>(json)),
                 "lap" => SetLap(Deserialize<LapRowData>(json)),
+                "session" => SetSession(Deserialize<SessionData>(json)),
+                "positions" => SetPositionsJson(root),
                 "status" => SetPlayerStatus(Deserialize<PlayerStatusData>(json)),
                 "fastest_lap" => SetExplicitFastest(root),
                 "session_history_fastest" => SetSessionHistoryFastest(root),
-                "protocol_status" => SetProtocolLabels(root),
-                "playback_lap_blocks" => SetPlayback(true),
+                "protocol_status" => SetProtocolMetadata(root),
+                "playback_lap_blocks" => SetPlaybackMetadata(root),
                 "playback_loaded" => SetPlaybackLoaded(root),
                 "playback_close" => Reset(TimelineResetReason.PlaybackClosed),
                 "race_event" => HandleRaceEvent(root),
@@ -263,6 +388,22 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
+    private void OnBinaryBatchReceived(ReadOnlySpan<byte> data)
+    {
+        if (_disposed || !TryDecodeLatestPositions(data, out var positions) ||
+            positions is null)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _positions = positions;
+            _revision++;
+        }
+        SnapshotChanged?.Invoke();
+    }
+
     private void OnSeekFlushReceived(
         byte[] binary,
         string coldJson,
@@ -280,11 +421,13 @@ internal sealed class TelemetrySessionStore : IDisposable
             _allStatus = null;
             _lap = null;
             _playerStatus = null;
+            _positions = null;
             _timelineRevision++;
             _revision++;
         }
 
         TimelineReset?.Invoke(TimelineResetReason.Seek);
+        OnBinaryBatchReceived(binary);
 
         var start = 0;
         while (start < coldJson.Length)
@@ -323,6 +466,41 @@ internal sealed class TelemetrySessionStore : IDisposable
 
     private bool SetPlayerStatus(PlayerStatusData? value) =>
         SetValue(value, data => _playerStatus = data);
+
+    private bool SetSession(SessionData? value) =>
+        SetValue(value, data => _session = data);
+
+    private bool SetPositionsJson(JsonElement root)
+    {
+        if (!root.TryGetProperty("player_idx", out var playerElement) ||
+            !playerElement.TryGetInt32(out var playerIdx) ||
+            !root.TryGetProperty("cars", out var carsElement) ||
+            carsElement.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var cars = new List<CarPositionData>();
+        foreach (var car in carsElement.EnumerateArray())
+        {
+            if (car.TryGetProperty("idx", out var idxElement) &&
+                idxElement.TryGetInt32(out var idx) &&
+                car.TryGetProperty("x", out var xElement) &&
+                xElement.TryGetDouble(out var x) &&
+                car.TryGetProperty("z", out var zElement) &&
+                zElement.TryGetDouble(out var z))
+            {
+                cars.Add(new CarPositionData(idx, x, z));
+            }
+        }
+
+        lock (_gate)
+        {
+            _positions = new PositionsRowData(playerIdx, cars.ToArray());
+            _revision++;
+        }
+        return true;
+    }
 
     private bool SetValue<T>(T? value, Action<T> setter)
         where T : class
@@ -382,26 +560,82 @@ internal sealed class TelemetrySessionStore : IDisposable
         return true;
     }
 
-    private bool SetProtocolLabels(JsonElement root)
+    private bool SetProtocolMetadata(JsonElement root)
     {
-        if (!root.TryGetProperty("labels", out var labelsElement) ||
-            labelsElement.ValueKind != JsonValueKind.Object)
+        var labels = new Dictionary<string, string>(FallbackLabels, StringComparer.Ordinal);
+        if (root.TryGetProperty("labels", out var labelsElement) &&
+            labelsElement.ValueKind == JsonValueKind.Object)
         {
-            return false;
+            foreach (var property in labelsElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    labels[property.Name] = property.Value.GetString() ?? property.Name;
+                }
+            }
         }
 
-        var labels = new Dictionary<string, string>(FallbackLabels, StringComparer.Ordinal);
-        foreach (var property in labelsElement.EnumerateObject())
+        var cardColors = new Dictionary<string, CardColorSpecData>(StringComparer.Ordinal);
+        if (root.TryGetProperty("cardColors", out var colorsElement) &&
+            colorsElement.ValueKind == JsonValueKind.Object)
         {
-            if (property.Value.ValueKind == JsonValueKind.String)
+            foreach (var property in colorsElement.EnumerateObject())
             {
-                labels[property.Name] = property.Value.GetString() ?? property.Name;
+                try
+                {
+                    var spec = property.Value.Deserialize<CardColorSpecData>(JsonOptions);
+                    if (spec is not null)
+                    {
+                        cardColors[property.Name] = spec;
+                    }
+                }
+                catch (JsonException)
+                {
+                }
+            }
+        }
+
+        var aeroMode = root.TryGetProperty("aero_mode", out var aeroElement) &&
+            aeroElement.ValueKind == JsonValueKind.String
+                ? aeroElement.GetString() ?? "drs"
+                : "drs";
+
+        lock (_gate)
+        {
+            _labels = labels;
+            _cardColors = cardColors;
+            _aeroMode = aeroMode;
+            _revision++;
+        }
+        return true;
+    }
+
+    private bool SetPlaybackMetadata(JsonElement root)
+    {
+        var events = new List<RaceEventData>();
+        if (root.TryGetProperty("events", out var eventsElement) &&
+            eventsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in eventsElement.EnumerateArray())
+            {
+                try
+                {
+                    var value = element.Deserialize<RaceEventData>(JsonOptions);
+                    if (value is not null)
+                    {
+                        events.Add(value);
+                    }
+                }
+                catch (JsonException)
+                {
+                }
             }
         }
 
         lock (_gate)
         {
-            _labels = labels;
+            _isPlayback = true;
+            _playbackEvents = events.ToArray();
             _revision++;
         }
         return true;
@@ -424,10 +658,31 @@ internal sealed class TelemetrySessionStore : IDisposable
 
     private bool HandleRaceEvent(JsonElement root)
     {
-        if (!root.TryGetProperty("code", out var code) ||
-            !code.ValueEquals("SEND"))
+        RaceEventData? raceEvent = null;
+        try
         {
-            return false;
+            raceEvent = root.Deserialize<RaceEventData>(JsonOptions);
+        }
+        catch (JsonException)
+        {
+        }
+
+        if (raceEvent is not null)
+        {
+            lock (_gate)
+            {
+                _raceEvents.Add(raceEvent);
+                if (_raceEvents.Count > MaxRaceEvents)
+                {
+                    _raceEvents.RemoveRange(0, _raceEvents.Count - MaxRaceEvents);
+                }
+                _revision++;
+            }
+        }
+
+        if (!root.TryGetProperty("code", out var code) || !code.ValueEquals("SEND"))
+        {
+            return raceEvent is not null;
         }
 
         lock (_gate)
@@ -450,8 +705,12 @@ internal sealed class TelemetrySessionStore : IDisposable
             _allStatus = null;
             _lap = null;
             _playerStatus = null;
+            _session = null;
+            _positions = null;
             _fastestLapCarIndex = null;
             _sessionHistoryBest.Clear();
+            _raceEvents.Clear();
+            _playbackEvents = [];
             _hasExplicitFastestLap = false;
             _isPlayback = reason != TimelineResetReason.PlaybackClosed && _isPlayback;
             _timelineRevision++;
@@ -472,4 +731,66 @@ internal sealed class TelemetrySessionStore : IDisposable
         _labels,
         _revision,
         _timelineRevision);
+
+    private static bool TryDecodeLatestPositions(
+        ReadOnlySpan<byte> data,
+        out PositionsRowData? latest)
+    {
+        latest = null;
+        var offset = 0;
+        while (offset < data.Length)
+        {
+            var tag = data[offset++];
+            switch (tag)
+            {
+                case 1:
+                    // telemetry: 45 bytes after the tag; mirrored from
+                    // BinaryRows.h and electron main's 46-byte record length.
+                    if (!Advance(data, ref offset, 45)) return false;
+                    break;
+                case 2:
+                    // motion: f32 + 3*f64.
+                    if (!Advance(data, ref offset, 28)) return false;
+                    break;
+                case 4:
+                    // motion_ex: f32 + 2*f64.
+                    if (!Advance(data, ref offset, 20)) return false;
+                    break;
+                case 3:
+                    if (!Advance(data, ref offset, 2)) return false;
+                    var playerIdx = data[offset - 2];
+                    var count = data[offset - 1];
+                    var byteCount = checked(count * 16);
+                    if (offset + byteCount > data.Length) return false;
+                    var cars = new CarPositionData[count];
+                    for (var index = 0; index < count; index++)
+                    {
+                        var xBits = BinaryPrimitives.ReadInt64LittleEndian(
+                            data.Slice(offset, 8));
+                        var zBits = BinaryPrimitives.ReadInt64LittleEndian(
+                            data.Slice(offset + 8, 8));
+                        offset += 16;
+                        cars[index] = new CarPositionData(
+                            index,
+                            BitConverter.Int64BitsToDouble(xBits),
+                            BitConverter.Int64BitsToDouble(zBits));
+                    }
+                    latest = new PositionsRowData(playerIdx, cars);
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool Advance(ReadOnlySpan<byte> data, ref int offset, int count)
+    {
+        if (offset + count > data.Length)
+        {
+            return false;
+        }
+        offset += count;
+        return true;
+    }
 }

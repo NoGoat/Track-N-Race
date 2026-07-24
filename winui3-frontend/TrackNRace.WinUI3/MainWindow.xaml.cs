@@ -84,6 +84,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (pageName == "Session")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(SessionPage))
+            {
+                RootFrame.Navigate(typeof(SessionPage));
+            }
+            return;
+        }
+
         RootFrame.Navigate(typeof(DashboardPage), pageName);
     }
 
