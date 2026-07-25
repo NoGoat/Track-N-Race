@@ -1,52 +1,57 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
-using ScottPlot;
-using ScottPlot.Plottables;
-using ScottPlot.WinUI;
 using System.Diagnostics;
+using TrackNRace.Charting;
+using Windows.Foundation;
+using UiColor = Windows.UI.Color;
 
 namespace TrackNRace.WinUI3;
 
 public sealed partial class InputsPage : Page
 {
+    private const int MaxChartPoints = 750_000;
+    private const double RetentionSeconds = 600;
     private const double InputAxisMinimum = -1.05;
     private const double InputAxisMaximum = 1.05;
     private static readonly double[] InputAxisTicks =
         [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1];
-    private static readonly LinePattern HoverCrosshairPattern =
-        new([2f, 1f], 0, "ElectronCrosshair");
-
-    private static readonly ScottPlot.Color GearColor =
-        ScottPlot.Color.FromHex("#5794F2");
-    private static readonly ScottPlot.Color ThrottleColor =
-        ScottPlot.Color.FromHex("#37872D");
-    private static readonly ScottPlot.Color BrakeColor =
-        ScottPlot.Color.FromHex("#C4162A");
-    private static readonly ScottPlot.Color SteeringColor =
-        ScottPlot.Color.FromHex("#BF5FFF");
+    private static readonly UiColor GearColor =
+        UiColor.FromArgb(255, 87, 148, 242);
+    private static readonly UiColor ThrottleColor =
+        UiColor.FromArgb(255, 55, 135, 45);
+    private static readonly UiColor BrakeColor =
+        UiColor.FromArgb(255, 196, 22, 42);
+    private static readonly UiColor SteeringColor =
+        UiColor.FromArgb(255, 191, 95, 255);
 
     private readonly List<double> _times = [];
     private readonly List<double> _gear = [];
     private readonly List<double> _throttle = [];
     private readonly List<double> _brake = [];
     private readonly List<double> _steering = [];
-    private readonly List<HorizontalLine> _bottomBoundaries = [];
-    private HorizontalLine? _throttleCenterLine;
-    private HorizontalLine? _steeringCenterLine;
-    private Crosshair? _gearCrosshair;
-    private Crosshair? _throttleBrakeCrosshair;
-    private Crosshair? _steeringCrosshair;
-    private Marker? _gearHoverMarker;
-    private Marker? _throttleHoverMarker;
-    private Marker? _brakeHoverMarker;
-    private Marker? _steeringHoverMarker;
+    private ChartLineSeries _gearSeries = null!;
+    private ChartLineSeries _throttleSeries = null!;
+    private ChartLineSeries _brakeSeries = null!;
+    private ChartLineSeries _steeringSeries = null!;
+    private ChartAxis _gearTimeAxis = null!;
+    private ChartAxis _throttleBrakeTimeAxis = null!;
+    private ChartAxis _steeringTimeAxis = null!;
+    private ChartAxis _gearAxis = null!;
+    private ChartAxis _throttleBrakeAxis = null!;
+    private ChartAxis _steeringAxis = null!;
+    private ChartCrosshairTooltipPlugin _gearTooltip = null!;
+    private ChartCrosshairTooltipPlugin _throttleBrakeTooltip = null!;
+    private ChartCrosshairTooltipPlugin _steeringTooltip = null!;
+    private InputReferenceLinesPlugin _gearReferenceLines = null!;
+    private InputReferenceLinesPlugin _throttleBrakeReferenceLines = null!;
+    private InputReferenceLinesPlugin _steeringReferenceLines = null!;
     private TelemetrySessionStore? _store;
     private int _storeCount;
     private long _bufferEpoch = -1;
     private long _timelineRevision = -1;
     private bool _isLoaded;
     private int _windowSeconds;
+    private int _refreshQueued;
 
     public InputsPage()
     {
@@ -94,226 +99,183 @@ public sealed partial class InputsPage : Page
 
     private void ConfigurePlots()
     {
-        AddBottomBoundary(GearPlot, 0.5, 8.5);
-        var gear = GearPlot.Plot.Add.SignalXY(_times, _gear);
-        StyleSeries(gear, GearColor, ConnectStyle.StepHorizontal);
-        ConfigurePlot(
-            GearPlot,
-            0.5,
-            8.5,
-            [1, 2, 3, 4, 5, 6, 7, 8],
-            value => $"{value:0}");
-        _gearCrosshair = AddHoverCrosshair(GearPlot);
-        _gearHoverMarker = AddHoverMarker(GearPlot, GearColor);
+        _gearTimeAxis = CreateTimeAxis();
+        _gearAxis = new ChartAxis(
+            "gear", ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = .5,
+            Maximum = 8.5,
+            TickProvider = new FixedChartTickProvider(1, 2, 3, 4, 5, 6, 7, 8),
+            LabelFormatter = value => $"{value:0}",
+        };
+        ConfigureChart(GearPlot, _gearTimeAxis, _gearAxis, "Input/Gear");
+        _gearSeries = GearPlot.Series.Add(new ChartLineSeriesOptions(
+            "gear", "time", "gear", GearColor,
+            MaximumPointCount: MaxChartPoints,
+            MaximumXSpan: RetentionSeconds));
+        _gearReferenceLines = new InputReferenceLinesPlugin(
+            _gearTimeAxis,
+            _gearAxis,
+            [.5 + (8.5 - .5) * .0025]);
+        GearPlot.Plugins.Add(_gearReferenceLines);
+        _gearTooltip = new ChartCrosshairTooltipPlugin(BuildGearTooltip);
+        GearPlot.Plugins.Add(_gearTooltip);
 
-        AddBottomBoundary(
+        _throttleBrakeTimeAxis = CreateTimeAxis();
+        _throttleBrakeAxis = new ChartAxis(
+            "input", ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = InputAxisMinimum,
+            Maximum = InputAxisMaximum,
+            TickProvider = new FixedChartTickProvider(InputAxisTicks),
+            LabelFormatter = value => $"{Math.Abs(value) * 100:0}%",
+        };
+        ConfigureChart(
             ThrottleBrakePlot,
-            InputAxisMinimum,
-            InputAxisMaximum);
-        _throttleCenterLine =
-            ThrottleBrakePlot.Plot.Add.HorizontalLine(0);
-        _throttleCenterLine.LineWidth = 1;
+            _throttleBrakeTimeAxis,
+            _throttleBrakeAxis,
+            "Input/ThrottleBrake");
+        _throttleSeries = ThrottleBrakePlot.Series.Add(
+            new ChartLineSeriesOptions(
+                "throttle", "time", "input", ThrottleColor,
+                MaximumPointCount: MaxChartPoints,
+                MaximumXSpan: RetentionSeconds));
+        _brakeSeries = ThrottleBrakePlot.Series.Add(
+            new ChartLineSeriesOptions(
+                "brake", "time", "input", BrakeColor,
+                MaximumPointCount: MaxChartPoints,
+                MaximumXSpan: RetentionSeconds));
+        _throttleBrakeReferenceLines = new InputReferenceLinesPlugin(
+            _throttleBrakeTimeAxis,
+            _throttleBrakeAxis,
+            [
+                InputAxisMinimum +
+                    (InputAxisMaximum - InputAxisMinimum) * .0025,
+                0,
+            ]);
+        ThrottleBrakePlot.Plugins.Add(_throttleBrakeReferenceLines);
+        _throttleBrakeTooltip =
+            new ChartCrosshairTooltipPlugin(BuildThrottleBrakeTooltip);
+        ThrottleBrakePlot.Plugins.Add(_throttleBrakeTooltip);
 
-        var throttle = ThrottleBrakePlot.Plot.Add.SignalXY(_times, _throttle);
-        StyleSeries(throttle, ThrottleColor, ConnectStyle.StepVertical);
-
-        var brake = ThrottleBrakePlot.Plot.Add.SignalXY(_times, _brake);
-        StyleSeries(brake, BrakeColor, ConnectStyle.StepVertical);
-        ConfigurePlot(
-            ThrottleBrakePlot,
-            InputAxisMinimum,
-            InputAxisMaximum,
-            InputAxisTicks,
-            value => $"{Math.Abs(value) * 100:0}%");
-        _throttleBrakeCrosshair = AddHoverCrosshair(ThrottleBrakePlot);
-        _throttleHoverMarker =
-            AddHoverMarker(ThrottleBrakePlot, ThrottleColor);
-        _brakeHoverMarker = AddHoverMarker(ThrottleBrakePlot, BrakeColor);
-
-        AddBottomBoundary(
+        _steeringTimeAxis = CreateTimeAxis();
+        _steeringAxis = new ChartAxis(
+            "steering", ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = InputAxisMinimum,
+            Maximum = InputAxisMaximum,
+            TickProvider = new FixedChartTickProvider(InputAxisTicks),
+            LabelFormatter = FormatSteering,
+        };
+        ConfigureChart(
             SteeringPlot,
-            InputAxisMinimum,
-            InputAxisMaximum);
-        _steeringCenterLine = SteeringPlot.Plot.Add.HorizontalLine(0);
-        _steeringCenterLine.LineWidth = 1;
+            _steeringTimeAxis,
+            _steeringAxis,
+            "Input/Steering");
+        _steeringSeries = SteeringPlot.Series.Add(new ChartLineSeriesOptions(
+            "steering", "time", "steering", SteeringColor,
+            MaximumPointCount: MaxChartPoints,
+            MaximumXSpan: RetentionSeconds));
+        _steeringReferenceLines = new InputReferenceLinesPlugin(
+            _steeringTimeAxis,
+            _steeringAxis,
+            [
+                InputAxisMinimum +
+                    (InputAxisMaximum - InputAxisMinimum) * .0025,
+                0,
+            ]);
+        SteeringPlot.Plugins.Add(_steeringReferenceLines);
+        _steeringTooltip =
+            new ChartCrosshairTooltipPlugin(BuildSteeringTooltip);
+        SteeringPlot.Plugins.Add(_steeringTooltip);
 
-        var steering = SteeringPlot.Plot.Add.SignalXY(_times, _steering);
-        StyleSeries(steering, SteeringColor, ConnectStyle.Straight);
-        ConfigurePlot(
-            SteeringPlot,
-            InputAxisMinimum,
-            InputAxisMaximum,
-            InputAxisTicks,
-            FormatSteering);
-        _steeringCrosshair = AddHoverCrosshair(SteeringPlot);
-        _steeringHoverMarker = AddHoverMarker(SteeringPlot, SteeringColor);
-
-#if DEBUG
-        AttachRenderProbe(GearPlot, "Input/Gear");
-        AttachRenderProbe(ThrottleBrakePlot, "Input/ThrottleBrake");
-        AttachRenderProbe(SteeringPlot, "Input/Steering");
-#endif
         ApplyTheme();
     }
 
-#if DEBUG
-    private static void AttachRenderProbe(WinUIPlot control, string name)
-    {
-        var sampleCount = 0;
-        var totalMilliseconds = 0d;
-        var maximumMilliseconds = 0d;
-        control.Plot.RenderManager.RenderFinished += (_, details) =>
+    private ChartAxis CreateTimeAxis() =>
+        new("time", ChartAxisOrientation.X, ChartAxisSide.Bottom)
         {
-            if (details.Count <= 1)
+            Minimum = 0,
+            Maximum = _windowSeconds,
+            TickProvider = new IntervalChartTickProvider(_windowSeconds / 6d),
+            LabelFormatter = FormatTime,
+            ShowGridLines = true,
+        };
+
+    private static void ConfigureChart(
+        GpuChart chart,
+        ChartAxis timeAxis,
+        ChartAxis valueAxis,
+        string diagnosticsName)
+    {
+        chart.Plugins.Add(new ChartBackgroundPlugin());
+        chart.Axes.Add(timeAxis);
+        chart.Axes.Add(valueAxis);
+        chart.RenderFailed += error =>
+            Debug.WriteLine($"[D3D11Chart] {diagnosticsName}: {error}");
+#if DEBUG
+        AttachRenderProbe(chart, diagnosticsName);
+#endif
+    }
+
+#if DEBUG
+    private static void AttachRenderProbe(GpuChart chart, string name)
+    {
+        var count = 0;
+        var total = 0d;
+        var maximum = 0d;
+        chart.DiagnosticsUpdated += details =>
+        {
+            var milliseconds = details.FrameMilliseconds;
+            count++;
+            total += milliseconds;
+            maximum = Math.Max(maximum, milliseconds);
+            if (count < 120)
             {
                 return;
             }
-
-            var milliseconds = details.Elapsed.TotalMilliseconds;
-            sampleCount++;
-            totalMilliseconds += milliseconds;
-            maximumMilliseconds = Math.Max(maximumMilliseconds, milliseconds);
-            if (sampleCount < 120)
-            {
-                return;
-            }
-
             Debug.WriteLine(
-                $"[ScottPlot] {name}: avg " +
-                $"{totalMilliseconds / sampleCount:0.00} ms, " +
-                $"max {maximumMilliseconds:0.00} ms, " +
-                $"{details.Count:N0} total renders");
-            sampleCount = 0;
-            totalMilliseconds = 0;
-            maximumMilliseconds = 0;
+                $"[D3D11Chart] {name}: avg {total / count:0.00} ms, " +
+                $"max {maximum:0.00} ms, {details.SourcePoints:N0} source points, " +
+                $"{details.SubmittedSegments:N0} segments, " +
+                $"LOD={details.UsedReduction}, WARP={details.UsingWarp}");
+            count = 0;
+            total = 0;
+            maximum = 0;
         };
     }
 #endif
 
-    private static void StyleSeries(
-        SignalXY series,
-        ScottPlot.Color color,
-        ConnectStyle connectStyle)
-    {
-        series.Color = color;
-        series.LineWidth = 2;
-        series.MarkerSize = 0;
-        series.ConnectStyle = connectStyle;
-    }
+    private void OnInputTelemetryChanged() => QueueRefresh();
 
-    private void AddBottomBoundary(
-        WinUIPlot plotControl,
-        double yMinimum,
-        double yMaximum)
-    {
-        const double insetFraction = .0025;
-        var y = yMinimum + (yMaximum - yMinimum) * insetFraction;
-        var boundary = plotControl.Plot.Add.HorizontalLine(y);
-        boundary.EnableAutoscale = false;
-        boundary.LineWidth = .75f;
-        _bottomBoundaries.Add(boundary);
-    }
+    private void OnTimelineReset(TimelineResetReason reason) => QueueRefresh();
 
-    private static Crosshair AddHoverCrosshair(WinUIPlot plotControl)
+    private void QueueRefresh()
     {
-        var crosshair = plotControl.Plot.Add.Crosshair(0, 0);
-        crosshair.EnableAutoscale = false;
-        crosshair.IsVisible = false;
-        crosshair.LineWidth = 1;
-        crosshair.LinePattern = HoverCrosshairPattern;
-        crosshair.MarkerSize = 0;
-        return crosshair;
-    }
-
-    private static Marker AddHoverMarker(
-        WinUIPlot plotControl,
-        ScottPlot.Color color)
-    {
-        var marker = plotControl.Plot.Add.Marker(
-            0,
-            0,
-            MarkerShape.OpenCircle,
-            7,
-            color);
-        marker.MarkerLineWidth = 2;
-        marker.IsVisible = false;
-        return marker;
-    }
-
-    private void ConfigurePlot(
-        WinUIPlot plotControl,
-        double yMin,
-        double yMax,
-        double[] yTicks,
-        Func<double, string> yFormatter)
-    {
-        var plot = plotControl.Plot;
-        plotControl.UserInputProcessor.Disable();
-        plot.Axes.SetLimits(0, 30, yMin, yMax);
-        plot.Axes.Left.SetTicks(
-            yTicks,
-            yTicks.Select(yFormatter).ToArray());
-        ConfigureTimeTicks(plotControl, _windowSeconds);
-        plot.Axes.Top.IsVisible = false;
-        plot.Axes.Right.IsVisible = false;
-        plot.Axes.Margins(0, 0, 0, 0);
-        plot.Grid.IsVisible = true;
-        plot.Grid.YAxisStyle.IsVisible = false;
-        plot.Grid.MajorLineWidth = 1;
-        plot.Grid.MinorLineWidth = 0;
-        StyleAxis(plot.Axes.Left);
-        StyleAxis(plot.Axes.Bottom);
-    }
-
-    private static void ConfigureTimeTicks(
-        WinUIPlot plotControl,
-        int windowSeconds)
-    {
-        plotControl.Plot.Axes.Bottom.TickGenerator =
-            new ScottPlot.TickGenerators.NumericFixedInterval(
-                windowSeconds / 6d)
-            {
-                LabelFormatter = FormatTime,
-            };
-    }
-
-    private static void StyleAxis(IAxis axis)
-    {
-        axis.FrameLineStyle.Width = .75f;
-        axis.MajorTickStyle.Length = 3;
-        axis.MajorTickStyle.Width = .75f;
-        axis.MinorTickStyle.Length = 0;
-        axis.TickLabelStyle.FontName = "Segoe UI Variable Text";
-        axis.TickLabelStyle.FontSize = 12;
-        axis.TickLabelStyle.Bold = false;
-    }
-
-    private void OnInputTelemetryChanged()
-    {
-        if (!_isLoaded)
+        if (!_isLoaded || Interlocked.Exchange(ref _refreshQueued, 1) != 0)
         {
             return;
         }
-
-        DispatcherQueue.TryEnqueue(RefreshFromStore);
-    }
-
-    private void OnTimelineReset(TimelineResetReason reason)
-    {
-        if (!_isLoaded)
+        DispatcherQueue.TryEnqueue(() =>
         {
-            return;
-        }
-
-        DispatcherQueue.TryEnqueue(RefreshFromStore);
+            Interlocked.Exchange(ref _refreshQueued, 0);
+            RefreshFromStore();
+        });
     }
 
     private void OnChartWindowChanged(int seconds)
     {
         _windowSeconds = seconds;
-        ConfigureTimeTicks(GearPlot, seconds);
-        ConfigureTimeTicks(ThrottleBrakePlot, seconds);
-        ConfigureTimeTicks(SteeringPlot, seconds);
+        var tickProvider = new IntervalChartTickProvider(seconds / 6d);
+        foreach (var axis in new[]
+                 {
+                     _gearTimeAxis,
+                     _throttleBrakeTimeAxis,
+                     _steeringTimeAxis,
+                 })
+        {
+            axis.TickProvider = tickProvider;
+        }
         if (_isLoaded)
         {
             RefreshFromStore();
@@ -334,6 +296,7 @@ public sealed partial class InputsPage : Page
             ClearData();
         }
 
+        var firstNewIndex = _times.Count;
         foreach (var sample in read.Samples)
         {
             _times.Add(sample.SessionTime);
@@ -342,6 +305,7 @@ public sealed partial class InputsPage : Page
             _brake.Add(-sample.Brake);
             _steering.Add(sample.Steering);
         }
+        AppendNewPoints(firstNewIndex);
 
         _storeCount = read.TotalCount;
         _bufferEpoch = read.BufferEpoch;
@@ -356,22 +320,83 @@ public sealed partial class InputsPage : Page
         var latest = hasData ? _times[^1] : 0;
         var xMin = Math.Max(0, latest - _windowSeconds);
         var xMax = Math.Max(_windowSeconds, latest);
-        SetPlotLimits(GearPlot, xMin, xMax, 0.5, 8.5);
-        SetPlotLimits(
-            ThrottleBrakePlot,
-            xMin,
-            xMax,
-            InputAxisMinimum,
-            InputAxisMaximum);
-        SetPlotLimits(
-            SteeringPlot,
-            xMin,
-            xMax,
-            InputAxisMinimum,
-            InputAxisMaximum);
-        GearPlot.Refresh();
-        ThrottleBrakePlot.Refresh();
-        SteeringPlot.Refresh();
+        SetTimeRange(_gearTimeAxis, xMin, xMax);
+        SetTimeRange(_throttleBrakeTimeAxis, xMin, xMax);
+        SetTimeRange(_steeringTimeAxis, xMin, xMax);
+        GearPlot.Invalidate();
+        ThrottleBrakePlot.Invalidate();
+        SteeringPlot.Invalidate();
+    }
+
+    private void AppendNewPoints(int firstNewIndex)
+    {
+        var count = _times.Count - firstNewIndex;
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _gearSeries.Append(BuildHorizontalStepPoints(
+            _gear, firstNewIndex, count));
+        _throttleSeries.Append(BuildVerticalStepPoints(
+            _throttle, firstNewIndex, count));
+        _brakeSeries.Append(BuildVerticalStepPoints(
+            _brake, firstNewIndex, count));
+
+        var steering = new ChartPoint[count];
+        for (var index = 0; index < count; index++)
+        {
+            var sourceIndex = firstNewIndex + index;
+            steering[index] = new ChartPoint(
+                _times[sourceIndex], _steering[sourceIndex]);
+        }
+        _steeringSeries.Append(steering);
+    }
+
+    private ChartPoint[] BuildHorizontalStepPoints(
+        IReadOnlyList<double> values,
+        int firstNewIndex,
+        int count)
+    {
+        var points = new ChartPoint[
+            count * 2 - (firstNewIndex == 0 ? 1 : 0)];
+        var destination = 0;
+        for (var index = firstNewIndex;
+             index < firstNewIndex + count;
+             index++)
+        {
+            if (index > 0)
+            {
+                points[destination++] =
+                    new ChartPoint(_times[index], values[index - 1]);
+            }
+            points[destination++] =
+                new ChartPoint(_times[index], values[index]);
+        }
+        return points;
+    }
+
+    private ChartPoint[] BuildVerticalStepPoints(
+        IReadOnlyList<double> values,
+        int firstNewIndex,
+        int count)
+    {
+        var points = new ChartPoint[
+            count * 2 - (firstNewIndex == 0 ? 1 : 0)];
+        var destination = 0;
+        for (var index = firstNewIndex;
+             index < firstNewIndex + count;
+             index++)
+        {
+            if (index > 0)
+            {
+                points[destination++] =
+                    new ChartPoint(_times[index - 1], values[index]);
+            }
+            points[destination++] =
+                new ChartPoint(_times[index], values[index]);
+        }
+        return points;
     }
 
     private void ClearData()
@@ -381,18 +406,17 @@ public sealed partial class InputsPage : Page
         _throttle.Clear();
         _brake.Clear();
         _steering.Clear();
+        _gearSeries.Clear();
+        _throttleSeries.Clear();
+        _brakeSeries.Clear();
+        _steeringSeries.Clear();
         _storeCount = 0;
-        HideTooltips();
     }
 
-    private static void SetPlotLimits(
-        WinUIPlot plotControl,
-        double xMin,
-        double xMax,
-        double yMin,
-        double yMax)
+    private static void SetTimeRange(ChartAxis axis, double minimum, double maximum)
     {
-        plotControl.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
+        axis.Minimum = minimum;
+        axis.Maximum = maximum;
     }
 
     private void OnActualThemeChanged(FrameworkElement sender, object args)
@@ -400,9 +424,9 @@ public sealed partial class InputsPage : Page
         ApplyTheme();
         if (_isLoaded)
         {
-            GearPlot.Refresh();
-            ThrottleBrakePlot.Refresh();
-            SteeringPlot.Refresh();
+            GearPlot.Invalidate();
+            ThrottleBrakePlot.Invalidate();
+            SteeringPlot.Invalidate();
         }
     }
 
@@ -414,241 +438,143 @@ public sealed partial class InputsPage : Page
         }
 
         var dark = ActualTheme == ElementTheme.Dark;
-        var transparent = ScottPlot.Color.FromHex("#00000000");
-        var axes = ScottPlot.Color.FromHex(dark ? "#7C8098" : "#6B7280");
-        var grid = ScottPlot.Color.FromHex(dark ? "#FFFFFF" : "#000000")
-            .WithAlpha(dark ? .05 : .045);
-        var centerLine = axes.WithAlpha(dark ? .42 : .35);
-        var crosshair = axes.WithAlpha(dark ? .7 : .6);
-        if (_throttleCenterLine is not null)
-        {
-            _throttleCenterLine.Color = centerLine;
-        }
-        if (_steeringCenterLine is not null)
-        {
-            _steeringCenterLine.Color = centerLine;
-        }
-        foreach (var boundary in _bottomBoundaries)
-        {
-            boundary.Color = axes;
-        }
-        foreach (var hoverCrosshair in new[]
+        var axes = dark
+            ? UiColor.FromArgb(255, 124, 128, 152)
+            : UiColor.FromArgb(255, 107, 114, 128);
+        var grid = dark
+            ? UiColor.FromArgb(10, 255, 255, 255)
+            : UiColor.FromArgb(18, 0, 0, 0);
+        var centerLine = dark
+            ? UiColor.FromArgb(107, 124, 128, 152)
+            : UiColor.FromArgb(89, 107, 114, 128);
+
+        foreach (var axis in new[]
                  {
-                     _gearCrosshair,
-                     _throttleBrakeCrosshair,
-                     _steeringCrosshair,
+                     _gearTimeAxis,
+                     _throttleBrakeTimeAxis,
+                     _steeringTimeAxis,
+                     _gearAxis,
+                     _throttleBrakeAxis,
+                     _steeringAxis,
                  })
         {
-            if (hoverCrosshair is not null)
-            {
-                hoverCrosshair.LineColor = crosshair;
-            }
+            axis.Color = axes;
         }
-        foreach (var control in new[]
+        foreach (var chart in new[]
                  {
-                     GearPlot, ThrottleBrakePlot, SteeringPlot,
+                     GearPlot,
+                     ThrottleBrakePlot,
+                     SteeringPlot,
                  })
         {
-            var plot = control.Plot;
-            plot.FigureBackground.Color = transparent;
-            plot.DataBackground.Color = transparent;
-            plot.Axes.Color(axes);
-            plot.Grid.MajorLineColor = grid;
+            chart.GridColor = grid;
         }
+        _gearReferenceLines.Color = axes;
+        _throttleBrakeReferenceLines.Color = centerLine;
+        _steeringReferenceLines.Color = centerLine;
+        _gearTooltip.ApplyTheme(dark);
+        _throttleBrakeTooltip.ApplyTheme(dark);
+        _steeringTooltip.ApplyTheme(dark);
     }
 
-    private void OnGearPointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
+    private ChartTooltipData? BuildGearTooltip(double x)
     {
-        if (!TryGetNearestIndex(
-                GearPlot,
-                args,
-                out var index,
-                out var position,
-                out var pointerCoordinates))
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            return;
+            return null;
         }
-        GearTooltipTimeText.Text = FormatTime(_times[index]);
-        GearTooltipValueRun.Text = $" {Math.Round(_gear[index])}";
-        ShowTooltip(GearTooltip, GearPlot, position);
-        ShowCrosshair(_gearCrosshair, pointerCoordinates);
-        ShowMarker(_gearHoverMarker, _times[index], _gear[index]);
-        GearPlot.Refresh();
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "Gear", $"{Math.Round(_gear[index])}", GearColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index], _gear[index], "gear", GearColor),
+            ]);
     }
 
-    private void OnThrottleBrakePointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
+    private ChartTooltipData? BuildThrottleBrakeTooltip(double x)
     {
-        if (!TryGetNearestIndex(
-                ThrottleBrakePlot,
-                args,
-                out var index,
-                out var position,
-                out var pointerCoordinates))
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            return;
+            return null;
         }
-        ThrottleBrakeTooltipTimeText.Text = FormatTime(_times[index]);
-        ThrottleBrakeTooltipThrottleValueRun.Text =
-            $" {Math.Round(_throttle[index] * 100)}%";
-        ThrottleBrakeTooltipBrakeValueRun.Text =
-            $" {Math.Round(Math.Abs(_brake[index]) * 100)}%";
-        ShowTooltip(ThrottleBrakeTooltip, ThrottleBrakePlot, position);
-        ShowCrosshair(_throttleBrakeCrosshair, pointerCoordinates);
-        ShowMarker(_throttleHoverMarker, _times[index], _throttle[index]);
-        ShowMarker(_brakeHoverMarker, _times[index], _brake[index]);
-        ThrottleBrakePlot.Refresh();
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "Throttle",
+                        $"{Math.Round(_throttle[index] * 100)}%",
+                        ThrottleColor),
+                    new ChartTooltipEntry(
+                        "Brake",
+                        $"{Math.Round(Math.Abs(_brake[index]) * 100)}%",
+                        BrakeColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index], _throttle[index], "input", ThrottleColor),
+                new ChartTooltipMarker(
+                    _times[index], _brake[index], "input", BrakeColor),
+            ]);
     }
 
-    private void OnSteeringPointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
+    private ChartTooltipData? BuildSteeringTooltip(double x)
     {
-        if (!TryGetNearestIndex(
-                SteeringPlot,
-                args,
-                out var index,
-                out var position,
-                out var pointerCoordinates))
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            return;
+            return null;
         }
-        SteeringTooltipTimeText.Text = FormatTime(_times[index]);
-        SteeringTooltipValueRun.Text =
-            $" {FormatSteering(_steering[index])}";
-        ShowTooltip(SteeringTooltip, SteeringPlot, position);
-        ShowCrosshair(_steeringCrosshair, pointerCoordinates);
-        ShowMarker(_steeringHoverMarker, _times[index], _steering[index]);
-        SteeringPlot.Refresh();
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "Steering",
+                        FormatSteering(_steering[index]),
+                        SteeringColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index],
+                    _steering[index],
+                    "steering",
+                    SteeringColor),
+            ]);
     }
 
-    private bool TryGetNearestIndex(
-        WinUIPlot plot,
-        PointerRoutedEventArgs args,
-        out int index,
-        out Windows.Foundation.Point position,
-        out Coordinates pointerCoordinates)
+    private int NearestIndex(double sessionTime)
     {
-        position = args.GetCurrentPoint(plot).Position;
-        pointerCoordinates = default;
-        index = -1;
         if (_times.Count == 0)
         {
-            return false;
+            return -1;
         }
-
-        var scale = XamlRoot?.RasterizationScale ?? 1;
-        pointerCoordinates = plot.Plot.GetCoordinates(
-            new Pixel(
-                (float)(position.X * scale),
-                (float)(position.Y * scale)));
-        var candidate = _times.BinarySearch(pointerCoordinates.X);
+        var candidate = _times.BinarySearch(sessionTime);
         if (candidate < 0)
         {
             candidate = ~candidate;
         }
         if (candidate >= _times.Count)
         {
-            candidate = _times.Count - 1;
+            return _times.Count - 1;
         }
         if (candidate > 0 &&
-            Math.Abs(_times[candidate - 1] - pointerCoordinates.X) <
-            Math.Abs(_times[candidate] - pointerCoordinates.X))
+            sessionTime - _times[candidate - 1] <=
+            _times[candidate] - sessionTime)
         {
             candidate--;
         }
-        index = candidate;
-        return true;
-    }
-
-    private static void ShowCrosshair(
-        Crosshair? crosshair,
-        Coordinates coordinates)
-    {
-        if (crosshair is null)
-        {
-            return;
-        }
-        crosshair.Position = coordinates;
-        crosshair.IsVisible = true;
-    }
-
-    private static void ShowMarker(
-        Marker? marker,
-        double x,
-        double y)
-    {
-        if (marker is null)
-        {
-            return;
-        }
-        marker.Position = new Coordinates(x, y);
-        marker.IsVisible = true;
-    }
-
-    private static void ShowTooltip(
-        Border tooltip,
-        FrameworkElement plot,
-        Windows.Foundation.Point position)
-    {
-        tooltip.Visibility = Visibility.Visible;
-        var left = Math.Clamp(
-            position.X + 12,
-            4,
-            Math.Max(4, plot.ActualWidth - tooltip.ActualWidth - 8));
-        var top = Math.Clamp(
-            position.Y + 12,
-            4,
-            Math.Max(4, plot.ActualHeight - tooltip.ActualHeight - 8));
-        Canvas.SetLeft(tooltip, left);
-        Canvas.SetTop(tooltip, top);
-    }
-
-    private void OnPlotPointerExited(
-        object sender,
-        PointerRoutedEventArgs args) =>
-        HideTooltips();
-
-    private void HideTooltips()
-    {
-        GearTooltip.Visibility = Visibility.Collapsed;
-        ThrottleBrakeTooltip.Visibility = Visibility.Collapsed;
-        SteeringTooltip.Visibility = Visibility.Collapsed;
-        var refreshGear = _gearCrosshair?.IsVisible == true;
-        var refreshThrottleBrake = _throttleBrakeCrosshair?.IsVisible == true;
-        var refreshSteering = _steeringCrosshair?.IsVisible == true;
-        SetHoverVisibility(_gearCrosshair, false);
-        SetHoverVisibility(_throttleBrakeCrosshair, false);
-        SetHoverVisibility(_steeringCrosshair, false);
-        SetHoverVisibility(_gearHoverMarker, false);
-        SetHoverVisibility(_throttleHoverMarker, false);
-        SetHoverVisibility(_brakeHoverMarker, false);
-        SetHoverVisibility(_steeringHoverMarker, false);
-        if (refreshGear)
-        {
-            GearPlot.Refresh();
-        }
-        if (refreshThrottleBrake)
-        {
-            ThrottleBrakePlot.Refresh();
-        }
-        if (refreshSteering)
-        {
-            SteeringPlot.Refresh();
-        }
-    }
-
-    private static void SetHoverVisibility(
-        IPlottable? plottable,
-        bool isVisible)
-    {
-        if (plottable is not null)
-        {
-            plottable.IsVisible = isVisible;
-        }
+        return candidate;
     }
 
     private static string FormatTime(double seconds)
@@ -659,10 +585,53 @@ public sealed partial class InputsPage : Page
 
     private static string FormatSteering(double value)
     {
-        if (Math.Abs(value) < 0.005)
+        if (Math.Abs(value) < .005)
         {
             return "0%";
         }
         return $"{Math.Abs(value) * 100:0}% {(value < 0 ? "L" : "R")}";
+    }
+
+    private sealed class InputReferenceLinesPlugin(
+        ChartAxis xAxis,
+        ChartAxis yAxis,
+        IReadOnlyList<double> values) : IChartPlugin
+    {
+        private readonly ChartAxis _xAxis = xAxis;
+        private readonly ChartAxis _yAxis = yAxis;
+        private readonly IReadOnlyList<double> _values = values;
+        private ChartPluginContext? _context;
+        private UiColor _color;
+
+        public UiColor Color
+        {
+            get => _color;
+            set
+            {
+                if (_color == value)
+                {
+                    return;
+                }
+                _color = value;
+                _context?.InvalidateOverlay();
+            }
+        }
+
+        public void Attach(ChartPluginContext context) => _context = context;
+
+        public void Detach() => _context = null;
+
+        public void BuildOverlay(ChartOverlayBuilder builder)
+        {
+            foreach (var value in _values)
+            {
+                builder.Add(new ChartOverlayLine(
+                    new Point(_xAxis.Minimum, value),
+                    new Point(_xAxis.Maximum, value),
+                    Color,
+                    value == 0 ? 1 : .75,
+                    YAxisKey: _yAxis.Key));
+            }
+        }
     }
 }

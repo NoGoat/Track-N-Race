@@ -154,6 +154,7 @@ public sealed class GpuChart : Grid, IDisposable
     private readonly Dictionary<string, Brush> _resourceBrushes = [];
     private readonly Dictionary<string, Style> _themeBackgroundStyles = [];
     private readonly HashSet<string> _failedThemeBackgroundStyles = [];
+    private Border? _tooltipElement;
     private readonly ChartPluginContext _pluginContext;
     private bool _loaded;
     private bool _attached;
@@ -648,7 +649,17 @@ public sealed class GpuChart : Grid, IDisposable
 
     private void RenderPluginOverlays()
     {
-        _overlay.Children.Clear();
+        for (var index = _overlay.Children.Count - 1; index >= 0; index--)
+        {
+            if (!ReferenceEquals(_overlay.Children[index], _tooltipElement))
+            {
+                _overlay.Children.RemoveAt(index);
+            }
+        }
+        if (_tooltipElement is not null)
+        {
+            _tooltipElement.Visibility = Visibility.Collapsed;
+        }
         var builder = new ChartOverlayBuilder();
         foreach (var plugin in Plugins)
         {
@@ -779,22 +790,33 @@ public sealed class GpuChart : Grid, IDisposable
             content.Children.Add(row);
         }
 
-        var tooltip = new Border
+        var tooltip = _tooltipElement;
+        if (tooltip is null)
         {
-            BorderBrush = new SolidColorBrush(command.Border),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(10, 6, 10, 6),
-            Child = content,
-        };
+            tooltip = new Border
+            {
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 6, 10, 6),
+                IsHitTestVisible = false,
+            };
+            Canvas.SetZIndex(tooltip, 1000);
+            _tooltipElement = tooltip;
+            _overlay.Children.Add(tooltip);
+        }
+        tooltip.Visibility = Visibility.Visible;
+        tooltip.BorderBrush = new SolidColorBrush(command.Border);
+        tooltip.Child = content;
         var backgroundStyle = ResolveThemeBackgroundStyle(
             command.BackgroundResourceKey);
         if (backgroundStyle is not null)
         {
+            tooltip.ClearValue(Border.BackgroundProperty);
             tooltip.Style = backgroundStyle;
         }
         else
         {
+            tooltip.Style = null;
             tooltip.Background = new SolidColorBrush(command.Background);
         }
         const double gap = 16;
@@ -823,7 +845,6 @@ public sealed class GpuChart : Grid, IDisposable
                 padding,
                 Math.Max(padding, _plotHost.ActualHeight -
                     desired.Height - padding)));
-        _overlay.Children.Add(tooltip);
     }
 
     private Brush? ResolveResourceBrush(string? key)

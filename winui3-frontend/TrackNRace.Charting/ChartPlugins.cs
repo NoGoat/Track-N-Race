@@ -280,7 +280,7 @@ public sealed class ChartCrosshairTooltipPlugin(
     public Color TooltipSecondaryForeground { get; set; } =
         Color.FromArgb(255, 160, 168, 184);
     public string TooltipBackgroundResourceKey { get; set; } =
-        "SolidBackgroundFillColorQuarternaryBrush";
+        "AcrylicBackgroundFillColorDefaultBrush";
 
     public void Attach(ChartPluginContext context)
     {
