@@ -123,6 +123,12 @@ internal sealed class NativeChartRenderer : IDisposable
         internal static extern int GetDiagnostics(
             ChartHandle chart, out NativeDiagnostics diagnostics);
 
+        [DllImport(
+            NativeLibrary,
+            EntryPoint = "tnr_chart_get_surface_generation",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern ulong GetSurfaceGeneration(ChartHandle chart);
+
         [DllImport(NativeLibrary, EntryPoint = "tnr_chart_copy_last_error",
             CallingConvention = CallingConvention.Cdecl)]
         internal static extern nuint CopyLastError(
@@ -136,6 +142,9 @@ internal sealed class NativeChartRenderer : IDisposable
 
     private readonly ChartHandle _handle;
     private bool _disposed;
+
+    public ulong SurfaceGeneration =>
+        NativeMethods.GetSurfaceGeneration(_handle);
 
     public NativeChartRenderer()
     {

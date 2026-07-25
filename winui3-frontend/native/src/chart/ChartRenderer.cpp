@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -207,6 +208,234 @@ std::string wideToUtf8(const std::wstring& value) {
     return result;
 }
 
+// D3D11 devices are designed to own resources for many render targets. Keep
+// the device, immediate context, and immutable pipeline state process-wide;
+// each Renderer below still owns its swap chain and dynamic upload buffers.
+class SharedGraphics {
+public:
+    static SharedGraphics& instance() {
+        static SharedGraphics graphics;
+        return graphics;
+    }
+
+    std::unique_lock<std::recursive_mutex> lock() {
+        return std::unique_lock(mutex_);
+    }
+
+    void ensure() {
+        if (device_) {
+            return;
+        }
+        try {
+            create(false);
+        } catch (...) {
+            release();
+            throw;
+        }
+    }
+
+    void recreate(const bool forceWarp) {
+        release();
+        try {
+            create(forceWarp);
+        } catch (...) {
+            release();
+            throw;
+        }
+    }
+
+    ID3D11Device* device() const { return device_.Get(); }
+    ID3D11DeviceContext* context() const { return context_.Get(); }
+    ID3D11VertexShader* vertexShader() const { return vertexShader_.Get(); }
+    ID3D11PixelShader* pixelShader() const { return pixelShader_.Get(); }
+    ID3D11InputLayout* inputLayout() const { return inputLayout_.Get(); }
+    ID3D11RasterizerState* rasterizerState() const {
+        return rasterizerState_.Get();
+    }
+    ID3D11BlendState* blendState() const { return blendState_.Get(); }
+    std::uint64_t generation() const { return generation_; }
+    bool usingWarp() const { return usingWarp_; }
+    const std::string& adapterName() const { return adapterName_; }
+
+private:
+    void create(const bool forceWarp) {
+        constexpr D3D_FEATURE_LEVEL levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+        auto driver = forceWarp
+            ? D3D_DRIVER_TYPE_WARP
+            : D3D_DRIVER_TYPE_HARDWARE;
+        auto result = D3D11CreateDevice(
+            nullptr,
+            driver,
+            nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            levels,
+            static_cast<UINT>(std::size(levels)),
+            D3D11_SDK_VERSION,
+            &device_,
+            nullptr,
+            &context_);
+        if (FAILED(result) && !forceWarp) {
+            driver = D3D_DRIVER_TYPE_WARP;
+            result = D3D11CreateDevice(
+                nullptr,
+                driver,
+                nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                levels,
+                static_cast<UINT>(std::size(levels)),
+                D3D11_SDK_VERSION,
+                &device_,
+                nullptr,
+                &context_);
+        }
+        check(result, "D3D11CreateDevice");
+        usingWarp_ = driver == D3D_DRIVER_TYPE_WARP;
+
+        ComPtr<IDXGIDevice> dxgiDevice;
+        check(device_.As(&dxgiDevice), "Query IDXGIDevice");
+        ComPtr<IDXGIAdapter> adapter;
+        check(dxgiDevice->GetAdapter(&adapter), "GetAdapter");
+        DXGI_ADAPTER_DESC description{};
+        check(adapter->GetDesc(&description), "Get adapter description");
+        adapterName_ = wideToUtf8(description.Description);
+
+        createPipeline();
+        ++generation_;
+    }
+
+    void createPipeline() {
+        ComPtr<ID3DBlob> vertexBlob;
+        ComPtr<ID3DBlob> pixelBlob;
+        ComPtr<ID3DBlob> errors;
+        auto result = D3DCompile(
+            ShaderSource,
+            sizeof(ShaderSource) - 1,
+            "TrackNRace.ChartRenderer",
+            nullptr,
+            nullptr,
+            "VSMain",
+            "vs_5_0",
+            D3DCOMPILE_OPTIMIZATION_LEVEL3,
+            0,
+            &vertexBlob,
+            &errors);
+        if (FAILED(result)) {
+            const auto message = errors
+                ? std::string(
+                    static_cast<const char*>(errors->GetBufferPointer()),
+                    errors->GetBufferSize())
+                : hresultMessage("Compile vertex shader", result);
+            throw std::runtime_error(message);
+        }
+        errors.Reset();
+        result = D3DCompile(
+            ShaderSource,
+            sizeof(ShaderSource) - 1,
+            "TrackNRace.ChartRenderer",
+            nullptr,
+            nullptr,
+            "PSMain",
+            "ps_5_0",
+            D3DCOMPILE_OPTIMIZATION_LEVEL3,
+            0,
+            &pixelBlob,
+            &errors);
+        if (FAILED(result)) {
+            const auto message = errors
+                ? std::string(
+                    static_cast<const char*>(errors->GetBufferPointer()),
+                    errors->GetBufferSize())
+                : hresultMessage("Compile pixel shader", result);
+            throw std::runtime_error(message);
+        }
+
+        check(
+            device_->CreateVertexShader(
+                vertexBlob->GetBufferPointer(),
+                vertexBlob->GetBufferSize(),
+                nullptr,
+                &vertexShader_),
+            "CreateVertexShader");
+        check(
+            device_->CreatePixelShader(
+                pixelBlob->GetBufferPointer(),
+                pixelBlob->GetBufferSize(),
+                nullptr,
+                &pixelShader_),
+            "CreatePixelShader");
+
+        const D3D11_INPUT_ELEMENT_DESC elements[] = {{
+            "INSTANCE_SEGMENT",
+            0,
+            DXGI_FORMAT_R32G32B32A32_FLOAT,
+            0,
+            0,
+            D3D11_INPUT_PER_INSTANCE_DATA,
+            1,
+        }};
+        check(
+            device_->CreateInputLayout(
+                elements,
+                1,
+                vertexBlob->GetBufferPointer(),
+                vertexBlob->GetBufferSize(),
+                &inputLayout_),
+            "CreateInputLayout");
+
+        D3D11_RASTERIZER_DESC rasterizer{};
+        rasterizer.FillMode = D3D11_FILL_SOLID;
+        rasterizer.CullMode = D3D11_CULL_NONE;
+        rasterizer.ScissorEnable = TRUE;
+        rasterizer.DepthClipEnable = TRUE;
+        check(
+            device_->CreateRasterizerState(
+                &rasterizer, &rasterizerState_),
+            "CreateRasterizerState");
+
+        D3D11_BLEND_DESC blend{};
+        blend.RenderTarget[0].BlendEnable = TRUE;
+        blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+        blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        blend.RenderTarget[0].RenderTargetWriteMask =
+            D3D11_COLOR_WRITE_ENABLE_ALL;
+        check(
+            device_->CreateBlendState(&blend, &blendState_),
+            "CreateBlendState");
+    }
+
+    void release() {
+        blendState_.Reset();
+        rasterizerState_.Reset();
+        inputLayout_.Reset();
+        pixelShader_.Reset();
+        vertexShader_.Reset();
+        context_.Reset();
+        device_.Reset();
+        adapterName_.clear();
+    }
+
+    std::recursive_mutex mutex_;
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<ID3D11VertexShader> vertexShader_;
+    ComPtr<ID3D11PixelShader> pixelShader_;
+    ComPtr<ID3D11InputLayout> inputLayout_;
+    ComPtr<ID3D11RasterizerState> rasterizerState_;
+    ComPtr<ID3D11BlendState> blendState_;
+    std::uint64_t generation_{};
+    bool usingWarp_{};
+    std::string adapterName_;
+};
+
 class Renderer {
 public:
     bool attach(IUnknown* compositor, IUnknown** compositionSurface) {
@@ -214,9 +443,12 @@ public:
             return fail("Compositor or composition-surface pointer was null.");
         }
         *compositionSurface = nullptr;
-        compositor_ = compositor;
-        if (!recoverDevice(false)) {
-            return false;
+        auto graphicsLock = graphics_.lock();
+        if (compositor_.Get() != compositor || !compositionSurface_) {
+            compositor_ = compositor;
+            if (!recoverDevice(false, false)) {
+                return false;
+            }
         }
         *compositionSurface = compositionSurface_.Get();
         (*compositionSurface)->AddRef();
@@ -234,6 +466,10 @@ public:
             return true;
         }
         return guard([&] {
+            auto graphicsLock = graphics_.lock();
+            if (!ensureCurrentDevice()) {
+                throw std::runtime_error(lastError_);
+            }
             renderTarget_.Reset();
             context_->OMSetRenderTargets(0, nullptr, nullptr);
             check(
@@ -391,9 +627,13 @@ public:
         if (!swapChain_ || !renderTarget_) {
             return true;
         }
+        auto graphicsLock = graphics_.lock();
+        if (!ensureCurrentDevice()) {
+            return false;
+        }
         const auto started = std::chrono::steady_clock::now();
         diagnostics_ = {};
-        diagnostics_.using_warp = usingWarp_ ? 1 : 0;
+        diagnostics_.using_warp = graphics_.usingWarp() ? 1 : 0;
         return guard([&] {
             const float clear[] = {
                 background_.r * background_.a,
@@ -448,7 +688,7 @@ public:
             if (presented == DXGI_ERROR_DEVICE_REMOVED ||
                 presented == DXGI_ERROR_DEVICE_RESET) {
                 ++deviceLossCount_;
-                if (!recoverDevice(deviceLossCount_ > 1)) {
+                if (!recoverDevice(deviceLossCount_ > 1, true)) {
                     throw std::runtime_error(lastError_);
                 }
             } else {
@@ -470,8 +710,13 @@ public:
         return lastError_;
     }
 
-    const std::string& adapterName() const {
-        return adapterName_;
+    std::string adapterName() const {
+        auto graphicsLock = graphics_.lock();
+        return graphics_.adapterName();
+    }
+
+    std::uint64_t surfaceGeneration() const {
+        return surfaceGeneration_;
     }
 
 private:
@@ -527,12 +772,28 @@ private:
         }
     }
 
-    bool recoverDevice(const bool forceWarp) {
+    bool ensureCurrentDevice() {
+        if (graphicsGeneration_ == graphics_.generation()) {
+            return true;
+        }
+        return recoverDevice(false, false);
+    }
+
+    bool recoverDevice(
+        const bool forceWarp,
+        const bool recreateSharedDevice) {
         return guard([&] {
             releaseDeviceResources();
-            createDevice(forceWarp);
-            createPipeline();
+            if (recreateSharedDevice) {
+                graphics_.recreate(forceWarp);
+            } else {
+                graphics_.ensure();
+            }
+            createDeviceReferences();
+            createPerChartPipelineResources();
             createSwapChain();
+            graphicsGeneration_ = graphics_.generation();
+            ++surfaceGeneration_;
         });
     }
 
@@ -552,132 +813,17 @@ private:
         segmentCapacity_ = 0;
     }
 
-    void createDevice(const bool forceWarp) {
-        constexpr D3D_FEATURE_LEVEL levels[] = {
-            D3D_FEATURE_LEVEL_11_1,
-            D3D_FEATURE_LEVEL_11_0,
-            D3D_FEATURE_LEVEL_10_1,
-            D3D_FEATURE_LEVEL_10_0,
-        };
-        auto driver = forceWarp
-            ? D3D_DRIVER_TYPE_WARP
-            : D3D_DRIVER_TYPE_HARDWARE;
-        auto result = D3D11CreateDevice(
-            nullptr,
-            driver,
-            nullptr,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            levels,
-            static_cast<UINT>(std::size(levels)),
-            D3D11_SDK_VERSION,
-            &device_,
-            nullptr,
-            &context_);
-        if (FAILED(result) && !forceWarp) {
-            driver = D3D_DRIVER_TYPE_WARP;
-            result = D3D11CreateDevice(
-                nullptr,
-                driver,
-                nullptr,
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                levels,
-                static_cast<UINT>(std::size(levels)),
-                D3D11_SDK_VERSION,
-                &device_,
-                nullptr,
-                &context_);
-        }
-        check(result, "D3D11CreateDevice");
-        usingWarp_ = driver == D3D_DRIVER_TYPE_WARP;
-
-        ComPtr<IDXGIDevice> dxgiDevice;
-        check(device_.As(&dxgiDevice), "Query IDXGIDevice");
-        ComPtr<IDXGIAdapter> adapter;
-        check(dxgiDevice->GetAdapter(&adapter), "GetAdapter");
-        DXGI_ADAPTER_DESC description{};
-        check(adapter->GetDesc(&description), "Get adapter description");
-        adapterName_ = wideToUtf8(description.Description);
+    void createDeviceReferences() {
+        device_ = graphics_.device();
+        context_ = graphics_.context();
+        vertexShader_ = graphics_.vertexShader();
+        pixelShader_ = graphics_.pixelShader();
+        inputLayout_ = graphics_.inputLayout();
+        rasterizerState_ = graphics_.rasterizerState();
+        blendState_ = graphics_.blendState();
     }
 
-    void createPipeline() {
-        ComPtr<ID3DBlob> vertexBlob;
-        ComPtr<ID3DBlob> pixelBlob;
-        ComPtr<ID3DBlob> errors;
-        auto result = D3DCompile(
-            ShaderSource,
-            sizeof(ShaderSource) - 1,
-            "TrackNRace.ChartRenderer",
-            nullptr,
-            nullptr,
-            "VSMain",
-            "vs_5_0",
-            D3DCOMPILE_OPTIMIZATION_LEVEL3,
-            0,
-            &vertexBlob,
-            &errors);
-        if (FAILED(result)) {
-            const auto message = errors
-                ? std::string(
-                    static_cast<const char*>(errors->GetBufferPointer()),
-                    errors->GetBufferSize())
-                : hresultMessage("Compile vertex shader", result);
-            throw std::runtime_error(message);
-        }
-        errors.Reset();
-        result = D3DCompile(
-            ShaderSource,
-            sizeof(ShaderSource) - 1,
-            "TrackNRace.ChartRenderer",
-            nullptr,
-            nullptr,
-            "PSMain",
-            "ps_5_0",
-            D3DCOMPILE_OPTIMIZATION_LEVEL3,
-            0,
-            &pixelBlob,
-            &errors);
-        if (FAILED(result)) {
-            const auto message = errors
-                ? std::string(
-                    static_cast<const char*>(errors->GetBufferPointer()),
-                    errors->GetBufferSize())
-                : hresultMessage("Compile pixel shader", result);
-            throw std::runtime_error(message);
-        }
-
-        check(
-            device_->CreateVertexShader(
-                vertexBlob->GetBufferPointer(),
-                vertexBlob->GetBufferSize(),
-                nullptr,
-                &vertexShader_),
-            "CreateVertexShader");
-        check(
-            device_->CreatePixelShader(
-                pixelBlob->GetBufferPointer(),
-                pixelBlob->GetBufferSize(),
-                nullptr,
-                &pixelShader_),
-            "CreatePixelShader");
-
-        const D3D11_INPUT_ELEMENT_DESC elements[] = {{
-            "INSTANCE_SEGMENT",
-            0,
-            DXGI_FORMAT_R32G32B32A32_FLOAT,
-            0,
-            0,
-            D3D11_INPUT_PER_INSTANCE_DATA,
-            1,
-        }};
-        check(
-            device_->CreateInputLayout(
-                elements,
-                1,
-                vertexBlob->GetBufferPointer(),
-                vertexBlob->GetBufferSize(),
-                &inputLayout_),
-            "CreateInputLayout");
-
+    void createPerChartPipelineResources() {
         D3D11_BUFFER_DESC constants{};
         constants.ByteWidth = sizeof(DrawConstants);
         constants.Usage = D3D11_USAGE_DYNAMIC;
@@ -686,30 +832,6 @@ private:
         check(
             device_->CreateBuffer(&constants, nullptr, &constantBuffer_),
             "Create constant buffer");
-
-        D3D11_RASTERIZER_DESC rasterizer{};
-        rasterizer.FillMode = D3D11_FILL_SOLID;
-        rasterizer.CullMode = D3D11_CULL_NONE;
-        rasterizer.ScissorEnable = TRUE;
-        rasterizer.DepthClipEnable = TRUE;
-        check(
-            device_->CreateRasterizerState(
-                &rasterizer, &rasterizerState_),
-            "CreateRasterizerState");
-
-        D3D11_BLEND_DESC blend{};
-        blend.RenderTarget[0].BlendEnable = TRUE;
-        blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-        blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-        blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-        blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-        blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-        blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-        blend.RenderTarget[0].RenderTargetWriteMask =
-            D3D11_COLOR_WRITE_ENABLE_ALL;
-        check(
-            device_->CreateBlendState(&blend, &blendState_),
-            "CreateBlendState");
     }
 
     void createSwapChain() {
@@ -892,6 +1014,7 @@ private:
             6, static_cast<UINT>(segments.size()), 0, 0);
     }
 
+    SharedGraphics& graphics_{SharedGraphics::instance()};
     ComPtr<IUnknown> compositor_;
     ComPtr<IUnknown> compositionSurface_;
     ComPtr<ID3D11Device> device_;
@@ -920,8 +1043,8 @@ private:
     std::uint32_t height_{1};
     float scale_{1};
     int deviceLossCount_{};
-    bool usingWarp_{};
-    std::string adapterName_;
+    std::uint64_t graphicsGeneration_{};
+    std::uint64_t surfaceGeneration_{};
     std::string lastError_;
     tnr_chart_diagnostics diagnostics_{};
 };
@@ -1100,6 +1223,10 @@ int tnr_chart_get_diagnostics(
     }
     *diagnostics = renderer(chart)->diagnostics();
     return 1;
+}
+
+std::uint64_t tnr_chart_get_surface_generation(void* chart) {
+    return chart ? renderer(chart)->surfaceGeneration() : 0;
 }
 
 std::size_t tnr_chart_copy_last_error(

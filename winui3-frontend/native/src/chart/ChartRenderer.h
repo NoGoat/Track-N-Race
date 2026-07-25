@@ -77,6 +77,7 @@ TNR_CHART_API int tnr_chart_clear_series(
 TNR_CHART_API int tnr_chart_render(void* chart);
 TNR_CHART_API int tnr_chart_get_diagnostics(
     void* chart, tnr_chart_diagnostics* diagnostics);
+TNR_CHART_API std::uint64_t tnr_chart_get_surface_generation(void* chart);
 TNR_CHART_API std::size_t tnr_chart_copy_last_error(
     void* chart, char* buffer, std::size_t buffer_size);
 TNR_CHART_API std::size_t tnr_chart_copy_adapter_name(

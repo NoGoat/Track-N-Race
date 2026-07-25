@@ -87,6 +87,21 @@ int main() {
     assert(compositor.hasSwapChain());
     assert(surface != nullptr);
     surface->Release();
+    assert(tnr_chart_get_surface_generation(chart) > 0);
+
+    // Multiple chart instances must coexist on the process-wide D3D device
+    // while retaining independent swap chains and composition surfaces.
+    auto* secondChart = tnr_chart_create();
+    assert(secondChart != nullptr);
+    TestCompositor secondCompositor;
+    IUnknown* secondSurface{};
+    assert(tnr_chart_attach(
+        secondChart,
+        &secondCompositor,
+        reinterpret_cast<void**>(&secondSurface)) == 1);
+    assert(secondCompositor.hasSwapChain());
+    assert(secondSurface != nullptr);
+    secondSurface->Release();
     assert(tnr_chart_set_x_range(chart, 0, 30) == 1);
 
     const auto series = tnr_chart_add_series(
@@ -112,5 +127,8 @@ int main() {
     assert(tnr_chart_clear_series(chart, series) == 1);
     assert(tnr_chart_remove_series(chart, series) == 1);
     assert(tnr_chart_remove_series(chart, series) == 0);
+    assert(tnr_chart_render(chart) == 1);
+    assert(tnr_chart_render(secondChart) == 1);
+    tnr_chart_destroy(secondChart);
     tnr_chart_destroy(chart);
 }

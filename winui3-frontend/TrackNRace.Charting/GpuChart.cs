@@ -165,6 +165,7 @@ public sealed class GpuChart : Grid, IDisposable
     private uint _pixelWidth = 1;
     private uint _pixelHeight = 1;
     private float _scale = 1;
+    private ulong _surfaceGeneration;
     private Color _plotBackground = Color.FromArgb(0, 0, 0, 0);
     private Color _gridColor = Color.FromArgb(13, 255, 255, 255);
     private ICompositionSurface? _compositionSurface;
@@ -434,6 +435,7 @@ public sealed class GpuChart : Grid, IDisposable
                     .GetElementVisual(_compositionHost)
                     .Compositor;
                 _compositionSurface = _renderer.Attach(compositor);
+                _surfaceGeneration = _renderer.SurfaceGeneration;
                 _surfaceBrush = compositor.CreateSurfaceBrush(
                     _compositionSurface);
                 _surfaceBrush.Stretch = CompositionStretch.Fill;
@@ -599,12 +601,28 @@ public sealed class GpuChart : Grid, IDisposable
             RenderPluginOverlays();
 
             Diagnostics = _renderer.Render();
+            RefreshCompositionSurfaceIfNeeded();
             DiagnosticsUpdated?.Invoke(Diagnostics);
         }
         catch (Exception error)
         {
             RenderFailed?.Invoke(error);
         }
+    }
+
+    private void RefreshCompositionSurfaceIfNeeded()
+    {
+        var generation = _renderer.SurfaceGeneration;
+        if (generation == _surfaceGeneration || _surfaceBrush is null)
+        {
+            return;
+        }
+        var compositor = ElementCompositionPreview
+            .GetElementVisual(_compositionHost)
+            .Compositor;
+        _compositionSurface = _renderer.Attach(compositor);
+        _surfaceBrush.Surface = _compositionSurface;
+        _surfaceGeneration = _renderer.SurfaceGeneration;
     }
 
     private void RebuildAxisHosts()
