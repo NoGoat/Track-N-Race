@@ -63,7 +63,7 @@ struct PixelInput
 float2 ToClip(float2 value)
 {
     float x = ((value.x - xRange.x) / (xRange.y - xRange.x)) * 2.0 - 1.0;
-    float y = 1.0 - ((value.y - yRange.x) / (yRange.y - yRange.x)) * 2.0;
+    float y = ((value.y - yRange.x) / (yRange.y - yRange.x)) * 2.0 - 1.0;
     return float2(x, y);
 }
 

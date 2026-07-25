@@ -222,7 +222,9 @@ internal sealed record TelemetryReadResult(
     int TotalCount,
     long BufferEpoch,
     long TimelineRevision,
-    bool Reset);
+    bool Reset,
+    float? PlaybackLapStart,
+    int? PlaybackLapNumber);
 
 internal sealed record DamageRowData
 {
@@ -427,6 +429,8 @@ internal sealed class TelemetrySessionStore : IDisposable
     private double _liveFuelMaximum = double.NegativeInfinity;
     private OverviewLapBlock[] _playbackLapBlocks = [];
     private int _fastestPlaybackLapNumber;
+    private float? _playbackLapStart;
+    private int? _playbackLapNumber;
     private bool _disposed;
 
     public TelemetrySessionStore(TelemetryEngine engine)
@@ -571,7 +575,9 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _telemetry.Count,
                 _telemetryBufferEpoch,
                 _timelineRevision,
-                reset);
+                reset,
+                _playbackLapStart,
+                _playbackLapNumber);
         }
     }
 
@@ -735,25 +741,14 @@ internal sealed class TelemetrySessionStore : IDisposable
             return;
         }
 
-        lock (_gate)
+        if (!TryDecodeHotBatch(binary, out var telemetry, out var positions))
         {
-            _timing = null;
-            _allStatus = null;
-            _lap = null;
-            _playerStatus = null;
-            _positions = null;
-            _tyreSets = null;
-            _latestDamage = null;
-            ClearTelemetryLocked();
-            ClearDamageLocked();
-            ClearPowerLocked();
-            _timelineRevision++;
-            _revision++;
+            return;
         }
 
-        TimelineReset?.Invoke(TimelineResetReason.Seek);
-        OnBinaryBatchReceived(binary);
-
+        var statusHistory = new List<PlayerStatusData>();
+        var damageHistory = new List<DamageRowData>();
+        LapRowData? latestLap = null;
         var start = 0;
         while (start < coldJson.Length)
         {
@@ -765,13 +760,68 @@ internal sealed class TelemetrySessionStore : IDisposable
 
             if (end > start)
             {
-                OnRowReceived(coldJson[start..end]);
+                var row = coldJson[start..end];
+                try
+                {
+                    using var document = JsonDocument.Parse(row);
+                    if (document.RootElement.TryGetProperty("type", out var type))
+                    {
+                        if (type.ValueEquals("status") &&
+                            Deserialize<PlayerStatusData>(row) is { } status)
+                        {
+                            statusHistory.Add(status);
+                        }
+                        else if (type.ValueEquals("damage") &&
+                            Deserialize<DamageRowData>(row) is { } damage)
+                        {
+                            damageHistory.Add(damage);
+                        }
+                        else if (type.ValueEquals("lap") &&
+                            Deserialize<LapRowData>(row) is { } lap)
+                        {
+                            latestLap = lap;
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                }
+                catch (NotSupportedException)
+                {
+                }
             }
 
             start = end + 1;
         }
 
+        lock (_gate)
+        {
+            _timing = null;
+            _allStatus = null;
+            _lap = latestLap;
+            _playerStatus = statusHistory.Count > 0 ? statusHistory[^1] : null;
+            _positions = positions;
+            _tyreSets = null;
+            _latestDamage = damageHistory.Count > 0 ? damageHistory[^1] : null;
+            ClearTelemetryLocked();
+            ClearDamageLocked();
+            ClearPowerLocked();
+            AppendTelemetryLocked(telemetry);
+            _damageHistory.AddRange(damageHistory);
+            _powerHistory.AddRange(statusHistory);
+            TrimDamageLocked();
+            TrimPowerLocked();
+            _playbackLapStart = currentLapStart;
+            _playbackLapNumber = lapNumber > 0 ? lapNumber : null;
+            _timelineRevision++;
+            _revision++;
+        }
+
+        TimelineReset?.Invoke(TimelineResetReason.Seek);
         SnapshotChanged?.Invoke();
+        TelemetryChanged?.Invoke();
+        TyresChanged?.Invoke();
+        PowerChanged?.Invoke();
     }
 
     private static T? Deserialize<T>(string json) =>
@@ -1144,6 +1194,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _liveFuelMaximum = double.NegativeInfinity;
                 _playbackLapBlocks = [];
                 _fastestPlaybackLapNumber = 0;
+                _playbackLapStart = null;
+                _playbackLapNumber = null;
             }
         }
         if (loaded)
@@ -1219,6 +1271,8 @@ internal sealed class TelemetrySessionStore : IDisposable
             _playbackEvents = [];
             _playbackLapBlocks = [];
             _fastestPlaybackLapNumber = 0;
+            _playbackLapStart = null;
+            _playbackLapNumber = null;
             _hasExplicitFastestLap = false;
             _isPlayback = reason != TimelineResetReason.PlaybackClosed && _isPlayback;
             _timelineRevision++;

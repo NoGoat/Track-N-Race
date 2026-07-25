@@ -150,7 +150,7 @@ public sealed record ChartLineSeriesOptions(
     string XAxisKey,
     string YAxisKey,
     Color Stroke,
-    float Thickness = 2,
+    float Thickness = 1.5f,
     float Opacity = 1,
     bool Visible = true,
     int MaximumPointCount = 0,

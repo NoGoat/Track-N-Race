@@ -142,16 +142,21 @@ public sealed class GpuChart : Grid, IDisposable
         Orientation = Orientation.Horizontal,
         HorizontalAlignment = HorizontalAlignment.Left,
     };
-    private readonly Grid _plotHost = new();
+    private readonly Grid _plotHost = new()
+    {
+        Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)),
+    };
     private readonly Grid _compositionHost = new() { IsHitTestVisible = false };
     private readonly Canvas _overlay = new() { IsHitTestVisible = false };
     private readonly Grid _bottomAxes = new();
     private readonly Dictionary<ChartAxis, AxisPresenter> _axisPresenters = [];
+    private readonly Dictionary<string, Brush> _resourceBrushes = [];
     private readonly ChartPluginContext _pluginContext;
     private bool _loaded;
     private bool _attached;
     private bool _disposed;
     private bool _renderQueued;
+    private bool _overlayRenderQueued;
     private bool _axesDirty = true;
     private uint _pixelWidth = 1;
     private uint _pixelHeight = 1;
@@ -271,6 +276,16 @@ public sealed class GpuChart : Grid, IDisposable
                 point.Y / _plotHost.ActualHeight * (yAxis.Maximum - yAxis.Minimum));
     }
 
+    public double DataXToPlot(double x)
+    {
+        var xAxis = Axes.FirstOrDefault(
+            axis => axis.Orientation == ChartAxisOrientation.X);
+        return xAxis is null || !xAxis.HasValidRange
+            ? double.NaN
+            : (x - xAxis.Minimum) / (xAxis.Maximum - xAxis.Minimum) *
+                _plotHost.ActualWidth;
+    }
+
     public void Invalidate()
     {
         if (_disposed || !_loaded || _renderQueued)
@@ -347,6 +362,28 @@ public sealed class GpuChart : Grid, IDisposable
         Invalidate();
     }
 
+    internal void InvalidateOverlay()
+    {
+        if (_disposed || !_loaded || _overlayRenderQueued)
+        {
+            return;
+        }
+        _overlayRenderQueued = true;
+        if (!DispatcherQueue.TryEnqueue(
+            DispatcherQueuePriority.Normal,
+            () =>
+            {
+                _overlayRenderQueued = false;
+                if (!_disposed && _loaded)
+                {
+                    RenderPluginOverlays();
+                }
+            }))
+        {
+            _overlayRenderQueued = false;
+        }
+    }
+
     internal void AttachPlugin(IChartPlugin plugin)
     {
         plugin.Attach(_pluginContext);
@@ -416,6 +453,7 @@ public sealed class GpuChart : Grid, IDisposable
     {
         _loaded = false;
         _renderQueued = false;
+        _overlayRenderQueued = false;
         UnsubscribeFromXamlRoot();
     }
 
@@ -604,7 +642,7 @@ public sealed class GpuChart : Grid, IDisposable
                         line.Start, line.CoordinateSpace, line.YAxisKey);
                     var end = ResolveOverlayPoint(
                         line.End, line.CoordinateSpace, line.YAxisKey);
-                    _overlay.Children.Add(new Line
+                    var overlayLine = new Line
                     {
                         X1 = start.X,
                         Y1 = start.Y,
@@ -612,7 +650,15 @@ public sealed class GpuChart : Grid, IDisposable
                         Y2 = end.Y,
                         Stroke = new SolidColorBrush(line.Color),
                         StrokeThickness = line.Thickness,
-                    });
+                    };
+                    if (line.DashPattern is not null)
+                    {
+                        foreach (var dash in line.DashPattern)
+                        {
+                            overlayLine.StrokeDashArray.Add(dash);
+                        }
+                    }
+                    _overlay.Children.Add(overlayLine);
                     break;
                 case ChartOverlayText text:
                     var position = ResolveOverlayPoint(
@@ -627,9 +673,124 @@ public sealed class GpuChart : Grid, IDisposable
                     Canvas.SetTop(label, position.Y);
                     _overlay.Children.Add(label);
                     break;
+                case ChartOverlayTooltip tooltip:
+                    AddTooltip(tooltip);
+                    break;
             }
         }
     }
+
+    private void AddTooltip(ChartOverlayTooltip command)
+    {
+        var content = new StackPanel { Spacing = 2 };
+        content.Children.Add(new TextBlock
+        {
+            Text = command.Content.Header,
+            Foreground = new SolidColorBrush(command.SecondaryForeground),
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 2),
+        });
+        string? group = null;
+        foreach (var entry in command.Content.Entries)
+        {
+            if (entry.Group is not null && entry.Group != group)
+            {
+                group = entry.Group;
+                content.Children.Add(new TextBlock
+                {
+                    Text = group,
+                    Foreground = new SolidColorBrush(
+                        command.SecondaryForeground),
+                    FontSize = 10,
+                    Margin = new Thickness(0, 3, 0, 0),
+                });
+            }
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+            };
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{entry.Label}:",
+                Foreground = new SolidColorBrush(entry.Color),
+                FontSize = 12,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = entry.Value,
+                Foreground = new SolidColorBrush(command.Foreground),
+                FontSize = 12,
+            });
+            content.Children.Add(row);
+        }
+
+        var tooltip = new Border
+        {
+            Background = ResolveResourceBrush(command.BackgroundResourceKey) ??
+                new SolidColorBrush(command.Background),
+            BorderBrush = new SolidColorBrush(command.Border),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10, 6, 10, 6),
+            Child = content,
+        };
+        const double gap = 16;
+        const double padding = 4;
+        tooltip.Measure(new Size(
+            double.PositiveInfinity,
+            double.PositiveInfinity));
+        var desired = tooltip.DesiredSize;
+        var left = command.Position.X <= _plotHost.ActualWidth / 2
+            ? command.Position.X + gap
+            : command.Position.X - gap - desired.Width;
+        var top = command.Position.Y <= _plotHost.ActualHeight / 2
+            ? command.Position.Y + gap
+            : command.Position.Y - gap - desired.Height;
+        Canvas.SetLeft(
+            tooltip,
+            Math.Clamp(
+                left,
+                padding,
+                Math.Max(padding, _plotHost.ActualWidth -
+                    desired.Width - padding)));
+        Canvas.SetTop(
+            tooltip,
+            Math.Clamp(
+                top,
+                padding,
+                Math.Max(padding, _plotHost.ActualHeight -
+                    desired.Height - padding)));
+        _overlay.Children.Add(tooltip);
+    }
+
+    private Brush? ResolveResourceBrush(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+        if (_resourceBrushes.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+        var brush =
+            BrushFrom(_plotHost.Resources, key) ??
+            BrushFrom(Resources, key) ??
+            BrushFrom(Application.Current?.Resources, key);
+        if (brush is not null)
+        {
+            _resourceBrushes[key] = brush;
+        }
+        return brush;
+    }
+
+    private static Brush? BrushFrom(ResourceDictionary? resources, string key) =>
+        resources is not null &&
+        resources.TryGetValue(key, out var value) &&
+        value is Brush brush
+            ? brush
+            : null;
 
     private Point ResolveOverlayPoint(
         Point point, ChartCoordinateSpace space, string? yAxisKey) =>

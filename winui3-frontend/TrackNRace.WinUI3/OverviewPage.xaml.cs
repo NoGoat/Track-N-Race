@@ -40,6 +40,7 @@ public sealed partial class OverviewPage : Page
     private readonly List<PlayerStatusData> _statusHistory = [];
     private readonly ChartLineSeries[] _currentSeries = new ChartLineSeries[3];
     private readonly ChartLineSeries[] _referenceSeries = new ChartLineSeries[3];
+    private ChartCrosshairTooltipPlugin? _telemetryTooltip;
     private ChartAxis? _timeAxis;
     private ChartAxis? _speedAxis;
     private ChartAxis? _rpmAxis;
@@ -181,8 +182,19 @@ public sealed partial class OverviewPage : Page
             InnerChart.ClearData();
             BrakeChart.ClearData();
         }
-        UpdateLapBoundary(snapshot.Lap);
-        AppendTelemetry(telemetry.Samples);
+        float? playbackLapStart = null;
+        if (telemetry.Reset &&
+            telemetry.PlaybackLapStart is float lapStart &&
+            telemetry.PlaybackLapNumber is int lapNumber)
+        {
+            _currentLapNumber = lapNumber;
+            playbackLapStart = lapStart;
+        }
+        else
+        {
+            UpdateLapBoundary(snapshot.Lap);
+        }
+        AppendTelemetry(telemetry.Samples, playbackLapStart);
         SurfaceChart.AppendTelemetry(telemetry.Samples);
         InnerChart.AppendTelemetry(telemetry.Samples);
         BrakeChart.AppendTelemetry(telemetry.Samples);
@@ -274,25 +286,43 @@ public sealed partial class OverviewPage : Page
         }
     }
 
-    private void AppendTelemetry(TelemetrySample[] samples)
+    private void AppendTelemetry(
+        TelemetrySample[] samples,
+        float? currentLapStart = null)
     {
-        var speed = new ChartPoint[samples.Length];
-        var rpm = new ChartPoint[samples.Length];
-        var ers = new ChartPoint[samples.Length];
-        for (var index = 0; index < samples.Length; index++)
+        var displayedCount = currentLapStart is null ||
+            _chartMode == OverviewChartMode.Default
+                ? samples.Length
+                : samples.Count(sample =>
+                    sample.SessionTime >= currentLapStart.Value);
+        var speed = new ChartPoint[displayedCount];
+        var rpm = new ChartPoint[displayedCount];
+        var ers = new ChartPoint[displayedCount];
+        var displayedIndex = 0;
+        foreach (var sample in samples)
         {
-            var sample = samples[index];
             var point = new OverviewChartPoint(
                 sample.SessionTime, sample.SpeedKph, sample.Rpm, ErsAt(sample.SessionTime));
             _sessionPoints.Add(point);
-            _currentLapPoints.Add(point);
+            if (currentLapStart is null ||
+                sample.SessionTime >= currentLapStart.Value)
+            {
+                _currentLapPoints.Add(point);
+            }
+            if (currentLapStart is not null &&
+                _chartMode != OverviewChartMode.Default &&
+                sample.SessionTime < currentLapStart.Value)
+            {
+                continue;
+            }
             var origin = _chartMode == OverviewChartMode.Default
                 ? 0
                 : _currentLapPoints[0].SessionTime;
             var x = point.SessionTime - origin;
-            speed[index] = new ChartPoint(x, point.SpeedKph);
-            rpm[index] = new ChartPoint(x, point.Rpm);
-            ers[index] = new ChartPoint(x, point.ErsPct);
+            speed[displayedIndex] = new ChartPoint(x, point.SpeedKph);
+            rpm[displayedIndex] = new ChartPoint(x, point.Rpm);
+            ers[displayedIndex] = new ChartPoint(x, point.ErsPct);
+            displayedIndex++;
         }
         _currentSeries[0].Append(speed);
         _currentSeries[1].Append(rpm);
@@ -382,6 +412,9 @@ public sealed partial class OverviewPage : Page
     private void ConfigureTelemetryPlot()
     {
         TelemetryPlot.Plugins.Add(new ChartBackgroundPlugin());
+        _telemetryTooltip = new ChartCrosshairTooltipPlugin(
+            BuildTelemetryTooltip);
+        TelemetryPlot.Plugins.Add(_telemetryTooltip);
         TelemetryPlot.RenderFailed += error =>
         {
             Debug.WriteLine($"[D3D11Chart] {error}");
@@ -1343,6 +1376,7 @@ public sealed partial class OverviewPage : Page
         _rpmAxis!.Color = RpmColor;
         _ersAxis!.Color = ErsColor;
         TelemetryPlot.GridColor = grid;
+        _telemetryTooltip?.ApplyTheme(dark);
         SurfaceChart.ApplyTheme(dark);
         InnerChart.ApplyTheme(dark);
         BrakeChart.ApplyTheme(dark);
@@ -1390,6 +1424,111 @@ public sealed partial class OverviewPage : Page
         $"{(int)(seconds / 60)}:{(int)(seconds % 60):00}";
     private static string FormatLapTime(double seconds) =>
         $"{(int)(seconds / 60)}:{seconds % 60:00.0}";
+
+    private ChartTooltipData? BuildTelemetryTooltip(double x)
+    {
+        IReadOnlyList<OverviewChartPoint> current =
+            _chartMode == OverviewChartMode.Default
+                ? _sessionPoints
+                : _currentLapPoints;
+        var currentOrigin = _chartMode == OverviewChartMode.Default ||
+            current.Count == 0
+                ? 0
+                : current[0].SessionTime;
+        var currentPoint = NearestPoint(current, x + currentOrigin);
+
+        var reference = ReferencePoints(_store?.OverviewSnapshot);
+        var referenceOrigin = reference.Count == 0
+            ? 0
+            : reference[0].SessionTime;
+        var referencePoint = NearestPoint(reference, x + referenceOrigin);
+        if (currentPoint is null && referencePoint is null)
+        {
+            return null;
+        }
+
+        var snappedX = currentPoint is not null
+            ? currentPoint.SessionTime - currentOrigin
+            : referencePoint!.SessionTime - referenceOrigin;
+        var entries = new List<ChartTooltipEntry>(6);
+        if (referencePoint is not null)
+        {
+            AddTooltipEntries(entries, referencePoint, ReferenceTooltipLabel());
+        }
+        if (currentPoint is not null)
+        {
+            AddTooltipEntries(
+                entries,
+                currentPoint,
+                referencePoint is null ? null : "CURR");
+        }
+        return new ChartTooltipData(
+            snappedX,
+            new ChartTooltipContent(
+                _chartMode == OverviewChartMode.Default
+                    ? FormatSessionTime(snappedX)
+                    : FormatLapTime(snappedX),
+                entries));
+    }
+
+    private string ReferenceTooltipLabel() =>
+        _chartMode switch
+        {
+            OverviewChartMode.PreviousLap => "PL",
+            OverviewChartMode.FastestLap => "FL",
+            OverviewChartMode.Compare when CompareLapComboBox.SelectedItem is int lap =>
+                $"L{lap}",
+            _ => "REF",
+        };
+
+    private static void AddTooltipEntries(
+        List<ChartTooltipEntry> entries,
+        OverviewChartPoint point,
+        string? group)
+    {
+        entries.Add(new ChartTooltipEntry(
+            "Speed", $"{point.SpeedKph:N0} kph", SpeedColor, group));
+        entries.Add(new ChartTooltipEntry(
+            "RPM", $"{point.Rpm:N0}", RpmColor, group));
+        entries.Add(new ChartTooltipEntry(
+            "ERS", $"{point.ErsPct:N0}%", ErsColor, group));
+    }
+
+    private static OverviewChartPoint? NearestPoint(
+        IReadOnlyList<OverviewChartPoint> points,
+        double sessionTime)
+    {
+        if (points.Count == 0)
+        {
+            return null;
+        }
+        var low = 0;
+        var high = points.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (points[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        if (low == 0)
+        {
+            return points[0];
+        }
+        if (low == points.Count)
+        {
+            return points[^1];
+        }
+        return sessionTime - points[low - 1].SessionTime <=
+            points[low].SessionTime - sessionTime
+                ? points[low - 1]
+                : points[low];
+    }
 
 #if DEBUG
     private void AttachRenderProbe()

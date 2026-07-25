@@ -28,6 +28,18 @@ public sealed record PlaybackLap(int LapNumber, float StartSessionTime, float En
 
 public sealed class TelemetryEngine : IDisposable
 {
+    private sealed class SeekCapture
+    {
+        public byte[] Binary { get; set; } = [];
+        public string ColdJson { get; set; } = string.Empty;
+        public float CurrentLapStart { get; set; }
+        public int LapNumber { get; set; }
+        public List<string> Rows { get; } = [];
+    }
+
+    [ThreadStatic]
+    private static SeekCapture? _threadSeekCapture;
+
     private const string NativeLibrary = "TrackNRace.EngineBridge";
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -151,11 +163,15 @@ public sealed class TelemetryEngine : IDisposable
     private readonly BinaryCallback _binaryCallback;
     private readonly SeekCallback _seekCallback;
     private readonly EngineHandle _handle;
+    private readonly object _seekGate = new();
     private long _rowCount;
     private long _binaryBatchCount;
     private int _sessionTimeBits = int.MinValue;
     private PlaybackState? _playbackState;
     private PlaybackLap[] _playbackLaps = [];
+    private float? _pendingSeek;
+    private bool _seekWorkerRunning;
+    private int _suppressPlaybackCallbacks;
     private bool _disposed;
 
     public event Action<string>? RowReceived;
@@ -251,7 +267,24 @@ public sealed class TelemetryEngine : IDisposable
 
     public void Play() => NativeMethods.PlayerPlay(_handle);
     public void Pause() => NativeMethods.PlayerPause(_handle);
-    public void Seek(float percentage) => NativeMethods.PlayerSeek(_handle, percentage);
+    public void Seek(float percentage)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        lock (_seekGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _pendingSeek = Math.Clamp(percentage, 0, 1);
+            Volatile.Write(ref _suppressPlaybackCallbacks, 1);
+            if (_seekWorkerRunning)
+            {
+                return;
+            }
+
+            _seekWorkerRunning = true;
+        }
+
+        _ = Task.Run(ProcessPendingSeeks);
+    }
     public void SetPlaybackSpeed(float multiplier) =>
         NativeMethods.PlayerSetSpeed(_handle, multiplier);
     public void RequestLapData(int lapNumber) =>
@@ -277,14 +310,85 @@ public sealed class TelemetryEngine : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_seekGate)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _pendingSeek = null;
+            Volatile.Write(ref _suppressPlaybackCallbacks, 0);
         }
 
-        _disposed = true;
         _handle.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private void ProcessPendingSeeks()
+    {
+        while (true)
+        {
+            float percentage;
+            lock (_seekGate)
+            {
+                if (_disposed || _pendingSeek is not float pending)
+                {
+                    _seekWorkerRunning = false;
+                    return;
+                }
+
+                percentage = pending;
+                _pendingSeek = null;
+            }
+
+            var capture = new SeekCapture();
+            _threadSeekCapture = capture;
+            try
+            {
+                NativeMethods.PlayerSeek(_handle, percentage);
+            }
+            catch (ObjectDisposedException)
+            {
+                lock (_seekGate)
+                {
+                    _seekWorkerRunning = false;
+                    Volatile.Write(ref _suppressPlaybackCallbacks, 0);
+                }
+                return;
+            }
+            finally
+            {
+                _threadSeekCapture = null;
+            }
+
+            lock (_seekGate)
+            {
+                if (_disposed)
+                {
+                    _seekWorkerRunning = false;
+                    return;
+                }
+                if (_pendingSeek is not null)
+                {
+                    continue;
+                }
+            }
+
+            PublishSeekCapture(capture);
+
+            lock (_seekGate)
+            {
+                if (_pendingSeek is not null)
+                {
+                    continue;
+                }
+                _seekWorkerRunning = false;
+                Volatile.Write(ref _suppressPlaybackCallbacks, 0);
+                return;
+            }
+        }
     }
 
     private void OnNativeRow(nint json, nuint length, nint context)
@@ -297,9 +401,17 @@ public sealed class TelemetryEngine : IDisposable
                 return;
             }
 
-            Interlocked.Increment(ref _rowCount);
-            UpdateRowMetadata(row);
-            RowReceived?.Invoke(row);
+            if (_threadSeekCapture is { } capture)
+            {
+                capture.Rows.Add(row);
+                return;
+            }
+            if (Volatile.Read(ref _suppressPlaybackCallbacks) != 0)
+            {
+                return;
+            }
+
+            PublishRow(row);
         }
         catch
         {
@@ -311,6 +423,10 @@ public sealed class TelemetryEngine : IDisposable
     {
         try
         {
+            if (Volatile.Read(ref _suppressPlaybackCallbacks) != 0)
+            {
+                return;
+            }
             Interlocked.Increment(ref _binaryBatchCount);
             BinaryBatchReceived?.Invoke(
                 new ReadOnlySpan<byte>(data.ToPointer(), checked((int)length)));
@@ -340,6 +456,18 @@ public sealed class TelemetryEngine : IDisposable
 
             var rows = Marshal.PtrToStringUTF8(
                 coldJson, checked((int)coldJsonLength)) ?? string.Empty;
+            if (_threadSeekCapture is { } capture)
+            {
+                capture.Binary = bytes;
+                capture.ColdJson = rows;
+                capture.CurrentLapStart = currentLapStart;
+                capture.LapNumber = lapNumber;
+                return;
+            }
+            if (Volatile.Read(ref _suppressPlaybackCallbacks) != 0)
+            {
+                return;
+            }
             SeekFlushReceived?.Invoke(bytes, rows, currentLapStart, lapNumber);
         }
         catch
@@ -348,13 +476,35 @@ public sealed class TelemetryEngine : IDisposable
         }
     }
 
+    private void PublishSeekCapture(SeekCapture capture)
+    {
+        SeekFlushReceived?.Invoke(
+            capture.Binary,
+            capture.ColdJson,
+            capture.CurrentLapStart,
+            capture.LapNumber);
+        foreach (var row in capture.Rows)
+        {
+            PublishRow(row);
+        }
+    }
+
+    private void PublishRow(string row)
+    {
+        Interlocked.Increment(ref _rowCount);
+        UpdateRowMetadata(row);
+        RowReceived?.Invoke(row);
+    }
+
     private void UpdateRowMetadata(string json)
     {
         try
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (root.TryGetProperty("session_time", out var sessionTime) &&
+            var isPlayback = Volatile.Read(ref _playbackState) is not null;
+            if (!isPlayback &&
+                root.TryGetProperty("session_time", out var sessionTime) &&
                 sessionTime.TryGetSingle(out var seconds) &&
                 seconds >= 0)
             {
@@ -370,12 +520,17 @@ public sealed class TelemetryEngine : IDisposable
                 }
                 else if (type.ValueEquals("playback_state"))
                 {
-                    Volatile.Write(ref _playbackState, new PlaybackState(
+                    var state = new PlaybackState(
                         root.GetProperty("playing").GetBoolean(),
                         root.GetProperty("current_time").GetSingle(),
                         root.GetProperty("total_time").GetSingle(),
                         root.GetProperty("speed").GetSingle(),
-                        root.GetProperty("start_time").GetSingle()));
+                        root.GetProperty("start_time").GetSingle());
+                    Volatile.Write(ref _playbackState, state);
+                    Volatile.Write(
+                        ref _sessionTimeBits,
+                        BitConverter.SingleToInt32Bits(
+                            state.StartTime + state.CurrentTime));
                 }
                 else if (type.ValueEquals("playback_lap_blocks"))
                 {

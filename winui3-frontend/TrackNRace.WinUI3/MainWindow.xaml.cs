@@ -18,6 +18,7 @@ public sealed partial class MainWindow : Window
     private string? _loadedTnrdPath;
     private IReadOnlyList<PlaybackLap>? _displayedLaps;
     private bool _updatingPlaybackControls;
+    private bool _isPlaybackSliderDragging;
     private long _lastSliderSeekMs;
 
     public MainWindow()
@@ -303,8 +304,14 @@ public sealed partial class MainWindow : Window
             var progress = state.TotalTime > 0
                 ? Math.Clamp(state.CurrentTime / state.TotalTime, 0, 1)
                 : 0;
-            PlaybackProgressSlider.Value = progress;
-            PlaybackCurrentTimeText.Text = FormatPlaybackTime(state.CurrentTime);
+            if (!_isPlaybackSliderDragging)
+            {
+                PlaybackProgressSlider.Value = progress;
+            }
+            var displayedTime = _isPlaybackSliderDragging
+                ? PlaybackProgressSlider.Value * state.TotalTime
+                : state.CurrentTime;
+            PlaybackCurrentTimeText.Text = FormatPlaybackTime((float)displayedTime);
             PlaybackTotalTimeText.Text = FormatPlaybackTime(state.TotalTime);
 
             PlayPauseIcon.Glyph = state.IsPlaying ? "\uE769" : "\uE768";
@@ -408,10 +415,18 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void OnPlaybackSliderPointerPressed(
+        object sender,
+        Microsoft.UI.Xaml.Input.PointerRoutedEventArgs args)
+    {
+        _isPlaybackSliderDragging = true;
+    }
+
     private void OnPlaybackSliderPointerReleased(
         object sender,
         Microsoft.UI.Xaml.Input.PointerRoutedEventArgs args)
     {
+        _isPlaybackSliderDragging = false;
         if (!_updatingPlaybackControls)
         {
             ((App)Application.Current).Telemetry?.Seek(

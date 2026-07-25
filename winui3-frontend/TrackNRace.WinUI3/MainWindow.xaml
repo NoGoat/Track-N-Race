@@ -250,6 +250,7 @@
                     IsThumbToolTipEnabled="True"
                     Maximum="1"
                     Minimum="0"
+                    PointerPressed="OnPlaybackSliderPointerPressed"
                     PointerReleased="OnPlaybackSliderPointerReleased"
                     StepFrequency="0.001"
                     ValueChanged="OnPlaybackSliderValueChanged" />
