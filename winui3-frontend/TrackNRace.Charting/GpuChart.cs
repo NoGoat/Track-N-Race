@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
@@ -151,6 +152,8 @@ public sealed class GpuChart : Grid, IDisposable
     private readonly Grid _bottomAxes = new();
     private readonly Dictionary<ChartAxis, AxisPresenter> _axisPresenters = [];
     private readonly Dictionary<string, Brush> _resourceBrushes = [];
+    private readonly Dictionary<string, Style> _themeBackgroundStyles = [];
+    private readonly HashSet<string> _failedThemeBackgroundStyles = [];
     private readonly ChartPluginContext _pluginContext;
     private bool _loaded;
     private bool _attached;
@@ -561,6 +564,21 @@ public sealed class GpuChart : Grid, IDisposable
                     xAxis.Minimum, xAxis.Maximum, _plotHost.ActualWidth).ToArray()
                 : [];
             _renderer.SetVerticalGrid(gridTicks);
+            var primaryYAxis = Axes.FirstOrDefault(
+                axis => axis.Orientation == ChartAxisOrientation.Y &&
+                    axis.Side == ChartAxisSide.Left);
+            var horizontalGrid = primaryYAxis is { ShowGridLines: true } &&
+                primaryYAxis.HasValidRange
+                ? primaryYAxis.TickProvider.GetTicks(
+                        primaryYAxis.Minimum,
+                        primaryYAxis.Maximum,
+                        _plotHost.ActualHeight)
+                    .Select(value =>
+                        (value - primaryYAxis.Minimum) /
+                        (primaryYAxis.Maximum - primaryYAxis.Minimum))
+                    .ToArray()
+                : [];
+            _renderer.SetHorizontalGrid(horizontalGrid);
 
             foreach (var series in Series)
             {
@@ -616,12 +634,15 @@ public sealed class GpuChart : Grid, IDisposable
 
     private void RenderAxes()
     {
+        var dividerBrush =
+            ResolveResourceBrush("DividerStrokeColorDefaultBrush") ??
+            new SolidColorBrush(Color.FromArgb(51, 128, 128, 128));
         foreach (var (axis, presenter) in _axisPresenters)
         {
             var length = axis.Orientation == ChartAxisOrientation.X
                 ? _plotHost.ActualWidth
                 : _plotHost.ActualHeight;
-            presenter.Update(length);
+            presenter.Update(length, dividerBrush);
         }
     }
 
@@ -672,6 +693,39 @@ public sealed class GpuChart : Grid, IDisposable
                     Canvas.SetLeft(label, position.X);
                     Canvas.SetTop(label, position.Y);
                     _overlay.Children.Add(label);
+                    break;
+                case ChartOverlayMarker marker:
+                    var markerPosition = ResolveOverlayPoint(
+                        marker.Position,
+                        marker.CoordinateSpace,
+                        marker.YAxisKey);
+                    if (!double.IsFinite(markerPosition.X) ||
+                        !double.IsFinite(markerPosition.Y) ||
+                        markerPosition.X < 0 ||
+                        markerPosition.X > _plotHost.ActualWidth ||
+                        markerPosition.Y < 0 ||
+                        markerPosition.Y > _plotHost.ActualHeight)
+                    {
+                        break;
+                    }
+                    // SVG strokes are centered on the circle's radius. Include
+                    // that outward half-stroke on both sides so a 3 px marker
+                    // matches Electron's 7.5 px rendered diameter.
+                    var diameter =
+                        marker.Radius * 2 + marker.StrokeThickness;
+                    var dot = new Ellipse
+                    {
+                        Width = diameter,
+                        Height = diameter,
+                        Fill = new SolidColorBrush(
+                            Color.FromArgb(255, 0, 0, 0)),
+                        Stroke = new SolidColorBrush(marker.Color),
+                        StrokeThickness = marker.StrokeThickness,
+                        IsHitTestVisible = false,
+                    };
+                    Canvas.SetLeft(dot, markerPosition.X - diameter / 2);
+                    Canvas.SetTop(dot, markerPosition.Y - diameter / 2);
+                    _overlay.Children.Add(dot);
                     break;
                 case ChartOverlayTooltip tooltip:
                     AddTooltip(tooltip);
@@ -727,14 +781,22 @@ public sealed class GpuChart : Grid, IDisposable
 
         var tooltip = new Border
         {
-            Background = ResolveResourceBrush(command.BackgroundResourceKey) ??
-                new SolidColorBrush(command.Background),
             BorderBrush = new SolidColorBrush(command.Border),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(10, 6, 10, 6),
             Child = content,
         };
+        var backgroundStyle = ResolveThemeBackgroundStyle(
+            command.BackgroundResourceKey);
+        if (backgroundStyle is not null)
+        {
+            tooltip.Style = backgroundStyle;
+        }
+        else
+        {
+            tooltip.Background = new SolidColorBrush(command.Background);
+        }
         const double gap = 16;
         const double padding = 4;
         tooltip.Measure(new Size(
@@ -792,6 +854,38 @@ public sealed class GpuChart : Grid, IDisposable
             ? brush
             : null;
 
+    private Style? ResolveThemeBackgroundStyle(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+        if (_themeBackgroundStyles.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+        if (_failedThemeBackgroundStyles.Contains(key))
+        {
+            return null;
+        }
+        try
+        {
+            var style = (Style)XamlReader.Load(
+                "<Style xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" " +
+                "TargetType=\"Border\">" +
+                "<Setter Property=\"Background\" Value=\"{ThemeResource " +
+                key +
+                "}\" /></Style>");
+            _themeBackgroundStyles[key] = style;
+            return style;
+        }
+        catch
+        {
+            _failedThemeBackgroundStyles.Add(key);
+            return null;
+        }
+    }
+
     private Point ResolveOverlayPoint(
         Point point, ChartCoordinateSpace space, string? yAxisKey) =>
         space == ChartCoordinateSpace.Pixels
@@ -824,7 +918,6 @@ public sealed class GpuChart : Grid, IDisposable
     {
         private readonly ChartAxis _axis;
         private readonly List<TextBlock> _labels = [];
-        private readonly List<Border> _ticks = [];
         private readonly Border _line = new();
         private Color _brushColor;
         private SolidColorBrush? _brush;
@@ -834,18 +927,21 @@ public sealed class GpuChart : Grid, IDisposable
             _axis = axis;
             if (axis.Orientation == ChartAxisOrientation.X)
             {
-                Height = 26;
+                Height = 22;
                 HorizontalAlignment = HorizontalAlignment.Stretch;
             }
             else
             {
-                Width = 52;
+                Width = axis.Side == ChartAxisSide.Left ? 44 : 50;
                 VerticalAlignment = VerticalAlignment.Stretch;
             }
+            _line.Visibility = axis.Side == ChartAxisSide.Right
+                ? Visibility.Collapsed
+                : Visibility.Visible;
             Children.Add(_line);
         }
 
-        public void Update(double length)
+        public void Update(double length, Brush lineBrush)
         {
             if (!_axis.HasValidRange || length <= 0)
             {
@@ -862,18 +958,18 @@ public sealed class GpuChart : Grid, IDisposable
                 _brush = new SolidColorBrush(_brushColor);
             }
             var brush = _brush;
-            _line.Background = brush;
+            _line.Background = lineBrush;
 
             if (_axis.Orientation == ChartAxisOrientation.X)
             {
                 _line.Width = length;
-                _line.Height = .75;
+                _line.Height = 1;
                 Canvas.SetLeft(_line, 0);
                 Canvas.SetTop(_line, 0);
             }
             else
             {
-                _line.Width = .75;
+                _line.Width = 1;
                 _line.Height = length;
                 Canvas.SetLeft(
                     _line, _axis.Side == ChartAxisSide.Left ? Width - 1 : 0);
@@ -886,36 +982,25 @@ public sealed class GpuChart : Grid, IDisposable
                 var normalized =
                     (value - _axis.Minimum) / (_axis.Maximum - _axis.Minimum);
                 var label = _labels[index];
-                var tick = _ticks[index];
                 label.Text = _axis.LabelFormatter(value);
                 label.Foreground = brush;
-                tick.Background = brush;
 
                 if (_axis.Orientation == ChartAxisOrientation.X)
                 {
                     var x = normalized * length;
-                    tick.Width = .75;
-                    tick.Height = 3;
-                    Canvas.SetLeft(tick, x);
-                    Canvas.SetTop(tick, 0);
                     label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
                     Canvas.SetLeft(label, x - label.DesiredSize.Width / 2);
-                    Canvas.SetTop(label, 5);
+                    Canvas.SetTop(label, 2);
                 }
                 else
                 {
                     var y = (1 - normalized) * length;
-                    tick.Width = 3;
-                    tick.Height = .75;
-                    Canvas.SetLeft(
-                        tick, _axis.Side == ChartAxisSide.Left ? Width - 4 : 0);
-                    Canvas.SetTop(tick, y);
                     label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
                     Canvas.SetLeft(
                         label,
                         _axis.Side == ChartAxisSide.Left
-                            ? Math.Max(0, Width - 7 - label.DesiredSize.Width)
-                            : 7);
+                            ? Math.Max(0, Width - 4 - label.DesiredSize.Width)
+                            : 4);
                     Canvas.SetTop(label, y - label.DesiredSize.Height / 2);
                 }
             }
@@ -925,15 +1010,12 @@ public sealed class GpuChart : Grid, IDisposable
         {
             while (_labels.Count < count)
             {
-                var tick = new Border();
                 var label = new TextBlock
                 {
                     FontFamily = new FontFamily("Segoe UI Variable Text"),
                     FontSize = 12,
                 };
-                _ticks.Add(tick);
                 _labels.Add(label);
-                Children.Add(tick);
                 Children.Add(label);
             }
             for (var index = 0; index < _labels.Count; index++)
@@ -942,7 +1024,6 @@ public sealed class GpuChart : Grid, IDisposable
                     ? Visibility.Visible
                     : Visibility.Collapsed;
                 _labels[index].Visibility = visibility;
-                _ticks[index].Visibility = visibility;
             }
         }
     }

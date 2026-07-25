@@ -139,7 +139,7 @@ struct Series {
     double yMinimum{};
     double yMaximum{1};
     Color color{};
-    float thickness{2};
+    float thickness{1.5f};
     bool visible{true};
     std::uint64_t revision{};
     std::uint64_t cachedRevision{std::numeric_limits<std::uint64_t>::max()};
@@ -270,6 +270,14 @@ public:
         return true;
     }
 
+    bool setHorizontalGrid(const double* values, const std::size_t count) {
+        if (count > 0 && !values) {
+            return fail("Grid value pointer was null.");
+        }
+        horizontalGrid_.assign(values, values + count);
+        return true;
+    }
+
     std::uint32_t addSeries(
         const Color color,
         const float thickness,
@@ -282,6 +290,7 @@ public:
         series->maximumPoints = maximumPoints;
         series->maximumXSpan = std::max(0.0, maximumXSpan);
         series_.emplace(id, std::move(series));
+        seriesOrder_.push_back(id);
         return id;
     }
 
@@ -289,6 +298,7 @@ public:
         if (series_.erase(id) == 0) {
             return fail("Unknown series handle.");
         }
+        std::erase(seriesOrder_, id);
         return true;
     }
 
@@ -402,7 +412,8 @@ public:
             context_->RSSetScissorRects(1, &scissor);
 
             drawGrid();
-            for (const auto& [id, series] : series_) {
+            for (const auto id : seriesOrder_) {
+                const auto& series = series_.at(id);
                 if (!series->visible ||
                     !validRange(series->yMinimum, series->yMaximum)) {
                     continue;
@@ -786,16 +797,26 @@ private:
     }
 
     void drawGrid() {
-        if (verticalGrid_.empty() || gridColor_.a <= 0) {
+        if ((verticalGrid_.empty() && horizontalGrid_.empty()) ||
+            gridColor_.a <= 0) {
             return;
         }
         std::vector<tnr::chart::Segment> segments;
-        segments.reserve(verticalGrid_.size());
+        segments.reserve(verticalGrid_.size() + horizontalGrid_.size());
         for (const auto x : verticalGrid_) {
             if (std::isfinite(x) && x >= xMinimum_ && x <= xMaximum_) {
                 segments.push_back({
                     static_cast<float>(x - xMinimum_), 0,
                     static_cast<float>(x - xMinimum_), 1,
+                });
+            }
+        }
+        const auto width = static_cast<float>(xMaximum_ - xMinimum_);
+        for (const auto y : horizontalGrid_) {
+            if (std::isfinite(y) && y >= 0 && y <= 1) {
+                segments.push_back({
+                    0, static_cast<float>(y),
+                    width, static_cast<float>(y),
                 });
             }
         }
@@ -887,8 +908,10 @@ private:
     std::size_t segmentCapacity_{};
 
     std::unordered_map<std::uint32_t, std::unique_ptr<Series>> series_;
+    std::vector<std::uint32_t> seriesOrder_;
     std::uint32_t nextSeriesId_{1};
     std::vector<double> verticalGrid_;
+    std::vector<double> horizontalGrid_;
     double xMinimum_{};
     double xMaximum_{1};
     Color background_{0, 0, 0, 0};
@@ -980,6 +1003,13 @@ int tnr_chart_set_vertical_grid(
     void* chart, const double* values, std::size_t count) {
     return chart
         ? success(renderer(chart)->setVerticalGrid(values, count))
+        : 0;
+}
+
+int tnr_chart_set_horizontal_grid(
+    void* chart, const double* values, std::size_t count) {
+    return chart
+        ? success(renderer(chart)->setHorizontalGrid(values, count))
         : 0;
 }
 

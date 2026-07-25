@@ -36,6 +36,8 @@ TNR_CHART_API int tnr_chart_set_x_range(
     void* chart, double minimum, double maximum);
 TNR_CHART_API int tnr_chart_set_vertical_grid(
     void* chart, const double* values, std::size_t count);
+TNR_CHART_API int tnr_chart_set_horizontal_grid(
+    void* chart, const double* values, std::size_t count);
 
 TNR_CHART_API std::uint32_t tnr_chart_add_series(
     void* chart,

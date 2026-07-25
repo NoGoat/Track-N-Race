@@ -29,6 +29,20 @@ public sealed partial class OverviewPage : Page
         UiColor.FromArgb(255, 196, 22, 42);
     private static readonly UiColor ErsColor =
         UiColor.FromArgb(255, 250, 222, 42);
+    private static readonly UiColor[] CurrentSeriesColors =
+        [SpeedColor, RpmColor, ErsColor];
+    private static readonly UiColor[] DarkReferenceSeriesColors =
+    [
+        UiColor.FromArgb(255, 47, 75, 46),
+        UiColor.FromArgb(255, 96, 38, 44),
+        UiColor.FromArgb(255, 117, 103, 42),
+    ];
+    private static readonly UiColor[] LightReferenceSeriesColors =
+    [
+        UiColor.FromArgb(255, 185, 213, 181),
+        UiColor.FromArgb(255, 232, 185, 192),
+        UiColor.FromArgb(255, 251, 237, 151),
+    ];
 
     private readonly List<OverviewChartPoint> _sessionPoints = [];
     private readonly List<OverviewChartPoint> _currentLapPoints = [];
@@ -74,6 +88,7 @@ public sealed partial class OverviewPage : Page
         var app = (App)Application.Current;
         _windowSeconds = app.ChartWindowSeconds;
         ConfigureTelemetryPlot();
+        ChartModeSelector.SelectedItem = DefaultModeItem;
         ConfigureTyreCharts(app);
     }
 
@@ -437,6 +452,7 @@ public sealed partial class OverviewPage : Page
             TickProvider = new FixedChartTickProvider(0, 95, 190, 285, 380),
             LabelFormatter = value => $"{value:0}",
             Color = SpeedColor,
+            ShowGridLines = true,
         };
         _rpmAxis = new ChartAxis(
             "rpm", ChartAxisOrientation.Y, ChartAxisSide.Right)
@@ -462,7 +478,20 @@ public sealed partial class OverviewPage : Page
         TelemetryPlot.Axes.Add(_ersAxis);
 
         var keys = new[] { "speed", "rpm", "ers" };
-        var colors = new[] { SpeedColor, RpmColor, ErsColor };
+        var referenceColors = ReferenceSeriesColors(
+            ActualTheme != ElementTheme.Light);
+        for (var index = 0; index < 3; index++)
+        {
+            _referenceSeries[index] = TelemetryPlot.Series.Add(
+                new ChartLineSeriesOptions(
+                    $"reference-{keys[index]}",
+                    "time",
+                    keys[index],
+                    referenceColors[index],
+                    Thickness: 1.5f,
+                    Visible: false,
+                    MaximumPointCount: MaxChartPoints));
+        }
         for (var index = 0; index < 3; index++)
         {
             _currentSeries[index] = TelemetryPlot.Series.Add(
@@ -470,18 +499,10 @@ public sealed partial class OverviewPage : Page
                     $"current-{keys[index]}",
                     "time",
                     keys[index],
-                    colors[index],
+                    CurrentSeriesColors[index],
+                    Thickness: 1.5f,
                     MaximumPointCount: MaxChartPoints,
                     MaximumXSpan: RetentionSeconds));
-            _referenceSeries[index] = TelemetryPlot.Series.Add(
-                new ChartLineSeriesOptions(
-                    $"reference-{keys[index]}",
-                    "time",
-                    keys[index],
-                    colors[index],
-                    Opacity: .35f,
-                    Visible: false,
-                    MaximumPointCount: MaxChartPoints));
         }
         ConfigureTimeTicks();
 #if DEBUG
@@ -519,23 +540,16 @@ public sealed partial class OverviewPage : Page
             : FormatLapTime;
     }
 
-    private void OnChartModeClicked(object sender, RoutedEventArgs args)
+    private void OnChartModeSelectionChanged(
+        SelectorBar sender,
+        SelectorBarSelectionChangedEventArgs args)
     {
-        if (sender is not ToggleButton button ||
-            button.Tag is not string tag ||
+        if (sender.SelectedItem?.Tag is not string tag ||
             !Enum.TryParse<OverviewChartMode>(tag, out var mode))
         {
             return;
         }
         _chartMode = mode;
-        foreach (var candidate in new[]
-                 {
-                     DefaultModeButton, CurrentLapModeButton, PreviousLapModeButton,
-                     FastestLapModeButton, CompareModeButton,
-                 })
-        {
-            candidate.IsChecked = candidate == button;
-        }
         CompareLapComboBox.Visibility =
             mode == OverviewChartMode.Compare ? Visibility.Visible : Visibility.Collapsed;
         RebuildDisplayedSeries(_store?.OverviewSnapshot);
@@ -620,7 +634,7 @@ public sealed partial class OverviewPage : Page
         var existing = CompareLapComboBox.Items.Cast<object>().OfType<int>().ToArray();
         if (laps.SequenceEqual(existing))
         {
-            CompareModeButton.Visibility =
+            CompareModeItem.Visibility =
                 laps.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             return;
         }
@@ -630,7 +644,7 @@ public sealed partial class OverviewPage : Page
         {
             CompareLapComboBox.Items.Add(lap);
         }
-        CompareModeButton.Visibility =
+        CompareModeItem.Visibility =
             laps.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (laps.Length > 0)
         {
@@ -1369,13 +1383,21 @@ public sealed partial class OverviewPage : Page
             ? UiColor.FromArgb(255, 124, 128, 152)
             : UiColor.FromArgb(255, 107, 114, 128);
         var grid = dark
-            ? UiColor.FromArgb(13, 255, 255, 255)
-            : UiColor.FromArgb(12, 0, 0, 0);
+            ? UiColor.FromArgb(10, 255, 255, 255)
+            : UiColor.FromArgb(18, 0, 0, 0);
         _timeAxis!.Color = axes;
         _speedAxis!.Color = SpeedColor;
         _rpmAxis!.Color = RpmColor;
         _ersAxis!.Color = ErsColor;
         TelemetryPlot.GridColor = grid;
+        var referenceColors = ReferenceSeriesColors(dark);
+        for (var index = 0; index < _currentSeries.Length; index++)
+        {
+            _currentSeries[index].Thickness = 1.5f;
+            _referenceSeries[index].Stroke = referenceColors[index];
+            _referenceSeries[index].Opacity = 1;
+            _referenceSeries[index].Thickness = 1.5f;
+        }
         _telemetryTooltip?.ApplyTheme(dark);
         SurfaceChart.ApplyTheme(dark);
         InnerChart.ApplyTheme(dark);
@@ -1451,16 +1473,34 @@ public sealed partial class OverviewPage : Page
             ? currentPoint.SessionTime - currentOrigin
             : referencePoint!.SessionTime - referenceOrigin;
         var entries = new List<ChartTooltipEntry>(6);
+        var markers = new List<ChartTooltipMarker>(6);
         if (referencePoint is not null)
         {
-            AddTooltipEntries(entries, referencePoint, ReferenceTooltipLabel());
+            var referenceColors =
+                ReferenceSeriesColors(ActualTheme == ElementTheme.Dark);
+            AddTooltipEntries(
+                entries,
+                referencePoint,
+                ReferenceTooltipLabel(),
+                referenceColors);
+            AddTooltipMarkers(
+                markers,
+                referencePoint.SessionTime - referenceOrigin,
+                referencePoint,
+                referenceColors);
         }
         if (currentPoint is not null)
         {
             AddTooltipEntries(
                 entries,
                 currentPoint,
-                referencePoint is null ? null : "CURR");
+                referencePoint is null ? null : "CURR",
+                CurrentSeriesColors);
+            AddTooltipMarkers(
+                markers,
+                currentPoint.SessionTime - currentOrigin,
+                currentPoint,
+                CurrentSeriesColors);
         }
         return new ChartTooltipData(
             snappedX,
@@ -1468,7 +1508,8 @@ public sealed partial class OverviewPage : Page
                 _chartMode == OverviewChartMode.Default
                     ? FormatSessionTime(snappedX)
                     : FormatLapTime(snappedX),
-                entries));
+                entries),
+            markers);
     }
 
     private string ReferenceTooltipLabel() =>
@@ -1484,15 +1525,33 @@ public sealed partial class OverviewPage : Page
     private static void AddTooltipEntries(
         List<ChartTooltipEntry> entries,
         OverviewChartPoint point,
-        string? group)
+        string? group,
+        IReadOnlyList<UiColor> colors)
     {
         entries.Add(new ChartTooltipEntry(
-            "Speed", $"{point.SpeedKph:N0} kph", SpeedColor, group));
+            "Speed", $"{point.SpeedKph:N0} kph", colors[0], group));
         entries.Add(new ChartTooltipEntry(
-            "RPM", $"{point.Rpm:N0}", RpmColor, group));
+            "RPM", $"{point.Rpm:N0}", colors[1], group));
         entries.Add(new ChartTooltipEntry(
-            "ERS", $"{point.ErsPct:N0}%", ErsColor, group));
+            "ERS", $"{point.ErsPct:N0}%", colors[2], group));
     }
+
+    private static void AddTooltipMarkers(
+        List<ChartTooltipMarker> markers,
+        double x,
+        OverviewChartPoint point,
+        IReadOnlyList<UiColor> colors)
+    {
+        markers.Add(new ChartTooltipMarker(
+            x, point.SpeedKph, "speed", colors[0]));
+        markers.Add(new ChartTooltipMarker(
+            x, point.Rpm, "rpm", colors[1]));
+        markers.Add(new ChartTooltipMarker(
+            x, point.ErsPct, "ers", colors[2]));
+    }
+
+    private static IReadOnlyList<UiColor> ReferenceSeriesColors(bool dark) =>
+        dark ? DarkReferenceSeriesColors : LightReferenceSeriesColors;
 
     private static OverviewChartPoint? NearestPoint(
         IReadOnlyList<OverviewChartPoint> points,

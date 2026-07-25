@@ -36,15 +36,6 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
         </Style>
-        <Style
-            x:Key="ChartModeButtonStyle"
-            TargetType="ToggleButton">
-            <Setter Property="Padding" Value="8,2" />
-            <Setter Property="MinHeight" Value="26" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="0" />
-        </Style>
     </Page.Resources>
 
     <Grid x:Name="PageLayout">
@@ -72,42 +63,42 @@
                         AutomationProperties.HeadingLevel="Level2"
                         Style="{StaticResource OverviewSectionLabelStyle}"
                         Text="SPEED + RPM + ERS" />
-                    <StackPanel Orientation="Horizontal" Spacing="2">
-                        <ToggleButton
-                            x:Name="DefaultModeButton"
-                            Click="OnChartModeClicked"
-                            Content="Default"
-                            IsChecked="True"
-                            Style="{StaticResource ChartModeButtonStyle}"
-                            Tag="Default" />
-                        <ToggleButton
-                            x:Name="CurrentLapModeButton"
-                            Click="OnChartModeClicked"
-                            Content="Current Lap"
-                            Style="{StaticResource ChartModeButtonStyle}"
-                            Tag="CurrentLap" />
-                        <ToggleButton
-                            x:Name="PreviousLapModeButton"
-                            Click="OnChartModeClicked"
-                            Content="Previous Lap"
-                            Style="{StaticResource ChartModeButtonStyle}"
-                            Tag="PreviousLap" />
-                        <ToggleButton
-                            x:Name="FastestLapModeButton"
-                            Click="OnChartModeClicked"
-                            Content="Fastest Lap"
-                            Style="{StaticResource ChartModeButtonStyle}"
-                            Tag="FastestLap" />
-                        <ToggleButton
-                            x:Name="CompareModeButton"
-                            Click="OnChartModeClicked"
-                            Content="Compare Laps"
-                            Style="{StaticResource ChartModeButtonStyle}"
-                            Tag="Compare" />
-                    </StackPanel>
+                    <SelectorBar
+                        x:Name="ChartModeSelector"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        SelectionChanged="OnChartModeSelectionChanged">
+                        <SelectorBarItem
+                            x:Name="DefaultModeItem"
+                            Padding="12,4,12,3"
+                            Tag="Default"
+                            Text="Default" />
+                        <SelectorBarItem
+                            Padding="12,4,12,3"
+                            Tag="CurrentLap"
+                            Text="Current Lap" />
+                        <SelectorBarItem
+                            Padding="12,4,12,3"
+                            Tag="PreviousLap"
+                            Text="Previous Lap" />
+                        <SelectorBarItem
+                            Padding="12,4,12,3"
+                            Tag="FastestLap"
+                            Text="Fastest Lap" />
+                        <SelectorBarItem
+                            x:Name="CompareModeItem"
+                            Padding="12,4,12,3"
+                            Tag="Compare"
+                            Text="Compare Laps" />
+                    </SelectorBar>
                     <ComboBox
                         x:Name="CompareLapComboBox"
                         Width="84"
+                        Height="29"
+                        MaxHeight="29"
+                        MinHeight="0"
+                        Padding="12,0,0,0"
+                        VerticalAlignment="Center"
                         AutomationProperties.Name="Comparison lap"
                         PlaceholderText="Lap"
                         SelectionChanged="OnCompareLapChanged"

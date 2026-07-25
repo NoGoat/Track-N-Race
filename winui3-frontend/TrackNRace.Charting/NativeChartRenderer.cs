@@ -70,6 +70,11 @@ internal sealed class NativeChartRenderer : IDisposable
         internal static extern unsafe int SetVerticalGrid(
             ChartHandle chart, double* values, nuint count);
 
+        [DllImport(NativeLibrary, EntryPoint = "tnr_chart_set_horizontal_grid",
+            CallingConvention = CallingConvention.Cdecl)]
+        internal static extern unsafe int SetHorizontalGrid(
+            ChartHandle chart, double* values, nuint count);
+
         [DllImport(NativeLibrary, EntryPoint = "tnr_chart_add_series",
             CallingConvention = CallingConvention.Cdecl)]
         internal static extern uint AddSeries(
@@ -192,6 +197,17 @@ internal sealed class NativeChartRenderer : IDisposable
                 NativeMethods.SetVerticalGrid(
                     _handle, pointer, checked((nuint)values.Length)),
                 "set vertical grid");
+        }
+    }
+
+    public unsafe void SetHorizontalGrid(ReadOnlySpan<double> values)
+    {
+        fixed (double* pointer = values)
+        {
+            Check(
+                NativeMethods.SetHorizontalGrid(
+                    _handle, pointer, checked((nuint)values.Length)),
+                "set horizontal grid");
         }
     }
 

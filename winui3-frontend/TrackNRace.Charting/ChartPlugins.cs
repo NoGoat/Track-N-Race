@@ -45,9 +45,25 @@ public sealed record ChartTooltipContent(
     string Header,
     IReadOnlyList<ChartTooltipEntry> Entries);
 
+public sealed record ChartTooltipMarker(
+    double X,
+    double Y,
+    string YAxisKey,
+    Color Color);
+
 public sealed record ChartTooltipData(
     double X,
-    ChartTooltipContent Content);
+    ChartTooltipContent Content,
+    IReadOnlyList<ChartTooltipMarker>? Markers = null);
+
+public sealed record ChartOverlayMarker(
+    Point Position,
+    Color Color,
+    double Radius = 3,
+    double StrokeThickness = 1.5,
+    ChartCoordinateSpace CoordinateSpace = ChartCoordinateSpace.Plot,
+    string? YAxisKey = null)
+    : ChartOverlayCommand;
 
 public sealed record ChartOverlayTooltip(
     Point Position,
@@ -264,7 +280,7 @@ public sealed class ChartCrosshairTooltipPlugin(
     public Color TooltipSecondaryForeground { get; set; } =
         Color.FromArgb(255, 160, 168, 184);
     public string TooltipBackgroundResourceKey { get; set; } =
-        "AcrylicBackgroundFillColorBaseBrush";
+        "SolidBackgroundFillColorQuarternaryBrush";
 
     public void Attach(ChartPluginContext context)
     {
@@ -311,12 +327,7 @@ public sealed class ChartCrosshairTooltipPlugin(
             return;
         }
 
-        var x = _context.Chart.DataXToPlot(_data.X);
-        if (!double.IsFinite(x))
-        {
-            return;
-        }
-        x = Math.Clamp(x, 0, _plotBounds.Width);
+        var x = Math.Clamp(_pointer.X, 0, _plotBounds.Width);
         var y = Math.Clamp(_pointer.Y, 0, _plotBounds.Height);
         builder.Add(new ChartOverlayLine(
             new Point(x, 0),
@@ -330,6 +341,19 @@ public sealed class ChartCrosshairTooltipPlugin(
             CrosshairColor,
             CoordinateSpace: ChartCoordinateSpace.Pixels,
             DashPattern: [2, 1]));
+        if (_data.Markers is not null)
+        {
+            foreach (var marker in _data.Markers)
+            {
+                if (double.IsFinite(marker.X) && double.IsFinite(marker.Y))
+                {
+                    builder.Add(new ChartOverlayMarker(
+                        new Point(marker.X, marker.Y),
+                        marker.Color,
+                        YAxisKey: marker.YAxisKey));
+                }
+            }
+        }
         builder.Add(new ChartOverlayTooltip(
             new Point(x, y),
             _data.Content,
