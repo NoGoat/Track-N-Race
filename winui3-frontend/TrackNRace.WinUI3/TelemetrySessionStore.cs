@@ -195,7 +195,11 @@ internal sealed record CarPositionData(int Idx, double X, double Z);
 internal sealed record PositionsRowData(int PlayerIdx, CarPositionData[] Cars);
 internal sealed record TelemetrySample(
     float SessionTime,
+    int SpeedKph,
+    int Rpm,
     int Gear,
+    int Drs,
+    int Slm,
     float Throttle,
     float Brake,
     double Steering,
@@ -210,7 +214,8 @@ internal sealed record TelemetrySample(
     int BrakeTempRl,
     int BrakeTempRr,
     int BrakeTempFl,
-    int BrakeTempFr);
+    int BrakeTempFr,
+    int EngineTemp);
 
 internal sealed record TelemetryReadResult(
     TelemetrySample[] Samples,
@@ -230,7 +235,51 @@ internal sealed record DamageRowData
     public int BlistersRr { get; init; }
     public int BlistersFl { get; init; }
     public int BlistersFr { get; init; }
+    public int TyreDmgRl { get; init; }
+    public int TyreDmgRr { get; init; }
+    public int TyreDmgFl { get; init; }
+    public int TyreDmgFr { get; init; }
+    public int BrakeDmgRl { get; init; }
+    public int BrakeDmgRr { get; init; }
+    public int BrakeDmgFl { get; init; }
+    public int BrakeDmgFr { get; init; }
+    public int WingFl { get; init; }
+    public int WingFr { get; init; }
+    public int WingRear { get; init; }
+    public int FloorDamage { get; init; }
+    public int SidepodDamage { get; init; }
+    public int DiffuserDamage { get; init; }
+    public int GearboxDamage { get; init; }
+    public int EngineDamage { get; init; }
+    public int DrsFault { get; init; }
+    public int ErsFault { get; init; }
 }
+
+internal sealed record OverviewChartPoint(
+    float SessionTime,
+    int SpeedKph,
+    int Rpm,
+    double ErsPct);
+
+internal sealed record OverviewLapBlock(
+    int LapNumber,
+    float StartSessionTime,
+    float EndSessionTime,
+    OverviewChartPoint[] Points);
+
+internal sealed record OverviewSnapshot(
+    TelemetrySample? LatestTelemetry,
+    PlayerStatusData? Status,
+    LapRowData? Lap,
+    DamageRowData? Damage,
+    IReadOnlyDictionary<string, string> Labels,
+    IReadOnlyDictionary<string, CardColorSpecData> CardColors,
+    string AeroMode,
+    OverviewLapBlock[] PlaybackLapBlocks,
+    int FastestPlaybackLapNumber,
+    bool IsPlayback,
+    long Revision,
+    long TimelineRevision);
 
 internal sealed record TyreSetData
 {
@@ -376,6 +425,8 @@ internal sealed class TelemetrySessionStore : IDisposable
     private bool _hasMguh;
     private double? _fuelUpperLimit;
     private double _liveFuelMaximum = double.NegativeInfinity;
+    private OverviewLapBlock[] _playbackLapBlocks = [];
+    private int _fastestPlaybackLapNumber;
     private bool _disposed;
 
     public TelemetrySessionStore(TelemetryEngine engine)
@@ -469,6 +520,29 @@ internal sealed class TelemetrySessionStore : IDisposable
                     _cardColors,
                     _hasMguh,
                     _fuelUpperLimit,
+                    _revision,
+                    _timelineRevision);
+            }
+        }
+    }
+
+    public OverviewSnapshot OverviewSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new OverviewSnapshot(
+                    _telemetry.Count > 0 ? _telemetry[^1] : null,
+                    _playerStatus,
+                    _lap,
+                    _latestDamage,
+                    _labels,
+                    _cardColors,
+                    _aeroMode,
+                    _playbackLapBlocks,
+                    _fastestPlaybackLapNumber,
+                    _isPlayback,
                     _revision,
                     _timelineRevision);
             }
@@ -963,15 +1037,93 @@ internal sealed class TelemetrySessionStore : IDisposable
             fuelUpperLimit = initialFuel + 1;
         }
 
+        var lapBlocks = ParseOverviewLapBlocks(root);
+        var fastestLapNumber =
+            root.TryGetProperty("fastestLapNum", out var fastestElement) &&
+            fastestElement.TryGetInt32(out var parsedFastest)
+                ? parsedFastest
+                : 0;
+
         lock (_gate)
         {
             _isPlayback = true;
             _playbackEvents = events.ToArray();
+            _playbackLapBlocks = lapBlocks;
+            _fastestPlaybackLapNumber = fastestLapNumber;
             _fuelUpperLimit = fuelUpperLimit;
             _liveFuelMaximum = double.NegativeInfinity;
             _revision++;
         }
         return true;
+    }
+
+    private static OverviewLapBlock[] ParseOverviewLapBlocks(JsonElement root)
+    {
+        if (!root.TryGetProperty("blocks", out var blocksElement) ||
+            blocksElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var blocks = new List<OverviewLapBlock>();
+        foreach (var block in blocksElement.EnumerateArray())
+        {
+            if (!block.TryGetProperty("lapNum", out var lapElement) ||
+                !lapElement.TryGetInt32(out var lapNumber) ||
+                !block.TryGetProperty("startSessionTime", out var startElement) ||
+                !startElement.TryGetSingle(out var startTime) ||
+                !block.TryGetProperty("endSessionTime", out var endElement) ||
+                !endElement.TryGetSingle(out var endTime) ||
+                !block.TryGetProperty("telemetry", out var telemetryElement) ||
+                telemetryElement.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            var statuses = new List<(float Time, double Ers)>();
+            if (block.TryGetProperty("statusHistory", out var statusElement) &&
+                statusElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var status in statusElement.EnumerateArray())
+                {
+                    if (status.TryGetProperty("session_time", out var timeElement) &&
+                        timeElement.TryGetSingle(out var time) &&
+                        status.TryGetProperty("ers_pct", out var ersElement) &&
+                        ersElement.TryGetDouble(out var ers))
+                    {
+                        statuses.Add((time, ers));
+                    }
+                }
+            }
+
+            var points = new List<OverviewChartPoint>();
+            var statusIndex = 0;
+            foreach (var telemetry in telemetryElement.EnumerateArray())
+            {
+                if (!telemetry.TryGetProperty("session_time", out var timeElement) ||
+                    !timeElement.TryGetSingle(out var time) ||
+                    !telemetry.TryGetProperty("speed_kph", out var speedElement) ||
+                    !speedElement.TryGetInt32(out var speed) ||
+                    !telemetry.TryGetProperty("rpm", out var rpmElement) ||
+                    !rpmElement.TryGetInt32(out var rpm))
+                {
+                    continue;
+                }
+
+                while (statusIndex + 1 < statuses.Count &&
+                    statuses[statusIndex + 1].Time <= time)
+                {
+                    statusIndex++;
+                }
+                var ers = statuses.Count > 0 && statuses[statusIndex].Time <= time
+                    ? statuses[statusIndex].Ers
+                    : 0;
+                points.Add(new OverviewChartPoint(time, speed, rpm, ers));
+            }
+            blocks.Add(new OverviewLapBlock(
+                lapNumber, startTime, endTime, points.ToArray()));
+        }
+        return blocks.ToArray();
     }
 
     private bool SetPlaybackLoaded(JsonElement root)
@@ -990,6 +1142,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                 ClearPowerLocked();
                 _fuelUpperLimit = null;
                 _liveFuelMaximum = double.NegativeInfinity;
+                _playbackLapBlocks = [];
+                _fastestPlaybackLapNumber = 0;
             }
         }
         if (loaded)
@@ -1063,6 +1217,8 @@ internal sealed class TelemetrySessionStore : IDisposable
             _sessionHistoryBest.Clear();
             _raceEvents.Clear();
             _playbackEvents = [];
+            _playbackLapBlocks = [];
+            _fastestPlaybackLapNumber = 0;
             _hasExplicitFastestLap = false;
             _isPlayback = reason != TimelineResetReason.PlaybackClosed && _isPlayback;
             _timelineRevision++;
@@ -1242,9 +1398,10 @@ internal sealed class TelemetrySessionStore : IDisposable
             {
                 case 1:
                     if (!TryReadSingle(data, ref offset, out var sessionTime) ||
-                        !Advance(data, ref offset, 4) ||
+                        !TryReadUInt16(data, ref offset, out var speedKph) ||
+                        !TryReadUInt16(data, ref offset, out var rpm) ||
                         !TryReadSByte(data, ref offset, out var gear) ||
-                        !Advance(data, ref offset, 1) ||
+                        !TryReadByte(data, ref offset, out var drs) ||
                         !TryReadSingle(data, ref offset, out var throttle) ||
                         !TryReadSingle(data, ref offset, out var brake) ||
                         !TryReadDouble(data, ref offset, out var steering) ||
@@ -1260,7 +1417,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                         !TryReadUInt16(data, ref offset, out var brakeTempRr) ||
                         !TryReadUInt16(data, ref offset, out var brakeTempFl) ||
                         !TryReadUInt16(data, ref offset, out var brakeTempFr) ||
-                        !Advance(data, ref offset, 3))
+                        !TryReadUInt16(data, ref offset, out var engineTemp) ||
+                        !TryReadByte(data, ref offset, out var slm))
                     {
                         telemetry = [];
                         latestPositions = null;
@@ -1268,7 +1426,11 @@ internal sealed class TelemetrySessionStore : IDisposable
                     }
                     telemetry.Add(new TelemetrySample(
                         sessionTime,
+                        speedKph,
+                        rpm,
                         gear,
+                        drs,
+                        slm,
                         throttle,
                         brake,
                         steering,
@@ -1283,7 +1445,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                         brakeTempRl,
                         brakeTempRr,
                         brakeTempFl,
-                        brakeTempFr));
+                        brakeTempFr,
+                        engineTemp));
                     break;
                 case 2:
                     // motion: f32 + 3*f64.

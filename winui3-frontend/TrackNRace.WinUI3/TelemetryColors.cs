@@ -12,6 +12,17 @@ internal static class TelemetryColors
         bool dark,
         Brush? fallback = null)
     {
+        return ResolveContext(specs, key, value, null, dark, fallback);
+    }
+
+    public static Brush ResolveContext(
+        IReadOnlyDictionary<string, CardColorSpecData> specs,
+        string key,
+        double? value,
+        IReadOnlyDictionary<string, double>? fields,
+        bool dark,
+        Brush? fallback = null)
+    {
         if (string.IsNullOrEmpty(key) || !specs.TryGetValue(key, out var spec))
         {
             return fallback ?? new SolidColorBrush(
@@ -21,18 +32,23 @@ internal static class TelemetryColors
         var token = spec.Default;
         foreach (var rule in spec.Rules)
         {
-            if (value is null || rule.On != "self")
+            double? candidate = rule.On == "self"
+                ? value
+                : fields is not null && fields.TryGetValue(rule.On, out var fieldValue)
+                    ? fieldValue
+                    : null;
+            if (candidate is null)
             {
                 continue;
             }
 
             var matches = rule.Op switch
             {
-                "lt" => value < rule.Value,
-                "lte" => value <= rule.Value,
-                "gt" => value > rule.Value,
-                "gte" => value >= rule.Value,
-                "eq" => Math.Abs(value.Value - rule.Value) < 0.0001,
+                "lt" => candidate < rule.Value,
+                "lte" => candidate <= rule.Value,
+                "gt" => candidate > rule.Value,
+                "gte" => candidate >= rule.Value,
+                "eq" => Math.Abs(candidate.Value - rule.Value) < 0.0001,
                 _ => false,
             };
             if (matches)

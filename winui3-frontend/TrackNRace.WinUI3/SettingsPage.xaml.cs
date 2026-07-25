@@ -30,6 +30,12 @@ public sealed partial class SettingsPage : Page
         SessionStaleTimeoutNumberBox.Value = display.StaleCarTimeoutSeconds;
         SessionReduceAnimationsToggle.IsOn = display.ReduceAnimations;
         CompactPowerCardsToggle.IsOn = app.PowerDisplay.CompactCards;
+        CompactOverviewStatsToggle.IsOn = app.OverviewDisplay.CompactStats;
+        CompactOverviewDamageToggle.IsOn = app.OverviewDisplay.CompactDamage;
+        OverviewTyreDensityComboBox.SelectedIndex =
+            (int)app.OverviewDisplay.TyreDensity;
+        OverviewTyreViewComboBox.SelectedIndex =
+            (int)app.OverviewDisplay.TyreViewMode;
         TyreWearModeComboBox.SelectedIndex =
             app.TyreWearMode == TyreWearDisplayMode.Wear ? 1 : 0;
         _isInitialized = true;
@@ -73,6 +79,20 @@ public sealed partial class SettingsPage : Page
 
         ((App)Application.Current).SetPowerDisplay(
             new PowerDisplaySettings(CompactPowerCardsToggle.IsOn));
+    }
+
+    private void OnOverviewDisplaySettingChanged(object sender, RoutedEventArgs args)
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        ((App)Application.Current).SetOverviewDisplay(new OverviewDisplaySettings(
+            CompactOverviewStatsToggle.IsOn,
+            CompactOverviewDamageToggle.IsOn,
+            (OverviewTyreDensity)Math.Max(0, OverviewTyreDensityComboBox.SelectedIndex),
+            (OverviewTyreViewMode)Math.Max(0, OverviewTyreViewComboBox.SelectedIndex)));
     }
 
     private void OnThemeSelectionChanged(object sender, SelectionChangedEventArgs args)

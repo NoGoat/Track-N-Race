@@ -76,6 +76,15 @@ public sealed partial class MainWindow : Window
 
     private void NavigateToDashboard(string pageName)
     {
+        if (pageName == "Overview")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(OverviewPage))
+            {
+                RootFrame.Navigate(typeof(OverviewPage));
+            }
+            return;
+        }
+
         if (pageName == "Standings")
         {
             if (RootFrame.CurrentSourcePageType != typeof(StandingsPage))

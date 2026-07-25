@@ -20,6 +20,10 @@ public partial class App : Application
     private const string SessionStaleTimeoutKey = "SessionStaleTimeoutSeconds";
     private const string SessionReduceAnimationsKey = "SessionReduceAnimations";
     private const string PowerCompactCardsKey = "PowerCompactCards";
+    private const string OverviewCompactStatsKey = "OverviewCompactStats";
+    private const string OverviewCompactDamageKey = "OverviewCompactDamage";
+    private const string OverviewTyreDensityKey = "OverviewTyreDensity";
+    private const string OverviewTyreViewModeKey = "OverviewTyreViewMode";
 
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
@@ -33,10 +37,12 @@ public partial class App : Application
     public TyreWearDisplayMode TyreWearMode { get; private set; }
     public SessionDisplaySettings SessionDisplay { get; private set; }
     public PowerDisplaySettings PowerDisplay { get; private set; }
+    public OverviewDisplaySettings OverviewDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
     public event Action<TyreWearDisplayMode>? TyreWearModeChanged;
     public event Action? SessionDisplayChanged;
     public event Action? PowerDisplayChanged;
+    public event Action? OverviewDisplayChanged;
     private int _selectedDriverIndex = -1;
 
     internal int? SelectedDriverIndex
@@ -62,6 +68,7 @@ public partial class App : Application
         TyreWearMode = ReadTyreWearMode();
         SessionDisplay = ReadSessionDisplay();
         PowerDisplay = ReadPowerDisplay();
+        OverviewDisplay = ReadOverviewDisplay();
     }
 
     public void SetTheme(ElementTheme theme)
@@ -224,6 +231,30 @@ public partial class App : Application
         PowerDisplayChanged?.Invoke();
     }
 
+    public void SetOverviewDisplay(OverviewDisplaySettings settings)
+    {
+        if (!Enum.IsDefined(settings.TyreDensity))
+        {
+            settings = settings with { TyreDensity = OverviewTyreDensity.Normal };
+        }
+        if (!Enum.IsDefined(settings.TyreViewMode))
+        {
+            settings = settings with { TyreViewMode = OverviewTyreViewMode.Cards };
+        }
+        if (settings == OverviewDisplay)
+        {
+            return;
+        }
+
+        OverviewDisplay = settings;
+        var values = ApplicationData.Current.LocalSettings.Values;
+        values[OverviewCompactStatsKey] = settings.CompactStats;
+        values[OverviewCompactDamageKey] = settings.CompactDamage;
+        values[OverviewTyreDensityKey] = settings.TyreDensity.ToString();
+        values[OverviewTyreViewModeKey] = settings.TyreViewMode.ToString();
+        OverviewDisplayChanged?.Invoke();
+    }
+
     private static ushort ReadUdpPort()
     {
         var value = ApplicationData.Current.LocalSettings.Values[UdpPortSettingKey];
@@ -290,5 +321,25 @@ public partial class App : Application
         var values = ApplicationData.Current.LocalSettings.Values;
         return new PowerDisplaySettings(
             values[PowerCompactCardsKey] is true);
+    }
+
+    private static OverviewDisplaySettings ReadOverviewDisplay()
+    {
+        var values = ApplicationData.Current.LocalSettings.Values;
+        var density = Enum.TryParse<OverviewTyreDensity>(
+                values[OverviewTyreDensityKey] as string, out var parsedDensity) &&
+            Enum.IsDefined(parsedDensity)
+                ? parsedDensity
+                : OverviewTyreDensity.Normal;
+        var viewMode = Enum.TryParse<OverviewTyreViewMode>(
+                values[OverviewTyreViewModeKey] as string, out var parsedViewMode) &&
+            Enum.IsDefined(parsedViewMode)
+                ? parsedViewMode
+                : OverviewTyreViewMode.Cards;
+        return new OverviewDisplaySettings(
+            values[OverviewCompactStatsKey] is true,
+            values[OverviewCompactDamageKey] is true,
+            density,
+            viewMode);
     }
 }

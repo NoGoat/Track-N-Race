@@ -56,6 +56,57 @@
                     <TextBlock
                         AutomationProperties.HeadingLevel="Level2"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Overview page" />
+
+                    <toolkit:SettingsCard
+                        Description="Show the eleven live statistics as a dense single-line strip."
+                        Header="Compact statistics">
+                        <ToggleSwitch
+                            x:Name="CompactOverviewStatsToggle"
+                            Toggled="OnOverviewDisplaySettingChanged" />
+                    </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        Description="Show the Overview damage values as a dense single-line strip."
+                        Header="Compact damage cards">
+                        <ToggleSwitch
+                            x:Name="CompactOverviewDamageToggle"
+                            Toggled="OnOverviewDisplaySettingChanged" />
+                    </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        Description="Choose the amount of detail and height used by the four tyre cards."
+                        Header="Tyre card density">
+                        <ComboBox
+                            x:Name="OverviewTyreDensityComboBox"
+                            Width="160"
+                            SelectionChanged="OnOverviewDisplaySettingChanged">
+                            <x:String>Normal</x:String>
+                            <x:String>Compact 1</x:String>
+                            <x:String>Compact 2</x:String>
+                            <x:String>Compact 3</x:String>
+                            <x:String>Compact 4</x:String>
+                            <x:String>Compact 5</x:String>
+                        </ComboBox>
+                    </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        Description="Show current tyre cards or the four rolling tyre-history charts."
+                        Header="Tyre display">
+                        <ComboBox
+                            x:Name="OverviewTyreViewComboBox"
+                            Width="160"
+                            SelectionChanged="OnOverviewDisplaySettingChanged">
+                            <x:String>Cards</x:String>
+                            <x:String>Graphs</x:String>
+                        </ComboBox>
+                    </toolkit:SettingsCard>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
                         Text="Power page" />
 
                     <toolkit:SettingsCard

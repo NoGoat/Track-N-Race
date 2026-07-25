@@ -40,6 +40,8 @@ public sealed partial class TyreChartControl : UserControl
     private int _windowSeconds = 30;
     private bool _configured;
     private double _observedMaximum;
+    private double _configuredYMinimum = double.NaN;
+    private double _configuredYMaximum = double.NaN;
 
     public TyreChartControl()
     {
@@ -105,6 +107,8 @@ public sealed partial class TyreChartControl : UserControl
 
         plot.Axes.SetLimits(0, windowSeconds, minimum, maximum);
         ConfigureYAxis(minimum, maximum);
+        _configuredYMinimum = minimum;
+        _configuredYMaximum = maximum;
         ConfigureTimeTicks();
         plot.Axes.Top.IsVisible = false;
         plot.Axes.Right.IsVisible = false;
@@ -203,6 +207,8 @@ public sealed partial class TyreChartControl : UserControl
         _rawRl.Clear();
         _rawRr.Clear();
         _observedMaximum = 0;
+        _configuredYMinimum = double.NaN;
+        _configuredYMaximum = double.NaN;
         HideHover(false);
     }
 
@@ -223,8 +229,15 @@ public sealed partial class TyreChartControl : UserControl
             TyreChartKind.Brake => ExpandedMaximum(baseMaximum, 250),
             _ => baseMaximum,
         };
-        PlotControl.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
-        ConfigureYAxis(yMin, yMax);
+        PlotControl.Plot.Axes.SetLimitsX(xMin, xMax);
+        if (Math.Abs(_configuredYMinimum - yMin) > .001 ||
+            Math.Abs(_configuredYMaximum - yMax) > .001)
+        {
+            PlotControl.Plot.Axes.SetLimitsY(yMin, yMax);
+            ConfigureYAxis(yMin, yMax);
+            _configuredYMinimum = yMin;
+            _configuredYMaximum = yMax;
+        }
         PlotControl.Refresh();
     }
 
