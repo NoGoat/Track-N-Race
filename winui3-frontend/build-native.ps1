@@ -13,8 +13,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "Native bridge configuration failed with exit code $LASTEXITCODE."
 }
 
-cmake --build $buildRoot --config $Configuration --target track_n_race_engine_bridge
+cmake --build $buildRoot --config $Configuration `
+    --target track_n_race_engine_bridge track_n_race_chart_renderer
 if ($LASTEXITCODE -ne 0) {
     throw "Native bridge build failed with exit code $LASTEXITCODE."
 }
-

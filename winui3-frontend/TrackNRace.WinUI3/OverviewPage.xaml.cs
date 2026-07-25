@@ -2,12 +2,10 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Documents;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
-using ScottPlot;
-using ScottPlot.Plottables;
 using System.Diagnostics;
+using TrackNRace.Charting;
 using UiColor = Windows.UI.Color;
 
 namespace TrackNRace.WinUI3;
@@ -25,11 +23,12 @@ public sealed partial class OverviewPage : Page
 {
     private const int MaxChartPoints = 750_000;
     private const float RetentionSeconds = 600;
-    private static readonly ScottPlot.Color SpeedColor = ScottPlot.Color.FromHex("#37872D");
-    private static readonly ScottPlot.Color RpmColor = ScottPlot.Color.FromHex("#C4162A");
-    private static readonly ScottPlot.Color ErsColor = ScottPlot.Color.FromHex("#FADE2A");
-    private static readonly LinePattern HoverCrosshairPattern =
-        new([2f, 1f], 0, "OverviewCrosshair");
+    private static readonly UiColor SpeedColor =
+        UiColor.FromArgb(255, 55, 135, 45);
+    private static readonly UiColor RpmColor =
+        UiColor.FromArgb(255, 196, 22, 42);
+    private static readonly UiColor ErsColor =
+        UiColor.FromArgb(255, 250, 222, 42);
 
     private readonly List<OverviewChartPoint> _sessionPoints = [];
     private readonly List<OverviewChartPoint> _currentLapPoints = [];
@@ -39,22 +38,12 @@ public sealed partial class OverviewPage : Page
     private int? _currentLapNumber;
 
     private readonly List<PlayerStatusData> _statusHistory = [];
-    private readonly List<double> _currentX = [];
-    private readonly List<double> _currentSpeed = [];
-    private readonly List<double> _currentRpm = [];
-    private readonly List<double> _currentErs = [];
-    private readonly List<double> _referenceX = [];
-    private readonly List<double> _referenceSpeed = [];
-    private readonly List<double> _referenceRpm = [];
-    private readonly List<double> _referenceErs = [];
-
-    private readonly SignalXY[] _currentSeries = new SignalXY[3];
-    private readonly SignalXY[] _referenceSeries = new SignalXY[3];
-    private readonly Marker[] _hoverMarkers = new Marker[3];
-    private Crosshair? _crosshair;
-    private HorizontalLine? _bottomBoundary;
-    private IYAxis? _rpmAxis;
-    private IYAxis? _ersAxis;
+    private readonly ChartLineSeries[] _currentSeries = new ChartLineSeries[3];
+    private readonly ChartLineSeries[] _referenceSeries = new ChartLineSeries[3];
+    private ChartAxis? _timeAxis;
+    private ChartAxis? _speedAxis;
+    private ChartAxis? _rpmAxis;
+    private ChartAxis? _ersAxis;
     private TelemetrySessionStore? _store;
     private int _telemetryCount;
     private long _telemetryEpoch = -1;
@@ -285,24 +274,29 @@ public sealed partial class OverviewPage : Page
         }
     }
 
-    private void AppendTelemetry(IEnumerable<TelemetrySample> samples)
+    private void AppendTelemetry(TelemetrySample[] samples)
     {
-        foreach (var sample in samples)
+        var speed = new ChartPoint[samples.Length];
+        var rpm = new ChartPoint[samples.Length];
+        var ers = new ChartPoint[samples.Length];
+        for (var index = 0; index < samples.Length; index++)
         {
+            var sample = samples[index];
             var point = new OverviewChartPoint(
                 sample.SessionTime, sample.SpeedKph, sample.Rpm, ErsAt(sample.SessionTime));
             _sessionPoints.Add(point);
             _currentLapPoints.Add(point);
-            if (_chartMode == OverviewChartMode.Default)
-            {
-                AppendDisplayed(_currentX, _currentSpeed, _currentRpm, _currentErs, point, 0);
-            }
-            else
-            {
-                var origin = _currentLapPoints[0].SessionTime;
-                AppendDisplayed(_currentX, _currentSpeed, _currentRpm, _currentErs, point, origin);
-            }
+            var origin = _chartMode == OverviewChartMode.Default
+                ? 0
+                : _currentLapPoints[0].SessionTime;
+            var x = point.SessionTime - origin;
+            speed[index] = new ChartPoint(x, point.SpeedKph);
+            rpm[index] = new ChartPoint(x, point.Rpm);
+            ers[index] = new ChartPoint(x, point.ErsPct);
         }
+        _currentSeries[0].Append(speed);
+        _currentSeries[1].Append(rpm);
+        _currentSeries[2].Append(ers);
         TrimSessionPoints();
         if (_currentLapPoints.Count > MaxChartPoints)
         {
@@ -346,132 +340,137 @@ public sealed partial class OverviewPage : Page
             return;
         }
         _sessionPoints.RemoveRange(0, remove);
-        if (_chartMode == OverviewChartMode.Default)
-        {
-            RemoveDisplayedPrefix(remove);
-        }
     }
 
     private void RefreshTelemetryPlot(OverviewSnapshot snapshot)
     {
-        var hasData = _currentX.Count > 1;
+        var current = _chartMode == OverviewChartMode.Default
+            ? _sessionPoints
+            : _currentLapPoints;
+        var hasData = current.Count > 1;
         TelemetryNoData.Visibility = hasData ? Visibility.Collapsed : Visibility.Visible;
-        var showReference = _referenceX.Count > 1;
+        var reference = ReferencePoints(snapshot);
+        var showReference = reference.Count > 1;
         if (showReference != _referenceSeriesVisible)
         {
             _referenceSeriesVisible = showReference;
             foreach (var series in _referenceSeries)
             {
-                series.IsVisible = showReference;
+                series.Visible = showReference;
             }
         }
 
-        var latest = _currentX.Count > 0 ? _currentX[^1] : 0;
+        var origin = _chartMode == OverviewChartMode.Default || current.Count == 0
+            ? 0
+            : current[0].SessionTime;
+        var latest = current.Count > 0 ? current[^1].SessionTime - origin : 0;
         var xMin = _chartMode == OverviewChartMode.Default
             ? Math.Max(0, latest - _windowSeconds)
             : 0;
-        var referenceEnd = _referenceX.Count > 0 ? _referenceX[^1] : 0;
+        var referenceEnd = reference.Count > 0
+            ? reference[^1].SessionTime - reference[0].SessionTime
+            : 0;
         var xMax = _chartMode == OverviewChartMode.Default
             ? Math.Max(_windowSeconds, latest)
             : Math.Max(10, Math.Max(latest, referenceEnd));
-        TelemetryPlot.Plot.Axes.SetLimits(xMin, xMax, 0, 1);
-        ApplyTelemetryYAxisLimits();
-        TelemetryPlot.Refresh();
+        _timeAxis!.Minimum = xMin;
+        _timeAxis.Maximum = xMax;
+        ConfigureTimeTicks();
+        TelemetryPlot.Invalidate();
     }
 
     private void ConfigureTelemetryPlot()
     {
-        var plot = TelemetryPlot.Plot;
-        TelemetryPlot.UserInputProcessor.Disable();
-        _rpmAxis = plot.Axes.AddRightAxis();
-        _ersAxis = plot.Axes.AddRightAxis();
+        TelemetryPlot.Plugins.Add(new ChartBackgroundPlugin());
+        TelemetryPlot.RenderFailed += error =>
+        {
+            Debug.WriteLine($"[D3D11Chart] {error}");
+            TelemetryNoData.Text = "Chart unavailable";
+            TelemetryNoData.Visibility = Visibility.Visible;
+        };
+        _timeAxis = new ChartAxis(
+            "time", ChartAxisOrientation.X, ChartAxisSide.Bottom)
+        {
+            Minimum = 0,
+            Maximum = _windowSeconds,
+            ShowGridLines = true,
+            Color = UiColor.FromArgb(255, 124, 128, 152),
+        };
+        _speedAxis = new ChartAxis(
+            "speed", ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = 0,
+            Maximum = 380,
+            TickProvider = new FixedChartTickProvider(0, 95, 190, 285, 380),
+            LabelFormatter = value => $"{value:0}",
+            Color = SpeedColor,
+        };
+        _rpmAxis = new ChartAxis(
+            "rpm", ChartAxisOrientation.Y, ChartAxisSide.Right)
+        {
+            Minimum = 0,
+            Maximum = 16000,
+            TickProvider = new FixedChartTickProvider(0, 4000, 8000, 12000, 16000),
+            LabelFormatter = value => value == 0 ? "0" : $"{value / 1000:0}k",
+            Color = RpmColor,
+        };
+        _ersAxis = new ChartAxis(
+            "ers", ChartAxisOrientation.Y, ChartAxisSide.Right)
+        {
+            Minimum = 0,
+            Maximum = 100,
+            TickProvider = new FixedChartTickProvider(0, 25, 50, 75, 100),
+            LabelFormatter = value => $"{value:0}%",
+            Color = ErsColor,
+        };
+        TelemetryPlot.Axes.Add(_timeAxis);
+        TelemetryPlot.Axes.Add(_speedAxis);
+        TelemetryPlot.Axes.Add(_rpmAxis);
+        TelemetryPlot.Axes.Add(_ersAxis);
 
-        _currentSeries[0] = plot.Add.SignalXY(_currentX, _currentSpeed);
-        _currentSeries[1] = plot.Add.SignalXY(_currentX, _currentRpm);
-        _currentSeries[2] = plot.Add.SignalXY(_currentX, _currentErs);
-        _referenceSeries[0] = plot.Add.SignalXY(_referenceX, _referenceSpeed);
-        _referenceSeries[1] = plot.Add.SignalXY(_referenceX, _referenceRpm);
-        _referenceSeries[2] = plot.Add.SignalXY(_referenceX, _referenceErs);
+        var keys = new[] { "speed", "rpm", "ers" };
         var colors = new[] { SpeedColor, RpmColor, ErsColor };
         for (var index = 0; index < 3; index++)
         {
-            StyleSeries(_currentSeries[index], colors[index]);
-            StyleSeries(_referenceSeries[index], colors[index].WithAlpha(.35));
-            _referenceSeries[index].IsVisible = false;
+            _currentSeries[index] = TelemetryPlot.Series.Add(
+                new ChartLineSeriesOptions(
+                    $"current-{keys[index]}",
+                    "time",
+                    keys[index],
+                    colors[index],
+                    MaximumPointCount: MaxChartPoints,
+                    MaximumXSpan: RetentionSeconds));
+            _referenceSeries[index] = TelemetryPlot.Series.Add(
+                new ChartLineSeriesOptions(
+                    $"reference-{keys[index]}",
+                    "time",
+                    keys[index],
+                    colors[index],
+                    Opacity: .35f,
+                    Visible: false,
+                    MaximumPointCount: MaxChartPoints));
         }
-
-        _bottomBoundary = plot.Add.HorizontalLine(.0025);
-        _bottomBoundary.EnableAutoscale = false;
-        _bottomBoundary.LineWidth = .75f;
-        _crosshair = plot.Add.Crosshair(0, 0);
-        _crosshair.EnableAutoscale = false;
-        _crosshair.IsVisible = false;
-        _crosshair.LineWidth = 1;
-        _crosshair.LinePattern = HoverCrosshairPattern;
-        _crosshair.MarkerSize = 0;
-        for (var index = 0; index < 3; index++)
-        {
-            _hoverMarkers[index] = plot.Add.Marker(
-                0, 0, MarkerShape.OpenCircle, 7, colors[index]);
-            _hoverMarkers[index].MarkerLineWidth = 2;
-            _hoverMarkers[index].IsVisible = false;
-        }
-        plot.Axes.Left.SetTicks(
-            [0, .25, .5, .75, 1],
-            ["0", "95", "190", "285", "380"]);
-        _rpmAxis.SetTicks(
-            [0, .25, .5, .75, 1],
-            ["0", "4k", "8k", "12k", "16k"]);
-        _ersAxis.SetTicks(
-            [0, .25, .5, .75, 1],
-            ["0%", "25%", "50%", "75%", "100%"]);
         ConfigureTimeTicks();
-        ApplyTelemetryYAxisLimits();
-        plot.Axes.Top.IsVisible = false;
-        plot.Axes.Right.IsVisible = false;
-        plot.Axes.Margins(0, 0, 0, 0);
-        plot.Grid.IsVisible = true;
-        plot.Grid.YAxisStyle.IsVisible = false;
-        plot.Grid.MajorLineWidth = 1;
-        plot.Grid.MinorLineWidth = 0;
-        StyleAxis(plot.Axes.Left);
-        StyleAxis(plot.Axes.Bottom);
-        StyleAxis(_rpmAxis);
-        StyleAxis(_ersAxis);
 #if DEBUG
         AttachRenderProbe();
 #endif
     }
 
-    private void ApplyTelemetryYAxisLimits()
-    {
-        // SignalXY reads mutable lists. Reassert its fixed coordinate ranges
-        // after list mutations without replacing axes, ticks, or series.
-        TelemetryPlot.Plot.Axes.Left.Min = 0;
-        TelemetryPlot.Plot.Axes.Left.Max = 1;
-        _rpmAxis!.Min = 0;
-        _rpmAxis.Max = 1;
-        _ersAxis!.Min = 0;
-        _ersAxis.Max = 1;
-    }
-
-    private static void StyleSeries(SignalXY series, ScottPlot.Color color)
-    {
-        series.Color = color;
-        series.LineWidth = 2;
-        series.MarkerSize = 0;
-        series.ConnectStyle = ConnectStyle.Straight;
-    }
-
     private void ConfigureTimeTicks()
     {
         var lapTicks = _chartMode != OverviewChartMode.Default;
+        var currentEnd = _currentLapPoints.Count > 1
+            ? _currentLapPoints[^1].SessionTime -
+                _currentLapPoints[0].SessionTime
+            : 0;
+        var reference = ReferencePoints(_store?.OverviewSnapshot);
+        var referenceEnd = reference.Count > 1
+            ? reference[^1].SessionTime - reference[0].SessionTime
+            : 0;
         var interval = _chartMode == OverviewChartMode.Default
             ? _windowSeconds / 6d
             : Math.Max(5, Math.Ceiling(
-                (_currentX.LastOrDefault() > 0
-                    ? _currentX.Last()
-                    : _referenceX.LastOrDefault()) / 30d) * 5);
+                Math.Max(currentEnd, referenceEnd) / 30d) * 5);
         // Tick generators allocate and invalidate axis layout. Only replace one
         // when its effective configuration actually changes.
         if (_configuredLapTicks == lapTicks &&
@@ -481,24 +480,10 @@ public sealed partial class OverviewPage : Page
         }
         _configuredLapTicks = lapTicks;
         _configuredTickInterval = interval;
-        TelemetryPlot.Plot.Axes.Bottom.TickGenerator =
-            new ScottPlot.TickGenerators.NumericFixedInterval(interval)
-            {
-                LabelFormatter = !lapTicks
-                    ? FormatSessionTime
-                    : FormatLapTime,
-            };
-    }
-
-    private static void StyleAxis(IAxis axis)
-    {
-        axis.FrameLineStyle.Width = .75f;
-        axis.MajorTickStyle.Length = 3;
-        axis.MajorTickStyle.Width = .75f;
-        axis.MinorTickStyle.Length = 0;
-        axis.TickLabelStyle.FontName = "Segoe UI Variable Text";
-        axis.TickLabelStyle.FontSize = 12;
-        axis.TickLabelStyle.Bold = false;
+        _timeAxis!.TickProvider = new IntervalChartTickProvider(interval);
+        _timeAxis.LabelFormatter = !lapTicks
+            ? FormatSessionTime
+            : FormatLapTime;
     }
 
     private void OnChartModeClicked(object sender, RoutedEventArgs args)
@@ -538,30 +523,26 @@ public sealed partial class OverviewPage : Page
 
     private void RebuildDisplayedSeries(OverviewSnapshot? snapshot)
     {
-        ClearDisplayed(_currentX, _currentSpeed, _currentRpm, _currentErs);
-        ClearDisplayed(_referenceX, _referenceSpeed, _referenceRpm, _referenceErs);
-        IEnumerable<OverviewChartPoint> current = _chartMode == OverviewChartMode.Default
+        IReadOnlyList<OverviewChartPoint> current = _chartMode == OverviewChartMode.Default
             ? _sessionPoints
             : _currentLapPoints;
         var currentOrigin = _chartMode == OverviewChartMode.Default ||
             _currentLapPoints.Count == 0
                 ? 0
                 : _currentLapPoints[0].SessionTime;
-        foreach (var point in current)
-        {
-            AppendDisplayed(_currentX, _currentSpeed, _currentRpm, _currentErs, point, currentOrigin);
-        }
+        ReplaceDisplayedSeries(_currentSeries, current, currentOrigin);
 
         var reference = ReferencePoints(snapshot);
-        if (reference.Count > 0)
+        ReplaceDisplayedSeries(
+            _referenceSeries,
+            reference,
+            reference.Count > 0 ? reference[0].SessionTime : 0);
+        var visible = reference.Count > 1;
+        foreach (var series in _referenceSeries)
         {
-            var origin = reference[0].SessionTime;
-            foreach (var point in reference)
-            {
-                AppendDisplayed(
-                    _referenceX, _referenceSpeed, _referenceRpm, _referenceErs, point, origin);
-            }
+            series.Visible = visible;
         }
+        _referenceSeriesVisible = visible;
     }
 
     private IReadOnlyList<OverviewChartPoint> ReferencePoints(OverviewSnapshot? snapshot)
@@ -625,41 +606,34 @@ public sealed partial class OverviewPage : Page
         }
     }
 
-    private static void AppendDisplayed(
-        List<double> x,
-        List<double> speed,
-        List<double> rpm,
-        List<double> ers,
-        OverviewChartPoint point,
+    private static void ReplaceDisplayedSeries(
+        ChartLineSeries[] series,
+        IReadOnlyList<OverviewChartPoint> points,
         float origin)
     {
-        x.Add(point.SessionTime - origin);
-        // Match Electron's SpeedRpmTimeChart: every channel shares one
-        // normalized coordinate space, while the axes display real units.
-        speed.Add(point.SpeedKph / 380d);
-        rpm.Add(point.Rpm / 16000d);
-        ers.Add(point.ErsPct / 100d);
-    }
-
-    private void RemoveDisplayedPrefix(int count)
-    {
-        if (count <= 0 || count > _currentX.Count)
+        if (points.Count == 0)
         {
+            foreach (var candidate in series)
+            {
+                candidate.Clear();
+            }
             return;
         }
-        _currentX.RemoveRange(0, count);
-        _currentSpeed.RemoveRange(0, count);
-        _currentRpm.RemoveRange(0, count);
-        _currentErs.RemoveRange(0, count);
-    }
 
-    private static void ClearDisplayed(
-        List<double> x, List<double> speed, List<double> rpm, List<double> ers)
-    {
-        x.Clear();
-        speed.Clear();
-        rpm.Clear();
-        ers.Clear();
+        var speed = new ChartPoint[points.Count];
+        var rpm = new ChartPoint[points.Count];
+        var ers = new ChartPoint[points.Count];
+        for (var index = 0; index < points.Count; index++)
+        {
+            var point = points[index];
+            var x = point.SessionTime - origin;
+            speed[index] = new ChartPoint(x, point.SpeedKph);
+            rpm[index] = new ChartPoint(x, point.Rpm);
+            ers[index] = new ChartPoint(x, point.ErsPct);
+        }
+        series[0].Replace(speed);
+        series[1].Replace(rpm);
+        series[2].Replace(ers);
     }
 
     private void ResetHistories()
@@ -688,8 +662,11 @@ public sealed partial class OverviewPage : Page
         _fastestLapPoints.Clear();
         _fastestLapMilliseconds = int.MaxValue;
         _currentLapNumber = null;
-        ClearDisplayed(_currentX, _currentSpeed, _currentRpm, _currentErs);
-        ClearDisplayed(_referenceX, _referenceSpeed, _referenceRpm, _referenceErs);
+        foreach (var series in _currentSeries.Concat(_referenceSeries))
+        {
+            series.Clear();
+        }
+        _referenceSeriesVisible = false;
     }
 
     private void RenderStats(OverviewSnapshot snapshot)
@@ -1355,106 +1332,21 @@ public sealed partial class OverviewPage : Page
             return;
         }
         var dark = ActualTheme == ElementTheme.Dark;
-        var transparent = ScottPlot.Color.FromHex("#00000000");
-        var axes = ScottPlot.Color.FromHex(dark ? "#7C8098" : "#6B7280");
-        var grid = ScottPlot.Color.FromHex(dark ? "#FFFFFF" : "#000000")
-            .WithAlpha(dark ? .05 : .045);
-        var plot = TelemetryPlot.Plot;
-        plot.FigureBackground.Color = transparent;
-        plot.DataBackground.Color = transparent;
-        plot.Axes.Color(axes);
-        ApplyAxisColor(plot.Axes.Left, SpeedColor);
-        ApplyAxisColor(_rpmAxis!, RpmColor);
-        ApplyAxisColor(_ersAxis!, ErsColor);
-        plot.Grid.MajorLineColor = grid;
-        if (_bottomBoundary is not null)
-        {
-            _bottomBoundary.Color = axes;
-        }
-        if (_crosshair is not null)
-        {
-            _crosshair.LineColor = axes.WithAlpha(dark ? .7 : .6);
-        }
+        var axes = dark
+            ? UiColor.FromArgb(255, 124, 128, 152)
+            : UiColor.FromArgb(255, 107, 114, 128);
+        var grid = dark
+            ? UiColor.FromArgb(13, 255, 255, 255)
+            : UiColor.FromArgb(12, 0, 0, 0);
+        _timeAxis!.Color = axes;
+        _speedAxis!.Color = SpeedColor;
+        _rpmAxis!.Color = RpmColor;
+        _ersAxis!.Color = ErsColor;
+        TelemetryPlot.GridColor = grid;
         SurfaceChart.ApplyTheme(dark);
         InnerChart.ApplyTheme(dark);
         BrakeChart.ApplyTheme(dark);
         WearChart.ApplyTheme(dark);
-    }
-
-    private static void ApplyAxisColor(IAxis axis, ScottPlot.Color color)
-    {
-        axis.TickLabelStyle.ForeColor = color;
-        axis.MajorTickStyle.Color = color;
-        axis.FrameLineStyle.Color = color;
-    }
-
-    private void OnPlotPointerMoved(object sender, PointerRoutedEventArgs args)
-    {
-        if (_currentX.Count == 0)
-        {
-            return;
-        }
-        var position = args.GetCurrentPoint(TelemetryPlot).Position;
-        var scale = XamlRoot?.RasterizationScale ?? 1;
-        var coordinates = TelemetryPlot.Plot.GetCoordinates(new Pixel(
-            (float)(position.X * scale), (float)(position.Y * scale)));
-        var index = _currentX.BinarySearch(coordinates.X);
-        if (index < 0)
-        {
-            index = ~index;
-            if (index >= _currentX.Count)
-            {
-                index = _currentX.Count - 1;
-            }
-            else if (index > 0 &&
-                Math.Abs(_currentX[index - 1] - coordinates.X) <
-                Math.Abs(_currentX[index] - coordinates.X))
-            {
-                index--;
-            }
-        }
-        TooltipTime.Text = _chartMode == OverviewChartMode.Default
-            ? FormatSessionTime(_currentX[index])
-            : FormatLapTime(_currentX[index]);
-        TooltipSpeed.Text = $" {_currentSpeed[index] * 380:0} kph";
-        TooltipRpm.Text = $" {_currentRpm[index] * 16000:N0}";
-        TooltipErs.Text = $" {_currentErs[index] * 100:0}%";
-        TelemetryTooltip.Visibility = Visibility.Visible;
-        Canvas.SetLeft(TelemetryTooltip, Math.Clamp(
-            position.X + 12, 4,
-            Math.Max(4, TelemetryPlot.ActualWidth - TelemetryTooltip.ActualWidth - 8)));
-        Canvas.SetTop(TelemetryTooltip, Math.Clamp(
-            position.Y + 12, 4,
-            Math.Max(4, TelemetryPlot.ActualHeight - TelemetryTooltip.ActualHeight - 8)));
-        if (_crosshair is not null)
-        {
-            _crosshair.Position = coordinates;
-            _crosshair.IsVisible = true;
-        }
-        var values = new[] { _currentSpeed[index], _currentRpm[index], _currentErs[index] };
-        for (var marker = 0; marker < 3; marker++)
-        {
-            _hoverMarkers[marker].Position = new Coordinates(_currentX[index], values[marker]);
-            _hoverMarkers[marker].IsVisible = true;
-        }
-        TelemetryPlot.Refresh();
-    }
-
-    private void OnPlotPointerExited(object sender, PointerRoutedEventArgs args)
-    {
-        TelemetryTooltip.Visibility = Visibility.Collapsed;
-        if (_crosshair is not null)
-        {
-            _crosshair.IsVisible = false;
-        }
-        foreach (var marker in _hoverMarkers)
-        {
-            if (marker is not null)
-            {
-                marker.IsVisible = false;
-            }
-        }
-        TelemetryPlot.Refresh();
     }
 
     private static IReadOnlyDictionary<string, double> ColorFields(
@@ -1505,13 +1397,9 @@ public sealed partial class OverviewPage : Page
         var count = 0;
         var total = 0d;
         var maximum = 0d;
-        TelemetryPlot.Plot.RenderManager.RenderFinished += (_, details) =>
+        TelemetryPlot.DiagnosticsUpdated += details =>
         {
-            if (details.Count <= 1)
-            {
-                return;
-            }
-            var milliseconds = details.Elapsed.TotalMilliseconds;
+            var milliseconds = details.FrameMilliseconds;
             count++;
             total += milliseconds;
             maximum = Math.Max(maximum, milliseconds);
@@ -1520,8 +1408,10 @@ public sealed partial class OverviewPage : Page
                 return;
             }
             Debug.WriteLine(
-                $"[ScottPlot] Overview/SpeedRpmErs: avg {total / count:0.00} ms, " +
-                $"max {maximum:0.00} ms, {details.Count:N0} total renders");
+                $"[D3D11Chart] Overview/SpeedRpmErs: avg {total / count:0.00} ms, " +
+                $"max {maximum:0.00} ms, {details.SourcePoints:N0} source points, " +
+                $"{details.SubmittedSegments:N0} segments, " +
+                $"LOD={details.UsedReduction}, WARP={details.UsingWarp}");
             count = 0;
             total = 0;
             maximum = 0;

@@ -5,8 +5,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="using:TrackNRace.WinUI3"
+    xmlns:charting="using:TrackNRace.Charting"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    xmlns:scottPlot="using:ScottPlot.WinUI"
     ActualThemeChanged="OnActualThemeChanged"
     Loaded="OnLoaded"
     Unloaded="OnUnloaded"
@@ -35,15 +35,6 @@
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
-        </Style>
-        <Style x:Key="OverviewTooltipStyle" TargetType="Border">
-            <Setter Property="Padding" Value="10,8" />
-            <Setter Property="Background" Value="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}" />
-            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="6" />
-            <Setter Property="IsHitTestVisible" Value="False" />
-            <Setter Property="Visibility" Value="Collapsed" />
         </Style>
         <Style
             x:Key="ChartModeButtonStyle"
@@ -138,36 +129,11 @@
                 </StackPanel>
             </Grid>
             <Grid Grid.Row="1">
-                <scottPlot:WinUIPlot
-                    x:Name="TelemetryPlot"
-                    PointerExited="OnPlotPointerExited"
-                    PointerMoved="OnPlotPointerMoved" />
+                <charting:GpuChart x:Name="TelemetryPlot" />
                 <TextBlock
                     x:Name="TelemetryNoData"
                     Style="{StaticResource OverviewEmptyStateStyle}"
                     Text="Waiting for telemetry" />
-                <Canvas IsHitTestVisible="False">
-                    <Border x:Name="TelemetryTooltip" Style="{StaticResource OverviewTooltipStyle}">
-                        <StackPanel Spacing="2">
-                            <TextBlock
-                                x:Name="TooltipTime"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                Style="{StaticResource CaptionTextBlockStyle}" />
-                            <TextBlock>
-                                <Run Foreground="#37872D" Text="Speed:" />
-                                <Run x:Name="TooltipSpeed" FontWeight="SemiBold" />
-                            </TextBlock>
-                            <TextBlock>
-                                <Run Foreground="#C4162A" Text="RPM:" />
-                                <Run x:Name="TooltipRpm" FontWeight="SemiBold" />
-                            </TextBlock>
-                            <TextBlock>
-                                <Run Foreground="#FADE2A" Text="ERS:" />
-                                <Run x:Name="TooltipErs" FontWeight="SemiBold" />
-                            </TextBlock>
-                        </StackPanel>
-                    </Border>
-                </Canvas>
             </Grid>
         </Grid>
 

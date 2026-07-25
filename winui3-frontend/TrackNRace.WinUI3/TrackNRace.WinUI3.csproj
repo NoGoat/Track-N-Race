@@ -17,6 +17,7 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NativeBridgeOutput>$(MSBuildProjectDirectory)\..\native\build\$(Configuration)\TrackNRace.EngineBridge.dll</NativeBridgeOutput>
+    <NativeChartOutput>$(MSBuildProjectDirectory)\..\native\build\$(Configuration)\TrackNRace.ChartRenderer.dll</NativeChartOutput>
   </PropertyGroup>
 
   <ItemGroup>
@@ -52,6 +53,11 @@
         Link="TrackNRace.EngineBridge.dll"
         CopyToOutputDirectory="PreserveNewest"
         CopyToPublishDirectory="PreserveNewest" />
+    <Content
+        Include="$(NativeChartOutput)"
+        Link="TrackNRace.ChartRenderer.dll"
+        CopyToOutputDirectory="PreserveNewest"
+        CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -63,6 +69,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\TrackNRace.Charting\TrackNRace.Charting.csproj" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <PackageReference Include="FluentIcons.WinUI" Version="2.2.333" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
