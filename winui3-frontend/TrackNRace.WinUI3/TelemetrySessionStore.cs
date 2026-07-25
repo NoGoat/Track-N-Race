@@ -174,15 +174,78 @@ internal sealed record WeatherForecastData
 
 internal sealed record CarPositionData(int Idx, double X, double Z);
 internal sealed record PositionsRowData(int PlayerIdx, CarPositionData[] Cars);
-internal sealed record InputTelemetrySample(
+internal sealed record TelemetrySample(
     float SessionTime,
     int Gear,
     float Throttle,
     float Brake,
-    double Steering);
+    double Steering,
+    int TyreTempSurfaceRl,
+    int TyreTempSurfaceRr,
+    int TyreTempSurfaceFl,
+    int TyreTempSurfaceFr,
+    int TyreTempInnerRl,
+    int TyreTempInnerRr,
+    int TyreTempInnerFl,
+    int TyreTempInnerFr,
+    int BrakeTempRl,
+    int BrakeTempRr,
+    int BrakeTempFl,
+    int BrakeTempFr);
 
-internal sealed record InputTelemetryReadResult(
-    InputTelemetrySample[] Samples,
+internal sealed record TelemetryReadResult(
+    TelemetrySample[] Samples,
+    int TotalCount,
+    long BufferEpoch,
+    long TimelineRevision,
+    bool Reset);
+
+internal sealed record DamageRowData
+{
+    public float SessionTime { get; init; }
+    public double TyreWearRl { get; init; }
+    public double TyreWearRr { get; init; }
+    public double TyreWearFl { get; init; }
+    public double TyreWearFr { get; init; }
+    public int BlistersRl { get; init; }
+    public int BlistersRr { get; init; }
+    public int BlistersFl { get; init; }
+    public int BlistersFr { get; init; }
+}
+
+internal sealed record TyreSetData
+{
+    public int Idx { get; init; }
+    public int ActualCompound { get; init; }
+    public int VisualCompound { get; init; }
+    public int Wear { get; init; }
+    public bool Available { get; init; }
+    public int RecommendedSession { get; init; }
+    public int LifeSpan { get; init; }
+    public int UsableLife { get; init; }
+    public int LapDeltaMs { get; init; }
+    public bool Fitted { get; init; }
+}
+
+internal sealed record TyreSetsRowData
+{
+    public float SessionTime { get; init; }
+    public TyreSetData[] Sets { get; init; } = [];
+    public int FittedIdx { get; init; }
+}
+
+internal sealed record TyresSnapshot(
+    TyreSetsRowData? TyreSets,
+    TelemetrySample? LatestTelemetry,
+    DamageRowData? LatestDamage,
+    int? SessionType,
+    IReadOnlyDictionary<string, string> Labels,
+    IReadOnlyDictionary<string, CardColorSpecData> CardColors,
+    long Revision,
+    long TimelineRevision);
+
+internal sealed record DamageReadResult(
+    DamageRowData[] Rows,
     int TotalCount,
     long BufferEpoch,
     long TimelineRevision,
@@ -236,6 +299,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     private const int MaxHotRows = 750_000;
     private const int HotRowTrimChunk = 4096;
     private const float HotRowRetentionSeconds = 600;
+    private const int MaxDamageRows = MaxHotRows;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -276,14 +340,18 @@ internal sealed class TelemetrySessionStore : IDisposable
     private string _aeroMode = "drs";
     private SessionData? _session;
     private PositionsRowData? _positions;
+    private TyreSetsRowData? _tyreSets;
+    private DamageRowData? _latestDamage;
     private readonly List<RaceEventData> _raceEvents = [];
-    private readonly List<InputTelemetrySample> _inputTelemetry = [];
+    private readonly List<TelemetrySample> _telemetry = [];
+    private readonly List<DamageRowData> _damageHistory = [];
     private RaceEventData[] _playbackEvents = [];
     private bool _hasExplicitFastestLap;
     private bool _isPlayback;
     private long _revision;
     private long _timelineRevision;
-    private long _inputBufferEpoch;
+    private long _telemetryBufferEpoch;
+    private long _damageBufferEpoch;
     private bool _disposed;
 
     public TelemetrySessionStore(TelemetryEngine engine)
@@ -299,7 +367,8 @@ internal sealed class TelemetrySessionStore : IDisposable
     }
 
     public event Action? SnapshotChanged;
-    public event Action? InputTelemetryChanged;
+    public event Action? TelemetryChanged;
+    public event Action? TyresChanged;
     public event Action<TimelineResetReason>? TimelineReset;
 
     public StandingsSnapshot Snapshot
@@ -345,7 +414,26 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
-    public InputTelemetryReadResult ReadInputTelemetry(
+    public TyresSnapshot TyresSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new TyresSnapshot(
+                    _tyreSets,
+                    _telemetry.Count > 0 ? _telemetry[^1] : null,
+                    _latestDamage,
+                    _session?.SessionType,
+                    _labels,
+                    _cardColors,
+                    _revision,
+                    _timelineRevision);
+            }
+        }
+    }
+
+    public TelemetryReadResult ReadTelemetry(
         int knownCount,
         long knownBufferEpoch,
         long knownTimelineRevision)
@@ -353,19 +441,43 @@ internal sealed class TelemetrySessionStore : IDisposable
         lock (_gate)
         {
             var reset =
-                knownBufferEpoch != _inputBufferEpoch ||
+                knownBufferEpoch != _telemetryBufferEpoch ||
                 knownTimelineRevision != _timelineRevision ||
                 knownCount < 0 ||
-                knownCount > _inputTelemetry.Count;
+                knownCount > _telemetry.Count;
             var start = reset ? 0 : knownCount;
-            var samples = new InputTelemetrySample[
-                _inputTelemetry.Count - start];
-            _inputTelemetry.CopyTo(
+            var samples = new TelemetrySample[
+                _telemetry.Count - start];
+            _telemetry.CopyTo(
                 start, samples, 0, samples.Length);
-            return new InputTelemetryReadResult(
+            return new TelemetryReadResult(
                 samples,
-                _inputTelemetry.Count,
-                _inputBufferEpoch,
+                _telemetry.Count,
+                _telemetryBufferEpoch,
+                _timelineRevision,
+                reset);
+        }
+    }
+
+    public DamageReadResult ReadDamage(
+        int knownCount,
+        long knownBufferEpoch,
+        long knownTimelineRevision)
+    {
+        lock (_gate)
+        {
+            var reset =
+                knownBufferEpoch != _damageBufferEpoch ||
+                knownTimelineRevision != _timelineRevision ||
+                knownCount < 0 ||
+                knownCount > _damageHistory.Count;
+            var start = reset ? 0 : knownCount;
+            var rows = new DamageRowData[_damageHistory.Count - start];
+            _damageHistory.CopyTo(start, rows, 0, rows.Length);
+            return new DamageReadResult(
+                rows,
+                _damageHistory.Count,
+                _damageBufferEpoch,
                 _timelineRevision,
                 reset);
         }
@@ -408,6 +520,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                 "all_status" => SetAllStatus(Deserialize<AllStatusRowData>(json)),
                 "lap" => SetLap(Deserialize<LapRowData>(json)),
                 "session" => SetSession(Deserialize<SessionData>(json)),
+                "tyre_sets" => SetTyreSets(Deserialize<TyreSetsRowData>(json)),
+                "damage" => SetDamage(Deserialize<DamageRowData>(json)),
                 "positions" => SetPositionsJson(root),
                 "status" => SetPlayerStatus(Deserialize<PlayerStatusData>(json)),
                 "fastest_lap" => SetExplicitFastest(root),
@@ -423,6 +537,10 @@ internal sealed class TelemetrySessionStore : IDisposable
             if (changed)
             {
                 SnapshotChanged?.Invoke();
+                if (type is "tyre_sets" or "damage" or "session" or "protocol_status")
+                {
+                    TyresChanged?.Invoke();
+                }
             }
         }
         catch (JsonException)
@@ -450,7 +568,7 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _positions = positions;
                 _revision++;
             }
-            AppendInputTelemetryLocked(telemetry);
+            AppendTelemetryLocked(telemetry);
         }
         if (positionsChanged)
         {
@@ -458,7 +576,7 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
         if (telemetryChanged)
         {
-            InputTelemetryChanged?.Invoke();
+            TelemetryChanged?.Invoke();
         }
     }
 
@@ -480,7 +598,10 @@ internal sealed class TelemetrySessionStore : IDisposable
             _lap = null;
             _playerStatus = null;
             _positions = null;
-            ClearInputTelemetryLocked();
+            _tyreSets = null;
+            _latestDamage = null;
+            ClearTelemetryLocked();
+            ClearDamageLocked();
             _timelineRevision++;
             _revision++;
         }
@@ -528,6 +649,38 @@ internal sealed class TelemetrySessionStore : IDisposable
 
     private bool SetSession(SessionData? value) =>
         SetValue(value, data => _session = data);
+
+    private bool SetTyreSets(TyreSetsRowData? value) =>
+        SetValue(value, data => _tyreSets = data);
+
+    private bool SetDamage(DamageRowData? value)
+    {
+        if (value is null)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_damageHistory.Count > 0 &&
+                value.SessionTime < _damageHistory[^1].SessionTime)
+            {
+                var keep = LowerBoundDamage(value.SessionTime);
+                if (keep < _damageHistory.Count)
+                {
+                    _damageHistory.RemoveRange(
+                        keep, _damageHistory.Count - keep);
+                    _damageBufferEpoch++;
+                }
+            }
+
+            _latestDamage = value;
+            _damageHistory.Add(value);
+            TrimDamageLocked();
+            _revision++;
+        }
+        return true;
+    }
 
     private bool SetPositionsJson(JsonElement root)
     {
@@ -708,12 +861,16 @@ internal sealed class TelemetrySessionStore : IDisposable
             _isPlayback = loaded;
             if (loaded)
             {
-                ClearInputTelemetryLocked();
+                _tyreSets = null;
+                _latestDamage = null;
+                ClearTelemetryLocked();
+                ClearDamageLocked();
             }
         }
         if (loaded)
         {
-            InputTelemetryChanged?.Invoke();
+            TelemetryChanged?.Invoke();
+            TyresChanged?.Invoke();
         }
         return false;
     }
@@ -769,7 +926,10 @@ internal sealed class TelemetrySessionStore : IDisposable
             _playerStatus = null;
             _session = null;
             _positions = null;
-            ClearInputTelemetryLocked();
+            _tyreSets = null;
+            _latestDamage = null;
+            ClearTelemetryLocked();
+            ClearDamageLocked();
             _fastestLapCarIndex = null;
             _sessionHistoryBest.Clear();
             _raceEvents.Clear();
@@ -795,50 +955,50 @@ internal sealed class TelemetrySessionStore : IDisposable
         _revision,
         _timelineRevision);
 
-    private void AppendInputTelemetryLocked(
-        IReadOnlyList<InputTelemetrySample> samples)
+    private void AppendTelemetryLocked(
+        IReadOnlyList<TelemetrySample> samples)
     {
         foreach (var sample in samples)
         {
-            if (_inputTelemetry.Count > 0 &&
-                sample.SessionTime < _inputTelemetry[^1].SessionTime)
+            if (_telemetry.Count > 0 &&
+                sample.SessionTime < _telemetry[^1].SessionTime)
             {
-                var keep = LowerBoundInput(sample.SessionTime);
-                if (keep < _inputTelemetry.Count)
+                var keep = LowerBoundTelemetry(sample.SessionTime);
+                if (keep < _telemetry.Count)
                 {
-                    _inputTelemetry.RemoveRange(
-                        keep, _inputTelemetry.Count - keep);
-                    _inputBufferEpoch++;
+                    _telemetry.RemoveRange(
+                        keep, _telemetry.Count - keep);
+                    _telemetryBufferEpoch++;
                 }
             }
 
-            _inputTelemetry.Add(sample);
+            _telemetry.Add(sample);
         }
 
-        if (_inputTelemetry.Count == 0)
+        if (_telemetry.Count == 0)
         {
             return;
         }
 
-        var cutoff = _inputTelemetry[^1].SessionTime - HotRowRetentionSeconds;
-        var firstValid = LowerBoundInput(cutoff);
-        var excess = Math.Max(0, _inputTelemetry.Count - MaxHotRows);
+        var cutoff = _telemetry[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundTelemetry(cutoff);
+        var excess = Math.Max(0, _telemetry.Count - MaxHotRows);
         var removeCount = Math.Max(firstValid, excess);
         if (removeCount >= HotRowTrimChunk || excess > 0)
         {
-            _inputTelemetry.RemoveRange(0, removeCount);
-            _inputBufferEpoch++;
+            _telemetry.RemoveRange(0, removeCount);
+            _telemetryBufferEpoch++;
         }
     }
 
-    private int LowerBoundInput(float sessionTime)
+    private int LowerBoundTelemetry(float sessionTime)
     {
         var low = 0;
-        var high = _inputTelemetry.Count;
+        var high = _telemetry.Count;
         while (low < high)
         {
             var middle = low + ((high - low) / 2);
-            if (_inputTelemetry[middle].SessionTime < sessionTime)
+            if (_telemetry[middle].SessionTime < sessionTime)
             {
                 low = middle + 1;
             }
@@ -850,15 +1010,57 @@ internal sealed class TelemetrySessionStore : IDisposable
         return low;
     }
 
-    private void ClearInputTelemetryLocked()
+    private int LowerBoundDamage(float sessionTime)
     {
-        _inputTelemetry.Clear();
-        _inputBufferEpoch++;
+        var low = 0;
+        var high = _damageHistory.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (_damageHistory[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        return low;
+    }
+
+    private void TrimDamageLocked()
+    {
+        if (_damageHistory.Count == 0)
+        {
+            return;
+        }
+        var cutoff = _damageHistory[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundDamage(cutoff);
+        var excess = Math.Max(0, _damageHistory.Count - MaxDamageRows);
+        var removeCount = Math.Max(firstValid, excess);
+        if (removeCount >= HotRowTrimChunk || excess > 0)
+        {
+            _damageHistory.RemoveRange(0, removeCount);
+            _damageBufferEpoch++;
+        }
+    }
+
+    private void ClearTelemetryLocked()
+    {
+        _telemetry.Clear();
+        _telemetryBufferEpoch++;
+    }
+
+    private void ClearDamageLocked()
+    {
+        _damageHistory.Clear();
+        _damageBufferEpoch++;
     }
 
     private static bool TryDecodeHotBatch(
         ReadOnlySpan<byte> data,
-        out List<InputTelemetrySample> telemetry,
+        out List<TelemetrySample> telemetry,
         out PositionsRowData? latestPositions)
     {
         telemetry = [];
@@ -877,14 +1079,42 @@ internal sealed class TelemetrySessionStore : IDisposable
                         !TryReadSingle(data, ref offset, out var throttle) ||
                         !TryReadSingle(data, ref offset, out var brake) ||
                         !TryReadDouble(data, ref offset, out var steering) ||
-                        !Advance(data, ref offset, 19))
+                        !TryReadByte(data, ref offset, out var tyreSurfaceRl) ||
+                        !TryReadByte(data, ref offset, out var tyreSurfaceRr) ||
+                        !TryReadByte(data, ref offset, out var tyreSurfaceFl) ||
+                        !TryReadByte(data, ref offset, out var tyreSurfaceFr) ||
+                        !TryReadByte(data, ref offset, out var tyreInnerRl) ||
+                        !TryReadByte(data, ref offset, out var tyreInnerRr) ||
+                        !TryReadByte(data, ref offset, out var tyreInnerFl) ||
+                        !TryReadByte(data, ref offset, out var tyreInnerFr) ||
+                        !TryReadUInt16(data, ref offset, out var brakeTempRl) ||
+                        !TryReadUInt16(data, ref offset, out var brakeTempRr) ||
+                        !TryReadUInt16(data, ref offset, out var brakeTempFl) ||
+                        !TryReadUInt16(data, ref offset, out var brakeTempFr) ||
+                        !Advance(data, ref offset, 3))
                     {
                         telemetry = [];
                         latestPositions = null;
                         return false;
                     }
-                    telemetry.Add(new InputTelemetrySample(
-                        sessionTime, gear, throttle, brake, steering));
+                    telemetry.Add(new TelemetrySample(
+                        sessionTime,
+                        gear,
+                        throttle,
+                        brake,
+                        steering,
+                        tyreSurfaceRl,
+                        tyreSurfaceRr,
+                        tyreSurfaceFl,
+                        tyreSurfaceFr,
+                        tyreInnerRl,
+                        tyreInnerRr,
+                        tyreInnerFl,
+                        tyreInnerFr,
+                        brakeTempRl,
+                        brakeTempRr,
+                        brakeTempFl,
+                        brakeTempFr));
                     break;
                 case 2:
                     // motion: f32 + 3*f64.
@@ -935,6 +1165,36 @@ internal sealed class TelemetrySessionStore : IDisposable
             return false;
         }
         value = unchecked((sbyte)data[offset++]);
+        return true;
+    }
+
+    private static bool TryReadByte(
+        ReadOnlySpan<byte> data,
+        ref int offset,
+        out byte value)
+    {
+        if (offset >= data.Length)
+        {
+            value = 0;
+            return false;
+        }
+        value = data[offset++];
+        return true;
+    }
+
+    private static bool TryReadUInt16(
+        ReadOnlySpan<byte> data,
+        ref int offset,
+        out ushort value)
+    {
+        if (offset + sizeof(ushort) > data.Length)
+        {
+            value = 0;
+            return false;
+        }
+        value = BinaryPrimitives.ReadUInt16LittleEndian(
+            data.Slice(offset, sizeof(ushort)));
+        offset += sizeof(ushort);
         return true;
     }
 

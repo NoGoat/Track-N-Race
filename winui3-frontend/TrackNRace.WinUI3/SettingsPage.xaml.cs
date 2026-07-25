@@ -29,6 +29,8 @@ public sealed partial class SettingsPage : Page
         SessionDriverModeComboBox.SelectedIndex = (int)display.DriverDisplayMode;
         SessionStaleTimeoutNumberBox.Value = display.StaleCarTimeoutSeconds;
         SessionReduceAnimationsToggle.IsOn = display.ReduceAnimations;
+        TyreWearModeComboBox.SelectedIndex =
+            app.TyreWearMode == TyreWearDisplayMode.Wear ? 1 : 0;
         _isInitialized = true;
     }
 
@@ -80,6 +82,19 @@ public sealed partial class SettingsPage : Page
             _ => ElementTheme.Default,
         };
         ((App)Application.Current).SetTheme(theme);
+    }
+
+    private void OnTyreWearModeChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        ((App)Application.Current).SetTyreWearMode(
+            TyreWearModeComboBox.SelectedIndex == 1
+                ? TyreWearDisplayMode.Wear
+                : TyreWearDisplayMode.Life);
     }
 
     private void OnApplyTelemetrySettings(object sender, RoutedEventArgs args)

@@ -67,7 +67,7 @@ public sealed partial class InputsPage : Page
         _store = app.TelemetryState;
         if (_store is not null)
         {
-            _store.InputTelemetryChanged += OnInputTelemetryChanged;
+            _store.TelemetryChanged += OnInputTelemetryChanged;
             _store.TimelineReset += OnTimelineReset;
         }
         app.ChartWindowChanged += OnChartWindowChanged;
@@ -85,7 +85,7 @@ public sealed partial class InputsPage : Page
         _isLoaded = false;
         if (_store is not null)
         {
-            _store.InputTelemetryChanged -= OnInputTelemetryChanged;
+            _store.TelemetryChanged -= OnInputTelemetryChanged;
             _store.TimelineReset -= OnTimelineReset;
             _store = null;
         }
@@ -327,7 +327,7 @@ public sealed partial class InputsPage : Page
             return;
         }
 
-        var read = _store.ReadInputTelemetry(
+        var read = _store.ReadTelemetry(
             _storeCount, _bufferEpoch, _timelineRevision);
         if (read.Reset)
         {

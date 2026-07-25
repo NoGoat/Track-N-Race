@@ -10,6 +10,7 @@ public partial class App : Application
     private const string BindAddressSettingKey = "TelemetryBindAddress";
     private const string ProtocolSettingKey = "TelemetryProtocol";
     private const string ChartWindowSettingKey = "ChartWindowSeconds";
+    private const string TyreWearDisplayModeKey = "TyreWearDisplayMode";
     private const string SessionCompactHeaderKey = "SessionCompactHeader";
     private const string SessionCompactCardsKey = "SessionCompactCards";
     private const string SessionWeatherDensityKey = "SessionWeatherDensity";
@@ -28,8 +29,10 @@ public partial class App : Application
     public string TelemetryBindAddress { get; private set; }
     public TelemetryProtocol SelectedProtocol { get; private set; }
     public int ChartWindowSeconds { get; private set; }
+    public TyreWearDisplayMode TyreWearMode { get; private set; }
     public SessionDisplaySettings SessionDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
+    public event Action<TyreWearDisplayMode>? TyreWearModeChanged;
     public event Action? SessionDisplayChanged;
     private int _selectedDriverIndex = -1;
 
@@ -53,6 +56,7 @@ public partial class App : Application
             ?? "0.0.0.0";
         SelectedProtocol = ReadProtocol();
         ChartWindowSeconds = ReadChartWindow();
+        TyreWearMode = ReadTyreWearMode();
         SessionDisplay = ReadSessionDisplay();
     }
 
@@ -165,6 +169,20 @@ public partial class App : Application
         ChartWindowChanged?.Invoke(seconds);
     }
 
+    public void SetTyreWearMode(TyreWearDisplayMode mode)
+    {
+        if (mode is not (TyreWearDisplayMode.Life or TyreWearDisplayMode.Wear) ||
+            mode == TyreWearMode)
+        {
+            return;
+        }
+
+        TyreWearMode = mode;
+        ApplicationData.Current.LocalSettings.Values[TyreWearDisplayModeKey] =
+            mode.ToString();
+        TyreWearModeChanged?.Invoke(mode);
+    }
+
     public void SetSessionDisplay(SessionDisplaySettings settings)
     {
         settings = settings with
@@ -213,6 +231,16 @@ public partial class App : Application
             seconds is 15 or 30 or 60 or 120 or 300 or 600
                 ? seconds
                 : 30;
+    }
+
+    private static TyreWearDisplayMode ReadTyreWearMode()
+    {
+        var value =
+            ApplicationData.Current.LocalSettings.Values[TyreWearDisplayModeKey] as string;
+        return Enum.TryParse<TyreWearDisplayMode>(value, out var mode) &&
+            mode is TyreWearDisplayMode.Life or TyreWearDisplayMode.Wear
+                ? mode
+                : TyreWearDisplayMode.Life;
     }
 
     private static SessionDisplaySettings ReadSessionDisplay()

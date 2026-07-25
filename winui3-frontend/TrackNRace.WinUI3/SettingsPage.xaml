@@ -56,6 +56,26 @@
                     <TextBlock
                         AutomationProperties.HeadingLevel="Level2"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Tyres page" />
+
+                    <toolkit:SettingsCard
+                        Description="Choose whether the fourth Tyres graph shows used tread or remaining tyre life."
+                        Header="Wear chart">
+                        <ComboBox
+                            x:Name="TyreWearModeComboBox"
+                            Width="160"
+                            AutomationProperties.Name="Tyre wear chart mode"
+                            SelectionChanged="OnTyreWearModeChanged">
+                            <x:String>Tyre life</x:String>
+                            <x:String>Tyre wear</x:String>
+                        </ComboBox>
+                    </toolkit:SettingsCard>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
                         Text="Session page" />
 
                     <toolkit:SettingsCard
