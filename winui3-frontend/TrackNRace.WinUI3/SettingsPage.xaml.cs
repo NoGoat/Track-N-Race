@@ -29,6 +29,7 @@ public sealed partial class SettingsPage : Page
         SessionDriverModeComboBox.SelectedIndex = (int)display.DriverDisplayMode;
         SessionStaleTimeoutNumberBox.Value = display.StaleCarTimeoutSeconds;
         SessionReduceAnimationsToggle.IsOn = display.ReduceAnimations;
+        CompactPowerCardsToggle.IsOn = app.PowerDisplay.CompactCards;
         TyreWearModeComboBox.SelectedIndex =
             app.TyreWearMode == TyreWearDisplayMode.Wear ? 1 : 0;
         _isInitialized = true;
@@ -61,6 +62,17 @@ public sealed partial class SettingsPage : Page
             (TrackDriverDisplayMode)Math.Max(0, SessionDriverModeComboBox.SelectedIndex),
             timeout,
             SessionReduceAnimationsToggle.IsOn));
+    }
+
+    private void OnPowerDisplaySettingChanged(object sender, RoutedEventArgs args)
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        ((App)Application.Current).SetPowerDisplay(
+            new PowerDisplaySettings(CompactPowerCardsToggle.IsOn));
     }
 
     private void OnThemeSelectionChanged(object sender, SelectionChangedEventArgs args)

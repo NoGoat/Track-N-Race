@@ -19,6 +19,7 @@ public partial class App : Application
     private const string SessionDriverModeKey = "SessionDriverMode";
     private const string SessionStaleTimeoutKey = "SessionStaleTimeoutSeconds";
     private const string SessionReduceAnimationsKey = "SessionReduceAnimations";
+    private const string PowerCompactCardsKey = "PowerCompactCards";
 
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
@@ -31,9 +32,11 @@ public partial class App : Application
     public int ChartWindowSeconds { get; private set; }
     public TyreWearDisplayMode TyreWearMode { get; private set; }
     public SessionDisplaySettings SessionDisplay { get; private set; }
+    public PowerDisplaySettings PowerDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
     public event Action<TyreWearDisplayMode>? TyreWearModeChanged;
     public event Action? SessionDisplayChanged;
+    public event Action? PowerDisplayChanged;
     private int _selectedDriverIndex = -1;
 
     internal int? SelectedDriverIndex
@@ -58,6 +61,7 @@ public partial class App : Application
         ChartWindowSeconds = ReadChartWindow();
         TyreWearMode = ReadTyreWearMode();
         SessionDisplay = ReadSessionDisplay();
+        PowerDisplay = ReadPowerDisplay();
     }
 
     public void SetTheme(ElementTheme theme)
@@ -207,6 +211,19 @@ public partial class App : Application
         SessionDisplayChanged?.Invoke();
     }
 
+    public void SetPowerDisplay(PowerDisplaySettings settings)
+    {
+        if (settings == PowerDisplay)
+        {
+            return;
+        }
+
+        PowerDisplay = settings;
+        ApplicationData.Current.LocalSettings.Values[PowerCompactCardsKey] =
+            settings.CompactCards;
+        PowerDisplayChanged?.Invoke();
+    }
+
     private static ushort ReadUdpPort()
     {
         var value = ApplicationData.Current.LocalSettings.Values[UdpPortSettingKey];
@@ -266,5 +283,12 @@ public partial class App : Application
             driver,
             timeout,
             values[SessionReduceAnimationsKey] is true);
+    }
+
+    private static PowerDisplaySettings ReadPowerDisplay()
+    {
+        var values = ApplicationData.Current.LocalSettings.Values;
+        return new PowerDisplaySettings(
+            values[PowerCompactCardsKey] is true);
     }
 }

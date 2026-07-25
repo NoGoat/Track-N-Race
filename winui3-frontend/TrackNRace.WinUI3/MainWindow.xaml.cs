@@ -103,6 +103,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (pageName == "Power")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(PowerPage))
+            {
+                RootFrame.Navigate(typeof(PowerPage));
+            }
+            return;
+        }
+
         if (pageName == "Tyres")
         {
             if (RootFrame.CurrentSourcePageType != typeof(TyresPage))

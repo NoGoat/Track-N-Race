@@ -56,9 +56,15 @@ internal static class TelemetryColors
         "info" => dark
             ? Color.FromArgb(255, 87, 148, 242)
             : Color.FromArgb(255, 11, 87, 208),
+        "ice" => dark
+            ? Color.FromArgb(255, 87, 148, 242)
+            : Color.FromArgb(255, 11, 87, 208),
         "mguk" => dark
-            ? Color.FromArgb(255, 0, 208, 255)
-            : Color.FromArgb(255, 0, 112, 168),
+            ? Color.FromArgb(255, 250, 222, 42)
+            : Color.FromArgb(255, 176, 96, 0),
+        "fuel" => dark
+            ? Color.FromArgb(255, 240, 165, 0)
+            : Color.FromArgb(255, 194, 100, 0),
         "wear1" => dark
             ? Color.FromArgb(255, 80, 200, 120)
             : Color.FromArgb(255, 30, 130, 70),

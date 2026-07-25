@@ -56,6 +56,21 @@
                     <TextBlock
                         AutomationProperties.HeadingLevel="Level2"
                         Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Power page" />
+
+                    <toolkit:SettingsCard
+                        Description="Show the seven Power statistics as a dense single-line strip."
+                        Header="Compact info cards">
+                        <ToggleSwitch
+                            x:Name="CompactPowerCardsToggle"
+                            Toggled="OnPowerDisplaySettingChanged" />
+                    </toolkit:SettingsCard>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        AutomationProperties.HeadingLevel="Level2"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
                         Text="Tyres page" />
 
                     <toolkit:SettingsCard

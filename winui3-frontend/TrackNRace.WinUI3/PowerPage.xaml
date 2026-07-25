@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="TrackNRace.WinUI3.PowerPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:scottPlot="using:ScottPlot.WinUI"
+    ActualThemeChanged="OnActualThemeChanged"
+    Loaded="OnLoaded"
+    Unloaded="OnUnloaded"
+    mc:Ignorable="d">
+    <Page.Resources>
+        <Style
+            x:Key="PowerHeadingStyle"
+            BasedOn="{StaticResource BodyStrongTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontStyle" Value="Normal" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style
+            x:Key="PowerLegendStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Style>
+        <Style x:Key="PowerTooltipStyle" TargetType="Border">
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Background" Value="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="IsHitTestVisible" Value="False" />
+            <Setter Property="Visibility" Value="Collapsed" />
+        </Style>
+        <Style
+            x:Key="PowerTooltipTimeStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Style>
+        <Style
+            x:Key="PowerTooltipValueStyle"
+            BasedOn="{StaticResource BodyTextBlockStyle}"
+            TargetType="TextBlock" />
+        <Style
+            x:Key="PowerEmptyStateStyle"
+            BasedOn="{StaticResource CaptionTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Style>
+    </Page.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="1" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="StatsGrid" MinHeight="72" />
+
+        <Border
+            Grid.Row="1"
+            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+        <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="1" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="1" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border>
+                <Grid Padding="16,12,12,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock
+                            AutomationProperties.HeadingLevel="Level2"
+                            Style="{StaticResource PowerHeadingStyle}"
+                            Text="POWER SPLIT" />
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="12">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#5794F2" RadiusX="1" RadiusY="1" />
+                                <TextBlock Style="{StaticResource PowerLegendStyle}" Text="ICE" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#FADE2A" RadiusX="1" RadiusY="1" />
+                                <TextBlock Style="{StaticResource PowerLegendStyle}" Text="MGU-K" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="PowerSplitPlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnPowerSplitPointerMoved" />
+                        <TextBlock
+                            x:Name="PowerSplitNoData"
+                            Style="{StaticResource PowerEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border x:Name="PowerSplitTooltip" Style="{StaticResource PowerTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock x:Name="PowerSplitTooltipTime" Style="{StaticResource PowerTooltipTimeStyle}" />
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#5794F2" Text="ICE:" />
+                                        <Run x:Name="PowerSplitTooltipIce" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#FADE2A" Text="MGU-K:" />
+                                        <Run x:Name="PowerSplitTooltipMguk" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Text="Total:" />
+                                        <Run x:Name="PowerSplitTooltipTotal" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Border Grid.Column="2">
+                <Grid Padding="12,12,16,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock
+                            AutomationProperties.HeadingLevel="Level2"
+                            Style="{StaticResource PowerHeadingStyle}"
+                            Text="ERS HARVEST" />
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="12">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#37872D" RadiusX="1" RadiusY="1" />
+                                <TextBlock Style="{StaticResource PowerLegendStyle}" Text="MGU-K" />
+                            </StackPanel>
+                            <StackPanel x:Name="MguhLegend" Orientation="Horizontal" Spacing="6">
+                                <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#C4162A" RadiusX="1" RadiusY="1" />
+                                <TextBlock Style="{StaticResource PowerLegendStyle}" Text="MGU-H" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource PowerLegendStyle}" Text="resets each lap" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="ErsHarvestPlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnErsHarvestPointerMoved" />
+                        <TextBlock
+                            x:Name="ErsHarvestNoData"
+                            Style="{StaticResource PowerEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border x:Name="ErsHarvestTooltip" Style="{StaticResource PowerTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock x:Name="ErsHarvestTooltipTime" Style="{StaticResource PowerTooltipTimeStyle}" />
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#37872D" Text="MGU-K:" />
+                                        <Run x:Name="ErsHarvestTooltipMguk" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock x:Name="ErsHarvestTooltipMguhRow" Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#C4162A" Text="MGU-H:" />
+                                        <Run x:Name="ErsHarvestTooltipMguh" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Text="Total:" />
+                                        <Run x:Name="ErsHarvestTooltipTotal" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="1" Grid.ColumnSpan="3" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Border Grid.Row="2">
+                <Grid Padding="16,12,12,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock
+                            AutomationProperties.HeadingLevel="Level2"
+                            Style="{StaticResource PowerHeadingStyle}"
+                            Text="ERS STORE" />
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="12">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#5794F2" RadiusX="1" RadiusY="1" />
+                                <TextBlock Style="{StaticResource PowerLegendStyle}" Text="ERS" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource PowerLegendStyle}" Text="max 4.0 MJ" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="ErsStorePlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnErsStorePointerMoved" />
+                        <TextBlock
+                            x:Name="ErsStoreNoData"
+                            Style="{StaticResource PowerEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border x:Name="ErsStoreTooltip" Style="{StaticResource PowerTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock x:Name="ErsStoreTooltipTime" Style="{StaticResource PowerTooltipTimeStyle}" />
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#5794F2" Text="ERS:" />
+                                        <Run x:Name="ErsStoreTooltipPercent" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Text="Stored:" />
+                                        <Run x:Name="ErsStoreTooltipEnergy" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="2" Grid.Column="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Border Grid.Row="2" Grid.Column="2">
+                <Grid Padding="12,12,16,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock
+                            AutomationProperties.HeadingLevel="Level2"
+                            Style="{StaticResource PowerHeadingStyle}"
+                            Text="FUEL HISTORY" />
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="6">
+                            <Rectangle Width="12" Height="2" VerticalAlignment="Center" Fill="#F0A500" RadiusX="1" RadiusY="1" />
+                            <TextBlock Style="{StaticResource PowerLegendStyle}" Text="Fuel" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <scottPlot:WinUIPlot
+                            x:Name="FuelPlot"
+                            PointerExited="OnPlotPointerExited"
+                            PointerMoved="OnFuelPointerMoved" />
+                        <TextBlock
+                            x:Name="FuelNoData"
+                            Style="{StaticResource PowerEmptyStateStyle}"
+                            Text="Waiting for telemetry" />
+                        <Canvas IsHitTestVisible="False">
+                            <Border x:Name="FuelTooltip" Style="{StaticResource PowerTooltipStyle}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock x:Name="FuelTooltipTime" Style="{StaticResource PowerTooltipTimeStyle}" />
+                                    <TextBlock Style="{StaticResource PowerTooltipValueStyle}">
+                                        <Run Foreground="#F0A500" Text="Fuel:" />
+                                        <Run x:Name="FuelTooltipValue" FontWeight="SemiBold" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </Canvas>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

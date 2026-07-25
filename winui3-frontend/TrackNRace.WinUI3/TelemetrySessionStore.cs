@@ -90,6 +90,10 @@ internal sealed record PlayerStatusData
     public double ErsPct { get; init; }
     public int ErsMode { get; init; }
     public int ErsDeployedJ { get; init; }
+    public double EnginePowerIceKw { get; init; }
+    public double EnginePowerMgukKw { get; init; }
+    public int ErsHarvestedMgukJ { get; init; }
+    public int ErsHarvestedMguhJ { get; init; }
 
     public CarStatusData AsCarStatus(int carIndex) => new()
     {
@@ -108,6 +112,21 @@ internal sealed record PlayerStatusData
         ErsDeployedJ = ErsDeployedJ,
     };
 }
+
+internal sealed record PowerSnapshot(
+    PlayerStatusData? Latest,
+    IReadOnlyDictionary<string, CardColorSpecData> CardColors,
+    bool HasMguh,
+    double? FuelUpperLimit,
+    long Revision,
+    long TimelineRevision);
+
+internal sealed record PowerReadResult(
+    PlayerStatusData[] Rows,
+    int TotalCount,
+    long BufferEpoch,
+    long TimelineRevision,
+    bool Reset);
 
 internal sealed record LapRowData
 {
@@ -345,6 +364,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     private readonly List<RaceEventData> _raceEvents = [];
     private readonly List<TelemetrySample> _telemetry = [];
     private readonly List<DamageRowData> _damageHistory = [];
+    private readonly List<PlayerStatusData> _powerHistory = [];
     private RaceEventData[] _playbackEvents = [];
     private bool _hasExplicitFastestLap;
     private bool _isPlayback;
@@ -352,6 +372,10 @@ internal sealed class TelemetrySessionStore : IDisposable
     private long _timelineRevision;
     private long _telemetryBufferEpoch;
     private long _damageBufferEpoch;
+    private long _powerBufferEpoch;
+    private bool _hasMguh;
+    private double? _fuelUpperLimit;
+    private double _liveFuelMaximum = double.NegativeInfinity;
     private bool _disposed;
 
     public TelemetrySessionStore(TelemetryEngine engine)
@@ -369,6 +393,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     public event Action? SnapshotChanged;
     public event Action? TelemetryChanged;
     public event Action? TyresChanged;
+    public event Action? PowerChanged;
     public event Action<TimelineResetReason>? TimelineReset;
 
     public StandingsSnapshot Snapshot
@@ -433,6 +458,23 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
+    public PowerSnapshot PowerSnapshot
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new PowerSnapshot(
+                    _playerStatus,
+                    _cardColors,
+                    _hasMguh,
+                    _fuelUpperLimit,
+                    _revision,
+                    _timelineRevision);
+            }
+        }
+    }
+
     public TelemetryReadResult ReadTelemetry(
         int knownCount,
         long knownBufferEpoch,
@@ -478,6 +520,30 @@ internal sealed class TelemetrySessionStore : IDisposable
                 rows,
                 _damageHistory.Count,
                 _damageBufferEpoch,
+                _timelineRevision,
+                reset);
+        }
+    }
+
+    public PowerReadResult ReadPower(
+        int knownCount,
+        long knownBufferEpoch,
+        long knownTimelineRevision)
+    {
+        lock (_gate)
+        {
+            var reset =
+                knownBufferEpoch != _powerBufferEpoch ||
+                knownTimelineRevision != _timelineRevision ||
+                knownCount < 0 ||
+                knownCount > _powerHistory.Count;
+            var start = reset ? 0 : knownCount;
+            var rows = new PlayerStatusData[_powerHistory.Count - start];
+            _powerHistory.CopyTo(start, rows, 0, rows.Length);
+            return new PowerReadResult(
+                rows,
+                _powerHistory.Count,
+                _powerBufferEpoch,
                 _timelineRevision,
                 reset);
         }
@@ -541,6 +607,10 @@ internal sealed class TelemetrySessionStore : IDisposable
                 {
                     TyresChanged?.Invoke();
                 }
+                if (type is "status" or "protocol_status" or "playback_lap_blocks")
+                {
+                    PowerChanged?.Invoke();
+                }
             }
         }
         catch (JsonException)
@@ -602,6 +672,7 @@ internal sealed class TelemetrySessionStore : IDisposable
             _latestDamage = null;
             ClearTelemetryLocked();
             ClearDamageLocked();
+            ClearPowerLocked();
             _timelineRevision++;
             _revision++;
         }
@@ -644,8 +715,42 @@ internal sealed class TelemetrySessionStore : IDisposable
     private bool SetLap(LapRowData? value) =>
         SetValue(value, data => _lap = data);
 
-    private bool SetPlayerStatus(PlayerStatusData? value) =>
-        SetValue(value, data => _playerStatus = data);
+    private bool SetPlayerStatus(PlayerStatusData? value)
+    {
+        if (value is null)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_powerHistory.Count > 0 &&
+                value.SessionTime < _powerHistory[^1].SessionTime)
+            {
+                var keep = LowerBoundPower(value.SessionTime);
+                if (keep < _powerHistory.Count)
+                {
+                    _powerHistory.RemoveRange(
+                        keep, _powerHistory.Count - keep);
+                    _powerBufferEpoch++;
+                }
+            }
+
+            _playerStatus = value;
+            _powerHistory.Add(value);
+            if (!_isPlayback &&
+                double.IsFinite(value.FuelKg) &&
+                value.FuelKg >= 0 &&
+                value.FuelKg > _liveFuelMaximum)
+            {
+                _liveFuelMaximum = value.FuelKg;
+                _fuelUpperLimit = value.FuelKg + 1;
+            }
+            TrimPowerLocked();
+            _revision++;
+        }
+        return true;
+    }
 
     private bool SetSession(SessionData? value) =>
         SetValue(value, data => _session = data);
@@ -811,12 +916,17 @@ internal sealed class TelemetrySessionStore : IDisposable
             aeroElement.ValueKind == JsonValueKind.String
                 ? aeroElement.GetString() ?? "drs"
                 : "drs";
+        var hasMguh = root.TryGetProperty("capabilities", out var capabilities) &&
+            capabilities.ValueKind == JsonValueKind.Object &&
+            capabilities.TryGetProperty("hasMguh", out var hasMguhElement) &&
+            hasMguhElement.ValueKind == JsonValueKind.True;
 
         lock (_gate)
         {
             _labels = labels;
             _cardColors = cardColors;
             _aeroMode = aeroMode;
+            _hasMguh = hasMguh;
             _revision++;
         }
         return true;
@@ -844,10 +954,21 @@ internal sealed class TelemetrySessionStore : IDisposable
             }
         }
 
+        double? fuelUpperLimit = null;
+        if (root.TryGetProperty("initialFuelKg", out var initialFuelElement) &&
+            initialFuelElement.TryGetDouble(out var initialFuel) &&
+            double.IsFinite(initialFuel) &&
+            initialFuel >= 0)
+        {
+            fuelUpperLimit = initialFuel + 1;
+        }
+
         lock (_gate)
         {
             _isPlayback = true;
             _playbackEvents = events.ToArray();
+            _fuelUpperLimit = fuelUpperLimit;
+            _liveFuelMaximum = double.NegativeInfinity;
             _revision++;
         }
         return true;
@@ -863,14 +984,19 @@ internal sealed class TelemetrySessionStore : IDisposable
             {
                 _tyreSets = null;
                 _latestDamage = null;
+                _playerStatus = null;
                 ClearTelemetryLocked();
                 ClearDamageLocked();
+                ClearPowerLocked();
+                _fuelUpperLimit = null;
+                _liveFuelMaximum = double.NegativeInfinity;
             }
         }
         if (loaded)
         {
             TelemetryChanged?.Invoke();
             TyresChanged?.Invoke();
+            PowerChanged?.Invoke();
         }
         return false;
     }
@@ -930,6 +1056,9 @@ internal sealed class TelemetrySessionStore : IDisposable
             _latestDamage = null;
             ClearTelemetryLocked();
             ClearDamageLocked();
+            ClearPowerLocked();
+            _fuelUpperLimit = null;
+            _liveFuelMaximum = double.NegativeInfinity;
             _fastestLapCarIndex = null;
             _sessionHistoryBest.Clear();
             _raceEvents.Clear();
@@ -1029,6 +1158,25 @@ internal sealed class TelemetrySessionStore : IDisposable
         return low;
     }
 
+    private int LowerBoundPower(float sessionTime)
+    {
+        var low = 0;
+        var high = _powerHistory.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (_powerHistory[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        return low;
+    }
+
     private void TrimDamageLocked()
     {
         if (_damageHistory.Count == 0)
@@ -1046,6 +1194,21 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
+    private void TrimPowerLocked()
+    {
+        if (_powerHistory.Count == 0)
+        {
+            return;
+        }
+        var cutoff = _powerHistory[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundPower(cutoff);
+        if (firstValid >= HotRowTrimChunk)
+        {
+            _powerHistory.RemoveRange(0, firstValid);
+            _powerBufferEpoch++;
+        }
+    }
+
     private void ClearTelemetryLocked()
     {
         _telemetry.Clear();
@@ -1056,6 +1219,12 @@ internal sealed class TelemetrySessionStore : IDisposable
     {
         _damageHistory.Clear();
         _damageBufferEpoch++;
+    }
+
+    private void ClearPowerLocked()
+    {
+        _powerHistory.Clear();
+        _powerBufferEpoch++;
     }
 
     private static bool TryDecodeHotBatch(
