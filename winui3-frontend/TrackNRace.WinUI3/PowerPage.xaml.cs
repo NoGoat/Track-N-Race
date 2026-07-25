@@ -1,29 +1,29 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using ScottPlot;
-using ScottPlot.Plottables;
-using ScottPlot.WinUI;
 using System.Diagnostics;
+using TrackNRace.Charting;
+using UiColor = Windows.UI.Color;
 
 namespace TrackNRace.WinUI3;
 
 public sealed partial class PowerPage : Page
 {
+    private const int MaxChartPoints = 750_000;
+    private const double RetentionSeconds = 600;
     private const double DefaultHarvestUpper = 8000;
-    private static readonly LinePattern HoverCrosshairPattern =
-        new([2f, 1f], 0, "ElectronCrosshair");
-    private static readonly ScottPlot.Color IceColor =
-        ScottPlot.Color.FromHex("#5794F2");
-    private static readonly ScottPlot.Color MgukColor =
-        ScottPlot.Color.FromHex("#FADE2A");
-    private static readonly ScottPlot.Color HarvestMgukColor =
-        ScottPlot.Color.FromHex("#37872D");
-    private static readonly ScottPlot.Color HarvestMguhColor =
-        ScottPlot.Color.FromHex("#C4162A");
-    private static readonly ScottPlot.Color FuelColor =
-        ScottPlot.Color.FromHex("#F0A500");
+    private static readonly UiColor IceColor =
+        UiColor.FromArgb(255, 87, 148, 242);
+    private static readonly UiColor MgukColor =
+        UiColor.FromArgb(255, 250, 222, 42);
+    private static readonly UiColor HarvestMgukColor =
+        UiColor.FromArgb(255, 55, 135, 45);
+    private static readonly UiColor HarvestMguhColor =
+        UiColor.FromArgb(255, 196, 22, 42);
+    private static readonly UiColor FuelColor =
+        UiColor.FromArgb(255, 240, 165, 0);
+    private static readonly UiColor NeutralColor =
+        UiColor.FromArgb(255, 160, 168, 184);
 
     private readonly List<double> _times = [];
     private readonly List<double> _ice = [];
@@ -32,19 +32,25 @@ public sealed partial class PowerPage : Page
     private readonly List<double> _harvestMguh = [];
     private readonly List<double> _ers = [];
     private readonly List<double> _fuel = [];
-    private readonly List<HorizontalLine> _bottomBoundaries = [];
 
-    private SignalXY? _harvestMguhSeries;
-    private Crosshair? _powerSplitCrosshair;
-    private Crosshair? _harvestCrosshair;
-    private Crosshair? _ersCrosshair;
-    private Crosshair? _fuelCrosshair;
-    private Marker? _iceMarker;
-    private Marker? _mgukMarker;
-    private Marker? _harvestMgukMarker;
-    private Marker? _harvestMguhMarker;
-    private Marker? _ersMarker;
-    private Marker? _fuelMarker;
+    private ChartLineSeries _iceSeries = null!;
+    private ChartLineSeries _mgukSeries = null!;
+    private ChartLineSeries _harvestMgukSeries = null!;
+    private ChartLineSeries _harvestMguhSeries = null!;
+    private ChartLineSeries _ersSeries = null!;
+    private ChartLineSeries _fuelSeries = null!;
+    private ChartAxis _powerTimeAxis = null!;
+    private ChartAxis _harvestTimeAxis = null!;
+    private ChartAxis _ersTimeAxis = null!;
+    private ChartAxis _fuelTimeAxis = null!;
+    private ChartAxis _powerAxis = null!;
+    private ChartAxis _harvestAxis = null!;
+    private ChartAxis _ersAxis = null!;
+    private ChartAxis _fuelAxis = null!;
+    private ChartCrosshairTooltipPlugin _powerTooltip = null!;
+    private ChartCrosshairTooltipPlugin _harvestTooltip = null!;
+    private ChartCrosshairTooltipPlugin _ersTooltip = null!;
+    private ChartCrosshairTooltipPlugin _fuelTooltip = null!;
     private TelemetrySessionStore? _store;
     private int _storeCount;
     private long _bufferEpoch = -1;
@@ -105,244 +111,173 @@ public sealed partial class PowerPage : Page
 
     private void ConfigurePlots()
     {
-        AddBottomBoundary(PowerSplitPlot, 0, 1000);
-        StyleSeries(
-            PowerSplitPlot.Plot.Add.SignalXY(_times, _ice),
-            IceColor);
-        StyleSeries(
-            PowerSplitPlot.Plot.Add.SignalXY(_times, _mguk),
-            MgukColor);
-        ConfigurePlot(
-            PowerSplitPlot,
-            0,
-            1000,
+        _powerTimeAxis = CreateTimeAxis();
+        _powerAxis = CreateValueAxis(
+            "power", 0, 1000,
             [0, 250, 500, 750, 1000],
             value => $"{value:0}kW");
-        _powerSplitCrosshair = AddHoverCrosshair(PowerSplitPlot);
-        _iceMarker = AddHoverMarker(PowerSplitPlot, IceColor);
-        _mgukMarker = AddHoverMarker(PowerSplitPlot, MgukColor);
+        ConfigureChart(
+            PowerSplitPlot, _powerTimeAxis, _powerAxis, "Power/Split");
+        _iceSeries = AddSeries(
+            PowerSplitPlot, "ice", "power", IceColor);
+        _mgukSeries = AddSeries(
+            PowerSplitPlot, "mguk", "power", MgukColor);
+        _powerTooltip =
+            new ChartCrosshairTooltipPlugin(BuildPowerTooltip);
+        PowerSplitPlot.Plugins.Add(_powerTooltip);
 
-        AddBottomBoundary(ErsHarvestPlot, 0, DefaultHarvestUpper);
-        StyleSeries(
-            ErsHarvestPlot.Plot.Add.SignalXY(_times, _harvestMguk),
-            HarvestMgukColor);
-        _harvestMguhSeries =
-            ErsHarvestPlot.Plot.Add.SignalXY(_times, _harvestMguh);
-        StyleSeries(_harvestMguhSeries, HarvestMguhColor);
-        ConfigurePlot(
-            ErsHarvestPlot,
-            0,
-            DefaultHarvestUpper,
+        _harvestTimeAxis = CreateTimeAxis();
+        _harvestAxis = CreateValueAxis(
+            "harvest", 0, DefaultHarvestUpper,
             [0, 2000, 4000, 6000, 8000],
             value => $"{value:0}kJ");
-        _harvestCrosshair = AddHoverCrosshair(ErsHarvestPlot);
-        _harvestMgukMarker =
-            AddHoverMarker(ErsHarvestPlot, HarvestMgukColor);
-        _harvestMguhMarker =
-            AddHoverMarker(ErsHarvestPlot, HarvestMguhColor);
+        ConfigureChart(
+            ErsHarvestPlot,
+            _harvestTimeAxis,
+            _harvestAxis,
+            "Power/Harvest");
+        _harvestMgukSeries = AddSeries(
+            ErsHarvestPlot, "harvest-mguk", "harvest", HarvestMgukColor);
+        _harvestMguhSeries = AddSeries(
+            ErsHarvestPlot, "harvest-mguh", "harvest", HarvestMguhColor);
+        _harvestTooltip =
+            new ChartCrosshairTooltipPlugin(BuildHarvestTooltip);
+        ErsHarvestPlot.Plugins.Add(_harvestTooltip);
 
-        AddBottomBoundary(ErsStorePlot, 0, 100);
-        StyleSeries(
-            ErsStorePlot.Plot.Add.SignalXY(_times, _ers),
-            IceColor);
-        ConfigurePlot(
-            ErsStorePlot,
-            0,
-            100,
+        _ersTimeAxis = CreateTimeAxis();
+        _ersAxis = CreateValueAxis(
+            "ers", 0, 100,
             [0, 25, 50, 75, 100],
             value => $"{value:0}%");
-        _ersCrosshair = AddHoverCrosshair(ErsStorePlot);
-        _ersMarker = AddHoverMarker(ErsStorePlot, IceColor);
+        ConfigureChart(ErsStorePlot, _ersTimeAxis, _ersAxis, "Power/Store");
+        _ersSeries = AddSeries(
+            ErsStorePlot, "ers", "ers", IceColor);
+        _ersTooltip = new ChartCrosshairTooltipPlugin(BuildErsTooltip);
+        ErsStorePlot.Plugins.Add(_ersTooltip);
 
-        AddBottomBoundary(FuelPlot, 0, 1);
-        StyleSeries(
-            FuelPlot.Plot.Add.SignalXY(_times, _fuel),
-            FuelColor);
-        ConfigurePlot(
-            FuelPlot,
-            0,
-            1,
+        _fuelTimeAxis = CreateTimeAxis();
+        _fuelAxis = CreateValueAxis(
+            "fuel", 0, 1,
             [0, .25, .5, .75, 1],
             value => $"{value:0.0}kg");
-        _fuelCrosshair = AddHoverCrosshair(FuelPlot);
-        _fuelMarker = AddHoverMarker(FuelPlot, FuelColor);
+        ConfigureChart(FuelPlot, _fuelTimeAxis, _fuelAxis, "Power/Fuel");
+        _fuelSeries = AddSeries(
+            FuelPlot, "fuel", "fuel", FuelColor);
+        _fuelTooltip = new ChartCrosshairTooltipPlugin(BuildFuelTooltip);
+        FuelPlot.Plugins.Add(_fuelTooltip);
 
-#if DEBUG
-        AttachRenderProbe(PowerSplitPlot, "Power/Split");
-        AttachRenderProbe(ErsHarvestPlot, "Power/Harvest");
-        AttachRenderProbe(ErsStorePlot, "Power/Store");
-        AttachRenderProbe(FuelPlot, "Power/Fuel");
-#endif
         ApplyTheme();
     }
 
-#if DEBUG
-    private static void AttachRenderProbe(WinUIPlot control, string name)
-    {
-        var sampleCount = 0;
-        var totalMilliseconds = 0d;
-        var maximumMilliseconds = 0d;
-        control.Plot.RenderManager.RenderFinished += (_, details) =>
+    private ChartAxis CreateTimeAxis() =>
+        new("time", ChartAxisOrientation.X, ChartAxisSide.Bottom)
         {
-            if (details.Count <= 1)
+            Minimum = 0,
+            Maximum = _windowSeconds,
+            TickProvider = new IntervalChartTickProvider(_windowSeconds / 6d),
+            LabelFormatter = FormatTime,
+            ShowGridLines = true,
+        };
+
+    private static ChartAxis CreateValueAxis(
+        string key,
+        double minimum,
+        double maximum,
+        double[] ticks,
+        Func<double, string> formatter) =>
+        new(key, ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            TickProvider = new FixedChartTickProvider(ticks),
+            LabelFormatter = formatter,
+        };
+
+    private static void ConfigureChart(
+        GpuChart chart,
+        ChartAxis timeAxis,
+        ChartAxis valueAxis,
+        string diagnosticsName)
+    {
+        chart.Plugins.Add(new ChartBackgroundPlugin());
+        chart.Axes.Add(timeAxis);
+        chart.Axes.Add(valueAxis);
+        chart.RenderFailed += error =>
+            Debug.WriteLine($"[D3D11Chart] {diagnosticsName}: {error}");
+#if DEBUG
+        AttachRenderProbe(chart, diagnosticsName);
+#endif
+    }
+
+    private static ChartLineSeries AddSeries(
+        GpuChart chart,
+        string key,
+        string yAxisKey,
+        UiColor color) =>
+        chart.Series.Add(new ChartLineSeriesOptions(
+            key,
+            "time",
+            yAxisKey,
+            color,
+            Thickness: 1.5f,
+            MaximumPointCount: MaxChartPoints,
+            MaximumXSpan: RetentionSeconds));
+
+#if DEBUG
+    private static void AttachRenderProbe(GpuChart chart, string name)
+    {
+        var count = 0;
+        var total = 0d;
+        var maximum = 0d;
+        chart.DiagnosticsUpdated += details =>
+        {
+            var milliseconds = details.FrameMilliseconds;
+            count++;
+            total += milliseconds;
+            maximum = Math.Max(maximum, milliseconds);
+            if (count < 120)
             {
                 return;
             }
-
-            var milliseconds = details.Elapsed.TotalMilliseconds;
-            sampleCount++;
-            totalMilliseconds += milliseconds;
-            maximumMilliseconds = Math.Max(maximumMilliseconds, milliseconds);
-            if (sampleCount < 120)
-            {
-                return;
-            }
-
             Debug.WriteLine(
-                $"[ScottPlot] {name}: avg " +
-                $"{totalMilliseconds / sampleCount:0.00} ms, " +
-                $"max {maximumMilliseconds:0.00} ms, " +
-                $"{details.Count:N0} total renders");
-            sampleCount = 0;
-            totalMilliseconds = 0;
-            maximumMilliseconds = 0;
+                $"[D3D11Chart] {name}: avg {total / count:0.00} ms, " +
+                $"max {maximum:0.00} ms, {details.SourcePoints:N0} source points, " +
+                $"{details.SubmittedSegments:N0} segments, " +
+                $"LOD={details.UsedReduction}, WARP={details.UsingWarp}");
+            count = 0;
+            total = 0;
+            maximum = 0;
         };
     }
 #endif
 
-    private static void StyleSeries(
-        SignalXY series,
-        ScottPlot.Color color)
-    {
-        series.Color = color;
-        series.LineWidth = 2;
-        series.MarkerSize = 0;
-        series.ConnectStyle = ConnectStyle.Straight;
-    }
+    private void OnPowerChanged() => QueueRefresh();
 
-    private void AddBottomBoundary(
-        WinUIPlot plotControl,
-        double yMinimum,
-        double yMaximum)
-    {
-        const double insetFraction = .0025;
-        var y = yMinimum + (yMaximum - yMinimum) * insetFraction;
-        var boundary = plotControl.Plot.Add.HorizontalLine(y);
-        boundary.EnableAutoscale = false;
-        boundary.LineWidth = .75f;
-        _bottomBoundaries.Add(boundary);
-    }
+    private void OnTimelineReset(TimelineResetReason reason) => QueueRefresh();
 
-    private static Crosshair AddHoverCrosshair(WinUIPlot plotControl)
-    {
-        var crosshair = plotControl.Plot.Add.Crosshair(0, 0);
-        crosshair.EnableAutoscale = false;
-        crosshair.IsVisible = false;
-        crosshair.LineWidth = 1;
-        crosshair.LinePattern = HoverCrosshairPattern;
-        crosshair.MarkerSize = 0;
-        return crosshair;
-    }
-
-    private static Marker AddHoverMarker(
-        WinUIPlot plotControl,
-        ScottPlot.Color color)
-    {
-        var marker = plotControl.Plot.Add.Marker(
-            0,
-            0,
-            MarkerShape.OpenCircle,
-            7,
-            color);
-        marker.MarkerLineWidth = 2;
-        marker.IsVisible = false;
-        return marker;
-    }
-
-    private void ConfigurePlot(
-        WinUIPlot plotControl,
-        double yMin,
-        double yMax,
-        double[] yTicks,
-        Func<double, string> yFormatter)
-    {
-        var plot = plotControl.Plot;
-        plotControl.UserInputProcessor.Disable();
-        plot.Axes.SetLimits(0, 30, yMin, yMax);
-        plot.Axes.Left.SetTicks(
-            yTicks,
-            yTicks.Select(yFormatter).ToArray());
-        ConfigureTimeTicks(plotControl, _windowSeconds);
-        plot.Axes.Top.IsVisible = false;
-        plot.Axes.Right.IsVisible = false;
-        plot.Axes.Margins(0, 0, 0, 0);
-        plot.Grid.IsVisible = true;
-        plot.Grid.YAxisStyle.IsVisible = false;
-        plot.Grid.MajorLineWidth = 1;
-        plot.Grid.MinorLineWidth = 0;
-        StyleAxis(plot.Axes.Left);
-        StyleAxis(plot.Axes.Bottom);
-    }
-
-    private static void ConfigureTimeTicks(
-        WinUIPlot plotControl,
-        int windowSeconds)
-    {
-        plotControl.Plot.Axes.Bottom.TickGenerator =
-            new ScottPlot.TickGenerators.NumericFixedInterval(
-                windowSeconds / 6d)
-            {
-                LabelFormatter = FormatTime,
-            };
-    }
-
-    private static void StyleAxis(IAxis axis)
-    {
-        axis.FrameLineStyle.Width = .75f;
-        axis.MajorTickStyle.Length = 3;
-        axis.MajorTickStyle.Width = .75f;
-        axis.MinorTickStyle.Length = 0;
-        axis.TickLabelStyle.FontName = "Segoe UI Variable Text";
-        axis.TickLabelStyle.FontSize = 12;
-        axis.TickLabelStyle.Bold = false;
-    }
-
-    private void OnPowerChanged()
+    private void QueueRefresh()
     {
         if (!_isLoaded || Interlocked.Exchange(ref _refreshQueued, 1) != 0)
         {
             return;
         }
-
         if (!DispatcherQueue.TryEnqueue(() =>
             {
                 Interlocked.Exchange(ref _refreshQueued, 0);
-                if (_isLoaded)
-                {
-                    RefreshFromStore();
-                }
+                RefreshFromStore();
             }))
         {
             Interlocked.Exchange(ref _refreshQueued, 0);
         }
     }
 
-    private void OnTimelineReset(TimelineResetReason reason)
-    {
-        if (!_isLoaded)
-        {
-            return;
-        }
-
-        DispatcherQueue.TryEnqueue(RefreshFromStore);
-    }
-
     private void OnChartWindowChanged(int seconds)
     {
         _windowSeconds = seconds;
-        foreach (var plot in AllPlots())
+        var ticks = new IntervalChartTickProvider(seconds / 6d);
+        foreach (var axis in TimeAxes())
         {
-            ConfigureTimeTicks(plot, seconds);
+            axis.TickProvider = ticks;
         }
         if (_isLoaded)
         {
@@ -375,6 +310,7 @@ public sealed partial class PowerPage : Page
             ClearData();
         }
 
+        var firstNewIndex = _times.Count;
         foreach (var row in read.Rows)
         {
             _times.Add(row.SessionTime);
@@ -385,34 +321,21 @@ public sealed partial class PowerPage : Page
             _ers.Add(row.ErsPct);
             _fuel.Add(row.FuelKg);
         }
+        AppendNewPoints(firstNewIndex);
 
         _storeCount = read.TotalCount;
         _bufferEpoch = read.BufferEpoch;
         _timelineRevision = read.TimelineRevision;
         _hasMguh = snapshot.HasMguh;
-        if (_harvestMguhSeries is not null)
-        {
-            _harvestMguhSeries.IsVisible = _hasMguh;
-        }
-        if (!_hasMguh && _harvestMguhMarker is not null)
-        {
-            _harvestMguhMarker.IsVisible = false;
-        }
+        _harvestMguhSeries.Visible = _hasMguh;
         MguhLegend.Visibility = _hasMguh
             ? Visibility.Visible
             : Visibility.Collapsed;
-        ErsHarvestTooltipMguhRow.Visibility = MguhLegend.Visibility;
 
         UpdateAxisRanges(snapshot);
         RenderCards(snapshot);
         var hasData = _times.Count > 0;
-        foreach (var emptyState in new[]
-                 {
-                     PowerSplitNoData,
-                     ErsHarvestNoData,
-                     ErsStoreNoData,
-                     FuelNoData,
-                 })
+        foreach (var emptyState in EmptyStates())
         {
             emptyState.Visibility =
                 hasData ? Visibility.Collapsed : Visibility.Visible;
@@ -421,11 +344,43 @@ public sealed partial class PowerPage : Page
         var latest = hasData ? _times[^1] : 0;
         var xMin = Math.Max(0, latest - _windowSeconds);
         var xMax = Math.Max(_windowSeconds, latest);
-        SetPlotLimits(PowerSplitPlot, xMin, xMax, 0, 1000);
-        SetPlotLimits(ErsHarvestPlot, xMin, xMax, 0, _harvestUpper);
-        SetPlotLimits(ErsStorePlot, xMin, xMax, 0, 100);
-        SetPlotLimits(FuelPlot, xMin, xMax, 0, _fuelUpper);
-        RefreshPlots();
+        foreach (var axis in TimeAxes())
+        {
+            SetRange(axis, xMin, xMax);
+        }
+        InvalidatePlots();
+    }
+
+    private void AppendNewPoints(int firstNewIndex)
+    {
+        var count = _times.Count - firstNewIndex;
+        if (count <= 0)
+        {
+            return;
+        }
+        _iceSeries.Append(BuildPoints(_ice, firstNewIndex, count));
+        _mgukSeries.Append(BuildPoints(_mguk, firstNewIndex, count));
+        _harvestMgukSeries.Append(
+            BuildPoints(_harvestMguk, firstNewIndex, count));
+        _harvestMguhSeries.Append(
+            BuildPoints(_harvestMguh, firstNewIndex, count));
+        _ersSeries.Append(BuildPoints(_ers, firstNewIndex, count));
+        _fuelSeries.Append(BuildPoints(_fuel, firstNewIndex, count));
+    }
+
+    private ChartPoint[] BuildPoints(
+        IReadOnlyList<double> values,
+        int firstNewIndex,
+        int count)
+    {
+        var points = new ChartPoint[count];
+        for (var index = 0; index < count; index++)
+        {
+            var sourceIndex = firstNewIndex + index;
+            points[index] =
+                new ChartPoint(_times[sourceIndex], values[sourceIndex]);
+        }
+        return points;
     }
 
     private void UpdateAxisRanges(PowerSnapshot snapshot)
@@ -440,12 +395,11 @@ public sealed partial class PowerPage : Page
         if (observedHarvest > _harvestUpper)
         {
             _harvestUpper = Math.Ceiling(observedHarvest / 2000) * 2000;
-            var ticks = Enumerable.Range(0, 5)
-                .Select(index => index * _harvestUpper / 4)
-                .ToArray();
-            ErsHarvestPlot.Plot.Axes.Left.SetTicks(
-                ticks,
-                ticks.Select(value => $"{value:0}kJ").ToArray());
+            _harvestAxis.Maximum = _harvestUpper;
+            _harvestAxis.TickProvider = new FixedChartTickProvider(
+                Enumerable.Range(0, 5)
+                    .Select(index => index * _harvestUpper / 4)
+                    .ToArray());
         }
 
         var fuelUpper = snapshot.FuelUpperLimit ??
@@ -453,12 +407,11 @@ public sealed partial class PowerPage : Page
         if (Math.Abs(fuelUpper - _fuelUpper) > .0001)
         {
             _fuelUpper = Math.Max(1, fuelUpper);
-            var ticks = Enumerable.Range(0, 5)
-                .Select(index => index * _fuelUpper / 4)
-                .ToArray();
-            FuelPlot.Plot.Axes.Left.SetTicks(
-                ticks,
-                ticks.Select(value => $"{value:0.0}kg").ToArray());
+            _fuelAxis.Maximum = _fuelUpper;
+            _fuelAxis.TickProvider = new FixedChartTickProvider(
+                Enumerable.Range(0, 5)
+                    .Select(index => index * _fuelUpper / 4)
+                    .ToArray());
         }
     }
 
@@ -471,13 +424,19 @@ public sealed partial class PowerPage : Page
         _harvestMguh.Clear();
         _ers.Clear();
         _fuel.Clear();
+        foreach (var series in AllSeries())
+        {
+            series.Clear();
+        }
         _storeCount = 0;
         _harvestUpper = DefaultHarvestUpper;
         _fuelUpper = 1;
-        ErsHarvestPlot.Plot.Axes.Left.SetTicks(
-            [0, 2000, 4000, 6000, 8000],
-            ["0kJ", "2000kJ", "4000kJ", "6000kJ", "8000kJ"]);
-        HideTooltips();
+        _harvestAxis.Maximum = DefaultHarvestUpper;
+        _harvestAxis.TickProvider =
+            new FixedChartTickProvider(0, 2000, 4000, 6000, 8000);
+        _fuelAxis.Maximum = 1;
+        _fuelAxis.TickProvider =
+            new FixedChartTickProvider(0, .25, .5, .75, 1);
     }
 
     private void RenderCards(PowerSnapshot? snapshot)
@@ -541,8 +500,7 @@ public sealed partial class PowerPage : Page
                             Style = (Style)Resources["PowerHeadingStyle"],
                             FontSize = 10,
                             TextTrimming = TextTrimming.CharacterEllipsis,
-                            VerticalAlignment =
-                                Microsoft.UI.Xaml.VerticalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
                         },
                         CreateInlineValue(
                             item.Item2,
@@ -606,21 +564,13 @@ public sealed partial class PowerPage : Page
             Text = string.IsNullOrEmpty(unit) ? value : $"{value} {unit}",
             TextTrimming = TextTrimming.CharacterEllipsis,
             HorizontalAlignment = gridColumn == 0
-                ? Microsoft.UI.Xaml.HorizontalAlignment.Left
-                : Microsoft.UI.Xaml.HorizontalAlignment.Right,
-            VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Center,
+                ? HorizontalAlignment.Left
+                : HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetColumn(block, gridColumn);
         return block;
     }
-
-    private static void SetPlotLimits(
-        WinUIPlot plotControl,
-        double xMin,
-        double xMax,
-        double yMin,
-        double yMax) =>
-        plotControl.Plot.Axes.SetLimits(xMin, xMax, yMin, yMax);
 
     private void OnActualThemeChanged(FrameworkElement sender, object args)
     {
@@ -628,7 +578,7 @@ public sealed partial class PowerPage : Page
         if (_isLoaded)
         {
             RenderCards(_store?.PowerSnapshot);
-            RefreshPlots();
+            InvalidatePlots();
         }
     }
 
@@ -640,284 +590,204 @@ public sealed partial class PowerPage : Page
         }
 
         var dark = ActualTheme == ElementTheme.Dark;
-        var transparent = ScottPlot.Color.FromHex("#00000000");
-        var axes = ScottPlot.Color.FromHex(dark ? "#7C8098" : "#6B7280");
-        var grid = ScottPlot.Color.FromHex(dark ? "#FFFFFF" : "#000000")
-            .WithAlpha(dark ? .05 : .045);
-        var crosshair = axes.WithAlpha(dark ? .7 : .6);
-        foreach (var boundary in _bottomBoundaries)
+        var axes = dark
+            ? UiColor.FromArgb(255, 124, 128, 152)
+            : UiColor.FromArgb(255, 107, 114, 128);
+        var grid = dark
+            ? UiColor.FromArgb(10, 255, 255, 255)
+            : UiColor.FromArgb(18, 0, 0, 0);
+        foreach (var axis in TimeAxes().Concat(ValueAxes()))
         {
-            boundary.Color = axes;
+            axis.Color = axes;
         }
-        foreach (var hoverCrosshair in new[]
-                 {
-                     _powerSplitCrosshair,
-                     _harvestCrosshair,
-                     _ersCrosshair,
-                     _fuelCrosshair,
-                 })
+        foreach (var chart in AllPlots())
         {
-            if (hoverCrosshair is not null)
-            {
-                hoverCrosshair.LineColor = crosshair;
-            }
+            chart.GridColor = grid;
         }
-        foreach (var control in AllPlots())
+        foreach (var tooltip in Tooltips())
         {
-            var plot = control.Plot;
-            plot.FigureBackground.Color = transparent;
-            plot.DataBackground.Color = transparent;
-            plot.Axes.Color(axes);
-            plot.Grid.MajorLineColor = grid;
+            tooltip.ApplyTheme(dark);
         }
     }
 
-    private WinUIPlot[] AllPlots() =>
-        [PowerSplitPlot, ErsHarvestPlot, ErsStorePlot, FuelPlot];
-
-    private void RefreshPlots()
+    private ChartTooltipData? BuildPowerTooltip(double x)
     {
-        foreach (var plot in AllPlots())
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            plot.Refresh();
+            return null;
         }
-    }
-
-    private void OnPowerSplitPointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
-    {
-        if (!TryGetNearestIndex(
-                PowerSplitPlot,
-                args,
-                out var index,
-                out var position,
-                out var coordinates))
-        {
-            return;
-        }
-
-        PowerSplitTooltipTime.Text = FormatTime(_times[index]);
-        PowerSplitTooltipIce.Text = $" {_ice[index]:0.0} kW";
-        PowerSplitTooltipMguk.Text = $" {_mguk[index]:0.0} kW";
-        PowerSplitTooltipTotal.Text =
-            $" {_ice[index] + _mguk[index]:0.0} kW";
-        ShowTooltip(PowerSplitTooltip, PowerSplitPlot, position);
-        ShowCrosshair(_powerSplitCrosshair, coordinates);
-        ShowMarker(_iceMarker, _times[index], _ice[index]);
-        ShowMarker(_mgukMarker, _times[index], _mguk[index]);
-        PowerSplitPlot.Refresh();
-    }
-
-    private void OnErsHarvestPointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
-    {
-        if (!TryGetNearestIndex(
-                ErsHarvestPlot,
-                args,
-                out var index,
-                out var position,
-                out var coordinates))
-        {
-            return;
-        }
-
-        ErsHarvestTooltipTime.Text = FormatTime(_times[index]);
-        ErsHarvestTooltipMguk.Text = $" {_harvestMguk[index]:0.0} kJ";
-        ErsHarvestTooltipMguh.Text = $" {_harvestMguh[index]:0.0} kJ";
-        var total = _harvestMguk[index] +
-            (_hasMguh ? _harvestMguh[index] : 0);
-        ErsHarvestTooltipTotal.Text = $" {total:0.0} kJ";
-        ShowTooltip(ErsHarvestTooltip, ErsHarvestPlot, position);
-        ShowCrosshair(_harvestCrosshair, coordinates);
-        ShowMarker(
-            _harvestMgukMarker,
+        return new ChartTooltipData(
             _times[index],
-            _harvestMguk[index]);
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "ICE", $"{_ice[index]:0.0} kW", IceColor),
+                    new ChartTooltipEntry(
+                        "MGU-K", $"{_mguk[index]:0.0} kW", MgukColor),
+                    new ChartTooltipEntry(
+                        "Total",
+                        $"{_ice[index] + _mguk[index]:0.0} kW",
+                        NeutralColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index], _ice[index], "power", IceColor),
+                new ChartTooltipMarker(
+                    _times[index], _mguk[index], "power", MgukColor),
+            ]);
+    }
+
+    private ChartTooltipData? BuildHarvestTooltip(double x)
+    {
+        var index = NearestIndex(x);
+        if (index < 0)
+        {
+            return null;
+        }
+        var entries = new List<ChartTooltipEntry>
+        {
+            new("MGU-K", $"{_harvestMguk[index]:0.0} kJ", HarvestMgukColor),
+        };
+        var markers = new List<ChartTooltipMarker>
+        {
+            new(
+                _times[index],
+                _harvestMguk[index],
+                "harvest",
+                HarvestMgukColor),
+        };
         if (_hasMguh)
         {
-            ShowMarker(
-                _harvestMguhMarker,
+            entries.Add(new ChartTooltipEntry(
+                "MGU-H", $"{_harvestMguh[index]:0.0} kJ", HarvestMguhColor));
+            markers.Add(new ChartTooltipMarker(
                 _times[index],
-                _harvestMguh[index]);
+                _harvestMguh[index],
+                "harvest",
+                HarvestMguhColor));
         }
-        ErsHarvestPlot.Refresh();
+        var total = _harvestMguk[index] +
+            (_hasMguh ? _harvestMguh[index] : 0);
+        entries.Add(new ChartTooltipEntry(
+            "Total", $"{total:0.0} kJ", NeutralColor));
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(FormatTime(_times[index]), entries),
+            markers);
     }
 
-    private void OnErsStorePointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
+    private ChartTooltipData? BuildErsTooltip(double x)
     {
-        if (!TryGetNearestIndex(
-                ErsStorePlot,
-                args,
-                out var index,
-                out var position,
-                out var coordinates))
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            return;
+            return null;
         }
-
-        ErsStoreTooltipTime.Text = FormatTime(_times[index]);
-        ErsStoreTooltipPercent.Text = $" {_ers[index]:0.0}%";
-        ErsStoreTooltipEnergy.Text =
-            $" {_ers[index] / 100 * 4:0.00} / 4.00 MJ";
-        ShowTooltip(ErsStoreTooltip, ErsStorePlot, position);
-        ShowCrosshair(_ersCrosshair, coordinates);
-        ShowMarker(_ersMarker, _times[index], _ers[index]);
-        ErsStorePlot.Refresh();
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "ERS", $"{_ers[index]:0.0}%", IceColor),
+                    new ChartTooltipEntry(
+                        "Stored",
+                        $"{_ers[index] / 100 * 4:0.00} / 4.00 MJ",
+                        NeutralColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index], _ers[index], "ers", IceColor),
+            ]);
     }
 
-    private void OnFuelPointerMoved(
-        object sender,
-        PointerRoutedEventArgs args)
+    private ChartTooltipData? BuildFuelTooltip(double x)
     {
-        if (!TryGetNearestIndex(
-                FuelPlot,
-                args,
-                out var index,
-                out var position,
-                out var coordinates))
+        var index = NearestIndex(x);
+        if (index < 0)
         {
-            return;
+            return null;
         }
-
-        FuelTooltipTime.Text = FormatTime(_times[index]);
-        FuelTooltipValue.Text = $" {_fuel[index]:0.00} kg";
-        ShowTooltip(FuelTooltip, FuelPlot, position);
-        ShowCrosshair(_fuelCrosshair, coordinates);
-        ShowMarker(_fuelMarker, _times[index], _fuel[index]);
-        FuelPlot.Refresh();
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                [
+                    new ChartTooltipEntry(
+                        "Fuel", $"{_fuel[index]:0.00} kg", FuelColor),
+                ]),
+            [
+                new ChartTooltipMarker(
+                    _times[index], _fuel[index], "fuel", FuelColor),
+            ]);
     }
 
-    private bool TryGetNearestIndex(
-        WinUIPlot plot,
-        PointerRoutedEventArgs args,
-        out int index,
-        out Windows.Foundation.Point position,
-        out Coordinates pointerCoordinates)
+    private int NearestIndex(double sessionTime)
     {
-        position = args.GetCurrentPoint(plot).Position;
-        pointerCoordinates = default;
-        index = -1;
         if (_times.Count == 0)
         {
-            return false;
+            return -1;
         }
-
-        var scale = XamlRoot?.RasterizationScale ?? 1;
-        pointerCoordinates = plot.Plot.GetCoordinates(
-            new Pixel(
-                (float)(position.X * scale),
-                (float)(position.Y * scale)));
-        var candidate = _times.BinarySearch(pointerCoordinates.X);
+        var candidate = _times.BinarySearch(sessionTime);
         if (candidate < 0)
         {
             candidate = ~candidate;
         }
         if (candidate >= _times.Count)
         {
-            candidate = _times.Count - 1;
+            return _times.Count - 1;
         }
         if (candidate > 0 &&
-            Math.Abs(_times[candidate - 1] - pointerCoordinates.X) <
-            Math.Abs(_times[candidate] - pointerCoordinates.X))
+            sessionTime - _times[candidate - 1] <=
+            _times[candidate] - sessionTime)
         {
             candidate--;
         }
-        index = candidate;
-        return true;
+        return candidate;
     }
 
-    private static void ShowCrosshair(
-        Crosshair? crosshair,
-        Coordinates coordinates)
+    private ChartAxis[] TimeAxes() =>
+        [_powerTimeAxis, _harvestTimeAxis, _ersTimeAxis, _fuelTimeAxis];
+
+    private ChartAxis[] ValueAxes() =>
+        [_powerAxis, _harvestAxis, _ersAxis, _fuelAxis];
+
+    private GpuChart[] AllPlots() =>
+        [PowerSplitPlot, ErsHarvestPlot, ErsStorePlot, FuelPlot];
+
+    private ChartLineSeries[] AllSeries() =>
+        [
+            _iceSeries,
+            _mgukSeries,
+            _harvestMgukSeries,
+            _harvestMguhSeries,
+            _ersSeries,
+            _fuelSeries,
+        ];
+
+    private TextBlock[] EmptyStates() =>
+        [PowerSplitNoData, ErsHarvestNoData, ErsStoreNoData, FuelNoData];
+
+    private ChartCrosshairTooltipPlugin[] Tooltips() =>
+        [_powerTooltip, _harvestTooltip, _ersTooltip, _fuelTooltip];
+
+    private void InvalidatePlots()
     {
-        if (crosshair is null)
+        foreach (var plot in AllPlots())
         {
-            return;
+            plot.Invalidate();
         }
-        crosshair.Position = coordinates;
-        crosshair.IsVisible = true;
     }
 
-    private static void ShowMarker(
-        Marker? marker,
-        double x,
-        double y)
+    private static void SetRange(
+        ChartAxis axis,
+        double minimum,
+        double maximum)
     {
-        if (marker is null)
-        {
-            return;
-        }
-        marker.Position = new Coordinates(x, y);
-        marker.IsVisible = true;
-    }
-
-    private static void ShowTooltip(
-        Border tooltip,
-        FrameworkElement plot,
-        Windows.Foundation.Point position)
-    {
-        tooltip.Visibility = Visibility.Visible;
-        var left = Math.Clamp(
-            position.X + 12,
-            4,
-            Math.Max(4, plot.ActualWidth - tooltip.ActualWidth - 8));
-        var top = Math.Clamp(
-            position.Y + 12,
-            4,
-            Math.Max(4, plot.ActualHeight - tooltip.ActualHeight - 8));
-        Canvas.SetLeft(tooltip, left);
-        Canvas.SetTop(tooltip, top);
-    }
-
-    private void OnPlotPointerExited(
-        object sender,
-        PointerRoutedEventArgs args) =>
-        HideTooltips();
-
-    private void HideTooltips()
-    {
-        PowerSplitTooltip.Visibility = Visibility.Collapsed;
-        ErsHarvestTooltip.Visibility = Visibility.Collapsed;
-        ErsStoreTooltip.Visibility = Visibility.Collapsed;
-        FuelTooltip.Visibility = Visibility.Collapsed;
-        var refresh = new[]
-        {
-            _powerSplitCrosshair?.IsVisible == true,
-            _harvestCrosshair?.IsVisible == true,
-            _ersCrosshair?.IsVisible == true,
-            _fuelCrosshair?.IsVisible == true,
-        };
-        foreach (var plottable in new IPlottable?[]
-                 {
-                     _powerSplitCrosshair,
-                     _harvestCrosshair,
-                     _ersCrosshair,
-                     _fuelCrosshair,
-                     _iceMarker,
-                     _mgukMarker,
-                     _harvestMgukMarker,
-                     _harvestMguhMarker,
-                     _ersMarker,
-                     _fuelMarker,
-                 })
-        {
-            if (plottable is not null)
-            {
-                plottable.IsVisible = false;
-            }
-        }
-        var plots = AllPlots();
-        for (var index = 0; index < plots.Length; index++)
-        {
-            if (refresh[index])
-            {
-                plots[index].Refresh();
-            }
-        }
+        axis.Minimum = minimum;
+        axis.Maximum = maximum;
     }
 
     private static string FormatTime(double seconds)
@@ -928,11 +798,12 @@ public sealed partial class PowerPage : Page
 
     private Brush PrimaryBrush() => new SolidColorBrush(
         ActualTheme == ElementTheme.Dark
-            ? Windows.UI.Color.FromArgb(255, 255, 255, 255)
-            : Windows.UI.Color.FromArgb(255, 0, 0, 0));
+            ? UiColor.FromArgb(255, 255, 255, 255)
+            : UiColor.FromArgb(255, 0, 0, 0));
 
     private Brush DividerBrush() => new SolidColorBrush(
         ActualTheme == ElementTheme.Dark
-            ? Windows.UI.Color.FromArgb(255, 42, 46, 58)
-            : Windows.UI.Color.FromArgb(255, 217, 220, 227));
+            ? UiColor.FromArgb(255, 42, 46, 58)
+            : UiColor.FromArgb(255, 217, 220, 227));
+
 }

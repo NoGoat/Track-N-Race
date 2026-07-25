@@ -42,7 +42,6 @@ public sealed partial class InputsPage : Page
     private ChartCrosshairTooltipPlugin _gearTooltip = null!;
     private ChartCrosshairTooltipPlugin _throttleBrakeTooltip = null!;
     private ChartCrosshairTooltipPlugin _steeringTooltip = null!;
-    private InputReferenceLinesPlugin _gearReferenceLines = null!;
     private InputReferenceLinesPlugin _throttleBrakeReferenceLines = null!;
     private InputReferenceLinesPlugin _steeringReferenceLines = null!;
     private TelemetrySessionStore? _store;
@@ -111,13 +110,9 @@ public sealed partial class InputsPage : Page
         ConfigureChart(GearPlot, _gearTimeAxis, _gearAxis, "Input/Gear");
         _gearSeries = GearPlot.Series.Add(new ChartLineSeriesOptions(
             "gear", "time", "gear", GearColor,
+            Thickness: 1.5f,
             MaximumPointCount: MaxChartPoints,
             MaximumXSpan: RetentionSeconds));
-        _gearReferenceLines = new InputReferenceLinesPlugin(
-            _gearTimeAxis,
-            _gearAxis,
-            [.5 + (8.5 - .5) * .0025]);
-        GearPlot.Plugins.Add(_gearReferenceLines);
         _gearTooltip = new ChartCrosshairTooltipPlugin(BuildGearTooltip);
         GearPlot.Plugins.Add(_gearTooltip);
 
@@ -138,21 +133,19 @@ public sealed partial class InputsPage : Page
         _throttleSeries = ThrottleBrakePlot.Series.Add(
             new ChartLineSeriesOptions(
                 "throttle", "time", "input", ThrottleColor,
+                Thickness: 1.5f,
                 MaximumPointCount: MaxChartPoints,
                 MaximumXSpan: RetentionSeconds));
         _brakeSeries = ThrottleBrakePlot.Series.Add(
             new ChartLineSeriesOptions(
                 "brake", "time", "input", BrakeColor,
+                Thickness: 1.5f,
                 MaximumPointCount: MaxChartPoints,
                 MaximumXSpan: RetentionSeconds));
         _throttleBrakeReferenceLines = new InputReferenceLinesPlugin(
             _throttleBrakeTimeAxis,
             _throttleBrakeAxis,
-            [
-                InputAxisMinimum +
-                    (InputAxisMaximum - InputAxisMinimum) * .0025,
-                0,
-            ]);
+            [0]);
         ThrottleBrakePlot.Plugins.Add(_throttleBrakeReferenceLines);
         _throttleBrakeTooltip =
             new ChartCrosshairTooltipPlugin(BuildThrottleBrakeTooltip);
@@ -174,16 +167,13 @@ public sealed partial class InputsPage : Page
             "Input/Steering");
         _steeringSeries = SteeringPlot.Series.Add(new ChartLineSeriesOptions(
             "steering", "time", "steering", SteeringColor,
+            Thickness: 1.5f,
             MaximumPointCount: MaxChartPoints,
             MaximumXSpan: RetentionSeconds));
         _steeringReferenceLines = new InputReferenceLinesPlugin(
             _steeringTimeAxis,
             _steeringAxis,
-            [
-                InputAxisMinimum +
-                    (InputAxisMaximum - InputAxisMinimum) * .0025,
-                0,
-            ]);
+            [0]);
         SteeringPlot.Plugins.Add(_steeringReferenceLines);
         _steeringTooltip =
             new ChartCrosshairTooltipPlugin(BuildSteeringTooltip);
@@ -469,7 +459,6 @@ public sealed partial class InputsPage : Page
         {
             chart.GridColor = grid;
         }
-        _gearReferenceLines.Color = axes;
         _throttleBrakeReferenceLines.Color = centerLine;
         _steeringReferenceLines.Color = centerLine;
         _gearTooltip.ApplyTheme(dark);

@@ -5,7 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    xmlns:scottPlot="using:ScottPlot.WinUI"
+    xmlns:charting="using:TrackNRace.Charting"
     ActualThemeChanged="OnActualThemeChanged"
     Loaded="OnLoaded"
     Unloaded="OnUnloaded"
@@ -107,10 +107,7 @@
                         </StackPanel>
                     </Grid>
                     <Grid Grid.Row="1">
-                        <scottPlot:WinUIPlot
-                            x:Name="PowerSplitPlot"
-                            PointerExited="OnPlotPointerExited"
-                            PointerMoved="OnPowerSplitPointerMoved" />
+                        <charting:GpuChart x:Name="PowerSplitPlot" />
                         <TextBlock
                             x:Name="PowerSplitNoData"
                             Style="{StaticResource PowerEmptyStateStyle}"
@@ -167,10 +164,7 @@
                         </StackPanel>
                     </Grid>
                     <Grid Grid.Row="1">
-                        <scottPlot:WinUIPlot
-                            x:Name="ErsHarvestPlot"
-                            PointerExited="OnPlotPointerExited"
-                            PointerMoved="OnErsHarvestPointerMoved" />
+                        <charting:GpuChart x:Name="ErsHarvestPlot" />
                         <TextBlock
                             x:Name="ErsHarvestNoData"
                             Style="{StaticResource PowerEmptyStateStyle}"
@@ -223,10 +217,7 @@
                         </StackPanel>
                     </Grid>
                     <Grid Grid.Row="1">
-                        <scottPlot:WinUIPlot
-                            x:Name="ErsStorePlot"
-                            PointerExited="OnPlotPointerExited"
-                            PointerMoved="OnErsStorePointerMoved" />
+                        <charting:GpuChart x:Name="ErsStorePlot" />
                         <TextBlock
                             x:Name="ErsStoreNoData"
                             Style="{StaticResource PowerEmptyStateStyle}"
@@ -272,10 +263,7 @@
                         </StackPanel>
                     </Grid>
                     <Grid Grid.Row="1">
-                        <scottPlot:WinUIPlot
-                            x:Name="FuelPlot"
-                            PointerExited="OnPlotPointerExited"
-                            PointerMoved="OnFuelPointerMoved" />
+                        <charting:GpuChart x:Name="FuelPlot" />
                         <TextBlock
                             x:Name="FuelNoData"
                             Style="{StaticResource PowerEmptyStateStyle}"
