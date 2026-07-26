@@ -298,15 +298,10 @@ public sealed class GpuChart : Grid, IDisposable
             return;
         }
         _renderQueued = true;
-        if (!DispatcherQueue.TryEnqueue(
-            // PointerMoved is delivered at normal priority. Keeping chart
-            // rendering at low priority lets a stream of pointer events (and
-            // the overlay work they request) starve live telemetry frames.
-            DispatcherQueuePriority.Normal,
-            RenderCore))
-        {
-            _renderQueued = false;
-        }
+        // Subscribe only until the next composition frame. A permanent
+        // Rendering handler would keep the UI thread active at the display's
+        // refresh rate even while this chart is unchanged.
+        CompositionTarget.Rendering += OnCompositionRendering;
     }
 
     internal ChartLineSeries CreateSeries(ChartLineSeriesOptions options)
@@ -418,6 +413,7 @@ public sealed class GpuChart : Grid, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        CancelScheduledRender();
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;
         _plotHost.SizeChanged -= OnPlotSizeChanged;
@@ -471,9 +467,29 @@ public sealed class GpuChart : Grid, IDisposable
     private void OnUnloaded(object sender, RoutedEventArgs args)
     {
         _loaded = false;
-        _renderQueued = false;
+        CancelScheduledRender();
         _overlayRenderQueued = false;
         UnsubscribeFromXamlRoot();
+    }
+
+    private void OnCompositionRendering(object? sender, object args)
+    {
+        CompositionTarget.Rendering -= OnCompositionRendering;
+        if (!_renderQueued)
+        {
+            return;
+        }
+        RenderCore();
+    }
+
+    private void CancelScheduledRender()
+    {
+        if (!_renderQueued)
+        {
+            return;
+        }
+        CompositionTarget.Rendering -= OnCompositionRendering;
+        _renderQueued = false;
     }
 
     private void OnPlotSizeChanged(object sender, SizeChangedEventArgs args)
@@ -674,9 +690,6 @@ public sealed class GpuChart : Grid, IDisposable
             new SolidColorBrush(Color.FromArgb(51, 128, 128, 128));
         foreach (var (axis, presenter) in _axisPresenters)
         {
-            presenter.Visibility = axis.IsVisible
-                ? Visibility.Visible
-                : Visibility.Collapsed;
             var length = axis.Orientation == ChartAxisOrientation.X
                 ? _plotHost.ActualWidth
                 : _plotHost.ActualHeight;
@@ -1001,7 +1014,7 @@ public sealed class GpuChart : Grid, IDisposable
 
         public void Update(double length, Brush lineBrush)
         {
-            if (!_axis.HasValidRange || length <= 0)
+            if (!_axis.IsVisible || !_axis.HasValidRange || length <= 0)
             {
                 Visibility = Visibility.Collapsed;
                 return;

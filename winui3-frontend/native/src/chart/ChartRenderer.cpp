@@ -684,7 +684,13 @@ public:
                     series->thickness * scale_);
             }
 
-            const auto presented = swapChain_->Present(1, 0);
+            // This swap chain is consumed by the WinUI compositor, which
+            // performs the display synchronization. Waiting for a vertical
+            // blank here blocks the UI thread while holding the process-wide
+            // D3D context lock and serializes every chart behind that wait.
+            // Submit immediately and let the flip queue retain the newest
+            // telemetry frame for composition.
+            const auto presented = swapChain_->Present(0, 0);
             if (presented == DXGI_ERROR_DEVICE_REMOVED ||
                 presented == DXGI_ERROR_DEVICE_RESET) {
                 ++deviceLossCount_;

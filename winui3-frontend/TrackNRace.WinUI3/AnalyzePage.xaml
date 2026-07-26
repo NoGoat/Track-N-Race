@@ -275,6 +275,7 @@
                 Orientation="Horizontal"
                 Spacing="2">
                 <Button
+                    x:Name="CollapseSidebarButton"
                     Style="{StaticResource ToolbarButtonStyle}"
                     Click="OnCollapseSidebar"
                     ToolTipService.ToolTip="Collapse Analyze controls">

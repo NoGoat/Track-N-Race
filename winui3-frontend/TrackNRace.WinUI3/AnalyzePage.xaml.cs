@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -19,10 +21,6 @@ public sealed partial class AnalyzePage : Page
     private const double ExpandedSidebarWidth = 300;
     private static readonly TimeSpan SidebarAnimationDuration =
         TimeSpan.FromMilliseconds(200);
-    private readonly DispatcherTimer _refreshTimer = new()
-    {
-        Interval = TimeSpan.FromMilliseconds(100),
-    };
     private readonly List<TelemetrySample> _telemetry = [];
     private readonly List<PlayerStatusData> _status = [];
     private readonly List<MotionSample> _motion = [];
@@ -30,8 +28,8 @@ public sealed partial class AnalyzePage : Page
     private readonly List<DamageRowData> _damage = [];
     private readonly Dictionary<string, ChartLineSeries> _currentSeries = [];
     private readonly Dictionary<string, ChartLineSeries> _comparisonSeries = [];
-    private readonly Dictionary<string, ChartPoint[]> _currentPoints = [];
-    private readonly Dictionary<string, ChartPoint[]> _comparisonPoints = [];
+    private readonly Dictionary<string, List<ChartPoint>> _currentPoints = [];
+    private readonly Dictionary<string, List<ChartPoint>> _comparisonPoints = [];
     private readonly List<(UIElement Element, ICompositionAnimationBase Animation)>
         _sidebarAnimations = [];
     private readonly HashSet<int> _requestedLaps = [];
@@ -53,13 +51,18 @@ public sealed partial class AnalyzePage : Page
     private long _damageEpoch = -1;
     private long _timelineRevision = -1;
     private float? _playbackLapStart;
+    private int? _playbackLapNumber;
+    private float _currentOrigin;
+    private int? _currentLapNumber;
     private bool _isLoaded;
-    private bool _refreshPending;
+    private bool _liveSeriesInitialized;
     private bool _sidebarCollapsed;
     private bool _fixedLapMode;
+    private bool _restoringConfiguration = true;
     private bool _updatingLapSelectors;
     private bool _updatingColor;
     private double _fullRangeMaximum = 1;
+    private int _refreshQueued;
     private int _sidebarAnimationVersion;
 
     internal ObservableCollection<AnalyzeMetricItem> Metrics { get; } = [];
@@ -67,12 +70,18 @@ public sealed partial class AnalyzePage : Page
     public AnalyzePage()
     {
         InitializeComponent();
-        var initiallyVisible = new HashSet<string>(
-            ["throttle", "power-ice", "power-mguk"],
-            StringComparer.Ordinal);
-        foreach (var id in AnalyzeMetrics.ScreenshotDefaults)
+        var settings = ((App)Application.Current).AnalyzeDisplay;
+        _sidebarCollapsed = settings.Collapsed is true;
+        YAxisToggle.IsOn = settings.ShowYAxis is not false;
+        foreach (var saved in settings.Series ?? [])
         {
-            AddMetric(AnalyzeMetrics.ById[id], initiallyVisible.Contains(id));
+            if (AnalyzeMetrics.ById.TryGetValue(saved.MetricId, out var definition))
+            {
+                AddMetric(
+                    definition,
+                    saved.Visible is not false,
+                    ParseColor(saved.Color, definition.DefaultColor));
+            }
         }
 
         _colorPicker = new ColorPicker
@@ -89,9 +98,17 @@ public sealed partial class AnalyzePage : Page
         };
         _colorPicker.ColorChanged += OnMetricColorChanged;
         _colorFlyout = new Flyout { Content = _colorPicker };
-        _refreshTimer.Tick += OnRefreshTimerTick;
         ConfigureChart();
         RefreshMetricChoices();
+        ApplySidebarLayout(_sidebarCollapsed);
+        CollapseIcon.Glyph = _sidebarCollapsed ? "\uE8A0" : "\uE89F";
+        ToolTipService.SetToolTip(
+            CollapseSidebarButton,
+            _sidebarCollapsed
+                ? "Open Analyze controls"
+                : "Collapse Analyze controls");
+        _restoringConfiguration = false;
+        Metrics.CollectionChanged += OnMetricsCollectionChanged;
         UpdateControlState();
     }
 
@@ -111,8 +128,6 @@ public sealed partial class AnalyzePage : Page
             _store.AnalyzeLapDataChanged += OnAnalyzeLapDataChanged;
             _store.TimelineReset += OnTimelineReset;
         }
-        _refreshPending = true;
-        _refreshTimer.Start();
         ApplyTheme();
         RefreshFromStore();
     }
@@ -121,7 +136,7 @@ public sealed partial class AnalyzePage : Page
     {
         if (!_isLoaded) return;
         _isLoaded = false;
-        _refreshTimer.Stop();
+        Interlocked.Exchange(ref _refreshQueued, 0);
         CancelSidebarAnimation();
         if (_store is not null)
         {
@@ -222,7 +237,23 @@ public sealed partial class AnalyzePage : Page
         RebuildAllSeries(resetView: true);
     }
 
-    private void OnStoreChanged() => _refreshPending = true;
+    private void OnStoreChanged() => QueueRefresh();
+
+    private void QueueRefresh()
+    {
+        if (!_isLoaded || Interlocked.Exchange(ref _refreshQueued, 1) != 0)
+        {
+            return;
+        }
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                Interlocked.Exchange(ref _refreshQueued, 0);
+                RefreshFromStore();
+            }))
+        {
+            Interlocked.Exchange(ref _refreshQueued, 0);
+        }
+    }
 
     private void OnAnalyzeLapDataChanged(int lapNumber)
     {
@@ -242,15 +273,8 @@ public sealed partial class AnalyzePage : Page
             {
                 _requestedLaps.Clear();
             }
-            _refreshPending = true;
+            QueueRefresh();
         });
-    }
-
-    private void OnRefreshTimerTick(object? sender, object args)
-    {
-        if (!_refreshPending) return;
-        _refreshPending = false;
-        RefreshFromStore();
     }
 
     private void RefreshFromStore()
@@ -265,6 +289,7 @@ public sealed partial class AnalyzePage : Page
         _telemetryCount = telemetry.TotalCount;
         _telemetryEpoch = telemetry.BufferEpoch;
         _playbackLapStart = telemetry.PlaybackLapStart;
+        _playbackLapNumber = telemetry.PlaybackLapNumber;
 
         var misc = _store.ReadMisc(
             _motionCount, _motionEpoch,
@@ -298,7 +323,28 @@ public sealed partial class AnalyzePage : Page
         _timelineRevision = snapshot.TimelineRevision;
 
         RefreshLapChoices();
-        RebuildAllSeries(resetView: false);
+        if (_fixedLapMode)
+        {
+            return;
+        }
+
+        var lapNumber = _playbackLapNumber ?? snapshot.Lap?.LapNum;
+        var sourcesReset =
+            telemetry.Reset || misc.Reset || power.Reset || damage.Reset;
+        var lapChanged = _currentLapNumber != lapNumber;
+        if (!_liveSeriesInitialized || sourcesReset || lapChanged)
+        {
+            RebuildAllSeries(resetView: false);
+            return;
+        }
+
+        AppendLiveSeries(
+            _currentOrigin,
+            telemetry.Samples,
+            power.Rows,
+            misc.Motion,
+            misc.MotionEx,
+            damage.Rows);
     }
 
     private void RebuildAllSeries(bool resetView)
@@ -333,20 +379,80 @@ public sealed partial class AnalyzePage : Page
             _comparisonPoints[item.Id] = comparison;
             if (_currentSeries.TryGetValue(item.Id, out var currentSeries))
             {
-                currentSeries.Replace(current);
+                currentSeries.Replace(CollectionsMarshal.AsSpan(current));
             }
             if (_comparisonSeries.TryGetValue(item.Id, out var comparisonSeries))
             {
-                comparisonSeries.Replace(comparison);
-                comparisonSeries.Visible = comparison.Length > 1;
+                comparisonSeries.Replace(CollectionsMarshal.AsSpan(comparison));
+                comparisonSeries.Visible = comparison.Count > 1;
             }
-            if (current.Length > 0) currentEnd = Math.Max(currentEnd, current[^1].X);
-            if (comparison.Length > 0)
+            if (current.Count > 0) currentEnd = Math.Max(currentEnd, current[^1].X);
+            if (comparison.Count > 0)
             {
                 comparisonEnd = Math.Max(comparisonEnd, comparison[^1].X);
             }
         }
 
+        _liveSeriesInitialized = !_fixedLapMode;
+        if (_liveSeriesInitialized)
+        {
+            _currentOrigin = origin;
+            _currentLapNumber =
+                _playbackLapNumber ?? _store?.OverviewSnapshot.Lap?.LapNum;
+        }
+        UpdateChartState(currentEnd, comparisonEnd, primaryLap, resetView);
+        UpdateControlState();
+    }
+
+    private void AppendLiveSeries(
+        float origin,
+        IReadOnlyList<TelemetrySample> telemetry,
+        IReadOnlyList<PlayerStatusData> status,
+        IReadOnlyList<MotionSample> motion,
+        IReadOnlyList<MotionExSample> motionEx,
+        IReadOnlyList<DamageRowData> damage)
+    {
+        foreach (var item in Metrics.Where(metric => metric.IsVisible))
+        {
+            IEnumerable<object> rows = item.Definition.Source switch
+            {
+                AnalyzeMetricSource.Telemetry => telemetry,
+                AnalyzeMetricSource.Status => status,
+                AnalyzeMetricSource.Motion => motion,
+                AnalyzeMetricSource.MotionEx => motionEx,
+                AnalyzeMetricSource.Damage => damage,
+                _ => [],
+            };
+            var appended = BuildPoints(item.Definition, rows, origin);
+            if (appended.Count == 0)
+            {
+                continue;
+            }
+            if (!_currentPoints.TryGetValue(item.Id, out var points))
+            {
+                points = [];
+                _currentPoints[item.Id] = points;
+            }
+            points.AddRange(appended);
+            if (_currentSeries.TryGetValue(item.Id, out var series))
+            {
+                series.Append(CollectionsMarshal.AsSpan(appended));
+            }
+        }
+
+        var currentEnd = LastPointX(_currentPoints);
+        var comparisonEnd = LastPointX(_comparisonPoints);
+        UpdateChartState(
+            currentEnd, comparisonEnd, primaryLap: null, resetView: false);
+    }
+
+    private void UpdateChartState(
+        double currentEnd,
+        double comparisonEnd,
+        AnalyzeLapData? primaryLap,
+        bool resetView)
+    {
+        if (_timeAxis is null) return;
         _fullRangeMaximum = Math.Max(1, Math.Max(currentEnd, comparisonEnd));
         var interval = _fullRangeMaximum <= 1
             ? .1
@@ -367,10 +473,23 @@ public sealed partial class AnalyzePage : Page
             ? Visibility.Collapsed
             : Visibility.Visible;
         AnalyzePlot.Invalidate();
-        UpdateControlState();
     }
 
-    private ChartPoint[] BuildLivePoints(
+    private static double LastPointX(
+        IReadOnlyDictionary<string, List<ChartPoint>> points)
+    {
+        var maximum = 0d;
+        foreach (var values in points.Values)
+        {
+            if (values.Count > 0)
+            {
+                maximum = Math.Max(maximum, values[^1].X);
+            }
+        }
+        return maximum;
+    }
+
+    private List<ChartPoint> BuildLivePoints(
         AnalyzeMetricDefinition definition, float origin)
     {
         IEnumerable<object> rows = definition.Source switch
@@ -385,7 +504,7 @@ public sealed partial class AnalyzePage : Page
         return BuildPoints(definition, rows, origin);
     }
 
-    private static ChartPoint[] BuildPoints(
+    private static List<ChartPoint> BuildPoints(
         AnalyzeMetricDefinition definition,
         AnalyzeLapData lap,
         float origin)
@@ -402,7 +521,7 @@ public sealed partial class AnalyzePage : Page
         return BuildPoints(definition, rows, origin);
     }
 
-    private static ChartPoint[] BuildPoints(
+    private static List<ChartPoint> BuildPoints(
         AnalyzeMetricDefinition definition,
         IEnumerable<object> rows,
         float origin)
@@ -426,7 +545,7 @@ public sealed partial class AnalyzePage : Page
                 lastX = x;
             }
         }
-        return points.ToArray();
+        return points;
     }
 
     private float CurrentLapOrigin()
@@ -507,6 +626,47 @@ public sealed partial class AnalyzePage : Page
             _motionExEpoch = _damageEpoch = -1;
         _timelineRevision = -1;
         _playbackLapStart = null;
+        _playbackLapNumber = null;
+        _currentLapNumber = null;
+        _currentOrigin = 0;
+        _liveSeriesInitialized = false;
+    }
+
+    private void SaveConfiguration()
+    {
+        if (_restoringConfiguration)
+        {
+            return;
+        }
+        ((App)Application.Current).SetAnalyzeDisplay(
+            new AnalyzeDisplaySettings(
+                1,
+                _sidebarCollapsed,
+                YAxisToggle.IsOn,
+                Metrics.Select(item => new AnalyzeSeriesDisplaySettings(
+                    item.Id,
+                    AnalyzeDisplaySettings.ColorHex(item.Color),
+                    item.IsVisible)).ToArray()));
+    }
+
+    private static Color ParseColor(string value, Color fallback)
+    {
+        if (value is not { Length: 7 } || value[0] != '#')
+        {
+            return fallback;
+        }
+        try
+        {
+            return Color.FromArgb(
+                255,
+                Convert.ToByte(value[1..3], 16),
+                Convert.ToByte(value[3..5], 16),
+                Convert.ToByte(value[5..7], 16));
+        }
+        catch (FormatException)
+        {
+            return fallback;
+        }
     }
 
     private void RefreshMetricChoices()
@@ -521,9 +681,11 @@ public sealed partial class AnalyzePage : Page
 
     private void AddMetric(
         AnalyzeMetricDefinition definition,
-        bool isVisible = true)
+        bool isVisible = true,
+        Color? color = null)
     {
         var item = new AnalyzeMetricItem(definition);
+        item.Color = color ?? definition.DefaultColor;
         item.IsVisible = isVisible;
         item.PropertyChanged += (_, args) =>
         {
@@ -531,9 +693,19 @@ public sealed partial class AnalyzePage : Page
                 nameof(AnalyzeMetricItem.Color))
             {
                 ReconfigureMetricSeries();
+                SaveConfiguration();
             }
         };
         Metrics.Add(item);
+    }
+
+    private void OnMetricsCollectionChanged(
+        object? sender,
+        NotifyCollectionChangedEventArgs args)
+    {
+        RefreshMetricChoices();
+        ReconfigureMetricSeries();
+        SaveConfiguration();
     }
 
     private void OnAddMetricChanged(object sender, SelectionChangedEventArgs args)
@@ -544,8 +716,6 @@ public sealed partial class AnalyzePage : Page
         }
         AddMetric(definition);
         AddMetricComboBox.SelectedItem = null;
-        RefreshMetricChoices();
-        ReconfigureMetricSeries();
     }
 
     private AnalyzeMetricItem? MetricFrom(object sender) =>
@@ -558,7 +728,6 @@ public sealed partial class AnalyzePage : Page
         if (index > 0)
         {
             Metrics.Move(index, index - 1);
-            ReconfigureMetricSeries();
         }
     }
 
@@ -569,7 +738,6 @@ public sealed partial class AnalyzePage : Page
         if (index >= 0 && index < Metrics.Count - 1)
         {
             Metrics.Move(index, index + 1);
-            ReconfigureMetricSeries();
         }
     }
 
@@ -587,8 +755,6 @@ public sealed partial class AnalyzePage : Page
     {
         if (MetricFrom(sender) is not { } item) return;
         Metrics.Remove(item);
-        RefreshMetricChoices();
-        ReconfigureMetricSeries();
     }
 
     private void OnColorButtonClicked(object sender, RoutedEventArgs args)
@@ -635,6 +801,7 @@ public sealed partial class AnalyzePage : Page
             axis.IsVisible = YAxisToggle.IsOn;
         }
         AnalyzePlot.Invalidate();
+        SaveConfiguration();
     }
 
     private void OnCollapseSidebar(object sender, RoutedEventArgs args)
@@ -645,6 +812,7 @@ public sealed partial class AnalyzePage : Page
         ToolTipService.SetToolTip(
             sender as DependencyObject,
             _sidebarCollapsed ? "Open Analyze controls" : "Collapse Analyze controls");
+        SaveConfiguration();
     }
 
     private void AnimateSidebarTo(double targetWidth)
@@ -660,6 +828,10 @@ public sealed partial class AnalyzePage : Page
 
         // Change XAML layout once, then use a FLIP transform to visually bridge
         // the old and new bounds entirely on the compositor thread.
+        if (!collapsing)
+        {
+            SidebarDivider.Visibility = Visibility.Visible;
+        }
         Sidebar.Width = ExpandedSidebarWidth;
         SidebarColumn.Width = new GridLength(
             collapsing ? 0 : ExpandedSidebarWidth);
@@ -761,6 +933,9 @@ public sealed partial class AnalyzePage : Page
         Sidebar.Width = double.NaN;
         SidebarColumn.Width = new GridLength(
             collapsed ? 0 : ExpandedSidebarWidth);
+        SidebarDivider.Visibility = collapsed
+            ? Visibility.Collapsed
+            : Visibility.Visible;
     }
 
     private void OnZoomIn(object sender, RoutedEventArgs args) => Zoom(.7);
@@ -839,13 +1014,13 @@ public sealed partial class AnalyzePage : Page
     private static void AddTooltipRole(
         AnalyzeMetricItem item,
         double x,
-        IReadOnlyDictionary<string, ChartPoint[]> source,
+        IReadOnlyDictionary<string, List<ChartPoint>> source,
         string group,
         Color color,
         List<ChartTooltipEntry> entries,
         List<ChartTooltipMarker> markers)
     {
-        if (!source.TryGetValue(item.Id, out var points) || points.Length == 0)
+        if (!source.TryGetValue(item.Id, out var points) || points.Count == 0)
         {
             return;
         }
@@ -856,16 +1031,25 @@ public sealed partial class AnalyzePage : Page
             point.X, point.Y, item.Definition.ScaleKey, color));
     }
 
-    private static ChartPoint Nearest(ChartPoint[] points, double x)
+    private static ChartPoint Nearest(IReadOnlyList<ChartPoint> points, double x)
     {
-        var index = Array.BinarySearch(
-            points,
-            new ChartPoint(x, 0),
-            Comparer<ChartPoint>.Create((left, right) => left.X.CompareTo(right.X)));
-        if (index >= 0) return points[index];
-        index = ~index;
+        var low = 0;
+        var high = points.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (points[middle].X < x)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        var index = low;
         if (index == 0) return points[0];
-        if (index >= points.Length) return points[^1];
+        if (index >= points.Count) return points[^1];
         return x - points[index - 1].X <= points[index].X - x
             ? points[index - 1]
             : points[index];

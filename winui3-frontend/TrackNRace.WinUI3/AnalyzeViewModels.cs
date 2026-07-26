@@ -141,12 +141,6 @@ internal static class AnalyzeMetrics
     public static readonly IReadOnlyDictionary<string, AnalyzeMetricDefinition> ById =
         All.ToDictionary(value => value.Id, StringComparer.Ordinal);
 
-    public static readonly string[] ScreenshotDefaults =
-    [
-        "steering", "speed", "ers", "throttle", "power-ice",
-        "power-mguk", "gear", "brake", "rpm",
-    ];
-
     private static IReadOnlyList<AnalyzeMetricDefinition> Build()
     {
         var metrics = new List<AnalyzeMetricDefinition>

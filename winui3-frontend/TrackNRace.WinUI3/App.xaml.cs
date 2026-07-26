@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Windows.Storage;
 
@@ -29,6 +30,7 @@ public partial class App : Application
     private const string OverviewCompactDamageKey = "OverviewCompactDamage";
     private const string OverviewTyreDensityKey = "OverviewTyreDensity";
     private const string OverviewTyreViewModeKey = "OverviewTyreViewMode";
+    private const string AnalyzeDisplayKey = "AnalyzeDisplay";
 
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
@@ -46,6 +48,7 @@ public partial class App : Application
     public PowerDisplaySettings PowerDisplay { get; private set; }
     public MiscDisplaySettings MiscDisplay { get; private set; }
     public OverviewDisplaySettings OverviewDisplay { get; private set; }
+    internal AnalyzeDisplaySettings AnalyzeDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
     public event Action<TyreWearDisplayMode>? TyreWearModeChanged;
     public event Action? SessionDisplayChanged;
@@ -83,6 +86,7 @@ public partial class App : Application
         PowerDisplay = ReadPowerDisplay();
         MiscDisplay = ReadMiscDisplay();
         OverviewDisplay = ReadOverviewDisplay();
+        AnalyzeDisplay = ReadAnalyzeDisplay();
     }
 
     public void SetTheme(ElementTheme theme)
@@ -319,6 +323,13 @@ public partial class App : Application
         OverviewDisplayChanged?.Invoke();
     }
 
+    internal void SetAnalyzeDisplay(AnalyzeDisplaySettings settings)
+    {
+        AnalyzeDisplay = AnalyzeDisplaySettings.Sanitize(settings);
+        ApplicationData.Current.LocalSettings.Values[AnalyzeDisplayKey] =
+            JsonSerializer.Serialize(AnalyzeDisplay);
+    }
+
     private static ushort ReadUdpPort()
     {
         var value = ApplicationData.Current.LocalSettings.Values[UdpPortSettingKey];
@@ -413,5 +424,28 @@ public partial class App : Application
             values[OverviewCompactDamageKey] is true,
             density,
             viewMode);
+    }
+
+    private static AnalyzeDisplaySettings ReadAnalyzeDisplay()
+    {
+        var json =
+            ApplicationData.Current.LocalSettings.Values[AnalyzeDisplayKey] as string;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return AnalyzeDisplaySettings.Default;
+        }
+        try
+        {
+            return AnalyzeDisplaySettings.Sanitize(
+                JsonSerializer.Deserialize<AnalyzeDisplaySettings>(json));
+        }
+        catch (JsonException)
+        {
+            return AnalyzeDisplaySettings.Default;
+        }
+        catch (NotSupportedException)
+        {
+            return AnalyzeDisplaySettings.Default;
+        }
     }
 }
