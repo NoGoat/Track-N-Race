@@ -69,6 +69,7 @@ public sealed class ChartAxis
     private Func<double, string> _labelFormatter = value => $"{value:g}";
     private Color _color = Color.FromArgb(255, 107, 114, 128);
     private bool _showGridLines;
+    private bool _isVisible = true;
 
     public ChartAxis(
         string key,
@@ -127,6 +128,12 @@ public sealed class ChartAxis
     {
         get => _showGridLines;
         set => Set(ref _showGridLines, value);
+    }
+
+    public bool IsVisible
+    {
+        get => _isVisible;
+        set => Set(ref _isVisible, value);
     }
 
     internal event Action? Changed;

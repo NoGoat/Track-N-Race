@@ -290,6 +290,16 @@ internal sealed record OverviewLapBlock(
     float EndSessionTime,
     OverviewChartPoint[] Points);
 
+internal sealed record AnalyzeLapData(
+    int LapNumber,
+    float StartSessionTime,
+    float EndSessionTime,
+    TelemetrySample[] Telemetry,
+    PlayerStatusData[] Status,
+    MotionSample[] Motion,
+    MotionExSample[] MotionEx,
+    DamageRowData[] Damage);
+
 internal sealed record OverviewSnapshot(
     TelemetrySample? LatestTelemetry,
     PlayerStatusData? Status,
@@ -453,6 +463,7 @@ internal sealed class TelemetrySessionStore : IDisposable
     private double? _fuelUpperLimit;
     private double _liveFuelMaximum = double.NegativeInfinity;
     private OverviewLapBlock[] _playbackLapBlocks = [];
+    private readonly Dictionary<int, AnalyzeLapData> _analyzeLapData = [];
     private int _fastestPlaybackLapNumber;
     private float? _playbackLapStart;
     private int? _playbackLapNumber;
@@ -475,7 +486,16 @@ internal sealed class TelemetrySessionStore : IDisposable
     public event Action? MiscChanged;
     public event Action? TyresChanged;
     public event Action? PowerChanged;
+    public event Action<int>? AnalyzeLapDataChanged;
     public event Action<TimelineResetReason>? TimelineReset;
+
+    public AnalyzeLapData? GetAnalyzeLapData(int lapNumber)
+    {
+        lock (_gate)
+        {
+            return _analyzeLapData.GetValueOrDefault(lapNumber);
+        }
+    }
 
     public StandingsSnapshot Snapshot
     {
@@ -735,6 +755,7 @@ internal sealed class TelemetrySessionStore : IDisposable
                 "session_history_fastest" => SetSessionHistoryFastest(root),
                 "protocol_status" => SetProtocolMetadata(root),
                 "playback_lap_blocks" => SetPlaybackMetadata(root),
+                "playback_lap_data" => SetAnalyzeLapData(root),
                 "playback_loaded" => SetPlaybackLoaded(root),
                 "playback_close" => Reset(TimelineResetReason.PlaybackClosed),
                 "race_event" => HandleRaceEvent(root),
@@ -957,6 +978,60 @@ internal sealed class TelemetrySessionStore : IDisposable
             _revision++;
         }
         return true;
+    }
+
+    private bool SetAnalyzeLapData(JsonElement root)
+    {
+        if (!root.TryGetProperty("lapNum", out var lapElement) ||
+            !lapElement.TryGetInt32(out var lapNumber) ||
+            !root.TryGetProperty("startSessionTime", out var startElement) ||
+            !startElement.TryGetSingle(out var startTime) ||
+            !root.TryGetProperty("endSessionTime", out var endElement) ||
+            !endElement.TryGetSingle(out var endTime))
+        {
+            return false;
+        }
+
+        static T[] Rows<T>(JsonElement parent, string property)
+        {
+            if (!parent.TryGetProperty(property, out var value) ||
+                value.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+            var rows = new List<T>();
+            foreach (var element in value.EnumerateArray())
+            {
+                try
+                {
+                    var row = element.Deserialize<T>(JsonOptions);
+                    if (row is not null)
+                    {
+                        rows.Add(row);
+                    }
+                }
+                catch (JsonException)
+                {
+                }
+            }
+            return rows.ToArray();
+        }
+
+        var lap = new AnalyzeLapData(
+            lapNumber,
+            startTime,
+            endTime,
+            Rows<TelemetrySample>(root, "telemetry"),
+            Rows<PlayerStatusData>(root, "statusHistory"),
+            Rows<MotionSample>(root, "motionHistory"),
+            Rows<MotionExSample>(root, "motionExHistory"),
+            Rows<DamageRowData>(root, "damageHistory"));
+        lock (_gate)
+        {
+            _analyzeLapData[lapNumber] = lap;
+        }
+        AnalyzeLapDataChanged?.Invoke(lapNumber);
+        return false;
     }
 
     private bool SetSession(SessionData? value) =>
@@ -1278,6 +1353,7 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _fuelUpperLimit = null;
                 _liveFuelMaximum = double.NegativeInfinity;
                 _playbackLapBlocks = [];
+                _analyzeLapData.Clear();
                 _fastestPlaybackLapNumber = 0;
                 _playbackLapStart = null;
                 _playbackLapNumber = null;
@@ -1358,6 +1434,7 @@ internal sealed class TelemetrySessionStore : IDisposable
             _raceEvents.Clear();
             _playbackEvents = [];
             _playbackLapBlocks = [];
+            _analyzeLapData.Clear();
             _fastestPlaybackLapNumber = 0;
             _playbackLapStart = null;
             _playbackLapNumber = null;

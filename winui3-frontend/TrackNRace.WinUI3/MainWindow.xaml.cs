@@ -135,6 +135,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (pageName == "Analyze")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(AnalyzePage))
+            {
+                RootFrame.Navigate(typeof(AnalyzePage));
+            }
+            return;
+        }
+
         if (pageName == "Misc")
         {
             if (RootFrame.CurrentSourcePageType != typeof(MiscPage))

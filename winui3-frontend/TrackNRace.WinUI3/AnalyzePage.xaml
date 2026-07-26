@@ -1,0 +1,347 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="TrackNRace.WinUI3.AnalyzePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:charting="using:TrackNRace.Charting"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    ActualThemeChanged="OnActualThemeChanged"
+    Loaded="OnLoaded"
+    Unloaded="OnUnloaded"
+    mc:Ignorable="d">
+    <Page.Resources>
+        <Style
+            x:Key="AnalyzeLabelStyle"
+            BasedOn="{StaticResource BodyTextBlockStyle}"
+            TargetType="TextBlock">
+            <Setter Property="FontStyle" Value="Normal" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="MaxLines" Value="1" />
+        </Style>
+        <Style
+            x:Key="ToolbarButtonStyle"
+            BasedOn="{StaticResource DefaultButtonStyle}"
+            TargetType="Button">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style
+            x:Key="MetricButtonStyle"
+            BasedOn="{StaticResource ToolbarButtonStyle}"
+            TargetType="Button">
+            <Setter Property="Width" Value="25" />
+            <Setter Property="Height" Value="25" />
+        </Style>
+    </Page.Resources>
+
+    <Grid x:Name="RootGrid">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="SidebarColumn" Width="300" />
+            <ColumnDefinition Width="1" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Grid x:Name="Sidebar">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="1" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Padding="12,10,12,12" Spacing="9">
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="154" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        Style="{StaticResource AnalyzeLabelStyle}"
+                        Text="Add metric" />
+                    <ComboBox
+                        x:Name="AddMetricComboBox"
+                        Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        DisplayMemberPath="Label"
+                        PlaceholderText="Choose a value…"
+                        SelectionChanged="OnAddMetricChanged" />
+                </Grid>
+
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="154" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        Style="{StaticResource AnalyzeLabelStyle}"
+                        Text="Disable playback" />
+                    <ToggleSwitch
+                        x:Name="FixedLapModeToggle"
+                        Grid.Column="1"
+                        Width="40"
+                        MinWidth="0"
+                        HorizontalAlignment="Right"
+                        OffContent=""
+                        OnContent=""
+                        Toggled="OnFixedLapModeToggled" />
+                </Grid>
+
+                <StackPanel x:Name="FixedLapSelectors" Spacing="9" Visibility="Collapsed">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="154" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock
+                            Style="{StaticResource AnalyzeLabelStyle}"
+                            Text="Lap A" />
+                        <ComboBox
+                            x:Name="LapAComboBox"
+                            Grid.Column="1"
+                            HorizontalAlignment="Stretch"
+                            DisplayMemberPath="DisplayName"
+                            PlaceholderText="Select Lap A…"
+                            SelectionChanged="OnLapSelectionChanged" />
+                    </Grid>
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="154" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock
+                            Style="{StaticResource AnalyzeLabelStyle}"
+                            Text="Lap B" />
+                        <ComboBox
+                            x:Name="LapBComboBox"
+                            Grid.Column="1"
+                            HorizontalAlignment="Stretch"
+                            DisplayMemberPath="DisplayName"
+                            PlaceholderText="Select Lap B…"
+                            SelectionChanged="OnLapSelectionChanged" />
+                    </Grid>
+                </StackPanel>
+
+                <Grid x:Name="CompareLapSelector" ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="154" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        Style="{StaticResource AnalyzeLabelStyle}"
+                        Text="Compare lap" />
+                    <ComboBox
+                        x:Name="CompareLapComboBox"
+                        Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        DisplayMemberPath="DisplayName"
+                        PlaceholderText="None"
+                        SelectionChanged="OnLapSelectionChanged" />
+                </Grid>
+
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="154" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        Style="{StaticResource AnalyzeLabelStyle}"
+                        Text="Y-axis values" />
+                    <ToggleSwitch
+                        x:Name="YAxisToggle"
+                        Grid.Column="1"
+                        Width="40"
+                        MinWidth="0"
+                        HorizontalAlignment="Right"
+                        IsOn="True"
+                        OffContent=""
+                        OnContent=""
+                        Toggled="OnYAxisToggled" />
+                </Grid>
+            </StackPanel>
+
+            <Border Grid.Row="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <ListView
+                x:Name="MetricList"
+                Grid.Row="2"
+                Padding="0"
+                CanReorderItems="True"
+                IsItemClickEnabled="False"
+                ItemsSource="{x:Bind Metrics}">
+                <ListView.ItemContainerStyle>
+                    <Style
+                        BasedOn="{StaticResource DefaultListViewItemStyle}"
+                        TargetType="ListViewItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="MinHeight" Value="45" />
+                        <Setter Property="Padding" Value="8,2" />
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid ColumnSpacing="5">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button
+                                Width="22"
+                                Height="22"
+                                MinWidth="0"
+                                MinHeight="0"
+                                Padding="0"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Click="OnColorButtonClicked"
+                                ToolTipService.ToolTip="Change series colour">
+                                <Border
+                                    Width="19"
+                                    Height="19"
+                                    Background="{Binding ColorBrush}"
+                                    CornerRadius="{ThemeResource ControlCornerRadius}" />
+                            </Button>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock
+                                    FontSize="11"
+                                    FontWeight="SemiBold"
+                                    Text="{Binding Label}"
+                                    TextTrimming="CharacterEllipsis" />
+                                <TextBlock
+                                    Margin="0,1,0,0"
+                                    FontSize="8"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="{Binding Detail}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Button
+                                    Style="{StaticResource MetricButtonStyle}"
+                                    Click="OnMoveMetricUp"
+                                    ToolTipService.ToolTip="Move up">
+                                    <FontIcon FontSize="10" Glyph="&#xE70E;" />
+                                </Button>
+                                <Button
+                                    Style="{StaticResource MetricButtonStyle}"
+                                    Click="OnMoveMetricDown"
+                                    ToolTipService.ToolTip="Move down">
+                                    <FontIcon FontSize="10" Glyph="&#xE70D;" />
+                                </Button>
+                                <Button
+                                    Style="{StaticResource MetricButtonStyle}"
+                                    Click="OnToggleMetric"
+                                    ToolTipService.ToolTip="Show or hide">
+                                    <FontIcon FontSize="11" Glyph="{Binding VisibilityGlyph}" />
+                                </Button>
+                                <Button
+                                    Style="{StaticResource MetricButtonStyle}"
+                                    Click="OnResetMetricColor"
+                                    ToolTipService.ToolTip="Reset colour">
+                                    <FontIcon FontSize="11" Glyph="&#xE72C;" />
+                                </Button>
+                                <Button
+                                    Style="{StaticResource MetricButtonStyle}"
+                                    Click="OnRemoveMetric"
+                                    ToolTipService.ToolTip="Remove metric">
+                                    <FontIcon FontSize="11" Glyph="&#xE74D;" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <Border
+            x:Name="SidebarDivider"
+            Grid.Column="1"
+            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+        <Grid x:Name="ChartArea" Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="44" />
+                <RowDefinition Height="1" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel
+                Padding="7,0"
+                VerticalAlignment="Center"
+                Orientation="Horizontal"
+                Spacing="2">
+                <Button
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnCollapseSidebar"
+                    ToolTipService.ToolTip="Collapse Analyze controls">
+                    <FontIcon x:Name="CollapseIcon" FontSize="15" Glyph="&#xE89F;" />
+                </Button>
+                <Rectangle
+                    Width="1"
+                    Height="22"
+                    Margin="5,0"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <TextBlock Margin="3,0,2,0" Style="{StaticResource AnalyzeLabelStyle}" Text="Zoom" />
+                <Button
+                    x:Name="ZoomOutButton"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnZoomOut"
+                    ToolTipService.ToolTip="Zoom out">
+                    <FontIcon FontSize="14" Glyph="&#xE71F;" />
+                </Button>
+                <Button
+                    x:Name="ZoomInButton"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnZoomIn"
+                    ToolTipService.ToolTip="Zoom in">
+                    <FontIcon FontSize="14" Glyph="&#xE8A3;" />
+                </Button>
+                <Rectangle
+                    Width="1"
+                    Height="22"
+                    Margin="5,0"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <TextBlock Margin="3,0,2,0" Style="{StaticResource AnalyzeLabelStyle}" Text="Pan" />
+                <Button
+                    x:Name="PanLeftButton"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnPanLeft"
+                    ToolTipService.ToolTip="Pan left">
+                    <FontIcon FontSize="14" Glyph="&#xE72B;" />
+                </Button>
+                <Button
+                    x:Name="PanRightButton"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnPanRight"
+                    ToolTipService.ToolTip="Pan right">
+                    <FontIcon FontSize="14" Glyph="&#xE72A;" />
+                </Button>
+                <Button
+                    x:Name="ResetViewButton"
+                    Style="{StaticResource ToolbarButtonStyle}"
+                    Click="OnResetView"
+                    ToolTipService.ToolTip="Reset view">
+                    <FontIcon FontSize="13" Glyph="&#xE72C;" />
+                </Button>
+            </StackPanel>
+
+            <Border Grid.Row="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <Grid Grid.Row="2" Padding="12,10,12,7">
+                <charting:GpuChart x:Name="AnalyzePlot" />
+                <TextBlock
+                    x:Name="NoDataText"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="Waiting for telemetry" />
+            </Grid>
+        </Grid>
+
+    </Grid>
+</Page>

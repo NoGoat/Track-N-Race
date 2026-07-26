@@ -674,6 +674,9 @@ public sealed class GpuChart : Grid, IDisposable
             new SolidColorBrush(Color.FromArgb(51, 128, 128, 128));
         foreach (var (axis, presenter) in _axisPresenters)
         {
+            presenter.Visibility = axis.IsVisible
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             var length = axis.Orientation == ChartAxisOrientation.X
                 ? _plotHost.ActualWidth
                 : _plotHost.ActualHeight;
