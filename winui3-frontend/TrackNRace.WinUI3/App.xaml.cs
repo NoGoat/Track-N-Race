@@ -20,6 +20,8 @@ public partial class App : Application
     private const string SessionStaleTimeoutKey = "SessionStaleTimeoutSeconds";
     private const string SessionReduceAnimationsKey = "SessionReduceAnimations";
     private const string PowerCompactCardsKey = "PowerCompactCards";
+    private const string MiscShowGForceKey = "MiscShowGForce";
+    private const string MiscShowRideHeightKey = "MiscShowRideHeight";
     private const string OverviewCompactStatsKey = "OverviewCompactStats";
     private const string OverviewCompactDamageKey = "OverviewCompactDamage";
     private const string OverviewTyreDensityKey = "OverviewTyreDensity";
@@ -37,11 +39,13 @@ public partial class App : Application
     public TyreWearDisplayMode TyreWearMode { get; private set; }
     public SessionDisplaySettings SessionDisplay { get; private set; }
     public PowerDisplaySettings PowerDisplay { get; private set; }
+    public MiscDisplaySettings MiscDisplay { get; private set; }
     public OverviewDisplaySettings OverviewDisplay { get; private set; }
     public event Action<int>? ChartWindowChanged;
     public event Action<TyreWearDisplayMode>? TyreWearModeChanged;
     public event Action? SessionDisplayChanged;
     public event Action? PowerDisplayChanged;
+    public event Action? MiscDisplayChanged;
     public event Action? OverviewDisplayChanged;
     private int _selectedDriverIndex = -1;
 
@@ -68,6 +72,7 @@ public partial class App : Application
         TyreWearMode = ReadTyreWearMode();
         SessionDisplay = ReadSessionDisplay();
         PowerDisplay = ReadPowerDisplay();
+        MiscDisplay = ReadMiscDisplay();
         OverviewDisplay = ReadOverviewDisplay();
     }
 
@@ -231,6 +236,20 @@ public partial class App : Application
         PowerDisplayChanged?.Invoke();
     }
 
+    public void SetMiscDisplay(MiscDisplaySettings settings)
+    {
+        if (settings == MiscDisplay)
+        {
+            return;
+        }
+
+        MiscDisplay = settings;
+        var values = ApplicationData.Current.LocalSettings.Values;
+        values[MiscShowGForceKey] = settings.ShowGForce;
+        values[MiscShowRideHeightKey] = settings.ShowRideHeight;
+        MiscDisplayChanged?.Invoke();
+    }
+
     public void SetOverviewDisplay(OverviewDisplaySettings settings)
     {
         if (!Enum.IsDefined(settings.TyreDensity))
@@ -321,6 +340,14 @@ public partial class App : Application
         var values = ApplicationData.Current.LocalSettings.Values;
         return new PowerDisplaySettings(
             values[PowerCompactCardsKey] is true);
+    }
+
+    private static MiscDisplaySettings ReadMiscDisplay()
+    {
+        var values = ApplicationData.Current.LocalSettings.Values;
+        return new MiscDisplaySettings(
+            values[MiscShowGForceKey] is not false,
+            values[MiscShowRideHeightKey] is not false);
     }
 
     private static OverviewDisplaySettings ReadOverviewDisplay()

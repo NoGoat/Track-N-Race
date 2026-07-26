@@ -226,6 +226,27 @@ internal sealed record TelemetryReadResult(
     float? PlaybackLapStart,
     int? PlaybackLapNumber);
 
+internal sealed record MotionSample(
+    float SessionTime,
+    double LateralG,
+    double LongitudinalG,
+    double VerticalG);
+
+internal sealed record MotionExSample(
+    float SessionTime,
+    double FrontAeroHeightMm,
+    double RearAeroHeightMm);
+
+internal sealed record MiscReadResult(
+    MotionSample[] Motion,
+    MotionExSample[] MotionEx,
+    int MotionTotalCount,
+    int MotionExTotalCount,
+    long MotionBufferEpoch,
+    long MotionExBufferEpoch,
+    long TimelineRevision,
+    bool Reset);
+
 internal sealed record DamageRowData
 {
     public float SessionTime { get; init; }
@@ -414,6 +435,8 @@ internal sealed class TelemetrySessionStore : IDisposable
     private DamageRowData? _latestDamage;
     private readonly List<RaceEventData> _raceEvents = [];
     private readonly List<TelemetrySample> _telemetry = [];
+    private readonly List<MotionSample> _motion = [];
+    private readonly List<MotionExSample> _motionEx = [];
     private readonly List<DamageRowData> _damageHistory = [];
     private readonly List<PlayerStatusData> _powerHistory = [];
     private RaceEventData[] _playbackEvents = [];
@@ -422,6 +445,8 @@ internal sealed class TelemetrySessionStore : IDisposable
     private long _revision;
     private long _timelineRevision;
     private long _telemetryBufferEpoch;
+    private long _motionBufferEpoch;
+    private long _motionExBufferEpoch;
     private long _damageBufferEpoch;
     private long _powerBufferEpoch;
     private bool _hasMguh;
@@ -447,6 +472,7 @@ internal sealed class TelemetrySessionStore : IDisposable
 
     public event Action? SnapshotChanged;
     public event Action? TelemetryChanged;
+    public event Action? MiscChanged;
     public event Action? TyresChanged;
     public event Action? PowerChanged;
     public event Action<TimelineResetReason>? TimelineReset;
@@ -581,6 +607,41 @@ internal sealed class TelemetrySessionStore : IDisposable
         }
     }
 
+    public MiscReadResult ReadMisc(
+        int knownMotionCount,
+        long knownMotionBufferEpoch,
+        int knownMotionExCount,
+        long knownMotionExBufferEpoch,
+        long knownTimelineRevision)
+    {
+        lock (_gate)
+        {
+            var reset =
+                knownMotionBufferEpoch != _motionBufferEpoch ||
+                knownMotionExBufferEpoch != _motionExBufferEpoch ||
+                knownTimelineRevision != _timelineRevision ||
+                knownMotionCount < 0 ||
+                knownMotionCount > _motion.Count ||
+                knownMotionExCount < 0 ||
+                knownMotionExCount > _motionEx.Count;
+            var motionStart = reset ? 0 : knownMotionCount;
+            var motionExStart = reset ? 0 : knownMotionExCount;
+            var motion = new MotionSample[_motion.Count - motionStart];
+            var motionEx = new MotionExSample[_motionEx.Count - motionExStart];
+            _motion.CopyTo(motionStart, motion, 0, motion.Length);
+            _motionEx.CopyTo(motionExStart, motionEx, 0, motionEx.Length);
+            return new MiscReadResult(
+                motion,
+                motionEx,
+                _motion.Count,
+                _motionEx.Count,
+                _motionBufferEpoch,
+                _motionExBufferEpoch,
+                _timelineRevision,
+                reset);
+        }
+    }
+
     public DamageReadResult ReadDamage(
         int knownCount,
         long knownBufferEpoch,
@@ -704,13 +765,19 @@ internal sealed class TelemetrySessionStore : IDisposable
     private void OnBinaryBatchReceived(ReadOnlySpan<byte> data)
     {
         if (_disposed ||
-            !TryDecodeHotBatch(data, out var telemetry, out var positions))
+            !TryDecodeHotBatch(
+                data,
+                out var telemetry,
+                out var motion,
+                out var motionEx,
+                out var positions))
         {
             return;
         }
 
         var positionsChanged = positions is not null;
         var telemetryChanged = telemetry.Count > 0;
+        var miscChanged = motion.Count > 0 || motionEx.Count > 0;
         lock (_gate)
         {
             if (positionsChanged)
@@ -719,6 +786,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _revision++;
             }
             AppendTelemetryLocked(telemetry);
+            AppendMotionLocked(motion);
+            AppendMotionExLocked(motionEx);
         }
         if (positionsChanged)
         {
@@ -727,6 +796,10 @@ internal sealed class TelemetrySessionStore : IDisposable
         if (telemetryChanged)
         {
             TelemetryChanged?.Invoke();
+        }
+        if (miscChanged)
+        {
+            MiscChanged?.Invoke();
         }
     }
 
@@ -741,7 +814,12 @@ internal sealed class TelemetrySessionStore : IDisposable
             return;
         }
 
-        if (!TryDecodeHotBatch(binary, out var telemetry, out var positions))
+        if (!TryDecodeHotBatch(
+                binary,
+                out var telemetry,
+                out var motion,
+                out var motionEx,
+                out var positions))
         {
             return;
         }
@@ -804,9 +882,13 @@ internal sealed class TelemetrySessionStore : IDisposable
             _tyreSets = null;
             _latestDamage = damageHistory.Count > 0 ? damageHistory[^1] : null;
             ClearTelemetryLocked();
+            ClearMotionLocked();
+            ClearMotionExLocked();
             ClearDamageLocked();
             ClearPowerLocked();
             AppendTelemetryLocked(telemetry);
+            AppendMotionLocked(motion);
+            AppendMotionExLocked(motionEx);
             _damageHistory.AddRange(damageHistory);
             _powerHistory.AddRange(statusHistory);
             TrimDamageLocked();
@@ -820,6 +902,7 @@ internal sealed class TelemetrySessionStore : IDisposable
         TimelineReset?.Invoke(TimelineResetReason.Seek);
         SnapshotChanged?.Invoke();
         TelemetryChanged?.Invoke();
+        MiscChanged?.Invoke();
         TyresChanged?.Invoke();
         PowerChanged?.Invoke();
     }
@@ -1188,6 +1271,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                 _latestDamage = null;
                 _playerStatus = null;
                 ClearTelemetryLocked();
+                ClearMotionLocked();
+                ClearMotionExLocked();
                 ClearDamageLocked();
                 ClearPowerLocked();
                 _fuelUpperLimit = null;
@@ -1201,6 +1286,7 @@ internal sealed class TelemetrySessionStore : IDisposable
         if (loaded)
         {
             TelemetryChanged?.Invoke();
+            MiscChanged?.Invoke();
             TyresChanged?.Invoke();
             PowerChanged?.Invoke();
         }
@@ -1261,6 +1347,8 @@ internal sealed class TelemetrySessionStore : IDisposable
             _tyreSets = null;
             _latestDamage = null;
             ClearTelemetryLocked();
+            ClearMotionLocked();
+            ClearMotionExLocked();
             ClearDamageLocked();
             ClearPowerLocked();
             _fuelUpperLimit = null;
@@ -1349,6 +1437,116 @@ internal sealed class TelemetrySessionStore : IDisposable
         return low;
     }
 
+    private void AppendMotionLocked(IReadOnlyList<MotionSample> samples)
+    {
+        foreach (var sample in samples)
+        {
+            if (_motion.Count > 0 &&
+                sample.SessionTime < _motion[^1].SessionTime)
+            {
+                var keep = LowerBoundMotion(sample.SessionTime);
+                if (keep < _motion.Count)
+                {
+                    _motion.RemoveRange(keep, _motion.Count - keep);
+                    _motionBufferEpoch++;
+                }
+            }
+            _motion.Add(sample);
+        }
+        TrimMotionLocked();
+    }
+
+    private void AppendMotionExLocked(IReadOnlyList<MotionExSample> samples)
+    {
+        foreach (var sample in samples)
+        {
+            if (_motionEx.Count > 0 &&
+                sample.SessionTime < _motionEx[^1].SessionTime)
+            {
+                var keep = LowerBoundMotionEx(sample.SessionTime);
+                if (keep < _motionEx.Count)
+                {
+                    _motionEx.RemoveRange(keep, _motionEx.Count - keep);
+                    _motionExBufferEpoch++;
+                }
+            }
+            _motionEx.Add(sample);
+        }
+        TrimMotionExLocked();
+    }
+
+    private int LowerBoundMotion(float sessionTime)
+    {
+        var low = 0;
+        var high = _motion.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (_motion[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        return low;
+    }
+
+    private int LowerBoundMotionEx(float sessionTime)
+    {
+        var low = 0;
+        var high = _motionEx.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) / 2);
+            if (_motionEx[middle].SessionTime < sessionTime)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+        return low;
+    }
+
+    private void TrimMotionLocked()
+    {
+        if (_motion.Count == 0)
+        {
+            return;
+        }
+        var cutoff = _motion[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundMotion(cutoff);
+        var excess = Math.Max(0, _motion.Count - MaxHotRows);
+        var removeCount = Math.Max(firstValid, excess);
+        if (removeCount >= HotRowTrimChunk || excess > 0)
+        {
+            _motion.RemoveRange(0, removeCount);
+            _motionBufferEpoch++;
+        }
+    }
+
+    private void TrimMotionExLocked()
+    {
+        if (_motionEx.Count == 0)
+        {
+            return;
+        }
+        var cutoff = _motionEx[^1].SessionTime - HotRowRetentionSeconds;
+        var firstValid = LowerBoundMotionEx(cutoff);
+        var excess = Math.Max(0, _motionEx.Count - MaxHotRows);
+        var removeCount = Math.Max(firstValid, excess);
+        if (removeCount >= HotRowTrimChunk || excess > 0)
+        {
+            _motionEx.RemoveRange(0, removeCount);
+            _motionExBufferEpoch++;
+        }
+    }
+
     private int LowerBoundDamage(float sessionTime)
     {
         var low = 0;
@@ -1425,6 +1623,18 @@ internal sealed class TelemetrySessionStore : IDisposable
         _telemetryBufferEpoch++;
     }
 
+    private void ClearMotionLocked()
+    {
+        _motion.Clear();
+        _motionBufferEpoch++;
+    }
+
+    private void ClearMotionExLocked()
+    {
+        _motionEx.Clear();
+        _motionExBufferEpoch++;
+    }
+
     private void ClearDamageLocked()
     {
         _damageHistory.Clear();
@@ -1440,9 +1650,13 @@ internal sealed class TelemetrySessionStore : IDisposable
     private static bool TryDecodeHotBatch(
         ReadOnlySpan<byte> data,
         out List<TelemetrySample> telemetry,
+        out List<MotionSample> motion,
+        out List<MotionExSample> motionEx,
         out PositionsRowData? latestPositions)
     {
         telemetry = [];
+        motion = [];
+        motionEx = [];
         latestPositions = null;
         var offset = 0;
         while (offset < data.Length)
@@ -1475,6 +1689,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                         !TryReadByte(data, ref offset, out var slm))
                     {
                         telemetry = [];
+                        motion = [];
+                        motionEx = [];
                         latestPositions = null;
                         return false;
                     }
@@ -1503,12 +1719,25 @@ internal sealed class TelemetrySessionStore : IDisposable
                         engineTemp));
                     break;
                 case 2:
-                    // motion: f32 + 3*f64.
-                    if (!Advance(data, ref offset, 28)) return false;
+                    if (!TryReadSingle(data, ref offset, out var motionTime) ||
+                        !TryReadDouble(data, ref offset, out var lateralG) ||
+                        !TryReadDouble(data, ref offset, out var longitudinalG) ||
+                        !TryReadDouble(data, ref offset, out var verticalG))
+                    {
+                        return false;
+                    }
+                    motion.Add(new MotionSample(
+                        motionTime, lateralG, longitudinalG, verticalG));
                     break;
                 case 4:
-                    // motion_ex: f32 + 2*f64.
-                    if (!Advance(data, ref offset, 20)) return false;
+                    if (!TryReadSingle(data, ref offset, out var motionExTime) ||
+                        !TryReadDouble(data, ref offset, out var frontHeight) ||
+                        !TryReadDouble(data, ref offset, out var rearHeight))
+                    {
+                        return false;
+                    }
+                    motionEx.Add(new MotionExSample(
+                        motionExTime, frontHeight, rearHeight));
                     break;
                 case 3:
                     if (!Advance(data, ref offset, 2)) return false;
@@ -1533,6 +1762,8 @@ internal sealed class TelemetrySessionStore : IDisposable
                     break;
                 default:
                     telemetry = [];
+                    motion = [];
+                    motionEx = [];
                     latestPositions = null;
                     return false;
             }

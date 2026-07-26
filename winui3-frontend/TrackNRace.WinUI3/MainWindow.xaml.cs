@@ -131,6 +131,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (pageName == "Misc")
+        {
+            if (RootFrame.CurrentSourcePageType != typeof(MiscPage))
+            {
+                RootFrame.Navigate(typeof(MiscPage));
+            }
+            return;
+        }
+
         RootFrame.Navigate(typeof(DashboardPage), pageName);
     }
 
