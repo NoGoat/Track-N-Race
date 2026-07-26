@@ -18,6 +18,8 @@ public sealed partial class SettingsPage : Page
             _ => 2,
         };
         BackdropComboBox.SelectedIndex = (int)app.SelectedBackdrop;
+        TransparentNavigationContentToggle.IsOn =
+            app.IsNavigationContentTransparent;
         BindAddressTextBox.Text = app.TelemetryBindAddress;
         UdpPortNumberBox.Value = app.TelemetryPort;
         ProtocolComboBox.SelectedIndex = (int)app.SelectedProtocol;
@@ -126,6 +128,19 @@ public sealed partial class SettingsPage : Page
 
         ((App)Application.Current).SetBackdrop(
             (WindowBackdrop)BackdropComboBox.SelectedIndex);
+    }
+
+    private void OnTransparentNavigationContentToggled(
+        object sender,
+        RoutedEventArgs args)
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        ((App)Application.Current).SetNavigationContentTransparent(
+            TransparentNavigationContentToggle.IsOn);
     }
 
     private void OnTyreWearModeChanged(object sender, SelectionChangedEventArgs args)

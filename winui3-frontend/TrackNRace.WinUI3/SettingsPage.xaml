@@ -68,6 +68,19 @@
                             <x:String>Acrylic</x:String>
                         </ComboBox>
                     </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        HorizontalAlignment="Stretch"
+                        Description="Make the NavigationView content background transparent with a subtle divider border."
+                        Header="Transparent content pane">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE7B8;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ToggleSwitch
+                            x:Name="TransparentNavigationContentToggle"
+                            AutomationProperties.Name="Transparent NavigationView content pane"
+                            Toggled="OnTransparentNavigationContentToggled" />
+                    </toolkit:SettingsCard>
                 </StackPanel>
 
                 <StackPanel Spacing="8">

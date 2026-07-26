@@ -7,6 +7,8 @@ public partial class App : Application
 {
     private const string ThemeSettingKey = "AppTheme";
     private const string BackdropSettingKey = "WindowBackdrop";
+    private const string TransparentNavigationContentSettingKey =
+        "TransparentNavigationContent";
     private const string UdpPortSettingKey = "TelemetryUdpPort";
     private const string BindAddressSettingKey = "TelemetryBindAddress";
     private const string ProtocolSettingKey = "TelemetryProtocol";
@@ -31,6 +33,7 @@ public partial class App : Application
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
     public WindowBackdrop SelectedBackdrop { get; private set; }
+    public bool IsNavigationContentTransparent { get; private set; }
     public TelemetryEngine? Telemetry { get; private set; }
     internal TelemetrySessionStore? TelemetryState { get; private set; }
     public string TelemetryStartError { get; private set; } = string.Empty;
@@ -66,6 +69,9 @@ public partial class App : Application
         InitializeComponent();
         SelectedTheme = ReadSavedTheme();
         SelectedBackdrop = ReadSavedBackdrop();
+        IsNavigationContentTransparent =
+            ApplicationData.Current.LocalSettings.Values[
+                TransparentNavigationContentSettingKey] is true;
         TelemetryPort = ReadUdpPort();
         TelemetryBindAddress =
             ApplicationData.Current.LocalSettings.Values[BindAddressSettingKey] as string
@@ -102,6 +108,19 @@ public partial class App : Application
         ApplicationData.Current.LocalSettings.Values[BackdropSettingKey] =
             backdrop.ToString();
         MainWindow?.ApplyBackdrop(backdrop);
+    }
+
+    public void SetNavigationContentTransparent(bool isTransparent)
+    {
+        if (isTransparent == IsNavigationContentTransparent)
+        {
+            return;
+        }
+
+        IsNavigationContentTransparent = isTransparent;
+        ApplicationData.Current.LocalSettings.Values[
+            TransparentNavigationContentSettingKey] = isTransparent;
+        MainWindow?.ApplyNavigationContentTransparency(isTransparent);
     }
 
     private static ElementTheme ReadSavedTheme()

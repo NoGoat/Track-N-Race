@@ -29,6 +29,7 @@ public sealed partial class MainWindow : Window
         var app = (App)Application.Current;
         RootLayout.RequestedTheme = app.SelectedTheme;
         ApplyBackdrop(app.SelectedBackdrop);
+        ApplyNavigationContentTransparency(app.IsNavigationContentTransparent);
         ChartWindowComboBox.SelectedIndex = ChartWindowIndex(app.ChartWindowSeconds);
         _updatingPlaybackControls = true;
         PlaybackSpeedComboBox.SelectedIndex = 2;
@@ -598,6 +599,26 @@ public sealed partial class MainWindow : Window
         };
     }
 
+    public void ApplyNavigationContentTransparency(bool isTransparent)
+    {
+        const string backgroundKey = "NavigationViewContentBackground";
+        const string borderKey = "NavigationViewContentGridBorderBrush";
+        const string dividerBrushKey = "NavigationContentPaneDividerBrush";
+        var resources = AppNavigationView.Resources;
+
+        resources.Remove(backgroundKey);
+        resources.Remove(borderKey);
+        if (!isTransparent)
+        {
+            return;
+        }
+
+        var transparentBrush =
+            new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        resources[backgroundKey] = transparentBrush;
+        resources[borderKey] = resources[dividerBrushKey];
+    }
+
     private void OnRootLayoutLoaded(object sender, RoutedEventArgs args)
     {
         UpdateTitleBarTheme();
@@ -628,8 +649,8 @@ public sealed partial class MainWindow : Window
     private void UpdateTitleBarIcon()
     {
         var iconName = RootLayout.ActualTheme == ElementTheme.Light
-            ? "icon_transparent_light.png"
-            : "icon_transparent.png";
+            ? "Square44x44Logo.targetsize-48_altform-lightunplated.png"
+            : "Square44x44Logo.targetsize-48_altform-unplated.png";
 
         TitleBarIconImage.Source = new BitmapImage(
             new Uri($"ms-appx:///Assets/{iconName}"));
