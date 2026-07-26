@@ -84,6 +84,11 @@ public:
     std::vector<std::pair<uint8_t, std::string>> latestOfTypesTagged(
         float t, const std::vector<uint8_t>& types);
     std::vector<std::string> readRange(float fromTime, float toTime);
+    // Reconstruct deduplicated Car Damage state at the UDP specification's
+    // fixed 10 Hz cadence. Each returned row has session_time rewritten to its
+    // sample tick and carries the latest recorded state at/before that tick.
+    std::vector<std::string> damageRowsAtCadence(
+        float fromTime, float toTime, bool includeFrom = true) const;
     bool currentLapAt(float t, float& startOut, int& numOut) const;
 
     // Binary seek flush (requires setBinaryPlayback before load): the hot rows
@@ -133,6 +138,7 @@ private:
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
     size_t      playPos_     = 0;
+    float       damageCadenceCursor_ = 0.0f;
     bool        binaryPlayback_ = false;
     TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
     std::string lastError_;
