@@ -1,11 +1,9 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using ScottPlot;
-using ScottPlot.Plottables;
-using ScottPlot.WinUI;
 using System.Diagnostics;
+using TrackNRace.Charting;
+using UiColor = Windows.UI.Color;
 
 namespace TrackNRace.WinUI3;
 
@@ -19,8 +17,10 @@ internal enum TyreChartKind
 
 public sealed partial class TyreChartControl : UserControl
 {
-    private static readonly LinePattern HoverCrosshairPattern =
-        new([2f, 1f], 0, "TyreCrosshair");
+    private const int MaxChartPoints = 750_000;
+    private const double RetentionSeconds = 600;
+    private static readonly string[] SeriesKeys = ["fl", "fr", "rl", "rr"];
+    private static readonly string[] SeriesLabels = ["FL", "FR", "RL", "RR"];
 
     private readonly List<double> _times = [];
     private readonly List<double> _fl = [];
@@ -31,16 +31,16 @@ public sealed partial class TyreChartControl : UserControl
     private readonly List<double> _rawFr = [];
     private readonly List<double> _rawRl = [];
     private readonly List<double> _rawRr = [];
-    private readonly SignalXY[] _series = new SignalXY[4];
-    private readonly Marker[] _markers = new Marker[4];
-    private Crosshair? _crosshair;
-    private HorizontalLine? _bottomBoundary;
+    private readonly ChartLineSeries[] _series = new ChartLineSeries[4];
+    private readonly UiColor[] _seriesColors = new UiColor[4];
+    private ChartAxis _timeAxis = null!;
+    private ChartAxis _valueAxis = null!;
+    private ChartCrosshairTooltipPlugin _tooltip = null!;
     private TyreChartKind _kind;
     private TyreWearDisplayMode _wearMode;
     private int _windowSeconds = 30;
     private bool _configured;
     private double _observedMaximum;
-    private double _configuredYMinimum = double.NaN;
     private double _configuredYMaximum = double.NaN;
 
     public TyreChartControl()
@@ -70,55 +70,46 @@ public sealed partial class TyreChartControl : UserControl
             _ => wearMode == TyreWearDisplayMode.Life ? "TYRE LIFE" : "TYRE WEAR",
         };
 
-        var plot = PlotControl.Plot;
-        PlotControl.UserInputProcessor.Disable();
-        _series[0] = plot.Add.SignalXY(_times, _fl);
-        _series[1] = plot.Add.SignalXY(_times, _fr);
-        _series[2] = plot.Add.SignalXY(_times, _rl);
-        _series[3] = plot.Add.SignalXY(_times, _rr);
-        foreach (var series in _series)
+        _timeAxis = new ChartAxis(
+            "time", ChartAxisOrientation.X, ChartAxisSide.Bottom)
         {
-            series.LineWidth = 2;
-            series.MarkerSize = 0;
-            series.ConnectStyle = ConnectStyle.Straight;
-        }
-
-        _crosshair = plot.Add.Crosshair(0, 0);
-        _crosshair.EnableAutoscale = false;
-        _crosshair.IsVisible = false;
-        _crosshair.LineWidth = 1;
-        _crosshair.LinePattern = HoverCrosshairPattern;
-        _crosshair.MarkerSize = 0;
-
-        for (var index = 0; index < _markers.Length; index++)
-        {
-            _markers[index] = plot.Add.Marker(
-                0, 0, MarkerShape.OpenCircle, 7, ScottPlot.Colors.Transparent);
-            _markers[index].MarkerLineWidth = 2;
-            _markers[index].IsVisible = false;
-        }
-
+            Minimum = 0,
+            Maximum = windowSeconds,
+            TickProvider = new IntervalChartTickProvider(windowSeconds / 6d),
+            LabelFormatter = FormatTime,
+            ShowGridLines = true,
+        };
         var (minimum, maximum) = BaseRange();
-        const double insetFraction = .0025;
-        _bottomBoundary = plot.Add.HorizontalLine(
-            minimum + (maximum - minimum) * insetFraction);
-        _bottomBoundary.EnableAutoscale = false;
-        _bottomBoundary.LineWidth = .75f;
-
-        plot.Axes.SetLimits(0, windowSeconds, minimum, maximum);
-        ConfigureYAxis(minimum, maximum);
-        _configuredYMinimum = minimum;
+        _valueAxis = new ChartAxis(
+            "value", ChartAxisOrientation.Y, ChartAxisSide.Left)
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            TickProvider = new IntervalChartTickProvider(YInterval()),
+            LabelFormatter = FormatAxisValue,
+        };
         _configuredYMaximum = maximum;
-        ConfigureTimeTicks();
-        plot.Axes.Top.IsVisible = false;
-        plot.Axes.Right.IsVisible = false;
-        plot.Axes.Margins(0, 0, 0, 0);
-        plot.Grid.IsVisible = true;
-        plot.Grid.YAxisStyle.IsVisible = false;
-        plot.Grid.MajorLineWidth = 1;
-        plot.Grid.MinorLineWidth = 0;
-        StyleAxis(plot.Axes.Left);
-        StyleAxis(plot.Axes.Bottom);
+
+        PlotControl.Plugins.Add(new ChartBackgroundPlugin());
+        PlotControl.Axes.Add(_timeAxis);
+        PlotControl.Axes.Add(_valueAxis);
+        PlotControl.RenderFailed += error =>
+            Debug.WriteLine($"[D3D11Chart] Tyres/{_kind}: {error}");
+
+        for (var index = 0; index < _series.Length; index++)
+        {
+            _series[index] = PlotControl.Series.Add(new ChartLineSeriesOptions(
+                SeriesKeys[index],
+                "time",
+                "value",
+                UiColor.FromArgb(255, 255, 255, 255),
+                Thickness: 2,
+                MaximumPointCount: MaxChartPoints,
+                MaximumXSpan: RetentionSeconds));
+        }
+
+        _tooltip = new ChartCrosshairTooltipPlugin(BuildTooltip);
+        PlotControl.Plugins.Add(_tooltip);
 #if DEBUG
         AttachRenderProbe();
 #endif
@@ -130,6 +121,8 @@ public sealed partial class TyreChartControl : UserControl
         {
             return;
         }
+
+        var firstNewIndex = _times.Count;
         foreach (var sample in samples)
         {
             _times.Add(sample.SessionTime);
@@ -149,6 +142,7 @@ public sealed partial class TyreChartControl : UserControl
                     break;
             }
         }
+        AppendSeries(firstNewIndex);
     }
 
     internal void AppendDamage(IEnumerable<DamageRowData> rows)
@@ -157,6 +151,8 @@ public sealed partial class TyreChartControl : UserControl
         {
             return;
         }
+
+        var firstNewIndex = _times.Count;
         foreach (var row in rows)
         {
             _times.Add(row.SessionTime);
@@ -170,6 +166,7 @@ public sealed partial class TyreChartControl : UserControl
                 DisplayWear(row.TyreWearRl),
                 DisplayWear(row.TyreWearRr));
         }
+        AppendSeries(firstNewIndex);
     }
 
     internal void SetWearMode(TyreWearDisplayMode mode)
@@ -178,6 +175,7 @@ public sealed partial class TyreChartControl : UserControl
         {
             return;
         }
+
         _wearMode = mode;
         Heading.Text = mode == TyreWearDisplayMode.Life ? "TYRE LIFE" : "TYRE WEAR";
         for (var index = 0; index < _rawFl.Count; index++)
@@ -187,12 +185,13 @@ public sealed partial class TyreChartControl : UserControl
             _rl[index] = DisplayWear(_rawRl[index]);
             _rr[index] = DisplayWear(_rawRr[index]);
         }
+        ReplaceSeries();
     }
 
     internal void SetWindowSeconds(int seconds)
     {
         _windowSeconds = seconds;
-        ConfigureTimeTicks();
+        _timeAxis.TickProvider = new IntervalChartTickProvider(seconds / 6d);
     }
 
     internal void ClearData()
@@ -206,39 +205,41 @@ public sealed partial class TyreChartControl : UserControl
         _rawFr.Clear();
         _rawRl.Clear();
         _rawRr.Clear();
+        foreach (var series in _series)
+        {
+            series.Clear();
+        }
         _observedMaximum = 0;
-        _configuredYMinimum = double.NaN;
-        _configuredYMaximum = double.NaN;
-        HideHover(false);
+        var (_, maximum) = BaseRange();
+        _valueAxis.Maximum = maximum;
+        _configuredYMaximum = maximum;
+        NoData.Visibility = Visibility.Visible;
     }
 
     internal void RefreshChart(double latestSessionTime)
     {
-        var hasData = _times.Count > 1;
-        NoData.Visibility = hasData ? Visibility.Collapsed : Visibility.Visible;
+        NoData.Visibility =
+            _times.Count > 1 ? Visibility.Collapsed : Visibility.Visible;
         var latest = Math.Max(
             latestSessionTime,
             _times.Count > 0 ? _times[^1] : 0);
-        var xMin = Math.Max(0, latest - _windowSeconds);
-        var xMax = Math.Max(_windowSeconds, latest);
-        var (yMin, baseMaximum) = BaseRange();
-        var yMax = _kind switch
+        _timeAxis.Minimum = Math.Max(0, latest - _windowSeconds);
+        _timeAxis.Maximum = Math.Max(_windowSeconds, latest);
+
+        var (_, baseMaximum) = BaseRange();
+        var yMaximum = _kind switch
         {
             TyreChartKind.Surface or TyreChartKind.Inner =>
                 ExpandedMaximum(baseMaximum, 25),
             TyreChartKind.Brake => ExpandedMaximum(baseMaximum, 250),
             _ => baseMaximum,
         };
-        PlotControl.Plot.Axes.SetLimitsX(xMin, xMax);
-        if (Math.Abs(_configuredYMinimum - yMin) > .001 ||
-            Math.Abs(_configuredYMaximum - yMax) > .001)
+        if (Math.Abs(_configuredYMaximum - yMaximum) > .001)
         {
-            PlotControl.Plot.Axes.SetLimitsY(yMin, yMax);
-            ConfigureYAxis(yMin, yMax);
-            _configuredYMinimum = yMin;
-            _configuredYMaximum = yMax;
+            _valueAxis.Maximum = yMaximum;
+            _configuredYMaximum = yMaximum;
         }
-        PlotControl.Refresh();
+        PlotControl.Invalidate();
     }
 
     internal void ApplyTheme(bool dark)
@@ -247,33 +248,112 @@ public sealed partial class TyreChartControl : UserControl
             ? new[] { "#E10600", "#4488FF", "#37872D", "#FFD700" }
             : new[] { "#E10600", "#0B57D0", "#137333", "#B38F00" };
         var legend = new[] { FlLegend, FrLegend, RlLegend, RrLegend };
-        var labels = new[] { TooltipFlLabel, TooltipFrLabel, TooltipRlLabel, TooltipRrLabel };
-        for (var index = 0; index < 4; index++)
+        for (var index = 0; index < _series.Length; index++)
         {
-            var color = ScottPlot.Color.FromHex(colorValues[index]);
-            _series[index].Color = color;
-            _markers[index].Color = color;
-            var brush = new SolidColorBrush(ParseColor(colorValues[index]));
-            legend[index].Fill = brush;
-            labels[index].Foreground = brush;
+            var color = ParseColor(colorValues[index]);
+            _seriesColors[index] = color;
+            _series[index].Stroke = color;
+            legend[index].Fill = new SolidColorBrush(color);
         }
 
-        var transparent = ScottPlot.Color.FromHex("#00000000");
-        var axes = ScottPlot.Color.FromHex(dark ? "#7C8098" : "#6B7280");
-        var grid = ScottPlot.Color.FromHex(dark ? "#FFFFFF" : "#000000")
-            .WithAlpha(dark ? .05 : .045);
-        PlotControl.Plot.FigureBackground.Color = transparent;
-        PlotControl.Plot.DataBackground.Color = transparent;
-        PlotControl.Plot.Axes.Color(axes);
-        PlotControl.Plot.Grid.MajorLineColor = grid;
-        if (_bottomBoundary is not null)
+        var axes = dark
+            ? UiColor.FromArgb(255, 124, 128, 152)
+            : UiColor.FromArgb(255, 107, 114, 128);
+        _timeAxis.Color = axes;
+        _valueAxis.Color = axes;
+        PlotControl.GridColor = dark
+            ? UiColor.FromArgb(13, 255, 255, 255)
+            : UiColor.FromArgb(11, 0, 0, 0);
+        _tooltip.ApplyTheme(dark);
+        PlotControl.Invalidate();
+    }
+
+    private void AppendSeries(int firstNewIndex)
+    {
+        var count = _times.Count - firstNewIndex;
+        if (count <= 0)
         {
-            _bottomBoundary.Color = axes;
+            return;
         }
-        if (_crosshair is not null)
+        var values = new[] { _fl, _fr, _rl, _rr };
+        for (var seriesIndex = 0; seriesIndex < _series.Length; seriesIndex++)
         {
-            _crosshair.LineColor = axes.WithAlpha(dark ? .7 : .6);
+            var points = new ChartPoint[count];
+            for (var offset = 0; offset < count; offset++)
+            {
+                var index = firstNewIndex + offset;
+                points[offset] = new ChartPoint(
+                    _times[index], values[seriesIndex][index]);
+            }
+            _series[seriesIndex].Append(points);
         }
+    }
+
+    private void ReplaceSeries()
+    {
+        var values = new[] { _fl, _fr, _rl, _rr };
+        for (var seriesIndex = 0; seriesIndex < _series.Length; seriesIndex++)
+        {
+            var points = new ChartPoint[_times.Count];
+            for (var index = 0; index < _times.Count; index++)
+            {
+                points[index] = new ChartPoint(
+                    _times[index], values[seriesIndex][index]);
+            }
+            _series[seriesIndex].Replace(points);
+        }
+    }
+
+    private ChartTooltipData? BuildTooltip(double sessionTime)
+    {
+        var index = NearestIndex(sessionTime);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var values = new[] { _fl[index], _fr[index], _rl[index], _rr[index] };
+        return new ChartTooltipData(
+            _times[index],
+            new ChartTooltipContent(
+                FormatTime(_times[index]),
+                SeriesLabels.Select((label, seriesIndex) =>
+                    new ChartTooltipEntry(
+                        label,
+                        FormatValue(values[seriesIndex]),
+                        _seriesColors[seriesIndex]))
+                    .ToArray()),
+            SeriesKeys.Select((_, seriesIndex) =>
+                new ChartTooltipMarker(
+                    _times[index],
+                    values[seriesIndex],
+                    "value",
+                    _seriesColors[seriesIndex]))
+                .ToArray());
+    }
+
+    private int NearestIndex(double sessionTime)
+    {
+        if (_times.Count == 0)
+        {
+            return -1;
+        }
+        var candidate = _times.BinarySearch(sessionTime);
+        if (candidate < 0)
+        {
+            candidate = ~candidate;
+        }
+        if (candidate >= _times.Count)
+        {
+            return _times.Count - 1;
+        }
+        if (candidate > 0 &&
+            sessionTime - _times[candidate - 1] <=
+            _times[candidate] - sessionTime)
+        {
+            candidate--;
+        }
+        return candidate;
     }
 
     private void Add(double fl, double fr, double rl, double rr)
@@ -297,146 +377,34 @@ public sealed partial class TyreChartControl : UserControl
         _ => (0, 100),
     };
 
-    private double ExpandedMaximum(double baseMaximum, double increment)
+    private double YInterval() => _kind switch
     {
-        return _observedMaximum <= baseMaximum
+        TyreChartKind.Brake => 250,
+        TyreChartKind.Wear => 20,
+        _ => 25,
+    };
+
+    private double ExpandedMaximum(double baseMaximum, double increment) =>
+        _observedMaximum <= baseMaximum
             ? baseMaximum
             : Math.Ceiling(_observedMaximum / increment) * increment;
-    }
 
-    private void ConfigureYAxis(double minimum, double maximum)
-    {
-        var interval = _kind switch
-        {
-            TyreChartKind.Brake => 250,
-            TyreChartKind.Wear => 20,
-            _ => 25,
-        };
-        var ticks = new List<double>();
-        for (var value = minimum; value <= maximum; value += interval)
-        {
-            ticks.Add(value);
-        }
-        var suffix = _kind == TyreChartKind.Wear ? "%" : "°C";
-        PlotControl.Plot.Axes.Left.SetTicks(
-            ticks.ToArray(),
-            ticks.Select(value => $"{value:0}{suffix}").ToArray());
-    }
-
-    private void ConfigureTimeTicks()
-    {
-        PlotControl.Plot.Axes.Bottom.TickGenerator =
-            new ScottPlot.TickGenerators.NumericFixedInterval(
-                _windowSeconds / 6d)
-            {
-                LabelFormatter = FormatTime,
-            };
-    }
-
-    private static void StyleAxis(IAxis axis)
-    {
-        axis.FrameLineStyle.Width = .75f;
-        axis.MajorTickStyle.Length = 3;
-        axis.MajorTickStyle.Width = .75f;
-        axis.MinorTickStyle.Length = 0;
-        axis.TickLabelStyle.FontName = "Segoe UI Variable Text";
-        axis.TickLabelStyle.FontSize = 12;
-        axis.TickLabelStyle.Bold = false;
-    }
-
-    private void OnPointerMoved(object sender, PointerRoutedEventArgs args)
-    {
-        if (_times.Count == 0)
-        {
-            return;
-        }
-        var position = args.GetCurrentPoint(PlotControl).Position;
-        var scale = XamlRoot?.RasterizationScale ?? 1;
-        var coordinates = PlotControl.Plot.GetCoordinates(
-            new Pixel(
-                (float)(position.X * scale),
-                (float)(position.Y * scale)));
-        var index = _times.BinarySearch(coordinates.X);
-        if (index < 0)
-        {
-            index = ~index;
-            if (index >= _times.Count)
-            {
-                index = _times.Count - 1;
-            }
-            else if (index > 0 &&
-                Math.Abs(_times[index - 1] - coordinates.X) <
-                Math.Abs(_times[index] - coordinates.X))
-            {
-                index--;
-            }
-        }
-
-        TooltipTime.Text = FormatTime(_times[index]);
-        TooltipFlValue.Text = $" {FormatValue(_fl[index])}";
-        TooltipFrValue.Text = $" {FormatValue(_fr[index])}";
-        TooltipRlValue.Text = $" {FormatValue(_rl[index])}";
-        TooltipRrValue.Text = $" {FormatValue(_rr[index])}";
-        Tooltip.Visibility = Visibility.Visible;
-        var left = Math.Clamp(
-            position.X + 12,
-            4,
-            Math.Max(4, PlotControl.ActualWidth - Tooltip.ActualWidth - 8));
-        var top = Math.Clamp(
-            position.Y + 12,
-            4,
-            Math.Max(4, PlotControl.ActualHeight - Tooltip.ActualHeight - 8));
-        Canvas.SetLeft(Tooltip, left);
-        Canvas.SetTop(Tooltip, top);
-
-        if (_crosshair is not null)
-        {
-            _crosshair.Position = coordinates;
-            _crosshair.IsVisible = true;
-        }
-        var values = new[] { _fl[index], _fr[index], _rl[index], _rr[index] };
-        for (var markerIndex = 0; markerIndex < 4; markerIndex++)
-        {
-            _markers[markerIndex].Position =
-                new Coordinates(_times[index], values[markerIndex]);
-            _markers[markerIndex].IsVisible = true;
-        }
-        PlotControl.Refresh();
-    }
-
-    private void OnPointerExited(object sender, PointerRoutedEventArgs args) =>
-        HideHover(true);
-
-    private void HideHover(bool refresh)
-    {
-        Tooltip.Visibility = Visibility.Collapsed;
-        if (_crosshair is not null)
-        {
-            _crosshair.IsVisible = false;
-        }
-        foreach (var marker in _markers)
-        {
-            if (marker is not null)
-            {
-                marker.IsVisible = false;
-            }
-        }
-        if (refresh)
-        {
-            PlotControl.Refresh();
-        }
-    }
+    private string FormatAxisValue(double value) =>
+        _kind == TyreChartKind.Wear ? $"{value:0}%" : $"{value:0}°C";
 
     private string FormatValue(double value) =>
         _kind == TyreChartKind.Wear ? $"{value:0.0}%" : $"{value:0}°C";
 
-    private static string FormatTime(double seconds) =>
-        $"{(int)(seconds / 60)}:{(int)(seconds % 60):00}";
+    private static string FormatTime(double seconds)
+    {
+        var safe = Math.Max(0, seconds);
+        return $"{(int)(safe / 60)}:{(int)(safe % 60):00}";
+    }
 
-    private static Windows.UI.Color ParseColor(string value)
+    private static UiColor ParseColor(string value)
     {
         var packed = Convert.ToUInt32(value.TrimStart('#'), 16);
-        return Windows.UI.Color.FromArgb(
+        return UiColor.FromArgb(
             255,
             (byte)(packed >> 16),
             (byte)(packed >> 8),
@@ -449,25 +417,23 @@ public sealed partial class TyreChartControl : UserControl
         var sampleCount = 0;
         var totalMilliseconds = 0d;
         var maximumMilliseconds = 0d;
-        PlotControl.Plot.RenderManager.RenderFinished += (_, details) =>
+        PlotControl.DiagnosticsUpdated += details =>
         {
-            if (details.Count <= 1)
-            {
-                return;
-            }
-            var milliseconds = details.Elapsed.TotalMilliseconds;
             sampleCount++;
-            totalMilliseconds += milliseconds;
-            maximumMilliseconds = Math.Max(maximumMilliseconds, milliseconds);
+            totalMilliseconds += details.FrameMilliseconds;
+            maximumMilliseconds = Math.Max(
+                maximumMilliseconds, details.FrameMilliseconds);
             if (sampleCount < 120)
             {
                 return;
             }
             Debug.WriteLine(
-                $"[ScottPlot] Tyres/{_kind}: avg " +
+                $"[D3D11Chart] Tyres/{_kind}: avg " +
                 $"{totalMilliseconds / sampleCount:0.00} ms, " +
                 $"max {maximumMilliseconds:0.00} ms, " +
-                $"{details.Count:N0} total renders");
+                $"{details.SourcePoints:N0} source points, " +
+                $"{details.SubmittedSegments:N0} segments, " +
+                $"LOD={details.UsedReduction}, WARP={details.UsingWarp}");
             sampleCount = 0;
             totalMilliseconds = 0;
             maximumMilliseconds = 0;

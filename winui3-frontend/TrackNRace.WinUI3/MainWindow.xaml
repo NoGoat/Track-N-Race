@@ -151,7 +151,7 @@
                 <NavigationViewItem
                     x:Name="LoadTnrdNavigationItem"
                     AutomationProperties.Name="Load TNRD file"
-                    Content="Load TNRD File"
+                    Content="Load File"
                     SelectsOnInvoked="False"
                     Tag="LoadTnrd"
                     Tapped="OnLoadTnrdClicked"

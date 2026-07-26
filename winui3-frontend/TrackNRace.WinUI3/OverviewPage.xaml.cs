@@ -207,7 +207,7 @@ public sealed partial class OverviewPage : Page
         }
         else
         {
-            UpdateLapBoundary(snapshot.Lap);
+            UpdateLapBoundary(snapshot.Lap, snapshot);
         }
         AppendTelemetry(telemetry.Samples, playbackLapStart);
         SurfaceChart.AppendTelemetry(telemetry.Samples);
@@ -268,7 +268,9 @@ public sealed partial class OverviewPage : Page
         }
     }
 
-    private void UpdateLapBoundary(LapRowData? lap)
+    private void UpdateLapBoundary(
+        LapRowData? lap,
+        OverviewSnapshot snapshot)
     {
         if (lap is null || lap.LapNum <= 0)
         {
@@ -297,7 +299,7 @@ public sealed partial class OverviewPage : Page
         _currentLapNumber = lap.LapNum;
         if (_chartMode != OverviewChartMode.Default)
         {
-            RebuildDisplayedSeries(null);
+            RebuildDisplayedSeries(snapshot);
         }
     }
 
