@@ -6,6 +6,7 @@ namespace TrackNRace.WinUI3;
 public partial class App : Application
 {
     private const string ThemeSettingKey = "AppTheme";
+    private const string BackdropSettingKey = "WindowBackdrop";
     private const string UdpPortSettingKey = "TelemetryUdpPort";
     private const string BindAddressSettingKey = "TelemetryBindAddress";
     private const string ProtocolSettingKey = "TelemetryProtocol";
@@ -29,6 +30,7 @@ public partial class App : Application
 
     public MainWindow MainWindow { get; private set; } = null!;
     public ElementTheme SelectedTheme { get; private set; }
+    public WindowBackdrop SelectedBackdrop { get; private set; }
     public TelemetryEngine? Telemetry { get; private set; }
     internal TelemetrySessionStore? TelemetryState { get; private set; }
     public string TelemetryStartError { get; private set; } = string.Empty;
@@ -63,6 +65,7 @@ public partial class App : Application
     {
         InitializeComponent();
         SelectedTheme = ReadSavedTheme();
+        SelectedBackdrop = ReadSavedBackdrop();
         TelemetryPort = ReadUdpPort();
         TelemetryBindAddress =
             ApplicationData.Current.LocalSettings.Values[BindAddressSettingKey] as string
@@ -88,6 +91,19 @@ public partial class App : Application
         MainWindow?.ApplyTheme(theme);
     }
 
+    public void SetBackdrop(WindowBackdrop backdrop)
+    {
+        if (!Enum.IsDefined(backdrop))
+        {
+            return;
+        }
+
+        SelectedBackdrop = backdrop;
+        ApplicationData.Current.LocalSettings.Values[BackdropSettingKey] =
+            backdrop.ToString();
+        MainWindow?.ApplyBackdrop(backdrop);
+    }
+
     private static ElementTheme ReadSavedTheme()
     {
         var value = ApplicationData.Current.LocalSettings.Values[ThemeSettingKey] as string;
@@ -95,6 +111,16 @@ public partial class App : Application
             theme is ElementTheme.Default or ElementTheme.Light or ElementTheme.Dark
                 ? theme
                 : ElementTheme.Default;
+    }
+
+    private static WindowBackdrop ReadSavedBackdrop()
+    {
+        var value =
+            ApplicationData.Current.LocalSettings.Values[BackdropSettingKey] as string;
+        return Enum.TryParse<WindowBackdrop>(value, out var backdrop) &&
+            Enum.IsDefined(backdrop)
+                ? backdrop
+                : WindowBackdrop.Mica;
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

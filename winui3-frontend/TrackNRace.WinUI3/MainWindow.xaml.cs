@@ -1,7 +1,9 @@
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
@@ -26,6 +28,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         var app = (App)Application.Current;
         RootLayout.RequestedTheme = app.SelectedTheme;
+        ApplyBackdrop(app.SelectedBackdrop);
         ChartWindowComboBox.SelectedIndex = ChartWindowIndex(app.ChartWindowSeconds);
         _updatingPlaybackControls = true;
         PlaybackSpeedComboBox.SelectedIndex = 2;
@@ -583,6 +586,16 @@ public sealed partial class MainWindow : Window
     {
         RootLayout.RequestedTheme = theme;
         UpdateTitleBarIcon();
+    }
+
+    public void ApplyBackdrop(WindowBackdrop backdrop)
+    {
+        SystemBackdrop = backdrop switch
+        {
+            WindowBackdrop.MicaAlt => new MicaBackdrop { Kind = MicaKind.BaseAlt },
+            WindowBackdrop.Acrylic => new DesktopAcrylicBackdrop(),
+            _ => new MicaBackdrop { Kind = MicaKind.Base },
+        };
     }
 
     private void OnRootLayoutLoaded(object sender, RoutedEventArgs args)

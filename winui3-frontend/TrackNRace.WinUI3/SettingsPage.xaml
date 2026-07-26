@@ -50,6 +50,24 @@
                             <ComboBoxItem Content="Use system setting" Tag="Default" />
                         </ComboBox>
                     </toolkit:SettingsCard>
+
+                    <toolkit:SettingsCard
+                        HorizontalAlignment="Stretch"
+                        Description="Choose the material used behind the app content."
+                        Header="Window backdrop">
+                        <toolkit:SettingsCard.HeaderIcon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE771;" />
+                        </toolkit:SettingsCard.HeaderIcon>
+                        <ComboBox
+                            x:Name="BackdropComboBox"
+                            Width="160"
+                            AutomationProperties.Name="Window backdrop"
+                            SelectionChanged="OnBackdropSelectionChanged">
+                            <x:String>Mica</x:String>
+                            <x:String>Mica Alt</x:String>
+                            <x:String>Acrylic</x:String>
+                        </ComboBox>
+                    </toolkit:SettingsCard>
                 </StackPanel>
 
                 <StackPanel Spacing="8">

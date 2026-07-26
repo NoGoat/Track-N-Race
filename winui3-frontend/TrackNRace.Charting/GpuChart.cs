@@ -299,7 +299,10 @@ public sealed class GpuChart : Grid, IDisposable
         }
         _renderQueued = true;
         if (!DispatcherQueue.TryEnqueue(
-            DispatcherQueuePriority.Low,
+            // PointerMoved is delivered at normal priority. Keeping chart
+            // rendering at low priority lets a stream of pointer events (and
+            // the overlay work they request) starve live telemetry frames.
+            DispatcherQueuePriority.Normal,
             RenderCore))
         {
             _renderQueued = false;
@@ -369,15 +372,25 @@ public sealed class GpuChart : Grid, IDisposable
 
     internal void InvalidateOverlay()
     {
-        if (_disposed || !_loaded || _overlayRenderQueued)
+        // RenderCore also builds the plugin overlays. If it is already queued,
+        // it will consume the latest pointer state, so a second pass would only
+        // rebuild the XAML overlay tree twice.
+        if (_disposed || !_loaded || _renderQueued || _overlayRenderQueued)
         {
             return;
         }
         _overlayRenderQueued = true;
         if (!DispatcherQueue.TryEnqueue(
-            DispatcherQueuePriority.Normal,
+            // Hover visuals are cosmetic and relatively expensive: the
+            // tooltip is measured and the overlay elements are rebuilt. Do
+            // not let that work pre-empt telemetry rendering.
+            DispatcherQueuePriority.Low,
             () =>
             {
+                if (!_overlayRenderQueued)
+                {
+                    return;
+                }
                 _overlayRenderQueued = false;
                 if (!_disposed && _loaded)
                 {
@@ -598,6 +611,9 @@ public sealed class GpuChart : Grid, IDisposable
             {
                 plugin.OnLayout(layoutContext);
             }
+            // Satisfy any lower-priority overlay invalidation with this full
+            // render. Its queued callback will observe the cleared flag.
+            _overlayRenderQueued = false;
             RenderPluginOverlays();
 
             Diagnostics = _renderer.Render();

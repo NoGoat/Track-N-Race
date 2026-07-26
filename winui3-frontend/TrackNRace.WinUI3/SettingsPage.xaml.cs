@@ -17,6 +17,7 @@ public sealed partial class SettingsPage : Page
             ElementTheme.Dark => 1,
             _ => 2,
         };
+        BackdropComboBox.SelectedIndex = (int)app.SelectedBackdrop;
         BindAddressTextBox.Text = app.TelemetryBindAddress;
         UdpPortNumberBox.Value = app.TelemetryPort;
         ProtocolComboBox.SelectedIndex = (int)app.SelectedProtocol;
@@ -114,6 +115,17 @@ public sealed partial class SettingsPage : Page
             _ => ElementTheme.Default,
         };
         ((App)Application.Current).SetTheme(theme);
+    }
+
+    private void OnBackdropSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (!_isInitialized || BackdropComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        ((App)Application.Current).SetBackdrop(
+            (WindowBackdrop)BackdropComboBox.SelectedIndex);
     }
 
     private void OnTyreWearModeChanged(object sender, SelectionChangedEventArgs args)
