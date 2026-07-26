@@ -74,11 +74,10 @@ private:
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
 
-    // Binary-playback sparse-row dup cache (guarded by mutex_): the last seen
-    // raw line per type id for the panel row types. On a tick where a dup type
-    // delivered no fresh row, its cached line is re-emitted with session_time
-    // set to the playhead so the panels never appear frozen between their
-    // native ~2 Hz updates. Only used when config_.binaryPlayback.
+    // Binary-playback sparse-row cache (guarded by mutex_): the last seen raw
+    // line per panel type. Damage is cached for initial/seek restoration but is
+    // streamed from TnrdReader's 10 Hz reconstruction; other dup types are
+    // re-emitted with session_time set to the playhead between native updates.
     std::array<std::string, 16> dupCache_{};
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread

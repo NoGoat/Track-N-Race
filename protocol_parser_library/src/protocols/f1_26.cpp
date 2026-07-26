@@ -361,7 +361,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             break;
         }
 
-        // ── CAR_DAMAGE (2 Hz, glaze) ───────────────────────────────────────
+        // ── CAR_DAMAGE (10 Hz, glaze) ──────────────────────────────────────
         // Damage struct unchanged at 46 bytes; only the car-array count grows.
         case PID_CAR_DAMAGE: {
             int damageSize = 46;

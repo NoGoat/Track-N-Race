@@ -13,9 +13,10 @@
 namespace tnrp {
 
 // Sparse panel-row type ids re-emitted each binary-playback tick so their
-// panels track the playhead between native ~2 Hz updates (reader ids:
-// status, damage, lap, session, timing, all_status, positions).
-static constexpr uint8_t kDupTypeIds[] = { 2, 3, 4, 5, 7, 9, 13 };
+// panels track the playhead between native ~2 Hz updates. Damage (id 3) is
+// excluded: TnrdReader reconstructs it independently at its specified 10 Hz.
+static constexpr uint8_t kDupTypeIds[] = { 2, 4, 5, 7, 9, 13 };
+static constexpr uint8_t kInitialPanelTypeIds[] = { 2, 3, 4, 5, 7, 9, 13 };
 
 // Rewrites (or inserts, for row types that lack it, e.g. positions/session)
 // the top-level "session_time" of a raw JSON row to the playhead. A targeted
@@ -211,7 +212,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
                 // doesn't cover (status/damage/positions).
                 dupCache_ = {};
                 initPanels = reader_.latestOfTypesTagged(
-                    reader_.startTime(), { std::begin(kDupTypeIds), std::end(kDupTypeIds) });
+                    reader_.startTime(),
+                    { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
                 for (auto& [tid, line] : initPanels) dupCache_[tid] = line;
             }
         }
@@ -281,7 +283,7 @@ void Engine::playerSeek(float pct) {
             // re-emissions carry the right panel data.
             dupCache_ = {};
             panels = reader_.latestOfTypesTagged(
-                target, { std::begin(kDupTypeIds), std::end(kDupTypeIds) });
+                target, { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
             for (auto& [tid, line] : panels) dupCache_[tid] = line;
         }
     }

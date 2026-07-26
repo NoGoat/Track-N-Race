@@ -167,6 +167,7 @@ void TyreChartsWidget::refresh() {
             for (int w = 0; w < 4; ++w)
                 chart_->clear(seriesIds_[s][w]);
         lastAddedTime_ = left;
+        lastAddedDamageTime_ = left;
     }
 
     auto lb = [](const auto& v, float t) {
@@ -194,15 +195,23 @@ void TyreChartsWidget::refresh() {
         chart_->appendPoint(seriesIds_[BRAKE][2], s.t, s.brakeRl);
         chart_->appendPoint(seriesIds_[BRAKE][3], s.t, s.brakeRr);
 
-        // Life mode plots remaining tyre life (100 - wear); wear mode plots the
-        // accumulated wear directly. Matches the Electron tyreWearMode toggle.
-        const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
+        lastAddedTime_ = s.t;
+    }
+
+    // Wear is a Car Damage field. Both live parsing and recording playback now
+    // provide it at the packet specification's 10 Hz cadence; do not inflate it
+    // to the menu-rate telemetry cadence.
+    const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
+    int damageStart = (int)std::distance(
+        d.damageBuf.begin(), lb(d.damageBuf, lastAddedDamageTime_ + 0.0001f));
+    for (int i = damageStart; i < d.damageBuf.size(); ++i) {
+        const auto& s = d.damageBuf[i];
+        if (s.t > endTime) break;
         chart_->appendPoint(seriesIds_[WEAR][0], s.t, wv(s.wearFl));
         chart_->appendPoint(seriesIds_[WEAR][1], s.t, wv(s.wearFr));
         chart_->appendPoint(seriesIds_[WEAR][2], s.t, wv(s.wearRl));
         chart_->appendPoint(seriesIds_[WEAR][3], s.t, wv(s.wearRr));
-
-        lastAddedTime_ = s.t;
+        lastAddedDamageTime_ = s.t;
     }
 
     for (int s = 0; s < SECTIONS; ++s)
@@ -220,7 +229,6 @@ void TyreChartsWidget::refresh() {
     for (int s = 0; s < SECTIONS; ++s)
         if (tableMode_[s] && visible_[s] && table_[s]) anyTable = true;
     if (anyTable) {
-        const auto wv = [this](float w) { return lifeMode_ ? 100.0f - w : w; };
         for (int s = 0; s < SECTIONS; ++s)
             if (tableMode_[s] && visible_[s] && table_[s]) table_[s]->beginRebuild();
         for (int i = d.tyreBuf.size() - 1; i >= 0; --i) {
@@ -234,12 +242,21 @@ void TyreChartsWidget::refresh() {
             add4(SURF,  s.surfFl,  s.surfFr,  s.surfRl,  s.surfRr);
             add4(INNER, s.innerFl, s.innerFr, s.innerRl, s.innerRr);
             add4(BRAKE, s.brakeFl, s.brakeFr, s.brakeRl, s.brakeRr);
-            add4(WEAR,  wv(s.wearFl), wv(s.wearFr), wv(s.wearRl), wv(s.wearRr));
             bool allFull = true;
-            for (int sec = 0; sec < SECTIONS; ++sec)
+            for (int sec = 0; sec < WEAR; ++sec)
                 if (tableMode_[sec] && visible_[sec] && table_[sec] && !table_[sec]->full())
                     { allFull = false; break; }
             if (allFull) break;
+        }
+        if (tableMode_[WEAR] && visible_[WEAR] && table_[WEAR]) {
+            for (int i = d.damageBuf.size() - 1; i >= 0 && !table_[WEAR]->full(); --i) {
+                const auto& s = d.damageBuf[i];
+                if (s.t > endTime) continue;
+                if (s.t < left) break;
+                table_[WEAR]->addRow(
+                    s.t, wv(s.wearFl), wv(s.wearFr),
+                    wv(s.wearRl), wv(s.wearRr));
+            }
         }
         for (int s = 0; s < SECTIONS; ++s)
             if (tableMode_[s] && visible_[s] && table_[s]) table_[s]->endRebuild();

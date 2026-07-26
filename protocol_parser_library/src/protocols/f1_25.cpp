@@ -335,7 +335,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             break;
         }
 
-        // ── CAR_DAMAGE (2 Hz, glaze) ───────────────────────────────────────
+        // ── CAR_DAMAGE (10 Hz, glaze) ──────────────────────────────────────
         // F1_25 damage packet is 46 bytes (vs 42 in F1_24) — includes actual blisters
         case PID_CAR_DAMAGE: {
             int damageSize = 46;

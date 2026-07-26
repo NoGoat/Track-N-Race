@@ -51,6 +51,7 @@ private:
 
     float prevEndTime_  = -9999.0f;
     float lastAddedTime_= -9999.0f;
+    float lastAddedDamageTime_ = -9999.0f;
 
     // The four sections (surface / inner / brake / wear) are panels of ONE ChartView
     // — a single QCustomPlot / GL context / replot instead of four separate widgets.

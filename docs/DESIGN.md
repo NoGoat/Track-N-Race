@@ -92,9 +92,10 @@ no persistence (the host persists the last detected format; Electron uses
   (cleared with a null-field warning when the mismatch ends).
 - **Rate limiting** (fixed arrays indexed by packet id): motion / car
   telemetry / motion_ex dedupe on `frameId`; session and event packets are
-  unlimited; participants 5000 ms; everything else is published live at most
-  every 500 ms. While recording, intervening Car Status packets are still parsed
-  and written to `.tnrd`; they are only suppressed from the live sinks.
+  unlimited; Car Damage follows its specified fixed 10 Hz cadence; participants
+  5000 ms; everything else is published live at most every 500 ms. While
+  recording, intervening Car Status packets are still parsed and written to
+  `.tnrd`; they are only suppressed from the live sinks.
 - **Dispatch**: `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are parallel ~500-line
   versioned parsers behind a shared `protocol.h` (header layout, byte readers).
   2026 adds `slm` (Straight Line Mode, the active-aero DRS replacement) and an
@@ -158,6 +159,8 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
   with per-record times/offsets and a cumulative count per index position, so
   any index range maps to a contiguous byte slice;
 - keeps the sparse cold rows (status/damage/lap) whole for seek flushes;
+- reconstructs deduplicated Car Damage state at the specification's fixed
+  10 Hz cadence for streaming playback, seeks and per-lap Analyze payloads;
 - fills slim per-lap chart points (`speed_kph`/`rpm` + `ers_pct`) into
   `lapBlocksMessage()` so the load payload is small.
 
@@ -166,12 +169,12 @@ an absolute session_time cursor scaled by speed:
 
 - **Binary mode** (`pullUntilSplit`): due cold rows are appended as JSONL, due
   hot rows as packed bytes, and a bitmask records which type ids delivered.
-  Sparse panel row types (status, damage, lap, session, timing, all_status,
-  positions) that delivered nothing on a delivering tick are re-emitted from a
-  **dup cache** with their `session_time` string-spliced to the playhead, so
-  panels track the cursor between their native ~2 Hz updates. The cache is
-  seeded on load and re-keyed on every seek via `latestOfTypesTagged`
-  (a backward index walk reading only matching lines).
+  Car Damage is emitted only from its reconstructed 10 Hz stream. Other sparse
+  panel row types (status, lap, session, timing, all_status, positions) that
+  delivered nothing on a delivering tick are re-emitted from a **dup cache**
+  with their `session_time` string-spliced to the playhead. The cache is seeded
+  on load and re-keyed on every seek via `latestOfTypesTagged` (a backward index
+  walk reading only matching lines).
 - **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` — the hot
   rows of `[min(target−600 s, currentLapStart), target]` as one binary slice
   plus the window's cold status/damage/lap JSONL — then the state snapshot rows

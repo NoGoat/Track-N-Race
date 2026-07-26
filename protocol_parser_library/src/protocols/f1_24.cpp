@@ -343,7 +343,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             break;
         }
 
-        // ── CAR_DAMAGE (2 Hz, glaze) ───────────────────────────────────────
+        // ── CAR_DAMAGE (10 Hz, glaze) ──────────────────────────────────────
         case PID_CAR_DAMAGE: {
             int damageSize = 42;
             int base = HEADER_SIZE + hdr.playerCarIndex * damageSize;

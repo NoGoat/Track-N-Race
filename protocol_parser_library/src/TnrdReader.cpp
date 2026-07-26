@@ -49,6 +49,21 @@ static float scanSessionTime(const char* d, int len) {
     return -1.0f;
 }
 
+static void setSessionTime(std::string& line, float t) {
+    char num[32];
+    std::snprintf(num, sizeof(num), "%.9g", (double)t);
+    static const char KEY[] = "\"session_time\":";
+    size_t key = line.find(KEY);
+    if (key == std::string::npos) return;
+    size_t valueStart = key + sizeof(KEY) - 1;
+    size_t valueEnd = valueStart;
+    while (valueEnd < line.size() &&
+           line[valueEnd] != ',' && line[valueEnd] != '}') {
+        ++valueEnd;
+    }
+    line.replace(valueStart, valueEnd - valueStart, num);
+}
+
 static uint8_t scanType(const char* d, int len) {
     static const char KEY[] = "\"type\":\"";
     static constexpr int KLEN = sizeof(KEY) - 1;
@@ -159,6 +174,8 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         // the store record count per index position for range slicing.
         TelemetryRow telRow;   // parsed once for the hot store, reused for slim points
         StatusScanFields statusRow;
+        if (tid == 3)
+            coldDamage_.push_back({ t, std::string(ld, ll) });
         if (binaryPlayback_) {
             std::string_view sv(ld, (size_t)ll);
             if (tid == 1) {
@@ -182,8 +199,6 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                 (void)glz::read<kPartialRead>(statusRow, sv);
                 if (initialFuelKg_ < 0.0) initialFuelKg_ = statusRow.fuel_kg;
                 coldStatus_.push_back({ t, std::string(ld, ll) });
-            } else if (tid == 3) {
-                coldDamage_.push_back({ t, std::string(ld, ll) });
             } else if (tid == 4) {
                 coldLap_.push_back({ t, std::string(ld, ll) });
             }
@@ -280,9 +295,13 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         if (it != lapBlocks_.end()) it->second.endSessionTime = totalTime_;
     }
     auto byT = [](const TimedRaw& a, const TimedRaw& b) { return a.t < b.t; };
+    std::sort(coldDamage_.begin(), coldDamage_.end(), byT);
     for (auto& kv : lapBlocks_) {
         std::sort(kv.second.telemetry.begin(), kv.second.telemetry.end(), byT);
         std::sort(kv.second.statusHistory.begin(), kv.second.statusHistory.end(), byT);
+        std::sort(kv.second.motionHistory.begin(), kv.second.motionHistory.end(), byT);
+        std::sort(kv.second.motionExHistory.begin(), kv.second.motionExHistory.end(), byT);
+        std::sort(kv.second.damageHistory.begin(), kv.second.damageHistory.end(), byT);
         // Slim points sorted too — recordings can contain out-of-order UDP rows,
         // which would stall the renderer chart's advance cursor.
         std::sort(kv.second.slimTelemetry.begin(), kv.second.slimTelemetry.end(),
@@ -295,6 +314,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                   });
     }
     if (binaryPlayback_) hotStart_.push_back(hotBin_.size());   // sentinel end offset
+    damageCadenceCursor_ = startTime_;
 }
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
@@ -448,6 +468,7 @@ void TnrdReader::close() {
     startTime_ = totalTime_ = 0.0f;
     tempFileSize_ = 0;
     playPos_ = 0;
+    damageCadenceCursor_ = 0.0f;
 }
 
 size_t TnrdReader::upperBoundTime(float t) const {
@@ -481,6 +502,50 @@ std::string TnrdReader::readLine(long offset) {
 
 void TnrdReader::setCursor(float t) {
     playPos_ = upperBoundTime(t);
+    damageCadenceCursor_ = t;
+}
+
+std::vector<std::string> TnrdReader::damageRowsAtCadence(
+    float fromTime, float toTime, bool includeFrom) const {
+    std::vector<std::string> out;
+    if (coldDamage_.empty() || !std::isfinite(fromTime) ||
+        !std::isfinite(toTime) || toTime < fromTime) {
+        return out;
+    }
+
+    constexpr double RATE = 10.0;
+    constexpr double EPS = 1e-6;
+    const long long firstTick = includeFrom
+        ? (long long)std::ceil((double)fromTime * RATE - EPS)
+        : (long long)std::floor((double)fromTime * RATE + EPS) + 1;
+    const long long lastTick =
+        (long long)std::floor((double)toTime * RATE + EPS);
+    if (firstTick > lastTick) return out;
+
+    auto nextState = std::upper_bound(
+        coldDamage_.begin(), coldDamage_.end(), (float)(firstTick / RATE),
+        [](float t, const TimedRaw& row) { return t < row.t; });
+    size_t stateIndex = nextState == coldDamage_.begin()
+        ? coldDamage_.size()
+        : (size_t)(nextState - coldDamage_.begin() - 1);
+
+    out.reserve((size_t)(lastTick - firstTick + 1));
+    for (long long tick = firstTick; tick <= lastTick; ++tick) {
+        const float sampleTime = (float)((double)tick / RATE);
+        while (stateIndex != coldDamage_.size() &&
+               stateIndex + 1 < coldDamage_.size() &&
+               coldDamage_[stateIndex + 1].t <= sampleTime + (float)EPS) {
+            ++stateIndex;
+        }
+        if (stateIndex == coldDamage_.size()) {
+            if (coldDamage_.front().t > sampleTime + (float)EPS) continue;
+            stateIndex = 0;
+        }
+        std::string row = coldDamage_[stateIndex].json;
+        setSessionTime(row, sampleTime);
+        out.push_back(std::move(row));
+    }
+    return out;
 }
 
 // Latest row of each requested type at or before t. Walks the index backward and
@@ -601,7 +666,11 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     fill(msg.statusHistory,   b.statusHistory);
     fill(msg.motionHistory,   b.motionHistory);
     fill(msg.motionExHistory, b.motionExHistory);
-    fill(msg.damageHistory,   b.damageHistory);
+    const auto damageRows = damageRowsAtCadence(
+        b.startSessionTime, b.endSessionTime);
+    for (const auto& row : damageRows) {
+        msg.damageHistory.push_back(glz::raw_json{ row });
+    }
     return writeJson(msg);
 }
 
@@ -676,12 +745,12 @@ std::vector<std::string> TnrdReader::drainRest() {
 void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8_t>& binOut,
                                 uint32_t& seenTypes,
                                 std::array<std::string, 16>* lastOfType) {
+    const float cadenceEnd = std::isfinite(t) ? t : totalTime_;
     size_t end = pullEnd(t);
-    if (end == playPos_) return;
 
     // Hot rows: the range's records are contiguous in the packed store, so the
     // whole tick's hot payload is a single byte-slice append.
-    if (!hotCum_.empty()) {
+    if (end > playPos_ && !hotCum_.empty()) {
         size_t hotLo = hotCum_[playPos_], hotHi = hotCum_[end];
         if (hotHi > hotLo)
             binOut.insert(binOut.end(),
@@ -690,19 +759,35 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
     }
 
     // Cold rows: contiguous read, hot lines skipped (they went out as binary).
-    size_t got = readBlock(playPos_, end);
+    size_t got = end > playPos_ ? readBlock(playPos_, end) : 0;
     if (got > 0) {
         walkBlockLines(scratch_.data(), got, playPos_, end - playPos_,
                        [&](size_t idx, const char* ld, int ll) {
             uint8_t tid = index_[idx].type;
             seenTypes |= (1u << tid);
             if (tid == 1 || tid == 11 || tid == 12) return;   // hot → binary path
+            // Raw damage rows only advance the last-state cache. The emitted
+            // chart stream below is exclusively the reconstructed 10 Hz series.
+            if (tid == 3) {
+                if (lastOfType) (*lastOfType)[tid].assign(ld, (size_t)ll);
+                return;
+            }
             jsonOut.append(ld, (size_t)ll);
             jsonOut.push_back('\n');
             if (lastOfType && tid < 16) (*lastOfType)[tid].assign(ld, (size_t)ll);
         });
     }
     playPos_ = end;
+
+    auto damageRows = damageRowsAtCadence(
+        damageCadenceCursor_, cadenceEnd, false);
+    for (auto& row : damageRows) {
+        jsonOut += row;
+        jsonOut.push_back('\n');
+        seenTypes |= (1u << 3);
+        if (lastOfType) (*lastOfType)[3] = row;
+    }
+    damageCadenceCursor_ = cadenceEnd;
 }
 
 TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart) {
@@ -729,7 +814,10 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart)
         }
     };
     gather(coldStatus_);
-    gather(coldDamage_);
+    for (auto& row : damageRowsAtCadence(windowStart, target)) {
+        f.coldJson += row;
+        f.coldJson.push_back('\n');
+    }
     gather(coldLap_);
     if (!f.coldJson.empty()) f.coldJson.pop_back();   // no trailing newline
     return f;

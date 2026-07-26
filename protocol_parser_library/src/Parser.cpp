@@ -48,6 +48,11 @@ static constexpr std::array<int, PID_TABLE_SIZE> makeSlowRateMs() {
     a[PID_SESSION]      = 0;
     a[PID_EVENT]        = 0;
     a[PID_PARTICIPANTS] = 5000;
+    // Every applicable UDP specification declares Car Damage at a fixed 10 Hz.
+    // Do not wall-clock throttle it here: packet jitter around 100 ms would turn
+    // a nominal 10 Hz stream into 5 Hz. The game supplies the cadence, and the
+    // writer deduplicates unchanged state after every received sample is parsed.
+    a[PID_CAR_DAMAGE]   = 0;
     // PID_MOTION / PID_CAR_TEL / PID_MOTION_EX are frame-sampled, never read here.
     return a;
 }

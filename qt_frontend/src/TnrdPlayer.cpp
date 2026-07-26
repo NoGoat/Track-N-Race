@@ -3,7 +3,9 @@
 #include <QMetaObject>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <thread>
 
 // Fast type tag extraction from a raw JSON line — avoids a full parse for the
@@ -25,6 +27,15 @@ static int scanType(const char* d, int len) {
         }
     }
     return 0;
+}
+
+static float scanSessionTime(const char* d, int len) {
+    static const char KEY[] = "\"session_time\":";
+    static constexpr int KLEN = sizeof(KEY) - 1;
+    for (int i = 0; i <= len - KLEN; ++i)
+        if (d[i] == '"' && memcmp(d + i, KEY, KLEN) == 0)
+            return std::strtof(d + i + KLEN, nullptr);
+    return -1.0f;
 }
 
 TnrdPlayer::TnrdPlayer(QObject* parent) : QObject(parent) {
@@ -221,6 +232,17 @@ void TnrdPlayer::scanIntoSessionData() {
     // are glaze-parsed into typed structs via tnrp::parseRow (fields the structs
     // don't declare are skipped — no dynamic JSON objects anywhere in the scan).
     std::vector<std::string> rows = reader_.readRange(startTime_, totalTime_);
+    rows.erase(std::remove_if(rows.begin(), rows.end(), [](const std::string& row) {
+        return scanType(row.data(), (int)row.size()) == 3;
+    }), rows.end());
+    auto damageRows = reader_.damageRowsAtCadence(startTime_, totalTime_);
+    rows.insert(rows.end(),
+                std::make_move_iterator(damageRows.begin()),
+                std::make_move_iterator(damageRows.end()));
+    std::stable_sort(rows.begin(), rows.end(), [](const std::string& a, const std::string& b) {
+        return scanSessionTime(a.data(), (int)a.size()) <
+               scanSessionTime(b.data(), (int)b.size());
+    });
     qInfo("[player] scan: %zu raw rows in [%.2f, %.2f]", rows.size(), startTime_, totalTime_);
     int parseFails = 0;
     for (const std::string& s : rows) {
