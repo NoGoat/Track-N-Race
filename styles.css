@@ -605,7 +605,7 @@ body {
 }
 
 .card-title {
-    font-size: 1.1rem;
+    font-size: 1rem;
     margin-bottom: 0.5rem;
     color: var(--text-primary);
 }
@@ -636,9 +636,6 @@ body {
     height: 100vh;
     background: rgba(0, 0, 0, 0.9);
     z-index: 9999;
-    display: flex;
-    justify-content: center;
-    align-items: center;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.3s ease;
@@ -647,20 +644,83 @@ body {
 .lightbox.active {
     opacity: 1;
     pointer-events: all;
-    cursor: zoom-out;
+}
+
+.lightbox-scroll {
+    width: 100vw;
+    height: 100vh;
+    overflow: auto;
+    position: absolute;
+    top: 0;
+    left: 0;
+    scroll-behavior: auto !important;
+}
+
+/* Hide scrollbar visually but keep functionality */
+.lightbox-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.lightbox-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+.lightbox-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.lightbox-centerer {
+    min-width: 100vw;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.lightbox-centerer.zoomed {
+    min-width: 200vw;
+    min-height: 200vh;
 }
 
 .lightbox img {
-    max-width: 90%;
-    max-height: 90%;
+    max-width: 90vw;
+    max-height: 90vh;
     border-radius: 8px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
     transform: scale(0.9);
-    transition: transform 0.3s ease;
+    transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+    cursor: zoom-in;
 }
 
 .lightbox.active img {
     transform: scale(1);
+}
+
+.lightbox.active img.zoomed {
+    transform: scale(2);
+    cursor: zoom-out;
+}
+
+/* Lightbox Close Button */
+.lightbox-close {
+    position: absolute;
+    top: 2rem;
+    right: 2rem;
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 2rem;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: all 0.2s ease;
+    z-index: 10000;
 }
 
 /* Attributions Section */

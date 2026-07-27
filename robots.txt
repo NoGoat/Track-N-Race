@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://nogoat.github.io/Track-N-Race/sitemap.xml

@@ -128,6 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Lightbox Logic
     const lightbox = document.getElementById('lightbox');
     const lightboxImg = lightbox?.querySelector('img');
+    const lightboxClose = document.getElementById('lightboxClose');
     const clickableImages = document.querySelectorAll('.card-img-wrapper, .mockup-img');
 
     if (lightbox && lightboxImg) {
@@ -142,9 +143,74 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        lightbox.addEventListener('click', () => {
+        const lightboxScroll = document.getElementById('lightboxScroll');
+        const lightboxCenterer = document.getElementById('lightboxCenterer');
+
+        const closeLightbox = () => {
             lightbox.classList.remove('active');
+            lightboxImg.classList.remove('zoomed');
+            lightboxCenterer.classList.remove('zoomed');
             document.body.style.overflow = '';
+        };
+
+        lightboxClose?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeLightbox();
+        });
+
+        let isDragging = false;
+        let isMoved = false;
+        let startX = 0, startY = 0;
+        let startScrollLeft = 0, startScrollTop = 0;
+
+        lightboxImg.addEventListener('dragstart', (e) => e.preventDefault());
+
+        lightboxImg.addEventListener('mousedown', (e) => {
+            if (!lightboxImg.classList.contains('zoomed')) return;
+            e.preventDefault();
+            isDragging = true;
+            isMoved = false;
+            startX = e.clientX;
+            startY = e.clientY;
+            startScrollLeft = lightboxScroll.scrollLeft;
+            startScrollTop = lightboxScroll.scrollTop;
+            lightboxImg.style.cursor = 'grabbing';
+            lightboxImg.style.transition = 'none';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
+                isMoved = true;
+            }
+            lightboxScroll.scrollLeft = startScrollLeft - (e.clientX - startX);
+            lightboxScroll.scrollTop = startScrollTop - (e.clientY - startY);
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            lightboxImg.style.cursor = '';
+            lightboxImg.style.transition = '';
+        });
+
+        lightboxImg.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (isMoved) {
+                isMoved = false;
+                return;
+            }
+            if (lightboxImg.classList.contains('zoomed')) {
+                lightboxImg.classList.remove('zoomed');
+                lightboxCenterer.classList.remove('zoomed');
+            } else {
+                lightboxImg.classList.add('zoomed');
+                lightboxCenterer.classList.add('zoomed');
+                setTimeout(() => {
+                    lightboxScroll.scrollLeft = (lightboxScroll.scrollWidth - lightboxScroll.clientWidth) / 2;
+                    lightboxScroll.scrollTop = (lightboxScroll.scrollHeight - lightboxScroll.clientHeight) / 2;
+                }, 10);
+            }
         });
     }
 

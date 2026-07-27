@@ -4,11 +4,46 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Track-N-Race | Telemetry Analysis</title>
+
+    <!-- Primary Meta Tags -->
+    <title>Track-N-Race</title>
+    <meta name="title" content="Track-N-Race">
+    <meta name="description"
+        content="Track-N-Race is a telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+    <meta name="keywords" content="F1, Telemetry, Racing, Track-N-Race, F1 24, F1 25, Analysis, Lap Time, Sim Racing">
+    <meta name="author" content="NoGoat">
+    <meta name="theme-color" content="#1a1a1a">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://nogoat.github.io/Track-N-Race/">
+    <meta property="og:title" content="Track-N-Race | Telemetry Analysis">
+    <meta property="og:description"
+        content="Track-N-Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+    <meta property="og:image" content="https://nogoat.github.io/Track-N-Race/assets/screenshots/overview.png">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://nogoat.github.io/Track-N-Race/">
+    <meta property="twitter:title" content="Track-N-Race | Telemetry Analysis">
+    <meta property="twitter:description"
+        content="Track-N-Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+    <meta property="twitter:image" content="https://nogoat.github.io/Track-N-Race/assets/screenshots/overview.png">
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://nogoat.github.io/Track-N-Race/" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="assets/icons/icon_transparent.png">
+    <link rel="apple-touch-icon" href="assets/icons/icon_solid.png">
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cascadia+Code:ital,wght@0,200..700;1,200..700&display=swap"
         rel="stylesheet">
+
+    <!-- Styles -->
     <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -37,7 +72,8 @@
                     <h1 class="main-title">Find that extra<br><span class="highlight">few tenths.</span></h1>
                     <p class="subtitle">
                         Track N Race is a telemetry recording and analysis tool designed for the F1 games.
-                        It supports F1 24, F1 25 and the 2026 DLC pack.
+                        Analyze and find out where you lose that extra tenth over your competitors.
+                        Supports F1 24, F1 25 and the 2026 DLC pack.
                     </p>
                     <div class="cta-group">
                         <a id="downloadBtn" class="primary-btn"
@@ -450,7 +486,12 @@
         <button class="card-btn primary license-btn footer-license" data-license="GPL-3.0.txt">View License</button>
     </footer>
     <div class="lightbox" id="lightbox">
-        <img src="" alt="Enlarged view">
+        <button class="lightbox-close" id="lightboxClose" aria-label="Close lightbox">&times;</button>
+        <div class="lightbox-scroll" id="lightboxScroll">
+            <div class="lightbox-centerer" id="lightboxCenterer">
+                <img src="" alt="Enlarged view">
+            </div>
+        </div>
     </div>
 
     <!-- License Modal -->
