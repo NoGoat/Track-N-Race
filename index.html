@@ -25,6 +25,7 @@
             <nav class="nav-menu">
                 <button class="nav-btn active" data-target="hero">Home</button>
                 <button class="nav-btn" data-target="features">Features</button>
+                <button class="nav-btn" data-target="attributions">Attributions</button>
             </nav>
         </div>
     </header>
@@ -39,7 +40,7 @@
                         It supports F1 24, F1 25 and the 2026 DLC pack.
                     </p>
                     <div class="cta-group">
-                        <a class="primary-btn"
+                        <a id="downloadBtn" class="primary-btn"
                             href="https://github.com/NoGoat/Track-N-Race/releases/latest">Download</a>
                     </div>
                 </div>
@@ -51,7 +52,7 @@
             </div>
         </section>
 
-        <section id="features" class="section feature-section reverse" style="flex-direction: column;">
+        <section id="features" class="section feature-section reverse">
             <div class="carousel-container">
                 <div class="carousel-track">
                     <!-- Slide 1: Session -->
@@ -255,177 +256,199 @@
                     </div>
                 </div>
             </div>
+        </section>
 
+        <section id="attributions" class="section">
             <div class="attributions-container">
-                <h2 class="section-title">Open Source <span class="highlight-alt">Attributions</span></h2>
-                <p class="section-desc" style="margin-bottom: 2rem;">
-                    Track N Race is built using incredible open-source projects. Here is a list of the third-party licenses for Track-N-Race, its frontends, and the protocol parsing library.
+                <h2 class="section-title">Attributions</h2>
+                <p class="section-desc attributions-desc">
+                    The following projects made Track-N-Race possible. Note that this is in no way trying to affiliate
+                    Track-N-Race with those projects.
                 </p>
-                
-                <div class="table-responsive">
-                    <table class="attributions-table">
-                        <thead>
-                            <tr>
-                                <th>Project Name</th>
-                                <th>License Type</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <!-- Shared / Core Parser Dependencies -->
-                            <tr><th colspan="3" style="text-align: center; background: var(--bg-panel);">Core Parser / Shared Addons</th></tr>
-                            <tr>
-                                <td>zlib</td>
-                                <td>zlib License</td>
-                                <td><button class="license-btn" data-license="zlib.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>Zstandard</td>
-                                <td>BSD 3-Clause</td>
-                                <td><button class="license-btn" data-license="zstandard.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>glaze</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="glaze.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>libxlsxwriter</td>
-                                <td>BSD 2-Clause</td>
-                                <td><button class="license-btn" data-license="libxlsxwriter.txt">View License</button></td>
-                            </tr>
 
-                            <!-- Electron Frontend Dependencies -->
-                            <tr><th colspan="3" style="text-align: center; background: var(--bg-panel);">Electron Frontend</th></tr>
-                            <tr>
-                                <td>Electron</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="electron.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>React</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="react.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>React DOM</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="react-dom.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>electron-store</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="electron-store.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>lucide-react</td>
-                                <td>ISC</td>
-                                <td><button class="license-btn" data-license="lucide-react.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>react-select</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="react-select.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>@uiw/react-color</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="uiw-react-color.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>zustand</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="zustand.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>TimeChart</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="timechart.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>d3-axis</td>
-                                <td>ISC</td>
-                                <td><button class="license-btn" data-license="d3-axis.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>d3-color</td>
-                                <td>ISC</td>
-                                <td><button class="license-btn" data-license="d3-color.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>d3-scale</td>
-                                <td>ISC</td>
-                                <td><button class="license-btn" data-license="d3-scale.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>d3-selection</td>
-                                <td>ISC</td>
-                                <td><button class="license-btn" data-license="d3-selection.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>gl-matrix</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="gl-matrix.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>tslib</td>
-                                <td>0BSD</td>
-                                <td><button class="license-btn" data-license="tslib.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>Cascadia Code</td>
-                                <td>OFL-1.1</td>
-                                <td><button class="license-btn" data-license="cascadia-code.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>node-addon-api</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="node-addon-api.txt">View License</button></td>
-                            </tr>
+                <div class="attributions-sections">
+                    <details class="attribution-accordion">
+                        <summary class="attribution-section-title">Core Parser / Shared Addons</summary>
+                        <div class="attributions-grid">
+                            <div class="attribution-card">
+                                <a href="https://zlib.net" target="_blank" class="attribution-title">zlib</a>
+                                <button class="card-btn primary license-btn" data-license="zlib.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://facebook.github.io/zstd/" target="_blank"
+                                    class="attribution-title">Zstandard</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="zstandard.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/stephenberry/glaze" target="_blank"
+                                    class="attribution-title">glaze</a>
+                                <button class="card-btn primary license-btn" data-license="glaze.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://libxlsxwriter.github.io" target="_blank"
+                                    class="attribution-title">libxlsxwriter</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="libxlsxwriter.txt">License</button>
+                            </div>
+                        </div>
+                    </details>
 
-                            <!-- Qt Frontend Dependencies -->
-                            <tr><th colspan="3" style="text-align: center; background: var(--bg-panel);">Qt Frontend</th></tr>
-                            <tr>
-                                <td>Qt</td>
-                                <td>LGPL-3.0</td>
-                                <td><button class="license-btn" data-license="LGPL-3.0.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>QCustomPlot</td>
-                                <td>GPL-3.0</td>
-                                <td><button class="license-btn" data-license="GPL-3.0.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>qt-toast (fork)</td>
-                                <td>MIT</td>
-                                <td><button class="license-btn" data-license="MIT-qt-toast.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>Noto Sans</td>
-                                <td>OFL-1.1</td>
-                                <td><button class="license-btn" data-license="OFL-1.1-Noto.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>Breeze style (Plasma)</td>
-                                <td>GPL-2.0+</td>
-                                <td><button class="license-btn" data-license="GPL-2.0.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>Breeze Icons</td>
-                                <td>LGPL-3.0</td>
-                                <td><button class="license-btn" data-license="LGPL-3.0.txt">View License</button></td>
-                            </tr>
-                            <tr>
-                                <td>KDE Frameworks</td>
-                                <td>LGPL-2.1+</td>
-                                <td><button class="license-btn" data-license="LGPL-2.1.txt">View License</button></td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <details class="attribution-accordion">
+                        <summary class="attribution-section-title">Electron Frontend</summary>
+                        <div class="attributions-grid">
+                            <div class="attribution-card">
+                                <a href="https://electronjs.org" target="_blank" class="attribution-title">Electron</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="electron.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://react.dev" target="_blank" class="attribution-title">React</a>
+                                <button class="card-btn primary license-btn" data-license="react.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://react.dev" target="_blank" class="attribution-title">React DOM</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="react-dom.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/sindresorhus/electron-store" target="_blank"
+                                    class="attribution-title">electron-store</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="electron-store.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://lucide.dev" target="_blank" class="attribution-title">lucide-react</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="lucide-react.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://react-select.com" target="_blank"
+                                    class="attribution-title">react-select</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="react-select.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/uiwjs/react-color" target="_blank"
+                                    class="attribution-title">@uiw/react-color</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="uiw-react-color.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://zustand.docs.pmnd.rs/" target="_blank"
+                                    class="attribution-title">zustand</a>
+                                <button class="card-btn primary license-btn" data-license="zustand.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/huww98/TimeChart" target="_blank"
+                                    class="attribution-title">TimeChart</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="timechart.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://d3js.org/d3-axis/" target="_blank"
+                                    class="attribution-title">d3-axis</a>
+                                <button class="card-btn primary license-btn" data-license="d3-axis.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://d3js.org/d3-color/" target="_blank"
+                                    class="attribution-title">d3-color</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="d3-color.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://d3js.org/d3-scale/" target="_blank"
+                                    class="attribution-title">d3-scale</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="d3-scale.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://d3js.org/d3-selection/" target="_blank"
+                                    class="attribution-title">d3-selection</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="d3-selection.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://glmatrix.net/" target="_blank" class="attribution-title">gl-matrix</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="gl-matrix.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/microsoft/tslib" target="_blank"
+                                    class="attribution-title">tslib</a>
+                                <button class="card-btn primary license-btn" data-license="tslib.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/microsoft/cascadia-code" target="_blank"
+                                    class="attribution-title">Cascadia Code</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="cascadia-code.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/nodejs/node-addon-api" target="_blank"
+                                    class="attribution-title">node-addon-api</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="node-addon-api.txt">License</button>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="attribution-accordion">
+                        <summary class="attribution-section-title">Qt Frontend</summary>
+                        <div class="attributions-grid">
+                            <div class="attribution-card">
+                                <a href="https://www.qt.io" target="_blank" class="attribution-title">Qt</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="LGPL-3.0.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://www.qcustomplot.com" target="_blank"
+                                    class="attribution-title">QCustomPlot</a>
+                                <button class="card-btn primary license-btn" data-license="GPL-3.0.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://github.com/niklashenning/qt-toast" target="_blank"
+                                    class="attribution-title">qt-toast (fork)</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="MIT-qt-toast.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://fonts.google.com/noto/specimen/Noto+Sans" target="_blank"
+                                    class="attribution-title">Noto Sans</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="OFL-1.1-Noto.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://invent.kde.org/plasma/breeze" target="_blank"
+                                    class="attribution-title">Breeze style (Plasma)</a>
+                                <button class="card-btn primary license-btn" data-license="GPL-2.0.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://invent.kde.org/frameworks/breeze-icons" target="_blank"
+                                    class="attribution-title">Breeze Icons</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="LGPL-3.0.txt">License</button>
+                            </div>
+                            <div class="attribution-card">
+                                <a href="https://develop.kde.org/products/frameworks/" target="_blank"
+                                    class="attribution-title">KDE Frameworks</a>
+                                <button class="card-btn primary license-btn"
+                                    data-license="LGPL-2.1.txt">License</button>
+                            </div>
+                        </div>
+                    </details>
                 </div>
+
             </div>
         </section>
     </main>
+
+    <footer class="site-footer">
+        <p class="section-desc footer-desc">
+            Copyright &copy; 2026 NoGoat. Track-N-Race is distributed under the GNU General Public License v3.0.
+        </p>
+        <button class="card-btn primary license-btn footer-license" data-license="GPL-3.0.txt">View License</button>
+    </footer>
     <div class="lightbox" id="lightbox">
         <img src="" alt="Enlarged view">
     </div>
@@ -445,4 +468,5 @@
 
     <script src="script.js"></script>
 </body>
+
 </html>

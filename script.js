@@ -29,6 +29,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        // If scrolled to the bottom of the page, select the last section
+        if ((window.innerHeight + Math.round(window.scrollY)) >= document.body.offsetHeight - 20) {
+            current = sections[sections.length - 1].getAttribute('id');
+        }
+
         navItems.forEach(item => {
             item.classList.remove('active');
             if (item.getAttribute('data-target') === current) {
@@ -76,11 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
             dots.forEach(dot => dot.classList.remove('active'));
             if (dots[index]) dots[index].classList.add('active');
             currentSlideIndex = index;
-            
-            const activeSlide = slides[index];
-            if (activeSlide) {
-                track.style.height = `${activeSlide.offsetHeight}px`;
-            }
         };
 
         // Initialize height
@@ -159,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
         licenseBtns.forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const licenseFile = btn.getAttribute('data-license');
-                const projectName = btn.closest('tr').querySelector('td').textContent;
+                const projectName = btn.closest('.attribution-card').querySelector('.attribution-title').textContent;
                 
                 licenseModalTitle.textContent = `${projectName} License`;
                 licenseTextContent.textContent = 'Loading...';
@@ -190,5 +190,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeModal();
             }
         });
+    }
+
+    // Fetch latest release version for Download button
+    const downloadBtn = document.getElementById('downloadBtn');
+    if (downloadBtn) {
+        const getCookie = (name) => {
+            const value = `; ${document.cookie}`;
+            const parts = value.split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+            return null;
+        };
+
+        const cachedVersion = getCookie('tnr_latest_version');
+
+        if (cachedVersion) {
+            downloadBtn.textContent = `Download ${cachedVersion}`;
+        } else {
+            fetch('https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest')
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.tag_name) {
+                        downloadBtn.textContent = `Download ${data.tag_name}`;
+                        document.cookie = `tnr_latest_version=${data.tag_name}; max-age=3600; path=/; SameSite=Lax`;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching latest release:', error);
+                });
+        }
     }
 });
