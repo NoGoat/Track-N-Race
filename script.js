@@ -147,4 +147,48 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.style.overflow = '';
         });
     }
+
+    // License Modal Logic
+    const licenseBtns = document.querySelectorAll('.license-btn');
+    const licenseModal = document.getElementById('licenseModal');
+    const closeLicenseModal = document.getElementById('closeLicenseModal');
+    const licenseTextContent = document.getElementById('licenseTextContent');
+    const licenseModalTitle = document.getElementById('licenseModalTitle');
+
+    if (licenseBtns.length > 0 && licenseModal) {
+        licenseBtns.forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const licenseFile = btn.getAttribute('data-license');
+                const projectName = btn.closest('tr').querySelector('td').textContent;
+                
+                licenseModalTitle.textContent = `${projectName} License`;
+                licenseTextContent.textContent = 'Loading...';
+                licenseModal.classList.add('active');
+                document.body.style.overflow = 'hidden'; // Prevent scrolling
+
+                try {
+                    const response = await fetch(`assets/licenses/${licenseFile}`);
+                    if (!response.ok) throw new Error('Failed to load license');
+                    const text = await response.text();
+                    licenseTextContent.textContent = text;
+                } catch (error) {
+                    licenseTextContent.textContent = 'Error loading license text. Please try again later.';
+                    console.error(error);
+                }
+            });
+        });
+
+        const closeModal = () => {
+            licenseModal.classList.remove('active');
+            document.body.style.overflow = '';
+        };
+
+        closeLicenseModal?.addEventListener('click', closeModal);
+
+        licenseModal.addEventListener('click', (e) => {
+            if (e.target === licenseModal) {
+                closeModal();
+            }
+        });
+    }
 });
