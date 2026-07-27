@@ -225,7 +225,8 @@ document.addEventListener('DOMContentLoaded', () => {
         licenseBtns.forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const licenseFile = btn.getAttribute('data-license');
-                const projectName = btn.closest('.attribution-card').querySelector('.attribution-title').textContent;
+                const card = btn.closest('.attribution-card');
+                const projectName = card ? card.querySelector('.attribution-title').textContent : 'Track-N-Race';
                 
                 licenseModalTitle.textContent = `${projectName} License`;
                 licenseTextContent.textContent = 'Loading...';
