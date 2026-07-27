@@ -36,6 +36,10 @@ body {
     overflow-x: hidden;
 }
 
+.post-script {
+    font-size: x-small;
+}
+
 /* Ambient Background Glows */
 .ambient-glow {
     position: fixed;
@@ -155,14 +159,26 @@ body {
     box-shadow: 0 6px 20px rgba(68, 136, 255, 0.4);
 }
 
+.highlight-alt-yellow {
+    color: #8250D1;
+}
+
+.highlight-alt-green {
+    color: #0ED17B;
+}
+
 /* General Section Setup */
 .section {
-    min-height: 100vh;
-    padding: 100px 2rem 4rem;
+    padding: 80px 2rem;
     display: flex;
     align-items: center;
     max-width: 1400px;
     margin: 0 auto;
+}
+
+.hero-section {
+    padding: 100px 2rem 4rem;
+    min-height: 100vh;
 }
 
 /* Hero Grid */
@@ -254,6 +270,7 @@ body {
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s ease;
+    text-decoration: none;
 }
 
 .primary-btn:hover {
@@ -366,8 +383,8 @@ body {
 /* Animations & Scrolling */
 .fade-in {
     opacity: 0;
-    transform: translateY(30px);
-    transition: opacity 0.8s ease, transform 0.8s ease;
+    transform: translateY(10px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
 .fade-in.visible {
@@ -447,8 +464,11 @@ body {
     }
 
     .section {
+        padding: 100px 1rem 2rem;
+    }
+
+    .hero-section {
         padding: 145px 1rem 3rem;
-        min-height: auto;
     }
 
     .main-title {
@@ -473,7 +493,10 @@ body {
 
 @media (max-width: 397px) {
     .section {
+        padding: 120px 1rem 2rem;
+    }
+
+    .hero-section {
         padding: 165px 1rem 3rem;
-        min-height: auto;
     }
 }
