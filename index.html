@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Track-N-Race | Telemetry Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cascadia+Code:ital,wght@0,200..700;1,200..700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="ambient-glow"></div>
+    <div class="ambient-glow right"></div>
+
+    <header class="navbar">
+        <div class="nav-container">
+            <div class="brand">
+                <span class="brand-track">Track</span><span class="brand-dash">-N-</span><span
+                    class="brand-race">Race</span>
+            </div>
+            <nav class="nav-menu">
+                <button class="nav-btn active" data-target="hero">Home</button>
+                <button class="nav-btn" data-target="overview">Overview</button>
+                <button class="nav-btn" data-target="analyze">Analyze</button>
+                <button class="nav-btn" data-target="session">Session</button>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section id="hero" class="section hero-section active-section">
+            <div class="hero-grid">
+                <div class="hero-content">
+                    <h1 class="main-title">Extract Every<br><span class="highlight">Millisecond.</span></h1>
+                    <p class="subtitle">
+                        High-performance telemetry analyzer and track mapping toolkit.
+                        Visualize your data with uncompromising precision and gain the competitive edge.
+                    </p>
+                    <div class="cta-group">
+                        <a class="primary-btn"
+                            href="https://github.com/NoGoat/Track-N-Race/releases/latest">Download</a>
+                    </div>
+                </div>
+                <div class="hero-visual">
+                    <div class="app-window">
+                        <img src="assets/screenshots/Screenshot 2026-07-24 at 1.29.13 AM.png" alt="Overview Interface"
+                            class="mockup-img">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="overview" class="section feature-section">
+            <div class="feature-container">
+                <div class="feature-text">
+                    <h2 class="section-title">Overview Dashboard</h2>
+                    <p class="section-desc">
+                        Get a real-time, comprehensive look at your race data.
+                        Monitor live telemetry, track your delta times, and make critical decisions directly from the
+                        pit wall.
+                    </p>
+                    <ul class="feature-list">
+                        <li>Live gap and interval tracking</li>
+                        <li>Dynamic sector times and speed traps</li>
+                        <li>Instant driver position updates</li>
+                    </ul>
+                </div>
+                <div class="feature-visual">
+                    <div class="app-window glass">
+                        <img src="assets/screenshots/Screenshot 2026-07-24 at 1.29.13 AM.png" alt="Overview Panel"
+                            class="mockup-img">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="analyze" class="section feature-section reverse">
+            <div class="feature-container">
+                <div class="feature-text">
+                    <h2 class="section-title">Deep <span class="highlight-alt">Analyze</span></h2>
+                    <p class="section-desc">
+                        Dive deep into your telemetry traces. Compare your laps against the fastest sessions,
+                        investigate corner speeds, and perfect your braking points with absolute clarity.
+                    </p>
+                    <ul class="feature-list">
+                        <li>High-resolution trace charts</li>
+                        <li>Multi-lap overlay comparisons</li>
+                        <li>Throttle, brake, and steering mapping</li>
+                    </ul>
+                </div>
+                <div class="feature-visual">
+                    <div class="app-window glass">
+                        <img src="assets/screenshots/Screenshot 2026-07-24 at 12.44.09 AM.png" alt="Analyze Panel"
+                            class="mockup-img">
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="session" class="section feature-section">
+            <div class="feature-container">
+                <div class="feature-text">
+                    <h2 class="section-title">Session History</h2>
+                    <p class="section-desc">
+                        Track your progression across all practice, qualifying, and race sessions.
+                        Monitor your compound usage, stint lengths, and degradation over time.
+                    </p>
+                    <ul class="feature-list">
+                        <li>Full weekend data logging</li>
+                        <li>Tyre compound lifecycle tracking</li>
+                        <li>Stint and race pace analysis</li>
+                    </ul>
+                </div>
+                <div class="feature-visual">
+                    <div class="app-window glass">
+                        <img src="assets/screenshots/Screenshot 2026-07-24 at 12.46.26 AM.png" alt="Session Panel"
+                            class="mockup-img">
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
