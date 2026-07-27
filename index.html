@@ -24,9 +24,7 @@
             </div>
             <nav class="nav-menu">
                 <button class="nav-btn active" data-target="hero">Home</button>
-                <button class="nav-btn" data-target="session">Session</button>
-                <button class="nav-btn" data-target="analyze">Analysis</button>
-                <button class="nav-btn" data-target="minimal">Minimal</button>
+                <button class="nav-btn" data-target="features">Features</button>
             </nav>
         </div>
     </header>
@@ -35,10 +33,10 @@
         <section id="hero" class="section hero-section active-section">
             <div class="hero-grid">
                 <div class="hero-content">
-                    <h1 class="main-title">Extract Every<br><span class="highlight">Millisecond.</span></h1>
+                    <h1 class="main-title">Find that extra<br><span class="highlight">few tenths.</span></h1>
                     <p class="subtitle">
-                        High-performance telemetry analyzer and track mapping toolkit.
-                        Visualize your data with uncompromising precision and gain the competitive edge.
+                        Track N Race is a telemetry recording and analysis tool designed for the F1 games.
+                        It supports F1 24, F1 25 and the 2026 DLC pack.
                     </p>
                     <div class="cta-group">
                         <a class="primary-btn"
@@ -53,73 +51,215 @@
             </div>
         </section>
 
-        <section id="session" class="section feature-section">
-            <div class="feature-container">
-                <div class="feature-text">
-                    <h2 class="section-title">Track almost <span class="highlight-alt-green">Everything</span></h2>
-                    <p class="section-desc">
-                        Track N Race tries to track as much information as possible from the apps.
-                        Everything from tyres to ride heights can be tracked.
-                    </p>
-                    <ul class="feature-list">
-                        <li>Record everything for future analysis</li>
-                        <li>Replay recordings like a video</li>
-                        <li>Includes track maps for almost* every circuit</li>
-                        <span class="post-script">*I do not own F1 24. So I couldn't get maps for any tracks exclusive
-                            to F1 24.</span>
-                    </ul>
-                </div>
-                <div class="feature-visual">
-                    <div class="app-window glass">
-                        <img src="assets/screenshots/session.png" alt="Session Page" class="mockup-img">
+        <section id="features" class="section feature-section reverse" style="flex-direction: column;">
+            <div class="carousel-container">
+                <div class="carousel-track">
+                    <!-- Slide 1: Session -->
+                    <div class="carousel-slide">
+                        <div class="feature-container">
+                            <div class="feature-text">
+                                <h2 class="section-title">Track almost <span
+                                        class="highlight-alt-green">Everything</span></h2>
+                                <p class="section-desc">
+                                    Track N Race tries to track as much information as possible from the apps.
+                                    Everything from tyres to ride heights can be tracked.
+                                </p>
+                                <ul class="feature-list">
+                                    <li>Record everything for future analysis</li>
+                                    <li>Replay recordings like a video</li>
+                                    <li>Includes track maps for almost* every circuit</li>
+                                    <span class="post-script">*I do not own F1 24. So I couldn't get maps for any tracks
+                                        exclusive
+                                        to F1 24.</span>
+                                </ul>
+                            </div>
+                            <div class="feature-visual">
+                                <div class="app-window glass">
+                                    <img src="assets/screenshots/session.png" alt="Session Page" class="mockup-img">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Slide 2: Analyze -->
+                    <div class="carousel-slide">
+                        <div class="feature-container">
+                            <div class="feature-text">
+                                <h2 class="section-title">Deep <span class="highlight-alt">Analysis</span></h2>
+                                <p class="section-desc">
+                                    Dive deep into your race data. Compare any data of your choosing against
+                                    other of your own laps to find what's costing you lap time.
+                                </p>
+                                <ul class="feature-list">
+                                    <li>Trace charts for almost any data</li>
+                                    <li>Lap overlay comparisons</li>
+                                    <li>Customizable colors and chart hierarchy</li>
+                                </ul>
+                            </div>
+                            <div class="feature-visual">
+                                <div class="app-window glass">
+                                    <img src="assets/screenshots/analyze.png" alt="Analyze Panel" class="mockup-img">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Slide 3: Minimal -->
+                    <div class="carousel-slide">
+                        <div class="feature-container">
+                            <div class="feature-text">
+                                <h2 class="section-title">Minimal <span class="highlight-alt-yellow">Recorder</span>
+                                </h2>
+                                <p class="section-desc">
+                                    Worried about performance penalties from running the app while playing the game?
+                                    You can instead run the minimal recording and view your stats later in the main app.
+                                </p>
+                                <ul class="feature-list">
+                                    <li>Full data logging</li>
+                                    <li>No additional features to reduce overhead</li>
+                                </ul>
+                            </div>
+                            <div class="feature-visual">
+                                <div class="app-window glass">
+                                    <img src="assets/screenshots/minimal_recorder.png" alt="Minimal Recorder"
+                                        class="mockup-img">
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </section>
 
-        <section id="analyze" class="section feature-section reverse">
-            <div class="feature-container">
-                <div class="feature-text">
-                    <h2 class="section-title">Deep <span class="highlight-alt">Analysis</span></h2>
-                    <p class="section-desc">
-                        Dive deep into your race data. Compare any data of your choosing against
-                        other of your own laps to find what's costing you lap time.
-                    </p>
-                    <ul class="feature-list">
-                        <li>Trace charts for almost any data</li>
-                        <li>Lap overlay comparisons</li>
-                        <li>Customizable colors and chart hierarchy</li>
-                    </ul>
+                <div class="carousel-controls">
+                    <button class="carousel-btn prev" aria-label="Previous slide">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m15 18-6-6 6-6" />
+                        </svg>
+                    </button>
+                    <div class="carousel-indicators">
+                        <span class="dot active" data-slide="0"></span>
+                        <span class="dot" data-slide="1"></span>
+                        <span class="dot" data-slide="2"></span>
+                    </div>
+                    <button class="carousel-btn next" aria-label="Next slide">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m9 18 6-6-6-6" />
+                        </svg>
+                    </button>
                 </div>
-                <div class="feature-visual">
-                    <div class="app-window glass">
-                        <img src="assets/screenshots/analyze.png" alt="Analyze Panel" class="mockup-img">
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/editor.png" alt="Workspace Editor" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Layout Editor</h3>
+                        <p class="card-desc">Enable or disable cards based on your needs.
+                        </p>
                     </div>
                 </div>
-            </div>
-        </section>
 
-        <section id="minimal" class="section feature-section">
-            <div class="feature-container">
-                <div class="feature-text">
-                    <h2 class="section-title">Minimal <span class="highlight-alt-yellow">Recorder</span></h2>
-                    <p class="section-desc">
-                        Worried about performance penalties from running the app while playing the game?
-                        You can instead run the minimal recording and view your stats later in the main app.
-                    </p>
-                    <ul class="feature-list">
-                        <li>Full data logging</li>
-                        <li>No additional features to reduce overhead</li>
-                    </ul>
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/inputs.png" alt="Driver Inputs" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Inputs</h3>
+                        <p class="card-desc">Track your acceleration, brake, gear and steering inputs. Duh.</p>
+                    </div>
                 </div>
-                <div class="feature-visual">
-                    <div class="app-window glass">
-                        <img src="assets/screenshots/minimal_recorder.png" alt="Minimal Recorder" class="mockup-img">
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/analyze.png" alt="Deep Analysis" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Deep Analysis</h3>
+                        <p class="card-desc">Compare your laps to identify time gains and losses.</p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/power.png" alt="Power & ERS" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Power</h3>
+                        <p class="card-desc">Track engine and fuel status.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/tyres.png" alt="Tyre Wear" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Tyres</h3>
+                        <p class="card-desc">Get a list of all the available compounds for the weekend</p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/tyres_charts.png" alt="Tyre Analysis" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Tyre Graphs</h3>
+                        <p class="card-desc">Monitor compound degradation, surface, and inner carcass temperatures.</p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/strategy.png" alt="Race Strategy" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Race Strategy</h3>
+                        <p class="card-desc">This is a work in progress so expect strategies to be ... kinda meh.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/session.png" alt="Track Maps" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Session</h3>
+                        <p class="card-desc">Track info about your current session with a map of the circuit.</p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/standings.png" alt="Live Standings" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Standings</h3>
+                        <p class="card-desc">It's a timing tower. I feel like I am writing words to reach an essay word
+                            count.</p>
+                    </div>
+                </div>
+
+                <div class="feature-card">
+                    <div class="card-img-wrapper">
+                        <img src="assets/screenshots/overview_table.png" alt="Data Tables" class="card-img">
+                    </div>
+                    <div class="card-content">
+                        <h3 class="card-title">Data Tables</h3>
+                        <p class="card-desc">If you don't want graphs, you can't swap them out for tables.</p>
                     </div>
                 </div>
             </div>
         </section>
     </main>
+    <div class="lightbox" id="lightbox">
+        <img src="" alt="Enlarged view">
+    </div>
 
     <script src="script.js"></script>
 </body>

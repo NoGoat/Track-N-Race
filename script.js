@@ -24,8 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         sections.forEach(section => {
             const sectionTop = section.offsetTop;
-            const sectionHeight = section.clientHeight;
-            if (scrollY >= (sectionTop - sectionHeight / 3)) {
+            if (window.scrollY >= (sectionTop - 200)) {
                 current = section.getAttribute('id');
             }
         });
@@ -60,4 +59,92 @@ document.addEventListener('DOMContentLoaded', () => {
         el.classList.add('fade-in');
         observer.observe(el);
     });
+
+    // Carousel Logic
+    const track = document.querySelector('.carousel-track');
+    const slides = Array.from(track?.children || []);
+    const nextButton = document.querySelector('.carousel-btn.next');
+    const prevButton = document.querySelector('.carousel-btn.prev');
+    const dotsNav = document.querySelector('.carousel-indicators');
+    const dots = Array.from(dotsNav?.children || []);
+
+    if (track && slides.length > 0) {
+        let currentSlideIndex = 0;
+
+        const updateCarousel = (index) => {
+            track.style.transform = `translateX(-${index * 100}%)`;
+            dots.forEach(dot => dot.classList.remove('active'));
+            if (dots[index]) dots[index].classList.add('active');
+            currentSlideIndex = index;
+            
+            const activeSlide = slides[index];
+            if (activeSlide) {
+                track.style.height = `${activeSlide.offsetHeight}px`;
+            }
+        };
+
+        // Initialize height
+        setTimeout(() => updateCarousel(0), 100);
+        window.addEventListener('resize', () => updateCarousel(currentSlideIndex));
+
+        nextButton?.addEventListener('click', () => {
+            let nextIndex = currentSlideIndex + 1;
+            if (nextIndex >= slides.length) nextIndex = 0;
+            updateCarousel(nextIndex);
+        });
+
+        prevButton?.addEventListener('click', () => {
+            let prevIndex = currentSlideIndex - 1;
+            if (prevIndex < 0) prevIndex = slides.length - 1;
+            updateCarousel(prevIndex);
+        });
+
+        dotsNav?.addEventListener('click', e => {
+            const targetDot = e.target.closest('.dot');
+            if (!targetDot) return;
+            const index = dots.findIndex(dot => dot === targetDot);
+            updateCarousel(index);
+        });
+
+        // Auto-play
+        let autoPlayInterval = setInterval(() => {
+            let nextIndex = currentSlideIndex + 1;
+            if (nextIndex >= slides.length) nextIndex = 0;
+            updateCarousel(nextIndex);
+        }, 5000);
+
+        // Pause auto-play on hover
+        const carouselContainer = document.querySelector('.carousel-container');
+        carouselContainer?.addEventListener('mouseenter', () => clearInterval(autoPlayInterval));
+        carouselContainer?.addEventListener('mouseleave', () => {
+            autoPlayInterval = setInterval(() => {
+                let nextIndex = currentSlideIndex + 1;
+                if (nextIndex >= slides.length) nextIndex = 0;
+                updateCarousel(nextIndex);
+            }, 5000);
+        });
+    }
+
+    // Lightbox Logic
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImg = lightbox?.querySelector('img');
+    const clickableImages = document.querySelectorAll('.card-img-wrapper, .mockup-img');
+
+    if (lightbox && lightboxImg) {
+        clickableImages.forEach(wrapper => {
+            wrapper.addEventListener('click', (e) => {
+                const img = wrapper.tagName === 'IMG' ? wrapper : wrapper.querySelector('img');
+                if (img) {
+                    lightboxImg.src = img.src;
+                    lightbox.classList.add('active');
+                    document.body.style.overflow = 'hidden'; // Prevent scrolling
+                }
+            });
+        });
+
+        lightbox.addEventListener('click', () => {
+            lightbox.classList.remove('active');
+            document.body.style.overflow = '';
+        });
+    }
 });
