@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImage, dialog, screen } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImage, dialog, screen, clipboard } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
@@ -366,9 +366,33 @@ app.whenReady().then(() => {
   sweepTempFiles()
 
   console.log('[main] calling startBridge()')
-  startBridge()   // starts the in-process libtnrp addon; owns UDP + recording
+  const bridgeStartupError = startBridge()
   console.log('[main] calling createWindow()')
   createWindow()
+  if (bridgeStartupError) {
+    const bridgeErrorReport = [
+      'Track N Race native telemetry bridge startup failure',
+      `App version: ${app.getVersion()}`,
+      `Electron: ${process.versions.electron}`,
+      `Chrome: ${process.versions.chrome}`,
+      `Node: ${process.versions.node}`,
+      `Platform: ${process.platform} ${process.arch}`,
+      `OS version: ${process.getSystemVersion()}`,
+      '',
+      bridgeStartupError
+    ].join('\n')
+
+    setImmediate(() => {
+      clipboard.writeText(bridgeErrorReport)
+      dialog.showErrorBox(
+        'Telemetry Bridge Failed to Load',
+        'Track N Race will continue without the native telemetry bridge.\n\n' +
+        'The full diagnostic report and stack trace have been copied to your clipboard. ' +
+        'Paste them into a message to the developer.\n\n' +
+        bridgeErrorReport
+      )
+    })
+  }
 
   // Tray icons are decoded by a different, more restrictive loader than
   // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.

@@ -232,8 +232,8 @@ function pushLogging(): void {
   }
 }
 
-export function startBridge(): void {
-  if (engine) return
+export function startBridge(): string | null {
+  if (engine) return null
 
   try {
     const addon = loadAddon()
@@ -306,9 +306,14 @@ export function startBridge(): void {
       store.onDidChange('logging.enabled', () => pushLogging()),
       store.onDidChange('logging.directory', () => pushLogging()),
     ]
-    
+
+    return null
   } catch (err) {
     console.error('[bridge] Failed to load N-API addon:', err)
+    if (err instanceof Error) {
+      return err.stack || `${err.name}: ${err.message}`
+    }
+    return String(err)
   }
 }
 
