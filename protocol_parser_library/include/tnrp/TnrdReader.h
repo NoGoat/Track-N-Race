@@ -52,7 +52,10 @@ public:
     // they can't accumulate and fill /tmp. Call once at startup — a running
     // session's own temp is created afterwards, so it is never a target. Files an
     // active instance still holds open are skipped (their unlink simply fails).
-    static void sweepStaleTempFiles();
+    // Best-effort and non-throwing: this runs during host startup, where a
+    // malformed/unrepresentable entry in the shared OS temp directory must
+    // never be allowed to take down either application.
+    static void sweepStaleTempFiles() noexcept;
 
     float startTime() const { return startTime_; }
     float totalTime() const { return totalTime_; }

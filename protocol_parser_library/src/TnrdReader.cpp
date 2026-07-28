@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <string_view>
 #include <unordered_set>
@@ -92,25 +93,38 @@ static uint8_t scanType(const char* d, int len) {
 
 TnrdReader::~TnrdReader() { close(); }
 
-void TnrdReader::sweepStaleTempFiles() {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const fs::path dir = fs::temp_directory_path(ec);
-    if (ec) return;
+void TnrdReader::sweepStaleTempFiles() noexcept {
+    try {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path dir = fs::temp_directory_path(ec);
+        if (ec) return;
 
-    int removed = 0;
-    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
-        const fs::path& p = it->path();
-        const std::string name = p.filename().string();
-        // Match both apps' decompression temps: "tracknrace_*.tmp" (covers the
-        // current "tracknrace_temp_*" and any legacy "tracknrace_<ts>.tmp").
-        if (name.rfind("tracknrace_", 0) != 0) continue;
-        if (name.size() < 4 || name.substr(name.size() - 4) != ".tmp") continue;
-        std::error_code rmEc;
-        if (fs::remove(p, rmEc)) ++removed;   // a file held open elsewhere just fails; skip it
+        // Compare path::string_type directly (wstring on Windows, string on
+        // POSIX). Converting every arbitrary temp entry with path::string()
+        // can throw ERROR_NO_UNICODE_TRANSLATION before we even inspect it.
+        const auto prefix = fs::path("tracknrace_").native();
+        const auto suffix = fs::path(".tmp").native();
+
+        int removed = 0;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            const fs::path& p = it->path();
+            const auto name = p.filename().native();
+            // Match both apps' decompression temps: "tracknrace_*.tmp" (covers
+            // current "tracknrace_temp_*" and legacy "tracknrace_<ts>.tmp").
+            if (!name.starts_with(prefix) || !name.ends_with(suffix)) continue;
+            std::error_code rmEc;
+            if (fs::remove(p, rmEc)) ++removed;   // a held-open file simply fails; skip it
+        }
+        if (removed > 0)
+            std::fprintf(stderr, "[tnrd] startup sweep: removed %d stale temp file(s)\n", removed);
+    } catch (const std::exception& err) {
+        // Startup cleanup is opportunistic. Report an unexpected filesystem
+        // failure, but never let it escape through N-API or terminate Qt.
+        std::fprintf(stderr, "[tnrd] startup sweep skipped: %s\n", err.what());
+    } catch (...) {
+        std::fprintf(stderr, "[tnrd] startup sweep skipped: unknown error\n");
     }
-    if (removed > 0)
-        std::fprintf(stderr, "[tnrd] startup sweep: removed %d stale temp file(s)\n", removed);
 }
 
 void TnrdReader::buildIndex(const std::string& filePath) {
