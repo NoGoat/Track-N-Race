@@ -33,6 +33,8 @@ import iconTransparentLight from '../../build/icon_transparent_light.ico?asset'
 import iconTransparentPng from '../../build/icon_transparent.png?asset'
 import iconTransparentLightPng from '../../build/icon_transparent_light.png?asset'
 
+declare const __APP_VERSION__: string
+
 console.log('[main] module loading, pid=', process.pid)
 
 process.on('uncaughtException', (err) => {
@@ -372,7 +374,7 @@ app.whenReady().then(() => {
   if (bridgeStartupError) {
     const bridgeErrorReport = [
       'Track N Race native telemetry bridge startup failure',
-      `App version: ${app.getVersion()}`,
+      `App version: ${app.isPackaged ? __APP_VERSION__ : 'Next'}`,
       `Electron: ${process.versions.electron}`,
       `Chrome: ${process.versions.chrome}`,
       `Node: ${process.versions.node}`,
@@ -386,7 +388,7 @@ app.whenReady().then(() => {
       clipboard.writeText(bridgeErrorReport)
       dialog.showErrorBox(
         'Telemetry Bridge Failed to Load',
-        'Track N Race will continue without the native telemetry bridge.\n\n' +
+        'Track N Race will continue without the native telemetry bridge. However, pretty much nothing will work.\n\n' +
         'The full diagnostic report and stack trace have been copied to your clipboard. ' +
         'Paste them into a message to the developer.\n\n' +
         bridgeErrorReport

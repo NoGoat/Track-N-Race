@@ -219,6 +219,11 @@ function loadAddon(): any {
   // Try to load the N-API module
   // Electron's require correctly handles ASAR unpacking for .node files automatically.
   if (addonModule) return addonModule
+  if (process.env.TNR_SIMULATE_BRIDGE_FAILURE === '1') {
+    throw new Error(
+      'Simulated native telemetry addon load failure (TNR_SIMULATE_BRIDGE_FAILURE=1)'
+    )
+  }
   let p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
   addonModule = require(p)
   return addonModule
