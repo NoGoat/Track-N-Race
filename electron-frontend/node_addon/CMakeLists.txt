@@ -1,4 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Build against the newest installed SDK, but target Windows 10 version 1809.
+# CMP0149 keeps CMAKE_SYSTEM_VERSION separate from Windows SDK selection.
+if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+    if(POLICY CMP0149)
+        cmake_policy(SET CMP0149 NEW)
+    endif()
+    set(CMAKE_SYSTEM_VERSION "10.0.17763.0" CACHE STRING
+        "Minimum Windows version targeted by the native addon" FORCE)
+endif()
+
 project(protocol_parser_addon VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -6,6 +17,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Make sure it builds as a node addon (.node)
 add_definitions(-DNAPI_VERSION=6)
+
+# Keep the addon and all statically linked dependencies compatible with
+# Windows 10. Without an explicit baseline, the selected Windows SDK decides
+# which Windows APIs are exposed during compilation.
+if(WIN32)
+    add_compile_definitions(WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+endif()
 
 # Force Position Independent Code (-fPIC) so libtnrp.a can be linked into a shared .node module
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -43,6 +61,10 @@ add_library(protocol_parser SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC})
 # Link node-addon-api and Node itself
 target_include_directories(protocol_parser PRIVATE ${CMAKE_JS_INC} ${NODE_ADDON_API_DIR})
 target_link_libraries(protocol_parser PRIVATE ${CMAKE_JS_LIB} tnrp)
+if(MSVC)
+    set_property(TARGET protocol_parser PROPERTY
+        VS_WINDOWS_TARGET_PLATFORM_MIN_VERSION "10.0.17763.0")
+endif()
 
 # We want the output to be protocol_parser.node
 set_target_properties(protocol_parser PROPERTIES PREFIX "" SUFFIX ".node")

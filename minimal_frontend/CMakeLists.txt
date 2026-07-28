@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Build against the newest installed SDK, but target Windows 10 version 1809.
+# CMP0149 keeps CMAKE_SYSTEM_VERSION separate from Windows SDK selection.
+if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+    if(POLICY CMP0149)
+        cmake_policy(SET CMP0149 NEW)
+    endif()
+    set(CMAKE_SYSTEM_VERSION "10.0.17763.0" CACHE STRING
+        "Minimum Windows version targeted by the minimal recorder" FORCE)
+endif()
+
 if(NOT DEFINED TNR_APP_VERSION)
     if(DEFINED ENV{TNR_APP_VERSION} AND NOT "$ENV{TNR_APP_VERSION}" STREQUAL "")
         set(TNR_APP_VERSION "$ENV{TNR_APP_VERSION}")
@@ -15,6 +25,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+if(WIN32)
+    # Keep the recorder and all statically linked dependencies compatible with
+    # Windows 10, regardless of which newer Windows SDK performs the build.
+    add_compile_definitions(WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 endif()
 
 if(MSVC)
@@ -64,7 +80,8 @@ if(WIN32)
     # a second one with the same resource id.
     target_link_options(minimal_app PRIVATE /MANIFEST:NO)
     set_target_properties(minimal_app PROPERTIES
-        OUTPUT_NAME "Track-N-Race - Minimal")
+        OUTPUT_NAME "Track-N-Race - Minimal"
+        VS_WINDOWS_TARGET_PLATFORM_MIN_VERSION "10.0.17763.0")
 
     install(TARGETS minimal_app RUNTIME DESTINATION .)
     return()
