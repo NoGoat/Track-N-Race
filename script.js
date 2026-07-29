@@ -1,10 +1,11 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const navButtons = document.querySelectorAll('.nav-btn, .primary-btn');
+    // Navigation Smooth Scroll
+    const navButtons = document.querySelectorAll('.nav-btn');
     
-    // Smooth scroll to sections
     navButtons.forEach(btn => {
         btn.addEventListener('click', () => {
             const targetId = btn.getAttribute('data-target');
+            if (!targetId) return;
             const targetSection = document.getElementById(targetId);
             
             if (targetSection) {
@@ -20,18 +21,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const navItems = document.querySelectorAll('.nav-btn');
 
     window.addEventListener('scroll', () => {
-        let current = '';
+        let current = 'hero';
         
         sections.forEach(section => {
             const sectionTop = section.offsetTop;
-            if (window.scrollY >= (sectionTop - 200)) {
+            if (window.scrollY >= (sectionTop - 120)) {
                 current = section.getAttribute('id');
             }
         });
 
-        // If scrolled to the bottom of the page, select the last section
+        // Bottom of page safety check
         if ((window.innerHeight + Math.round(window.scrollY)) >= document.body.offsetHeight - 20) {
-            current = sections[sections.length - 1].getAttribute('id');
+            current = sections[sections.length - 1]?.getAttribute('id') || current;
         }
 
         navItems.forEach(item => {
@@ -49,16 +50,15 @@ document.addEventListener('DOMContentLoaded', () => {
         threshold: 0.15
     };
 
-    const observer = new IntersectionObserver((entries, observer) => {
+    const observer = new IntersectionObserver((entries, obs) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 entry.target.classList.add('visible');
-                observer.unobserve(entry.target);
+                obs.unobserve(entry.target);
             }
         });
     }, observerOptions);
 
-    // Apply fade-in class to elements and observe them
     const animatedElements = document.querySelectorAll('.hero-content, .hero-visual, .feature-text, .feature-visual');
     animatedElements.forEach(el => {
         el.classList.add('fade-in');
@@ -83,7 +83,6 @@ document.addEventListener('DOMContentLoaded', () => {
             currentSlideIndex = index;
         };
 
-        // Initialize height
         setTimeout(() => updateCarousel(0), 100);
         window.addEventListener('resize', () => updateCarousel(currentSlideIndex));
 
@@ -106,14 +105,14 @@ document.addEventListener('DOMContentLoaded', () => {
             updateCarousel(index);
         });
 
-        // Auto-play
+        // Auto-play interval
         let autoPlayInterval = setInterval(() => {
             let nextIndex = currentSlideIndex + 1;
             if (nextIndex >= slides.length) nextIndex = 0;
             updateCarousel(nextIndex);
         }, 5000);
 
-        // Pause auto-play on hover
+        // Pause on hover
         const carouselContainer = document.querySelector('.carousel-container');
         carouselContainer?.addEventListener('mouseenter', () => clearInterval(autoPlayInterval));
         carouselContainer?.addEventListener('mouseleave', () => {
@@ -125,7 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Lightbox Logic
+    // Lightbox Logic & Drag-to-Pan
     const lightbox = document.getElementById('lightbox');
     const lightboxImg = lightbox?.querySelector('img');
     const lightboxClose = document.getElementById('lightboxClose');
@@ -133,12 +132,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (lightbox && lightboxImg) {
         clickableImages.forEach(wrapper => {
-            wrapper.addEventListener('click', (e) => {
+            wrapper.addEventListener('click', () => {
                 const img = wrapper.tagName === 'IMG' ? wrapper : wrapper.querySelector('img');
                 if (img) {
                     lightboxImg.src = img.src;
                     lightbox.classList.add('active');
-                    document.body.style.overflow = 'hidden'; // Prevent scrolling
+                    document.documentElement.classList.add('modal-open');
+                    document.body.classList.add('modal-open');
+                    document.documentElement.style.overflow = 'hidden';
+                    document.body.style.overflow = 'hidden';
                 }
             });
         });
@@ -149,13 +151,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const closeLightbox = () => {
             lightbox.classList.remove('active');
             lightboxImg.classList.remove('zoomed');
-            lightboxCenterer.classList.remove('zoomed');
+            lightboxCenterer?.classList.remove('zoomed');
+            document.documentElement.classList.remove('modal-open');
+            document.body.classList.remove('modal-open');
+            document.documentElement.style.overflow = '';
             document.body.style.overflow = '';
         };
 
         lightboxClose?.addEventListener('click', (e) => {
             e.stopPropagation();
             closeLightbox();
+        });
+
+        lightbox.addEventListener('click', (e) => {
+            if (e.target === lightbox || e.target === lightboxScroll || e.target === lightboxCenterer) {
+                closeLightbox();
+            }
         });
 
         let isDragging = false;
@@ -202,17 +213,82 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (lightboxImg.classList.contains('zoomed')) {
                 lightboxImg.classList.remove('zoomed');
-                lightboxCenterer.classList.remove('zoomed');
+                lightboxCenterer?.classList.remove('zoomed');
             } else {
+                // Calculate relative click position on unzoomed image
+                const rect = lightboxImg.getBoundingClientRect();
+                const clickRatioX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
+                const clickRatioY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+
                 lightboxImg.classList.add('zoomed');
-                lightboxCenterer.classList.add('zoomed');
+                lightboxCenterer?.classList.add('zoomed');
+
                 setTimeout(() => {
-                    lightboxScroll.scrollLeft = (lightboxScroll.scrollWidth - lightboxScroll.clientWidth) / 2;
-                    lightboxScroll.scrollTop = (lightboxScroll.scrollHeight - lightboxScroll.clientHeight) / 2;
+                    const targetScrollLeft = (clickRatioX * lightboxScroll.scrollWidth) - (lightboxScroll.clientWidth / 2);
+                    const targetScrollTop = (clickRatioY * lightboxScroll.scrollHeight) - (lightboxScroll.clientHeight / 2);
+                    lightboxScroll.scrollLeft = Math.max(0, targetScrollLeft);
+                    lightboxScroll.scrollTop = Math.max(0, targetScrollTop);
                 }, 10);
             }
         });
     }
+
+    // Smooth Accordion Animation for Attributions
+    const accordions = document.querySelectorAll('.attribution-accordion');
+    accordions.forEach(accordion => {
+        const summary = accordion.querySelector('.attribution-section-title');
+        if (!summary) return;
+
+        let isAnimating = false;
+
+        summary.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (isAnimating) return;
+            isAnimating = true;
+
+            if (accordion.open) {
+                const startHeight = accordion.offsetHeight;
+                const endHeight = summary.offsetHeight;
+
+                accordion.style.height = `${startHeight}px`;
+                accordion.style.overflow = 'hidden';
+                accordion.classList.add('is-collapsing');
+
+                requestAnimationFrame(() => {
+                    accordion.style.transition = 'height 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
+                    accordion.style.height = `${endHeight}px`;
+                });
+
+                setTimeout(() => {
+                    accordion.open = false;
+                    accordion.style.height = '';
+                    accordion.style.overflow = '';
+                    accordion.style.transition = '';
+                    accordion.classList.remove('is-collapsing');
+                    isAnimating = false;
+                }, 350);
+            } else {
+                accordion.open = true;
+                const endHeight = accordion.offsetHeight;
+                const startHeight = summary.offsetHeight;
+
+                accordion.style.height = `${startHeight}px`;
+                accordion.style.overflow = 'hidden';
+
+                requestAnimationFrame(() => {
+                    accordion.style.transition = 'height 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
+                    accordion.style.height = `${endHeight}px`;
+                });
+
+                setTimeout(() => {
+                    accordion.style.height = '';
+                    accordion.style.overflow = '';
+                    accordion.style.transition = '';
+                    isAnimating = false;
+                }, 350);
+            }
+        });
+    });
 
     // License Modal Logic
     const licenseBtns = document.querySelectorAll('.license-btn');
@@ -223,7 +299,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (licenseBtns.length > 0 && licenseModal) {
         licenseBtns.forEach(btn => {
-            btn.addEventListener('click', async (e) => {
+            btn.addEventListener('click', async () => {
                 const licenseFile = btn.getAttribute('data-license');
                 const card = btn.closest('.attribution-card');
                 const projectName = card ? card.querySelector('.attribution-title').textContent : 'Track-N-Race';
@@ -231,7 +307,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 licenseModalTitle.textContent = `${projectName} License`;
                 licenseTextContent.textContent = 'Loading...';
                 licenseModal.classList.add('active');
-                document.body.style.overflow = 'hidden'; // Prevent scrolling
+                document.documentElement.classList.add('modal-open');
+                document.body.classList.add('modal-open');
+                document.documentElement.style.overflow = 'hidden';
+                document.body.style.overflow = 'hidden';
 
                 try {
                     const response = await fetch(`assets/licenses/${licenseFile}`);
@@ -247,6 +326,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const closeModal = () => {
             licenseModal.classList.remove('active');
+            document.documentElement.classList.remove('modal-open');
+            document.body.classList.remove('modal-open');
+            document.documentElement.style.overflow = '';
             document.body.style.overflow = '';
         };
 
@@ -271,14 +353,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const cachedVersion = getCookie('tnr_latest_version');
 
+        const btnSpan = downloadBtn.querySelector('span');
+
+        const updateBtnText = (version) => {
+            if (btnSpan) {
+                btnSpan.textContent = `Download ${version}`;
+            } else {
+                downloadBtn.textContent = `Download ${version}`;
+            }
+        };
+
         if (cachedVersion) {
-            downloadBtn.textContent = `Download ${cachedVersion}`;
+            updateBtnText(cachedVersion);
         } else {
             fetch('https://api.github.com/repos/NoGoat/Track-N-Race/releases/latest')
                 .then(response => response.json())
                 .then(data => {
                     if (data && data.tag_name) {
-                        downloadBtn.textContent = `Download ${data.tag_name}`;
+                        updateBtnText(data.tag_name);
                         document.cookie = `tnr_latest_version=${data.tag_name}; max-age=3600; path=/; SameSite=Lax`;
                     }
                 })
