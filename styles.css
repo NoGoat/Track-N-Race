@@ -628,15 +628,8 @@ body.modal-open {
     border: 1px solid var(--border);
     border-radius: 14px;
     overflow: hidden;
-    transition: all 0.3s ease;
     display: flex;
     flex-direction: column;
-}
-
-.feature-card:hover {
-    background: var(--bg-card-hover);
-    border-color: var(--border-hover);
-    box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.5);
 }
 
 .card-img-wrapper {
@@ -718,10 +711,6 @@ body.modal-open {
 
 .attribution-section-title::-webkit-details-marker {
     display: none;
-}
-
-.attribution-section-title:hover {
-    background: rgba(255, 255, 255, 0.04);
 }
 
 .accordion-icon {
@@ -1030,6 +1019,7 @@ body.modal-open {
 
 /* Responsive Media Queries */
 @media (max-width: 1200px) {
+
     .section,
     .nav-container,
     .footer-container {
@@ -1063,6 +1053,7 @@ body.modal-open {
 }
 
 @media (max-width: 768px) {
+
     .section,
     .nav-container,
     .footer-container {
