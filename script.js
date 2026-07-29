@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // License Modal Logic
-    const licenseBtns = document.querySelectorAll('.license-btn');
+    const licenseBtns = document.querySelectorAll('[data-license]');
     const licenseModal = document.getElementById('licenseModal');
     const closeLicenseModal = document.getElementById('closeLicenseModal');
     const licenseTextContent = document.getElementById('licenseTextContent');

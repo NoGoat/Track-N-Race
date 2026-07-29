@@ -15,6 +15,9 @@
     --accent-green: #10b981;
     --accent-green-glow: rgba(16, 185, 129, 0.25);
     --accent-red: #ef4444;
+    --accent-red-glow: rgba(239, 68, 68, 0.25);
+    --accent-yellow: #eab308;
+    --accent-yellow-glow: rgba(234, 179, 8, 0.25);
 
     /* Text Colors */
     --text-primary: #f8fafc;
@@ -207,6 +210,10 @@ body.modal-open {
 
 .section-header.center {
     text-align: center;
+}
+
+.section-header .section-main-title-yellow {
+    color: var(--accent-yellow);
 }
 
 .section-tag {
@@ -601,7 +608,6 @@ body.modal-open {
     background: var(--accent-blue);
     width: 24px;
     border-radius: 99px;
-    box-shadow: 0 0 10px var(--accent-blue-glow);
 }
 
 /* Features Grid */
@@ -841,23 +847,8 @@ body.modal-open {
 }
 
 .footer-license {
-    background: rgba(59, 130, 246, 0.08);
-    color: #60a5fa;
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    padding: 0.5rem 1.1rem;
-    border-radius: 6px;
-    font-family: var(--font-sans);
     font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    backdrop-filter: blur(10px);
-}
-
-.footer-license:hover {
-    background: rgba(59, 130, 246, 0.16);
-    border-color: rgba(59, 130, 246, 0.6);
-    color: #ffffff;
+    font-weight: unset;
 }
 
 /* Lightbox Styles */

@@ -42,13 +42,22 @@
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-    <noscript><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet"></noscript>
+    <link rel="preload" as="style"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap">
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap"
+        rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript>
+        <link
+            href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap"
+            rel="stylesheet">
+    </noscript>
 
     <!-- Styles -->
     <link rel="stylesheet" href="styles.css" media="print" onload="this.media='all'">
-    <noscript><link rel="stylesheet" href="styles.css"></noscript>
+    <noscript>
+        <link rel="stylesheet" href="styles.css">
+    </noscript>
 </head>
 
 <body>
@@ -140,7 +149,6 @@
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <span class="slide-badge soft-green">Session</span>
                                         <h3 class="feature-title">Track almost <span
                                                 class="highlight-green">Everything</span></h3>
                                         <p class="section-desc">
@@ -180,7 +188,6 @@
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <span class="slide-badge soft-purple">Analyze</span>
                                         <h3 class="feature-title">Deep <span class="highlight-purple">Analysis</span>
                                         </h3>
                                         <p class="section-desc">
@@ -218,7 +225,6 @@
                             <div class="carousel-slide">
                                 <div class="feature-container">
                                     <div class="feature-text">
-                                        <span class="slide-badge soft-blue">Minimal</span>
                                         <h3 class="feature-title">Minimal <span class="highlight-blue">Recorder</span>
                                         </h3>
                                         <p class="section-desc">
@@ -501,8 +507,7 @@
         <section id="attributions" class="section attributions-section">
             <div class="attributions-container">
                 <div class="section-header">
-                    <span class="section-tag">Open Source</span>
-                    <h2 class="section-main-title">Attributions</h2>
+                    <h2 class="section-main-title section-main-title-yellow">Attributions</h2>
                     <p class="section-desc attributions-desc">
                         The following projects made Track-N-Race possible. Note that this is in no way trying to
                         affiliate Track-N-Race with these projects. I just felt that it was appropriate to shout out
@@ -701,16 +706,14 @@
             <div class="footer-left">
                 <span class="footer-brand"><span class="brand-accent">Track</span>-N-Race</span>
                 <p class="footer-desc">
-                    Copyright &copy; 2026 NoGoat. Track-N-Race is distributed under the GNU General Public License v3.0.
+                    Copyright &copy; 2026 NoGoat. Track-N-Race is distributed under the <span
+                        class="attribution-title footer-license" data-license="GPL-3.0.txt" style="cursor: pointer;">GNU
+                        General Public License v3.0</span>
                 </p>
                 <p class="footer-disclaimer">
                     Track-N-Race is not affiliated with, endorsed by, or associated with EA, Codemasters, F1, or the
                     FIA.
                 </p>
-            </div>
-            <div class="footer-right">
-                <button class="card-btn primary license-btn footer-license" data-license="GPL-3.0.txt">View
-                    License</button>
             </div>
         </div>
     </footer>
