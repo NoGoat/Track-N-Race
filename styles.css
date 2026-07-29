@@ -831,6 +831,13 @@ body.modal-open {
     margin-top: 0.3rem;
 }
 
+.footer-disclaimer {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.4rem;
+    max-width: 600px;
+}
+
 .footer-license {
     background: rgba(59, 130, 246, 0.08);
     color: #60a5fa;
