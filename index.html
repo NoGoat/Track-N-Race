@@ -47,7 +47,8 @@
     <noscript><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet"></noscript>
 
     <!-- Styles -->
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="styles.css"></noscript>
 </head>
 
 <body>
@@ -58,7 +59,7 @@
         <div class="nav-container">
             <div class="brand">
                 <img src="assets/icons/icon_transparent.webp" alt="Track-N-Race Logo" class="brand-logo-img" width="512"
-                    height="512">
+                    height="512" loading="lazy">
                 <span class="brand-text"><span class="brand-accent">Track</span>-N-Race</span>
             </div>
             <nav class="nav-menu">
@@ -111,7 +112,7 @@
                     <div class="app-window">
                         <div class="img-zoom-wrapper">
                             <img src="assets/screenshots/overview.webp" alt="Overview Interface" class="mockup-img"
-                                width="1920" height="1080" fetchpriority="high">
+                                width="1920" height="1080" loading="lazy">
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -719,7 +720,7 @@
         <button class="lightbox-close" id="lightboxClose" aria-label="Close lightbox">&times;</button>
         <div class="lightbox-scroll" id="lightboxScroll">
             <div class="lightbox-centerer" id="lightboxCenterer">
-                <img src="" alt="Enlarged view">
+                <img src="" alt="Enlarged view" loading="lazy">
             </div>
         </div>
     </div>
@@ -737,7 +738,7 @@
         </div>
     </div>
 
-    <script src="script.js"></script>
+    <script src="script.js" defer></script>
 </body>
 
 </html>
