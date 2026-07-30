@@ -42,22 +42,10 @@
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="style"
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap">
-    <link
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap"
-        rel="stylesheet" media="print" onload="this.media='all'">
-    <noscript>
-        <link
-            href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap"
-            rel="stylesheet">
-    </noscript>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="styles.css" media="print" onload="this.media='all'">
-    <noscript>
-        <link rel="stylesheet" href="styles.css">
-    </noscript>
+    <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
@@ -66,15 +54,18 @@
 
     <header class="navbar">
         <div class="nav-container">
-            <div class="brand">
-                <img src="assets/icons/icon_transparent.webp" alt="Track-N-Race Logo" class="brand-logo-img" width="512"
-                    height="512" loading="lazy">
-                <span class="brand-text"><span class="brand-accent">Track</span>-N-Race</span>
-            </div>
+            <a href="index.html" class="brand-link" aria-label="Track-N-Race Home">
+                <div class="brand">
+                    <img src="assets/icons/icon_transparent.webp" alt="Track-N-Race Logo" class="brand-logo-img" width="512"
+                        height="512" loading="lazy">
+                    <span class="brand-text"><span class="brand-accent">Track</span>-N-Race</span>
+                </div>
+            </a>
             <nav class="nav-menu">
-                <button class="nav-btn active" data-target="hero">Home</button>
-                <button class="nav-btn" data-target="features">Features</button>
-                <button class="nav-btn" data-target="attributions">Attributions</button>
+                <a href="index.html" class="nav-btn active">Home</a>
+                <a href="features.html" class="nav-btn">Features</a>
+                <a href="setup.html" class="nav-btn">Setup</a>
+                <a href="credits.html" class="nav-btn">Credits</a>
             </nav>
             <div class="nav-actions">
                 <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" class="github-link-btn"
@@ -85,6 +76,13 @@
                     </svg>
                     <span>GitHub</span>
                 </a>
+                <button class="mobile-toggle-btn" id="mobileToggleBtn" aria-label="Toggle Navigation Menu" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="6" x2="20" y2="6"></line>
+                        <line x1="4" y1="12" x2="20" y2="12"></line>
+                        <line x1="4" y1="18" x2="20" y2="18"></line>
+                    </svg>
+                </button>
             </div>
         </div>
     </header>
@@ -503,198 +501,34 @@
             </div>
         </section>
 
-        <!-- Attributions & Open Source Section -->
-        <section id="attributions" class="section attributions-section">
-            <div class="attributions-container">
-                <div class="section-header">
-                    <h2 class="section-main-title section-main-title-yellow">Attributions</h2>
-                    <p class="section-desc attributions-desc">
-                        The following projects made Track-N-Race possible. Note that this is in no way trying to
-                        affiliate Track-N-Race with these projects. I just felt that it was appropriate to shout out
-                        these projects since these helped me in creation of Track-N-Race.
-                    </p>
-                </div>
-
-                <div class="attributions-sections">
-                    <details class="attribution-accordion">
-                        <summary class="attribution-section-title">
-                            <span>Core Parser / Shared Addons</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://zlib.net" target="_blank" class="attribution-title">zlib</a>
-                                <button class="card-btn primary license-btn" data-license="Zlib.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://facebook.github.io/zstd/" target="_blank"
-                                    class="attribution-title">Zstandard</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="zstandard.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/stephenberry/glaze" target="_blank"
-                                    class="attribution-title">glaze</a>
-                                <button class="card-btn primary license-btn" data-license="glaze.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://libxlsxwriter.github.io" target="_blank"
-                                    class="attribution-title">libxlsxwriter</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="libxlsxwriter.txt">License</button>
-                            </div>
+        <!-- Navigation Hub Cards Section -->
+        <section id="navigation-hub" class="section">
+            <div class="features-grid-wrapper">
+                <h2 class="section-main-title" style="text-align: center; margin-bottom: 2rem;">Explore <span class="gradient-text">Track-N-Race</span></h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="card-content" style="padding: 2rem;">
+                            <h4 class="card-title" style="font-size: 1.3rem;">Full Features Showcase</h4>
+                            <p class="card-desc" style="margin-bottom: 1.5rem;">Discover live telemetry analysis, lap overlay comparisons, tire wear charts, and interactive track maps.</p>
+                            <a href="features.html" class="nav-btn active" style="width: fit-content;">View Features &rarr;</a>
                         </div>
-                    </details>
+                    </div>
 
-                    <details class="attribution-accordion">
-                        <summary class="attribution-section-title">
-                            <span>Electron Frontend</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://electronjs.org" target="_blank" class="attribution-title">Electron</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="electron.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://react.dev" target="_blank" class="attribution-title">React</a>
-                                <button class="card-btn primary license-btn" data-license="react.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://react.dev" target="_blank" class="attribution-title">React DOM</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="react-dom.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/sindresorhus/electron-store" target="_blank"
-                                    class="attribution-title">electron-store</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="electron-store.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://lucide.dev" target="_blank" class="attribution-title">lucide-react</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="lucide-react.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://react-select.com" target="_blank"
-                                    class="attribution-title">react-select</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="react-select.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/uiwjs/react-color" target="_blank"
-                                    class="attribution-title">@uiw/react-color</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="uiw-react-color.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://zustand.docs.pmnd.rs/" target="_blank"
-                                    class="attribution-title">zustand</a>
-                                <button class="card-btn primary license-btn" data-license="zustand.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/huww98/TimeChart" target="_blank"
-                                    class="attribution-title">TimeChart</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="timechart.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-axis/" target="_blank"
-                                    class="attribution-title">d3-axis</a>
-                                <button class="card-btn primary license-btn" data-license="d3-axis.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-color/" target="_blank"
-                                    class="attribution-title">d3-color</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-color.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-scale/" target="_blank"
-                                    class="attribution-title">d3-scale</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-scale.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://d3js.org/d3-selection/" target="_blank"
-                                    class="attribution-title">d3-selection</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="d3-selection.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://glmatrix.net/" target="_blank" class="attribution-title">gl-matrix</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="gl-matrix.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/microsoft/tslib" target="_blank"
-                                    class="attribution-title">tslib</a>
-                                <button class="card-btn primary license-btn" data-license="tslib.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/microsoft/cascadia-code" target="_blank"
-                                    class="attribution-title">Cascadia Code</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="cascadia-code.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/nodejs/node-addon-api" target="_blank"
-                                    class="attribution-title">node-addon-api</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="node-addon-api.txt">License</button>
-                            </div>
+                    <div class="feature-card">
+                        <div class="card-content" style="padding: 2rem;">
+                            <h4 class="card-title" style="font-size: 1.3rem;">Setup & Guide</h4>
+                            <p class="card-desc" style="margin-bottom: 1.5rem;">Learn how to easily configure UDP telemetry port, IP address, and broadcast settings in F1 24, F1 25 & 2026 DLC.</p>
+                            <a href="setup.html" class="nav-btn active" style="width: fit-content;">Read Setup Guide &rarr;</a>
                         </div>
-                    </details>
+                    </div>
 
-                    <details class="attribution-accordion">
-                        <summary class="attribution-section-title">
-                            <span>Qt Frontend</span>
-                            <span class="accordion-icon"></span>
-                        </summary>
-                        <div class="attributions-grid">
-                            <div class="attribution-card">
-                                <a href="https://www.qt.io" target="_blank" class="attribution-title">Qt</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://www.qcustomplot.com" target="_blank"
-                                    class="attribution-title">QCustomPlot</a>
-                                <button class="card-btn primary license-btn" data-license="GPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://github.com/niklashenning/qt-toast" target="_blank"
-                                    class="attribution-title">qt-toast (fork)</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="MIT-qt-toast.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://fonts.google.com/noto/specimen/Noto+Sans" target="_blank"
-                                    class="attribution-title">Noto Sans</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="OFL-1.1-Noto.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://invent.kde.org/plasma/breeze" target="_blank"
-                                    class="attribution-title">Breeze style (Plasma)</a>
-                                <button class="card-btn primary license-btn" data-license="GPL-2.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://invent.kde.org/frameworks/breeze-icons" target="_blank"
-                                    class="attribution-title">Breeze Icons</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-3.0.txt">License</button>
-                            </div>
-                            <div class="attribution-card">
-                                <a href="https://develop.kde.org/products/frameworks/" target="_blank"
-                                    class="attribution-title">KDE Frameworks</a>
-                                <button class="card-btn primary license-btn"
-                                    data-license="LGPL-2.1.txt">License</button>
-                            </div>
+                    <div class="feature-card">
+                        <div class="card-content" style="padding: 2rem;">
+                            <h4 class="card-title" style="font-size: 1.3rem;">Credits & Licenses</h4>
+                            <p class="card-desc" style="margin-bottom: 1.5rem;">View open source project acknowledgments, core libraries, Qt/Electron frameworks, and license details.</p>
+                            <a href="credits.html" class="nav-btn active" style="width: fit-content;">View Credits &rarr;</a>
                         </div>
-                    </details>
+                    </div>
                 </div>
             </div>
         </section>

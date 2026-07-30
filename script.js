@@ -1,46 +1,50 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Navigation Smooth Scroll
+    // Mobile Navigation Toggle
+    const mobileToggleBtn = document.getElementById('mobileToggleBtn');
+    const navMenu = document.querySelector('.nav-menu');
+
+    if (mobileToggleBtn && navMenu) {
+        mobileToggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = navMenu.classList.toggle('mobile-active');
+            mobileToggleBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        });
+
+        // Close menu on outside click
+        document.addEventListener('click', (e) => {
+            if (navMenu.classList.contains('mobile-active') && !navMenu.contains(e.target) && !mobileToggleBtn.contains(e.target)) {
+                navMenu.classList.remove('mobile-active');
+                mobileToggleBtn.setAttribute('aria-expanded', 'false');
+            }
+        });
+
+        // Close menu on link click
+        navMenu.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                navMenu.classList.remove('mobile-active');
+                mobileToggleBtn.setAttribute('aria-expanded', 'false');
+            });
+        });
+    }
+
+    // Set active navigation button based on current URL path
     const navButtons = document.querySelectorAll('.nav-btn');
-    
+    const currentPath = window.location.pathname.toLowerCase();
+    const isHomePage = currentPath.endsWith('/') || currentPath.endsWith('index.html') || currentPath.endsWith('index') || currentPath === '';
+
     navButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const targetId = btn.getAttribute('data-target');
-            if (!targetId) return;
-            const targetSection = document.getElementById(targetId);
-            
-            if (targetSection) {
-                targetSection.scrollIntoView({
-                    behavior: 'smooth'
-                });
-            }
-        });
-    });
+        const href = btn.getAttribute('href');
+        if (!href) return;
 
-    // Update active nav button on scroll
-    const sections = document.querySelectorAll('.section');
-    const navItems = document.querySelectorAll('.nav-btn');
+        btn.classList.remove('active');
+        const pageFileName = href.split('/').pop().toLowerCase();
+        const pageBase = pageFileName.replace(/\.html$/, '');
 
-    window.addEventListener('scroll', () => {
-        let current = 'hero';
-        
-        sections.forEach(section => {
-            const sectionTop = section.offsetTop;
-            if (window.scrollY >= (sectionTop - 120)) {
-                current = section.getAttribute('id');
-            }
-        });
-
-        // Bottom of page safety check
-        if ((window.innerHeight + Math.round(window.scrollY)) >= document.body.offsetHeight - 20) {
-            current = sections[sections.length - 1]?.getAttribute('id') || current;
+        if ((pageBase === 'index' || pageBase === '') && isHomePage) {
+            btn.classList.add('active');
+        } else if (pageBase !== 'index' && pageBase !== '' && !isHomePage && currentPath.includes(pageBase)) {
+            btn.classList.add('active');
         }
-
-        navItems.forEach(item => {
-            item.classList.remove('active');
-            if (item.getAttribute('data-target') === current) {
-                item.classList.add('active');
-            }
-        });
     });
 
     // Fade-in elements on scroll
