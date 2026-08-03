@@ -72,6 +72,14 @@ const fsBridge = {
     ipcRenderer.invoke('dialog:showOpenDialogTNRD'),
 }
 
+const recordingBridge = {
+  onError: (cb: (error: { operation: string; message: string; path: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, error: { operation: string; message: string; path: string }) => cb(error)
+    ipcRenderer.on('recording-error', handler)
+    return () => ipcRenderer.removeListener('recording-error', handler)
+  },
+}
+
 
 const playerBridge = {
   setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
@@ -112,4 +120,5 @@ contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
+contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)

@@ -1,5 +1,6 @@
 #include "TnrdCodec.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdio>
@@ -18,17 +19,53 @@ namespace {
 
 #ifdef _WIN32
 std::wstring utf8ToWide(const std::string& path) {
-    const int len = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    if (len <= 0) return {};
+    if (path.empty()) return {};
+    const int len = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()), nullptr, 0);
+    if (len <= 0) { errno = EINVAL; return {}; }
     std::wstring wide(static_cast<size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), len);
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
+                            static_cast<int>(path.size()), wide.data(), len) != len) {
+        errno = EINVAL;
+        return {};
+    }
     return wide;
 }
 #endif
 
+} // namespace
+
+#ifdef _WIN32
+std::wstring windowsExtendedPath(const std::string& path) {
+    std::wstring wide = utf8ToWide(path);
+    if (wide.empty()) return {};
+    std::replace(wide.begin(), wide.end(), L'/', L'\\');
+
+    // Device/extended paths are already in the namespace expected by Win32.
+    if (wide.rfind(L"\\\\?\\", 0) == 0 || wide.rfind(L"\\\\.\\", 0) == 0)
+        return wide;
+
+    // Extended paths do not resolve relative components. GetFullPathNameW
+    // makes every input absolute and normalizes '.'/'..' before prefixing it.
+    const DWORD needed = GetFullPathNameW(wide.c_str(), 0, nullptr, nullptr);
+    if (needed == 0) { errno = EINVAL; return {}; }
+    std::wstring absolute(static_cast<size_t>(needed), L'\0');
+    const DWORD written = GetFullPathNameW(
+        wide.c_str(), needed, absolute.data(), nullptr);
+    if (written == 0 || written >= needed) { errno = EINVAL; return {}; }
+    absolute.resize(static_cast<size_t>(written));
+
+    if (absolute.rfind(L"\\\\", 0) == 0)
+        return L"\\\\?\\UNC\\" + absolute.substr(2);
+    return L"\\\\?\\" + absolute;
+}
+#endif
+
+namespace {
+
 std::FILE* openFile(const std::string& path, const char* mode) {
 #ifdef _WIN32
-    const std::wstring wide = utf8ToWide(path);
+    const std::wstring wide = windowsExtendedPath(path);
     if (wide.empty()) return nullptr;
     std::wstring wmode;
     while (*mode) wmode.push_back(static_cast<wchar_t>(*mode++));
@@ -40,7 +77,7 @@ std::FILE* openFile(const std::string& path, const char* mode) {
 
 gzFile openGzip(const std::string& path, const char* mode) {
 #ifdef _WIN32
-    const std::wstring wide = utf8ToWide(path);
+    const std::wstring wide = windowsExtendedPath(path);
     return wide.empty() ? nullptr : gzopen_w(wide.c_str(), mode);
 #else
     return gzopen(path.c_str(), mode);
@@ -55,7 +92,11 @@ class GzipOutputStream final : public TnrdOutputStream {
 public:
     GzipOutputStream(const std::string& path, bool append)
         : file_(openGzip(path, append ? "ab" : "wb")) {
-        if (!file_) error_ = "cannot open gzip output";
+        if (!file_) {
+            const int openError = errno;
+            error_ = std::string("cannot open gzip output") +
+                (openError ? std::string(": ") + std::strerror(openError) : std::string{});
+        }
     }
 
     ~GzipOutputStream() override { (void)finish(); }
@@ -113,17 +154,27 @@ private:
 
 class ZstdOutputStream final : public TnrdOutputStream {
 public:
-    ZstdOutputStream(const std::string& path, bool append)
-        : file_(openFile(path, append ? "ab" : "wb")), ctx_(ZSTD_createCCtx()),
-          output_(ZSTD_CStreamOutSize()) {
-        if (!file_) error_ = "cannot open Zstandard output";
-        else if (!ctx_) error_ = "cannot allocate Zstandard compression context";
-        else {
-            if (!check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_compressionLevel, 3),
-                       "cannot set Zstandard compression level")) return;
-            (void)check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_checksumFlag, 1),
-                        "cannot enable Zstandard checksum");
+    ZstdOutputStream(const std::string& path, bool append) {
+        // Capture errno immediately after the open attempt. Allocating the
+        // compression context/output buffer first can overwrite the useful
+        // filesystem error that Electron needs to show the user.
+        file_ = openFile(path, append ? "ab" : "wb");
+        if (!file_) {
+            const int openError = errno;
+            error_ = std::string("cannot open Zstandard output") +
+                (openError ? std::string(": ") + std::strerror(openError) : std::string{});
+            return;
         }
+        ctx_ = ZSTD_createCCtx();
+        if (!ctx_) {
+            error_ = "cannot allocate Zstandard compression context";
+            return;
+        }
+        output_.resize(ZSTD_CStreamOutSize());
+        if (!check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_compressionLevel, 3),
+                   "cannot set Zstandard compression level")) return;
+        (void)check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_checksumFlag, 1),
+                    "cannot enable Zstandard checksum");
     }
 
     ~ZstdOutputStream() override {

@@ -16,6 +16,8 @@ import StatusOverlays from './components/StatusOverlays'
 import LayoutEditor from './components/LayoutEditor'
 import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
+import RecordingErrorDialog from './components/RecordingErrorDialog'
+import type { RecordingErrorMsg } from '../types'
 
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
@@ -34,11 +36,14 @@ export default function AppShell() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL' | 'compare'>('default')
   const [editOpen, setEditOpen] = useState(false)
+  const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
+
+  useEffect(() => window.recordingBridge.onError(setRecordingError), [])
 
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
@@ -238,6 +243,11 @@ export default function AppShell() {
         loadError={playback.loadError}
         setConfirmOpenFilePath={playback.setConfirmOpenFilePath}
         setLoadError={playback.setLoadError}
+      />
+
+      <RecordingErrorDialog
+        error={recordingError}
+        onClose={() => setRecordingError(null)}
       />
 
     </div>

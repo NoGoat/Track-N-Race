@@ -195,6 +195,17 @@ struct ProtocolWarningRow {
     std::optional<int> forced_format;
 };
 
+// Emitted by the asynchronous recording disk thread when a .tnrd stream cannot
+// be opened, written, flushed, finalized, or repaired after a flashback. Hosts
+// must surface this independently of recording intent: logging can remain
+// enabled even though no usable output stream exists.
+struct RecordingErrorRow {
+    std::string type{"recording_error"};
+    std::string operation;
+    std::string message;
+    std::string path;
+};
+
 // ── TNRD file header (writer emits, reader parses) ─────────────────────────
 
 struct HeaderRow {

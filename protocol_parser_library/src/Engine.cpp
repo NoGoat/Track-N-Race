@@ -53,7 +53,16 @@ static void emitLines(Sink* sink, const std::string& batch) {
 }
 
 Engine::Engine(const Config& config, Sink* sink)
-    : config_(config), sink_(sink), parser_(config.protocol) {
+    : config_(config), sink_(sink), parser_(config.protocol),
+      writer_([sink](const std::string& operation, const std::string& message,
+                     const std::string& path) {
+          if (!sink) return;
+          RecordingErrorRow row;
+          row.operation = operation;
+          row.message   = message;
+          row.path      = path;
+          sink->onRow(writeJson(row));
+      }) {
     TRACE("Engine ctor: start");
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
@@ -179,6 +188,11 @@ void Engine::setLoggingGzip(bool enabled, const std::string& outputDir) {
 #endif
 }
 
+void Engine::flushRecording() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    writer_.flushToDisk();
+}
+
 // ── Playback ─────────────────────────────────────────────────────────────────
 
 bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
@@ -192,6 +206,10 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     std::vector<std::pair<uint8_t, std::string>> initPanels;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        // The selected file may be the recording currently being written.
+        // Drain queued rows and make its newest buffered data recoverable before
+        // the reader snapshots/decompresses it.
+        writer_.flushToDisk();
         reader_.setBinaryPlayback(config_.binaryPlayback);
         ok = reader_.load(path, header);
         if (!ok && errorOut) *errorOut = reader_.lastError();
@@ -200,6 +218,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             playing_     = false;
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
+            // Playback suspends live ingest. Finalize the live recording on its
+            // owner thread so it is complete and a later return to live starts
+            // a fresh stream on the next session packet.
             writer_.closeActiveStream();
             lapBlocksMsg = reader_.lapBlocksMessage();
             initState = reader_.stateSnapshot(reader_.startTime());

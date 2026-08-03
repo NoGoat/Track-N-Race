@@ -10,6 +10,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <functional>
+#include <future>
 #include <memory>
 
 #include "tnrp/TnrdFormat.h"
@@ -28,7 +30,11 @@ namespace tnrp {
 // Not thread-safe; the engine serializes all calls.
 class TnrdWriter {
 public:
-    TnrdWriter();
+    using ErrorHandler = std::function<void(const std::string& operation,
+                                            const std::string& message,
+                                            const std::string& path)>;
+
+    explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
 
     // Source-compatible default recording entry point: writes TNRD V2/zstd.
@@ -54,12 +60,16 @@ public:
     // Append one serialised JSON row to the rolling buffer (deduped, flushed lazily).
     void record(const std::string& json, float sessionTime);
 
+    // Synchronous writer-thread barriers. They first drain all events queued by
+    // the UDP thread. flushToDisk keeps the stream open; closeActiveStream also
+    // finalizes it. Both are safe to call from Engine control/shutdown threads.
+    void flushToDisk();
     void closeActiveStream();
 
 private:
     struct BufferEntry { std::string line; float sessionTime; };
 
-    enum class EventType { SetLogging, NotePacket, Record, Close };
+    enum class EventType { SetLogging, NotePacket, Record, Flush, Close };
 
     struct WriterEvent {
         EventType             type;
@@ -71,6 +81,7 @@ private:
         float                 sessionTime;
         std::vector<uint8_t>  packetData;
         std::string           json;   // serialised JSON row
+        std::shared_ptr<std::promise<void>> completion;
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
@@ -100,14 +111,21 @@ private:
 
     std::vector<BufferEntry>                     rollingBuffer_;
     std::unordered_map<std::string, std::string> dedupeCache_;
+    ErrorHandler                                  errorHandler_;
+    std::string                                   lastReportedError_;
 
     static const std::unordered_set<std::string>& dedupeTypes();
 
     void startNewStream(int trackId, int sessionType, int format);
-    void flushBufferToDisk(const std::vector<BufferEntry>& entries);
+    bool flushBufferToDisk(const std::vector<BufferEntry>& entries);
+    void flushToDiskOnWriterThread();
+    void closeActiveStreamOnWriterThread();
     void flushOldBufferEntries();
     void truncateTimeline(float newSessionTime);
     bool isDuplicate(const std::string& type, const std::string& json);
+    void reportError(const std::string& operation, const std::string& message,
+                     const std::string& path);
+    void clearReportedError();
 
     void setLoggingForFormat(bool enabled, const std::string& outputDir, TnrdFormat format);
 };

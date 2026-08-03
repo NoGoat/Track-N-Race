@@ -44,6 +44,10 @@ public:
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
     void setLoggingGzip(bool enabled, const std::string& outputDir);
+    // Blocks until queued recording rows and the rolling buffer have reached a
+    // recoverable codec/stdio flush point. Used before playback and by host
+    // shutdown/crash hooks.
+    void flushRecording();
 
     // ── Playback ─────────────────────────────────────────────────────────
     // Loads a .tnrd, switches the engine into playback mode (UDP ignored),

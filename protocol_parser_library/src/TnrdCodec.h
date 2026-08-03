@@ -8,6 +8,13 @@
 
 namespace tnrp::detail {
 
+#ifdef _WIN32
+// Converts a UTF-8 path to an absolute Windows extended-length path. Keep the
+// original UTF-8 path for UI/error reporting; use this only at filesystem API
+// boundaries so paths beyond MAX_PATH work without changing recorded names.
+std::wstring windowsExtendedPath(const std::string& path);
+#endif
+
 class TnrdOutputStream {
 public:
     virtual ~TnrdOutputStream() = default;

@@ -395,6 +395,12 @@ export interface ProtocolWarningMsg {
   forced_format:   2024 | 2025 | 2026
 }
 
+export interface RecordingErrorMsg {
+  operation: string
+  message: string
+  path: string
+}
+
 declare global {
   const __ENABLE_PERFORMANCE_DIAGNOSTICS__: boolean
 
@@ -428,6 +434,9 @@ declare global {
     fsBridge: {
       selectDirectory: () => Promise<string | null>
       selectTNRDFile: () => Promise<string | null>
+    }
+    recordingBridge: {
+      onError: (cb: (error: RecordingErrorMsg) => void) => () => void
     }
     playerBridge: {
       setPageVisible: (visible: boolean) => void

@@ -115,6 +115,7 @@ public:
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
             InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
+            InstanceMethod("flushRecording", &TNRPAddon::FlushRecording),
             InstanceMethod("playerLoad", &TNRPAddon::PlayerLoad),
             InstanceMethod("playerPlay", &TNRPAddon::PlayerPlay),
             InstanceMethod("playerPause", &TNRPAddon::PlayerPause),
@@ -359,6 +360,11 @@ private:
 
     Napi::Value SetLogging(const Napi::CallbackInfo& info) {
         return SetLoggingZstd(info);
+    }
+
+    Napi::Value FlushRecording(const Napi::CallbackInfo& info) {
+        if (engine) engine->flushRecording();
+        return info.Env().Undefined();
     }
 
     Napi::Value SetLoggingZstd(const Napi::CallbackInfo& info) {

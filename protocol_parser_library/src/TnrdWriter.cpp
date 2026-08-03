@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <utility>
 
 #include "protocols/protocol.h"
 
@@ -50,8 +51,29 @@ const std::unordered_set<std::string>& TnrdWriter::dedupeTypes() {
     return kTypes;
 }
 
-TnrdWriter::TnrdWriter() {
+TnrdWriter::TnrdWriter(ErrorHandler errorHandler)
+    : errorHandler_(std::move(errorHandler)) {
     diskThread_ = std::thread(&TnrdWriter::writerLoop, this);
+}
+
+void TnrdWriter::reportError(const std::string& operation, const std::string& message,
+                             const std::string& path) {
+    const std::string key = operation + '\n' + message + '\n' + path;
+    if (key == lastReportedError_) return;
+    lastReportedError_ = key;
+    std::fprintf(stderr, "[tnrd] writer %s failed for '%s': %s\n",
+                 operation.c_str(), path.c_str(), message.c_str());
+    if (errorHandler_) {
+        try {
+            errorHandler_(operation, message, path);
+        } catch (...) {
+            // Error reporting must never terminate the recording disk thread.
+        }
+    }
+}
+
+void TnrdWriter::clearReportedError() {
+    lastReportedError_.clear();
 }
 
 TnrdWriter::~TnrdWriter() {
@@ -64,6 +86,34 @@ TnrdWriter::~TnrdWriter() {
     }
     cv_.notify_all();
     if (diskThread_.joinable()) diskThread_.join();
+}
+
+void TnrdWriter::flushToDisk() {
+    auto completion = std::make_shared<std::promise<void>>();
+    auto done = completion->get_future();
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::Flush;
+        ev.completion = std::move(completion);
+        queue_.push(std::move(ev));
+    }
+    cv_.notify_one();
+    done.wait();
+}
+
+void TnrdWriter::closeActiveStream() {
+    auto completion = std::make_shared<std::promise<void>>();
+    auto done = completion->get_future();
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        WriterEvent ev;
+        ev.type = EventType::Close;
+        ev.completion = std::move(completion);
+        queue_.push(std::move(ev));
+    }
+    cv_.notify_one();
+    done.wait();
 }
 
 void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
@@ -130,10 +180,16 @@ void TnrdWriter::writerLoop() {
 
         if (ev.type == EventType::SetLogging) {
             const bool formatChanged = wantRecord_ && writeFormat_ != ev.tnrdFormat;
+            const bool directoryChanged = wantRecord_ && outputDirectory_ != ev.outputDir;
             wantRecord_ = ev.enabled;
             outputDirectory_ = ev.outputDir;
             writeFormat_ = ev.tnrdFormat;
-            if (!ev.enabled || formatChanged) closeActiveStream();
+            clearReportedError();
+            // A live directory change must rotate away from the already-open
+            // file. The next session packet starts a new recording in the new
+            // directory, instead of requiring an application restart.
+            if (!ev.enabled || formatChanged || directoryChanged)
+                closeActiveStreamOnWriterThread();
         } else if (ev.type == EventType::NotePacket) {
             if (activeStream_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime);
@@ -155,22 +211,33 @@ void TnrdWriter::writerLoop() {
             float entryTime  = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
             rollingBuffer_.push_back({line, entryTime});
             if (type == "race_event" && ev.json.find("\"code\":\"SEND\"") != std::string::npos) {
-                closeActiveStream(); continue;
+                closeActiveStreamOnWriterThread(); continue;
             }
             flushOldBufferEntries();
+        } else if (ev.type == EventType::Flush) {
+            flushToDiskOnWriterThread();
+            if (ev.completion) ev.completion->set_value();
         } else if (ev.type == EventType::Close) {
-            closeActiveStream();
+            closeActiveStreamOnWriterThread();
+            if (ev.completion) ev.completion->set_value();
             if (stop_.load() && queue_.empty()) break;
         }
     }
 }
 
-void TnrdWriter::closeActiveStream() {
+void TnrdWriter::flushToDiskOnWriterThread() {
+    if (!activeStream_) return;
+    if (flushBufferToDisk(rollingBuffer_)) rollingBuffer_.clear();
+    if (!activeStream_->flushRecoverable())
+        reportError("flush", activeStream_->error(), activePath_);
+    rowsSinceFlush_ = 0;
+}
+
+void TnrdWriter::closeActiveStreamOnWriterThread() {
     if (activeStream_) {
-        flushBufferToDisk(rollingBuffer_);
+        (void)flushBufferToDisk(rollingBuffer_);
         if (!activeStream_->finish())
-            std::fprintf(stderr, "[tnrd] writer close failed for '%s': %s\n",
-                         activePath_.c_str(), activeStream_->error().c_str());
+            reportError("close", activeStream_->error(), activePath_);
         activeStream_.reset();
     }
     rollingBuffer_.clear();
@@ -183,7 +250,7 @@ void TnrdWriter::closeActiveStream() {
 }
 
 void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
-    closeActiveStream();
+    closeActiveStreamOnWriterThread();
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
     const std::string proto = RecordingFilenamePrefix(format);
@@ -209,6 +276,7 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, false, &openError);
 
     if (activeStream_) {
+        clearReportedError();
         HeaderRow hdr;
         hdr.magic        = writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2" : "TNRD_V1";
         if (writeFormat_ == TnrdFormat::ZstdV2) hdr.compression = "zstd";
@@ -221,8 +289,7 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
             std::chrono::system_clock::now().time_since_epoch()).count();
         std::string hl = writeJson(hdr) + "\n";
         if (!activeStream_->write(hl)) {
-            std::fprintf(stderr, "[tnrd] writer header failed for '%s': %s\n",
-                         activePath_.c_str(), activeStream_->error().c_str());
+            reportError("header write", activeStream_->error(), activePath_);
             activeStream_.reset();
             activePath_.clear();
             return;
@@ -233,19 +300,17 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
         lastSessionTime_    = -1.0f;
         rowsSinceFlush_     = 0;
     } else {
-        std::fprintf(stderr, "[tnrd] writer open failed for '%s': %s\n",
-                     activePath_.c_str(), openError.c_str());
+        reportError("open", openError, activePath_);
         activePath_.clear();
     }
 }
 
-void TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
-    if (!activeStream_ || entries.empty()) return;
+bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
+    if (!activeStream_ || entries.empty()) return true;
     for (const auto& e : entries) {
         if (!activeStream_->write(e.line)) {
-            std::fprintf(stderr, "[tnrd] writer data failed for '%s': %s\n",
-                         activePath_.c_str(), activeStream_->error().c_str());
-            return;
+            reportError("data write", activeStream_->error(), activePath_);
+            return false;
         }
     }
 
@@ -255,10 +320,10 @@ void TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
     rowsSinceFlush_ += (int)entries.size();
     if (rowsSinceFlush_ >= FLUSH_EVERY_ROWS) {
         if (!activeStream_->flushRecoverable())
-            std::fprintf(stderr, "[tnrd] writer flush failed for '%s': %s\n",
-                         activePath_.c_str(), activeStream_->error().c_str());
+            reportError("flush", activeStream_->error(), activePath_);
         rowsSinceFlush_ = 0;
     }
+    return true;
 }
 
 void TnrdWriter::flushOldBufferEntries() {
@@ -268,8 +333,11 @@ void TnrdWriter::flushOldBufferEntries() {
     while (flush < rollingBuffer_.size() && rollingBuffer_[flush].sessionTime < cutoff)
         flush++;
     if (flush > 0) {
-        flushBufferToDisk({rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush});
-        rollingBuffer_.erase(rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush);
+        if (flushBufferToDisk(
+                {rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush})) {
+            rollingBuffer_.erase(
+                rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush);
+        }
     }
 }
 
@@ -305,8 +373,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
         rollingBuffer_.clear();
         if (!activePath_.empty() && activeStream_) {
             if (!activeStream_->finish())
-                std::fprintf(stderr, "[tnrd] writer close before flashback failed: %s\n",
-                             activeStream_->error().c_str());
+                reportError("close before flashback", activeStream_->error(), activePath_);
             activeStream_.reset();
 
             std::vector<std::string> kept;
@@ -317,7 +384,12 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
             const bool decompressed = detail::decompressTnrd(
                 activePath_, plainPath, writeFormat_, &partial, &codecError);
             if (decompressed) {
+#ifdef _WIN32
+                std::ifstream in(std::filesystem::path(detail::windowsExtendedPath(plainPath)),
+                                 std::ios::binary);
+#else
                 std::ifstream in(std::filesystem::u8path(plainPath), std::ios::binary);
+#endif
                 std::string line;
                 while (std::getline(in, line)) {
                     line.push_back('\n');
@@ -327,8 +399,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
                         kept.push_back(line);
                 }
             } else {
-                std::fprintf(stderr, "[tnrd] flashback decompress failed for '%s': %s\n",
-                             activePath_.c_str(), codecError.c_str());
+                reportError("flashback decompress", codecError, activePath_);
             }
 
             bool replaced = false;
@@ -346,8 +417,8 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
                 if (writeOk) {
                     std::error_code ec;
 #ifdef _WIN32
-                    const auto src = std::filesystem::u8path(compressedPath).wstring();
-                    const auto dst = std::filesystem::u8path(activePath_).wstring();
+                    const auto src = detail::windowsExtendedPath(compressedPath);
+                    const auto dst = detail::windowsExtendedPath(activePath_);
                     replaced = MoveFileExW(src.c_str(), dst.c_str(),
                                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
@@ -357,18 +428,25 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
                 }
             }
             if (!replaced)
-                std::fprintf(stderr, "[tnrd] flashback rewrite failed for '%s': %s\n",
-                             activePath_.c_str(), codecError.c_str());
+                reportError("flashback rewrite",
+                            codecError.empty() ? "could not replace the original recording" : codecError,
+                            activePath_);
 
             std::error_code cleanupError;
+#ifdef _WIN32
+            std::filesystem::remove(
+                std::filesystem::path(detail::windowsExtendedPath(plainPath)), cleanupError);
+            std::filesystem::remove(
+                std::filesystem::path(detail::windowsExtendedPath(compressedPath)), cleanupError);
+#else
             std::filesystem::remove(std::filesystem::u8path(plainPath), cleanupError);
             std::filesystem::remove(std::filesystem::u8path(compressedPath), cleanupError);
+#endif
 
             codecError.clear();
             activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, true, &codecError);
             if (!activeStream_)
-                std::fprintf(stderr, "[tnrd] flashback append reopen failed for '%s': %s\n",
-                             activePath_.c_str(), codecError.c_str());
+                reportError("flashback append reopen", codecError, activePath_);
         }
     }
     dedupeCache_.clear();

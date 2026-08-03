@@ -1,10 +1,8 @@
 import { app, BrowserWindow } from 'electron'
-import Store from 'electron-store'
 import * as path from 'path'
 import { HotRowSmoother } from './binaryForwardFill'
 import { chartHistoryRecords } from './binaryRows'
-
-const store = new Store()
+import { configStore as store } from './configStore'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 
@@ -214,6 +212,26 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
   }
 }
 
+interface RecordingError {
+  operation: string
+  message: string
+  path: string
+}
+
+function handleRecordingError(row: Record<string, unknown>): void {
+  const error: RecordingError = {
+    operation: typeof row.operation === 'string' ? row.operation : 'unknown operation',
+    message: typeof row.message === 'string' ? row.message : 'Unknown recording error',
+    path: typeof row.path === 'string' ? row.path : '',
+  }
+  // initializeDiagnostics() captures console.error and writes it to the
+  // per-launch main.log before forwarding it to the original console.
+  console.error('[recording] Native writer error:', error)
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('recording-error', error)
+  }
+}
+
 let addonModule: any = null
 function loadAddon(): any {
   // Try to load the N-API module
@@ -272,7 +290,8 @@ export function startBridge(): string | null {
       // playback-state channel and the local playback bookkeeping.
       if (batch.includes('"type":"protocol_status"') ||
           batch.includes('"type":"playback_state"') ||
-          batch.includes('"type":"playback_close"')) {
+          batch.includes('"type":"playback_close"') ||
+          batch.includes('"type":"recording_error"')) {
         let start = 0
         while (start < batch.length) {
           let end = batch.indexOf('\n', start)
@@ -281,6 +300,10 @@ export function startBridge(): string | null {
             const rowStr = batch.slice(start, end)
             if (rowStr.includes('"type":"protocol_status"')) {
               handleRow(JSON.parse(rowStr))
+            } else if (rowStr.includes('"type":"recording_error"')) {
+              try { handleRecordingError(JSON.parse(rowStr)) } catch (e) {
+                console.error('[recording] Failed to parse native writer error:', e, rowStr)
+              }
             } else if (rowStr.includes('"type":"playback_state"') ||
                        rowStr.includes('"type":"playback_close"')) {
               try { handlePlaybackRow(JSON.parse(rowStr)) } catch (e) {}
@@ -331,9 +354,24 @@ export function stopBridge(): void {
   clearResumeCache()
   activeFilePath = null
   if (engine) {
+    // Synchronous native barrier: preserve queued rows and the rolling buffer
+    // before teardown, even though Engine destruction also finalizes the stream.
+    engine.flushRecording()
     engine.playerClose()
     engine.destroy()
     engine = null
+  }
+}
+
+let recordingFlushInProgress = false
+export function flushRecording(): boolean {
+  if (!engine || recordingFlushInProgress) return false
+  recordingFlushInProgress = true
+  try {
+    engine.flushRecording()
+    return true
+  } finally {
+    recordingFlushInProgress = false
   }
 }
 

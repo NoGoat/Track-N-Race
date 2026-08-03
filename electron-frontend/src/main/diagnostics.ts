@@ -20,6 +20,24 @@ const originalConsole: Record<ConsoleMethod, (...args: unknown[]) => void> = {
 }
 
 let logFd: number | null = null
+let fatalFlushHandler: (() => boolean) | null = null
+
+// Registered by application.ts after the native bridge module is available.
+// Kept as a callback so diagnostics can still initialize before bridgeManager
+// and report native-addon startup failures.
+export function setFatalFlushHandler(handler: (() => boolean) | null): void {
+  fatalFlushHandler = handler
+}
+
+function tryFatalFlush(reason: string): void {
+  if (!fatalFlushHandler) return
+  try {
+    if (fatalFlushHandler())
+      write('INFO', [`recording buffer flushed (${reason})`])
+  } catch (error) {
+    write('ERROR', [`recording buffer flush failed (${reason})`, error])
+  }
+}
 let writing = false
 
 function stringify(args: unknown[]): string {
@@ -69,14 +87,17 @@ function installConsoleCapture(): void {
 function installProcessCapture(): void {
   process.on('uncaughtExceptionMonitor', (error, origin) => {
     write('FATAL', ['uncaughtException', { origin }, error])
+    tryFatalFlush('uncaught exception')
   })
   process.on('unhandledRejection', (reason, promise) => {
     write('ERROR', ['unhandledRejection', { reason, promise }])
+    tryFatalFlush('unhandled rejection')
   })
   process.on('warning', (warning) => {
     write('WARN', ['process warning', warning])
   })
   process.on('exit', (code) => {
+    tryFatalFlush(`process exit ${code}`)
     write('INFO', [`process exit, code=${code}`])
     if (logFd !== null) {
       try {

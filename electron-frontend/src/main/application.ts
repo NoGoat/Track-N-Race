@@ -3,12 +3,14 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
 import { execSync, spawn } from 'child_process'
-import Store from 'electron-store'
+import { configStore as store } from './configStore'
+import { setFatalFlushHandler } from './diagnostics'
 import {
   setOverride,
   restartUdp,
   startBridge,
   stopBridge,
+  flushRecording,
   getProtocolConfig,
   requestStatus,
   setRendererVisible,
@@ -36,8 +38,7 @@ import iconTransparentLightPng from '../../build/icon_transparent_light.png?asse
 declare const __APP_VERSION__: string
 
 console.log('[main] application module loading, pid=', process.pid)
-
-const store = new Store()
+setFatalFlushHandler(flushRecording)
 
 // Helper to extract .tnrd or .trnd file paths from command-line arguments
 function getFilePathFromArgs(argv: string[]): string | null {
@@ -484,8 +485,10 @@ app.on('web-contents-created', (_event, contents) => {
 
 app.on('render-process-gone', (_event, _webContents, details) => {
   console.error('[main] app-level render-process-gone:', details)
+  flushRecording()
 })
 
 app.on('child-process-gone', (_event, details) => {
   console.error('[main] child-process-gone:', details)
+  flushRecording()
 })
