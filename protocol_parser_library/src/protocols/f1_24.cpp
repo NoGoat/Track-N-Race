@@ -2,6 +2,7 @@
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
 #include "tnrp/BinaryRows.h"
+#include <algorithm>
 
 using namespace tnrp;
 
@@ -170,7 +171,9 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             uint8_t  s1M = data[o++];
             uint16_t s2H = ReadUInt16(data, o); o += 2;
             uint8_t  s2M = data[o++];
-            o += 3; o += 3; o += 12;
+            o += 3; o += 3;
+            float lapDistance = ReadFloat(data, o); o += 4;
+            o += 8;
             uint8_t position   = data[o++];
             uint8_t lapNum     = data[o++];
             uint8_t pitStatus  = data[o++];
@@ -184,6 +187,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             lr.session_time   = hdr.sessionTime;
             lr.last_lap_ms    = (int)lastLap;
             lr.current_lap_ms = (int)curLap;
+            lr.lap_distance_m = lapDistance;
             lr.s1_ms          = s1M * 60000 + s1H;
             lr.s2_ms          = s2M * 60000 + s2H;
             lr.position       = position;
@@ -456,6 +460,19 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             SessionHistoryFastestRow sh;
             sh.ts = timestamp; sh.car_idx = carIdx;
             sh.best_lap_time_ms = ReadUInt32(data, lapOff);
+            if (carIdx == hdr.playerCarIndex) {
+                int numLaps = std::min<int>(data[HEADER_SIZE + 1], 100);
+                for (int lap = numLaps; lap >= 1; --lap) {
+                    int historyOff = HEADER_SIZE + 7 + (lap - 1) * 14;
+                    if (length < historyOff + 14) continue;
+                    int lapTimeMs = (int)ReadUInt32(data, historyOff);
+                    if (lapTimeMs > 0) {
+                        sh.latest_lap_num = lap;
+                        sh.latest_lap_time_ms = lapTimeMs;
+                        break;
+                    }
+                }
+            }
             buf.clear();
             (void)glz::write_json(sh, buf);
             rows.push_back(std::move(buf));

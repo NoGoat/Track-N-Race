@@ -15,7 +15,11 @@ namespace tnrp {
 // Sparse panel-row type ids re-emitted each binary-playback tick so their
 // panels track the playhead between native ~2 Hz updates. Damage (id 3) is
 // excluded: TnrdReader reconstructs it independently at its specified 10 Hz.
-static constexpr uint8_t kDupTypeIds[] = { 2, 4, 5, 7, 9, 13 };
+// Lap rows (id 4) are measurements, not panel-only state. Re-emitting one with
+// the playhead's session_time while retaining its recorded current_lap_ms and
+// lap_distance_m creates a false timing sample and corrupts distance-based
+// delta calculations. Only original recorded lap rows may advance lap data.
+static constexpr uint8_t kDupTypeIds[] = { 2, 5, 7, 9, 13 };
 static constexpr uint8_t kInitialPanelTypeIds[] = { 2, 3, 4, 5, 7, 9, 13 };
 
 // Rewrites (or inserts, for row types that lack it, e.g. positions/session)
@@ -120,10 +124,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // hot rows as JSON (config_.hotRowsAsJson), in which case we also need them.
     const bool recording   = writer_.isRecording();
     const bool wantHotJson = recording || config_.hotRowsAsJson;
-    // While recording, preserve packets that the parser would normally suppress
-    // from the low-frequency live JSON path. They are marked liveSuppressed so
-    // recording keeps the game's configured cadence without making either UI hot.
-    Parser::Result r = parser_.feed(data, length, ts, wantHotJson, recording);
+    Parser::Result r = parser_.feed(data, length, ts, wantHotJson);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -133,8 +134,6 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         for (const auto& row : r.rows)    writer_.record(row, r.sessionTime);
         for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
     }
-
-    if (r.liveSuppressed) return;
 
     // Cold rows always go to the live JSON channel. Hot rows go either to the
     // live binary channel (default) or, for an in-process JSON-only consumer, to

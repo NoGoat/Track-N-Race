@@ -1,8 +1,6 @@
 #include "tnrp/Parser.h"
 
 #include <array>
-#include <chrono>
-
 #include "tnrp/control_rows.h"
 #include "tnrp/Labels.h"
 #include "tnrp/CardColors.h"
@@ -21,18 +19,12 @@ static constexpr int DEBOUNCE_COUNT = 3;
 
 // Packet IDs
 static constexpr int PID_MOTION       = 0;
-static constexpr int PID_SESSION      = 1;
-static constexpr int PID_LAP_DATA     = 2;
-static constexpr int PID_EVENT        = 3;
-static constexpr int PID_PARTICIPANTS = 4;
 static constexpr int PID_CAR_TEL      = 6;
-static constexpr int PID_CAR_STATUS   = 7;
-static constexpr int PID_CAR_DAMAGE   = 10;
 static constexpr int PID_MOTION_EX    = 13;
 
 // Packet IDs are a tiny dense range (0..13); fixed arrays indexed by id avoid a
-// hash + pointer-chase per datagram. Frame-sampled packets dedupe on frameId;
-// the rest are time-rate-limited (0 == no limit, default 500 ms for unlisted).
+// hash + pointer-chase per datagram. The game controls packet cadence through
+// its UDP send-rate setting. We only discard exact duplicate hot-row frame IDs.
 static constexpr int PID_TABLE_SIZE = 16;
 
 static constexpr std::array<bool, PID_TABLE_SIZE> makeFrameSampled() {
@@ -42,27 +34,7 @@ static constexpr std::array<bool, PID_TABLE_SIZE> makeFrameSampled() {
     a[PID_MOTION_EX] = true;
     return a;
 }
-static constexpr std::array<int, PID_TABLE_SIZE> makeSlowRateMs() {
-    std::array<int, PID_TABLE_SIZE> a{};
-    for (int i = 0; i < PID_TABLE_SIZE; ++i) a[i] = 500;  // default for unlisted
-    a[PID_SESSION]      = 0;
-    a[PID_EVENT]        = 0;
-    a[PID_PARTICIPANTS] = 5000;
-    // Every applicable UDP specification declares Car Damage at a fixed 10 Hz.
-    // Do not wall-clock throttle it here: packet jitter around 100 ms would turn
-    // a nominal 10 Hz stream into 5 Hz. The game supplies the cadence, and the
-    // writer deduplicates unchanged state after every received sample is parsed.
-    a[PID_CAR_DAMAGE]   = 0;
-    // PID_MOTION / PID_CAR_TEL / PID_MOTION_EX are frame-sampled, never read here.
-    return a;
-}
 static constexpr std::array<bool, PID_TABLE_SIZE> kFrameSampled = makeFrameSampled();
-static constexpr std::array<int,  PID_TABLE_SIZE> kSlowRateMs   = makeSlowRateMs();
-
-static uint64_t nowMs() {
-    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-}
 
 Parser::Parser(Override ovr) : override_v_(ovr) {
     if (ovr == Override::F1_26) activeFormat_ = 2026;
@@ -73,7 +45,6 @@ Parser::Parser(Override ovr) : override_v_(ovr) {
 void Parser::reset() {
     lastFrameId_.fill(0);
     haveFrameId_.fill(false);
-    lastSlowMs_.fill(0);
 }
 
 void Parser::setOverride(Override ovr) {
@@ -142,7 +113,7 @@ std::string Parser::statusRowForFormat(uint16_t format) {
 }
 
 Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts,
-                            bool wantHotJson, bool preserveStatusForRecording) {
+                            bool wantHotJson) {
     Result r;
     if (length < HEADER_SIZE) { r.dropped = true; return r; }
 
@@ -190,7 +161,7 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         r.control.push_back(writeJsonNullable(w));
     }
 
-    // ── Rate limiting ────────────────────────────────────────────────────────
+    // ── Exact duplicate-frame rejection ─────────────────────────────────────
     uint8_t  packetId = data[6];
     float    sessionTime = ReadFloat(data, 15);
     uint32_t frameId  = ReadUInt32(data, 23);
@@ -198,32 +169,12 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     r.packetId    = packetId;
     r.sessionTime = sessionTime;
 
-    if (packetId < PID_TABLE_SIZE) {
-        if (kFrameSampled[packetId]) {
-            if (haveFrameId_[packetId] && lastFrameId_[packetId] == frameId) {
-                r.dropped = true; return r;
-            }
-            haveFrameId_[packetId] = true;
-            lastFrameId_[packetId] = frameId;
-        } else {
-            int rateMs = kSlowRateMs[packetId];
-            if (rateMs > 0) {
-                uint64_t now = nowMs();
-                // lastSlowMs_ starts at 0; (now - 0) always exceeds rateMs, so the
-                // first packet of each type is never spuriously dropped.
-                if (lastSlowMs_[packetId] != 0 && (now - lastSlowMs_[packetId]) < (uint64_t)rateMs) {
-                    if (!preserveStatusForRecording || packetId != PID_CAR_STATUS) {
-                        r.dropped = true; return r;
-                    }
-                    // Recording needs the game's full menu-rate stream, but the
-                    // live JSON/UI path deliberately remains capped. Do not move
-                    // the live deadline here: only a live-accepted row advances it.
-                    r.liveSuppressed = true;
-                } else {
-                    lastSlowMs_[packetId] = now;
-                }
-            }
+    if (packetId < PID_TABLE_SIZE && kFrameSampled[packetId]) {
+        if (haveFrameId_[packetId] && lastFrameId_[packetId] == frameId) {
+            r.dropped = true; return r;
         }
+        haveFrameId_[packetId] = true;
+        lastFrameId_[packetId] = frameId;
     }
     // packetId >= PID_TABLE_SIZE: unknown id; ParsePacket has no case and returns {}.
 

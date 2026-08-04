@@ -163,6 +163,7 @@ struct LapRow {
     float       session_time{};
     int         last_lap_ms{};
     int         current_lap_ms{};
+    float       lap_distance_m{};
     int         s1_ms{};
     int         s2_ms{};
     int         position{};
@@ -183,6 +184,7 @@ struct glz::meta<LapRow> {
         "session_time",   &T::session_time,
         "last_lap_ms",    &T::last_lap_ms,
         "current_lap_ms", &T::current_lap_ms,
+        "lap_distance_m", &T::lap_distance_m,
         "s1_ms",          &T::s1_ms,
         "s2_ms",          &T::s2_ms,
         "position",       &T::position,

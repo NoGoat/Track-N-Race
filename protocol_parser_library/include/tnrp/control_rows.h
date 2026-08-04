@@ -136,6 +136,8 @@ struct SessionHistoryFastestRow {
     std::string ts;
     int         car_idx{};
     int64_t     best_lap_time_ms{};
+    std::optional<int> latest_lap_num;
+    std::optional<int> latest_lap_time_ms;
 };
 
 struct FastestLapRow {
@@ -210,10 +212,11 @@ struct RecordingErrorRow {
 
 struct HeaderRow {
     std::string magic;
-    std::optional<std::string> compression;  // V2: "zstd"; omitted by V1
+    std::optional<std::string> compression;  // V2/V3: "zstd"; omitted by V1
     int         protocol{};
     int         track_id{};
     std::string track_name;
+    std::optional<int> track_length_m;         // V3; omitted by V1/V2
     int         session_type{};
     std::string session_name;
     int64_t     start_time{};
@@ -276,6 +279,15 @@ struct LapBlockMeta {
     std::vector<SlimStatusPoint>    statusHistory;
 };
 
+// V3-only player progress samples. current_lap_ms and lap_distance_m originate
+// in the same menu-rate Lap Data packet, so interpolating between these points
+// yields elapsed time at a common physical position around the circuit.
+struct LapProgressPoint {
+    float session_time{};
+    int   current_lap_ms{};
+    float lap_distance_m{};
+};
+
 struct LapMeta {
     int lapNum{};
     int lapTimeMs{};
@@ -288,6 +300,9 @@ struct PlaybackLapBlocksRow {
     double                     initialFuelKg{-1.0};
     std::vector<glz::raw_json> events;
     std::vector<LapMeta>       laps;
+    std::string                tnrdVersion;
+    bool                       deltaAvailable{};
+    int                        trackLengthM{};
 };
 
 struct PlaybackLapDataRow {
@@ -300,6 +315,7 @@ struct PlaybackLapDataRow {
     std::vector<glz::raw_json> motionHistory;
     std::vector<glz::raw_json> motionExHistory;
     std::vector<glz::raw_json> damageHistory;
+    std::vector<LapProgressPoint> lapProgress;
 };
 
 } // namespace tnrp

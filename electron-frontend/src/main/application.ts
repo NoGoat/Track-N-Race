@@ -63,6 +63,18 @@ let macStartupFilePath: string | null = null
 // reach the window outside that function's closure.
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+const LAST_DIALOG_DIRECTORY_KEY = 'dialogs.lastDirectory'
+
+function lastDialogDirectory(): string | undefined {
+  const value = store.get(LAST_DIALOG_DIRECTORY_KEY)
+  return typeof value === 'string' && value.length > 0 && fs.existsSync(value)
+    ? value
+    : undefined
+}
+
+function rememberDialogDirectory(selectedPath: string, selectedDirectory = false): void {
+  store.set(LAST_DIALOG_DIRECTORY_KEY, selectedDirectory ? selectedPath : path.dirname(selectedPath))
+}
 
 function showWindow(): void {
   if (!mainWindow) return
@@ -70,10 +82,19 @@ function showWindow(): void {
   mainWindow.focus()
 }
 
+function expandWindowsShortPath(filePath: string): string {
+  if (process.platform !== 'win32') return filePath
+  try {
+    return fs.realpathSync.native(filePath)
+  } catch {
+    return filePath
+  }
+}
+
 async function openTelemetryFile(filePath: string): Promise<PlayerLoadResult> {
   // The bridge switches to playback mode itself (it ignores live UDP while a clip
   // is loaded), so there's no separate live-suspend step here.
-  const result = await playerLoad(filePath)
+  const result = await playerLoad(expandWindowsShortPath(filePath))
   if (!result.ok) {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
@@ -127,25 +148,38 @@ ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
 
 ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
+  if (key === 'theme' && (process.platform === 'win32' || process.platform === 'linux') &&
+      store.get('nativeTitlebar', false) !== true && mainWindow && !mainWindow.isDestroyed()) {
+    const light = value === 'light'
+    mainWindow.setTitleBarOverlay({
+      color: '#00000000',
+      symbolColor: light ? '#565b70' : '#7c8098',
+      height: 40,
+    })
+  }
 })
 
 ipcMain.handle('dialog:showOpenDialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
+    defaultPath: lastDialogDirectory(),
     properties: ['openDirectory']
   })
   if (canceled) {
     return null
   } else {
+    rememberDialogDirectory(filePaths[0], true)
     return filePaths[0]
   }
 })
 
 ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
+    defaultPath: lastDialogDirectory(),
     filters: [{ name: 'Track N Race Data', extensions: ['tnrd', 'trnd'] }],
     properties: ['openFile']
   })
   if (canceled) return null
+  rememberDialogDirectory(filePaths[0])
   return filePaths[0]
 })
 
@@ -171,12 +205,14 @@ ipcMain.handle('player:export-xlsx', async (event) => {
   if (!srcPath) return { ok: false, error: 'No session loaded' }
 
   const base = path.basename(srcPath).replace(/\.(tnrd|trnd)$/i, '')
+  const exportDirectory = lastDialogDirectory() ?? path.dirname(srcPath)
   const { canceled, filePath } = await dialog.showSaveDialog({
     title: 'Export Session to Excel',
-    defaultPath: path.join(path.dirname(srcPath), `${base}.xlsx`),
+    defaultPath: path.join(exportDirectory, `${base}.xlsx`),
     filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
   })
   if (canceled || !filePath) return { ok: false, error: 'cancelled' }
+  rememberDialogDirectory(filePath)
 
   const sender = event.sender
   return exportSessionXlsx(srcPath, filePath, (pct, stage) => {
@@ -231,6 +267,8 @@ function createWindow(): void {
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
   const isMacOS = process.platform === 'darwin'
+  const useTitleBarOverlay = (process.platform === 'win32' || process.platform === 'linux') && !useNativeTitlebar
+  const lightTheme = store.get('theme', 'dark') === 'light'
 
   // Size the window to 60% of the primary display's work area. workAreaSize is
   // in DIPs, so this already accounts for the display's scale factor.
@@ -244,10 +282,18 @@ function createWindow(): void {
     minWidth: 1200,
     minHeight: 700,
     backgroundColor: '#0f172a',
-    frame: useNativeTitlebar || isMacOS,
+    frame: useNativeTitlebar || isMacOS || useTitleBarOverlay,
     ...(isMacOS && !useNativeTitlebar ? {
       titleBarStyle: 'hidden' as const,
       trafficLightPosition: { x: 14, y: 14 },
+    } : {}),
+    ...(useTitleBarOverlay ? {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: {
+        color: '#00000000',
+        symbolColor: lightTheme ? '#565b70' : '#7c8098',
+        height: 40,
+      },
     } : {}),
     icon: iconPath,
     webPreferences: {
@@ -256,6 +302,15 @@ function createWindow(): void {
     },
   })
   mainWindow = win
+
+  // Electron disables Chromium's visual pinch zoom by default. Enable the
+  // non-layout, trackpad-driven magnification in development for close UI
+  // inspection, while leaving packaged application behavior unchanged.
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    void win.webContents.setVisualZoomLevelLimits(1, 5).catch(error => {
+      console.error('[main] failed to enable development pinch zoom:', error)
+    })
+  }
 
   win.on('ready-to-show', () => win.show())
 

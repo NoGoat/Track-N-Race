@@ -41,8 +41,10 @@ export interface MotionExRow {
 export interface LapRow {
   type: 'lap'
   ts: string
+  session_time: number
   last_lap_ms: number
   current_lap_ms: number
+  lap_distance_m: number
   s1_ms: number
   s2_ms: number
   position: number
@@ -52,6 +54,12 @@ export interface LapRow {
   sector: number       // current sector 0/1/2
   lap_invalid: boolean
   penalties_s: number
+}
+
+export interface LapProgressPoint {
+  session_time: number
+  current_lap_ms: number
+  lap_distance_m: number
 }
 
 export interface StatusRow {
@@ -213,6 +221,8 @@ export interface SessionHistoryFastestMsg {
   ts: string
   car_idx: number
   best_lap_time_ms: number
+  latest_lap_num?: number
+  latest_lap_time_ms?: number
 }
 
 export interface RaceEventMsg {
@@ -292,6 +302,7 @@ export interface AnalyzeLapData {
   motionEx: MotionExRow[]
   statusHistory: StatusRow[]
   damageHistory: DamageRow[]
+  lapProgress: LapProgressPoint[]
 }
 
 export interface PlaybackLapDataMsg {
@@ -304,6 +315,7 @@ export interface PlaybackLapDataMsg {
   motionHistory: MotionRow[]
   motionExHistory: MotionExRow[]
   damageHistory: DamageRow[]
+  lapProgress: LapProgressPoint[]
 }
 
 export interface PlaybackFastestLapMsg {

@@ -11,7 +11,7 @@ option(TNRP_USE_QT "Use QUdpSocket instead of raw sockets for UDP" OFF)
 include(FetchContent)
 
 # All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
-# gzip compatibility; Zstandard is the default TNRD V2 codec.
+# gzip compatibility; Zstandard is the default TNRD V3 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git

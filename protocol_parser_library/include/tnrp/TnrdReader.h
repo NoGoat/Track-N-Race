@@ -14,8 +14,8 @@
 
 namespace tnrp {
 
-// Reads TNRD V1/gzip and TNRD V2/Zstandard files for playback. load() detects
-// the container signature; loadGzip()/loadZstd() are strict explicit paths.
+// Reads TNRD V1/gzip and TNRD V2/V3 Zstandard files for playback. load()
+// detects the codec signature, then the JSON header distinguishes V2 from V3.
 // Decompresses to a temp file, builds a
 // time/type index, and — in the same pass — builds the per-lap Speed/RPM/ERS
 // comparison blocks, the scanned lap list and the event log that the renderer
@@ -127,6 +127,7 @@ private:
         std::vector<TimedRaw> motionHistory;
         std::vector<TimedRaw> motionExHistory;
         std::vector<TimedRaw> damageHistory;
+        std::vector<LapProgressPoint> lapProgress; // populated only for V3
         // Slim chart points for lapBlocksMessage(); only filled when
         // binaryPlayback_ is on (values fall out of the hot-store parse).
         std::vector<SlimTelemetryPoint> slimTelemetry;
@@ -167,6 +168,7 @@ private:
     int                      fastestLapNum_ = 0;
     int                      fastestLapMs_  = 0;
     double                   initialFuelKg_ = -1.0;
+    int                      trackLengthM_ = 0;
 
     size_t upperBoundTime(float t) const;
     size_t lowerBoundTime(float t) const;

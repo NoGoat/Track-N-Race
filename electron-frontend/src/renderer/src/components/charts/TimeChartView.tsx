@@ -296,14 +296,16 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       }
       show(lastHtml, px, contentY + paddingTop, chart.clientWidth, chart.clientHeight)
     }
-    const stopMove = chart.contentBoxDetector.moved.on(onMove)
-    const stopLeave = chart.contentBoxDetector.left.on(hide)
+    const stopTooltipSync = chart.nearestPoint.updated.on(() => {
+      const pointer = chart.nearestPoint.lastPointerPos
+      if (!pointer) { hide(); return }
+      onMove(pointer.x - paddingLeft, pointer.y - paddingTop)
+    })
 
     attach(chart)
 
     return () => {
-      stopMove()
-      stopLeave()
+      stopTooltipSync()
       detach()
       chart.dispose()
       chartRef.current = null

@@ -369,7 +369,7 @@ std::unique_ptr<TnrdOutputStream> openTnrdOutput(
         setError(errorOut, stream->error());
         return nullptr;
     }
-    if (format == TnrdFormat::ZstdV2) {
+    if (isZstd(format)) {
         auto stream = std::make_unique<ZstdOutputStream>(path, append);
         if (stream->valid()) return stream;
         setError(errorOut, stream->error());
@@ -390,7 +390,7 @@ bool decompressTnrd(const std::string& srcPath, const std::string& destPath,
     bool ok = false;
     if (format == TnrdFormat::GzipV1)
         ok = decompressGzip(srcPath, output, partialOut, errorOut);
-    else if (format == TnrdFormat::ZstdV2)
+    else if (isZstd(format))
         ok = decompressZstd(srcPath, output, partialOut, errorOut);
     else
         setError(errorOut, "cannot decompress unknown TNRD format");

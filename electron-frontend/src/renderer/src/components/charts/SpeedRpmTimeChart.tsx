@@ -140,12 +140,14 @@ export default function SpeedRpmTimeChart({ isDark, data, revision, scrolling, w
         : referenceIndex >= 0 ? chartSeries[0].data.xAt(referenceIndex) : x
       show(tooltipRefFn.current(snappedX, referenceValues, currentValues), px, contentY + 4, chart.clientWidth, chart.clientHeight)
     }
-    const stopMove = chart.contentBoxDetector.moved.on(move)
-    const stopLeave = chart.contentBoxDetector.left.on(hide)
+    const stopTooltipSync = chart.nearestPoint.updated.on(() => {
+      const pointer = chart.nearestPoint.lastPointerPos
+      if (!pointer) { hide(); return }
+      move(pointer.x - chart.options.paddingLeft, pointer.y - chart.options.paddingTop)
+    })
     attach(chart)
     return () => {
-      stopMove()
-      stopLeave()
+      stopTooltipSync()
       detach(); chart.dispose(); chartRef.current = null; groupsRef.current = null
     }
     // chart lifetime is stable; live values flow through refs

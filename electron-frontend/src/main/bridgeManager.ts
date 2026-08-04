@@ -107,7 +107,7 @@ let activeFilePath: string | null = null
 let onPlaybackState: ((state: PlaybackState) => void) | null = null
 
 function activeFilename(): string | null {
-  return activeFilePath ? (activeFilePath.split(/[\\/]/).pop() ?? null) : null
+  return activeFilePath ? path.basename(activeFilePath) : null
 }
 
 function emitPlaybackState(state: Partial<PlaybackState>): void {

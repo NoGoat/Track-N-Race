@@ -167,6 +167,23 @@ export class AlignedDataBuffer {
         this.appended = Math.max(this.appended, 1);
     }
 
+    /** Rewrite one complete Y channel without changing the timeline or length. */
+    replaceChannel(channel: number, values: ArrayLike<number>) {
+        if (channel < 0 || channel >= this.channelCount) throw new RangeError(`Invalid Y channel ${channel}.`);
+        if (values.length !== this.size) throw new RangeError(`Expected ${this.size} values, received ${values.length}.`);
+        for (let index = 0; index < this.size; index++) {
+            const physical = this.physicalIndex(index);
+            const page = Math.floor(physical / ALIGNED_PAGE_SIZE);
+            const offset = physical % ALIGNED_PAGE_SIZE;
+            this.yPages[channel][page]![offset] = values[index];
+        }
+        // Retain the occupied timeline while asking the GPU pager to upload the
+        // rewritten values as one complete snapshot on the next draw.
+        this.appended = this.size;
+        this.evicted = 0;
+        this.needsReset = true;
+    }
+
     evictFront(count: number) {
         count = Math.min(Math.max(Math.trunc(count), 0), this.size);
         if (count === 0) return;

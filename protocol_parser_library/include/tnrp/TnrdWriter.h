@@ -20,7 +20,7 @@ namespace tnrp::detail { class TnrdOutputStream; }
 
 namespace tnrp {
 
-// Records parsed rows to compressed JSONL .tnrd files. TNRD V2/Zstandard is
+// Records parsed rows to compressed JSONL .tnrd files. TNRD V3/Zstandard is
 // the default; TNRD V1/gzip remains available for legacy compatibility. Owns:
 //   - per-session file rotation (new track/session => new file),
 //   - a 30s rolling buffer so in-game flashbacks (<=30s) rewrite cleanly,
@@ -37,7 +37,7 @@ public:
     explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
 
-    // Source-compatible default recording entry point: writes TNRD V2/zstd.
+    // Source-compatible default recording entry point: writes TNRD V3/zstd.
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
@@ -75,7 +75,7 @@ private:
         EventType             type;
         bool                  enabled;
         std::string           outputDir;
-        TnrdFormat            tnrdFormat{TnrdFormat::ZstdV2};
+        TnrdFormat            tnrdFormat{TnrdFormat::ZstdV3};
         uint16_t              format;
         uint8_t               packetId;
         float                 sessionTime;
@@ -96,7 +96,7 @@ private:
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
-    TnrdFormat  writeFormat_        = TnrdFormat::ZstdV2;
+    TnrdFormat  writeFormat_        = TnrdFormat::ZstdV3;
     std::string outputDirectory_;
     std::unique_ptr<detail::TnrdOutputStream> activeStream_;
     std::string activePath_;
@@ -116,7 +116,7 @@ private:
 
     static const std::unordered_set<std::string>& dedupeTypes();
 
-    void startNewStream(int trackId, int sessionType, int format);
+    void startNewStream(int trackId, int trackLengthM, int sessionType, int format);
     bool flushBufferToDisk(const std::vector<BufferEntry>& entries);
     void flushToDiskOnWriterThread();
     void closeActiveStreamOnWriterThread();

@@ -2,10 +2,11 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import Select, { type SingleValue } from 'react-select'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { ArrowDownUp, ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Eye, EyeOff, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
+import { ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
-  ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG, sanitizeAnalyzeConfig,
+  ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
+  DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
   type AnalyzeConfig, type AnalyzeSeriesConfig,
 } from '../lib/analyzeMetrics'
 import { buildSelectStyles } from '../lib/selectStyles'
@@ -38,7 +39,14 @@ interface LapBlock {
   statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
 }
 interface SelectOption { value: string; label: string }
-interface LapOption { value: number; label: string; compound: string | null; compoundColor: string | null; isFastest: boolean }
+interface LapOption {
+  value: number
+  label: string
+  compound: string | null
+  compoundColor: string | null
+  lapTime: string | null
+  isFastest: boolean
+}
 
 const COMPOUND_COLORS: Record<number, string> = {
   16: 'var(--compound-soft)',
@@ -62,11 +70,23 @@ function FastestLapChip() {
   >FL</span>
 }
 
+function formatLapTimeMs(milliseconds: number | undefined): string | null {
+  if (!Number.isFinite(milliseconds) || milliseconds! <= 0) return null
+  const minutes = Math.floor(milliseconds! / 60_000)
+  const seconds = ((milliseconds! % 60_000) / 1000).toFixed(3).padStart(6, '0')
+  return `${minutes}:${seconds}`
+}
+
 function formatLapOption(option: LapOption) {
-  if (!option.compound) return <span className="inline-flex items-center min-w-0">{option.value === 0 ? 'None' : `Lap ${option.value}`}{option.isFastest && <FastestLapChip />}</span>
+  if (!option.compound) return <span className="inline-flex items-center min-w-0">
+    {option.value === 0 ? 'None' : `Lap ${option.value}`}
+    {option.lapTime && <span>&nbsp;· {option.lapTime}</span>}
+    {option.isFastest && <FastestLapChip />}
+  </span>
   return <span className="inline-flex items-center min-w-0">
     <span style={{ color: option.compoundColor ?? 'var(--text-primary)' }}>{option.compound}</span>
     <span>&nbsp;· Lap {option.value}</span>
+    {option.lapTime && <span>&nbsp;· {option.lapTime}</span>}
     {option.isFastest && <FastestLapChip />}
   </span>
 }
@@ -84,8 +104,8 @@ function AnalyzeLapSelector({
   isClearable?: boolean
   isDisabled?: boolean
 }) {
-  return <div className="flex items-center gap-3">
-    <label htmlFor={id} className="w-20 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+  return <div className="flex items-center gap-2">
+    <label htmlFor={id} className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
     <div className="flex-1 min-w-0">
       <Select<LapOption, false>
         inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
@@ -96,7 +116,15 @@ function AnalyzeLapSelector({
   </div>
 }
 
-function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: string; onChange: (color: string) => void }) {
+function AnalyzeColorPicker({
+  label, color, onChange, triggerClassName, triggerStyle,
+}: {
+  label: string
+  color: string
+  onChange: (color: string) => void
+  triggerClassName?: string
+  triggerStyle?: CSSProperties
+}) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 8, top: 8 })
   const [formatIconHost, setFormatIconHost] = useState<HTMLElement | null>(null)
@@ -172,8 +200,8 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
       aria-haspopup="dialog"
       aria-expanded={open}
       onClick={() => setOpen(value => !value)}
-      className="w-5 h-5 rounded border border-[var(--border)] cursor-pointer shrink-0 shadow-inner"
-      style={{ backgroundColor: color }}
+      className={triggerClassName ?? 'w-5 h-5 rounded border border-[var(--border)] cursor-pointer shrink-0 shadow-inner'}
+      style={{ backgroundColor: color, ...triggerStyle }}
     />
     {open && createPortal(
       <div ref={pickerRef} role="dialog" aria-label={`${label} color picker`} className="fixed z-[10000]" style={position}>
@@ -198,12 +226,37 @@ function AnalyzeColorPicker({ label, color, onChange }: { label: string; color: 
   </>
 }
 
+function DeltaColorPicker({
+  positiveColor, negativeColor, onPositiveChange, onNegativeChange, disabled = false,
+}: {
+  positiveColor: string
+  negativeColor: string
+  onPositiveChange: (color: string) => void
+  onNegativeChange: (color: string) => void
+  disabled?: boolean
+}) {
+  return <div aria-disabled={disabled} className={`flex gap-1 shrink-0 ${disabled ? 'grayscale opacity-40 pointer-events-none' : ''}`}>
+    <AnalyzeColorPicker
+      label="Positive delta"
+      color={positiveColor}
+      onChange={onPositiveChange}
+    />
+    <AnalyzeColorPicker
+      label="Negative delta"
+      color={negativeColor}
+      onChange={onNegativeChange}
+    />
+  </div>
+}
+
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
-  isDark, selected, showYAxis, currentLapNum, comparison, fixedMode, primaryOverride, controlsRef,
+  isDark, selected, deltaPositiveColor, deltaNegativeColor,
+  currentLapNum, comparison, fixedMode, primaryOverride, controlsRef,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
-  showYAxis: boolean
+  deltaPositiveColor: string
+  deltaNegativeColor: string
   currentLapNum: number | null
   comparison: AnalyzeLapData | null
   fixedMode: boolean
@@ -215,30 +268,40 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   const motionEx = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotionEx)
   const statusHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapStatusHistory)
   const damageHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapDamageHistory)
+  const lapProgress = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapProgress)
   const startSessionTime = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapStartTime)
   const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
+  const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
+  const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
+  const playbackCurrentLap = useTelemetryStore(s =>
+    !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
+      ? s.playbackLapDataCache[currentLapNum] ?? null
+      : null)
 
   const liveCurrent = useMemo<AnalyzeLapData>(() => {
     const ends = [telemetry, motion, motionEx, statusHistory, damageHistory]
       .flatMap(rows => rows.length ? [rows[rows.length - 1].session_time] : [])
     return {
       lapNum: currentLapNum ?? 0,
-      startSessionTime,
+      startSessionTime: playbackCurrentLap?.startSessionTime ?? startSessionTime,
       endSessionTime: ends.length ? Math.max(...ends) : startSessionTime,
       telemetry, motion, motionEx, statusHistory, damageHistory,
+      lapProgress: playbackCurrentLap?.lapProgress ?? lapProgress,
     }
-  }, [currentLapNum, damageHistory, motion, motionEx, startSessionTime, statusHistory, telemetry])
+  }, [currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
   const current = fixedMode ? primaryOverride ?? EMPTY_ANALYZE_LAP : liveCurrent
   const currentRevision = fixedMode
     ? `fixed:${current.lapNum}:${current.startSessionTime}:${current.endSessionTime}`
-    : liveRevision
+    : `${liveRevision}:${current.lapNum}:${playbackCurrentLap ? `cached:${playbackCurrentLap.startSessionTime}` : 'stream'}`
 
   return <div className="absolute inset-0">
     <AnalyzeTimeChart
       isDark={isDark} current={current} currentRevision={currentRevision} comparison={comparison}
-      selected={selected} showYAxis={showYAxis}
+      selected={selected}
       primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
       comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
+      distanceMode={deltaAvailable} trackLengthM={trackLengthM}
+      deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
       zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
     />
   </div>
@@ -248,6 +311,7 @@ const EMPTY_ROWS: never[] = []
 const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   lapNum: 0, startSessionTime: 0, endSessionTime: 0,
   telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
+  lapProgress: [],
 }
 
 export default function AnalyzeScreen({
@@ -256,10 +320,13 @@ export default function AnalyzeScreen({
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
+  const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
   const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
   const fastestLapNum = useTelemetryStore(s => s.fastestLap?.lapNum ?? null)
+  const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
+  const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
@@ -285,19 +352,25 @@ export default function AnalyzeScreen({
   const lapOption = useCallback((block: LapBlock): LapOption => {
     const status = lastTyreStatus(block)
     const isFastest = block.lapNum === fastestLapNum
-    if (!status) return { value: block.lapNum, label: `Lap ${block.lapNum}${isFastest ? ' · FL' : ''}`, compound: null, compoundColor: null, isFastest }
+    const lapTime = formatLapTimeMs(lapTimesByNum[block.lapNum])
+    if (!status) return {
+      value: block.lapNum,
+      label: `Lap ${block.lapNum}${lapTime ? ` · ${lapTime}` : ''}${isFastest ? ' · FL' : ''}`,
+      compound: null, compoundColor: null, lapTime, isFastest,
+    }
     const actual = tn('tyre.actual', status.tyre_compound)
     return {
       value: block.lapNum,
-      label: `${actual} · Lap ${block.lapNum}${isFastest ? ' · FL' : ''}`,
+      label: `${actual} · Lap ${block.lapNum}${lapTime ? ` · ${lapTime}` : ''}${isFastest ? ' · FL' : ''}`,
       compound: actual,
       compoundColor: COMPOUND_COLORS[status.visual_compound] ?? null,
+      lapTime,
       isFastest,
     }
-  }, [fastestLapNum, tn])
+  }, [fastestLapNum, lapTimesByNum, tn])
 
   const compareOptions = useMemo<LapOption[]>(() => [
-    { value: 0, label: 'None', compound: null, compoundColor: null, isFastest: false },
+    { value: 0, label: 'None', compound: null, compoundColor: null, lapTime: null, isFastest: false },
     ...(blocks ?? []).map(lapOption),
   ], [blocks, lapOption])
   const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
@@ -318,7 +391,7 @@ export default function AnalyzeScreen({
     const sidebar = sidebarRef.current
     if (!sidebar) return
 
-    const targetWidth = config.collapsed ? 0 : 288
+    const targetWidth = config.collapsed ? 0 : 315
     if (previousCollapsedRef.current === config.collapsed) {
       sidebar.style.width = `${targetWidth}px`
       return
@@ -348,7 +421,7 @@ export default function AnalyzeScreen({
     if (!playbackFilename) return
     const targets = fixedLapMode.enabled
       ? [fixedLapMode.lapA, fixedLapMode.lapB]
-      : [compareLapNum]
+      : [compareLapNum, effectiveCurrentLapNum]
     for (const lapNum of targets) {
       if (lapNum === null) continue
       if (lapCache[lapNum]) {
@@ -359,13 +432,13 @@ export default function AnalyzeScreen({
       requestedRef.current.add(lapNum)
       window.playerBridge.getLapData(lapNum)
     }
-  }, [compareLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapCache, playbackFilename])
+  }, [compareLapNum, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapCache, playbackFilename])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
     const def = ANALYZE_METRIC_BY_ID.get(option.value)
     if (!def || config.series.some(item => item.metricId === def.id)) return
-    updateSeries([...config.series, { metricId: def.id, color: def.defaultColor, visible: true }])
+    updateSeries([...config.series, { metricId: def.id, color: def.defaultColor, visible: true, showYAxis: true }])
   }, [config.series, updateSeries])
 
   const moveMetric = useCallback((metricId: string, delta: number) => {
@@ -396,17 +469,16 @@ export default function AnalyzeScreen({
         ref={sidebarRef}
         className={`${config.collapsed ? 'border-r-0' : 'border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)]`}
       >
-          <div className={`w-72 h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
+          <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analyze</div>
-                <div className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Overlay configuration</div>
+                <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analysis</div>
               </div>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
-              <div className="flex items-center gap-3">
-                <label htmlFor="analyze-add-metric" className="w-20 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Add metric</label>
+              <div className="flex items-center gap-2">
+                <label htmlFor="analyze-add-metric" className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Add metric</label>
                 <div className="flex-1 min-w-0">
                   <Select<SelectOption, false>
                     inputId="analyze-add-metric" value={null} options={metricOptions} onChange={addMetric} placeholder="Choose a value…"
@@ -414,17 +486,16 @@ export default function AnalyzeScreen({
                   />
                 </div>
               </div>
-              <div>
+              {playbackFilename && blocks && <div>
                 <button
-                  role="switch" aria-checked={fixedLapMode.enabled} disabled={!playbackFilename || !blocks}
+                  role="switch" aria-checked={fixedLapMode.enabled}
                   onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
-                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)] disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)]"
                 >
-                  <span>Disable playback mode</span>
+                  <span>Compare Mode</span>
                   <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${fixedLapMode.enabled ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${fixedLapMode.enabled ? 'translate-x-4' : ''}`} /></span>
                 </button>
-                {!playbackFilename && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Load a recording to select fixed laps</div>}
-              </div>
+              </div>}
               {fixedLapMode.enabled ? (
                 <div className="space-y-2">
                   <AnalyzeLapSelector
@@ -445,22 +516,50 @@ export default function AnalyzeScreen({
                     onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
                     styles={selectStyles} isClearable={false} isDisabled={!playbackFilename || !blocks}
                   />
-                  {playbackFilename && compareLapNum !== null && !comparison && <div className="text-[9px] text-[var(--text-secondary)] mt-1">Loading comparison lap…</div>}
                 </div>
               )}
               <button
-                role="switch" aria-checked={config.showYAxis}
-                onClick={() => save({ ...config, showYAxis: !config.showYAxis })}
-                className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)]"
+                type="button"
+                onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
+                className="w-full h-7 rounded border border-[var(--border)] flex items-center justify-center gap-2 text-[9px] uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
               >
-                <span>Y-axis values</span>
-                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${config.showYAxis ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${config.showYAxis ? 'translate-x-4' : ''}`} /></span>
+                <span>Toggle Y-Axes</span>
               </button>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
               {config.series.length === 0 && <div className="p-4 text-center text-[10px] text-[var(--text-secondary)]">No metrics selected</div>}
               {config.series.map((item, index) => {
+                if (item.metricId === 'delta') return (
+                  <div
+                    key="delta" draggable onDragStart={() => setDraggedMetric('delta')} onDragEnd={() => setDraggedMetric(null)}
+                    onDragOver={event => event.preventDefault()} onDrop={() => dropMetric('delta')}
+                    className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === 'delta' ? 'opacity-40' : ''}`}
+                  >
+                    <GripVertical size={13} className="text-[var(--text-secondary)] cursor-grab shrink-0" />
+                    <DeltaColorPicker
+                      positiveColor={item.color}
+                      negativeColor={item.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
+                      onPositiveChange={color => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color } : entry))}
+                      onNegativeChange={negativeColor => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, negativeColor } : entry))}
+                      disabled={!!playbackFilename && !deltaAvailable}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] text-[var(--text-primary)] truncate">Delta</div>
+                      <div className="text-[8px] uppercase tracking-wider text-[var(--text-secondary)] truncate">
+                        {playbackFilename && !deltaAvailable ? 'Not supported in this file.' : 'Time · + / −'}
+                      </div>
+                    </div>
+                    {(!playbackFilename || deltaAvailable) && <div className="flex items-center shrink-0">
+                      <button disabled={index === 0} title="Move up" onClick={() => moveMetric('delta', -1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronLeft size={12} className="rotate-90" /></button>
+                      <button disabled={index === config.series.length - 1} title="Move down" onClick={() => moveMetric('delta', 1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronRight size={12} className="rotate-90" /></button>
+                      <button title={item.showYAxis ? 'Hide Y-axis' : 'Show Y-axis'} aria-label={item.showYAxis ? 'Hide Delta Y-axis' : 'Show Delta Y-axis'} onClick={() => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, showYAxis: !entry.showYAxis } : entry))} className={`p-1 hover:text-[var(--text-primary)] ${item.showYAxis ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}><Axis3d size={11} /></button>
+                      <button title={item.visible ? 'Hide series' : 'Show series'} aria-label={item.visible ? 'Hide Delta' : 'Show Delta'} onClick={() => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, visible: !entry.visible } : entry))} className={`p-1 hover:text-[var(--text-primary)] ${item.visible ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}><Eye size={11} /></button>
+                      <button title="Reset colors" onClick={() => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color: DEFAULT_DELTA_POSITIVE_COLOR, negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR } : entry))} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><RotateCcw size={11} /></button>
+                      <button disabled title="Delta cannot be removed" className="p-1 text-[var(--text-inactive)] opacity-30 cursor-not-allowed"><Trash2 size={11} /></button>
+                    </div>}
+                  </div>
+                )
                 const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
                 if (!def) return null
                 return (
@@ -483,14 +582,19 @@ export default function AnalyzeScreen({
                       <button disabled={index === 0} title="Move up" onClick={() => moveMetric(item.metricId, -1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronLeft size={12} className="rotate-90" /></button>
                       <button disabled={index === config.series.length - 1} title="Move down" onClick={() => moveMetric(item.metricId, 1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronRight size={12} className="rotate-90" /></button>
                       <button
+                        title={item.showYAxis ? 'Hide Y-axis' : 'Show Y-axis'} aria-label={item.showYAxis ? `Hide ${def.label} Y-axis` : `Show ${def.label} Y-axis`}
+                        onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, showYAxis: !entry.showYAxis } : entry))}
+                        className={`p-1 hover:text-[var(--text-primary)] ${item.showYAxis ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}
+                      ><Axis3d size={11} /></button>
+                      <button
                         title={item.visible ? 'Hide series' : 'Show series'} aria-label={item.visible ? `Hide ${def.label}` : `Show ${def.label}`}
                         onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, visible: !entry.visible } : entry))}
                         className={`p-1 hover:text-[var(--text-primary)] ${item.visible ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}
                       >
-                        {item.visible ? <Eye size={11} /> : <EyeOff size={11} />}
+                        <Eye size={11} />
                       </button>
                       <button title="Reset color" onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color: def.defaultColor } : entry))} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><RotateCcw size={11} /></button>
-                      <button title="Remove metric" onClick={() => updateSeries(config.series.filter(entry => entry.metricId !== item.metricId))} className="p-1 text-[var(--text-secondary)] hover:text-[#e10600]"><Trash2 size={11} /></button>
+                      <button title="Remove metric" onClick={() => updateSeries(config.series.filter(entry => entry.metricId !== item.metricId))} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252]"><Trash2 size={11} /></button>
                     </div>
                   </div>
                 )
@@ -502,8 +606,8 @@ export default function AnalyzeScreen({
       <section className="flex-1 min-w-0 flex flex-col">
         <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-1 shrink-0">
           <button
-            title={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
-            aria-label={config.collapsed ? 'Open Analyze controls' : 'Collapse Analyze controls'}
+            title={config.collapsed ? 'Open Analysis controls' : 'Collapse Analysis controls'}
+            aria-label={config.collapsed ? 'Open Analysis controls' : 'Collapse Analysis controls'}
             onClick={() => save({ ...config, collapsed: !config.collapsed })}
             className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
           >
@@ -519,10 +623,13 @@ export default function AnalyzeScreen({
           <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
           <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
           {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
+          {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{deltaAvailable ? 'Lap distance' : 'Elapsed time'}</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
           <AnalyzeChartSubscriber
-            isDark={isDark} selected={config.series} showYAxis={config.showYAxis}
+            isDark={isDark} selected={config.series}
+            deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
+            deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
             currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
             comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
             controlsRef={chartControlsRef}

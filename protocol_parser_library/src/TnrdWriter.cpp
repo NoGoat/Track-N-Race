@@ -121,7 +121,7 @@ void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
 }
 
 void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
-    setLoggingForFormat(enabled, outputDir, TnrdFormat::ZstdV2);
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::ZstdV3);
 }
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
@@ -197,11 +197,12 @@ void TnrdWriter::writerLoop() {
                 lastSessionTime_ = ev.sessionTime;
 
             if (ev.packetId == PID_SESSION && ev.packetData.size() >= 708) {
+                uint16_t trackLengthM = ReadUInt16(ev.packetData.data(), 33);
                 int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
                 uint8_t sessionType = ev.packetData[35];
                 if (wantRecord_ && (trackId != currentTrackId_ ||
                                     sessionType != currentSessionType_ || !activeStream_))
-                    startNewStream(trackId, sessionType, ev.format);
+                    startNewStream(trackId, trackLengthM, sessionType, ev.format);
             }
         } else if (ev.type == EventType::Record) {
             if (!activeStream_) continue;
@@ -249,7 +250,7 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
     dedupeCache_.clear();
 }
 
-void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
+void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, int format) {
     closeActiveStreamOnWriterThread();
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
@@ -278,11 +279,14 @@ void TnrdWriter::startNewStream(int trackId, int sessionType, int format) {
     if (activeStream_) {
         clearReportedError();
         HeaderRow hdr;
-        hdr.magic        = writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2" : "TNRD_V1";
-        if (writeFormat_ == TnrdFormat::ZstdV2) hdr.compression = "zstd";
+        hdr.magic        = writeFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
+                         : writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
+                                                              : "TNRD_V1";
+        if (isZstd(writeFormat_)) hdr.compression = "zstd";
         hdr.protocol     = format;
         hdr.track_id     = trackId;
         hdr.track_name   = resolvedTrackName;
+        if (writeFormat_ == TnrdFormat::ZstdV3) hdr.track_length_m = trackLengthM;
         hdr.session_type = sessionType;
         hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
         hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
-  LapData, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
+  LapData, LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
   AnalyzeLapData, PlaybackLapDataMsg,
 } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
@@ -115,8 +115,12 @@ export interface TelemetryStoreState {
   analyzeLapMotionEx: MotionExRow[]
   analyzeLapStatusHistory: StatusRow[]
   analyzeLapDamageHistory: DamageRow[]
+  analyzeLapProgress: LapProgressPoint[]
   analyzeLapStartTime: number
   analyzeLapRevision: number
+  analyzeDeltaAvailable: boolean
+  analyzeTrackLengthM: number
+  playbackTnrdVersion: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
@@ -135,8 +139,9 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, lapHistory: [], fastestLap: null, lapTelemetry: [], lapStatusHistory: [],
   analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-  analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapStartTime: 0,
+  analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
+  analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
   playbackLapDataCache: {},
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
@@ -150,6 +155,7 @@ const motBufRef   = { current: [] as MotionRow[] }
 const motExBufRef = { current: [] as MotionExRow[] }
 const dmgBufRef   = { current: [] as DamageRow[] }
 const stsBufRef   = { current: [] as StatusRow[] }
+const lapProgressBufRef = { current: [] as LapProgressPoint[] }
 
 const pools = {
   tel:    makeWindowPool<TelemetryRow>(),
@@ -164,6 +170,7 @@ const pools = {
   analyzeMotEx: makeWindowPool<MotionExRow>(),
   analyzeSts:   makeWindowPool<StatusRow>(),
   analyzeDmg:   makeWindowPool<DamageRow>(),
+  analyzeLapProgress: makeWindowPool<LapProgressPoint>(),
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
@@ -197,6 +204,7 @@ function resetSession(): void {
   motExBufRef.current = []
   stsBufRef.current = []
   dmgBufRef.current = []
+  lapProgressBufRef.current = []
   lapState = null; lapNum = null; lapStartTime = 0
   fastestLapTime = Infinity; fastestLapSet = false
   sessionHistoryBest.clear()
@@ -210,8 +218,9 @@ function resetSession(): void {
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null,
     lapHistory: [], fastestLap: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
     analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
-    analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapStartTime: 0,
+    analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
     analyzeLapRevision: analyzeLapRevisionVal,
+    analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
     playbackLapDataCache: {},
   })
 }
@@ -219,6 +228,7 @@ function resetSession(): void {
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
 // and update live lap times / fastest lap. Runs in the 'lap' handler now.
 function onLap(lap: LapRow): void {
+  if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressBufRef, lap, MAX_ROWS)
   lapState = lap
   set({ lap })
   const prevLapNum = lapNum
@@ -271,7 +281,7 @@ function handleMsg(msg: GatewayMsg): void {
     case 'telemetry': {
       const buf = telBufRef.current
       const last = buf[buf.length - 1]
-      if (last && msg.session_time < last.session_time) {
+      if (last && msg.session_time < last.session_time && !isPlaybackFlag) {
         // Playback can deliver a slightly older hot row around a seek/backfill
         // boundary. appendRow reconciles the renderer history below, but this
         // must not clear the Analyze GPU buffers. Explicit seek flushes carry
@@ -359,6 +369,7 @@ function handleMsg(msg: GatewayMsg): void {
         motionEx: payload.motionExHistory ?? [],
         statusHistory: payload.statusHistory ?? [],
         damageHistory: payload.damageHistory ?? [],
+        lapProgress: payload.lapProgress ?? [],
       }
       playbackLapCacheOrder = [...playbackLapCacheOrder.filter(lapNum => lapNum !== lapData.lapNum), lapData.lapNum]
       set(state => {
@@ -415,7 +426,7 @@ function handleMsg(msg: GatewayMsg): void {
         else if (row.type === 'motion') mot.push(row)
         else if (row.type === 'motion_ex') motEx.push(row)
       }
-      const sts: any[] = [], dmg: any[] = []
+      const sts: any[] = [], dmg: any[] = [], lapProgress: LapProgressPoint[] = []
       let lastLap: any = null
       const coldJson = (payload.coldJson as string) || ''
       let start = 0
@@ -427,7 +438,7 @@ function handleMsg(msg: GatewayMsg): void {
             const row = JSON.parse(coldJson.slice(start, end))
             if (row.type === 'status') sts.push(row)
             else if (row.type === 'damage') dmg.push(row)
-            else if (row.type === 'lap') lastLap = row
+            else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
           } catch (e) {}
         }
         start = end + 1
@@ -437,6 +448,7 @@ function handleMsg(msg: GatewayMsg): void {
       motExBufRef.current = motEx
       stsBufRef.current = sts
       dmgBufRef.current = dmg
+      lapProgressBufRef.current = lapProgress
       if (sts.length) set({ status: sts[sts.length - 1] })
       if (dmg.length) set({ damage: dmg[dmg.length - 1] })
       if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
@@ -457,12 +469,16 @@ function handleMsg(msg: GatewayMsg): void {
       }
       playbackLapTimes = map
       const initialFuelKg = Number(data.initialFuelKg)
+      const trackLengthM = Number(data.trackLengthM)
       set({
         speedRpmBlocks: speedRpmBlocksVal,
         playbackLapDataCache: {},
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1
           : null,
+        analyzeDeltaAvailable: data.deltaAvailable === true && data.tnrdVersion === 'TNRD_V3',
+        analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
+        playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
       })
       break
     }
@@ -476,8 +492,9 @@ const enum DirtySlice {
   MotionEx = 1 << 2,
   Status = 1 << 3,
   Damage = 1 << 4,
-  Derived = 1 << 5,
-  All = Telemetry | Motion | MotionEx | Status | Damage | Derived,
+  Lap = 1 << 5,
+  Derived = 1 << 6,
+  All = Telemetry | Motion | MotionEx | Status | Damage | Lap | Derived,
 }
 
 function dirtySliceFor(msg: { type: string }): DirtySlice {
@@ -487,7 +504,7 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'motion_ex': return DirtySlice.MotionEx
     case 'status': return DirtySlice.Status | DirtySlice.Derived
     case 'damage': return DirtySlice.Damage
-    case 'lap': return DirtySlice.All
+    case 'lap': return DirtySlice.Lap | DirtySlice.Derived
     case 'race_event':
     case 'playback_fastest_lap_raw':
     case 'playback_previous_lap_raw':
@@ -538,6 +555,11 @@ function recompute(dirty: DirtySlice): void {
     const buf = dmgBufRef.current
     next.damageHistory = fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
     next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+  }
+  if (dirty & DirtySlice.Lap) {
+    const buf = lapProgressBufRef.current
+    next.analyzeLapProgress = fillRange(
+      pools.analyzeLapProgress, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Derived) {
     next.lapHistory = isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf

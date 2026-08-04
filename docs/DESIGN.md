@@ -28,7 +28,7 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   ├── UdpListener   dual backend: raw winsock2/POSIX (TNRP_USE_QT=OFF, addon)
   │                 or QUdpSocket (ON, Qt recorder); one receive thread
   ├── Parser        pure decode: format detect + override + debounce +
-  │                 rate limit + dispatch to protocols/f1_24|25|26.cpp
+  │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
   ├── TnrdWriter    .tnrd recording (own disk thread)
   ├── TnrdReader    .tnrd playback (index, per-lap blocks, binary stores)
   └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
@@ -62,7 +62,8 @@ The four per-frame packet-derived row types — **telemetry, motion, positions,
 motion_ex** — are all-numeric, so they skip JSON entirely on the live path:
 `BinaryRows.h` packs them into fixed-layout little-endian records
 (`u8 tag` + fields; tags: 1 telemetry, 2 motion, 3 positions, 4 motion_ex) and
-ships raw bytes. Everything else (~2 Hz and rarer) is JSON via `onRow`.
+ships raw bytes. Other packet-derived rows follow the game's configured UDP
+send rate and are delivered as JSON via `onRow`.
 
 Hot rows are only serialised to JSON when they must be recorded
 (`wantHotJson = recording || hotRowsAsJson` in `Engine::onDatagram`); with
@@ -79,7 +80,7 @@ Three decoders exist and **must stay in lockstep** with the single C++ encoder:
 A schema drift here is silent corruption; treat any field change in
 `BinaryRows.h` as a three-file change.
 
-### 1.3 Parser: detection, override, rate limiting
+### 1.3 Parser: detection, override, duplicate rejection
 
 `Parser::feed()` is a pure function of the datagram + override state — no I/O,
 no persistence (the host persists the last detected format; Electron uses
@@ -90,12 +91,9 @@ no persistence (the host persists the last detected format; Electron uses
   A `protocol_status` control row is emitted on every switch. With a manual
   override active, a mismatching stream raises one `protocol_warning`
   (cleared with a null-field warning when the mismatch ends).
-- **Rate limiting** (fixed arrays indexed by packet id): motion / car
-  telemetry / motion_ex dedupe on `frameId`; session and event packets are
-  unlimited; Car Damage follows its specified fixed 10 Hz cadence; participants
-  5000 ms; everything else is published live at most every 500 ms. While
-  recording, intervening Car Status packets are still parsed and written to
-  `.tnrd`; they are only suppressed from the live sinks.
+- **Packet cadence**: the game controls cadence through its UDP send-rate
+  setting, and every received packet is parsed. Motion / car telemetry /
+  motion_ex reject only an exact repeated `frameId` for the same packet type.
 - **Dispatch**: `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are parallel ~500-line
   versioned parsers behind a shared `protocol.h` (header layout, byte readers).
   2026 adds `slm` (Straight Line Mode, the active-aero DRS replacement) and an
@@ -146,8 +144,8 @@ intent so the per-packet fast path can skip the whole recording pipeline
 
 ### 1.6 Playback (`TnrdReader` + `Engine::player*`)
 
-`load()` detects the container signature and decompresses either TNRD V1/gzip
-or TNRD V2/Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
+`load()` detects the container signature and decompresses TNRD V1/gzip or
+TNRD V2/V3 Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
 builds a time/type index in one pass, and in the same pass builds the per-lap
 blocks, scanned lap list, event log and fastest lap. Streaming reads return raw
 JSONL lines (no re-parse); block reads (`readBlock`) fetch contiguous index
@@ -162,7 +160,8 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
 - reconstructs deduplicated Car Damage state at the specification's fixed
   10 Hz cadence for streaming playback, seeks and per-lap Analyze payloads;
 - fills slim per-lap chart points (`speed_kph`/`rpm` + `ers_pct`) into
-  `lapBlocksMessage()` so the load payload is small.
+  `lapBlocksMessage()` so the load payload is small; for V3 it also indexes
+  lap-distance/timing points used by Electron Analyze.
 
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:
@@ -216,13 +215,16 @@ overlay flows.
 
 ## 2. File format & shared conventions
 
-- **`.tnrd`**: compressed JSONL with two supported generations. TNRD V1 uses
-  gzip and `magic: "TNRD_V1"`; TNRD V2 uses Zstandard and
-  `magic: "TNRD_V2", compression: "zstd"`. `TnrdReader::load()` detects the
-  codec from its native bytes and then validates the JSON header/container pair.
-  Normal recording writes V2. Explicit `setLoggingGzip()` retains deprecated V1
-  writing for compatibility. Every subsequent line is one typed row with
-  `session_time`; the telemetry row schema is shared by both generations.
+- **`.tnrd`**: compressed JSONL with three supported generations. TNRD V1 uses
+  gzip and `magic: "TNRD_V1"`; TNRD V2 and V3 use Zstandard with matching
+  `magic` and `compression: "zstd"` header values. V3 adds `track_length_m` to
+  the header and `lap_distance_m` to lap rows. `TnrdReader::load()` detects the
+  codec from its native bytes, then uses and validates the JSON header to
+  distinguish V2 from V3. Normal recording writes V3. Explicit
+  `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
+  subsequent line is one typed row with `session_time`; other telemetry row
+  schemas remain compatible. Electron Analyze distance alignment and delta are
+  enabled only for V3; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,

@@ -48,6 +48,12 @@ export default memo(function AppHeader({
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
+  const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
+  const headerPadding = actualNativeTitlebar
+    ? 'pl-2 pr-4'
+    : usesTitleBarOverlay && !isFullscreen
+      ? 'pl-4 pr-[150px]'
+      : 'px-4'
 
   return (
     <div
@@ -56,7 +62,7 @@ export default memo(function AppHeader({
       onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
     >
       <header
-        className={`relative flex items-center gap-3 ${actualNativeTitlebar ? 'pl-2 pr-4' : 'px-4'} h-10 select-none ${
+        className={`relative flex items-center gap-3 ${headerPadding} h-10 select-none ${
           isFullscreen
             ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
             : 'sticky top-0 z-10 transition-colors duration-500'
@@ -79,7 +85,7 @@ export default memo(function AppHeader({
         {filename ? (
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">{filename}</span>
-            <button onClick={onClosePlayback} title="Close session data" style={{ WebkitAppRegion: 'no-drag' }} className="p-1 text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"><X size={14} /></button>
+            <button onClick={onClosePlayback} title="Close session data" style={{ WebkitAppRegion: 'no-drag' }} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252] transition-colors"><X size={14} /></button>
           </div>
         ) : (
           <button onClick={onSelectPlaybackFile} title="Load Session Data File (.tnrd)" style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors shrink-0"><Upload size={14} /></button>
@@ -111,7 +117,7 @@ export default memo(function AppHeader({
         <button onClick={() => window.windowControls.minimizeToTray()} title="Background Mode" style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"><PictureInPicture2 size={13} /></button>
         <button onClick={() => window.windowControls.fullscreen()} title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0">{isFullscreen ? <Shrink size={13} /> : <Maximize size={13} />}</button>
 
-        {!actualNativeTitlebar && !isFullscreen && (
+        {!actualNativeTitlebar && !usesTitleBarOverlay && !isFullscreen && (
           <div className="flex self-stretch ml-2 -mr-4 shrink-0" style={{ WebkitAppRegion: 'no-drag' }}>
             <button onClick={() => window.windowControls.minimize()} title="Minimize" className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect y="4.5" width="10" height="1" /></svg></button>
             <button onClick={() => window.windowControls.maximize()} title={isMaximized ? 'Restore' : 'Maximize'} className="h-full px-4 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center">{isMaximized ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1"><polyline points="3,0.5 9.5,0.5 9.5,7" /><rect x="0.5" y="3" width="6.5" height="6.5" /></svg> : <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1"><rect x="0.5" y="0.5" width="9" height="9" /></svg>}</button>

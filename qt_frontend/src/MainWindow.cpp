@@ -68,7 +68,7 @@
 template <class T>
 static const T* optPtr(const std::optional<T>& o) { return o ? &*o : nullptr; }
 
-// Packet IDs, header layout, rate-limit/dedup tables and the F1 24/25 packet
+// Packet IDs, header layout, duplicate-frame tables and the F1 24/25 packet
 // parsers used to live here; they now belong to libtnrp (tnrp::Parser /
 // tnrp::TnrdWriter), which the engine drives. See onEngineRow().
 
@@ -922,7 +922,7 @@ void MainWindow::onEngineRow(const QByteArray& json) {
         return;
     }
 
-    // The engine has already done format detection, rate-limiting, recording and
+    // The engine has already done format detection, duplicate rejection, recording and
     // (when enabled) state-row deduplication; we only fan the row out to the live
     // UI panels and the lap-aware SessionModel.
     routeLiveRow(*parsed);

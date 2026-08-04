@@ -4,7 +4,7 @@ import { ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig, type A
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
-import type { AnalyzeLapData } from '../../types'
+import type { AnalyzeLapData, LapProgressPoint } from '../../types'
 
 interface Props {
   isDark: boolean
@@ -12,9 +12,12 @@ interface Props {
   currentRevision: string | number
   comparison: AnalyzeLapData | null
   selected: AnalyzeSeriesConfig[]
-  showYAxis: boolean
   primaryLabel?: string
   comparisonLabel?: string
+  distanceMode: boolean
+  trackLengthM: number
+  deltaPositiveColor: string
+  deltaNegativeColor: string
   zoomEnabled: boolean
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
 }
@@ -28,13 +31,18 @@ export interface AnalyzeChartControls {
 }
 
 type Role = 'comparison' | 'current'
-type Buffers = Record<Role, Record<AnalyzeSource, AlignedDataBuffer>>
+type Buffers = Record<Role, Record<AnalyzeSource, AlignedDataBuffer>> & {
+  deltaPositive: AlignedDataBuffer
+  deltaNegative: AlignedDataBuffer
+}
 type SeriesRecord = Record<Role, Map<string, any>>
 
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 const TOP_PADDING = 16
 const MIN_ZOOM_SECONDS = 0.5
+const MIN_ZOOM_METRES = 25
+const DELTA_GRID_METRES = 5
 const METRICS_BY_SOURCE = Object.fromEntries(SOURCES.map(source => [source, ANALYZE_METRICS.filter(metric => metric.source === source)])) as Record<AnalyzeSource, typeof ANALYZE_METRICS>
 
 function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
@@ -45,7 +53,88 @@ function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
 
 function makeBuffers(): Buffers {
   const makeRole = () => Object.fromEntries(SOURCES.map(source => [source, new AlignedDataBuffer(METRICS_BY_SOURCE[source].length)])) as Record<AnalyzeSource, AlignedDataBuffer>
-  return { comparison: makeRole(), current: makeRole() }
+  return {
+    comparison: makeRole(), current: makeRole(),
+    deltaPositive: new AlignedDataBuffer(1),
+    deltaNegative: new AlignedDataBuffer(1),
+  }
+}
+
+interface ProgressMap {
+  points: LapProgressPoint[]
+  maxSessionTime: number
+  maxDistance: number
+}
+
+function buildProgressMap(lap: AnalyzeLapData | null): ProgressMap | null {
+  if (!lap || lap.lapProgress.length === 0) return null
+  const points: LapProgressPoint[] = [{
+    session_time: lap.startSessionTime,
+    current_lap_ms: 0,
+    lap_distance_m: 0,
+  }]
+  let lastTime = lap.startSessionTime
+  let lastDistance = 0
+  for (const point of lap.lapProgress) {
+    if (point.session_time > lap.endSessionTime) break
+    if (!Number.isFinite(point.session_time) || !Number.isFinite(point.lap_distance_m) ||
+        !Number.isFinite(point.current_lap_ms) || point.session_time < lastTime ||
+        point.lap_distance_m < lastDistance || point.current_lap_ms < 0) continue
+    // The zero-distance/zero-time point is the mathematical lap origin. Keep it
+    // even when the first recorded packet has the same timestamp: playback's
+    // native seek boundary and the indexed JSON row can differ by sub-microsecond
+    // float representation, but that must not change the resulting progress map.
+    if (points.length === 1) {
+      if (point.lap_distance_m === 0) continue
+      points.push(point)
+    } else if (point.lap_distance_m === lastDistance) {
+      // Distance -> elapsed time is defined by the first arrival at a distance.
+      // Recorded rows can repeat the exact float distance while time advances.
+      // Replacing that point with the later row makes a completed map disagree
+      // with its own live prefix and leaves false delta dips behind.
+      continue
+    } else if (point.session_time === lastTime) {
+      points[points.length - 1] = point
+    } else {
+      points.push(point)
+    }
+    lastTime = point.session_time
+    lastDistance = point.lap_distance_m
+  }
+  if (points.length < 2) return null
+  return { points, maxSessionTime: lastTime, maxDistance: lastDistance }
+}
+
+function interpolateDistance(progress: ProgressMap, sessionTime: number): number {
+  const points = progress.points
+  if (sessionTime < points[0].session_time || sessionTime > progress.maxSessionTime) return NaN
+  let lo = 1, hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (points[mid].session_time < sessionTime) lo = mid + 1
+    else hi = mid
+  }
+  if (lo >= points.length) return points[points.length - 1].lap_distance_m
+  const before = points[lo - 1], after = points[lo]
+  const span = after.session_time - before.session_time
+  const ratio = span > 0 ? (sessionTime - before.session_time) / span : 1
+  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
+}
+
+function interpolateElapsed(progress: ProgressMap, distance: number): number {
+  const points = progress.points
+  if (distance < 0 || distance > progress.maxDistance) return NaN
+  let lo = 1, hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (points[mid].lap_distance_m < distance) lo = mid + 1
+    else hi = mid
+  }
+  if (lo >= points.length) return points[points.length - 1].current_lap_ms / 1000
+  const before = points[lo - 1], after = points[lo]
+  const span = after.lap_distance_m - before.lap_distance_m
+  const ratio = span > 0 ? (distance - before.lap_distance_m) / span : 1
+  return (before.current_lap_ms + (after.current_lap_ms - before.current_lap_ms) * ratio) / 1000
 }
 
 function nearestIndex(data: SeriesData, x: number): number {
@@ -120,6 +209,198 @@ function syncSource(buffer: AlignedDataBuffer, rows: any[], source: AnalyzeSourc
   return rebuild || changed
 }
 
+function syncSourceDistance(
+  buffer: AlignedDataBuffer,
+  rows: any[],
+  source: AnalyzeSource,
+  progress: ProgressMap | null,
+  rebuild: boolean,
+  scratch: Float64Array,
+  cursor: { value: number },
+): boolean {
+  if (rebuild) { buffer.clear(); cursor.value = -Infinity }
+  if (!progress || rows.length === 0) return rebuild
+  const defs = METRICS_BY_SOURCE[source]
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows[mid].session_time <= cursor.value) lo = mid + 1
+    else hi = mid
+  }
+  let changed = false
+  for (let i = lo; i < rows.length;) {
+    let next = i + 1
+    while (next < rows.length && rows[next].session_time === rows[i].session_time) next++
+    const row = rows[next - 1]
+    if (row.session_time > progress.maxSessionTime) break
+    cursor.value = row.session_time
+    const distance = interpolateDistance(progress, row.session_time)
+    if (!Number.isFinite(distance)) { i = next; continue }
+    for (let channel = 0; channel < defs.length; channel++) {
+      const def = defs[channel]
+      const value = def.getValue(row)
+      scratch[channel] = Number.isFinite(value) ? (value - def.min) / (def.max - def.min) : NaN
+    }
+    if (buffer.length && distance === buffer.lastX) buffer.replaceLast(scratch)
+    else if (!buffer.length || distance > buffer.lastX) buffer.append(distance, scratch)
+    changed = true
+    i = next
+  }
+  return rebuild || changed
+}
+
+interface DeltaSampleState {
+  revision: string
+  samples: Array<[number, number]>
+  renderedCount: number
+  renderedRange: number
+  diagnosticCount: number
+}
+
+interface DeltaDiagnosticContext {
+  currentLapNum: number
+  comparisonLapNum: number | null
+  currentStartSessionTime: number
+  comparisonStartSessionTime: number | null
+  currentEndSessionTime: number
+  comparisonEndSessionTime: number | null
+  currentProgressRows: number
+  comparisonProgressRows: number
+  sameProgressArray: boolean
+}
+
+function elapsedBracket(progress: ProgressMap, distance: number) {
+  const points = progress.points
+  let lo = 1, hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (points[mid].lap_distance_m < distance) lo = mid + 1
+    else hi = mid
+  }
+  return {
+    before: points[Math.max(0, Math.min(lo - 1, points.length - 1))],
+    after: points[Math.max(0, Math.min(lo, points.length - 1))],
+  }
+}
+
+function rewriteDeltaRange(
+  positive: AlignedDataBuffer,
+  negative: AlignedDataBuffer,
+  samples: Array<[number, number]>,
+  count: number,
+  range: number,
+) {
+  const positiveValues: number[] = []
+  const negativeValues: number[] = []
+  let previous: [number, number] | null = null
+  for (let index = 0; index < count; index++) {
+    const sample = samples[index]
+    const delta = sample[1]
+    if (previous && Math.sign(previous[1]) !== Math.sign(delta) && previous[1] !== 0 && delta !== 0) {
+      positiveValues.push(0.5)
+      negativeValues.push(0.5)
+    }
+    const normalized = 0.5 + delta / (2 * range)
+    positiveValues.push(delta >= 0 ? normalized : NaN)
+    negativeValues.push(delta <= 0 ? normalized : NaN)
+    previous = sample
+  }
+  positive.replaceChannel(0, positiveValues)
+  negative.replaceChannel(0, negativeValues)
+}
+
+function syncDelta(
+  positive: AlignedDataBuffer,
+  negative: AlignedDataBuffer,
+  current: ProgressMap | null,
+  comparison: ProgressMap | null,
+  state: DeltaSampleState,
+  diagnostic: DeltaDiagnosticContext,
+): { range: number; changed: boolean } {
+  if (!current || !comparison) {
+    const changed = positive.length > 0 || negative.length > 0
+    state.samples.length = 0
+    state.renderedCount = 0
+    state.renderedRange = 0
+    positive.clear()
+    negative.clear()
+    return { range: 0.5, changed }
+  }
+  const maxDistance = Math.min(current.maxDistance, comparison.maxDistance)
+  if (maxDistance <= 0) return { range: state.renderedRange || 0.5, changed: false }
+  const startDistance = state.samples.length
+    ? state.samples[state.samples.length - 1][0] + DELTA_GRID_METRES
+    : 0
+  for (let distance = startDistance; distance <= maxDistance; distance += DELTA_GRID_METRES) {
+    const currentElapsed = interpolateElapsed(current, distance)
+    const comparisonElapsed = interpolateElapsed(comparison, distance)
+    const delta = currentElapsed - comparisonElapsed
+    if (!Number.isFinite(delta)) continue
+    state.samples.push([distance, delta])
+    if (Math.abs(delta) >= 0.0005 && state.diagnosticCount < 50) {
+      state.diagnosticCount++
+      console.warn('[DELTA_DIAG]', JSON.stringify({
+        event: 'nonzero-calculation',
+        revision: state.revision,
+        distance,
+        delta,
+        currentElapsed,
+        comparisonElapsed,
+        ...diagnostic,
+        currentMap: {
+          points: current.points.length,
+          maxDistance: current.maxDistance,
+          maxSessionTime: current.maxSessionTime,
+          bracket: elapsedBracket(current, distance),
+        },
+        comparisonMap: {
+          points: comparison.points.length,
+          maxDistance: comparison.maxDistance,
+          maxSessionTime: comparison.maxSessionTime,
+          bracket: elapsedBracket(comparison, distance),
+        },
+      }))
+    }
+  }
+  const maxAbs = state.samples.reduce((max, sample) => Math.max(max, Math.abs(sample[1])), 0)
+  const range = Math.max(0.5, Math.ceil(maxAbs * 10) / 10)
+  const newRevision = state.renderedCount === 0 && (positive.length > 0 || negative.length > 0)
+  if (newRevision) {
+    positive.clear()
+    negative.clear()
+  } else if (state.renderedCount > 0 && state.renderedRange !== range) {
+    rewriteDeltaRange(positive, negative, state.samples, state.renderedCount, range)
+  }
+  if (state.renderedCount >= state.samples.length) {
+    const changed = state.renderedRange !== range
+    state.renderedRange = range
+    return { range, changed }
+  }
+  const positiveY = new Float64Array(1)
+  const negativeY = new Float64Array(1)
+  let previous: [number, number] | null = state.renderedCount > 0
+    ? state.samples[state.renderedCount - 1]
+    : null
+  for (let index = state.renderedCount; index < state.samples.length; index++) {
+    const [distance, delta] = state.samples[index]
+    if (previous && Math.sign(previous[1]) !== Math.sign(delta) && previous[1] !== 0 && delta !== 0) {
+      const zeroDistance = previous[0] + (distance - previous[0]) * Math.abs(previous[1]) / (Math.abs(previous[1]) + Math.abs(delta))
+      positiveY[0] = negativeY[0] = 0.5
+      positive.append(zeroDistance, positiveY)
+      negative.append(zeroDistance, negativeY)
+    }
+    const normalized = 0.5 + delta / (2 * range)
+    positiveY[0] = delta >= 0 ? normalized : NaN
+    negativeY[0] = delta <= 0 ? normalized : NaN
+    positive.append(distance, positiveY)
+    negative.append(distance, negativeY)
+    previous = [distance, delta]
+  }
+  state.renderedCount = state.samples.length
+  state.renderedRange = range
+  return { range, changed: true }
+}
+
 function blendColor(hex: string, isDark: boolean): string {
   const match = /^#([0-9a-f]{6})$/i.exec(hex)
   if (!match) return hex
@@ -133,8 +414,13 @@ function fmtLapTime(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}`
 }
 
+function fmtDistance(metres: number): string {
+  return `${Math.round(metres)} m`
+}
+
 export default function AnalyzeTimeChart({
-  isDark, current, currentRevision, comparison, selected, showYAxis, primaryLabel, comparisonLabel,
+  isDark, current, currentRevision, comparison, selected, primaryLabel, comparisonLabel,
+  distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
   zoomEnabled, controlsRef,
 }: Props) {
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -144,6 +430,10 @@ export default function AnalyzeTimeChart({
   const buffersRef = useRef<Buffers | null>(null)
   const seriesRef = useRef<SeriesRecord | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
+  const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
+  const deltaRangeRef = useRef(0.5)
+  const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 })
+  const deltaColorsRef = useRef({ positive: deltaPositiveColor, negative: deltaNegativeColor })
   const selectedRef = useRef(selected)
   const isDarkRef = useRef(isDark)
   const currentRef = useRef(current)
@@ -151,9 +441,11 @@ export default function AnalyzeTimeChart({
   const primaryLabelRef = useRef(primaryLabel)
   const comparisonLabelRef = useRef(comparisonLabel)
   const zoomEnabledRef = useRef(zoomEnabled)
+  const distanceModeRef = useRef(distanceMode)
   const fullXRangeRef = useRef({ min: 0, max: 1 })
   const revisionsRef = useRef<Record<string, string>>({})
   const originsRef = useRef<Record<string, number>>({})
+  const distanceCursorsRef = useRef<Record<string, { value: number }>>({})
   const scratchRef = useRef<Record<AnalyzeSource, Float64Array>>(Object.fromEntries(SOURCES.map(source => [source, new Float64Array(METRICS_BY_SOURCE[source].length)])) as Record<AnalyzeSource, Float64Array>)
   selectedRef.current = selected
   isDarkRef.current = isDark
@@ -162,6 +454,8 @@ export default function AnalyzeTimeChart({
   primaryLabelRef.current = primaryLabel
   comparisonLabelRef.current = comparisonLabel
   zoomEnabledRef.current = zoomEnabled
+  distanceModeRef.current = distanceMode
+  deltaColorsRef.current = { positive: deltaPositiveColor, negative: deltaNegativeColor }
 
   useEffect(() => {
     const host = hostRef.current
@@ -188,11 +482,26 @@ export default function AnalyzeTimeChart({
         })
       }
     }
+    const deltaSeries = {
+      positive: {
+        name: 'delta:positive', color: deltaPositiveColor, visible: false, lineWidth: 2,
+        lineType: TimeChart.LineType.Line, data: buffers.deltaPositive.series[0],
+      },
+      negative: {
+        name: 'delta:negative', color: deltaNegativeColor, visible: false, lineWidth: 2,
+        lineType: TimeChart.LineType.Line, data: buffers.deltaNegative.series[0],
+      },
+    }
+    rawSeries.push(deltaSeries.positive, deltaSeries.negative)
+    deltaSeriesRef.current = deltaSeries
     const chart = new TimeChart.core(host, {
       paddingTop: TOP_PADDING, paddingRight: 12, paddingBottom: 24, paddingLeft: 12,
       renderPaddingTop: TOP_PADDING, renderPaddingRight: 12, renderPaddingBottom: 24, renderPaddingLeft: 12,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5, series: rawSeries,
-      plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
+      plugins: {
+        lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair,
+        nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg),
+      } as any,
     } as any)
     chartRef.current = chart
 
@@ -201,7 +510,7 @@ export default function AnalyzeTimeChart({
       const full = fullXRangeRef.current
       const fullExtent = Math.max(0, full.max - full.min)
       if (fullExtent <= 0) return
-      const minExtent = Math.min(MIN_ZOOM_SECONDS, fullExtent)
+      const minExtent = Math.min(distanceModeRef.current ? MIN_ZOOM_METRES : MIN_ZOOM_SECONDS, fullExtent)
       const extent = Math.min(fullExtent, Math.max(minExtent, requestedMax - requestedMin))
       let min = requestedMin - (extent - (requestedMax - requestedMin)) / 2
       min = Math.max(full.min, Math.min(min, full.max - extent))
@@ -283,6 +592,7 @@ export default function AnalyzeTimeChart({
     interactionNode.addEventListener('dblclick', resetZoom)
     const records: SeriesRecord = { comparison: new Map(), current: new Map() }
     for (const option of chart.options.series) {
+      if (option.name.startsWith('delta:')) continue
       const [role, id] = option.name.split(':') as [Role, string]
       records[role].set(id, option)
     }
@@ -290,7 +600,7 @@ export default function AnalyzeTimeChart({
 
     const move = (contentX: number, contentY: number) => {
       const x = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
-      const rows: string[] = [`<div style="color:var(--text-secondary);margin-bottom:4px">${fmtLapTime(x)}</div>`]
+      const rows: string[] = [`<div style="color:var(--text-secondary);margin-bottom:4px">${distanceModeRef.current ? fmtDistance(x) : fmtLapTime(x)}</div>`]
       const appendRole = (role: Role, lap: AnalyzeLapData | null, heading: string) => {
         if (!lap) return
         rows.push(`<div style="color:var(--text-secondary);font-size:10px;margin:${rows.length > 1 ? '5px' : '0'} 0 2px">${heading}</div>`)
@@ -309,10 +619,23 @@ export default function AnalyzeTimeChart({
       }
       appendRole('current', currentRef.current, primaryLabelRef.current ?? `CURRENT L${currentRef.current.lapNum || '—'}`)
       appendRole('comparison', comparisonRef.current, comparisonRef.current ? comparisonLabelRef.current ?? `COMPARE L${comparisonRef.current.lapNum}` : '')
+      const deltaSeries = deltaSeriesRef.current
+      if (distanceModeRef.current && deltaSeries?.positive.visible) {
+        const index = nearestIndex(deltaSeries.positive.data, x)
+        const positive = index >= 0 ? deltaSeries.positive.data.yAt(index) : NaN
+        const negative = index >= 0 ? deltaSeries.negative.data.yAt(index) : NaN
+        const normalized = Number.isFinite(positive) ? positive : negative
+        const delta = (normalized - 0.5) * 2 * deltaRangeRef.current
+        const color = delta >= 0 ? deltaColorsRef.current.positive : deltaColorsRef.current.negative
+        rows.push(`<div style="margin-top:5px"><span style="color:${color}">Delta</span>: ${Number.isFinite(delta) ? `${delta >= 0 ? '+' : ''}${delta.toFixed(3)} s` : '—'}</div>`)
+      }
       show(rows.join(''), contentX + chart.options.paddingLeft, contentY + 4, chart.clientWidth, chart.clientHeight)
     }
-    const stopMove = chart.contentBoxDetector.moved.on(move)
-    const stopLeave = chart.contentBoxDetector.left.on(hide)
+    const stopTooltipSync = chart.nearestPoint.updated.on(() => {
+      const pointer = chart.nearestPoint.lastPointerPos
+      if (!pointer) { hide(); return }
+      move(pointer.x - chart.options.paddingLeft, pointer.y - chart.options.paddingTop)
+    })
     return () => {
       interactionNode.removeEventListener('wheel', onWheel)
       interactionNode.removeEventListener('pointerdown', onPointerDown)
@@ -321,8 +644,9 @@ export default function AnalyzeTimeChart({
       interactionNode.removeEventListener('pointercancel', stopDrag)
       interactionNode.removeEventListener('dblclick', resetZoom)
       if (controlsRef.current === controls) controlsRef.current = null
-      stopMove(); stopLeave(); chart.dispose()
+      stopTooltipSync(); chart.dispose()
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
+      deltaSeriesRef.current = null
     }
     // Stable chart lifetime; all changing inputs are applied imperatively below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -348,44 +672,86 @@ export default function AnalyzeTimeChart({
       if (comparisonOption) { comparisonOption.visible = visible && !!comparison; comparisonOption.color = blendColor(item?.color ?? def.defaultColor, isDark) }
     }
     // WebGL paints later series over earlier ones, so reverse the sidebar order:
-    // the first metric in the sidebar is drawn last and remains visually on top.
-    const drawOrder = [...visibleDefs].reverse()
-    const visibleComparison = drawOrder.map(({ def }) => records.comparison.get(def.id)).filter(Boolean)
-    const visibleCurrent = drawOrder.map(({ def }) => records.current.get(def.id)).filter(Boolean)
+    // the first row in the sidebar is drawn last and remains visually on top.
+    const deltaItem = selected.find(item => item.metricId === 'delta')
+    const showDelta = deltaItem?.visible !== false && distanceMode && !!comparison
+    const deltaSeries = deltaSeriesRef.current
+    if (deltaSeries) {
+      deltaSeries.positive.visible = showDelta
+      deltaSeries.positive.color = deltaPositiveColor
+      deltaSeries.negative.visible = showDelta
+      deltaSeries.negative.color = deltaNegativeColor
+    }
+    const drawOrder = [...selected].reverse().flatMap(item => {
+      if (!item.visible) return []
+      if (item.metricId === 'delta') return showDelta && deltaSeries ? [deltaSeries.positive, deltaSeries.negative] : []
+      const currentOption = records.current.get(item.metricId)
+      const comparisonOption = records.comparison.get(item.metricId)
+      return comparisonOption && comparison ? [comparisonOption, currentOption].filter(Boolean) : [currentOption].filter(Boolean)
+    })
+    const visibleOptions = new Set(drawOrder)
     const hidden = chart.options.series.filter(option => {
-      const id = option.name.slice(option.name.indexOf(':') + 1)
-      return !visibleIds.has(id)
+      return !visibleOptions.has(option)
     })
     // Keep the array identity stable for every plugin/renderer that received it
     // at chart construction while still updating the live GPU draw order.
-    chart.options.series.splice(0, chart.options.series.length, ...visibleComparison, ...visibleCurrent, ...hidden)
+    chart.options.series.splice(0, chart.options.series.length, ...drawOrder, ...hidden)
 
-    const scales = visibleDefs.filter(({ def }, index, all) => all.findIndex(candidate => candidate.def.scaleKey === def.scaleKey) === index)
-    const leftCount = showYAxis ? Math.ceil(scales.length / 2) : 0
-    const rightCount = showYAxis ? Math.floor(scales.length / 2) : 0
-    const left = showYAxis ? Math.max(44, 12 + leftCount * 54) : 12
-    const right = showYAxis ? Math.max(12, 12 + rightCount * 54) : 12
+    const seenScales = new Set<string>()
+    const axes: Array<
+      | { kind: 'delta'; item: AnalyzeSeriesConfig }
+      | { kind: 'metric'; item: AnalyzeSeriesConfig; def: (typeof ANALYZE_METRICS)[number] }
+    > = []
+    for (const item of selected) {
+      if (!item.visible || !item.showYAxis) continue
+      if (item.metricId === 'delta') {
+        if (showDelta) axes.push({ kind: 'delta', item })
+        continue
+      }
+      const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
+      if (!def || seenScales.has(def.scaleKey)) continue
+      seenScales.add(def.scaleKey)
+      axes.push({ kind: 'metric', item, def })
+    }
+    const axisCount = axes.length
+    const leftCount = Math.ceil(axisCount / 2)
+    const rightCount = Math.floor(axisCount / 2)
+    const left = axisCount > 0 ? Math.max(44, 12 + leftCount * 54) : 12
+    const right = axisCount > 0 ? Math.max(12, 12 + rightCount * 54) : 12
     const axis = isDark ? '#7c8098' : '#6b7280'
-    const first = scales[0]
+    const first = axes[0]
+    const extraYAxes = axes.slice(1).map((entry, index) => {
+      const axisIndex = index + 1
+      const side = axisIndex % 2 === 1 ? 'right' as const : 'left' as const
+      const slot = Math.floor(axisIndex / 2)
+      return {
+        side, offset: 4 + slot * 54,
+        color: entry.kind === 'delta' ? deltaPositiveColor : entry.item.color,
+        colorForValue: entry.kind === 'delta'
+          ? (normalized: number) => normalized < 0.5 ? deltaNegativeColor : normalized > 0.5 ? deltaPositiveColor : axis
+          : undefined,
+        values: Y_TICKS,
+        format: (normalized: number) => entry.kind === 'delta'
+          ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+          : entry.def.axisFormat(entry.def.min + normalized * (entry.def.max - entry.def.min)),
+      }
+    })
     axisHolder.current = {
       axisColor: axis,
-      yAxisColor: first?.item.color ?? axis,
+      yAxisColor: first?.kind === 'delta' ? deltaPositiveColor : first?.item.color ?? axis,
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
       borderColor: isDark ? '#1e2136' : '#d0d5e0',
       font: '10px "Cascadia Code", ui-monospace, monospace',
-      xTickSpacePx: 80, xTickFormat: fmtLapTime,
-      yTickValues: () => showYAxis && first ? Y_TICKS : [],
-      yTickFormat: normalized => first ? first.def.axisFormat(first.def.min + normalized * (first.def.max - first.def.min)) : '',
-      xGap: 2, yGap: 4, showYGrid: showYAxis,
-      extraYAxes: showYAxis ? scales.slice(1).map(({ item, def }, index) => {
-        const axisIndex = index + 1
-        const side = axisIndex % 2 === 1 ? 'right' as const : 'left' as const
-        const slot = Math.floor(axisIndex / 2)
-        return {
-          side, offset: 4 + slot * 54, color: item.color, values: Y_TICKS,
-          format: (normalized: number) => def.axisFormat(def.min + normalized * (def.max - def.min)),
-        }
-      }) : [],
+      xTickSpacePx: 80, xTickFormat: distanceMode ? fmtDistance : fmtLapTime,
+      yTickValues: () => first ? Y_TICKS : [],
+      yTickColor: first?.kind === 'delta'
+        ? normalized => normalized < 0.5 ? deltaNegativeColor : normalized > 0.5 ? deltaPositiveColor : axis
+        : undefined,
+      yTickFormat: normalized => first?.kind === 'delta'
+        ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+        : first?.kind === 'metric' ? first.def.axisFormat(first.def.min + normalized * (first.def.max - first.def.min)) : '',
+      xGap: 2, yGap: 4, showYGrid: axisCount > 0,
+      extraYAxes,
     }
     Object.assign(chart.options, { paddingLeft: left, paddingRight: right, renderPaddingLeft: left, renderPaddingRight: right })
     chart.contentBoxDetector.setPadding(left, right, chart.options.paddingTop, chart.options.paddingBottom)
@@ -393,12 +759,16 @@ export default function AnalyzeTimeChart({
     if (hostRef.current) hostRef.current.style.color = axis
     chart.update()
     chart.model.resize(chart.clientWidth, chart.clientHeight)
-  }, [comparison, isDark, selected, showYAxis])
+  }, [comparison, deltaNegativeColor, deltaPositiveColor, distanceMode, isDark, selected])
 
   useEffect(() => {
     const chart = chartRef.current
     const buffers = buffersRef.current
     if (!chart || !buffers) return
+    const progressByRole: Record<Role, ProgressMap | null> = {
+      current: distanceMode ? buildProgressMap(current) : null,
+      comparison: distanceMode ? buildProgressMap(comparison) : null,
+    }
     let changed = false
     for (const role of ['current', 'comparison'] as Role[]) {
       const lap = role === 'current' ? current : comparison
@@ -408,8 +778,10 @@ export default function AnalyzeTimeChart({
         // otherwise a one-frame metadata mismatch shifts every X value and
         // alternates the chart between a full lap and a one-point rebuild.
         const revision = lap
-          ? role === 'current' ? `${currentRevision}:${source}` : `${lap.lapNum}:${lap.startSessionTime}:${source}`
-          : `none:${source}`
+          ? role === 'current'
+            ? `${distanceMode ? 'distance' : 'time'}:${currentRevision}:${source}`
+            : `${distanceMode ? 'distance' : 'time'}:${lap.lapNum}:${lap.startSessionTime}:${source}`
+          : `${distanceMode ? 'distance' : 'time'}:none:${source}`
         const revisionKey = `${role}:${source}`
         let rebuild = revisionsRef.current[revisionKey] !== revision
         revisionsRef.current[revisionKey] = revision
@@ -418,6 +790,14 @@ export default function AnalyzeTimeChart({
         }
         const rows = lap ? rowsFor(lap, source) : []
         const buffer = buffers[role][source]
+        if (distanceMode) {
+          const cursor = distanceCursorsRef.current[revisionKey] ??= { value: -Infinity }
+          if (syncSourceDistance(
+            buffer, rows, source, progressByRole[role], rebuild,
+            scratchRef.current[source], cursor,
+          )) changed = true
+          continue
+        }
         if (rows.length === 0) {
           if (syncSource(buffer, rows, source, 0, rebuild, scratchRef.current[source])) changed = true
           // Only an explicit revision is allowed to invalidate the origin.
@@ -434,8 +814,54 @@ export default function AnalyzeTimeChart({
         if (syncSource(buffer, rows, source, origin, rebuild, scratchRef.current[source])) changed = true
       }
     }
+    if (distanceMode) {
+      const deltaRevision = `${currentRevision}:${comparison?.lapNum ?? 0}:${comparison?.startSessionTime ?? 0}`
+      if (deltaSamplesRef.current.revision !== deltaRevision) {
+        console.info('[DELTA_DIAG]', JSON.stringify({
+          event: 'revision-reset',
+          previousRevision: deltaSamplesRef.current.revision,
+          revision: deltaRevision,
+          previousSamples: deltaSamplesRef.current.samples.length,
+          positiveBufferLength: buffers.deltaPositive.length,
+          negativeBufferLength: buffers.deltaNegative.length,
+          currentLapNum: current.lapNum,
+          comparisonLapNum: comparison?.lapNum ?? null,
+          currentStartSessionTime: current.startSessionTime,
+          comparisonStartSessionTime: comparison?.startSessionTime ?? null,
+          currentEndSessionTime: current.endSessionTime,
+          comparisonEndSessionTime: comparison?.endSessionTime ?? null,
+          currentProgressRows: current.lapProgress.length,
+          comparisonProgressRows: comparison?.lapProgress.length ?? 0,
+          sameProgressArray: current.lapProgress === comparison?.lapProgress,
+        }))
+        deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 }
+      }
+      const deltaResult = syncDelta(
+        buffers.deltaPositive, buffers.deltaNegative,
+        progressByRole.current, progressByRole.comparison,
+        deltaSamplesRef.current,
+        {
+          currentLapNum: current.lapNum,
+          comparisonLapNum: comparison?.lapNum ?? null,
+          currentStartSessionTime: current.startSessionTime,
+          comparisonStartSessionTime: comparison?.startSessionTime ?? null,
+          currentEndSessionTime: current.endSessionTime,
+          comparisonEndSessionTime: comparison?.endSessionTime ?? null,
+          currentProgressRows: current.lapProgress.length,
+          comparisonProgressRows: comparison?.lapProgress.length ?? 0,
+          sameProgressArray: current.lapProgress === comparison?.lapProgress,
+        },
+      )
+      deltaRangeRef.current = deltaResult.range
+      if (deltaResult.changed) changed = true
+    } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
+      deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 }
+      buffers.deltaPositive.clear()
+      buffers.deltaNegative.clear()
+      changed = true
+    }
     if (!changed) return
-    let max = 1
+    let max = distanceMode && trackLengthM > 0 ? trackLengthM : 1
     for (const role of ['current', 'comparison'] as Role[]) {
       for (const source of SOURCES) {
         const buffer = buffers[role][source]
@@ -445,7 +871,7 @@ export default function AnalyzeTimeChart({
     chart.options.xRange = { min: 0, max }
     fullXRangeRef.current = { min: 0, max }
     chart.model.requestRedraw()
-  }, [comparison, current, currentRevision])
+  }, [comparison, current, currentRevision, distanceMode, trackLengthM])
 
   useEffect(() => {
     const node = chartRef.current?.contentBoxDetector.node

@@ -22,6 +22,7 @@ export interface AxisConfig {
   /** derive y tick values from the current y domain. */
   yTickValues: (min: number, max: number) => number[]
   yTickFormat: (v: number) => string
+  yTickColor?: (v: number) => string
   xGap: number
   yGap: number
   /** dash pattern for grid lines (e.g. [3, 3]); solid when omitted. */
@@ -35,6 +36,7 @@ export interface AxisConfig {
     side: 'left' | 'right'
     offset: number
     color: string
+    colorForValue?: (v: number) => string
     values: number[]
     format: (v: number) => string
   }>
@@ -185,7 +187,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           const t = ensureText(yLabels, i)
           t.setAttribute('x', String(plotLeft - c.yGap))
           t.setAttribute('y', String(py))
-          t.setAttribute('fill', c.yAxisColor ?? c.axisColor)
+          t.setAttribute('fill', c.yTickColor?.(yTicks[i]) ?? c.yAxisColor ?? c.axisColor)
           t.style.font = c.font
           t.setAttribute('text-anchor', 'end')
           t.setAttribute('dominant-baseline', 'central')
@@ -200,7 +202,7 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
             const t = ensureText(yLabels, labelIndex++)
             t.setAttribute('x', String(axis.side === 'left' ? plotLeft - axis.offset : plotRight + axis.offset))
             t.setAttribute('y', String(yScale(value)))
-            t.setAttribute('fill', axis.color)
+            t.setAttribute('fill', axis.colorForValue?.(value) ?? axis.color)
             t.style.font = c.font
             t.setAttribute('text-anchor', axis.side === 'left' ? 'end' : 'start')
             t.setAttribute('dominant-baseline', 'central')

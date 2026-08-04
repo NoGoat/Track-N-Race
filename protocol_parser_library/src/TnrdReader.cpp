@@ -25,6 +25,7 @@ struct LapScanFields {
     int lap_num{};
     int current_lap_ms{};
     int last_lap_ms{};
+    float lap_distance_m{};
 };
 // Partial read of a "status" row for Electron-only load-time chart metadata.
 struct StatusScanFields {
@@ -32,6 +33,10 @@ struct StatusScanFields {
     double fuel_kg{};
     int tyre_compound{};
     int visual_compound{};
+};
+struct SessionHistoryScanFields {
+    std::optional<int> latest_lap_num;
+    std::optional<int> latest_lap_time_ms;
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
@@ -85,6 +90,7 @@ static uint8_t scanType(const char* d, int len) {
             if (r >= 7  && std::memcmp(v, "motion\"",     7)  == 0) return 11;
             if (r >= 10 && std::memcmp(v, "motion_ex\"", 10)  == 0) return 12;
             if (r >= 9  && std::memcmp(v, "positions",    9)  == 0) return 13;
+            if (r >= 23 && std::memcmp(v, "session_history_fastest", 23) == 0) return 14;
             return 0;
         }
     }
@@ -171,6 +177,8 @@ void TnrdReader::buildIndex(const std::string& filePath) {
 
     int   curLapNum   = -1;
     float curLapStart = 0.0f;
+    int   latestHistoryLapNum = 0;
+    int   latestHistoryLapTimeMs = 0;
 
     auto commitLine = [&](const char* ld, int ll, long lineOffset) {
         if (ll <= 1) return;
@@ -219,10 +227,21 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             hotCum_.push_back((uint32_t)hotTimes_.size());
         }
 
-        if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12) return;
+        if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12 && tid != 14) return;
 
+        if (tid == 14) {
+            SessionHistoryScanFields history;
+            (void)glz::read<kPartialRead>(history, std::string_view(ld, (size_t)ll));
+            if (history.latest_lap_num && history.latest_lap_time_ms &&
+                *history.latest_lap_num > 0 && *history.latest_lap_time_ms > 0) {
+                latestHistoryLapNum = *history.latest_lap_num;
+                latestHistoryLapTimeMs = *history.latest_lap_time_ms;
+            }
+            return;
+        }
+
+        LapScanFields lf;
         if (tid == 4) {  // lap
-            LapScanFields lf;
             (void)glz::read<kPartialRead>(lf, std::string_view(ld, (size_t)ll));
             int lapNum = lf.lap_num;
             if (curLapNum < 0) {
@@ -230,7 +249,16 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                 curLapStart = lf.current_lap_ms > 0 ? t - lf.current_lap_ms / 1000.0f : t;
             } else if (lapNum > curLapNum) {
                 auto it = lapBlocks_.find(curLapNum);
-                if (it != lapBlocks_.end()) it->second.endSessionTime = t;
+                if (it != lapBlocks_.end()) {
+                    it->second.endSessionTime = t;
+                    if (loadedFormat_ == TnrdFormat::ZstdV3 && trackLengthM_ > 0 &&
+                        lf.last_lap_ms > 0 &&
+                        (it->second.lapProgress.empty() ||
+                         it->second.lapProgress.back().lap_distance_m < trackLengthM_)) {
+                        it->second.lapProgress.push_back(
+                            { t, lf.last_lap_ms, (float)trackLengthM_ });
+                    }
+                }
                 int lapTimeMs = lf.last_lap_ms;
                 scannedLaps_.push_back({ curLapNum, curLapStart, t, lapTimeMs });
                 if (lapTimeMs > 0 && lapTimeMs < 300000 &&
@@ -253,6 +281,12 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             else if (tid == 3)  it->second.damageHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 11) it->second.motionHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 12) it->second.motionExHistory.push_back({ t, std::string(ld, ll) });
+            else if (tid == 4 && loadedFormat_ == TnrdFormat::ZstdV3 &&
+                     lf.lap_num == curLapNum && std::isfinite(lf.lap_distance_m) &&
+                     lf.lap_distance_m >= 0.0f) {
+                it->second.lapProgress.push_back(
+                    { t, lf.current_lap_ms, lf.lap_distance_m });
+            }
 
             // Slim Speed/RPM/ERS chart points for lapBlocksMessage().
             if (binaryPlayback_) {
@@ -307,6 +341,15 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     if (curLapNum >= 0) {
         auto it = lapBlocks_.find(curLapNum);
         if (it != lapBlocks_.end()) it->second.endSessionTime = totalTime_;
+        if (latestHistoryLapNum == curLapNum && latestHistoryLapTimeMs > 0) {
+            scannedLaps_.push_back(
+                { curLapNum, curLapStart, totalTime_, latestHistoryLapTimeMs });
+            if (latestHistoryLapTimeMs < 300000 &&
+                (fastestLapMs_ == 0 || latestHistoryLapTimeMs < fastestLapMs_)) {
+                fastestLapMs_ = latestHistoryLapTimeMs;
+                fastestLapNum_ = curLapNum;
+            }
+        }
     }
     auto byT = [](const TimedRaw& a, const TimedRaw& b) { return a.t < b.t; };
     std::sort(coldDamage_.begin(), coldDamage_.end(), byT);
@@ -359,7 +402,8 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     lastError_.clear();
     std::string detectError;
     const TnrdFormat detected = detail::detectTnrdFormat(path, &detectError);
-    if (detected != format) {
+    const bool codecMatches = detected == format || (isZstd(detected) && isZstd(format));
+    if (!codecMatches) {
         lastError_ = detected == TnrdFormat::Unknown
             ? (detectError.empty() ? "The file format could not be identified." : detectError)
             : std::string("Expected ") + toString(format) + " but found " + toString(detected) + ".";
@@ -415,11 +459,15 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             close();
             return false;
         }
-        const char* expectedMagic = format == TnrdFormat::ZstdV2 ? "TNRD_V2" : "TNRD_V1";
-        const bool compressionOk = format == TnrdFormat::ZstdV2
-            ? (outHeader.compression && *outHeader.compression == "zstd")
-            : (!outHeader.compression || *outHeader.compression == "gzip");
-        if (outHeader.magic != expectedMagic || !compressionOk) {
+        TnrdFormat headerFormat = TnrdFormat::Unknown;
+        if (outHeader.magic == "TNRD_V1") headerFormat = TnrdFormat::GzipV1;
+        else if (outHeader.magic == "TNRD_V2") headerFormat = TnrdFormat::ZstdV2;
+        else if (outHeader.magic == "TNRD_V3") headerFormat = TnrdFormat::ZstdV3;
+        const bool compressionOk = isZstd(detected)
+            ? (isZstd(headerFormat) && outHeader.compression && *outHeader.compression == "zstd")
+            : (headerFormat == TnrdFormat::GzipV1 &&
+               (!outHeader.compression || *outHeader.compression == "gzip"));
+        if (!compressionOk) {
             lastError_ = "The recording header does not match its compression format.";
             std::fprintf(stderr,
                          "[tnrd] load FAILED: header/container mismatch: container=%s magic='%s' compression='%s'\n",
@@ -428,6 +476,8 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             close();
             return false;
         }
+        loadedFormat_ = headerFormat;
+        trackLengthM_ = outHeader.track_length_m.value_or(0);
     }
 
     buildIndex(tempPath_);
@@ -447,9 +497,8 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     }
     std::fseek(tempFile_, 0, SEEK_END);
     tempFileSize_ = std::ftell(tempFile_);
-    loadedFormat_ = format;
     std::fprintf(stderr, "[tnrd] load OK: format=%s rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
-                 toString(format), index_.size(), startTime_, totalTime_,
+                 toString(loadedFormat_), index_.size(), startTime_, totalTime_,
                  outHeader.track_name.c_str(), outHeader.session_name.c_str());
     return true;
 }
@@ -479,6 +528,7 @@ void TnrdReader::close() {
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
     initialFuelKg_ = -1.0;
+    trackLengthM_ = 0;
     startTime_ = totalTime_ = 0.0f;
     tempFileSize_ = 0;
     playPos_ = 0;
@@ -658,6 +708,11 @@ std::string TnrdReader::lapBlocksMessage() const {
     }
     msg.fastestLapNum = fastestLapNum_;
     msg.initialFuelKg = initialFuelKg_;
+    msg.tnrdVersion = loadedFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
+                    : loadedFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
+                    : loadedFormat_ == TnrdFormat::GzipV1 ? "TNRD_V1" : "";
+    msg.deltaAvailable = loadedFormat_ == TnrdFormat::ZstdV3;
+    msg.trackLengthM = loadedFormat_ == TnrdFormat::ZstdV3 ? trackLengthM_ : 0;
     msg.events.reserve(scannedEvents_.size());
     for (const auto& s : scannedEvents_) msg.events.push_back(glz::raw_json{ s });
     for (const auto& l : scannedLaps_)   msg.laps.push_back({ l.lapNum, l.lapTimeMs });
@@ -685,6 +740,8 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     for (const auto& row : damageRows) {
         msg.damageHistory.push_back(glz::raw_json{ row });
     }
+    if (loadedFormat_ == TnrdFormat::ZstdV3)
+        msg.lapProgress = b.lapProgress;
     return writeJson(msg);
 }
 
@@ -808,7 +865,7 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart)
     SeekFlush f;
     // Backfill window: the whole current lap, but at most 10 minutes — mirrors
     // the TS engine's extractAndBroadcastSeek.
-    float windowStart = std::min(target - 600.0f, currentLapStart);
+    float windowStart = std::max(target - 600.0f, currentLapStart);
 
     if (!hotTimes_.empty()) {
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();

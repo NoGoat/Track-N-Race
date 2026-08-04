@@ -22,15 +22,19 @@ export interface AnalyzeMetricDefinition {
 export interface AnalyzeSeriesConfig {
   metricId: AnalyzeMetricId
   color: string
+  negativeColor?: string
   visible: boolean
+  showYAxis: boolean
 }
 
 export interface AnalyzeConfig {
-  version: 1
+  version: 2
   collapsed: boolean
-  showYAxis: boolean
   series: AnalyzeSeriesConfig[]
 }
+
+export const DEFAULT_DELTA_POSITIVE_COLOR = '#C4162A'
+export const DEFAULT_DELTA_NEGATIVE_COLOR = '#37872D'
 
 const number = (digits = 0) => (value: number) => value.toFixed(digits)
 const withUnit = (unit: string, digits = 0) => (value: number) => `${value.toFixed(digits)}${unit}`
@@ -75,31 +79,48 @@ export const ANALYZE_METRICS = [...base, ...tyreMetrics]
 export const ANALYZE_METRIC_BY_ID = new Map(ANALYZE_METRICS.map(def => [def.id, def]))
 
 export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
-  version: 1,
+  version: 2,
   collapsed: false,
-  showYAxis: true,
-  series: ['speed', 'rpm', 'ers'].map(metricId => ({
-    metricId,
-    color: ANALYZE_METRIC_BY_ID.get(metricId)!.defaultColor,
-    visible: true,
-  })),
+  series: [
+    ...['speed', 'rpm', 'ers'].map(metricId => ({
+      metricId,
+      color: ANALYZE_METRIC_BY_ID.get(metricId)!.defaultColor,
+      visible: true,
+      showYAxis: true,
+    })),
+    { metricId: 'delta', color: DEFAULT_DELTA_POSITIVE_COLOR, negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR, visible: true, showYAxis: true },
+  ],
 }
 
 export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | undefined): AnalyzeConfig {
   const seen = new Set<string>()
+  const defaultShowYAxis = (value as (Partial<AnalyzeConfig> & { showYAxis?: boolean }) | null | undefined)?.showYAxis !== false
   const inputSeries = Array.isArray(value?.series) ? value.series : null
   const hasSeries = inputSeries !== null
-  const series = inputSeries ? inputSeries.flatMap(item => {
+  const series: AnalyzeSeriesConfig[] = inputSeries ? inputSeries.flatMap<AnalyzeSeriesConfig>(item => {
+    if (item?.metricId === 'delta' && !seen.has('delta')) {
+      seen.add('delta')
+      return [{
+        metricId: 'delta',
+        color: /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color : DEFAULT_DELTA_POSITIVE_COLOR,
+        negativeColor: /^#[0-9a-f]{6}$/i.test(item.negativeColor ?? '') ? item.negativeColor : DEFAULT_DELTA_NEGATIVE_COLOR,
+        visible: item.visible !== false,
+        showYAxis: typeof item.showYAxis === 'boolean' ? item.showYAxis : defaultShowYAxis,
+      }]
+    }
     const def = item && ANALYZE_METRIC_BY_ID.get(item.metricId)
     if (!def || seen.has(def.id)) return []
     seen.add(def.id)
     const color = /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color : def.defaultColor
-    return [{ metricId: def.id, color, visible: item.visible !== false }]
+    return [{ metricId: def.id, color, visible: item.visible !== false, showYAxis: typeof item.showYAxis === 'boolean' ? item.showYAxis : defaultShowYAxis }]
   }) : []
+  if (!seen.has('delta')) series.push({
+    metricId: 'delta', color: DEFAULT_DELTA_POSITIVE_COLOR,
+    negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR, visible: true, showYAxis: true,
+  })
   return {
-    version: 1,
+    version: 2,
     collapsed: value?.collapsed === true,
-    showYAxis: value?.showYAxis !== false,
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),
   }
 }

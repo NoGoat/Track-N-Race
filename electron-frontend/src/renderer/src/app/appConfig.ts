@@ -54,7 +54,7 @@ export interface TyresLayout { charts: { surfaceTemp: boolean; innerTemp: boolea
 export const DEFAULT_TYRES_LAYOUT: TyresLayout = { charts: { surfaceTemp: true, innerTemp: true, brakeTemp: true, tyreLife: true } }
 
 export const TAB_LABELS: Record<Tab, string> = {
-  core: 'Overview', analyze: 'Analyze', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
+  core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
 }
 
 export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])

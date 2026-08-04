@@ -29,8 +29,7 @@ public:
     uint16_t activeFormat() const { return activeFormat_; }
 
     struct Result {
-        bool                     dropped    = false;  // invalid / duplicate / live-rate-limited
-        bool                     liveSuppressed = false; // parsed for recording, hidden from live sinks
+        bool                     dropped    = false;  // invalid format or duplicate frame
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
         float                    sessionTime = -1.0f;
@@ -43,12 +42,10 @@ public:
     // Decode one raw UDP datagram. `ts` is the ISO timestamp to stamp on rows.
     // `wantHotJson` (true == logging on) makes the hot 60 Hz rows additionally
     // serialised to JSON in `hotJson` so they can be recorded; the binary form is
-    // always produced for the live channel. When `preserveStatusForRecording`
-    // is true, Car Status packets inside their live-publication interval are
-    // still parsed and returned with `liveSuppressed` set so the engine can
-    // record them without increasing the dashboard update rate.
+    // always produced for the live channel. Packet cadence is controlled by the
+    // game's UDP send-rate setting; the parser does not wall-clock throttle it.
     Result feed(const uint8_t* data, int length, const std::string& ts,
-                bool wantHotJson, bool preserveStatusForRecording = false);
+                bool wantHotJson);
 
     // The current protocol_status control row as a serialised JSON string.
     // The engine emits this on construction and after setOverride.
@@ -59,7 +56,7 @@ public:
     // format's i18n catalog / capabilities / aero mode.
     static std::string statusRowForFormat(uint16_t format);
 
-    // Reset rate-limit / debounce state (e.g. on UDP restart).
+    // Reset duplicate-frame / debounce state (e.g. on UDP restart).
     void reset();
 
 private:
@@ -72,10 +69,9 @@ private:
     bool      warnActive_  = false;
     uint16_t  warnForced_  = 0;
 
-    // Fixed tables indexed by packetId (0..15); see Parser.cpp rate-limit logic.
+    // Fixed tables indexed by packetId (0..15) for exact duplicate-frame checks.
     std::array<uint32_t, 16> lastFrameId_{};
     std::array<bool,     16> haveFrameId_{};
-    std::array<uint64_t, 16> lastSlowMs_{};
 
     uint16_t effectiveFormat(uint16_t incoming) const;
 };
