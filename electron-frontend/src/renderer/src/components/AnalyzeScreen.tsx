@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
-import Select, { type SingleValue } from 'react-select'
+import Select, { type GroupBase, type SingleValue } from 'react-select'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
@@ -11,6 +11,7 @@ import {
 } from '../lib/analyzeMetrics'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
+import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
@@ -46,6 +47,23 @@ interface LapOption {
   compoundColor: string | null
   lapTime: string | null
   isFastest: boolean
+}
+interface ComparisonLapOption extends Omit<LapOption, 'value'> {
+  value: string
+  lapNum: number
+}
+interface SecondaryFileData {
+  filename: string
+  blocks: LapBlock[]
+  fastestLapNum: number | null
+  lapTimesByNum: Record<number, number>
+  deltaAvailable: boolean
+}
+type AnalysisFileSource = 'file1' | 'file2'
+interface PendingCircuitMismatch {
+  filePath: string
+  data: any
+  trackName: string
 }
 
 const COMPOUND_COLORS: Record<number, string> = {
@@ -91,29 +109,47 @@ function formatLapOption(option: LapOption) {
   </span>
 }
 
-function AnalyzeLapSelector({
-  id, label, value, options, placeholder, onChange, styles, isClearable = true, isDisabled = false,
+function formatComparisonLapOption(option: ComparisonLapOption) {
+  return formatLapOption({ ...option, value: option.lapNum })
+}
+
+function AnalyzeComparisonSelector({
+  id, label, placeholder, value, options, onChange, styles, isDisabled = false,
 }: {
   id: string
   label: string
-  value: LapOption | null
-  options: LapOption[]
   placeholder: string
-  onChange: (option: SingleValue<LapOption>) => void
+  value: ComparisonLapOption | null
+  options: GroupBase<ComparisonLapOption>[]
+  onChange: (option: SingleValue<ComparisonLapOption>) => void
   styles: ReturnType<typeof buildSelectStyles>
-  isClearable?: boolean
   isDisabled?: boolean
 }) {
   return <div className="flex items-center gap-2">
     <label htmlFor={id} className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
     <div className="flex-1 min-w-0">
-      <Select<LapOption, false>
+      <Select<ComparisonLapOption, false, GroupBase<ComparisonLapOption>>
         inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
-        formatOptionLabel={formatLapOption} styles={styles} components={selectComponents}
-        isSearchable={false} isClearable={isClearable} isDisabled={isDisabled} menuPortalTarget={document.body}
+        formatOptionLabel={formatComparisonLapOption} styles={styles} components={selectComponents}
+        isSearchable={false} isClearable isDisabled={isDisabled} menuPortalTarget={document.body}
       />
     </div>
   </div>
+}
+
+function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
+  if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
+  return {
+    lapNum: payload.lapNum,
+    startSessionTime: payload.startSessionTime,
+    endSessionTime: payload.endSessionTime,
+    telemetry: payload.telemetry ?? [],
+    motion: payload.motionHistory ?? [],
+    motionEx: payload.motionExHistory ?? [],
+    statusHistory: payload.statusHistory ?? [],
+    damageHistory: payload.damageHistory ?? [],
+    lapProgress: payload.lapProgress ?? [],
+  }
 }
 
 function AnalyzeColorPicker({
@@ -251,7 +287,7 @@ function DeltaColorPicker({
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
-  currentLapNum, comparison, fixedMode, primaryOverride, controlsRef,
+  currentLapNum, comparison, fixedMode, primaryOverride, distanceMode, controlsRef,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -261,6 +297,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   comparison: AnalyzeLapData | null
   fixedMode: boolean
   primaryOverride: AnalyzeLapData | null
+  distanceMode: boolean
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
 }) {
   const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
@@ -271,7 +308,6 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   const lapProgress = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapProgress)
   const startSessionTime = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapStartTime)
   const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
-  const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
   const playbackCurrentLap = useTelemetryStore(s =>
     !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
@@ -300,7 +336,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       selected={selected}
       primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
       comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
-      distanceMode={deltaAvailable} trackLengthM={trackLengthM}
+      distanceMode={distanceMode} trackLengthM={trackLengthM}
       deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
       zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
     />
@@ -327,10 +363,21 @@ export default function AnalyzeScreen({
   const fastestLapNum = useTelemetryStore(s => s.fastestLap?.lapNum ?? null)
   const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
   const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
+  const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)
+  const primaryTrackName = useTelemetryStore(s => s.playbackTrackName)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
+  const [secondaryFile, setSecondaryFile] = useState<SecondaryFileData | null>(null)
+  const [secondaryLapNum, setSecondaryLapNum] = useState<number | null>(null)
+  const [lapASource, setLapASource] = useState<AnalysisFileSource>('file1')
+  const [lapBSource, setLapBSource] = useState<AnalysisFileSource>('file1')
+  const [secondaryLapCache, setSecondaryLapCache] = useState<Record<number, AnalyzeLapData>>({})
+  const [secondaryLoading, setSecondaryLoading] = useState(false)
+  const [secondaryError, setSecondaryError] = useState<string | null>(null)
+  const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
   const requestedRef = useRef(new Set<number>())
+  const secondaryRequestedRef = useRef(new Set<number>())
   const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
@@ -349,10 +396,10 @@ export default function AnalyzeScreen({
     options: ANALYZE_METRICS.filter(metric => metric.group === group && !selectedIds.has(metric.id)).map(metric => ({ value: metric.id, label: metric.label })),
   })).filter(group => group.options.length), [selectedIds])
 
-  const lapOption = useCallback((block: LapBlock): LapOption => {
+  const makeLapOption = useCallback((block: LapBlock, fastest: number | null, lapTimes: Record<number, number>): LapOption => {
     const status = lastTyreStatus(block)
-    const isFastest = block.lapNum === fastestLapNum
-    const lapTime = formatLapTimeMs(lapTimesByNum[block.lapNum])
+    const isFastest = block.lapNum === fastest
+    const lapTime = formatLapTimeMs(lapTimes[block.lapNum])
     if (!status) return {
       value: block.lapNum,
       label: `Lap ${block.lapNum}${lapTime ? ` · ${lapTime}` : ''}${isFastest ? ' · FL' : ''}`,
@@ -367,21 +414,120 @@ export default function AnalyzeScreen({
       lapTime,
       isFastest,
     }
-  }, [fastestLapNum, lapTimesByNum, tn])
+  }, [tn])
 
-  const compareOptions = useMemo<LapOption[]>(() => [
-    { value: 0, label: 'None', compound: null, compoundColor: null, lapTime: null, isFastest: false },
-    ...(blocks ?? []).map(lapOption),
-  ], [blocks, lapOption])
-  const compareValue = compareOptions.find(option => option.value === (compareLapNum ?? 0)) ?? compareOptions[0]
-  const lapOptions = useMemo<LapOption[]>(() => (blocks ?? []).map(lapOption), [blocks, lapOption])
-  const lapAValue = lapOptions.find(option => option.value === fixedLapMode.lapA) ?? null
-  const lapBValue = lapOptions.find(option => option.value === fixedLapMode.lapB) ?? null
-  const fixedPrimary = fixedLapMode.lapA !== null ? lapCache[fixedLapMode.lapA] ?? null : null
-  const fixedComparison = fixedLapMode.lapB !== null ? lapCache[fixedLapMode.lapB] ?? null : null
+  const lapOption = useCallback(
+    (block: LapBlock): LapOption => makeLapOption(block, fastestLapNum, lapTimesByNum),
+    [fastestLapNum, lapTimesByNum, makeLapOption],
+  )
+
+  const file1CompareOptions = useMemo<ComparisonLapOption[]>(() => (blocks ?? []).map(block => {
+    const option = lapOption(block)
+    return { ...option, value: `file1:${block.lapNum}`, lapNum: block.lapNum }
+  }), [blocks, lapOption])
+  const file2CompareOptions = useMemo<ComparisonLapOption[]>(() => (secondaryFile?.blocks ?? []).map(block => {
+    const option = makeLapOption(block, secondaryFile?.fastestLapNum ?? null, secondaryFile?.lapTimesByNum ?? {})
+    return { ...option, value: `file2:${block.lapNum}`, lapNum: block.lapNum }
+  }), [makeLapOption, secondaryFile])
+  const compareOptions = useMemo<GroupBase<ComparisonLapOption>[]>(() => [
+    { label: 'Primary File', options: file1CompareOptions },
+    ...(secondaryFile ? [{ label: 'Secondary File', options: file2CompareOptions }] : []),
+  ], [file1CompareOptions, file2CompareOptions, secondaryFile])
+  const compareValue = secondaryLapNum !== null
+    ? file2CompareOptions.find(option => option.lapNum === secondaryLapNum) ?? null
+    : file1CompareOptions.find(option => option.lapNum === compareLapNum) ?? null
+  const lapAValue = fixedLapMode.lapA === null ? null
+    : (lapASource === 'file2' ? file2CompareOptions : file1CompareOptions)
+      .find(option => option.lapNum === fixedLapMode.lapA) ?? null
+  const lapBValue = fixedLapMode.lapB === null ? null
+    : (lapBSource === 'file2' ? file2CompareOptions : file1CompareOptions)
+      .find(option => option.lapNum === fixedLapMode.lapB) ?? null
+  const fixedPrimary = fixedLapMode.lapA === null ? null
+    : lapASource === 'file2'
+      ? secondaryLapCache[fixedLapMode.lapA] ?? null
+      : lapCache[fixedLapMode.lapA] ?? null
+  const fixedComparison = fixedLapMode.lapB === null ? null
+    : lapBSource === 'file2'
+      ? secondaryLapCache[fixedLapMode.lapB] ?? null
+      : lapCache[fixedLapMode.lapB] ?? null
   const comparison = fixedLapMode.enabled
     ? fixedComparison
-    : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+    : secondaryLapNum !== null
+      ? secondaryLapCache[secondaryLapNum] ?? null
+      : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+  const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
+    ? (lapASource === 'file1' || secondaryFile?.deltaAvailable === true) &&
+      (lapBSource === 'file1' || secondaryFile?.deltaAvailable === true)
+    : secondaryLapNum === null || secondaryFile?.deltaAvailable === true)
+
+  const applySecondaryFile = useCallback((filePath: string, data: any) => {
+    const times: Record<number, number> = {}
+    for (const lap of data?.laps ?? []) {
+      if (Number.isFinite(lap.lapNum) && Number.isFinite(lap.lapTimeMs) && lap.lapTimeMs > 0) {
+        times[lap.lapNum] = lap.lapTimeMs
+      }
+    }
+    setSecondaryFile({
+      filename: filePath.split(/[\\/]/).pop() ?? filePath,
+      blocks: Array.isArray(data?.blocks) ? data.blocks : [],
+      fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
+      lapTimesByNum: times,
+      deltaAvailable: data?.deltaAvailable === true && data?.tnrdVersion === 'TNRD_V3',
+    })
+    setSecondaryLapCache({})
+    secondaryRequestedRef.current.clear()
+    setSecondaryLapNum(null)
+    setLapASource('file1')
+    setLapBSource('file1')
+  }, [])
+
+  const loadSecondaryFile = useCallback(async () => {
+    const filePath = await window.fsBridge.selectTNRDFile()
+    if (!filePath) return
+    setSecondaryLoading(true)
+    setSecondaryError(null)
+    const result = await window.analysisBridge.loadFile(filePath)
+    setSecondaryLoading(false)
+    if (!result.ok) {
+      setSecondaryFile(null)
+      setSecondaryLapCache({})
+      secondaryRequestedRef.current.clear()
+      setSecondaryLapNum(null)
+      setLapASource('file1')
+      setLapBSource('file1')
+      setSecondaryError(result.error ?? 'The recording could not be opened.')
+      return
+    }
+    const data = result.data as any
+    if (primaryTrackId !== null && Number.isFinite(result.trackId) && result.trackId !== primaryTrackId) {
+      setPendingCircuitMismatch({
+        filePath,
+        data,
+        trackName: result.trackName || `Circuit ${result.trackId}`,
+      })
+      return
+    }
+    applySecondaryFile(filePath, data)
+  }, [applySecondaryFile, primaryTrackId])
+
+  const clearSecondaryFile = useCallback(() => {
+    window.analysisBridge.closeFile()
+    setSecondaryFile(null)
+    setSecondaryLapCache({})
+    secondaryRequestedRef.current.clear()
+    setSecondaryLapNum(null)
+    setSecondaryError(null)
+    setPendingCircuitMismatch(null)
+    if (lapASource === 'file2' || lapBSource === 'file2') {
+      onFixedLapModeChange({
+        ...fixedLapMode,
+        lapA: lapASource === 'file2' ? null : fixedLapMode.lapA,
+        lapB: lapBSource === 'file2' ? null : fixedLapMode.lapB,
+      })
+    }
+    setLapASource('file1')
+    setLapBSource('file1')
+  }, [fixedLapMode, lapASource, lapBSource, onFixedLapModeChange])
 
   useEffect(() => {
     requestedRef.current.clear()
@@ -420,7 +566,7 @@ export default function AnalyzeScreen({
   useEffect(() => {
     if (!playbackFilename) return
     const targets = fixedLapMode.enabled
-      ? [fixedLapMode.lapA, fixedLapMode.lapB]
+      ? [lapASource === 'file1' ? fixedLapMode.lapA : null, lapBSource === 'file1' ? fixedLapMode.lapB : null]
       : [compareLapNum, effectiveCurrentLapNum]
     for (const lapNum of targets) {
       if (lapNum === null) continue
@@ -432,7 +578,24 @@ export default function AnalyzeScreen({
       requestedRef.current.add(lapNum)
       window.playerBridge.getLapData(lapNum)
     }
-  }, [compareLapNum, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapCache, playbackFilename])
+  }, [compareLapNum, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
+
+  useEffect(() => {
+    const targets = [
+      secondaryLapNum,
+      fixedLapMode.enabled && lapASource === 'file2' ? fixedLapMode.lapA : null,
+      fixedLapMode.enabled && lapBSource === 'file2' ? fixedLapMode.lapB : null,
+    ]
+    for (const lapNum of new Set(targets)) {
+      if (lapNum === null || secondaryLapCache[lapNum] || secondaryRequestedRef.current.has(lapNum)) continue
+      secondaryRequestedRef.current.add(lapNum)
+      window.analysisBridge.getLapData(lapNum).then(payload => {
+        const lapData = parseAnalyzeLapData(payload)
+        if (lapData) setSecondaryLapCache(cache => ({ ...cache, [lapData.lapNum]: lapData }))
+        else secondaryRequestedRef.current.delete(lapNum)
+      })
+    }
+  }, [fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
@@ -496,32 +659,72 @@ export default function AnalyzeScreen({
                   <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${fixedLapMode.enabled ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${fixedLapMode.enabled ? 'translate-x-4' : ''}`} /></span>
                 </button>
               </div>}
+              {playbackFilename && blocks && <div className="space-y-1">
+                <div className="h-8 flex items-center gap-1 min-w-0">
+                  <span
+                    className={`flex-1 min-w-0 truncate text-[11px] ${secondaryFile ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}
+                    title={secondaryFile?.filename}
+                  >
+                    {secondaryLoading ? 'Loading file' : secondaryFile?.filename ?? 'Choose file'}
+                  </span>
+                  <button
+                    type="button" onClick={loadSecondaryFile} disabled={secondaryLoading}
+                    title={secondaryFile ? 'Replace Secondary File' : 'Open Secondary File'}
+                    aria-label={secondaryFile ? 'Replace Secondary File' : 'Open Secondary File'}
+                    className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
+                  ><Upload size={14} /></button>
+                  {secondaryFile && <button
+                    type="button" onClick={clearSecondaryFile} disabled={secondaryLoading}
+                    title="Clear Secondary File" aria-label="Clear Secondary File"
+                    className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[#d44252] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40"
+                  ><X size={13} /></button>}
+                </div>
+                {secondaryError && <div className="px-1 text-[9px] text-[#d44252]">{secondaryError}</div>}
+              </div>}
               {fixedLapMode.enabled ? (
                 <div className="space-y-2">
-                  <AnalyzeLapSelector
-                    id="analyze-lap-a" label="Lap A" value={lapAValue} options={lapOptions} placeholder="Select Lap A…"
-                    onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.value ?? null })}
+                  <AnalyzeComparisonSelector
+                    id="analyze-lap-a" label="Lap A" value={lapAValue} options={compareOptions} placeholder="Select Lap A…"
+                    onChange={option => {
+                      setLapASource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
+                      onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })
+                    }}
                     styles={selectStyles}
                   />
-                  <AnalyzeLapSelector
-                    id="analyze-lap-b" label="Lap B" value={lapBValue} options={lapOptions} placeholder="Select Lap B…"
-                    onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.value ?? null })}
+                  <AnalyzeComparisonSelector
+                    id="analyze-lap-b" label="Lap B" value={lapBValue} options={compareOptions} placeholder="Select Lap B…"
+                    onChange={option => {
+                      setLapBSource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
+                      onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })
+                    }}
                     styles={selectStyles}
                   />
                 </div>
               ) : (
                 <div>
-                  <AnalyzeLapSelector
-                    id="analyze-compare-lap" label="Compare Lap" value={compareValue} options={compareOptions} placeholder="Select lap…"
-                    onChange={option => onCompareLapChange(option && option.value !== 0 ? option.value : null)}
-                    styles={selectStyles} isClearable={false} isDisabled={!playbackFilename || !blocks}
+                  <AnalyzeComparisonSelector
+                    id="analyze-compare-lap" label="Compare Lap" placeholder="Select lap…"
+                    value={compareValue} options={compareOptions}
+                    onChange={option => {
+                      if (!option) {
+                        setSecondaryLapNum(null)
+                        onCompareLapChange(null)
+                      } else if (option.value.startsWith('file2:')) {
+                        setSecondaryLapNum(option.lapNum)
+                        onCompareLapChange(null)
+                      } else {
+                        setSecondaryLapNum(null)
+                        onCompareLapChange(option.lapNum)
+                      }
+                    }}
+                    styles={selectStyles} isDisabled={!playbackFilename || !blocks}
                   />
                 </div>
               )}
               <button
                 type="button"
                 onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
-                className="w-full h-7 rounded border border-[var(--border)] flex items-center justify-center gap-2 text-[9px] uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                className={`${TEXT_ACTION_BUTTON_CLASS} w-full`}
               >
                 <span>Toggle Y-Axes</span>
               </button>
@@ -542,15 +745,15 @@ export default function AnalyzeScreen({
                       negativeColor={item.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
                       onPositiveChange={color => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, color } : entry))}
                       onNegativeChange={negativeColor => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, negativeColor } : entry))}
-                      disabled={!!playbackFilename && !deltaAvailable}
+                      disabled={!!playbackFilename && !selectedDistanceMode}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="text-[10px] text-[var(--text-primary)] truncate">Delta</div>
                       <div className="text-[8px] uppercase tracking-wider text-[var(--text-secondary)] truncate">
-                        {playbackFilename && !deltaAvailable ? 'Not supported in this file.' : 'Time · + / −'}
+                        {playbackFilename && !selectedDistanceMode ? 'Not supported in this file.' : 'Time · + / −'}
                       </div>
                     </div>
-                    {(!playbackFilename || deltaAvailable) && <div className="flex items-center shrink-0">
+                    {(!playbackFilename || selectedDistanceMode) && <div className="flex items-center shrink-0">
                       <button disabled={index === 0} title="Move up" onClick={() => moveMetric('delta', -1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronLeft size={12} className="rotate-90" /></button>
                       <button disabled={index === config.series.length - 1} title="Move down" onClick={() => moveMetric('delta', 1)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-20"><ChevronRight size={12} className="rotate-90" /></button>
                       <button title={item.showYAxis ? 'Hide Y-axis' : 'Show Y-axis'} aria-label={item.showYAxis ? 'Hide Delta Y-axis' : 'Show Delta Y-axis'} onClick={() => updateSeries(config.series.map(entry => entry.metricId === 'delta' ? { ...entry, showYAxis: !entry.showYAxis } : entry))} className={`p-1 hover:text-[var(--text-primary)] ${item.showYAxis ? 'text-[var(--text-secondary)]' : 'text-[var(--text-inactive)]'}`}><Axis3d size={11} /></button>
@@ -623,7 +826,7 @@ export default function AnalyzeScreen({
           <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
           <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
           {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
-          {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{deltaAvailable ? 'Lap distance' : 'Elapsed time'}</span>}
+          {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
           <AnalyzeChartSubscriber
@@ -632,10 +835,45 @@ export default function AnalyzeScreen({
             deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
             currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
             comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
+            distanceMode={selectedDistanceMode}
             controlsRef={chartControlsRef}
           />
         </div>
       </section>
+
+      {pendingCircuitMismatch && <div
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+        role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"
+      >
+        <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
+            <div id="analysis-circuit-mismatch-title" className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
+              <AlertTriangle size={15} className="text-amber-500" />
+              <span>Circuit Mismatch</span>
+            </div>
+            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="p-6 flex flex-col gap-4">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">The Secondary File was recorded on a different circuit.</p>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">Lap comparisons may not align correctly. You can cancel or load the file anyway.</p>
+            <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] text-xs font-mono text-[var(--text-secondary)] space-y-2">
+              <div><span className="text-[var(--text-muted)]">Loaded File: </span><span className="font-semibold">{primaryTrackName || `Circuit ${primaryTrackId}`}</span></div>
+              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{pendingCircuitMismatch.trackName}</span></div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
+            <button onClick={() => setPendingCircuitMismatch(null)} className={TEXT_ACTION_BUTTON_CLASS}>Cancel</button>
+            <button onClick={() => {
+              applySecondaryFile(pendingCircuitMismatch.filePath, pendingCircuitMismatch.data)
+              setPendingCircuitMismatch(null)
+            }} className={`${TEXT_ACTION_BUTTON_CLASS} !border-[var(--border-focus)] !bg-[var(--border-focus)] !text-white hover:brightness-110`}>Load Anyway</button>
+          </div>
+        </div>
+      </div>}
     </div>
   )
 }

@@ -47,6 +47,10 @@ public:
     // chart points in lapBlocksMessage(). Off by default (JSON-only consumers).
     void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
 
+    // Include the small per-lap status summaries used for tyre labels without
+    // building the binary playback stores.
+    void setLapStatusSummaries(bool on) { lapStatusSummaries_ = on; }
+
     // Delete stale decompression temp files ("tracknrace_*.tmp") left in the OS
     // temp dir by earlier runs (or the Electron app) that exited abnormally, so
     // they can't accumulate and fill /tmp. Call once at startup — a running
@@ -128,8 +132,7 @@ private:
         std::vector<TimedRaw> motionExHistory;
         std::vector<TimedRaw> damageHistory;
         std::vector<LapProgressPoint> lapProgress; // populated only for V3
-        // Slim chart points for lapBlocksMessage(); only filled when
-        // binaryPlayback_ is on (values fall out of the hot-store parse).
+        // Slim chart points for lapBlocksMessage().
         std::vector<SlimTelemetryPoint> slimTelemetry;
         std::vector<SlimStatusPoint>    slimStatus;
     };
@@ -144,6 +147,7 @@ private:
     size_t      playPos_     = 0;
     float       damageCadenceCursor_ = 0.0f;
     bool        binaryPlayback_ = false;
+    bool        lapStatusSummaries_ = false;
     TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
     std::string lastError_;
 

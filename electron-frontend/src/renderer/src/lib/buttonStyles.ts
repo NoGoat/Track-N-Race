@@ -1,0 +1,1 @@
+export const TEXT_ACTION_BUTTON_CLASS = 'h-7 rounded border border-[var(--border)] inline-flex items-center justify-center gap-2 px-3 text-[9px] font-normal uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed'

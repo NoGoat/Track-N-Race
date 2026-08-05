@@ -1,4 +1,5 @@
 import { AlertTriangle, X } from 'lucide-react'
+import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
 
 interface PlaybackDialogsProps {
   confirmOpenFilePath: string | null
@@ -56,7 +57,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
               <button
                 onClick={() => setConfirmOpenFilePath(null)}
-                className="px-4 h-8 rounded-lg text-xs font-semibold font-mono border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all active:scale-95 cursor-pointer outline-none"
+                className={TEXT_ACTION_BUTTON_CLASS}
               >
                 No
               </button>
@@ -65,7 +66,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
                   window.playerBridge.load(confirmOpenFilePath)
                   setConfirmOpenFilePath(null)
                 }}
-                className="px-4 h-8 rounded-lg text-xs font-semibold font-mono bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] shadow-sm transition-all active:scale-95 cursor-pointer outline-none"
+                className={TEXT_ACTION_BUTTON_CLASS}
               >
                 Yes
               </button>
@@ -114,7 +115,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               <button
                 autoFocus
                 onClick={() => setPlaybackLoadError(null)}
-                className="px-5 h-8 rounded-lg text-xs font-semibold font-mono bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] shadow-sm transition-all active:scale-95 cursor-pointer outline-none"
+                className={TEXT_ACTION_BUTTON_CLASS}
               >
                 OK
               </button>

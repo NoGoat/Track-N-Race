@@ -254,33 +254,6 @@ interface DeltaSampleState {
   samples: Array<[number, number]>
   renderedCount: number
   renderedRange: number
-  diagnosticCount: number
-}
-
-interface DeltaDiagnosticContext {
-  currentLapNum: number
-  comparisonLapNum: number | null
-  currentStartSessionTime: number
-  comparisonStartSessionTime: number | null
-  currentEndSessionTime: number
-  comparisonEndSessionTime: number | null
-  currentProgressRows: number
-  comparisonProgressRows: number
-  sameProgressArray: boolean
-}
-
-function elapsedBracket(progress: ProgressMap, distance: number) {
-  const points = progress.points
-  let lo = 1, hi = points.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (points[mid].lap_distance_m < distance) lo = mid + 1
-    else hi = mid
-  }
-  return {
-    before: points[Math.max(0, Math.min(lo - 1, points.length - 1))],
-    after: points[Math.max(0, Math.min(lo, points.length - 1))],
-  }
 }
 
 function rewriteDeltaRange(
@@ -315,7 +288,6 @@ function syncDelta(
   current: ProgressMap | null,
   comparison: ProgressMap | null,
   state: DeltaSampleState,
-  diagnostic: DeltaDiagnosticContext,
 ): { range: number; changed: boolean } {
   if (!current || !comparison) {
     const changed = positive.length > 0 || negative.length > 0
@@ -337,30 +309,6 @@ function syncDelta(
     const delta = currentElapsed - comparisonElapsed
     if (!Number.isFinite(delta)) continue
     state.samples.push([distance, delta])
-    if (Math.abs(delta) >= 0.0005 && state.diagnosticCount < 50) {
-      state.diagnosticCount++
-      console.warn('[DELTA_DIAG]', JSON.stringify({
-        event: 'nonzero-calculation',
-        revision: state.revision,
-        distance,
-        delta,
-        currentElapsed,
-        comparisonElapsed,
-        ...diagnostic,
-        currentMap: {
-          points: current.points.length,
-          maxDistance: current.maxDistance,
-          maxSessionTime: current.maxSessionTime,
-          bracket: elapsedBracket(current, distance),
-        },
-        comparisonMap: {
-          points: comparison.points.length,
-          maxDistance: comparison.maxDistance,
-          maxSessionTime: comparison.maxSessionTime,
-          bracket: elapsedBracket(comparison, distance),
-        },
-      }))
-    }
   }
   const maxAbs = state.samples.reduce((max, sample) => Math.max(max, Math.abs(sample[1])), 0)
   const range = Math.max(0.5, Math.ceil(maxAbs * 10) / 10)
@@ -432,7 +380,7 @@ export default function AnalyzeTimeChart({
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
   const deltaRangeRef = useRef(0.5)
-  const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 })
+  const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0 })
   const deltaColorsRef = useRef({ positive: deltaPositiveColor, negative: deltaNegativeColor })
   const selectedRef = useRef(selected)
   const isDarkRef = useRef(isDark)
@@ -817,45 +765,17 @@ export default function AnalyzeTimeChart({
     if (distanceMode) {
       const deltaRevision = `${currentRevision}:${comparison?.lapNum ?? 0}:${comparison?.startSessionTime ?? 0}`
       if (deltaSamplesRef.current.revision !== deltaRevision) {
-        console.info('[DELTA_DIAG]', JSON.stringify({
-          event: 'revision-reset',
-          previousRevision: deltaSamplesRef.current.revision,
-          revision: deltaRevision,
-          previousSamples: deltaSamplesRef.current.samples.length,
-          positiveBufferLength: buffers.deltaPositive.length,
-          negativeBufferLength: buffers.deltaNegative.length,
-          currentLapNum: current.lapNum,
-          comparisonLapNum: comparison?.lapNum ?? null,
-          currentStartSessionTime: current.startSessionTime,
-          comparisonStartSessionTime: comparison?.startSessionTime ?? null,
-          currentEndSessionTime: current.endSessionTime,
-          comparisonEndSessionTime: comparison?.endSessionTime ?? null,
-          currentProgressRows: current.lapProgress.length,
-          comparisonProgressRows: comparison?.lapProgress.length ?? 0,
-          sameProgressArray: current.lapProgress === comparison?.lapProgress,
-        }))
-        deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 }
+        deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0 }
       }
       const deltaResult = syncDelta(
         buffers.deltaPositive, buffers.deltaNegative,
         progressByRole.current, progressByRole.comparison,
         deltaSamplesRef.current,
-        {
-          currentLapNum: current.lapNum,
-          comparisonLapNum: comparison?.lapNum ?? null,
-          currentStartSessionTime: current.startSessionTime,
-          comparisonStartSessionTime: comparison?.startSessionTime ?? null,
-          currentEndSessionTime: current.endSessionTime,
-          comparisonEndSessionTime: comparison?.endSessionTime ?? null,
-          currentProgressRows: current.lapProgress.length,
-          comparisonProgressRows: comparison?.lapProgress.length ?? 0,
-          sameProgressArray: current.lapProgress === comparison?.lapProgress,
-        },
       )
       deltaRangeRef.current = deltaResult.range
       if (deltaResult.changed) changed = true
     } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
-      deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0, diagnosticCount: 0 }
+      deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
       buffers.deltaPositive.clear()
       buffers.deltaNegative.clear()
       changed = true

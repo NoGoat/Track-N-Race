@@ -105,6 +105,62 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+struct AnalysisReaderState {
+    std::mutex mutex;
+    tnrp::TnrdReader reader;
+    std::atomic<bool> busy{false};
+};
+
+// Loads a second recording for Analysis without replacing or controlling the
+// active playback reader.
+class AnalysisLoadWorker : public Napi::AsyncWorker {
+public:
+    AnalysisLoadWorker(Napi::Env env, std::shared_ptr<AnalysisReaderState> state,
+                       std::string path)
+        : Napi::AsyncWorker(env), state_(std::move(state)), path_(std::move(path)),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        tnrp::HeaderRow header;
+        state_->reader.setLapStatusSummaries(true);
+        ok_ = state_->reader.load(path_, header);
+        if (ok_) {
+            blocksJson_ = state_->reader.lapBlocksMessage();
+            trackId_ = header.track_id;
+            trackName_ = header.track_name;
+        }
+        else error_ = state_->reader.lastError();
+    }
+
+    void OnOK() override {
+        state_->busy.store(false);
+        Napi::Object result = Napi::Object::New(Env());
+        result.Set("ok", ok_);
+        if (ok_) {
+            result.Set("blocksJson", blocksJson_);
+            result.Set("trackId", trackId_);
+            result.Set("trackName", trackName_);
+        }
+        else result.Set("error", error_);
+        deferred_.Resolve(result);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        state_->busy.store(false);
+        deferred_.Reject(e.Value());
+    }
+
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<AnalysisReaderState> state_;
+    std::string path_, blocksJson_, trackName_, error_;
+    bool ok_ = false;
+    int trackId_ = 0;
+    Napi::Promise::Deferred deferred_;
+};
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -123,6 +179,9 @@ public:
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
+            InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
+            InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
+            InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
             InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
@@ -339,6 +398,7 @@ private:
     std::shared_ptr<FlushState>    flush_    = std::make_shared<FlushState>();
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<AnalysisReaderState> analysisReader_ = std::make_shared<AnalysisReaderState>();
 
     Napi::Value StartUdp(const Napi::CallbackInfo& info) {
         TRACE("StartUdp: calling engine->startUdp()");
@@ -448,6 +508,45 @@ private:
     Napi::Value PlayerGetLapData(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber() && engine) {
             engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value());
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value AnalysisLoadFile(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        auto resolveFailure = [&env](const char* error) {
+            auto deferred = Napi::Promise::Deferred::New(env);
+            Napi::Object result = Napi::Object::New(env);
+            result.Set("ok", false);
+            result.Set("error", error);
+            deferred.Resolve(result);
+            return deferred.Promise();
+        };
+        if (info.Length() < 1 || !info[0].IsString())
+            return resolveFailure("A recording path is required.");
+        if (analysisReader_->busy.exchange(true))
+            return resolveFailure("Another comparison recording is already being opened.");
+
+        auto* worker = new AnalysisLoadWorker(
+            env, analysisReader_, info[0].As<Napi::String>().Utf8Value());
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
+    }
+
+    Napi::Value AnalysisGetLapData(const Napi::CallbackInfo& info) {
+        if (info.Length() < 1 || !info[0].IsNumber() || analysisReader_->busy.load())
+            return Napi::String::New(info.Env(), "");
+        std::lock_guard<std::mutex> lock(analysisReader_->mutex);
+        return Napi::String::New(
+            info.Env(), analysisReader_->reader.getLapDataMessage(
+                info[0].As<Napi::Number>().Int32Value()));
+    }
+
+    Napi::Value AnalysisCloseFile(const Napi::CallbackInfo& info) {
+        if (!analysisReader_->busy.load()) {
+            std::lock_guard<std::mutex> lock(analysisReader_->mutex);
+            analysisReader_->reader.close();
         }
         return info.Env().Undefined();
     }

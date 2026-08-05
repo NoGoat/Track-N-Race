@@ -10,6 +10,7 @@ import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
+import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 
 interface Props {
   isOpen: boolean
@@ -291,7 +292,7 @@ const Settings = memo(function Settings({
   const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
     <button
       onClick={onClick}
-      className="text-xs px-3 h-8 rounded-lg font-medium transition-all active:scale-95 bg-[var(--border-muted)] text-[var(--text-primary)] hover:bg-[var(--border-focus)] hover:text-white"
+      className={TEXT_ACTION_BUTTON_CLASS}
     >
       {label}
     </button>
@@ -521,11 +522,7 @@ const Settings = memo(function Settings({
         <button
           onClick={applyUdp}
           disabled={!portValid || udpStatus === 'applying'}
-          className={`text-xs px-4 h-7 rounded-lg font-medium transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 ${
-            udpStatus === 'ok'    ? 'bg-green-700/30 text-green-400' :
-            udpStatus === 'error' ? 'bg-red-900/30 text-red-400' :
-                                   'bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)]'
-          }`}
+          className={TEXT_ACTION_BUTTON_CLASS}
         >
           {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}
         </button>
@@ -601,7 +598,7 @@ const Settings = memo(function Settings({
           />
           <button
             onClick={handleSelectDirectory}
-            className="text-xs px-3 h-8 rounded-lg font-medium transition-all active:scale-95 bg-[var(--border-muted)] text-[var(--text-primary)] hover:bg-[var(--border-focus)] hover:text-white"
+            className={TEXT_ACTION_BUTTON_CLASS}
           >
             Browse
           </button>
@@ -787,7 +784,7 @@ const Settings = memo(function Settings({
                     setActiveCategory(cat.id)
                     setView('category')
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                     active && view === 'category'
                       ? 'bg-[var(--border-focus)] text-white shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
@@ -805,7 +802,7 @@ const Settings = memo(function Settings({
             {/* Attribution Button */}
             <button
               onClick={() => setView('attributions')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                 view === 'attributions'
                   ? 'bg-[var(--border-focus)] text-white shadow-sm'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
@@ -818,7 +815,7 @@ const Settings = memo(function Settings({
             {/* About Button */}
             <button
               onClick={() => setView('about')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold font-mono transition-all text-left ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                 view === 'about'
                   ? 'bg-[var(--border-focus)] text-white shadow-sm'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'

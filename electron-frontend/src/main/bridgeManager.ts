@@ -417,6 +417,32 @@ export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult
 export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
 export function playerClose(): void { engine?.playerClose() }
 
+export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {
+  if (!engine) return { ok: false, error: 'The telemetry engine is not available.' }
+  try {
+    const result = await engine.analysisLoadFile(filePath)
+    if (!result.ok) return result
+    return { ok: true, data: JSON.parse(result.blocksJson), trackId: result.trackId, trackName: result.trackName }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export function analysisGetLapData(lapNum: number): unknown | null {
+  if (!engine) return null
+  const json = engine.analysisGetLapData(lapNum)
+  if (!json) return null
+  try {
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+export function analysisCloseFile(): void {
+  engine?.analysisCloseFile()
+}
+
 export function getActiveFilePath(): string | null {
   return activeFilePath
 }

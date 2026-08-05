@@ -1,5 +1,6 @@
 import { AlertTriangle, X } from 'lucide-react'
 import type { RecordingErrorMsg } from '../../types'
+import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
 
 interface RecordingErrorDialogProps {
   error: RecordingErrorMsg | null
@@ -63,7 +64,7 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
           <button
             autoFocus
             onClick={onClose}
-            className="px-5 h-8 rounded-lg text-xs font-semibold font-mono bg-[var(--border-focus)] text-white hover:bg-[var(--border-focus-hover)] shadow-sm transition-all active:scale-95 cursor-pointer outline-none"
+            className={TEXT_ACTION_BUTTON_CLASS}
           >
             OK
           </button>

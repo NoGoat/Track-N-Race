@@ -113,6 +113,14 @@ const playerBridge = {
   }
 }
 
+const analysisBridge = {
+  loadFile: (filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> =>
+    ipcRenderer.invoke('analysis:load-file', filePath),
+  getLapData: (lapNum: number): Promise<unknown | null> =>
+    ipcRenderer.invoke('analysis:get-lap-data', lapNum),
+  closeFile: (): void => ipcRenderer.send('analysis:close-file'),
+}
+
 contextBridge.exposeInMainWorld('electronStore', storeAPI)
 contextBridge.exposeInMainWorld('platform', process.platform)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
@@ -122,3 +130,4 @@ contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
+contextBridge.exposeInMainWorld('analysisBridge', analysisBridge)

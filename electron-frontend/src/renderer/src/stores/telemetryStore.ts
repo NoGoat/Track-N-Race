@@ -121,6 +121,8 @@ export interface TelemetryStoreState {
   analyzeDeltaAvailable: boolean
   analyzeTrackLengthM: number
   playbackTnrdVersion: string | null
+  playbackTrackId: number | null
+  playbackTrackName: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
@@ -142,6 +144,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
+  playbackTrackId: null, playbackTrackName: null,
   playbackLapDataCache: {},
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
@@ -221,6 +224,7 @@ function resetSession(): void {
     analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
     analyzeLapRevision: analyzeLapRevisionVal,
     analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
+    playbackTrackId: null, playbackTrackName: null,
     playbackLapDataCache: {},
   })
 }
@@ -273,6 +277,13 @@ function onLap(lap: LapRow): void {
 
 function handleMsg(msg: GatewayMsg): void {
   switch (msg.type) {
+    case 'playback_loaded': {
+      set({
+        playbackTrackId: msg.ok ? msg.header?.track_id ?? null : null,
+        playbackTrackName: msg.ok ? msg.header?.track_name ?? null : null,
+      })
+      break
+    }
     case 'playback_close': {
       isPlaybackFlag = false
       resetSession()

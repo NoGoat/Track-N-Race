@@ -338,6 +338,12 @@ export interface PlaybackSeekFlushMsg {
   lapNum: number
 }
 
+export interface PlaybackLoadedMsg {
+  type: 'playback_loaded'
+  ok: boolean
+  header: { track_id: number; track_name: string } | null
+}
+
 export interface PlaybackControlMsg {
   type:
     | 'playback_close'
@@ -368,6 +374,7 @@ export type GatewayMsg =
   | PlaybackFastestLapMsg
   | PlaybackPreviousLapMsg
   | PlaybackSeekFlushMsg
+  | PlaybackLoadedMsg
   | PlaybackLapDataMsg
   | PlaybackControlMsg
 
@@ -464,6 +471,11 @@ declare global {
       onStateChange: (cb: (state: any) => void) => () => void
       onRequestOpenConfirm: (cb: (filePath: string) => void) => () => void
       onLoadFailed: (cb: (reason: string) => void) => () => void
+    }
+    analysisBridge: {
+      loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
+      getLapData: (lapNum: number) => Promise<unknown | null>
+      closeFile: () => void
     }
 
   }

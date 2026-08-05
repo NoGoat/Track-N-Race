@@ -1,6 +1,7 @@
 import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
+import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from qt_frontend's GraphTable). One leading time column + one column
@@ -138,7 +139,7 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
       {!pinned && (
         <button
           onClick={scrollToBottom}
-          className="absolute bottom-3 right-3 z-10 flex items-center gap-1 px-2.5 py-1 rounded-full border border-[var(--border)] bg-[var(--bg-panel)] text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--text-secondary)] shadow-lg transition-colors"
+          className={`${TEXT_ACTION_BUTTON_CLASS} absolute bottom-3 right-3 z-10`}
         >
           <ChevronDown size={12} />
           <span>Scroll to Bottom</span>

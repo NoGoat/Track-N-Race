@@ -198,6 +198,8 @@ void TnrdReader::buildIndex(const std::string& filePath) {
         StatusScanFields statusRow;
         if (tid == 3)
             coldDamage_.push_back({ t, std::string(ld, ll) });
+        if (tid == 2 && (binaryPlayback_ || lapStatusSummaries_))
+            (void)glz::read<kPartialRead>(statusRow, std::string_view(ld, (size_t)ll));
         if (binaryPlayback_) {
             std::string_view sv(ld, (size_t)ll);
             if (tid == 1) {
@@ -218,7 +220,6 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                 hotTimes_.push_back(t);
                 bin::encodeMotionEx(hotBin_, r);
             } else if (tid == 2) {
-                (void)glz::read<kPartialRead>(statusRow, sv);
                 if (initialFuelKg_ < 0.0) initialFuelKg_ = statusRow.fuel_kg;
                 coldStatus_.push_back({ t, std::string(ld, ll) });
             } else if (tid == 4) {
@@ -288,18 +289,14 @@ void TnrdReader::buildIndex(const std::string& filePath) {
                     { t, lf.current_lap_ms, lf.lap_distance_m });
             }
 
-            // Slim Speed/RPM/ERS chart points for lapBlocksMessage().
-            if (binaryPlayback_) {
-                if (tid == 1) {
-                    it->second.slimTelemetry.push_back(
-                        { "telemetry", t, telRow.speed_kph, telRow.rpm });
-                } else if (tid == 2) {
-                    it->second.slimStatus.push_back({
-                        "status", t, statusRow.ers_pct,
-                        statusRow.tyre_compound, statusRow.visual_compound
-                    });
-                }
-            }
+            if (binaryPlayback_ && tid == 1)
+                it->second.slimTelemetry.push_back(
+                    { "telemetry", t, telRow.speed_kph, telRow.rpm });
+            else if ((binaryPlayback_ || lapStatusSummaries_) && tid == 2)
+                it->second.slimStatus.push_back({
+                    "status", t, statusRow.ers_pct,
+                    statusRow.tyre_compound, statusRow.visual_compound
+                });
         }
 
         if (tid == 6) {
