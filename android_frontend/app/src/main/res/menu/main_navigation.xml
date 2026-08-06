@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/navigation_overview" android:icon="@drawable/ic_overview" android:title="Overview" />
+    <item android:id="@+id/navigation_standings" android:icon="@drawable/ic_standings" android:title="Standings" />
+    <item android:id="@+id/navigation_session" android:icon="@drawable/ic_session" android:title="Session" />
+    <item android:id="@+id/navigation_strategy" android:icon="@drawable/ic_strategy" android:title="Strategy" />
+    <item android:id="@+id/navigation_more" android:icon="@drawable/ic_more" android:title="More" />
+</menu>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/tnr_primary</item>
+        <item name="colorPrimaryVariant">@color/tnr_primary_dark</item>
+        <item name="colorSecondary">@color/tnr_secondary</item>
+        <item name="colorSurface">@color/tnr_surface</item>
+        <item name="colorOnSurface">@color/tnr_on_surface</item>
+        <item name="android:colorBackground">@color/tnr_background</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="fontFamily">sans-serif</item>
+        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.TrackNRace.Small</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.TrackNRace.Medium</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/tnr_surface</item>
+        <item name="android:navigationBarColor">@color/tnr_surface</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+
+    <style name="ShapeAppearance.TrackNRace.Small" parent="ShapeAppearance.MaterialComponents.SmallComponent">
+        <item name="cornerSize">8dp</item>
+    </style>
+
+    <style name="ShapeAppearance.TrackNRace.Medium" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerSize">12dp</item>
+    </style>
+</resources>

@@ -1,8 +1,8 @@
 # Track N Race — Architecture & Design
 
-_Last updated: 2026-07-16 (branch `feature/opengl-charts`)._
+_Last updated: 2026-08-06._
 
-Track N Race is an F1 24/25/26 telemetry suite consisting of four components in
+Track N Race is an F1 24/25/26 telemetry suite consisting of five components in
 one repository:
 
 | Component | Path | Tech | Role |
@@ -11,15 +11,17 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
+| Android frontend | `android_frontend/` | Java, Material Components, JNI | Physical-device live dashboard; currently the Standings timing tower |
 
-Both apps have feature parity and read/write the same `.tnrd` files.
+The two desktop apps have feature parity and read/write the same `.tnrd` files.
+The Android host currently provides a focused live-only subset.
 
 ## 1. The shared engine (libtnrp)
 
-Everything protocol- or file-format-shaped lives in the library; the two apps
-are hosts. The design rule: **one engine, two hosts** — a feature that touches
-parsing, recording or playback is implemented once in C++ and consumed by both
-UIs.
+Everything protocol- or file-format-shaped lives in the library; the frontends
+are hosts. The design rule is **one engine, multiple hosts** — a feature that
+touches parsing, recording or playback is implemented once in C++ and consumed
+by both desktop UIs, while focused hosts can consume the same row stream.
 
 ### 1.1 Components
 
@@ -545,7 +547,26 @@ only the panels. While in playback, live engine rows are dropped at
   the deploy tool bundles their plugins.
 - Fonts (Noto Sans), track maps, and licences ship as Qt resources.
 
-## 5. Build & packaging
+## 5. Android frontend (`android_frontend/`)
+
+The Android app links `protocol_parser_library` directly through a small JNI
+sink. It configures `tnrp::Engine` with `hotRowsAsJson=true`, binds the raw UDP
+backend to `0.0.0.0:20777`, and forwards library-produced JSON rows into a
+thread-safe Java timing store. The first screen mirrors the Electron Standings
+table: timing rows provide order/laps/sectors/penalties, participants provide
+driver identity and livery colour, and all-status rows provide tyre compounds.
+
+The Java UI uses Material 2 app bars, cards, chips and bottom navigation. The
+persistent navigation shell reserves Overview, Standings, Session, Strategy
+and More; More routes the remaining dashboard destinations and the bundled
+open-source notices. Standings adapts the desktop tower into vertically
+scrolling driver cards instead of forcing a wide table onto a phone.
+`build-and-run.ps1` assembles the debug APK, installs it through ADB, and
+launches the activity on a physical device. The frontend is currently
+live-only; non-Standings destinations are ready UI shells rather than complete
+telemetry pages.
+
+## 6. Build & packaging
 
 - **Electron**: `npm run dev/build` → electron-vite; `pre*` hooks run
   `scripts/gen-icon.mjs` and `scripts/build-bridge.mjs` (cmake-js build of the
@@ -560,6 +581,9 @@ only the panels. While in playback, live engine rows are dropped at
 - **Native recorder**: standalone CMake project; Qt 6 preferred (enables
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
+- **Android**: Gradle/AGP application with an NDK CMake build; arm64 debug APK
+  installed and launched on a physical device by
+  `android_frontend/build-and-run.ps1`.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
   Zstandard v1.5.7, libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);
   a shadowed `FindZLIB.cmake` points libxlsxwriter at the fetched zlib.
@@ -568,11 +592,11 @@ only the panels. While in playback, live engine rows are dropped at
   `npm run build` / `dist` / `dist:win:portable`, with an optional
   version-bump commit. `build-release-candidate.ps1` is the RC variant.
 
-## 6. Known issues & roadmap (prioritised)
+## 7. Known issues & roadmap (prioritised)
 
 ### ~~P1 — Consolidate the duplicated playback engine~~ (done)
 `sessionPlayer.ts` is deleted; the Electron app drives the addon's `player*`
-API with `Config::binaryPlayback`. One engine, two hosts — see §1.6.
+API with `Config::binaryPlayback`. One engine, multiple hosts — see §1.6.
 
 ### ~~P1 — uPlot → TimeChart (WebGL) chart migration~~ (done on this branch)
 All chart leaves render through `TimeChartView`; the old chart dependencies,
