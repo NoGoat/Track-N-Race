@@ -12,6 +12,8 @@ interface Props {
   isDark: boolean
   telemetry: readonly TelemetryRow[]
   statuses: readonly StatusRow[]
+  comparisonTelemetry?: readonly TelemetryRow[]
+  comparisonStatuses?: readonly StatusRow[]
   windowSeconds: number
   xTickFormat: (x: number) => string
   tooltipFormat: (x: number, values: number[]) => string
@@ -86,15 +88,18 @@ function syncTelemetry(
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
 
-export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, windowSeconds, xTickFormat, tooltipFormat }: Props) {
+export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, windowSeconds, xTickFormat, tooltipFormat }: Props) {
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize()
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
+  const comparisonBufferRef = useRef<AlignedDataBuffer | null>(null)
   const scratchRef = useRef(new Float64Array(3))
   const syncRef = useRef({ lastSessionTime: -Infinity, lapRevision: coordinates.lapRevision })
+  const comparisonSyncRef = useRef({ lastSessionTime: -Infinity })
+  const comparisonLapRef = useRef<number | null>(null)
   const dirtyRef = useRef(false)
   const tooltipFormatRef = useRef(tooltipFormat)
   tooltipFormatRef.current = tooltipFormat
@@ -110,7 +115,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, windowS
     if (!host) return
     const axis = isDark ? '#7c8098' : '#6b7280'
     const buffer = new AlignedDataBuffer(3)
+    const comparisonBuffer = new AlignedDataBuffer(3)
     bufferRef.current = buffer
+    comparisonBufferRef.current = comparisonBuffer
+    const blend = (hex: string) => {
+      const value = Number.parseInt(hex.slice(1), 16)
+      const bg = isDark ? [0x12, 0x14, 0x1f] : [0xff, 0xff, 0xff]
+      const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+      return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
+    }
     const axisCfg: { current: AxisConfig } = { current: {
       axisColor: axis,
       yAxisColor: SPEED,
@@ -132,6 +145,9 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, windowS
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
+        { name: 'Previous Speed', color: blend(SPEED), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0] },
+        { name: 'Previous RPM', color: blend(RPM), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1] },
+        { name: 'Previous ERS', color: blend(ERS), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2] },
         { name: 'Speed', color: SPEED, lineWidth: 1.5, data: buffer.series[0] },
         { name: 'RPM', color: RPM, lineWidth: 1.5, data: buffer.series[1] },
         { name: 'ERS', color: ERS, lineWidth: 1.5, data: buffer.series[2] },
@@ -148,10 +164,10 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, windowS
       if (!pointer) { hide(); return }
       const px = pointer.x - chart.options.paddingLeft + 44
       const x = (chart.model.xScale as any).invert(px) as number
-      const index = nearestIndex(chart.options.series[0].data, x)
+      const index = nearestIndex(chart.options.series[3].data, x)
       if (index < 0) { hide(); return }
-      for (let i = 0; i < 3; i++) tooltipValues[i] = chart.options.series[i].data.yAt(index)
-      show(tooltipFormatRef.current(chart.options.series[0].data.xAt(index), tooltipValues), px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
+      for (let i = 0; i < 3; i++) tooltipValues[i] = chart.options.series[i + 3].data.yAt(index)
+      show(tooltipFormatRef.current(chart.options.series[3].data.xAt(index), tooltipValues), px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
     })
     attach(chart)
     return () => {
@@ -160,10 +176,34 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, windowS
       chart.dispose()
       chartRef.current = null
       bufferRef.current = null
+      comparisonBufferRef.current = null
     }
     // Theme changes remount this component; live values flow through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const buffer = comparisonBufferRef.current
+    const chart = chartRef.current
+    if (!buffer || !chart) return
+    const visible = coordinates.mode === 'PL' && comparisonTelemetry != null
+    for (let i = 0; i < 3; i++) chart.options.series[i].visible = visible
+    if (!visible) {
+      if (buffer.length) buffer.clear()
+      comparisonLapRef.current = null
+      comparisonSyncRef.current.lastSessionTime = -Infinity
+      chart.model.requestRedraw()
+      return
+    }
+    const comparisonLap = coordinates.lapData?.lapNum ?? null
+    const rebuild = comparisonLapRef.current !== comparisonLap
+    comparisonLapRef.current = comparisonLap
+    syncTelemetry(
+      buffer, comparisonTelemetry, comparisonStatuses ?? [], scratchRef.current,
+      coordinates.getComparisonX, comparisonSyncRef.current, rebuild,
+    )
+    chart.model.requestRedraw()
+  }, [comparisonStatuses, comparisonTelemetry, coordinates])
 
   useEffect(() => {
     const buffer = bufferRef.current

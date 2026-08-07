@@ -69,7 +69,7 @@ export default function AppShell() {
         ? 'supported'
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
-  const currentLapChartsActive = chartWindow === 'CL' && clAvailable
+  const distanceChartMode = clAvailable && (chartWindow === 'CL' || chartWindow === 'PL') ? chartWindow : null
   // Publish the visible time window to the store so it computes the right slices.
   useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
 
@@ -201,8 +201,8 @@ export default function AppShell() {
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        <ChartCoordinatesProvider enabled={currentLapChartsActive}>
-        <TabContent key={currentLapChartsActive ? 'current-lap' : 'time-window'}
+        <ChartCoordinatesProvider mode={distanceChartMode}>
+        <TabContent key={distanceChartMode ?? 'time-window'}
           tab={tab}
           isDark={theme === 'dark'}
           seconds={seconds}

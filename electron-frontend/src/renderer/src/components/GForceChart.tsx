@@ -81,6 +81,7 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
           <TimeChartView<MotionRow>
             isDark={isDark}
             rows={data}
+            comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.motion : undefined}
             getX={d => d.session_time}
             series={SERIES}
             windowSeconds={windowSeconds}

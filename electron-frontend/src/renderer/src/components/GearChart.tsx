@@ -42,7 +42,7 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} getX={d => d.session_time} series={SERIES}
+          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
               windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
               refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} />}

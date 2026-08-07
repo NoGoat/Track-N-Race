@@ -7,7 +7,7 @@ import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
-  const [chartWindow, setChartWindow] = useAppConfig<number | 'CL'>('chartWindow', (() => {
+  const [chartWindow, setChartWindow] = useAppConfig<number | 'CL' | 'PL'>('chartWindow', (() => {
     const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
     if (legacyMode === 'CL') return 'CL'
     return window.electronStore.get('timeWindow', 30) as number

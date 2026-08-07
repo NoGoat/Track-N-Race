@@ -22,11 +22,11 @@ interface AppHeaderProps {
   isMaximized: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
-  chartWindow: number | 'CL'
+  chartWindow: number | 'CL' | 'PL'
   clAvailable: boolean
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
-  setChartWindow: (window: number | 'CL') => void
+  setChartWindow: (window: number | 'CL' | 'PL') => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
@@ -49,8 +49,8 @@ export default memo(function AppHeader({
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
-  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
-  const displayedWindow = chartWindow === 'CL' && !clAvailable ? 30 : chartWindow
+  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
+  const displayedWindow = typeof chartWindow !== 'number' && !clAvailable ? 30 : chartWindow
 
   return (
     <div

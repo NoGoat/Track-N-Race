@@ -22,11 +22,11 @@ interface AppHeaderProps {
   isMaximized: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
-  chartWindow: number | 'CL'
+  chartWindow: number | 'CL' | 'PL'
   clAvailable: boolean
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
-  setChartWindow: (window: number | 'CL') => void
+  setChartWindow: (window: number | 'CL' | 'PL') => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
@@ -53,21 +53,19 @@ export default memo(function AppHeader({
   const headerPadding = actualNativeTitlebar
     ? 'pl-2 pr-4'
     : 'px-4'
-  const titleBarSafeArea = usesTitleBarOverlay && !isFullscreen
+  const titleBarSafePadding = usesTitleBarOverlay && !isFullscreen
     ? {
-        marginLeft: 'env(titlebar-area-x, 0px)',
-        width: 'env(titlebar-area-width, 100%)',
+        paddingLeft: 'calc(env(titlebar-area-x, 0px) + 1rem)',
+        paddingRight: 'calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + 1rem)',
       }
     : undefined
   const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
-  const displayedWindow = chartWindow === 'CL' && !clAvailable ? 30 : chartWindow
-
+  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
+  const displayedWindow = typeof chartWindow !== 'number' && !clAvailable ? 30 : chartWindow
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
-      style={usesTitleBarOverlay && !isFullscreen ? { background: headerBackground } : undefined}
       onMouseEnter={() => { if (isFullscreen) setHeaderVisible(true) }}
       onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
     >
@@ -81,7 +79,7 @@ export default memo(function AppHeader({
           background: headerBackground,
           borderColor: headerBorderColor,
           WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag',
-          ...titleBarSafeArea,
+          ...titleBarSafePadding,
         }}
       >
         {!actualNativeTitlebar && (

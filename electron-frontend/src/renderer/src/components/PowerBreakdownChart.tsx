@@ -102,6 +102,7 @@ function PowerLineChart({
           <TimeChartView<StatusRow>
             isDark={isDark}
             rows={data}
+            comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.statusHistory : undefined}
             getX={d => d.session_time}
             series={series}
             windowSeconds={windowSeconds}

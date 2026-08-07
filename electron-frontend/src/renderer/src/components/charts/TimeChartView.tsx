@@ -93,6 +93,8 @@ export type YRangeSpec =
 export interface TimeChartViewProps<T extends { session_time: number }> {
   isDark: boolean
   rows: readonly T[]
+  /** Optional completed-lap trace drawn underneath the live rows. */
+  comparisonRows?: readonly T[]
   getX: (row: T) => number
   series: SeriesDef<T>[]
   windowSeconds: number
@@ -120,7 +122,7 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
 
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
   const {
-    isDark, rows, getX, series, windowSeconds, yRange, yAxisSize,
+    isDark, rows, comparisonRows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
     followSessionClock, minScrollStallS,
@@ -147,6 +149,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
+  const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
+  const comparisonLapRef = useRef<number | null>(null)
   const lapRevisionRef = useRef(coordinates.lapRevision)
   const seriesBuffersRef = useRef<readonly AlignedSeriesData[]>([])
   const dataDirtyRef = useRef(false)
@@ -205,6 +209,15 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const getXRef = useRef(effectiveGetX)
   getXRef.current = effectiveGetX
 
+  const blendColor = (hex: string): string => {
+    const match = /^#([0-9a-f]{6})$/i.exec(hex)
+    if (!match) return hex
+    const value = Number.parseInt(match[1], 16)
+    const bg = isDark ? [0x12, 0x14, 0x1f] : [0xff, 0xff, 0xff]
+    const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+    return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
+  }
+
   // --- create the chart once ---
   useEffect(() => {
     const el = containerRef.current
@@ -212,6 +225,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
     const defs = seriesDefs.current
     const bridge = new TimeChartDataBridge<T>(row => getXRef.current(row), defs.map((s) => s.getY))
+    const comparisonBridge = new TimeChartDataBridge<T>(row => coordinates.getComparisonX(row), defs.map((s) => s.getY))
     const plugins: Record<string, unknown> = {
       lineChart: corePlugins.lineChart,
       crosshair: corePlugins.crosshair,
@@ -222,7 +236,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       plugins.refLines = createReferenceLinesPlugin(refCfgRef)
     }
     const fillDefs = defs.flatMap((s, i) => s.fill ? [{
-      seriesIndex: i,
+      seriesIndex: i + defs.length,
       color: s.fill,
       baseline: s.fillBaseline ?? 0,
       stepped: s.lineType === 1,
@@ -249,7 +263,17 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       renderPaddingLeft: paddingLeft,
       lineWidth: 1.5,
       yRange: { min: b.lower, max: b.upper },
-      series: defs.map((s, index) => ({
+      series: [
+        ...defs.map((s, index) => ({
+          name: `comparison:${s.label}`,
+          color: blendColor(s.color),
+          lineWidth: Math.max(1, (s.lineWidth ?? 1.5) - 0.5),
+          lineType: s.lineType ?? TimeChart.LineType.Line,
+          stepLocation: s.stepLocation ?? 1,
+          visible: comparisonRows != null && s.visible !== false,
+          data: comparisonBridge.series[index],
+        })),
+        ...defs.map((s, index) => ({
         name: s.label,
         color: s.color,
         lineWidth: s.lineWidth ?? 1.5,
@@ -257,7 +281,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         stepLocation: s.stepLocation ?? 1,
         visible: s.visible !== false,
         data: bridge.series[index],
-      })),
+        })),
+      ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       plugins: plugins as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -266,6 +291,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
     seriesBuffersRef.current = bridge.series
     bridgeRef.current = bridge
+    comparisonBridgeRef.current = comparisonBridge
 
     // Crosshair uses currentColor; the nearest-point dot centre uses
     // --background-overlay. Keep both subtle and theme-aware.
@@ -317,6 +343,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       chart.dispose()
       chartRef.current = null
       bridgeRef.current = null
+      comparisonBridgeRef.current = null
     }
     // Created once; all live updates happen through refs/other effects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,8 +357,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     visibilityRef.current = visibility
     if (!chart) return
     let changed = false
+    const count = series.length
     chart.options.series.forEach((s, i) => {
-      if (s.visible !== visibility[i]) { s.visible = visibility[i]; changed = true }
+      const visible = visibility[i % count] && (i >= count || comparisonRows != null)
+      if (s.visible !== visible) { s.visible = visible; changed = true }
     })
     if (changed) {
       autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
@@ -341,7 +370,33 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     // `visibilityKey` is the stable primitive dependency; series arrays are
     // commonly rebuilt by thin chart consumers on ordinary telemetry renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibilityKey, wake])
+  }, [comparisonRows, visibilityKey, wake])
+
+  useEffect(() => {
+    const bridge = comparisonBridgeRef.current
+    const chart = chartRef.current
+    if (!bridge) return
+    if (!comparisonRows || coordinates.mode !== 'PL') {
+      if (bridge.length) { bridge.data.clear(); chart?.model.requestRedraw() }
+      comparisonLapRef.current = null
+      return
+    }
+    const comparisonLap = coordinates.lapData?.lapNum ?? null
+    if (comparisonLapRef.current !== comparisonLap) {
+      bridge.data.clear()
+      comparisonLapRef.current = comparisonLap
+    }
+    let syncEnd = comparisonRows.length
+    let lo = 0, hi = comparisonRows.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (Number.isFinite(coordinates.getComparisonX(comparisonRows[mid]))) lo = mid + 1
+      else hi = mid
+    }
+    syncEnd = lo
+    const { changed } = bridge.sync(comparisonRows, syncEnd)
+    if (changed) chart?.model.requestRedraw()
+  }, [comparisonRows, coordinates])
 
   // --- feed new data ---
   useEffect(() => {
@@ -398,17 +453,17 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       const now = performance.now()
       if (now - a.lastFull >= AUTO_RANGE_FULL_MS) {
         a.lastFull = now
-        const bufs = seriesBuffersRef.current
-        const b0 = bufs.find((_, i) => visibilityRef.current[i])
+        const currentBuffers = seriesBuffersRef.current
+        const comparisonBuffers = coordinates.mode === 'PL' ? comparisonBridgeRef.current?.series ?? [] : []
+        const visibleBuffers = [...currentBuffers, ...comparisonBuffers]
+        const b0 = visibleBuffers.find((_, i) => visibilityRef.current[i % currentBuffers.length])
         if (b0 && b0.length > 0) {
-          // Scan only the visible window. Binary-searching the aligned X ring
-          // also keeps this correct when a caller retains a wider source span.
-          const startX = coordinates.distanceMode ? 0 : b0.xAt(b0.length - 1) - windowSeconds
-          const lb = b0.lowerBoundX(startX)
           let lo = Infinity, hi = -Infinity
-          for (let k = 0; k < bufs.length; k++) {
-            if (!visibilityRef.current[k]) continue
-            const buf = bufs[k]
+          for (let k = 0; k < visibleBuffers.length; k++) {
+            if (!visibilityRef.current[k % currentBuffers.length]) continue
+            const buf = visibleBuffers[k]
+            const startX = coordinates.distanceMode ? 0 : buf.xAt(buf.length - 1) - windowSeconds
+            const lb = buf.lowerBoundX(startX)
             for (let i = lb; i < buf.length; i++) {
               const v = buf.yAt(i)
               if (v < lo) lo = v
@@ -552,13 +607,16 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    const count = series.length
     series.forEach((s, i) => {
-      const so = chart.options.series[i]
-      if (so) so.color = s.color
+      const comparison = chart.options.series[i]
+      const current = chart.options.series[i + count]
+      if (comparison) comparison.color = blendColor(s.color)
+      if (current) current.color = s.color
     })
     chart.model.requestRedraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seriesColorKey])
+  }, [isDark, seriesColorKey])
 
   return (
     <div className="absolute inset-0" ref={sizeRef}>

@@ -94,6 +94,7 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
           <TimeChartView<MotionExRow>
             isDark={isDark}
             rows={data}
+            comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.motionEx : undefined}
             getX={d => d.session_time}
             series={SERIES}
             windowSeconds={windowSeconds}

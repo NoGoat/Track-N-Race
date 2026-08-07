@@ -71,7 +71,10 @@ export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'cha
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
           ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <SpeedRpmTimeChart key={isDark ? 'dark' : 'light'} isDark={isDark} telemetry={data} statuses={statusHistory} windowSeconds={windowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
+          : <SpeedRpmTimeChart key={isDark ? 'dark' : 'light'} isDark={isDark} telemetry={data} statuses={statusHistory}
+              comparisonTelemetry={coordinates.mode === 'PL' ? coordinates.lapData?.telemetry : undefined}
+              comparisonStatuses={coordinates.mode === 'PL' ? coordinates.lapData?.statusHistory : undefined}
+              windowSeconds={windowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
     </div>
   </div>
 }

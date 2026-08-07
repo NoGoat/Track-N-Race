@@ -121,6 +121,7 @@ export interface TelemetryStoreState {
   playbackTrackId: number | null
   playbackTrackName: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
+  livePreviousLapData: AnalyzeLapData | null
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
   isConnected: boolean
@@ -143,6 +144,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
   playbackTrackId: null, playbackTrackName: null,
   playbackLapDataCache: {},
+  livePreviousLapData: null,
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
 }))
@@ -221,6 +223,7 @@ function resetSession(): void {
     analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
     playbackTrackId: null, playbackTrackName: null,
     playbackLapDataCache: {},
+    livePreviousLapData: null,
   })
 }
 
@@ -242,6 +245,21 @@ function onLap(lap: LapRow): void {
     return
   }
   if (lap.lap_num === prevLapNum) return
+
+  const completed = useTelemetryStore.getState()
+  set({
+    livePreviousLapData: {
+      lapNum: prevLapNum,
+      startSessionTime: lapStartTime,
+      endSessionTime: packetLapStart,
+      telemetry: [...completed.analyzeLapTelemetry],
+      motion: [...completed.analyzeLapMotion],
+      motionEx: [...completed.analyzeLapMotionEx],
+      statusHistory: [...completed.analyzeLapStatusHistory],
+      damageHistory: [...completed.analyzeLapDamageHistory],
+      lapProgress: [...completed.analyzeLapProgress],
+    },
+  })
 
   analyzeLapRevisionVal++
   pendingAnalyzeLapReset = true
