@@ -19,6 +19,7 @@ import StrategyPanel from '../../components/StrategyPanel'
 import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../appConfig'
+import { useChartCoordinates } from '../../lib/chartCoordinates'
 
 // The tab content is the only part of the UI that consumes the hot (per-frame)
 // telemetry slices. Extracting it into its own store-subscribing component is
@@ -41,8 +42,6 @@ interface TabContentProps {
   chartYAxis: ChartYAxisState
   tyreView: 'cards' | 'graphs'
   tyreWearMode: 'wear' | 'life'
-  speedRpmMode: 'default' | 'CL' | 'PL' | 'FL' | 'compare'
-  onSpeedRpmModeChange: (m: 'default' | 'CL' | 'PL' | 'FL' | 'compare') => void
   selectedIdx: number | null
   onSelectDriver: (idx: number) => void
   reduceAnimations: boolean
@@ -60,21 +59,20 @@ interface TabContentProps {
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
   tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
-  graphView, compact, chartYAxis, tyreView, tyreWearMode, speedRpmMode, onSpeedRpmModeChange,
+  graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
 }: TabContentProps) {
+  const coordinates = useChartCoordinates()
   // Hot + cold slices this subtree needs. Only components that render these
   // re-render per frame; App does not.
-  const telemetry        = useTelemetryStore(s => s.telemetry)
-  const statusHistory    = useTelemetryStore(s => s.statusHistory)
+  const telemetry        = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
+  const statusHistory    = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
   const damage           = useTelemetryStore(s => s.damage)
-  const damageHistory    = useTelemetryStore(s => s.damageHistory)
+  const damageHistory    = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)
   const lap              = useTelemetryStore(s => s.lap)
   const timing           = useTelemetryStore(s => s.timing)
   const latest           = useTelemetryStore(s => s.latest)
-  const lapTelemetry     = useTelemetryStore(s => s.lapTelemetry)
-  const lapStatusHistory = useTelemetryStore(s => s.lapStatusHistory)
   const allStatus        = useTelemetryStore(s => s.allStatus)
   const status           = useTelemetryStore(s => s.status)
   const participants     = useTelemetryStore(s => s.participants)
@@ -82,9 +80,6 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
   const tyreSets         = useTelemetryStore(s => s.tyreSets)
   const raceEvents       = useTelemetryStore(s => s.raceEvents)
   const fastestLapCarIdx = useTelemetryStore(s => s.fastestLapCarIdx)
-  const lapHistory       = useTelemetryStore(s => s.lapHistory)
-  const fastestLap       = useTelemetryStore(s => s.fastestLap)
-  const speedRpmBlocks   = useTelemetryStore(s => s.speedRpmBlocks)
   const lapTimesByNum    = useTelemetryStore(s => s.lapTimesByNum)
   const isConnected      = useTelemetryStore(s => s.isConnected)
   const protocolStatus   = useTelemetryStore(s => s.protocolStatus)
@@ -128,7 +123,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             )}
             {showSpeedChartPanel && (
               <div className={`${speedChartFlex} min-h-0`}>
-                <SpeedRpmChart data={telemetry} statusHistory={statusHistory} lapData={lapTelemetry} lapStatusHistory={lapStatusHistory} lapHistory={lapHistory} fastestLap={fastestLap} speedRpmBlocks={speedRpmBlocks} mode={speedRpmMode} onModeChange={onSpeedRpmModeChange} isDark={isDark} view={graphView.overviewTelemetry} currentLapNum={currentPlaybackLapNum} windowSeconds={seconds} />
+                <SpeedRpmChart data={telemetry} statusHistory={statusHistory} isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} />
               </div>
             )}
             {showThermalPanel && (

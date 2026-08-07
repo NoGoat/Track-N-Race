@@ -3,6 +3,7 @@ import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_STEER = '#BF5FFF'
@@ -18,7 +19,8 @@ function fmtSteer(v: number) {
 }
 
 export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
-  const data = useTelemetryStore(s => s.telemetry)
+  const coordinates = useChartCoordinates()
+  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), steer = new Float64Array(data.length)
@@ -27,9 +29,9 @@ export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 
   }, [data, view])
   const axisColor = isDark ? '#7c8098' : '#6b7280'
   const tooltipFormat = useCallback((x: number, v: number[]) => [
-    `<div style="color:${axisColor};margin-bottom:4px">${fmtTime(x)}</div>`,
+    `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
     `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(v[0])}</div>`,
-  ].join(''), [axisColor])
+  ].join(''), [axisColor, coordinates])
 
   return <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
     <div className="flex items-center justify-between mb-3 shrink-0">

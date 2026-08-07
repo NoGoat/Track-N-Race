@@ -5,6 +5,7 @@ import type { TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
 import { niceTicks } from '../lib/timechart/ticks'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -105,6 +106,7 @@ function TyreLineChartImpl<T extends { session_time: number }>({
   title, unit, rows, series, isDark, view = 'chart', windowSeconds = 30,
   fastScroll, followSessionClock, minScrollStallS, yRange, yTickValues = tyreYTicks,
 }: ChartProps<T>) {
+  const coordinates = useChartCoordinates()
   const axisColor = isDark ? '#7c8098' : '#6b7280'
 
   // A single sample can't draw a line, so it counts as no data — otherwise the
@@ -129,12 +131,12 @@ function TyreLineChartImpl<T extends { session_time: number }>({
   )
 
   const tooltipFormat = useCallback((x: number, values: number[]) => {
-    let html = `<div style="color:${axisColor};margin-bottom:3px">${fmtTime(x)}</div>`
+    let html = `<div style="color:${axisColor};margin-bottom:3px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`
     for (let i = 0; i < series.length; i++) {
       html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${values[i].toFixed(1)}${unit}</div>`
     }
     return html
-  }, [series, unit, axisColor])
+  }, [series, unit, axisColor, coordinates])
 
   return (
     <div className="flex-1 min-w-0 bg-[var(--bg-panel)] p-3 flex flex-col">

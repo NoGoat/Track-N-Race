@@ -22,10 +22,11 @@ interface AppHeaderProps {
   isMaximized: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
-  seconds: number
+  chartWindow: number | 'CL'
+  clAvailable: boolean
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
-  setSeconds: (seconds: number) => void
+  setChartWindow: (window: number | 'CL') => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
@@ -42,12 +43,14 @@ const SessionTimer = memo(function SessionTimer() {
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
-  isMaximized, onClosePlayback, onSelectPlaybackFile, seconds, setEditOpen,
-  setHeaderVisible, setSeconds, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
+  setHeaderVisible, setChartWindow, setSettingsOpen, setTab, settingsOpen, tab, theme,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
+  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
+  const displayedWindow = chartWindow === 'CL' && !clAvailable ? 30 : chartWindow
 
   return (
     <div
@@ -94,7 +97,7 @@ export default memo(function AppHeader({
         </div>
 
         <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3.8rem]">
-          <Select options={WINDOW_OPTIONS} value={WINDOW_OPTIONS.find(option => option.value === seconds) ?? null} onChange={option => option && setSeconds(option.value as number)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          <Select options={windowOptions} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>

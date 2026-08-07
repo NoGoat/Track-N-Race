@@ -3,6 +3,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import type { AlignedTable, MotionRow } from '../types'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 interface Props {
   isDark: boolean
@@ -34,7 +35,8 @@ function fmtTime(s: number) {
 }
 
 export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
-  const data = useTelemetryStore(s => s.motion)
+  const coordinates = useChartCoordinates()
+  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion)
 
   // Only the table view needs the columnar AlignedData; the chart feeds rows
   // straight into TimeChartView.
@@ -53,10 +55,10 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#6b7280'
   const tooltipFormat = useCallback((x: number, v: number[]) => [
-    `<div style="color:${tooltipTimeColor};margin-bottom:4px">${fmtTime(x)}</div>`,
+    `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
     `<div><span style="color:${COLOR_LAT}">Lateral</span>: ${v[0].toFixed(2)} g</div>`,
     `<div><span style="color:${COLOR_LONG}">Longitudinal</span>: ${v[1].toFixed(2)} g</div>`,
-  ].join(''), [tooltipTimeColor])
+  ].join(''), [coordinates, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">

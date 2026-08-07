@@ -22,10 +22,11 @@ interface AppHeaderProps {
   isMaximized: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
-  seconds: number
+  chartWindow: number | 'CL'
+  clAvailable: boolean
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
-  setSeconds: (seconds: number) => void
+  setChartWindow: (window: number | 'CL') => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
@@ -42,8 +43,8 @@ const SessionTimer = memo(function SessionTimer() {
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
-  isMaximized, onClosePlayback, onSelectPlaybackFile, seconds, setEditOpen,
-  setHeaderVisible, setSeconds, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
+  setHeaderVisible, setChartWindow, setSettingsOpen, setTab, settingsOpen, tab, theme,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
@@ -51,13 +52,22 @@ export default memo(function AppHeader({
   const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
   const headerPadding = actualNativeTitlebar
     ? 'pl-2 pr-4'
-    : usesTitleBarOverlay && !isFullscreen
-      ? 'pl-4 pr-[150px]'
-      : 'px-4'
+    : 'px-4'
+  const titleBarSafeArea = usesTitleBarOverlay && !isFullscreen
+    ? {
+        marginLeft: 'env(titlebar-area-x, 0px)',
+        width: 'env(titlebar-area-width, 100%)',
+      }
+    : undefined
+  const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
+  const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
+  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
+  const displayedWindow = chartWindow === 'CL' && !clAvailable ? 30 : chartWindow
 
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
+      style={usesTitleBarOverlay && !isFullscreen ? { background: headerBackground } : undefined}
       onMouseEnter={() => { if (isFullscreen) setHeaderVisible(true) }}
       onMouseLeave={() => { if (isFullscreen) setHeaderVisible(false) }}
     >
@@ -67,9 +77,12 @@ export default memo(function AppHeader({
             ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
             : 'sticky top-0 z-10 transition-colors duration-500'
         }`}
-        style={activeBanner
-          ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
-          : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }}
+        style={{
+          background: headerBackground,
+          borderColor: headerBorderColor,
+          WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag',
+          ...titleBarSafeArea,
+        }}
       >
         {!actualNativeTitlebar && (
           <div className="flex items-center gap-2 shrink-0">
@@ -109,7 +122,7 @@ export default memo(function AppHeader({
         </div>
 
         <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3.8rem]">
-          <Select options={WINDOW_OPTIONS} value={WINDOW_OPTIONS.find(option => option.value === seconds) ?? null} onChange={option => option && setSeconds(option.value as number)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          <Select options={windowOptions} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>

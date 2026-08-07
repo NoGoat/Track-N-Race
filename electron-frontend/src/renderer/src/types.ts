@@ -347,8 +347,6 @@ export interface PlaybackLoadedMsg {
 export interface PlaybackControlMsg {
   type:
     | 'playback_close'
-    | 'playback_fastest_lap_raw'
-    | 'playback_previous_lap_raw'
     | 'playback_seek_flush_bin'
     | 'playback_lap_blocks'
 }

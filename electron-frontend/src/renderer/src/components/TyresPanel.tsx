@@ -29,26 +29,27 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
   fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> {
+const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
+type Corner = typeof CORNERS[number]
+
+function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>): Record<Corner, AlignedTable> {
   return useMemo(() => {
-    if (!enabled) return EMPTY_CORNER_HISTORIES
+    const requested = CORNERS.filter(corner => enabled[corner])
+    if (requested.length === 0) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
     const ts = new Float64Array(n)
-    const flS = new Float64Array(n), frS = new Float64Array(n), rlS = new Float64Array(n), rrS = new Float64Array(n)
-    const flI = new Float64Array(n), frI = new Float64Array(n), rlI = new Float64Array(n), rrI = new Float64Array(n)
-    const flB = new Float64Array(n), frB = new Float64Array(n), rlB = new Float64Array(n), rrB = new Float64Array(n)
+    const histories = { ...EMPTY_CORNER_HISTORIES }
+    for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
     telemetry.forEach((d, i) => {
       ts[i] = d.session_time
-      flS[i] = d.tyre_temp_surface_fl; frS[i] = d.tyre_temp_surface_fr; rlS[i] = d.tyre_temp_surface_rl; rrS[i] = d.tyre_temp_surface_rr
-      flI[i] = d.tyre_temp_inner_fl;   frI[i] = d.tyre_temp_inner_fr;   rlI[i] = d.tyre_temp_inner_rl;   rrI[i] = d.tyre_temp_inner_rr
-      flB[i] = d.brake_temp_fl;        frB[i] = d.brake_temp_fr;        rlB[i] = d.brake_temp_rl;        rrB[i] = d.brake_temp_rr
+      for (const corner of requested) {
+        const history = histories[corner]
+        ;(history[1] as Float64Array)[i] = d[`tyre_temp_surface_${corner}`]
+        ;(history[2] as Float64Array)[i] = d[`tyre_temp_inner_${corner}`]
+        ;(history[3] as Float64Array)[i] = d[`brake_temp_${corner}`]
+      }
     })
-    return {
-      fl: [ts, flS, flI, flB],
-      fr: [ts, frS, frI, frB],
-      rl: [ts, rlS, rlI, rlB],
-      rr: [ts, rrS, rrI, rrB],
-    }
+    return histories
   }, [telemetry, enabled])
 }
 
@@ -244,8 +245,11 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   // Expanded mode renders the shared TimeCharts directly. Building thirteen
   // full-window Float64 columns for the hidden wheel cards was pure allocation
   // churn (hundreds of MB/s at long 60 Hz windows), so skip it entirely.
-  const needsCornerHistory = !expanded && Object.values(cardViews ?? {}).some(v => v === 'table')
-  const cornerHistory = useCornerHistories(telemetry, needsCornerHistory)
+  const tableCorners = useMemo(() => Object.fromEntries(CORNERS.map(corner => [
+    corner,
+    !expanded && cardViews?.[corner] === 'table',
+  ])) as Record<Corner, boolean>, [cardViews, expanded])
+  const cornerHistory = useCornerHistories(telemetry, tableCorners)
 
   const drySets = useMemo(() => {
     return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null

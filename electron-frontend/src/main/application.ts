@@ -151,15 +151,6 @@ ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
 
 ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
-  if (key === 'theme' && (process.platform === 'win32' || process.platform === 'linux') &&
-      store.get('nativeTitlebar', false) !== true && mainWindow && !mainWindow.isDestroyed()) {
-    const light = value === 'light'
-    mainWindow.setTitleBarOverlay({
-      color: '#00000000',
-      symbolColor: light ? '#565b70' : '#7c8098',
-      height: 40,
-    })
-  }
 })
 
 ipcMain.handle('dialog:showOpenDialog', async () => {
@@ -274,7 +265,6 @@ function createWindow(): void {
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
   const isMacOS = process.platform === 'darwin'
   const useTitleBarOverlay = (process.platform === 'win32' || process.platform === 'linux') && !useNativeTitlebar
-  const lightTheme = store.get('theme', 'dark') === 'light'
 
   // Size the window to 60% of the primary display's work area. workAreaSize is
   // in DIPs, so this already accounts for the display's scale factor.
@@ -297,7 +287,6 @@ function createWindow(): void {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: {
         color: '#00000000',
-        symbolColor: lightTheme ? '#565b70' : '#7c8098',
         height: 40,
       },
     } : {}),

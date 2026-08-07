@@ -360,7 +360,7 @@ export default function AnalyzeScreen({
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
   const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
-  const fastestLapNum = useTelemetryStore(s => s.fastestLap?.lapNum ?? null)
+  const fastestLapNum = useTelemetryStore(s => s.fastestLapNum)
   const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
   const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)

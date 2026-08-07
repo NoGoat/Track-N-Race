@@ -197,26 +197,27 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
   fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> {
+const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
+type Corner = typeof CORNERS[number]
+
+function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>): Record<Corner, AlignedTable> {
   return useMemo(() => {
-    if (!enabled) return EMPTY_CORNER_HISTORIES
+    const requested = CORNERS.filter(corner => enabled[corner])
+    if (requested.length === 0) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
     const ts = new Float64Array(n)
-    const flS = new Float64Array(n), frS = new Float64Array(n), rlS = new Float64Array(n), rrS = new Float64Array(n)
-    const flI = new Float64Array(n), frI = new Float64Array(n), rlI = new Float64Array(n), rrI = new Float64Array(n)
-    const flB = new Float64Array(n), frB = new Float64Array(n), rlB = new Float64Array(n), rrB = new Float64Array(n)
+    const histories = { ...EMPTY_CORNER_HISTORIES }
+    for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
     telemetry.forEach((d, i) => {
       ts[i] = d.session_time
-      flS[i] = d.tyre_temp_surface_fl; frS[i] = d.tyre_temp_surface_fr; rlS[i] = d.tyre_temp_surface_rl; rrS[i] = d.tyre_temp_surface_rr
-      flI[i] = d.tyre_temp_inner_fl;   frI[i] = d.tyre_temp_inner_fr;   rlI[i] = d.tyre_temp_inner_rl;   rrI[i] = d.tyre_temp_inner_rr
-      flB[i] = d.brake_temp_fl;        frB[i] = d.brake_temp_fr;        rlB[i] = d.brake_temp_rl;        rrB[i] = d.brake_temp_rr
+      for (const corner of requested) {
+        const history = histories[corner]
+        ;(history[1] as Float64Array)[i] = d[`tyre_temp_surface_${corner}`]
+        ;(history[2] as Float64Array)[i] = d[`tyre_temp_inner_${corner}`]
+        ;(history[3] as Float64Array)[i] = d[`brake_temp_${corner}`]
+      }
     })
-    return {
-      fl: [ts, flS, flI, flB],
-      fr: [ts, frS, frI, frB],
-      rl: [ts, rlS, rlI, rlB],
-      rr: [ts, rrS, rrI, rrB],
-    }
+    return histories
   }, [telemetry, enabled])
 }
 
@@ -227,10 +228,11 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
 
   // Graph view does not consume per-corner uPlot columns; avoid rebuilding all
   // thirteen typed arrays on every telemetry publication while it is active.
-  const needsCornerHistory = view !== 'graphs' && Object.entries(cardViews ?? {}).some(
-    ([corner, cardView]) => cardView === 'table' && thermalCards[corner as keyof typeof thermalCards],
-  )
-  const cornerHistory = useCornerHistories(telemetry, needsCornerHistory)
+  const tableCorners = useMemo(() => Object.fromEntries(CORNERS.map(corner => [
+    corner,
+    view !== 'graphs' && thermalCards[corner] && cardViews?.[corner] === 'table',
+  ])) as Record<Corner, boolean>, [cardViews, thermalCards, view])
+  const cornerHistory = useCornerHistories(telemetry, tableCorners)
 
   // Tyre cards are content-height (at every density level) so the strip is short —
   // stretching them to fill the flex region just spreads the rows apart with gaps.

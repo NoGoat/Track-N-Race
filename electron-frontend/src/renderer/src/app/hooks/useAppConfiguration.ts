@@ -7,7 +7,12 @@ import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
-  const [seconds, setSeconds] = useAppConfig<number>('timeWindow', 30)
+  const [chartWindow, setChartWindow] = useAppConfig<number | 'CL'>('chartWindow', (() => {
+    const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
+    if (legacyMode === 'CL') return 'CL'
+    return window.electronStore.get('timeWindow', 30) as number
+  })())
+  const seconds = typeof chartWindow === 'number' ? chartWindow : 30
   const [mapTimeout, setMapTimeout] = useAppConfig<number>('mapTimeout', 10)
   const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
@@ -70,13 +75,13 @@ export function useAppConfiguration() {
   }, [rawChartYAxis])
 
   return {
-    actualNativeTitlebar, bannerDuration, chartYAxis, compact, coreLayout, driversMode,
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors,
-    setBannerDuration, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSeconds, setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
+    setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }
 }

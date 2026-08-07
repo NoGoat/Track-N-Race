@@ -3,6 +3,7 @@ import type { AlignedTable, StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
 import type { YAxisBehavior } from '../lib/graphSections'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }
 
@@ -53,6 +54,7 @@ function PowerLineChart({
   title, data, isDark, view = 'chart', windowSeconds = 30, series, columns,
   yRange, yFormat, note, tooltipDetails,
 }: PowerLineProps) {
+  const coordinates = useChartCoordinates()
   const visibleEntries = useMemo(() => series
     .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
     .filter(({ series: s }) => s.visible !== false), [columns, series])
@@ -74,11 +76,11 @@ function PowerLineChart({
       `<div><span style="color:${e.series.color}">${e.series.label}</span>: ${e.column.format(values[e.sourceIndex])}</div>`,
     )
     return [
-      `<div style="color:${axisColor};margin-bottom:4px">${fmtTime(x)}</div>`,
+      `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       ...rows,
       tooltipDetails?.(values, axisColor) ?? '',
     ].join('')
-  }, [axisColor, tooltipDetails, visibleEntries])
+  }, [axisColor, coordinates, tooltipDetails, visibleEntries])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">

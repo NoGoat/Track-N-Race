@@ -3,6 +3,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import type { AlignedTable, MotionExRow } from '../types'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 interface Props {
   isDark: boolean
@@ -49,7 +50,8 @@ function computeYSplits(lower: number, upper: number): number[] {
 }
 
 export default function RideHeightChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
-  const data = useTelemetryStore(s => s.motionEx)
+  const coordinates = useChartCoordinates()
+  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
 
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -66,10 +68,10 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#6b7280'
   const tooltipFormat = useCallback((x: number, v: number[]) => [
-    `<div style="color:${tooltipTimeColor};margin-bottom:4px">${fmtTime(x)}</div>`,
+    `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
     `<div><span style="color:${COLOR_FRONT}">Front</span>: ${v[0].toFixed(1)} mm</div>`,
     `<div><span style="color:${COLOR_REAR}">Rear</span>:  ${v[1].toFixed(1)} mm</div>`,
-  ].join(''), [tooltipTimeColor])
+  ].join(''), [coordinates, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">

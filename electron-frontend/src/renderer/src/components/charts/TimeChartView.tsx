@@ -10,6 +10,7 @@ import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '.
 import { niceTicks } from '../../lib/timechart/ticks'
 import { createAreaFillPlugin } from '../../lib/timechart/areaFill'
 import type { CSSProperties } from 'react'
+import { useChartCoordinates } from '../../lib/chartCoordinates'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -89,7 +90,7 @@ export type YRangeSpec =
   // padding and nice round ticks.
   | { kind: 'auto'; padFraction?: number; tickCount?: number; fixedMin?: number }
 
-export interface TimeChartViewProps<T> {
+export interface TimeChartViewProps<T extends { session_time: number }> {
   isDark: boolean
   rows: readonly T[]
   getX: (row: T) => number
@@ -117,7 +118,7 @@ export interface TimeChartViewProps<T> {
   minScrollStallS?: number
 }
 
-export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
+export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
   const {
     isDark, rows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
@@ -126,6 +127,10 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   } = props
 
   const look = axisLook ?? {}
+  const coordinates = useChartCoordinates()
+  const effectiveGetX = coordinates.distanceMode ? coordinates.getX : getX
+  const effectiveWindow = coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds
+  const effectiveXTickFormat = coordinates.distanceMode ? coordinates.formatX : xTickFormat
   const font = look.font ?? DEFAULT_FONT
   const padFraction = yRange.kind === 'auto' ? (yRange.padFraction ?? 0.1) : 0.1
   const tickCount = yRange.kind === 'auto' ? (yRange.tickCount ?? 5) : 5
@@ -142,6 +147,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
+  const lapRevisionRef = useRef(coordinates.lapRevision)
   const seriesBuffersRef = useRef<readonly AlignedSeriesData[]>([])
   const dataDirtyRef = useRef(false)
   // Auto y-range state: running min/max plus the last full-rescan timestamp.
@@ -168,7 +174,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     borderColor: initColors.border,
     font,
     xTickSpacePx: look.xTickSpacePx ?? 80,
-    xTickFormat,
+    xTickFormat: effectiveXTickFormat,
     yTickValues: effYTickValues,
     yTickFormat,
     xGap: look.xGap ?? 4,
@@ -187,16 +193,17 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
   const tooltipFormatRef = useRef(tooltipFormat)
   tooltipFormatRef.current = tooltipFormat
 
-  const latestT = rows.length > 0 ? getX(rows[rows.length - 1]) : null
-  const firstT = rows.length > 0 ? getX(rows[0]) : null
+  const latestT = rows.length > 0 ? effectiveGetX(rows[rows.length - 1]) : null
+  const firstT = rows.length > 0 ? effectiveGetX(rows[0]) : null
   const { attach, detach, wake } = useTimeChartScroll(
-    true, latestT, firstT, windowSeconds, dataDirtyRef,
+    !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
     { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS },
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
   const seriesDefs = useRef(series)
-  const getXRef = useRef(getX)
+  const getXRef = useRef(effectiveGetX)
+  getXRef.current = effectiveGetX
 
   // --- create the chart once ---
   useEffect(() => {
@@ -204,7 +211,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     if (!el) return
 
     const defs = seriesDefs.current
-    const bridge = new TimeChartDataBridge<T>(getXRef.current, defs.map((s) => s.getY))
+    const bridge = new TimeChartDataBridge<T>(row => getXRef.current(row), defs.map((s) => s.getY))
     const plugins: Record<string, unknown> = {
       lineChart: corePlugins.lineChart,
       crosshair: corePlugins.crosshair,
@@ -341,10 +348,31 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     const bridge = bridgeRef.current
     const chart = chartRef.current
     if (!bridge) return
-    const { changed, syncedFrom } = bridge.sync(rows)
+    if (coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) {
+      bridge.data.clear()
+      lapRevisionRef.current = coordinates.lapRevision
+      autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
+    }
+    let syncEnd = rows.length
+    if (coordinates.distanceMode) {
+      let lo = 0, hi = rows.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (Number.isFinite(effectiveGetX(rows[mid]))) lo = mid + 1
+        else hi = mid
+      }
+      syncEnd = lo
+    }
+    const { changed, syncedFrom } = bridge.sync(rows, syncEnd)
     if (changed) {
       dataDirtyRef.current = true
       wake()
+    }
+    if (changed && chart && coordinates.distanceMode) {
+      const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : (bridge.length ? bridge.xAt(bridge.length - 1) : 1)
+      chart.options.xRange = { min: 0, max: Math.max(max, 1) }
+      chart.model.requestRedraw()
+      dataDirtyRef.current = false
     }
 
     // Auto y-range: fit to the visible window like uPlot's auto-range. A full
@@ -357,8 +385,8 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     //     axis *shrink* again once old extremes scroll off.
     if (changed && chart && yRange.kind === 'auto') {
       const a = autoRef.current
-      if (rows.length > 0) {
-        const last = rows[rows.length - 1]
+      if (syncEnd > 0) {
+        const last = rows[syncEnd - 1]
         for (let i = 0; i < seriesDefs.current.length; i++) {
           if (!visibilityRef.current[i]) continue
           const s = seriesDefs.current[i]
@@ -375,7 +403,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
         if (b0 && b0.length > 0) {
           // Scan only the visible window. Binary-searching the aligned X ring
           // also keeps this correct when a caller retains a wider source span.
-          const startX = b0.xAt(b0.length - 1) - windowSeconds
+          const startX = coordinates.distanceMode ? 0 : b0.xAt(b0.length - 1) - windowSeconds
           const lb = b0.lowerBoundX(startX)
           let lo = Infinity, hi = -Infinity
           for (let k = 0; k < bufs.length; k++) {
@@ -407,7 +435,7 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
     if (changed && chart && yRange.kind === 'expand' && syncedFrom !== null) {
       let minVal = Infinity
       let maxVal = -Infinity
-      for (let rowIndex = syncedFrom; rowIndex < rows.length; rowIndex++) {
+      for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
         const row = rows[rowIndex]
         for (let seriesIndex = 0; seriesIndex < seriesDefs.current.length; seriesIndex++) {
           if (!visibilityRef.current[seriesIndex]) continue
@@ -426,7 +454,12 @@ export default function TimeChartView<T>(props: TimeChartViewProps<T>) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, wake])
+  }, [rows, wake, coordinates.distanceMode, coordinates.lapRevision, coordinates.progressRevision, coordinates.trackLengthM])
+
+  useEffect(() => {
+    axisCfgRef.current = { ...axisCfgRef.current, xTickFormat: effectiveXTickFormat }
+    chartRef.current?.model.requestRedraw()
+  }, [effectiveXTickFormat])
 
   // Apply Y-axis policy changes in place so a Settings toggle never recreates
   // the WebGL chart. Fixed bounds may also be data-derived (for example Fuel).

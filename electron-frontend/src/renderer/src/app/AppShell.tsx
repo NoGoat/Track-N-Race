@@ -18,23 +18,23 @@ import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import type { RecordingErrorMsg } from '../types'
+import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
 
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
-    actualNativeTitlebar, bannerDuration, chartYAxis, compact, coreLayout, driversMode,
+    actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors,
-    setBannerDuration, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
+    setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSeconds, setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
+    setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const [speedRpmMode, setSpeedRpmMode] = useState<'default' | 'CL' | 'PL' | 'FL' | 'compare'>('default')
   const [editOpen, setEditOpen] = useState(false)
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
@@ -59,6 +59,17 @@ export default function AppShell() {
   // components below, so a telemetry frame never re-renders App itself.
   const protocolStatus  = useTelemetryStore(s => s.protocolStatus)
   const protocolWarning = useTelemetryStore(s => s.protocolWarning)
+  const recordingCurrentLapSupported = useTelemetryStore(s => s.analyzeDeltaAvailable)
+  const playbackTnrdVersion = useTelemetryStore(s => s.playbackTnrdVersion)
+  const clCapability = !playback.state?.filename
+    ? 'live'
+    : playbackTnrdVersion === null
+      ? 'loading'
+      : playbackTnrdVersion === 'TNRD_V3' && recordingCurrentLapSupported
+        ? 'supported'
+        : 'legacy'
+  const clAvailable = clCapability !== 'legacy'
+  const currentLapChartsActive = chartWindow === 'CL' && clAvailable
   // Publish the visible time window to the store so it computes the right slices.
   useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
 
@@ -109,10 +120,11 @@ export default function AppShell() {
         isMaximized={isMaximized}
         onClosePlayback={playback.close}
         onSelectPlaybackFile={playback.selectFile}
-        seconds={seconds}
+        chartWindow={chartWindow}
+        clAvailable={clAvailable}
         setEditOpen={setEditOpen}
         setHeaderVisible={setHeaderVisible}
-        setSeconds={setSeconds}
+        setChartWindow={setChartWindow}
         setSettingsOpen={setSettingsOpen}
         setTab={setTab}
         settingsOpen={settingsOpen}
@@ -189,7 +201,8 @@ export default function AppShell() {
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        <TabContent
+        <ChartCoordinatesProvider enabled={currentLapChartsActive}>
+        <TabContent key={currentLapChartsActive ? 'current-lap' : 'time-window'}
           tab={tab}
           isDark={theme === 'dark'}
           seconds={seconds}
@@ -203,8 +216,6 @@ export default function AppShell() {
           chartYAxis={chartYAxis}
           tyreView={tyreView}
           tyreWearMode={tyreWearMode}
-          speedRpmMode={speedRpmMode}
-          onSpeedRpmModeChange={setSpeedRpmMode}
           selectedIdx={selectedIdx}
           onSelectDriver={handleSelectDriver}
           reduceAnimations={reduceAnimations}
@@ -219,6 +230,7 @@ export default function AppShell() {
           analyzeFixedLapMode={analyzeFixedLapMode}
           onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
         />
+        </ChartCoordinatesProvider>
       </main>
 
       {/* Playback Controls Bar */}

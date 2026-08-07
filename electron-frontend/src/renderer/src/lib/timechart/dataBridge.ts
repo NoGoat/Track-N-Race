@@ -36,8 +36,8 @@ export class TimeChartDataBridge<T> {
     return this.data.lowerBoundX(value, start, end)
   }
 
-  sync(rows: readonly T[]): DataSyncResult {
-    const n = rows.length
+  sync(rows: readonly T[], end = rows.length): DataSyncResult {
+    const n = Math.max(0, Math.min(end, rows.length))
     if (n === 0) {
       if (this.data.length === 0) return { changed: false, syncedFrom: null }
       this.data.clear()
@@ -58,7 +58,7 @@ export class TimeChartDataBridge<T> {
     const contiguous = this.data.length > 0 && !Number.isNaN(this.lastX) &&
       lastRowX >= this.lastX && firstX <= this.lastX && !needsBackfill
     if (!contiguous) {
-      const syncedFrom = this.rebuild(rows)
+      const syncedFrom = this.rebuild(rows, n)
       this.lastX = lastRowX
       return { changed: true, syncedFrom }
     }
@@ -91,12 +91,12 @@ export class TimeChartDataBridge<T> {
     this.data.append(this.getX(row), this.yScratch)
   }
 
-  private rebuild(rows: readonly T[]): number {
+  private rebuild(rows: readonly T[], end: number): number {
     this.data.clear()
     // If an input publication exceeds the hard renderer cap, retain its newest
     // samples. Normal 10-minute/60 Hz windows remain within one 65,536 page.
-    const start = Math.max(0, rows.length - ALIGNED_MAX_POINTS)
-    for (let i = start; i < rows.length; i++) this.appendRow(rows[i])
+    const start = Math.max(0, end - ALIGNED_MAX_POINTS)
+    for (let i = start; i < end; i++) this.appendRow(rows[i])
     return start
   }
 }

@@ -2,6 +2,7 @@ import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from qt_frontend's GraphTable). One leading time column + one column
@@ -37,12 +38,20 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
   // immediately above the table, where the default border-t would double up.
   noBorderTop?: boolean
 }) {
+  const coordinates = useChartCoordinates()
+  const lapRevisionRef = useRef(coordinates.lapRevision)
   const scrollRef   = useRef<HTMLDivElement>(null)
   const pinnedRef   = useRef(true)              // are we pinned to the live edge?
   const frozenNRef  = useRef<number | null>(null) // row count snapshot while scrolled away
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH]         = useState(0)
   const [pinned, setPinned]       = useState(true) // mirrors pinnedRef; drives the "scroll to bottom" button
+
+  if (coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) {
+    lapRevisionRef.current = coordinates.lapRevision
+    pinnedRef.current = true
+    frozenNRef.current = null
+  }
 
   const xs    = (data[0] as Float64Array | undefined) ?? new Float64Array()
   const liveN = xs.length
@@ -107,7 +116,7 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
         style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
         className={`grid items-center hover:bg-[var(--bg-hover)] ${i < n - 1 ? 'border-b border-[var(--border)]' : ''}`}
       >
-        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{fmtTime(xs[i])}</span>
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX({ session_time: xs[i] })) : fmtTime(xs[i])}</span>
         {columns.map((c, ci) => (
           <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
             {c.format((data[ci + 1] as Float64Array)[i])}
@@ -127,7 +136,7 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
           style={{ gridTemplateColumns: gridCols }}
           className="grid shrink-0 border-b border-[var(--border)] bg-[var(--bg-panel)]"
         >
-          <span className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">Time</span>
+          <span className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">{coordinates.distanceMode ? 'Distance' : 'Time'}</span>
           {columns.map((c, ci) => (
             <span key={ci} className="px-3 py-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)] font-normal">{c.header}</span>
           ))}
