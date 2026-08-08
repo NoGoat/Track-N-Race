@@ -80,6 +80,79 @@ function Find-Gradle {
     throw 'Gradle was not found. Install Gradle 8.9+ or generate a Gradle wrapper in android_frontend.'
 }
 
+function Get-AuthorizedDevices([string]$AdbPath) {
+    return @(& $AdbPath devices |
+        Select-Object -Skip 1 |
+        ForEach-Object {
+            if ($_ -match '^([^\s]+)\s+device(?:\s|$)') { $Matches[1] }
+        })
+}
+
+function Get-WirelessDebuggingEndpoints([string]$AdbPath) {
+    $output = @(& $AdbPath mdns services 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @() }
+
+    return @($output |
+        ForEach-Object {
+            # Typical output is: <service name> _adb-tls-connect._tcp. <ip>:<port>
+            if ($_ -match '_adb-tls-connect\._tcp\.?\s+([^\s]+:\d+)\s*$') { $Matches[1] }
+        } |
+        Sort-Object -Unique)
+}
+
+function Connect-WirelessDevices([string]$AdbPath) {
+    $endpoints = @(Get-WirelessDebuggingEndpoints $AdbPath)
+    if ($endpoints.Count -eq 0) { return }
+
+    Write-Host 'No authorized USB device found. Trying paired Wireless Debugging devices...' -ForegroundColor Yellow
+    foreach ($endpoint in $endpoints) {
+        Write-Host "  Connecting to $endpoint"
+        & $AdbPath connect $endpoint | Out-Host
+    }
+}
+
+function Resolve-DeviceSerial([string]$AdbPath, [string]$RequestedSerial) {
+    if ($RequestedSerial) {
+        $devices = @(Get-AuthorizedDevices $AdbPath)
+        if ($RequestedSerial -notin $devices -and $RequestedSerial -match ':\d+$') {
+            & $AdbPath connect $RequestedSerial | Out-Host
+            $devices = @(Get-AuthorizedDevices $AdbPath)
+        }
+        if ($RequestedSerial -notin $devices) {
+            throw "Device '$RequestedSerial' is not connected and authorized."
+        }
+        return $RequestedSerial
+    }
+
+    $devices = @(Get-AuthorizedDevices $AdbPath)
+    $usbDevices = @($devices | Where-Object { $_ -notmatch ':\d+$' })
+    if ($usbDevices.Count -eq 1) { return $usbDevices[0] }
+    if ($usbDevices.Count -gt 1) {
+        throw "Several authorized USB devices are connected: $($usbDevices -join ', '). Pass -DeviceSerial to choose one."
+    }
+
+    $wirelessDevices = @($devices | Where-Object { $_ -match ':\d+$' })
+    if ($wirelessDevices.Count -eq 0) {
+        Connect-WirelessDevices $AdbPath
+        $devices = @(Get-AuthorizedDevices $AdbPath)
+        $wirelessDevices = @($devices | Where-Object { $_ -match ':\d+$' })
+    }
+
+    if ($wirelessDevices.Count -eq 1) { return $wirelessDevices[0] }
+    if ($wirelessDevices.Count -gt 1) {
+        throw "Several authorized Wireless Debugging devices are connected: $($wirelessDevices -join ', '). Pass -DeviceSerial to choose one."
+    }
+
+    throw @"
+No authorized Android device was found over USB or Wireless Debugging.
+On the phone, enable Developer options > Wireless debugging and keep the phone and PC on the same network.
+For first-time setup, choose 'Pair device with pairing code' and run:
+  adb pair <phone-ip>:<pairing-port>
+Then rerun this script. If mDNS discovery is unavailable, pass the phone's Wireless debugging IP and port:
+  .\build-and-run.ps1 -DeviceSerial '<phone-ip>:<connect-port>'
+"@
+}
+
 $ResolvedSdk = $null
 if (-not $SkipBuild) {
     $ResolvedSdk = Find-AndroidSdk
@@ -88,14 +161,11 @@ if (-not $SkipBuild) {
     Assert-AndroidSdkLicenses $ResolvedSdk
 }
 $Adb = Find-Adb $ResolvedSdk
-$AdbArgs = @()
-if ($DeviceSerial) { $AdbArgs += @('-s', $DeviceSerial) }
 
-& $Adb @AdbArgs start-server | Out-Null
-$deviceLines = @(& $Adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '\sdevice$' })
-if (-not $DeviceSerial -and $deviceLines.Count -ne 1) {
-    throw "Expected exactly one authorized device, found $($deviceLines.Count). Pass -DeviceSerial when several are connected."
-}
+& $Adb start-server | Out-Null
+$ResolvedDeviceSerial = Resolve-DeviceSerial $Adb $DeviceSerial
+$AdbArgs = @('-s', $ResolvedDeviceSerial)
+Write-Host "Using Android device $ResolvedDeviceSerial"
 
 if (-not $SkipBuild) {
     $Gradle = Find-Gradle

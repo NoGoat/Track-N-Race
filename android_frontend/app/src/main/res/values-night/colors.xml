@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- M2 dark-theme brand roles; surfaces still come from the parent theme. -->
+    <color name="brand_primary">#EF9A9A</color>
+    <color name="brand_primary_variant">#D32F2F</color>
+    <color name="brand_on_primary">#000000</color>
+    <color name="brand_secondary">#9FA8DA</color>
+    <color name="brand_secondary_variant">#7986CB</color>
+    <color name="brand_on_secondary">#000000</color>
+
+    <!-- Contrast-adjusted racing-domain colors for dark surfaces. -->
+    <color name="racing_fastest_lap">#CE93D8</color>
+    <color name="racing_pit">#FFD54F</color>
+    <color name="racing_penalty">#FFB74D</color>
+    <color name="racing_podium_gold">#FFD700</color>
+    <color name="racing_podium_silver">#E0E0E0</color>
+    <color name="racing_podium_bronze">#D7A06E</color>
+    <color name="connection_starting">#FFD54F</color>
+    <color name="connection_listening">#FFD54F</color>
+    <color name="connection_receiving">#81C784</color>
+    <color name="connection_error">#CF6679</color>
+</resources>

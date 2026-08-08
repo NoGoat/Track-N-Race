@@ -1,31 +1,34 @@
 package com.tracknrace.android;
 
 import android.content.Context;
-import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import androidx.annotation.StringRes;
+
 import com.google.android.material.card.MaterialCardView;
 
 final class PlaceholderPageView extends FrameLayout {
-    PlaceholderPageView(Context context, String title, String description) {
+    PlaceholderPageView(Context context, @StringRes int description) {
         super(context);
-        setPadding(Ui.dp(context, 16), Ui.dp(context, 16), Ui.dp(context, 16), Ui.dp(context, 16));
+        int margin = Ui.dimen(context, R.dimen.m2_screen_margin);
+        setPadding(margin, margin, margin, margin);
+
         MaterialCardView card = Ui.card(context);
-        LinearLayout body = Ui.vertical(context);
-        body.setGravity(Gravity.CENTER);
-        body.setPadding(Ui.dp(context, 28), Ui.dp(context, 40), Ui.dp(context, 28), Ui.dp(context, 40));
-        TextView titleView = Ui.title(context, title, 22);
-        titleView.setGravity(Gravity.CENTER);
-        TextView descriptionView = Ui.text(context, description, 14, context.getColor(R.color.tnr_on_surface_muted));
-        descriptionView.setGravity(Gravity.CENTER);
-        descriptionView.setPadding(0, Ui.dp(context, 10), 0, 0);
-        body.addView(titleView);
-        body.addView(descriptionView);
-        card.addView(body);
+        LinearLayout content = Ui.vertical(context);
+        content.setPadding(margin, margin, margin, margin);
+
+        TextView title = Ui.text(context, context.getString(R.string.placeholder_title),
+            R.style.TextAppearance_TrackNRace_Headline6);
+        TextView body = Ui.text(context, context.getString(description),
+            R.style.TextAppearance_TrackNRace_Body2);
+        body.setPadding(0, Ui.dimen(context, R.dimen.m2_grid_1), 0, 0);
+        content.addView(title);
+        content.addView(body);
+        card.addView(content);
         addView(card, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 }

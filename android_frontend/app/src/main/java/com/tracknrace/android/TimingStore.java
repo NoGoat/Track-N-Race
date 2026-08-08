@@ -16,7 +16,7 @@ final class TimingStore {
         int idx;
         int raceNumber;
         String name = "";
-        String color = "#8E8E8E";
+        String color;
     }
 
     static final class Car {
@@ -107,7 +107,7 @@ final class TimingStore {
             d.idx = item.optInt("idx", i);
             d.raceNumber = item.optInt("race_number", 0);
             d.name = item.optString("name", "Car " + d.idx);
-            d.color = item.optString("livery_color", "#8E8E8E");
+            d.color = item.optString("livery_color", null);
             drivers.put(d.idx, d);
         }
     }

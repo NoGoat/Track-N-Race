@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="navigation_overview">Overview</string>
+    <string name="navigation_standings">Standings</string>
+    <string name="navigation_session">Session</string>
+    <string name="navigation_strategy">Strategy</string>
+    <string name="navigation_more">More</string>
+    <string name="navigation_up">Navigate up</string>
+
+    <string name="status_starting">Starting UDP listener…</string>
+    <string name="status_listening">Listening on UDP %1$d · Auto-detect</string>
+    <string name="status_receiving">Receiving F1 %1$d · UDP %2$d</string>
+    <string name="status_error">UDP error · %1$s</string>
+
+    <string name="standings_summary">Live classification · %1$d cars</string>
+    <string name="standings_empty_title">Waiting for live timing</string>
+    <string name="standings_empty_body">Set the F1 telemetry destination to this phone’s Wi-Fi address on UDP port 20777.</string>
+    <string name="standings_position">P%1$d</string>
+    <string name="standings_car_name">Car %1$d</string>
+    <string name="standings_player_suffix"> · YOU</string>
+    <string name="standings_race_lead">RACE LEAD</string>
+    <string name="standings_to_leader">TO LEADER</string>
+    <string name="standings_selected">Selected</string>
+    <string name="standings_not_selected">Not selected</string>
+
+    <string name="metric_lap">LAP</string>
+    <string name="metric_last_lap">LAST LAP</string>
+    <string name="metric_tyre">TYRE</string>
+    <string name="metric_sector_1">S1</string>
+    <string name="metric_sector_2">S2</string>
+    <string name="metric_sector_3">S3</string>
+
+    <string name="more_dashboard">DASHBOARD</string>
+    <string name="more_app">APP</string>
+    <string name="analysis_title">Analysis</string>
+    <string name="analysis_summary">Compare laps and inspect traces</string>
+    <string name="analysis_placeholder">Lap comparison and telemetry traces will live here.</string>
+    <string name="tyres_title">Tyres</string>
+    <string name="tyres_summary">Wear, temperature and compound state</string>
+    <string name="tyres_placeholder">Mobile tyre cards and stint history will live here.</string>
+    <string name="input_title">Input</string>
+    <string name="input_summary">Throttle, brake and steering</string>
+    <string name="input_placeholder">Pedal and steering telemetry will live here.</string>
+    <string name="power_title">Power</string>
+    <string name="power_summary">ERS, fuel and engine systems</string>
+    <string name="power_placeholder">Energy deployment, harvesting and fuel will live here.</string>
+    <string name="misc_title">Misc</string>
+    <string name="misc_summary">Damage and remaining telemetry</string>
+    <string name="misc_placeholder">Damage and secondary telemetry will live here.</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_summary">UDP, appearance and recording preferences</string>
+    <string name="settings_placeholder">Mobile settings will live here.</string>
+    <string name="about_title">About &amp; licences</string>
+    <string name="about_summary">Track N Race and open-source notices</string>
+    <string name="about_close">Close</string>
+    <string name="placeholder_title">Coming soon</string>
+
+    <string name="overview_placeholder">Live speed, gear and race-state cards will live here.</string>
+    <string name="session_placeholder">Weather, session clock, flags and proximity will live here.</string>
+    <string name="strategy_placeholder">Pit windows, tyre plans and rival comparisons will live here.</string>
+</resources>

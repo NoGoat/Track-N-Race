@@ -16,7 +16,7 @@ Prerequisites on the PC:
 - Android SDK Platform-Tools and Command-line Tools (latest)
 - NDK (Side by side) 27.0.12077973 and CMake 3.22.1
 - Gradle 8.9 or newer on `PATH` (or generate a Gradle wrapper here)
-- USB debugging or wireless debugging connected and authorized
+- USB debugging, or Android 11+ Wireless debugging enabled and paired
 
 From PowerShell:
 
@@ -42,6 +42,23 @@ If more than one ADB device is connected:
 
 ```powershell
 .\android_frontend\build-and-run.ps1 -DeviceSerial '<adb serial>'
+```
+
+The script prefers an authorized USB device. If none is available, it discovers
+paired Wireless Debugging devices on the local network and connects
+automatically. The first wireless connection must be paired from the phone's
+**Developer options > Wireless debugging > Pair device with pairing code**:
+
+```powershell
+adb pair '<phone-ip>:<pairing-port>'
+```
+
+The pairing port is temporary and is not the same as the connection port shown
+on the main Wireless debugging screen. If network mDNS discovery is blocked,
+pass that main-screen connection address explicitly:
+
+```powershell
+.\android_frontend\build-and-run.ps1 -DeviceSerial '<phone-ip>:<connect-port>'
 ```
 
 The first native build downloads the dependencies already pinned by

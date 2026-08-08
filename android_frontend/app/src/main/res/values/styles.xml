@@ -1,27 +1,59 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/tnr_primary</item>
-        <item name="colorPrimaryVariant">@color/tnr_primary_dark</item>
-        <item name="colorSecondary">@color/tnr_secondary</item>
-        <item name="colorSurface">@color/tnr_surface</item>
-        <item name="colorOnSurface">@color/tnr_on_surface</item>
-        <item name="android:colorBackground">@color/tnr_background</item>
-        <item name="android:fontFamily">sans-serif</item>
-        <item name="fontFamily">sans-serif</item>
-        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.TrackNRace.Small</item>
-        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.TrackNRace.Medium</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">@color/tnr_surface</item>
-        <item name="android:navigationBarColor">@color/tnr_surface</item>
-        <item name="android:windowActionModeOverlay">true</item>
+        <!-- Brand roles are business colors; Material owns every component tint. -->
+        <item name="colorPrimary">@color/brand_primary</item>
+        <item name="colorPrimaryDark">@color/brand_primary_variant</item>
+        <item name="colorPrimaryVariant">@color/brand_primary_variant</item>
+        <item name="colorOnPrimary">@color/brand_on_primary</item>
+        <item name="colorSecondary">@color/brand_secondary</item>
+        <item name="colorSecondaryVariant">@color/brand_secondary_variant</item>
+        <item name="colorOnSecondary">@color/brand_on_secondary</item>
+
+        <!-- These styles consume M2 theme roles; Android 12 can replace the roles dynamically. -->
+        <item name="appBarLayoutStyle">@style/Widget.TrackNRace.AppBar.PrimarySurface</item>
+        <item name="toolbarStyle">@style/Widget.TrackNRace.Toolbar.PrimarySurface</item>
+        <item name="materialCardViewStyle">@style/Widget.TrackNRace.Card</item>
+        <item name="chipStyle">@style/Widget.TrackNRace.Chip</item>
+
+        <!-- M2 dark surfaces use elevation overlays supplied by MaterialShapeDrawable. -->
+        <item name="elevationOverlayEnabled">true</item>
+        <item name="elevationOverlayColor">?attr/colorOnSurface</item>
     </style>
 
-    <style name="ShapeAppearance.TrackNRace.Small" parent="ShapeAppearance.MaterialComponents.SmallComponent">
-        <item name="cornerSize">8dp</item>
+    <style name="Widget.TrackNRace.AppBar.PrimarySurface"
+        parent="Widget.MaterialComponents.AppBarLayout.PrimarySurface">
+        <item name="android:background">?attr/colorPrimarySurface</item>
+        <item name="android:elevation">@dimen/m2_app_bar_elevation</item>
     </style>
 
-    <style name="ShapeAppearance.TrackNRace.Medium" parent="ShapeAppearance.MaterialComponents.MediumComponent">
-        <item name="cornerSize">12dp</item>
+    <style name="Widget.TrackNRace.Toolbar.PrimarySurface"
+        parent="Widget.MaterialComponents.Toolbar">
+        <item name="android:background">?attr/colorPrimarySurface</item>
+        <item name="titleTextColor">?attr/colorOnPrimarySurface</item>
+        <item name="subtitleTextColor">@color/on_primary_surface_medium</item>
     </style>
+
+    <style name="Widget.TrackNRace.Card" parent="Widget.MaterialComponents.CardView">
+        <item name="cardBackgroundColor">?attr/colorSurface</item>
+        <item name="cardCornerRadius">@dimen/m2_card_corner_radius</item>
+        <item name="cardElevation">@dimen/m2_card_elevation</item>
+        <item name="checkedIconTint">?attr/colorPrimary</item>
+        <item name="rippleColor">?attr/colorControlHighlight</item>
+    </style>
+
+    <style name="Widget.TrackNRace.Chip" parent="Widget.MaterialComponents.Chip.Action">
+        <item name="android:textAppearance">@style/TextAppearance.TrackNRace.Body2</item>
+        <item name="chipMinHeight">32dp</item>
+        <item name="ensureMinTouchTargetSize">false</item>
+    </style>
+
+    <style name="TextAppearance.TrackNRace.Headline5" parent="TextAppearance.MaterialComponents.Headline5" />
+    <style name="TextAppearance.TrackNRace.Headline6" parent="TextAppearance.MaterialComponents.Headline6" />
+    <style name="TextAppearance.TrackNRace.Subtitle1" parent="TextAppearance.MaterialComponents.Subtitle1" />
+    <style name="TextAppearance.TrackNRace.Subtitle2" parent="TextAppearance.MaterialComponents.Subtitle2" />
+    <style name="TextAppearance.TrackNRace.Body1" parent="TextAppearance.MaterialComponents.Body1" />
+    <style name="TextAppearance.TrackNRace.Body2" parent="TextAppearance.MaterialComponents.Body2" />
+    <style name="TextAppearance.TrackNRace.Caption" parent="TextAppearance.MaterialComponents.Caption" />
+    <style name="TextAppearance.TrackNRace.Overline" parent="TextAppearance.MaterialComponents.Overline" />
 </resources>

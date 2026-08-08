@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="m2_toolbar_height">56dp</dimen>
+    <dimen name="m2_bottom_navigation_height">56dp</dimen>
+    <dimen name="m2_connection_status_height">40dp</dimen>
+    <dimen name="m2_screen_margin">16dp</dimen>
+    <dimen name="m2_grid_1">8dp</dimen>
+    <dimen name="m2_grid_2">16dp</dimen>
+    <dimen name="m2_grid_3">24dp</dimen>
+    <dimen name="m2_grid_4">32dp</dimen>
+    <dimen name="m2_touch_target">48dp</dimen>
+    <dimen name="m2_two_line_item_height">64dp</dimen>
+    <dimen name="m2_card_corner_radius">4dp</dimen>
+    <dimen name="m2_card_elevation">1dp</dimen>
+    <dimen name="m2_app_bar_elevation">4dp</dimen>
+    <dimen name="m2_bottom_navigation_elevation">8dp</dimen>
+    <dimen name="m2_divider_height">1dp</dimen>
+    <dimen name="connection_indicator_size">8dp</dimen>
+    <dimen name="team_indicator_width">4dp</dimen>
+</resources>
