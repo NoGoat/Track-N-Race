@@ -4,6 +4,7 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
 import type { YAxisBehavior } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }
 
@@ -71,14 +72,17 @@ function PowerLineChart({
   }, [data, view, visibleEntries])
 
   const axisColor = isDark ? '#7c8098' : '#6b7280'
-  const tooltipFormat = useCallback((x: number, values: number[]) => {
-    const rows = visibleEntries.map(e =>
-      `<div><span style="color:${e.series.color}">${e.series.label}</span>: ${e.column.format(values[e.sourceIndex])}</div>`,
-    )
+  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
+    const formatValues = (source: number[]) => [
+      ...visibleEntries.map(e =>
+        `<div><span style="color:${e.series.color}">${e.series.label}</span>: ${e.column.format(source[e.sourceIndex])}</div>`,
+      ),
+      tooltipDetails?.(source, axisColor) ?? '',
+    ].join('')
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
-      ...rows,
-      tooltipDetails?.(values, axisColor) ?? '',
+      formatValues(values),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
   }, [axisColor, coordinates, tooltipDetails, visibleEntries])
 
@@ -102,7 +106,7 @@ function PowerLineChart({
           <TimeChartView<StatusRow>
             isDark={isDark}
             rows={data}
-            comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.statusHistory : undefined}
+            comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
             getX={d => d.session_time}
             series={series}
             windowSeconds={windowSeconds}

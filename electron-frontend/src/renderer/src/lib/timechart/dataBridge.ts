@@ -36,13 +36,17 @@ export class TimeChartDataBridge<T> {
     return this.data.lowerBoundX(value, start, end)
   }
 
+  clear() {
+    const changed = this.data.length > 0
+    this.data.clear()
+    this.lastX = NaN
+    return changed
+  }
+
   sync(rows: readonly T[], end = rows.length): DataSyncResult {
     const n = Math.max(0, Math.min(end, rows.length))
     if (n === 0) {
-      if (this.data.length === 0) return { changed: false, syncedFrom: null }
-      this.data.clear()
-      this.lastX = NaN
-      return { changed: true, syncedFrom: null }
+      return { changed: this.clear(), syncedFrom: null }
     }
 
     const firstX = this.getX(rows[0])

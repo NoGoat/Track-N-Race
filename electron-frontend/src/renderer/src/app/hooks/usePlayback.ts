@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
+import { playbackDebug } from '../../lib/playbackDebug'
 
 export function usePlayback(onClose: () => void) {
   const speedRpmBlocks = useTelemetryStore(state => state.speedRpmBlocks)
@@ -66,7 +67,30 @@ export function usePlayback(onClose: () => void) {
       }
       const blocks = blocksRef.current
       if (blocks) {
-        const lapNum = blocks.find(block => next.currentTime >= block.startSessionTime && next.currentTime <= block.endSessionTime)?.lapNum ?? null
+        // Adjacent lap blocks share their boundary timestamp. Select the block
+        // with the latest start so an exact lap-start seek belongs to the new
+        // lap instead of leaving the paused selector on the previous one.
+        let currentBlock: any = null
+        for (const block of blocks) {
+          if (next.currentTime >= block.startSessionTime && next.currentTime <= block.endSessionTime &&
+              (!currentBlock || block.startSessionTime > currentBlock.startSessionTime)) {
+            currentBlock = block
+          }
+        }
+        const lapNum = currentBlock?.lapNum ?? null
+        const timeJump = previous ? next.currentTime - previous.currentTime : 0
+        if (!previous || Math.abs(timeJump) >= 1 || lapNum !== currentLapRef.current) {
+          playbackDebug('player-state', {
+            previousTime: previous?.currentTime ?? null,
+            currentTime: next.currentTime,
+            timeJump,
+            progress: next.progressPct,
+            totalTime: next.totalTime,
+            isPlaying: next.isPlaying,
+            detectedLap: lapNum,
+            previousDetectedLap: currentLapRef.current,
+          })
+        }
         if (lapNum !== currentLapRef.current) {
           currentLapRef.current = lapNum
           setCurrentLapNum(lapNum)
@@ -86,11 +110,19 @@ export function usePlayback(onClose: () => void) {
 
   const seekBackward = useCallback(() => {
     const current = stateRef.current
-    if (current) window.playerBridge.seek(Math.max(0, current.currentTime - 5) / current.totalTime)
+    if (current) {
+      const progress = Math.max(0, current.currentTime - 5) / current.totalTime
+      playbackDebug('seek-backward', { currentTime: current.currentTime, totalTime: current.totalTime, sentProgress: progress })
+      window.playerBridge.seek(progress)
+    }
   }, [])
   const seekForward = useCallback(() => {
     const current = stateRef.current
-    if (current) window.playerBridge.seek(Math.min(current.totalTime, current.currentTime + 5) / current.totalTime)
+    if (current) {
+      const progress = Math.min(current.totalTime, current.currentTime + 5) / current.totalTime
+      playbackDebug('seek-forward', { currentTime: current.currentTime, totalTime: current.totalTime, sentProgress: progress })
+      window.playerBridge.seek(progress)
+    }
   }, [])
   const togglePlay = useCallback(() => {
     const current = stateRef.current

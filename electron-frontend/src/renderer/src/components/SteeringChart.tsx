@@ -4,6 +4,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_STEER = '#BF5FFF'
@@ -28,10 +29,14 @@ export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 
     return [ts, steer]
   }, [data, view])
   const axisColor = isDark ? '#7c8098' : '#6b7280'
-  const tooltipFormat = useCallback((x: number, v: number[]) => [
-    `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
-    `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(v[0])}</div>`,
-  ].join(''), [axisColor, coordinates])
+  const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
+    const formatValues = (values: number[]) => `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(values[0])}</div>`
+    return [
+      `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
+      formatValues(v),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+    ].join('')
+  }, [axisColor, coordinates])
 
   return <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
     <div className="flex items-center justify-between mb-3 shrink-0">
@@ -41,7 +46,7 @@ export default function SteeringChart({ isDark, view = 'chart', windowSeconds = 
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
             windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
             yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
             tooltipFormat={tooltipFormat} />}

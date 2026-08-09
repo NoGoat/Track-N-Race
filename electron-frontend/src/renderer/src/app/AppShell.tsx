@@ -25,11 +25,11 @@ export default function AppShell() {
   const {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
-    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors,
+    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
+    setSectorColors, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
@@ -69,7 +69,7 @@ export default function AppShell() {
         ? 'supported'
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
-  const distanceChartMode = clAvailable && (chartWindow === 'CL' || chartWindow === 'PL') ? chartWindow : null
+  const distanceChartMode = clAvailable && typeof chartWindow !== 'number' ? chartWindow : null
   // Publish the visible time window to the store so it computes the right slices.
   useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
 
@@ -130,6 +130,7 @@ export default function AppShell() {
         settingsOpen={settingsOpen}
         tab={tab}
         theme={theme}
+        titlebarUpdateInterval={titlebarUpdateInterval}
       />
 
       <StatusOverlays
@@ -181,6 +182,8 @@ export default function AppShell() {
           forcedWarningFormat={forcedWarningFormat}
           nativeTitlebar={nativeTitlebar}
           onNativeTitlebarChange={setNativeTitlebar}
+          titlebarUpdateInterval={titlebarUpdateInterval}
+          onTitlebarUpdateIntervalChange={setTitlebarUpdateInterval}
           reduceAnimations={reduceAnimations}
           onReduceAnimationsChange={setReduceAnimations}
           fpsInFocus={fpsInFocus}

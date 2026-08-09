@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAppConfig } from '../../hooks/useAppConfig'
 import { configureChartFrameRates, type ChartFrameRate } from '../../lib/timechart/frameRate'
 import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
-import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_TYRES_LAYOUT, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type TyresLayout } from '../appConfig'
+import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
   const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
-  const [chartWindow, setChartWindow] = useAppConfig<number | 'CL' | 'PL'>('chartWindow', (() => {
+  const [chartWindow, setChartWindow] = useAppConfig<ChartWindow>('chartWindow', (() => {
     const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
     if (legacyMode === 'CL') return 'CL'
     return window.electronStore.get('timeWindow', 30) as number
@@ -28,6 +28,7 @@ export function useAppConfiguration() {
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
+  const [titlebarUpdateInterval, setTitlebarUpdateInterval] = useAppConfig<TitlebarUpdateInterval>('titlebarUpdateInterval', 0)
   const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
   const [fpsInFocus, setFpsInFocus] = useAppConfig<ChartFrameRate>('chartFpsInFocus', 'display')
   const [fpsOutOfFocus, setFpsOutOfFocus] = useAppConfig<ChartFrameRate>('chartFpsOutOfFocus', 30)
@@ -77,11 +78,11 @@ export function useAppConfiguration() {
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
-    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors,
+    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSectorColors, setTheme, setTyreView, setTyreWearMode, setTyresLayout,
+    setSectorColors, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }
 }

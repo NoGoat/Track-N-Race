@@ -3,6 +3,7 @@ import type { AlignedTable, StatusRow, TelemetryRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import SpeedRpmTimeChart from './charts/SpeedRpmTimeChart'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 
 interface Props {
   data: TelemetryRow[]
@@ -30,13 +31,19 @@ function raw(value: number, max: number): number {
 
 export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
-  const tooltipFormat = useCallback((x: number, current: number[]) => {
-    const values = [raw(current[0], 380), raw(current[1], 16000), raw(current[2], 100)]
+  const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
+    const formatValues = (source: number[]) => {
+      const values = [raw(source[0], 380), raw(source[1], 16000), raw(source[2], 100)]
+      return [
+        `<div><span style="color:${COLOR_SPEED}">Speed</span>: ${values[0]} kph</div>`,
+        `<div><span style="color:${COLOR_RPM}">RPM</span>: ${values[1].toLocaleString()}</div>`,
+        `<div><span style="color:${COLOR_ERS}">ERS</span>: ${values[2]}%</div>`,
+      ].join('')
+    }
     return [
       `<div style="color:var(--text-secondary);margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
-      `<div><span style="color:${COLOR_SPEED}">Speed</span>: ${values[0]} kph</div>`,
-      `<div><span style="color:${COLOR_RPM}">RPM</span>: ${values[1].toLocaleString()}</div>`,
-      `<div><span style="color:${COLOR_ERS}">ERS</span>: ${values[2]}%</div>`,
+      formatValues(current),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
   }, [coordinates])
 
@@ -72,8 +79,8 @@ export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'cha
         : view === 'table'
           ? <GraphTable columns={TABLE_COLS} data={tableData} />
           : <SpeedRpmTimeChart key={isDark ? 'dark' : 'light'} isDark={isDark} telemetry={data} statuses={statusHistory}
-              comparisonTelemetry={coordinates.mode === 'PL' ? coordinates.lapData?.telemetry : undefined}
-              comparisonStatuses={coordinates.mode === 'PL' ? coordinates.lapData?.statusHistory : undefined}
+              comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
+              comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
               windowSeconds={windowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
     </div>
   </div>

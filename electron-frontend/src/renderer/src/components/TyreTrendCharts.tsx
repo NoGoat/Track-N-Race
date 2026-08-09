@@ -6,6 +6,7 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
 import { niceTicks } from '../lib/timechart/ticks'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -131,11 +132,17 @@ function TyreLineChartImpl<T extends { session_time: number }>({
     [series, unit],
   )
 
-  const tooltipFormat = useCallback((x: number, values: number[]) => {
-    let html = `<div style="color:${axisColor};margin-bottom:3px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`
-    for (let i = 0; i < series.length; i++) {
-      html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${values[i].toFixed(1)}${unit}</div>`
+  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
+    const formatValues = (source: number[]) => {
+      let html = ''
+      for (let i = 0; i < series.length; i++) {
+        html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${source[i].toFixed(1)}${unit}</div>`
+      }
+      return html
     }
+    let html = `<div style="color:${axisColor};margin-bottom:3px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`
+    html += formatValues(values)
+    html += formatChartComparisonTooltip(comparison, coordinates.mode, formatValues)
     return html
   }, [series, unit, axisColor, coordinates])
 
@@ -212,8 +219,8 @@ interface Props {
 export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis }: Props) {
   const coordinates = useChartCoordinates()
   const c = cornerColors(isDark)
-  const comparisonTelemetry = coordinates.mode === 'PL' ? coordinates.lapData?.telemetry : undefined
-  const comparisonDamage = coordinates.mode === 'PL' ? coordinates.lapData?.damageHistory : undefined
+  const comparisonTelemetry = coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined
+  const comparisonDamage = coordinates.comparisonMode ? coordinates.lapData?.damageHistory : undefined
 
   const tempSeries = useCallback((corner: (row: TelemetryRow) => { fl: number; fr: number; rl: number; rr: number }): SeriesDef<TelemetryRow>[] => [
     { label: 'FL', color: c.fl, getY: (d) => corner(d).fl, lineWidth: 2 },

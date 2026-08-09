@@ -151,6 +151,7 @@ ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
 
 ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
+  if (key === 'theme') updateWindowsTitleBarSymbolColor(value)
 })
 
 ipcMain.handle('dialog:showOpenDialog', async () => {
@@ -258,6 +259,21 @@ function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
   return 'dark'
 }
 
+function windowsTitleBarSymbolColor(theme: unknown): string {
+  return theme === 'light' ? '#000000' : '#ffffff'
+}
+
+function updateWindowsTitleBarSymbolColor(theme: unknown): void {
+  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return
+  if (store.get('nativeTitlebar', false) as boolean) return
+
+  mainWindow.setTitleBarOverlay({
+    color: '#00000000',
+    symbolColor: windowsTitleBarSymbolColor(theme),
+    height: 40,
+  })
+}
+
 function createWindow(): void {
   console.log('[main] createWindow() start')
   const taskbarTheme = getWindowsTaskbarThemeSync()
@@ -287,6 +303,9 @@ function createWindow(): void {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: {
         color: '#00000000',
+        ...(process.platform === 'win32' ? {
+          symbolColor: windowsTitleBarSymbolColor(store.get('theme', 'dark')),
+        } : {}),
         height: 40,
       },
     } : {}),

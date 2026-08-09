@@ -11,6 +11,8 @@ import { niceTicks } from '../../lib/timechart/ticks'
 import { createAreaFillPlugin } from '../../lib/timechart/areaFill'
 import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
+import { playbackDebug } from '../../lib/playbackDebug'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -67,6 +69,20 @@ const DEFAULT_FONT = '11px "Cascadia Code", ui-monospace, monospace'
 // imperceptible. 200ms keeps the scan cost low at large windows.
 const AUTO_RANGE_FULL_MS = 200
 
+interface XIndexedData {
+  readonly length: number
+  xAt(index: number): number
+  lowerBoundX(x: number): number
+}
+
+function nearestIndex(source: XIndexedData | null, targetX: number): number {
+  if (!source || source.length === 0) return -1
+  let index = source.lowerBoundX(targetX)
+  if (index === source.length) index--
+  else if (index > 0 && Math.abs(source.xAt(index - 1) - targetX) <= Math.abs(source.xAt(index) - targetX)) index--
+  return index
+}
+
 export interface SeriesDef<T> {
   label: string
   color: string
@@ -106,8 +122,8 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   yTickFormat: (v: number) => string
   xTickFormat: (seconds: number) => string
   refLines?: RefLine[]
-  /** builds the tooltip HTML from the cursor's x and the per-series y values. */
-  tooltipFormat: (x: number, values: number[]) => string
+  /** Builds tooltip HTML from the cursor x, current values, and optional comparison-lap values. */
+  tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
   /** theme colour resolver; defaults to the Misc-page palette. */
   colorsFor?: (isDark: boolean) => ChartColors
   axisLook?: AxisLook
@@ -168,6 +184,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       : `auto:${yRange.padFraction ?? 0.1}:${yRange.tickCount ?? 5}:${yRange.fixedMin ?? ''}`
   const visibilityKey = series.map(s => s.visible !== false ? '1' : '0').join('')
   const visibilityRef = useRef(series.map(s => s.visible !== false))
+  const debugChartName = series.map(s => s.label).join('+')
 
   const initColors = colorsFor(isDark)
   // Plugin configs live in mutable refs so theme changes update colors in place
@@ -196,6 +213,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   // Latest tooltip formatter for the imperative mousemove handler.
   const tooltipFormatRef = useRef(tooltipFormat)
   tooltipFormatRef.current = tooltipFormat
+  const deltaRevisionRef = useRef('')
+  deltaRevisionRef.current = coordinates.comparisonMode
+    ? `${coordinates.progressRevision}:${coordinates.lapData?.lapNum ?? ''}`
+    : ''
 
   const latestT = rows.length > 0 ? effectiveGetX(rows[rows.length - 1]) : null
   const firstT = rows.length > 0 ? effectiveGetX(rows[0]) : null
@@ -298,34 +319,45 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     el.style.color = axisCfgRef.current.axisColor
     el.style.setProperty('--background-overlay', overlayBgFor(isDark))
 
-    // Custom HTML tooltip: snap to the nearest sample (single index across all
-    // series, matching uPlot's cursor.idx), reusing the shared tooltip element.
-    let lastX = NaN
+    // Custom HTML tooltip: sample each lap independently at the cursor. The
+    // current lap retains its endpoint fallback while the completed comparison
+    // lap follows the hovered distance.
+    let lastCurrentX = NaN
+    let lastComparisonX = NaN
     let lastFormatter: typeof tooltipFormatRef.current | undefined
+    let lastDeltaRevision = ''
     let lastHtml = ''
     const onMove = (contentX: number, contentY: number) => {
       const bridge = bridgeRef.current
       const chart = chartRef.current
       if (!bridge || !chart) return
       if (bridge.length === 0) { hide(); return }
+      const comparisonBridge = comparisonBridgeRef.current
       const px = contentX + paddingLeft
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dataX = (chart.model.xScale as any).invert(px) as number
-      // nearest index by binary search on the shared x buffer
-      let idx = bridge.lowerBoundX(dataX)
-      if (idx === bridge.length) idx--
-      else if (idx > 0 && Math.abs(bridge.xAt(idx - 1) - dataX) <= Math.abs(bridge.xAt(idx) - dataX)) idx--
-      const x = bridge.xAt(idx)
+      const idx = nearestIndex(bridge, dataX)
+      const comparisonIdx = nearestIndex(comparisonBridge, dataX)
+      const currentX = bridge.xAt(idx)
+      const comparisonX = comparisonIdx >= 0 ? comparisonBridge!.xAt(comparisonIdx) : NaN
+      const x = comparisonIdx >= 0 ? comparisonX : currentX
       const formatter = tooltipFormatRef.current
+      const deltaRevision = deltaRevisionRef.current
       // Pointer events frequently remain on the same telemetry sample. Only
       // rebuild tooltip arrays/HTML when that snapped sample (or formatter)
       // actually changes; positioning remains smooth every frame.
-      if (x !== lastX || formatter !== lastFormatter) {
+      if (currentX !== lastCurrentX || comparisonX !== lastComparisonX || formatter !== lastFormatter || deltaRevision !== lastDeltaRevision) {
         const bufs = seriesBuffersRef.current
         const values = bufs.map((buf) => idx < buf.length ? buf.yAt(idx) : NaN)
-        lastHtml = formatter(x, values)
-        lastX = x
+        let comparisonValues: number[] | undefined
+        if (comparisonBridge && comparisonIdx >= 0) {
+          comparisonValues = comparisonBridge.series.map((buf) => comparisonIdx < buf.length ? buf.yAt(comparisonIdx) : NaN)
+        }
+        lastHtml = formatter(x, values, comparisonValues) + formatChartDeltaTooltip(coordinates.getDeltaAtDistance(x))
+        lastCurrentX = currentX
+        lastComparisonX = comparisonX
         lastFormatter = formatter
+        lastDeltaRevision = deltaRevision
       }
       show(lastHtml, px, contentY + paddingTop, chart.clientWidth, chart.clientHeight)
     }
@@ -376,14 +408,21 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     const bridge = comparisonBridgeRef.current
     const chart = chartRef.current
     if (!bridge) return
-    if (!comparisonRows || coordinates.mode !== 'PL') {
-      if (bridge.length) { bridge.data.clear(); chart?.model.requestRedraw() }
+    if (!comparisonRows || !coordinates.comparisonMode) {
+      if (bridge.clear()) chart?.model.requestRedraw()
       comparisonLapRef.current = null
       return
     }
     const comparisonLap = coordinates.lapData?.lapNum ?? null
     if (comparisonLapRef.current !== comparisonLap) {
-      bridge.data.clear()
+      playbackDebug('chart-comparison-lap-change', {
+        chart: debugChartName,
+        previousLap: comparisonLapRef.current,
+        comparisonLap,
+        comparisonRows: comparisonRows.length,
+        bufferRowsBeforeClear: bridge.length,
+      })
+      bridge.clear()
       comparisonLapRef.current = comparisonLap
     }
     let syncEnd = comparisonRows.length
@@ -403,8 +442,21 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     const bridge = bridgeRef.current
     const chart = chartRef.current
     if (!bridge) return
-    if (coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) {
-      bridge.data.clear()
+    const lapRevisionChanged = coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision
+    if (lapRevisionChanged) {
+      playbackDebug('chart-lap-revision', {
+        chart: debugChartName,
+        previousRevision: lapRevisionRef.current,
+        revision: coordinates.lapRevision,
+        mode: coordinates.mode,
+        rows: rows.length,
+        firstSessionTime: rows[0]?.session_time ?? null,
+        lastSessionTime: rows[rows.length - 1]?.session_time ?? null,
+        firstX: rows.length ? effectiveGetX(rows[0]) : null,
+        lastX: rows.length ? effectiveGetX(rows[rows.length - 1]) : null,
+        bufferRowsBeforeClear: bridge.length,
+      })
+      bridge.clear()
       lapRevisionRef.current = coordinates.lapRevision
       autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
     }
@@ -419,6 +471,19 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       syncEnd = lo
     }
     const { changed, syncedFrom } = bridge.sync(rows, syncEnd)
+    if (lapRevisionChanged) {
+      playbackDebug('chart-lap-revision-synced', {
+        chart: debugChartName,
+        revision: coordinates.lapRevision,
+        inputRows: rows.length,
+        syncEnd,
+        syncedFrom,
+        changed,
+        bufferRows: bridge.length,
+        bufferFirstX: bridge.length ? bridge.xAt(0) : null,
+        bufferLastX: bridge.length ? bridge.xAt(bridge.length - 1) : null,
+      })
+    }
     if (changed) {
       dataDirtyRef.current = true
       wake()
@@ -454,7 +519,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       if (now - a.lastFull >= AUTO_RANGE_FULL_MS) {
         a.lastFull = now
         const currentBuffers = seriesBuffersRef.current
-        const comparisonBuffers = coordinates.mode === 'PL' ? comparisonBridgeRef.current?.series ?? [] : []
+        const comparisonBuffers = coordinates.comparisonMode ? comparisonBridgeRef.current?.series ?? [] : []
         const visibleBuffers = [...currentBuffers, ...comparisonBuffers]
         const b0 = visibleBuffers.find((_, i) => visibilityRef.current[i % currentBuffers.length])
         if (b0 && b0.length > 0) {

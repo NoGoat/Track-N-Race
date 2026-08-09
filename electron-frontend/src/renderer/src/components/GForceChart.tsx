@@ -4,6 +4,7 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import type { AlignedTable, MotionRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 
 interface Props {
   isDark: boolean
@@ -54,11 +55,17 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
   }, [data, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#6b7280'
-  const tooltipFormat = useCallback((x: number, v: number[]) => [
-    `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
-    `<div><span style="color:${COLOR_LAT}">Lateral</span>: ${v[0].toFixed(2)} g</div>`,
-    `<div><span style="color:${COLOR_LONG}">Longitudinal</span>: ${v[1].toFixed(2)} g</div>`,
-  ].join(''), [coordinates, tooltipTimeColor])
+  const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
+    const formatValues = (values: number[]) => [
+      `<div><span style="color:${COLOR_LAT}">Lateral</span>: ${values[0].toFixed(2)} g</div>`,
+      `<div><span style="color:${COLOR_LONG}">Longitudinal</span>: ${values[1].toFixed(2)} g</div>`,
+    ].join('')
+    return [
+      `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
+      formatValues(v),
+      formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
+    ].join('')
+  }, [coordinates, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
@@ -81,7 +88,7 @@ export default function GForceChart({ isDark, view = 'chart', windowSeconds = 30
           <TimeChartView<MotionRow>
             isDark={isDark}
             rows={data}
-            comparisonRows={coordinates.mode === 'PL' ? coordinates.lapData?.motion : undefined}
+            comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motion : undefined}
             getX={d => d.session_time}
             series={SERIES}
             windowSeconds={windowSeconds}

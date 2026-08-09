@@ -412,7 +412,10 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
 
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
-export function playerSeek(pct: number): void { engine?.playerSeek(pct) }
+export function playerSeek(pct: number): void {
+  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, engineReady: Boolean(engine) })}`)
+  engine?.playerSeek(pct)
+}
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
 export function playerClose(): void { engine?.playerClose() }

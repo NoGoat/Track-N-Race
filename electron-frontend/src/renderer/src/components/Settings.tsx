@@ -11,6 +11,7 @@ import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import type { TitlebarUpdateInterval } from '../app/appConfig'
 
 interface Props {
   isOpen: boolean
@@ -34,6 +35,8 @@ interface Props {
   forcedWarningFormat: number | null
   nativeTitlebar: boolean
   onNativeTitlebarChange: (v: boolean) => void
+  titlebarUpdateInterval: TitlebarUpdateInterval
+  onTitlebarUpdateIntervalChange: (v: TitlebarUpdateInterval) => void
   reduceAnimations: boolean
   onReduceAnimationsChange: (v: boolean) => void
   fpsInFocus: ChartFrameRate
@@ -134,6 +137,8 @@ const Settings = memo(function Settings({
   forcedWarningFormat,
   nativeTitlebar,
   onNativeTitlebarChange,
+  titlebarUpdateInterval,
+  onTitlebarUpdateIntervalChange,
   reduceAnimations,
   onReduceAnimationsChange,
   fpsInFocus,
@@ -245,6 +250,18 @@ const Settings = memo(function Settings({
         warning="Requires restarting the application to apply."
       >
         <Toggle value={nativeTitlebar} onChange={onNativeTitlebarChange} />
+      </Row>
+      <Row label="Titlebar Updates" description="How often the session timer and lap-comparison delta refresh.">
+        <SegmentedControl<TitlebarUpdateInterval>
+          options={[
+            { value: 0, label: 'Realtime' },
+            { value: 250, label: '250 ms' },
+            { value: 500, label: '500 ms' },
+            { value: 1000, label: '1 second' },
+          ]}
+          value={titlebarUpdateInterval}
+          onChange={onTitlebarUpdateIntervalChange}
+        />
       </Row>
       <Row
         label="Reduce Animations"

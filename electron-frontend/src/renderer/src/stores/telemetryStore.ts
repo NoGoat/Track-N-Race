@@ -6,6 +6,7 @@ import type {
   AnalyzeLapData, PlaybackLapDataMsg,
 } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
+import { playbackDebug } from '../lib/playbackDebug'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -122,6 +123,7 @@ export interface TelemetryStoreState {
   playbackTrackName: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
   livePreviousLapData: AnalyzeLapData | null
+  liveFastestLapData: AnalyzeLapData | null
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
   isConnected: boolean
@@ -145,6 +147,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   playbackTrackId: null, playbackTrackName: null,
   playbackLapDataCache: {},
   livePreviousLapData: null,
+  liveFastestLapData: null,
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
 }))
@@ -224,6 +227,7 @@ function resetSession(): void {
     playbackTrackId: null, playbackTrackName: null,
     playbackLapDataCache: {},
     livePreviousLapData: null,
+    liveFastestLapData: null,
   })
 }
 
@@ -246,9 +250,10 @@ function onLap(lap: LapRow): void {
   }
   if (lap.lap_num === prevLapNum) return
 
-  const completed = useTelemetryStore.getState()
-  set({
-    livePreviousLapData: {
+  let completedLapData: AnalyzeLapData | null = null
+  if (!isPlaybackFlag) {
+    const completed = useTelemetryStore.getState()
+    completedLapData = {
       lapNum: prevLapNum,
       startSessionTime: lapStartTime,
       endSessionTime: packetLapStart,
@@ -258,19 +263,24 @@ function onLap(lap: LapRow): void {
       statusHistory: [...completed.analyzeLapStatusHistory],
       damageHistory: [...completed.analyzeLapDamageHistory],
       lapProgress: [...completed.analyzeLapProgress],
-    },
-  })
+    }
+    set({ livePreviousLapData: completedLapData })
+  }
 
   analyzeLapRevisionVal++
   pendingAnalyzeLapReset = true
 
-  const lapTimeMs = lap.last_lap_ms
-  if (lapTimeMs > 0 && lapTimeMs < 300_000) {
-    if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
-  }
-  if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime) {
-    fastestLapTime = lapTimeMs
-    set({ fastestLapNum: prevLapNum })
+  // Playback has an authoritative session-wide fastest lap from its index.
+  // Never let whichever lap happens to cross a boundary after a seek replace it.
+  if (!isPlaybackFlag && completedLapData) {
+    const lapTimeMs = lap.last_lap_ms
+    if (lapTimeMs > 0 && lapTimeMs < 300_000) {
+      if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
+    }
+    if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime) {
+      fastestLapTime = lapTimeMs
+      set({ fastestLapNum: prevLapNum, liveFastestLapData: completedLapData })
+    }
   }
   lapStartTime = packetLapStart
 }
@@ -298,7 +308,7 @@ function handleMsg(msg: GatewayMsg): void {
         // must not clear the Analyze GPU buffers. Explicit seek flushes carry
         // the revision that identifies a real timeline reset.
         fastestLapTime = Infinity
-        set({ fastestLapNum: null })
+        set({ fastestLapNum: null, liveFastestLapData: null })
         raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= msg.session_time)
         lapStartTime = msg.session_time
         lapNum = null
@@ -400,6 +410,22 @@ function handleMsg(msg: GatewayMsg): void {
     case 'playback_seek_flush_bin': {
       const payload = msg as any
       analyzeLapRevisionVal++
+      playbackDebug('seek-flush-received', {
+        lapNum: payload.lapNum,
+        currentLapStart: payload.currentLapStart,
+        revision: analyzeLapRevisionVal,
+        binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
+        coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : null,
+        fastestLapNum: playbackFastestLapNum || null,
+      })
+      // The rollover warm-up gate is only for naturally streaming lap changes.
+      // A seek flush is an authoritative replacement, and selecting an exact
+      // lap start can validly contain only one sample. Publish that short slice
+      // so paused charts clear the old lap instead of retaining/remapping it.
+      pendingAnalyzeLapReset = false
+      // A seek must restore indexed session metadata, not derive it from the
+      // first lap packet emitted around the new playhead position.
+      set({ fastestLapNum: playbackFastestLapNum || null })
       lapStartTime = payload.currentLapStart
       lapNum = payload.lapNum
       const tel: any[] = [], mot: any[] = [], motEx: any[] = []
@@ -431,6 +457,23 @@ function handleMsg(msg: GatewayMsg): void {
       stsBufRef.current = sts
       dmgBufRef.current = dmg
       lapProgressBufRef.current = lapProgress
+      playbackDebug('seek-flush-decoded', {
+        lapNum,
+        lapStartTime,
+        revision: analyzeLapRevisionVal,
+        telemetryRows: tel.length,
+        telemetryFirstTime: tel[0]?.session_time ?? null,
+        telemetryLastTime: tel[tel.length - 1]?.session_time ?? null,
+        motionRows: mot.length,
+        motionExRows: motEx.length,
+        statusRows: sts.length,
+        damageRows: dmg.length,
+        lapProgressRows: lapProgress.length,
+        lapProgressFirstTime: lapProgress[0]?.session_time ?? null,
+        lapProgressLastTime: lapProgress[lapProgress.length - 1]?.session_time ?? null,
+        lastLapNumber: lastLap?.current_lap_num ?? null,
+        lastLapTimeMs: lastLap?.current_lap_ms ?? null,
+      })
       if (sts.length) set({ status: sts[sts.length - 1] })
       if (dmg.length) set({ damage: dmg[dmg.length - 1] })
       if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
@@ -456,6 +499,7 @@ function handleMsg(msg: GatewayMsg): void {
         speedRpmBlocks: speedRpmBlocksVal,
         fastestLapNum: playbackFastestLapNum || null,
         playbackLapDataCache: {},
+        liveFastestLapData: null,
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1
           : null,

@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { useSize } from '../../hooks/useSize'
 import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
+import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { playbackDebug } from '../../lib/playbackDebug'
 
 interface Props {
   isDark: boolean
@@ -16,7 +18,7 @@ interface Props {
   comparisonStatuses?: readonly StatusRow[]
   windowSeconds: number
   xTickFormat: (x: number) => string
-  tooltipFormat: (x: number, values: number[]) => string
+  tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
 }
 
 const SPEED = '#37872D'
@@ -159,6 +161,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#ffffff')
 
     const tooltipValues = [NaN, NaN, NaN]
+    const comparisonTooltipValues = [NaN, NaN, NaN]
     const stopTooltipSync = chart.nearestPoint.updated.on(() => {
       const pointer = chart.nearestPoint.lastPointerPos
       if (!pointer) { hide(); return }
@@ -167,7 +170,17 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       const index = nearestIndex(chart.options.series[3].data, x)
       if (index < 0) { hide(); return }
       for (let i = 0; i < 3; i++) tooltipValues[i] = chart.options.series[i + 3].data.yAt(index)
-      show(tooltipFormatRef.current(chart.options.series[3].data.xAt(index), tooltipValues), px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
+      const comparisonData = chart.options.series[0].data
+      const comparisonIndex = nearestIndex(comparisonData, x)
+      const pointX = comparisonIndex >= 0 ? comparisonData.xAt(comparisonIndex) : chart.options.series[3].data.xAt(index)
+      const comparisonValues = comparisonIndex >= 0
+        ? comparisonTooltipValues
+        : undefined
+      if (comparisonValues) {
+        for (let i = 0; i < 3; i++) comparisonValues[i] = chart.options.series[i].data.yAt(comparisonIndex)
+      }
+      const html = tooltipFormatRef.current(pointX, tooltipValues, comparisonValues) + formatChartDeltaTooltip(coordinates.getDeltaAtDistance(pointX))
+      show(html, px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
     })
     attach(chart)
     return () => {
@@ -186,7 +199,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     const buffer = comparisonBufferRef.current
     const chart = chartRef.current
     if (!buffer || !chart) return
-    const visible = coordinates.mode === 'PL' && comparisonTelemetry != null
+    const visible = coordinates.comparisonMode && comparisonTelemetry != null
     for (let i = 0; i < 3; i++) chart.options.series[i].visible = visible
     if (!visible) {
       if (buffer.length) buffer.clear()
@@ -197,6 +210,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     }
     const comparisonLap = coordinates.lapData?.lapNum ?? null
     const rebuild = comparisonLapRef.current !== comparisonLap
+    if (rebuild) {
+      playbackDebug('speed-chart-comparison-rebuild', {
+        previousLap: comparisonLapRef.current,
+        comparisonLap,
+        telemetryRows: comparisonTelemetry.length,
+        statusRows: comparisonStatuses?.length ?? 0,
+        bufferRowsBeforeClear: buffer.length,
+      })
+    }
     comparisonLapRef.current = comparisonLap
     syncTelemetry(
       buffer, comparisonTelemetry, comparisonStatuses ?? [], scratchRef.current,
@@ -209,8 +231,32 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     const buffer = bufferRef.current
     if (!buffer) return
     const rebuild = coordinates.distanceMode && syncRef.current.lapRevision !== coordinates.lapRevision
+    if (rebuild) {
+      playbackDebug('speed-chart-lap-revision', {
+        previousRevision: syncRef.current.lapRevision,
+        revision: coordinates.lapRevision,
+        mode: coordinates.mode,
+        telemetryRows: telemetry.length,
+        telemetryFirstTime: telemetry[0]?.session_time ?? null,
+        telemetryLastTime: telemetry[telemetry.length - 1]?.session_time ?? null,
+        firstX: telemetry.length ? coordinates.getX(telemetry[0]) : null,
+        lastX: telemetry.length ? coordinates.getX(telemetry[telemetry.length - 1]) : null,
+        statusRows: statuses.length,
+        bufferRowsBeforeClear: buffer.length,
+        cursorSessionTime: syncRef.current.lastSessionTime,
+      })
+    }
     syncRef.current.lapRevision = coordinates.lapRevision
     if (!syncTelemetry(buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild)) return
+    if (rebuild) {
+      playbackDebug('speed-chart-lap-revision-synced', {
+        revision: coordinates.lapRevision,
+        bufferRows: buffer.length,
+        bufferFirstX: buffer.length ? buffer.firstX : null,
+        bufferLastX: buffer.length ? buffer.lastX : null,
+        cursorSessionTime: syncRef.current.lastSessionTime,
+      })
+    }
     dirtyRef.current = true
     if (coordinates.distanceMode && chartRef.current) {
       const max = coordinates.trackLengthM > 0 ? coordinates.trackLengthM : buffer.lastX

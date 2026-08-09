@@ -5,6 +5,7 @@ import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
 import { fmtLap } from '../bannerHelpers'
 import { PLAYBACK_SPEED_OPTIONS } from '../appConfig'
+import { playbackDebug } from '../../lib/playbackDebug'
 
 const selectStyles = buildSelectStyles(true)
 
@@ -40,8 +41,14 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, pr
 
   const finishDrag = useCallback(() => {
     draggingRef.current = false
+    playbackDebug('progress-finish', {
+      progress: dragProgressRef.current,
+      currentTime,
+      totalTime,
+      targetSessionTime: startSessionTime + dragProgressRef.current * totalTime,
+    })
     window.playerBridge.seek(dragProgressRef.current)
-  }, [])
+  }, [currentTime, startSessionTime, totalTime])
 
   const handleChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(event.target.value)
@@ -50,9 +57,15 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, pr
     const now = Date.now()
     if (now - lastSeekRef.current > 100) {
       lastSeekRef.current = now
+      playbackDebug('progress-drag-seek', {
+        progress: value,
+        currentTime,
+        totalTime,
+        targetSessionTime: startSessionTime + value * totalTime,
+      })
       window.playerBridge.seek(value)
     }
-  }, [])
+  }, [currentTime, startSessionTime, totalTime])
 
   return (
     <div className={`flex-1 flex items-center ${compact ? 'gap-2' : 'gap-4'}`}>
@@ -69,12 +82,36 @@ export default memo(function PlaybackBar({ compact, currentLapNum, exportError, 
   const lapValue = currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null
   const handleSpeed = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => { if (option) window.playerBridge.setSpeed(option.value) }, [])
   const handleLap = useCallback((option: SingleValue<{ value: number; label: string }>) => {
-    if (!option || state.totalTime <= 0 || !speedRpmBlocks) return
+    if (!option || state.totalTime <= 0 || !speedRpmBlocks) {
+      playbackDebug('lap-select-rejected', {
+        selectedLap: option?.value ?? null,
+        totalTime: state.totalTime,
+        hasBlocks: Boolean(speedRpmBlocks),
+      })
+      return
+    }
     const block = speedRpmBlocks.find(item => item.lapNum === option.value)
-    if (!block) return
+    if (!block) {
+      playbackDebug('lap-select-block-missing', {
+        selectedLap: option.value,
+        availableLaps: speedRpmBlocks.map(item => item.lapNum),
+      })
+      return
+    }
     const ratio = (block.startSessionTime - sessionFileStart) / state.totalTime
-    window.playerBridge.seek(Math.max(0, Math.min(1, ratio)))
-  }, [sessionFileStart, speedRpmBlocks, state.totalTime])
+    const clampedRatio = Math.max(0, Math.min(1, ratio))
+    playbackDebug('lap-select-seek', {
+      selectedLap: option.value,
+      blockStart: block.startSessionTime,
+      blockEnd: block.endSessionTime,
+      sessionFileStart,
+      currentTime: state.currentTime,
+      totalTime: state.totalTime,
+      rawProgress: ratio,
+      sentProgress: clampedRatio,
+    })
+    window.playerBridge.seek(clampedRatio)
+  }, [sessionFileStart, speedRpmBlocks, state.currentTime, state.totalTime])
 
   const controlSize = compact ? 'w-6 h-6' : 'w-8 h-8'
   return (

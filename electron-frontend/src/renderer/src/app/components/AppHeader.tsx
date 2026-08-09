@@ -7,8 +7,9 @@ import { selectComponents } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
 import iconTransparent from '../../assets/icon_transparent.png'
 import iconTransparentLight from '../../assets/icon_transparent_light.png'
-import { TAB_OPTIONS, WINDOW_OPTIONS, type Tab } from '../appConfig'
+import { TAB_OPTIONS, WINDOW_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
+import SessionTimer from './SessionTimer'
 
 const selectStyles = buildSelectStyles(true)
 
@@ -22,29 +23,24 @@ interface AppHeaderProps {
   isMaximized: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
-  chartWindow: number | 'CL' | 'PL'
+  chartWindow: ChartWindow
   clAvailable: boolean
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
-  setChartWindow: (window: number | 'CL' | 'PL') => void
+  setChartWindow: (window: ChartWindow) => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
   tab: Tab
   theme: 'dark' | 'light'
+  titlebarUpdateInterval: TitlebarUpdateInterval
 }
-
-const SessionTimer = memo(function SessionTimer() {
-  const sessionTime = useTelemetryStore(state => state.latest?.session_time)
-  if (sessionTime === undefined) return null
-  const formatted = `${Math.floor(sessionTime / 60)}:${String(Math.floor(sessionTime % 60)).padStart(2, '0')}`
-  return <div className="text-sm font-black tabular-nums text-[var(--text-primary)] shrink-0">{formatted}</div>
-})
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
   setHeaderVisible, setChartWindow, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  titlebarUpdateInterval,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
@@ -61,7 +57,7 @@ export default memo(function AppHeader({
     : undefined
   const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
+  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
   const displayedWindow = typeof chartWindow !== 'number' && !clAvailable ? 30 : chartWindow
   return (
     <div
@@ -109,7 +105,7 @@ export default memo(function AppHeader({
         )}
 
         <div className="flex-1" />
-        <SessionTimer />
+        <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL') ? chartWindow : null} updateInterval={titlebarUpdateInterval} />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           {activeBanner && (
             <div className="flex items-center gap-2">
