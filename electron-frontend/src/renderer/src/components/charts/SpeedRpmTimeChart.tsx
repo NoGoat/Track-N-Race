@@ -96,6 +96,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
+  const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
   const comparisonBufferRef = useRef<AlignedDataBuffer | null>(null)
   const scratchRef = useRef(new Float64Array(3))
@@ -110,7 +111,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
 
   const latestT = telemetry.length ? coordinates.getX(telemetry[telemetry.length - 1]) : null
   const firstT = telemetry.length ? coordinates.getX(telemetry[0]) : null
-  const { attach, detach, wake } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60 })
+  const { attach, detach, wake } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60, accumulateFromStart: coordinates.allLapsMode })
 
   useEffect(() => {
     const host = hostRef.current
@@ -133,7 +134,10 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       borderColor: isDark ? '#1e2136' : '#d0d5e0',
       font: '11px "Cascadia Code", ui-monospace, monospace',
       xTickSpacePx: 80,
-      xTickFormat: x => coordinates.distanceMode ? coordinates.formatX(x) : xFormatRef.current(x),
+      xTickFormat: x => coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX(x) : xFormatRef.current(x),
+      xTickValues: coordinates.xTickValues,
+      xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
+      xLabelOffset: coordinates.allLapsMode ? 4 : 0,
       yTickValues: () => Y_TICKS,
       yTickFormat: v => String(Math.round(v * 380)),
       xGap: 2, yGap: 4, showYGrid: true,
@@ -142,6 +146,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         { side: 'right', offset: 54, color: ERS, values: Y_TICKS, format: v => `${Math.round(v * 100)}%` },
       ],
     } }
+    axisCfgRef.current = axisCfg
     const chart = new TimeChart.core(host, {
       paddingTop: 4, paddingRight: 100, paddingBottom: 22, paddingLeft: 44,
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
@@ -190,10 +195,24 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       chartRef.current = null
       bufferRef.current = null
       comparisonBufferRef.current = null
+      axisCfgRef.current = null
     }
     // Theme changes remount this component; live values flow through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const cfg = axisCfgRef.current
+    if (!cfg) return
+    cfg.current = {
+      ...cfg.current,
+      xTickFormat: x => coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX(x) : xFormatRef.current(x),
+      xTickValues: coordinates.xTickValues,
+      xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
+      xLabelOffset: coordinates.allLapsMode ? 4 : 0,
+    }
+    chartRef.current?.model.requestRedraw()
+  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.distanceMode, coordinates.formatX, coordinates.xTickValues])
 
   useEffect(() => {
     const buffer = comparisonBufferRef.current

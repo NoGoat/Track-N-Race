@@ -471,6 +471,7 @@ declare global {
       seek: (pct: number) => void
       setSpeed: (mult: number) => void
       getLapData: (lapNum: number) => void
+      getAllLapsData: () => void
       close: () => void
       exportXlsx: () => Promise<{ ok: boolean; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void

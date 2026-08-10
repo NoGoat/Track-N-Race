@@ -288,9 +288,9 @@ export function startBridge(): string | null {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number) => {
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean) => {
       clearResumeCache()
-      broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum })
+      broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory })
     })
 
     engine.startUdp()
@@ -380,6 +380,7 @@ export function playerSeek(pct: number): void {
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
+export function playerGetAllLapsData(): void { engine?.playerGetAllLapsData() }
 export function playerClose(): void { engine?.playerClose() }
 
 export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {

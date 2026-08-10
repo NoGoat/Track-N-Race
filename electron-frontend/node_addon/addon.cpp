@@ -178,6 +178,7 @@ public:
             InstanceMethod("playerSeek", &TNRPAddon::PlayerSeek),
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
+            InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
@@ -252,7 +253,8 @@ public:
         }
 
         // Optional third callback for the playback seek flush
-        // (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number).
+        // (binary: Buffer, coldJson: string, currentLapStart: number,
+        //  lapNum: number, allHistory: boolean).
         // Only fires when the engine runs with config.binaryPlayback.
         if (info.Length() >= 4 && info[3].IsFunction()) {
             Napi::Function seekCb = info[3].As<Napi::Function>();
@@ -348,23 +350,25 @@ public:
     // Playback seek flush (Config::binaryPlayback only). Seeks arrive at user
     // rate, so no coalescing — each flush is copied once and handed to JS whole.
     void onSeekFlush(const uint8_t* bin, size_t len, const std::string& coldJson,
-                     float currentLapStart, int lapNum) override {
+                     float currentLapStart, int lapNum, bool allHistory) override {
         if (!hasSeekCb_) return;
         struct SeekData {
             std::vector<uint8_t> bin;
             std::string cold;
             float lapStart;
             int lapNum;
+            bool allHistory;
         };
         auto* d = new SeekData{ std::vector<uint8_t>(bin, bin + len), coldJson,
-                                currentLapStart, lapNum };
+                                currentLapStart, lapNum, allHistory };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 if (env != nullptr && cb != nullptr) {
                     cb.Call({ Napi::Buffer<uint8_t>::Copy(env, d->bin.data(), d->bin.size()),
                               Napi::String::New(env, d->cold),
                               Napi::Number::New(env, d->lapStart),
-                              Napi::Number::New(env, d->lapNum) });
+                              Napi::Number::New(env, d->lapNum),
+                              Napi::Boolean::New(env, d->allHistory) });
                 }
                 delete d;
             });
@@ -509,6 +513,11 @@ private:
         if (info.Length() >= 1 && info[0].IsNumber() && engine) {
             engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value());
         }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerGetAllLapsData(const Napi::CallbackInfo& info) {
+        if (engine) engine->playerGetAllLapsData();
         return info.Env().Undefined();
     }
 

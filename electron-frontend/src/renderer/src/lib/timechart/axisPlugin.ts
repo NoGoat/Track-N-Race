@@ -19,6 +19,10 @@ export interface AxisConfig {
   /** min px between adjacent x ticks (uPlot `space`). */
   xTickSpacePx: number
   xTickFormat: (seconds: number) => string
+  /** Optional exact x ticks (used by AL for lap-boundary splits). */
+  xTickValues?: (min: number, max: number) => number[]
+  xTickAnchor?: 'start' | 'middle' | 'end'
+  xLabelOffset?: number
   /** derive y tick values from the current y domain. */
   yTickValues: (min: number, max: number) => number[]
   yTickFormat: (v: number) => string
@@ -129,7 +133,9 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         // --- x axis: grid verticals + optional tick marks + labels ---
         const usable = plotRight - plotLeft
         const count = Math.max(2, Math.floor(usable / c.xTickSpacePx))
-        const xTicks: number[] = xScale.ticks(count)
+        const [xMin, xMax] = xScale.domain()
+        const xTicks: number[] = c.xTickValues ? c.xTickValues(xMin, xMax) : xScale.ticks(count)
+        const labelEvery = c.xTickValues ? Math.max(1, Math.ceil(xTicks.length / count)) : 1
 
         for (let i = 0; i < xTicks.length; i++) {
           const px = xScale(xTicks[i])
@@ -155,14 +161,14 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           }
 
           const t = ensureText(xLabels, i)
-          t.setAttribute('x', String(px))
+          t.setAttribute('x', String(px + (c.xLabelOffset ?? 0)))
           t.setAttribute('y', String(plotBottom + c.xGap + (c.xTickMark ? c.xTickMark.size : 0)))
           t.setAttribute('fill', c.axisColor)
           t.style.font = c.font
-          t.setAttribute('text-anchor', 'middle')
+          t.setAttribute('text-anchor', c.xTickAnchor ?? 'middle')
           t.setAttribute('dominant-baseline', 'hanging')
           t.textContent = c.xTickFormat(xTicks[i])
-          t.style.display = ''
+          t.style.display = i === 0 || i === xTicks.length - 1 || i % labelEvery === 0 ? '' : 'none'
         }
         for (let i = xTicks.length; i < gridPool.nodes.length; i++) gridPool.nodes[i].style.display = 'none'
         for (let i = xTicks.length; i < tickPool.nodes.length; i++) tickPool.nodes[i].style.display = 'none'

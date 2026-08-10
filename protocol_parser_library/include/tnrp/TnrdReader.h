@@ -101,8 +101,9 @@ public:
     // Binary seek flush (requires setBinaryPlayback before load): the hot rows
     // of [min(target-600, currentLapStart), target] as one packed binary slice,
     // plus the window's sparse cold rows (status/damage/lap) newline-joined.
+    // allHistory expands the same packed payload to [startTime, target] for AL.
     struct SeekFlush { std::vector<uint8_t> binary; std::string coldJson; };
-    SeekFlush seekFlush(float target, float currentLapStart);
+    SeekFlush seekFlush(float target, float currentLapStart, bool allHistory = false);
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row

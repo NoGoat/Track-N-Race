@@ -72,9 +72,11 @@ export default function AppShell() {
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
-  const distanceChartMode = clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
-    ? chartWindow
-    : null
+  const chartCoordinateMode = chartWindow === 'AL'
+    ? 'AL'
+    : clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
+      ? chartWindow
+      : null
   const referenceLapOptions = useMemo(() => {
     const lapNumbers = (playback.speedRpmBlocks ?? [])
       .map(block => Number(block.lapNum))
@@ -90,7 +92,7 @@ export default function AppShell() {
     }
   }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
-  useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
+  useEffect(() => { setTelemetrySeconds(chartWindow === 'AL' ? Infinity : seconds) }, [chartWindow, seconds])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we
@@ -226,8 +228,8 @@ export default function AppShell() {
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        <ChartCoordinatesProvider mode={distanceChartMode} referenceLapNum={referenceLapNum}>
-        <TabContent key={distanceChartMode ?? 'time-window'}
+        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum}>
+        <TabContent key={chartCoordinateMode ?? 'time-window'}
           tab={tab}
           isDark={theme === 'dark'}
           seconds={seconds}

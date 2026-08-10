@@ -61,10 +61,11 @@ export default memo(function AppHeader({
     : undefined
   const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const windowOptions = clAvailable
-    ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...(filename ? [{ value: 'RL' as const, label: 'RL' }] : []), windowSeparator, ...WINDOW_OPTIONS]
-    : WINDOW_OPTIONS
-  const displayedWindow = typeof chartWindow !== 'number' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
+  const distanceOptions = clAvailable
+    ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...(filename ? [{ value: 'RL' as const, label: 'RL' }] : [])]
+    : []
+  const windowOptions = [{ value: 'AL' as const, label: 'AL' }, ...distanceOptions, windowSeparator, ...WINDOW_OPTIONS]
+  const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}

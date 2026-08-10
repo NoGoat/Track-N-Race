@@ -21,6 +21,7 @@ import {
   playerSeek,
   playerSetSpeed,
   playerGetLapData,
+  playerGetAllLapsData,
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
@@ -193,6 +194,7 @@ ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
+ipcMain.on('player:getAllLapsData', () => playerGetAllLapsData())
 ipcMain.on('player:close', () => playerClose())
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
 ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number) => analysisGetLapData(lapNum))

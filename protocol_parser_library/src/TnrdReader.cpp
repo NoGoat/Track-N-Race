@@ -910,11 +910,15 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
     damageCadenceCursor_ = cadenceEnd;
 }
 
-TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart) {
+TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
+                                            bool allHistory) {
     SeekFlush f;
-    // Backfill window: the whole current lap, but at most 10 minutes — mirrors
-    // the TS engine's extractAndBroadcastSeek.
-    float windowStart = std::max(target - 600.0f, currentLapStart);
+    // Normal seeks restore the current lap. AL asks for the already-indexed
+    // prefix through the same packed path so the renderer receives one batch,
+    // not one enormous JSON message per completed lap.
+    float windowStart = allHistory
+        ? startTime_
+        : std::max(target - 600.0f, currentLapStart);
 
     if (!hotTimes_.empty()) {
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();

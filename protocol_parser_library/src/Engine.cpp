@@ -310,7 +310,7 @@ void Engine::playerSeek(float pct) {
 
     if (config_.binaryPlayback) {
         if (sink_) sink_->onSeekFlush(binFlush.binary.data(), binFlush.binary.size(),
-                                      binFlush.coldJson, lapStart, lapNum);
+                                      binFlush.coldJson, lapStart, lapNum, false);
         for (const auto& s : state) emitRow(s);
         // status/damage already ride in the flush's coldJson; positions has no
         // cold cache, so restore the track map explicitly.
@@ -342,6 +342,22 @@ void Engine::playerGetLapData(int lapNum) {
         msg = reader_.getLapDataMessage(lapNum);
     }
     if (!msg.empty()) emitRow(msg);
+}
+
+void Engine::playerGetAllLapsData() {
+    float lapStart = 0.0f;
+    int lapNum = 0;
+    TnrdReader::SeekFlush flush;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!inPlayback_.load() || !config_.binaryPlayback) return;
+        const float target = currentTime_;
+        lapStart = target;
+        reader_.currentLapAt(target, lapStart, lapNum);
+        flush = reader_.seekFlush(target, lapStart, true);
+    }
+    if (sink_) sink_->onSeekFlush(flush.binary.data(), flush.binary.size(),
+                                  flush.coldJson, lapStart, lapNum, true);
 }
 
 void Engine::playerClose() {

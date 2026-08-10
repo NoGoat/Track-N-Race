@@ -89,6 +89,7 @@ const playerBridge = {
   seek: (pct: number) => ipcRenderer.send('player:seek', pct),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
+  getAllLapsData: () => ipcRenderer.send('player:getAllLapsData'),
   close: () => ipcRenderer.send('player:close'),
   exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
   onExportProgress: (cb: (pct: number, stage: string) => void) => {

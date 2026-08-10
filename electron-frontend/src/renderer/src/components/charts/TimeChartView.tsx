@@ -148,7 +148,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const coordinates = useChartCoordinates()
   const effectiveGetX = coordinates.distanceMode ? coordinates.getX : getX
   const effectiveWindow = coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds
-  const effectiveXTickFormat = coordinates.distanceMode ? coordinates.formatX : xTickFormat
+  const effectiveXTickFormat = coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX : xTickFormat
   const font = look.font ?? DEFAULT_FONT
   const padFraction = yRange.kind === 'auto' ? (yRange.padFraction ?? 0.1) : 0.1
   const tickCount = yRange.kind === 'auto' ? (yRange.tickCount ?? 5) : 5
@@ -196,6 +196,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     font,
     xTickSpacePx: look.xTickSpacePx ?? 80,
     xTickFormat: effectiveXTickFormat,
+    xTickValues: coordinates.xTickValues,
+    xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
+    xLabelOffset: coordinates.allLapsMode ? 4 : 0,
     yTickValues: effYTickValues,
     yTickFormat,
     xGap: look.xGap ?? 4,
@@ -222,7 +225,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const firstT = rows.length > 0 ? effectiveGetX(rows[0]) : null
   const { attach, detach, wake } = useTimeChartScroll(
     !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
-    { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS },
+    { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
@@ -505,7 +508,20 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     //     axis *shrink* again once old extremes scroll off.
     if (changed && chart && yRange.kind === 'auto') {
       const a = autoRef.current
-      if (syncEnd > 0) {
+      if (coordinates.allLapsMode && syncedFrom !== null) {
+        // AL never evicts a visible prefix, so its range only needs to expand.
+        // Scan exactly the newly synchronized chunk (or the complete buffer
+        // after a backfill rebuild) instead of rescanning the whole race.
+        for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
+          const row = rows[rowIndex]
+          for (let i = 0; i < seriesDefs.current.length; i++) {
+            if (!visibilityRef.current[i]) continue
+            const v = seriesDefs.current[i].getY(row)
+            if (v < a.min) a.min = v
+            if (v > a.max) a.max = v
+          }
+        }
+      } else if (syncEnd > 0) {
         const last = rows[syncEnd - 1]
         for (let i = 0; i < seriesDefs.current.length; i++) {
           if (!visibilityRef.current[i]) continue
@@ -516,7 +532,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         }
       }
       const now = performance.now()
-      if (now - a.lastFull >= AUTO_RANGE_FULL_MS) {
+      if (!coordinates.allLapsMode && now - a.lastFull >= AUTO_RANGE_FULL_MS) {
         a.lastFull = now
         const currentBuffers = seriesBuffersRef.current
         const comparisonBuffers = coordinates.comparisonMode ? comparisonBridgeRef.current?.series ?? [] : []
@@ -527,7 +543,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
           for (let k = 0; k < visibleBuffers.length; k++) {
             if (!visibilityRef.current[k % currentBuffers.length]) continue
             const buf = visibleBuffers[k]
-            const startX = coordinates.distanceMode ? 0 : buf.xAt(buf.length - 1) - windowSeconds
+            const startX = coordinates.distanceMode || coordinates.allLapsMode ? buf.xAt(0) : buf.xAt(buf.length - 1) - windowSeconds
             const lb = buf.lowerBoundX(startX)
             for (let i = lb; i < buf.length; i++) {
               const v = buf.yAt(i)
@@ -574,12 +590,18 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, wake, coordinates.distanceMode, coordinates.lapRevision, coordinates.progressRevision, coordinates.trackLengthM])
+  }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.lapRevision, coordinates.progressRevision, coordinates.trackLengthM])
 
   useEffect(() => {
-    axisCfgRef.current = { ...axisCfgRef.current, xTickFormat: effectiveXTickFormat }
+    axisCfgRef.current = {
+      ...axisCfgRef.current,
+      xTickFormat: effectiveXTickFormat,
+      xTickValues: coordinates.xTickValues,
+      xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
+      xLabelOffset: coordinates.allLapsMode ? 4 : 0,
+    }
     chartRef.current?.model.requestRedraw()
-  }, [effectiveXTickFormat])
+  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.xTickValues, effectiveXTickFormat])
 
   // Apply Y-axis policy changes in place so a Settings toggle never recreates
   // the WebGL chart. Fixed bounds may also be data-derived (for example Fuel).
@@ -604,7 +626,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       for (let k = 0; k < bufs.length; k++) {
         if (!visibilityRef.current[k]) continue
         const buf = bufs[k]
-        const start = buf.length > 0 ? buf.lowerBoundX(buf.xAt(buf.length - 1) - windowSeconds) : 0
+        const start = buf.length > 0
+          ? coordinates.allLapsMode ? 0 : buf.lowerBoundX(buf.xAt(buf.length - 1) - windowSeconds)
+          : 0
         for (let i = start; i < buf.length; i++) {
           const v = buf.yAt(i)
           if (v < lo) lo = v

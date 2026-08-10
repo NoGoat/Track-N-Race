@@ -2,12 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useRef } from 'react
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, LapProgressPoint } from '../types'
 import { buildLapProgressMap, buildLapProgressMapFromPoints, interpolateLapElapsed, type LapProgressMap } from './lapDelta'
-import type { DistanceChartMode } from '../app/appConfig'
+import type { ChartMode } from '../app/appConfig'
 import { playbackDebug } from './playbackDebug'
 
 interface ChartCoordinates {
-  mode: DistanceChartMode | null
+  mode: ChartMode | null
   distanceMode: boolean
+  allLapsMode: boolean
   comparisonMode: boolean
   trackLengthM: number
   lapRevision: number
@@ -17,11 +18,14 @@ interface ChartCoordinates {
   getComparisonX: (row: { session_time: number }) => number
   getDeltaAtDistance: (distance: number) => number
   formatX: (x: number) => string
+  xTickValues?: (min: number, max: number) => number[]
+  axisRevision: string
 }
 
 const DEFAULT: ChartCoordinates = {
   mode: null,
   distanceMode: false,
+  allLapsMode: false,
   comparisonMode: false,
   trackLengthM: 0,
   lapRevision: 0,
@@ -31,6 +35,7 @@ const DEFAULT: ChartCoordinates = {
   getComparisonX: row => row.session_time,
   getDeltaAtDistance: () => NaN,
   formatX: x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`,
+  axisRevision: '',
 }
 
 const Context = createContext(DEFAULT)
@@ -58,7 +63,7 @@ export function formatChartDistance(metres: number): string {
   return `${Math.round(metres)} m`
 }
 
-export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { mode: DistanceChartMode | null; referenceLapNum: number | null; children: React.ReactNode }) {
+export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { mode: ChartMode | null; referenceLapNum: number | null; children: React.ReactNode }) {
   const currentProgress = useTelemetryStore(state => state.analyzeLapProgress)
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
@@ -69,6 +74,8 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
   const livePreviousLap = useTelemetryStore(state => state.livePreviousLapData)
   const liveFastestLap = useTelemetryStore(state => state.liveFastestLapData)
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
+  const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
+  const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as Array<{ lapNum: number; startSessionTime: number; endSessionTime: number }> | null
   const playbackCurrentLap = isPlayback && currentLapNum !== null
     ? playbackCache[currentLapNum] ?? null
     : null
@@ -80,13 +87,14 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
       : mode === 'PL' ? livePreviousLap : mode === 'FL' ? liveFastestLap : null
     : null
   useEffect(() => {
-    if (!isPlayback || mode === null) return
+    if (!isPlayback || mode === null || mode === 'AL') return
     for (const lapNum of new Set([currentLapNum, comparisonLapNum])) {
       if (lapNum !== null && !playbackCache[lapNum]) window.playerBridge.getLapData(lapNum)
     }
   }, [comparisonLapNum, currentLapNum, isPlayback, mode, playbackCache])
 
-  const enabled = mode !== null
+  const enabled = mode !== null && mode !== 'AL'
+  const allLapsMode = mode === 'AL'
   const comparisonMode = mode === 'PL' || mode === 'FL' || mode === 'RL'
   // Match Analysis: after a playback seek, use the indexed lap's canonical
   // origin/progress instead of mixing seek-backfill progress with cached
@@ -126,6 +134,18 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
     const delta = currentElapsed - comparisonElapsed
     return Number.isFinite(delta) ? delta : NaN
   }, [])
+  const lapBoundaries = isPlayback
+    ? (lapBlocks ?? [])
+      .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
+      .sort((a, b) => a.sessionTime - b.sessionTime)
+    : liveLapBoundaries
+  const boundaryLabelsRef = useRef(new Map<number, string>())
+  boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, `Lap ${boundary.lapNum}`]))
+  const boundaryValuesRef = useRef<number[]>([])
+  boundaryValuesRef.current = lapBoundaries.map(boundary => boundary.sessionTime)
+  const getAllLapTicks = useCallback((min: number, max: number) => boundaryValuesRef.current
+    .filter(time => time >= min && time <= max), [])
+  const formatAllLapX = useCallback((x: number) => boundaryLabelsRef.current.get(x) ?? '', [])
   const lastProgress = rawProgress[rawProgress.length - 1]
   const progressRevision = `${lapRevision}:${rawProgress.length}:${lastProgress?.session_time ?? ''}:${lastProgress?.lap_distance_m ?? ''}`
   useEffect(() => {
@@ -154,6 +174,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
   return <Context.Provider value={{
     mode,
     distanceMode: enabled,
+    allLapsMode,
     comparisonMode,
     trackLengthM,
     lapRevision,
@@ -162,7 +183,11 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
     getX: enabled ? getX : DEFAULT.getX,
     getComparisonX: comparisonMode ? getComparisonX : DEFAULT.getComparisonX,
     getDeltaAtDistance: comparisonMode ? getDeltaAtDistance : DEFAULT.getDeltaAtDistance,
-    formatX: enabled ? formatChartDistance : DEFAULT.formatX,
+    formatX: enabled ? formatChartDistance : allLapsMode ? formatAllLapX : DEFAULT.formatX,
+    xTickValues: allLapsMode ? getAllLapTicks : undefined,
+    axisRevision: allLapsMode
+      ? lapBoundaries.map(boundary => `${boundary.lapNum}:${boundary.sessionTime}`).join('|')
+      : progressRevision,
   }}>{children}</Context.Provider>
 }
 
