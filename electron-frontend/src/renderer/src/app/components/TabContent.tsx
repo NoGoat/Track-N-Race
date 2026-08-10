@@ -284,6 +284,9 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
       onCompareLapChange={props.onAnalyzeCompareLapChange}
       fixedLapMode={props.analyzeFixedLapMode}
       onFixedLapModeChange={props.onAnalyzeFixedLapModeChange}
+      mapDimmed={props.mapDimmed}
+      reduceAnimations={props.reduceAnimations}
+      sectorColors={props.sectorColors}
     />
   }
   if (props.tab === 'misc') {

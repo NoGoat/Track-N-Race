@@ -118,7 +118,8 @@ public:
                     const std::function<void(size_t, size_t, const std::string&)>& onProgress = nullptr);
 
 private:
-    struct IndexEntry { long offset; float sessionTime; uint8_t type; };
+    using FileOffset = std::int64_t;
+    struct IndexEntry { FileOffset offset; float sessionTime; uint8_t type; };
     // A stored raw JSONL row plus its session_time (for ordering). The json is
     // emitted verbatim into the playback payload via glz::raw_json.
     struct TimedRaw { float t; std::string json; };
@@ -132,6 +133,7 @@ private:
         std::vector<TimedRaw> motionExHistory;
         std::vector<TimedRaw> damageHistory;
         std::vector<LapProgressPoint> lapProgress; // populated only for V3
+        std::vector<PlayerPositionPoint> playerPositions;
         // Slim chart points for lapBlocksMessage().
         std::vector<SlimTelemetryPoint> slimTelemetry;
         std::vector<SlimStatusPoint>    slimStatus;
@@ -141,7 +143,7 @@ private:
     std::vector<IndexEntry> index_;
     std::FILE*  tempFile_    = nullptr;
     std::string tempPath_;
-    long        tempFileSize_ = 0;
+    FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
     size_t      playPos_     = 0;
@@ -178,8 +180,8 @@ private:
     size_t lowerBoundTime(float t) const;
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
-    void buildIndex(const std::string& filePath);
-    std::string readLine(long offset);   // reads raw JSONL line (no parse)
+    bool buildIndex(const std::string& filePath);
+    std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
 
     // Linear forward walk from playPos_ (same early-stop semantics as the old
     // per-row pullUntil on out-of-order rows): first index >= playPos_ whose

@@ -28,10 +28,16 @@ export interface AnalyzeSeriesConfig {
 }
 
 export interface AnalyzeConfig {
-  version: 2
+  version: 3
   collapsed: boolean
+  view: 'graph' | 'map'
+  mapCurrentColor: string
+  mapComparisonColor: string
   series: AnalyzeSeriesConfig[]
 }
+
+export const DEFAULT_MAP_CURRENT_COLOR = '#5794F2'
+export const DEFAULT_MAP_COMPARISON_COLOR = '#C4162A'
 
 export const DEFAULT_DELTA_POSITIVE_COLOR = '#C4162A'
 export const DEFAULT_DELTA_NEGATIVE_COLOR = '#37872D'
@@ -79,8 +85,11 @@ export const ANALYZE_METRICS = [...base, ...tyreMetrics]
 export const ANALYZE_METRIC_BY_ID = new Map(ANALYZE_METRICS.map(def => [def.id, def]))
 
 export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
-  version: 2,
+  version: 3,
   collapsed: false,
+  view: 'graph',
+  mapCurrentColor: DEFAULT_MAP_CURRENT_COLOR,
+  mapComparisonColor: DEFAULT_MAP_COMPARISON_COLOR,
   series: [
     ...['speed', 'rpm', 'ers'].map(metricId => ({
       metricId,
@@ -119,8 +128,11 @@ export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | und
     negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR, visible: true, showYAxis: true,
   })
   return {
-    version: 2,
+    version: 3,
     collapsed: value?.collapsed === true,
+    view: value?.view === 'map' ? 'map' : 'graph',
+    mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
+    mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),
   }
 }

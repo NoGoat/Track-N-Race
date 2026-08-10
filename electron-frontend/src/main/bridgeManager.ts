@@ -1,6 +1,5 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
-import { HotRowSmoother } from './binaryForwardFill'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
 
@@ -124,42 +123,19 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
   })
 }
 
-// The game streams 3 hot packet types per frame (motion, car_tel, motion_ex), so
-// the addon can hand us ~3x the frame rate in binary batches/sec. Forwarding each as
-// its own IPC message makes the renderer fall behind (bursty "every few seconds"
-// updates). Coalesce + forward-fill via the smoother, flushing once per measured
-// frame. The flush re-reads the smoother's detected period each tick so the cadence
-// tracks the actual send rate (20/40/60 Hz, or an fps-capped value).
-const BOOTSTRAP_TICK_MS = 16
-let binPending: Uint8Array[] = []
-let binFlushTimer: NodeJS.Timeout | null = null
-let binNextDueMs = 0
-const smoother = new HotRowSmoother()
-
-function flushBinary(): void {
-  // Always drain the smoother (so binPending can't grow unbounded while hidden),
-  // but only forward to a visible renderer.
-  const batch = smoother.tick(binPending)
-  binPending = []
-  if (batch && rendererVisible) {
+// The addon already coalesces hot rows with at most one native-to-JS flush in
+// flight. Forward each real batch unchanged so display data keeps the engine's
+// session_time values and no synthetic samples can cross lap boundaries.
+function forwardBinary(batch: Uint8Array): void {
+  if (rendererVisible) {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
     }
-  } else if (batch) {
-    const history = chartHistoryRecords(batch)
+  } else {
+    const history = chartHistoryRecords(Buffer.from(batch))
     if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
     trimResumeCache(performance.now())
   }
-  // Re-schedule against an absolute deadline rather than the rounded period:
-  // setTimeout delay is integer-ms, so scheduling "period from now" makes a
-  // 16.67 ms stream alternate 16/17 ms and drift. Advancing a running deadline
-  // feeds each tick's rounding error back into the next delay, keeping the
-  // long-run cadence locked to the measured frame period.
-  const now = performance.now()
-  if (binNextDueMs === 0) binNextDueMs = now
-  binNextDueMs += smoother.getPeriodMs()
-  if (binNextDueMs < now + 1) binNextDueMs = now + 1 // fell behind: skip forward, don't burst
-  binFlushTimer = setTimeout(flushBinary, binNextDueMs - now)
 }
 
 function broadcast(row: Record<string, unknown>): void {
@@ -205,8 +181,6 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
     })
   } else if (type === 'playback_close') {
     activeFilePath = null
-    smoother.reset()
-    binPending = []
     clearResumeCache()
     emitPlaybackState({})   // paused, no file
   }
@@ -265,7 +239,7 @@ export function startBridge(): string | null {
       port: store.get('udp.port', 20777),
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
       // Playback fast path: hot playback rows arrive on the binary channel
-      // (smoother-paced like live), seeks via the dedicated flush callback.
+      // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true
     }
 
@@ -313,21 +287,14 @@ export function startBridge(): string | null {
         }
       }
     }, (binBatch: Uint8Array) => {
-      // Hot rows: accumulate and flush once per frame (see flushBinary).
-      binPending.push(binBatch)
+      forwardBinary(binBatch)
     }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number) => {
-      // Playback seek flush: reset the smoother first so a held hot row can't
-      // forward-fill a stale session_time across the jump, then hand the
-      // renderer the backfill in the shape the TS engine used.
-      smoother.reset()
-      binPending = []
       clearResumeCache()
       broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum })
     })
 
     engine.startUdp()
     pushLogging()
-    if (!binFlushTimer) binFlushTimer = setTimeout(flushBinary, BOOTSTRAP_TICK_MS)
     
     // Listen for logging changes
     unsubLogging = [
@@ -348,9 +315,6 @@ export function startBridge(): string | null {
 export function stopBridge(): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
-  if (binFlushTimer) { clearTimeout(binFlushTimer); binFlushTimer = null }
-  binPending = []
-  smoother.reset()
   clearResumeCache()
   activeFilePath = null
   if (engine) {
@@ -389,8 +353,6 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
   // its playback buffers (playback_close) before the new clip's rows arrive.
   if (activeFilePath) engine.playerClose()
   activeFilePath = filePath
-  smoother.reset()
-  binPending = []
   emitPlaybackState({ isScanning: true })
   let result: PlayerLoadResult = { ok: false, error: 'The recording could not be opened.' }
   try {

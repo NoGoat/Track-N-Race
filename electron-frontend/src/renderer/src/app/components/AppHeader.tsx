@@ -3,7 +3,7 @@ import Select from 'react-select'
 import { Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
-import { selectComponents } from '../../lib/selectComponents'
+import { selectComponents, selectComponentsWithSeparator } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
 import iconTransparent from '../../assets/icon_transparent.png'
 import iconTransparentLight from '../../assets/icon_transparent_light.png'
@@ -12,6 +12,7 @@ import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 
 const selectStyles = buildSelectStyles(true)
+const windowSeparator = { value: 'separator' as const, label: '', isDisabled: true, isSeparator: true as const }
 
 interface AppHeaderProps {
   actualNativeTitlebar: boolean
@@ -25,9 +26,12 @@ interface AppHeaderProps {
   onSelectPlaybackFile: () => void
   chartWindow: ChartWindow
   clAvailable: boolean
+  referenceLapNum: number | null
+  referenceLapOptions: Array<{ value: number; label: string }>
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
   setChartWindow: (window: ChartWindow) => void
+  setReferenceLapNum: (lapNum: number | null) => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
   settingsOpen: boolean
@@ -39,7 +43,7 @@ interface AppHeaderProps {
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
-  setHeaderVisible, setChartWindow, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  referenceLapNum, referenceLapOptions, setHeaderVisible, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
@@ -57,8 +61,10 @@ export default memo(function AppHeader({
     : undefined
   const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const windowOptions = clAvailable ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...WINDOW_OPTIONS] : WINDOW_OPTIONS
-  const displayedWindow = typeof chartWindow !== 'number' && !clAvailable ? 30 : chartWindow
+  const windowOptions = clAvailable
+    ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...(filename ? [{ value: 'RL' as const, label: 'RL' }] : []), windowSeparator, ...WINDOW_OPTIONS]
+    : WINDOW_OPTIONS
+  const displayedWindow = typeof chartWindow !== 'number' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
@@ -105,7 +111,7 @@ export default memo(function AppHeader({
         )}
 
         <div className="flex-1" />
-        <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL') ? chartWindow : null} updateInterval={titlebarUpdateInterval} />
+        <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL' || (chartWindow === 'RL' && !!filename)) ? chartWindow : null} referenceLapNum={referenceLapNum} updateInterval={titlebarUpdateInterval} />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           {activeBanner && (
             <div className="flex items-center gap-2">
@@ -115,8 +121,14 @@ export default memo(function AppHeader({
           )}
         </div>
 
+        {filename && chartWindow === 'RL' && (
+          <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3rem]">
+            <Select options={referenceLapOptions} value={referenceLapOptions.find(option => option.value === referenceLapNum) ?? null} onChange={option => setReferenceLapNum(option?.value ?? null)} placeholder="—" styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          </div>
+        )}
+
         <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3.8rem]">
-          <Select options={windowOptions} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          <Select options={windowOptions} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && option.value !== 'separator' && setChartWindow(option.value)} styles={selectStyles} components={selectComponentsWithSeparator} isSearchable={false} menuPortalTarget={document.body} />
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>

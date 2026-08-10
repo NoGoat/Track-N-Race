@@ -303,6 +303,13 @@ export interface AnalyzeLapData {
   statusHistory: StatusRow[]
   damageHistory: DamageRow[]
   lapProgress: LapProgressPoint[]
+  playerPositions: PlayerPositionPoint[]
+}
+
+export interface PlayerPositionPoint {
+  session_time: number
+  x: number
+  z: number
 }
 
 export interface PlaybackLapDataMsg {
@@ -316,6 +323,7 @@ export interface PlaybackLapDataMsg {
   motionExHistory: MotionExRow[]
   damageHistory: DamageRow[]
   lapProgress: LapProgressPoint[]
+  playerPositions: PlayerPositionPoint[]
 }
 
 export interface PlaybackFastestLapMsg {

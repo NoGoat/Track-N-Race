@@ -18,3 +18,17 @@ function ClearIndicator(props: any) {
 }
 
 export const selectComponents = { DropdownIndicator, ClearIndicator }
+
+function SeparatorOption(props: any) {
+  if (props.data?.isSeparator) {
+    return (
+      <div
+        role="separator"
+        className="mx-1 my-1.5 h-px bg-[var(--text-secondary)] opacity-60"
+      />
+    )
+  }
+  return <components.Option {...props} />
+}
+
+export const selectComponentsWithSeparator = { ...selectComponents, Option: SeparatorOption }

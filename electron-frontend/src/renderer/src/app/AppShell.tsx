@@ -39,6 +39,7 @@ export default function AppShell() {
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
+  const [referenceLapNum, setReferenceLapNum] = useState<number | null>(null)
   const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
@@ -48,6 +49,7 @@ export default function AppShell() {
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
     setAnalyzeFixedLapMode({ enabled: false, lapA: null, lapB: null })
+    setReferenceLapNum(null)
   }, [playback.state?.filename])
 
   const handleCloseSettings = useCallback(() => {
@@ -69,7 +71,24 @@ export default function AppShell() {
         ? 'supported'
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
-  const distanceChartMode = clAvailable && typeof chartWindow !== 'number' ? chartWindow : null
+  const recordingOpen = !!playback.state?.filename
+  const distanceChartMode = clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
+    ? chartWindow
+    : null
+  const referenceLapOptions = useMemo(() => {
+    const lapNumbers = (playback.speedRpmBlocks ?? [])
+      .map(block => Number(block.lapNum))
+      .filter(Number.isFinite)
+    return [...new Set(lapNumbers)]
+      .sort((a, b) => a - b)
+      .map(value => ({ value, label: String(value) }))
+  }, [playback.speedRpmBlocks])
+
+  useEffect(() => {
+    if (referenceLapNum !== null && !referenceLapOptions.some(option => option.value === referenceLapNum)) {
+      setReferenceLapNum(null)
+    }
+  }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
   useEffect(() => { setTelemetrySeconds(seconds) }, [seconds])
 
@@ -122,9 +141,12 @@ export default function AppShell() {
         onSelectPlaybackFile={playback.selectFile}
         chartWindow={chartWindow}
         clAvailable={clAvailable}
+        referenceLapNum={referenceLapNum}
+        referenceLapOptions={referenceLapOptions}
         setEditOpen={setEditOpen}
         setHeaderVisible={setHeaderVisible}
         setChartWindow={setChartWindow}
+        setReferenceLapNum={setReferenceLapNum}
         setSettingsOpen={setSettingsOpen}
         setTab={setTab}
         settingsOpen={settingsOpen}
@@ -204,7 +226,7 @@ export default function AppShell() {
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        <ChartCoordinatesProvider mode={distanceChartMode}>
+        <ChartCoordinatesProvider mode={distanceChartMode} referenceLapNum={referenceLapNum}>
         <TabContent key={distanceChartMode ?? 'time-window'}
           tab={tab}
           isDark={theme === 'dark'}
@@ -244,8 +266,10 @@ export default function AppShell() {
           exportError={playback.exportError}
           exportState={playback.exportState}
           onExport={playback.exportXlsx}
+          onSeekProgress={playback.seekProgress}
           onSeekBackward={playback.seekBackward}
           onSeekForward={playback.seekForward}
+          onSpeedChange={playback.setSpeed}
           onTogglePlay={playback.togglePlay}
           sessionFileStart={playback.sessionFileStart}
           speedRpmBlocks={playback.speedRpmBlocks}

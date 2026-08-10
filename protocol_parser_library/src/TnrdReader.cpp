@@ -8,8 +8,13 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <string_view>
 #include <unordered_set>
+
+#ifndef _WIN32
+#include <sys/types.h>
+#endif
 
 #include "tnrp/BinaryRows.h"
 #include "TnrdCodec.h"
@@ -40,6 +45,27 @@ struct SessionHistoryScanFields {
 };
 namespace {
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
+
+// std::fseek/std::ftell use a 32-bit long on Windows, even in a 64-bit build.
+// TNRD recordings can decompress past 2 GiB, so every temp-file position must
+// go through the platform's 64-bit stdio API.
+std::int64_t tellFile(std::FILE* file) {
+#ifdef _WIN32
+    return static_cast<std::int64_t>(::_ftelli64(file));
+#else
+    return static_cast<std::int64_t>(::ftello(file));
+#endif
+}
+
+bool seekFile(std::FILE* file, std::int64_t offset, int origin) {
+    if (offset < 0) return false;
+#ifdef _WIN32
+    return ::_fseeki64(file, offset, origin) == 0;
+#else
+    if (offset > static_cast<std::int64_t>(std::numeric_limits<off_t>::max())) return false;
+    return ::fseeko(file, static_cast<off_t>(offset), origin) == 0;
+#endif
+}
 }
 
 // State types reconstructed on seek (panel-state setters, emitted individually):
@@ -133,7 +159,7 @@ void TnrdReader::sweepStaleTempFiles() noexcept {
     }
 }
 
-void TnrdReader::buildIndex(const std::string& filePath) {
+bool TnrdReader::buildIndex(const std::string& filePath) {
     index_.clear();
     lapBlocks_.clear();
     scannedLaps_.clear();
@@ -155,23 +181,24 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     std::FILE* f = std::fopen(filePath.c_str(), "rb");
     if (!f) {
         std::fprintf(stderr, "[tnrd] buildIndex: cannot open '%s'\n", filePath.c_str());
-        return;
+        return false;
     }
     // Reserve against vector regrowth during the scan: rows average well under
     // ~96 bytes of JSONL, so this slightly over-reserves and settles in one go.
     {
-        std::fseek(f, 0, SEEK_END);
-        long sz = std::ftell(f);
-        std::fseek(f, 0, SEEK_SET);
+        if (!seekFile(f, 0, SEEK_END)) { std::fclose(f); return false; }
+        const std::int64_t sz = tellFile(f);
+        if (sz < 0 || !seekFile(f, 0, SEEK_SET)) { std::fclose(f); return false; }
         if (sz > 0) index_.reserve((size_t)sz / 96);
     }
     { int c; while ((c = std::fgetc(f)) != EOF && c != '\n') {} }  // skip header
     if (binaryPlayback_) hotCum_.push_back(0);
 
-    constexpr long CHUNK = 2 * 1024 * 1024;
+    constexpr size_t CHUNK = 2 * 1024 * 1024;
     std::vector<char> buf(CHUNK);
     std::string partial;
-    long partialOffset = std::ftell(f);
+    std::int64_t partialOffset = tellFile(f);
+    if (partialOffset < 0) { std::fclose(f); return false; }
     float lastT = 0.0f;
     bool  haveStart = false;
 
@@ -180,7 +207,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     int   latestHistoryLapNum = 0;
     int   latestHistoryLapTimeMs = 0;
 
-    auto commitLine = [&](const char* ld, int ll, long lineOffset) {
+    auto commitLine = [&](const char* ld, int ll, std::int64_t lineOffset) {
         if (ll <= 1) return;
         float t = scanSessionTime(ld, ll);
         if (t < 0.0f) t = lastT;
@@ -228,7 +255,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             hotCum_.push_back((uint32_t)hotTimes_.size());
         }
 
-        if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12 && tid != 14) return;
+        if (tid != 1 && tid != 2 && tid != 4 && tid != 6 && tid != 3 && tid != 11 && tid != 12 && tid != 13 && tid != 14) return;
 
         if (tid == 14) {
             SessionHistoryScanFields history;
@@ -282,6 +309,15 @@ void TnrdReader::buildIndex(const std::string& filePath) {
             else if (tid == 3)  it->second.damageHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 11) it->second.motionHistory.push_back({ t, std::string(ld, ll) });
             else if (tid == 12) it->second.motionExHistory.push_back({ t, std::string(ld, ll) });
+            else if (tid == 13) {
+                PositionsRow positions;
+                (void)glz::read<kPartialRead>(positions, std::string_view(ld, (size_t)ll));
+                const auto player = std::find_if(
+                    positions.cars.begin(), positions.cars.end(),
+                    [&positions](const PositionCar& car) { return car.idx == positions.player_idx; });
+                if (player != positions.cars.end())
+                    it->second.playerPositions.push_back({ t, player->x, player->z });
+            }
             else if (tid == 4 && loadedFormat_ == TnrdFormat::ZstdV3 &&
                      lf.lap_num == curLapNum && std::isfinite(lf.lap_distance_m) &&
                      lf.lap_distance_m >= 0.0f) {
@@ -305,8 +341,9 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     };
 
     for (;;) {
-        long chunkStart = std::ftell(f);
-        size_t n = std::fread(buf.data(), 1, (size_t)CHUNK, f);
+        const std::int64_t chunkStart = tellFile(f);
+        if (chunkStart < 0) { std::fclose(f); return false; }
+        size_t n = std::fread(buf.data(), 1, CHUNK, f);
         if (n == 0) break;
         const char* base = buf.data();
         const char* p = base;
@@ -333,7 +370,9 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     // The writer always terminates every row (and the header) with '\n', so a
     // cleanly closed stream leaves nothing pending — a non-empty partial marks a
     // truncated tail (crash mid-write). Drop it rather than index a corrupt row.
+    const bool readOk = std::ferror(f) == 0;
     std::fclose(f);
+    if (!readOk) return false;
 
     if (curLapNum >= 0) {
         auto it = lapBlocks_.find(curLapNum);
@@ -369,6 +408,7 @@ void TnrdReader::buildIndex(const std::string& filePath) {
     }
     if (binaryPlayback_) hotStart_.push_back(hotBin_.size());   // sentinel end offset
     damageCadenceCursor_ = startTime_;
+    return true;
 }
 
 bool TnrdReader::load(const std::string& path, HeaderRow& outHeader) {
@@ -477,7 +517,12 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         trackLengthM_ = outHeader.track_length_m.value_or(0);
     }
 
-    buildIndex(tempPath_);
+    if (!buildIndex(tempPath_)) {
+        lastError_ = "The decompressed recording could not be indexed.";
+        std::fprintf(stderr, "[tnrd] load FAILED: 64-bit index read failed for '%s'\n", path.c_str());
+        close();
+        return false;
+    }
     if (index_.empty()) {
         lastError_ = "The recording contains no readable telemetry rows.";
         std::fprintf(stderr, "[tnrd] load FAILED: index empty (no indexable rows) for '%s'\n", path.c_str());
@@ -492,8 +537,12 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         close();
         return false;
     }
-    std::fseek(tempFile_, 0, SEEK_END);
-    tempFileSize_ = std::ftell(tempFile_);
+    if (!seekFile(tempFile_, 0, SEEK_END) || (tempFileSize_ = tellFile(tempFile_)) < 0) {
+        lastError_ = "The decompressed recording size could not be read.";
+        std::fprintf(stderr, "[tnrd] load FAILED: 64-bit size read failed for '%s'\n", path.c_str());
+        close();
+        return false;
+    }
     std::fprintf(stderr, "[tnrd] load OK: format=%s rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
                  toString(loadedFormat_), index_.size(), startTime_, totalTime_,
                  outHeader.track_name.c_str(), outHeader.session_name.c_str());
@@ -545,9 +594,9 @@ size_t TnrdReader::lowerBoundTime(float t) const {
 }
 
 // Returns the raw JSONL line at the given file offset (no JSON parse).
-std::string TnrdReader::readLine(long offset) {
+std::string TnrdReader::readLine(FileOffset offset) {
     if (!tempFile_) return {};
-    if (std::fseek(tempFile_, offset, SEEK_SET) != 0) return {};
+    if (!seekFile(tempFile_, offset, SEEK_SET)) return {};
     std::string line;
     char buf[65536];
     while (std::fgets(buf, sizeof(buf), tempFile_)) {
@@ -649,13 +698,14 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
     size_t hi = upperBoundTime(toTime);
     if (lo >= hi) return out;
 
-    long startOff = index_[lo].offset;
-    long endOff   = (hi < index_.size()) ? index_[hi].offset : tempFileSize_;
-    long len = endOff - startOff;
+    const FileOffset startOff = index_[lo].offset;
+    const FileOffset endOff   = (hi < index_.size()) ? index_[hi].offset : tempFileSize_;
+    const FileOffset len = endOff - startOff;
     if (len <= 0) return out;
+    if (static_cast<std::uint64_t>(len) > std::numeric_limits<size_t>::max()) return out;
 
     std::vector<char> buf((size_t)len);
-    if (std::fseek(tempFile_, startOff, SEEK_SET) != 0) return out;
+    if (!seekFile(tempFile_, startOff, SEEK_SET)) return out;
     size_t got = std::fread(buf.data(), 1, (size_t)len, tempFile_);
 
     const char* p = buf.data();
@@ -739,6 +789,7 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     }
     if (loadedFormat_ == TnrdFormat::ZstdV3)
         msg.lapProgress = b.lapProgress;
+    msg.playerPositions = b.playerPositions;
     return writeJson(msg);
 }
 
@@ -757,12 +808,13 @@ size_t TnrdReader::pullEnd(float t) const {
 // tick instead of one per row, which dominated the playback tick cost.
 size_t TnrdReader::readBlock(size_t fromIdx, size_t toIdx) {
     if (!tempFile_ || fromIdx >= toIdx || toIdx > index_.size()) return 0;
-    long startOff = index_[fromIdx].offset;
-    long endOff   = (toIdx < index_.size()) ? index_[toIdx].offset : tempFileSize_;
-    long len = endOff - startOff;
+    const FileOffset startOff = index_[fromIdx].offset;
+    const FileOffset endOff   = (toIdx < index_.size()) ? index_[toIdx].offset : tempFileSize_;
+    const FileOffset len = endOff - startOff;
     if (len <= 0) return 0;
+    if (static_cast<std::uint64_t>(len) > std::numeric_limits<size_t>::max()) return 0;
     if (scratch_.size() < (size_t)len) scratch_.resize((size_t)len);
-    if (std::fseek(tempFile_, startOff, SEEK_SET) != 0) return 0;
+    if (!seekFile(tempFile_, startOff, SEEK_SET)) return 0;
     return std::fread(scratch_.data(), 1, (size_t)len, tempFile_);
 }
 
@@ -822,8 +874,8 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
         size_t hotLo = hotCum_[playPos_], hotHi = hotCum_[end];
         if (hotHi > hotLo)
             binOut.insert(binOut.end(),
-                          hotBin_.begin() + (long)hotStart_[hotLo],
-                          hotBin_.begin() + (long)hotStart_[hotHi]);
+                          hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotLo]),
+                          hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotHi]));
     }
 
     // Cold rows: contiguous read, hot lines skipped (they went out as binary).
@@ -868,8 +920,9 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart)
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();
         size_t hi = std::upper_bound(hotTimes_.begin(), hotTimes_.end(), target) - hotTimes_.begin();
         if (hi > lo)
-            f.binary.assign(hotBin_.begin() + (long)hotStart_[lo],
-                            hotBin_.begin() + (long)hotStart_[hi]);
+            f.binary.assign(
+                hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[lo]),
+                hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hi]));
     }
 
     // Cold rows: full linear scan (small, ~2 Hz), robust to the occasional

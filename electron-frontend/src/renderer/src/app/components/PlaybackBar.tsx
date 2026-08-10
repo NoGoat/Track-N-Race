@@ -11,19 +11,23 @@ const selectStyles = buildSelectStyles(true)
 
 interface PlaybackBarProps {
   compact: boolean
-  currentLapNum: number | null
-  exportError: string | null
-  exportState: 'idle' | 'busy' | 'error'
-  onExport: () => void
+  currentLapNum?: number | null
+  exportError?: string | null
+  exportState?: 'idle' | 'busy' | 'error'
+  onExport?: () => void
+  onSeekProgress: (progress: number) => void
   onSeekBackward: () => void
   onSeekForward: () => void
+  onSpeedChange: (speed: number) => void
   onTogglePlay: () => void
-  sessionFileStart: number
-  speedRpmBlocks: any[] | null
+  sessionFileStart?: number
+  showExport?: boolean
+  showLapSelect?: boolean
+  speedRpmBlocks?: any[] | null
   state: any
 }
 
-const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, progressPct, totalTime }: { compact: boolean; currentTime: number; progressPct: number; totalTime: number }) {
+const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, onSeekProgress, progressPct, totalTime }: { compact: boolean; currentTime: number; onSeekProgress: (progress: number) => void; progressPct: number; totalTime: number }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const draggingRef = useRef(false)
   const dragProgressRef = useRef(progressPct)
@@ -47,8 +51,8 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, pr
       totalTime,
       targetSessionTime: startSessionTime + dragProgressRef.current * totalTime,
     })
-    window.playerBridge.seek(dragProgressRef.current)
-  }, [currentTime, startSessionTime, totalTime])
+    onSeekProgress(dragProgressRef.current)
+  }, [currentTime, onSeekProgress, startSessionTime, totalTime])
 
   const handleChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const value = parseFloat(event.target.value)
@@ -63,9 +67,9 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, pr
         totalTime,
         targetSessionTime: startSessionTime + value * totalTime,
       })
-      window.playerBridge.seek(value)
+      onSeekProgress(value)
     }
-  }, [currentTime, startSessionTime, totalTime])
+  }, [currentTime, onSeekProgress, startSessionTime, totalTime])
 
   return (
     <div className={`flex-1 flex items-center ${compact ? 'gap-2' : 'gap-4'}`}>
@@ -76,11 +80,11 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, pr
   )
 })
 
-export default memo(function PlaybackBar({ compact, currentLapNum, exportError, exportState, onExport, onSeekBackward, onSeekForward, onTogglePlay, sessionFileStart, speedRpmBlocks, state }: PlaybackBarProps) {
+export default memo(function PlaybackBar({ compact, currentLapNum = null, exportError = null, exportState = 'idle', onExport, onSeekProgress, onSeekBackward, onSeekForward, onSpeedChange, onTogglePlay, sessionFileStart = 0, showExport = true, showLapSelect = true, speedRpmBlocks = null, state }: PlaybackBarProps) {
   const speedValue = PLAYBACK_SPEED_OPTIONS.find(option => option.value === state.speed) ?? PLAYBACK_SPEED_OPTIONS[2]
   const lapOptions = useMemo(() => speedRpmBlocks?.map(block => ({ value: block.lapNum, label: String(block.lapNum) })) ?? [], [speedRpmBlocks])
   const lapValue = currentLapNum !== null ? { value: currentLapNum, label: String(currentLapNum) } : null
-  const handleSpeed = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => { if (option) window.playerBridge.setSpeed(option.value) }, [])
+  const handleSpeed = useCallback((option: SingleValue<(typeof PLAYBACK_SPEED_OPTIONS)[number]>) => { if (option) onSpeedChange(option.value) }, [onSpeedChange])
   const handleLap = useCallback((option: SingleValue<{ value: number; label: string }>) => {
     if (!option || state.totalTime <= 0 || !speedRpmBlocks) {
       playbackDebug('lap-select-rejected', {
@@ -121,10 +125,10 @@ export default memo(function PlaybackBar({ compact, currentLapNum, exportError, 
         <button onClick={onTogglePlay} className={`${compact ? 'w-5 h-5' : 'w-7 h-7'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}>{state.isPlaying ? <Pause size={compact ? 13 : 16} fill="currentColor" /> : <Play size={compact ? 13 : 16} fill="currentColor" className="ml-0.5" />}</button>
         <button onClick={onSeekForward} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronRight size={compact ? 14 : 18} /></button>
       </div>
-      <ProgressTracker compact={compact} currentTime={state.currentTime} progressPct={state.progressPct} totalTime={state.totalTime} />
+      <ProgressTracker compact={compact} currentTime={state.currentTime} onSeekProgress={onSeekProgress} progressPct={state.progressPct} totalTime={state.totalTime} />
       <div className={`${compact ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={speedValue} onChange={handleSpeed} options={PLAYBACK_SPEED_OPTIONS} styles={selectStyles} components={selectComponents} menuPlacement="top" isSearchable={false} /></div>
-      {lapOptions.length > 0 && <div className={`${compact ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={lapValue} options={lapOptions} onChange={handleLap} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" /></div>}
-      <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={compact ? 14 : 16} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>
+      {showLapSelect && lapOptions.length > 0 && <div className={`${compact ? 'w-[3.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={lapValue} options={lapOptions} onChange={handleLap} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" /></div>}
+      {showExport && onExport && <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={compact ? 14 : 16} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>}
     </div>
   )
 })

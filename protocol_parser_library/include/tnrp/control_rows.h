@@ -288,6 +288,15 @@ struct LapProgressPoint {
     float lap_distance_m{};
 };
 
+// Compact player-only world position used by Analyze's lap map. The source
+// positions row contains every car; keeping only player_idx avoids multiplying
+// the already sizeable per-lap payload by the full grid.
+struct PlayerPositionPoint {
+    float  session_time{};
+    double x{};
+    double z{};
+};
+
 struct LapMeta {
     int lapNum{};
     int lapTimeMs{};
@@ -316,6 +325,7 @@ struct PlaybackLapDataRow {
     std::vector<glz::raw_json> motionExHistory;
     std::vector<glz::raw_json> damageHistory;
     std::vector<LapProgressPoint> lapProgress;
+    std::vector<PlayerPositionPoint> playerPositions;
 };
 
 } // namespace tnrp

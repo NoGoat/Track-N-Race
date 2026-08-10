@@ -58,7 +58,7 @@ export function formatChartDistance(metres: number): string {
   return `${Math.round(metres)} m`
 }
 
-export function ChartCoordinatesProvider({ mode, children }: { mode: DistanceChartMode | null; children: React.ReactNode }) {
+export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { mode: DistanceChartMode | null; referenceLapNum: number | null; children: React.ReactNode }) {
   const currentProgress = useTelemetryStore(state => state.analyzeLapProgress)
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
@@ -73,11 +73,11 @@ export function ChartCoordinatesProvider({ mode, children }: { mode: DistanceCha
     ? playbackCache[currentLapNum] ?? null
     : null
   const previousLapNum = currentLapNum !== null && currentLapNum > 1 ? currentLapNum - 1 : null
-  const comparisonLapNum = mode === 'PL' ? previousLapNum : mode === 'FL' ? fastestLapNum : null
-  const comparisonLapData = mode === 'PL' || mode === 'FL'
+  const comparisonLapNum = mode === 'PL' ? previousLapNum : mode === 'FL' ? fastestLapNum : mode === 'RL' ? referenceLapNum : null
+  const comparisonLapData = mode === 'PL' || mode === 'FL' || mode === 'RL'
     ? isPlayback
       ? comparisonLapNum !== null ? playbackCache[comparisonLapNum] ?? null : null
-      : mode === 'PL' ? livePreviousLap : liveFastestLap
+      : mode === 'PL' ? livePreviousLap : mode === 'FL' ? liveFastestLap : null
     : null
   useEffect(() => {
     if (!isPlayback || mode === null) return
@@ -87,7 +87,7 @@ export function ChartCoordinatesProvider({ mode, children }: { mode: DistanceCha
   }, [comparisonLapNum, currentLapNum, isPlayback, mode, playbackCache])
 
   const enabled = mode !== null
-  const comparisonMode = mode === 'PL' || mode === 'FL'
+  const comparisonMode = mode === 'PL' || mode === 'FL' || mode === 'RL'
   // Match Analysis: after a playback seek, use the indexed lap's canonical
   // origin/progress instead of mixing seek-backfill progress with cached
   // comparison progress. The latter can differ by one packet (~17 ms).
@@ -107,7 +107,7 @@ export function ChartCoordinatesProvider({ mode, children }: { mode: DistanceCha
     pointsRef.current = rawProgress
     currentProgressMapRef.current = null
   }
-  if ((mode === 'PL' || mode === 'FL') && comparisonLapData) {
+  if (comparisonMode && comparisonLapData) {
     const progressMap = buildLapProgressMap(comparisonLapData)
     comparisonProgressMapRef.current = progressMap
     comparisonPointsRef.current = progressMap?.points ?? []
@@ -160,8 +160,8 @@ export function ChartCoordinatesProvider({ mode, children }: { mode: DistanceCha
     progressRevision,
     lapData: comparisonLapData,
     getX: enabled ? getX : DEFAULT.getX,
-    getComparisonX: mode === 'PL' || mode === 'FL' ? getComparisonX : DEFAULT.getComparisonX,
-    getDeltaAtDistance: mode === 'PL' || mode === 'FL' ? getDeltaAtDistance : DEFAULT.getDeltaAtDistance,
+    getComparisonX: comparisonMode ? getComparisonX : DEFAULT.getComparisonX,
+    getDeltaAtDistance: comparisonMode ? getDeltaAtDistance : DEFAULT.getDeltaAtDistance,
     formatX: enabled ? formatChartDistance : DEFAULT.formatX,
   }}>{children}</Context.Provider>
 }

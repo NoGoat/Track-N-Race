@@ -263,6 +263,7 @@ function onLap(lap: LapRow): void {
       statusHistory: [...completed.analyzeLapStatusHistory],
       damageHistory: [...completed.analyzeLapDamageHistory],
       lapProgress: [...completed.analyzeLapProgress],
+      playerPositions: [],
     }
     set({ livePreviousLapData: completedLapData })
   }
@@ -395,6 +396,7 @@ function handleMsg(msg: GatewayMsg): void {
         statusHistory: payload.statusHistory ?? [],
         damageHistory: payload.damageHistory ?? [],
         lapProgress: payload.lapProgress ?? [],
+        playerPositions: payload.playerPositions ?? [],
       }
       playbackLapCacheOrder = [...playbackLapCacheOrder.filter(lapNum => lapNum !== lapData.lapNum), lapData.lapNum]
       set(state => {

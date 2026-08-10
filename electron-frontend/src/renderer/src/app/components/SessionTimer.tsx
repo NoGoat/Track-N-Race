@@ -6,7 +6,8 @@ import { buildLapProgressMap, interpolateLapElapsed } from '../../lib/lapDelta'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 
 interface Props {
-  comparisonMode: 'PL' | 'FL' | null
+  comparisonMode: 'PL' | 'FL' | 'RL' | null
+  referenceLapNum: number | null
   updateInterval: TitlebarUpdateInterval
 }
 
@@ -17,19 +18,19 @@ interface TitlebarSnapshot {
   comparisonLap: AnalyzeLapData | null
 }
 
-function selectComparisonLap(state: ReturnType<typeof useTelemetryStore.getState>, mode: Props['comparisonMode']): AnalyzeLapData | null {
+function selectComparisonLap(state: ReturnType<typeof useTelemetryStore.getState>, mode: Props['comparisonMode'], referenceLapNum: number | null): AnalyzeLapData | null {
   if (mode === null) return null
   const currentLapNum = state.lap?.lap_num
   const comparisonLapNum = mode === 'PL'
     ? currentLapNum !== undefined && currentLapNum > 1 ? currentLapNum - 1 : null
-    : state.fastestLapNum
+    : mode === 'FL' ? state.fastestLapNum : referenceLapNum
   if (comparisonLapNum === null) return null
   return state.speedRpmBlocks !== null
     ? state.playbackLapDataCache[comparisonLapNum] ?? null
-    : mode === 'PL' ? state.livePreviousLapData : state.liveFastestLapData
+    : mode === 'PL' ? state.livePreviousLapData : mode === 'FL' ? state.liveFastestLapData : null
 }
 
-function readTitlebarSnapshot(comparisonMode: Props['comparisonMode']): TitlebarSnapshot {
+function readTitlebarSnapshot(comparisonMode: Props['comparisonMode'], referenceLapNum: number | null): TitlebarSnapshot {
   const state = useTelemetryStore.getState()
   return {
     sessionTime: state.latest?.session_time,
@@ -37,27 +38,27 @@ function readTitlebarSnapshot(comparisonMode: Props['comparisonMode']): Titlebar
     currentLapData: comparisonMode !== null && state.speedRpmBlocks !== null && state.lap
       ? state.playbackLapDataCache[state.lap.lap_num] ?? null
       : null,
-    comparisonLap: selectComparisonLap(state, comparisonMode),
+    comparisonLap: selectComparisonLap(state, comparisonMode, referenceLapNum),
   }
 }
 
-function RealtimeSessionTimer({ comparisonMode }: Pick<Props, 'comparisonMode'>) {
+function RealtimeSessionTimer({ comparisonMode, referenceLapNum }: Pick<Props, 'comparisonMode' | 'referenceLapNum'>) {
   const sessionTime = useTelemetryStore(state => state.latest?.session_time)
   const lap = useTelemetryStore(state => state.lap)
   const currentLapData = useTelemetryStore(state => comparisonMode !== null && state.speedRpmBlocks !== null && state.lap
     ? state.playbackLapDataCache[state.lap.lap_num] ?? null
     : null)
-  const comparisonLap = useTelemetryStore(state => selectComparisonLap(state, comparisonMode))
+  const comparisonLap = useTelemetryStore(state => selectComparisonLap(state, comparisonMode, referenceLapNum))
   return <SessionTimerDisplay comparisonMode={comparisonMode} sessionTime={sessionTime} lap={lap} currentLapData={currentLapData} comparisonLap={comparisonLap} />
 }
 
-function ThrottledSessionTimer({ comparisonMode, updateInterval }: Props) {
-  const [snapshot, setSnapshot] = useState(() => readTitlebarSnapshot(comparisonMode))
+function ThrottledSessionTimer({ comparisonMode, referenceLapNum, updateInterval }: Props) {
+  const [snapshot, setSnapshot] = useState(() => readTitlebarSnapshot(comparisonMode, referenceLapNum))
   useEffect(() => {
-    setSnapshot(readTitlebarSnapshot(comparisonMode))
-    const timer = window.setInterval(() => setSnapshot(readTitlebarSnapshot(comparisonMode)), updateInterval)
+    setSnapshot(readTitlebarSnapshot(comparisonMode, referenceLapNum))
+    const timer = window.setInterval(() => setSnapshot(readTitlebarSnapshot(comparisonMode, referenceLapNum)), updateInterval)
     return () => window.clearInterval(timer)
-  }, [comparisonMode, updateInterval])
+  }, [comparisonMode, referenceLapNum, updateInterval])
   return <SessionTimerDisplay comparisonMode={comparisonMode} {...snapshot} />
 }
 
@@ -99,6 +100,6 @@ function SessionTimerDisplay({ comparisonMode, sessionTime, lap, currentLapData,
 
 export default memo(function SessionTimer(props: Props) {
   return props.updateInterval === 0
-    ? <RealtimeSessionTimer comparisonMode={props.comparisonMode} />
+    ? <RealtimeSessionTimer comparisonMode={props.comparisonMode} referenceLapNum={props.referenceLapNum} />
     : <ThrottledSessionTimer {...props} />
 })

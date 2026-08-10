@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { playbackDebug } from '../../lib/playbackDebug'
+import { setPlaybackCursorTime } from '../../lib/playbackCursor'
 
 export function usePlayback(onClose: () => void) {
   const speedRpmBlocks = useTelemetryStore(state => state.speedRpmBlocks)
@@ -45,6 +46,7 @@ export function usePlayback(onClose: () => void) {
       setState(next)
     }
     const unsubscribe = window.playerBridge.onStateChange(next => {
+      setPlaybackCursorTime(next?.filename && Number.isFinite(next.currentTime) ? next.currentTime : null)
       const previous = stateRef.current
       stateRef.current = next
       const structuralChange = !previous
@@ -99,6 +101,7 @@ export function usePlayback(onClose: () => void) {
     })
     return () => {
       unsubscribe()
+      setPlaybackCursorTime(null)
       if (uiTimerRef.current) clearTimeout(uiTimerRef.current)
     }
   }, [])
@@ -123,6 +126,12 @@ export function usePlayback(onClose: () => void) {
       playbackDebug('seek-forward', { currentTime: current.currentTime, totalTime: current.totalTime, sentProgress: progress })
       window.playerBridge.seek(progress)
     }
+  }, [])
+  const seekProgress = useCallback((progress: number) => {
+    window.playerBridge.seek(Math.max(0, Math.min(1, progress)))
+  }, [])
+  const setSpeed = useCallback((speed: number) => {
+    window.playerBridge.setSpeed(speed)
   }, [])
   const togglePlay = useCallback(() => {
     const current = stateRef.current
@@ -155,7 +164,7 @@ export function usePlayback(onClose: () => void) {
 
   return {
     close, confirmOpenFilePath, currentLapNum, exportError, exportProgress, exportStage,
-    exportState, exportXlsx, loadError, seekBackward, seekForward, selectFile,
+    exportState, exportXlsx, loadError, seekBackward, seekForward, seekProgress, selectFile, setSpeed,
     sessionFileStart: sessionFileStartRef.current, setConfirmOpenFilePath, setLoadError,
     speedRpmBlocks, state, togglePlay,
   }

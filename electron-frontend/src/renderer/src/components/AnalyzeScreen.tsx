@@ -16,6 +16,7 @@ import { useLabels } from '../lib/labels'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
+import AnalyzeMapComparison from './AnalyzeMapComparison'
 
 interface Props {
   isDark: boolean
@@ -25,6 +26,9 @@ interface Props {
   onCompareLapChange: (lapNum: number | null) => void
   fixedLapMode: AnalyzeFixedLapMode
   onFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
+  mapDimmed: boolean
+  reduceAnimations: boolean
+  sectorColors: boolean
 }
 
 export interface AnalyzeFixedLapMode {
@@ -54,6 +58,7 @@ interface ComparisonLapOption extends Omit<LapOption, 'value'> {
 }
 interface SecondaryFileData {
   filename: string
+  trackId: number | null
   blocks: LapBlock[]
   fastestLapNum: number | null
   lapTimesByNum: Record<number, number>
@@ -63,6 +68,7 @@ type AnalysisFileSource = 'file1' | 'file2'
 interface PendingCircuitMismatch {
   filePath: string
   data: any
+  trackId: number | null
   trackName: string
 }
 
@@ -149,7 +155,39 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
     statusHistory: payload.statusHistory ?? [],
     damageHistory: payload.damageHistory ?? [],
     lapProgress: payload.lapProgress ?? [],
+    playerPositions: payload.playerPositions ?? [],
   }
+}
+
+function AnalysisViewSelector({
+  value, mapDisabled, onChange,
+}: {
+  value: 'graph' | 'map'
+  mapDisabled: boolean
+  onChange: (value: 'graph' | 'map') => void
+}) {
+  return <div
+    className="h-6 inline-flex overflow-hidden rounded-[4px] border border-[var(--border)] divide-x divide-[var(--border)]"
+    role="group"
+    aria-label="Analysis view"
+  >
+    {(['graph', 'map'] as const).map(option => {
+      const selected = value === option
+      const disabled = option === 'map' && mapDisabled
+      return <button
+        key={option}
+        type="button"
+        aria-pressed={selected}
+        disabled={disabled}
+        onClick={() => onChange(option)}
+        className={`w-11 h-full text-[8px] font-semibold uppercase tracking-[0.1em] transition-colors ${
+          selected
+            ? 'bg-[var(--border-focus)]/15 text-[var(--text-primary)]'
+            : 'bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+        } disabled:opacity-30 disabled:pointer-events-none`}
+      >{option}</button>
+    })}
+  </div>
 }
 
 function AnalyzeColorPicker({
@@ -323,6 +361,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       endSessionTime: ends.length ? Math.max(...ends) : startSessionTime,
       telemetry, motion, motionEx, statusHistory, damageHistory,
       lapProgress: playbackCurrentLap?.lapProgress ?? lapProgress,
+      playerPositions: playbackCurrentLap?.playerPositions ?? [],
     }
   }, [currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
   const current = fixedMode ? primaryOverride ?? EMPTY_ANALYZE_LAP : liveCurrent
@@ -347,15 +386,16 @@ const EMPTY_ROWS: never[] = []
 const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   lapNum: 0, startSessionTime: 0, endSessionTime: 0,
   telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
-  lapProgress: [],
+  lapProgress: [], playerPositions: [],
 }
 
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
-  fixedLapMode, onFixedLapModeChange,
+  fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
+  const analysisView = playbackFilename ? config.view : 'graph'
   const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
@@ -455,12 +495,26 @@ export default function AnalyzeScreen({
     : secondaryLapNum !== null
       ? secondaryLapCache[secondaryLapNum] ?? null
       : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+  const current = fixedLapMode.enabled
+    ? fixedPrimary
+    : effectiveCurrentLapNum !== null ? lapCache[effectiveCurrentLapNum] ?? null : null
+  const mapTrackIds = [
+    fixedLapMode.enabled
+      ? fixedLapMode.lapA !== null ? (lapASource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null
+      : current ? primaryTrackId : null,
+    fixedLapMode.enabled
+      ? fixedLapMode.lapB !== null ? (lapBSource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null
+      : comparison ? (secondaryLapNum !== null ? secondaryFile?.trackId ?? null : primaryTrackId) : null,
+  ].filter((trackId): trackId is number => trackId !== null)
+  const distinctMapTrackIds = [...new Set(mapTrackIds)]
+  const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
+  const compatibleMapCircuit = distinctMapTrackIds.length <= 1
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
     ? (lapASource === 'file1' || secondaryFile?.deltaAvailable === true) &&
       (lapBSource === 'file1' || secondaryFile?.deltaAvailable === true)
     : secondaryLapNum === null || secondaryFile?.deltaAvailable === true)
 
-  const applySecondaryFile = useCallback((filePath: string, data: any) => {
+  const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
     const times: Record<number, number> = {}
     for (const lap of data?.laps ?? []) {
       if (Number.isFinite(lap.lapNum) && Number.isFinite(lap.lapTimeMs) && lap.lapTimeMs > 0) {
@@ -469,6 +523,7 @@ export default function AnalyzeScreen({
     }
     setSecondaryFile({
       filename: filePath.split(/[\\/]/).pop() ?? filePath,
+      trackId,
       blocks: Array.isArray(data?.blocks) ? data.blocks : [],
       fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
       lapTimesByNum: times,
@@ -503,11 +558,12 @@ export default function AnalyzeScreen({
       setPendingCircuitMismatch({
         filePath,
         data,
+        trackId: Number.isFinite(result.trackId) ? result.trackId! : null,
         trackName: result.trackName || `Circuit ${result.trackId}`,
       })
       return
     }
-    applySecondaryFile(filePath, data)
+    applySecondaryFile(filePath, data, Number.isFinite(result.trackId) ? result.trackId! : null)
   }, [applySecondaryFile, primaryTrackId])
 
   const clearSecondaryFile = useCallback(() => {
@@ -634,8 +690,13 @@ export default function AnalyzeScreen({
       >
           <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analysis</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
+              <div className="ml-auto">
+                <AnalysisViewSelector
+                  value={analysisView}
+                  mapDisabled={!playbackFilename}
+                  onChange={view => save({ ...config, view })}
+                />
               </div>
             </div>
 
@@ -721,6 +782,24 @@ export default function AnalyzeScreen({
                   />
                 </div>
               )}
+              {analysisView === 'map' && <div className="grid grid-cols-2 gap-2">
+                <div className="h-8 px-2 flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-card)]/20">
+                  <AnalyzeColorPicker
+                    label={fixedLapMode.enabled ? 'Lap A' : 'Current'}
+                    color={config.mapCurrentColor}
+                    onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
+                  />
+                  <span className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)] truncate">{fixedLapMode.enabled ? 'Lap A' : 'Current'}</span>
+                </div>
+                <div className="h-8 px-2 flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-card)]/20">
+                  <AnalyzeColorPicker
+                    label={fixedLapMode.enabled ? 'Lap B' : 'Compare'}
+                    color={config.mapComparisonColor}
+                    onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
+                  />
+                  <span className="text-[9px] uppercase tracking-wider text-[var(--text-secondary)] truncate">{fixedLapMode.enabled ? 'Lap B' : 'Compare'}</span>
+                </div>
+              </div>}
               <button
                 type="button"
                 onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
@@ -816,28 +895,45 @@ export default function AnalyzeScreen({
           >
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
-          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => chartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => chartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
-          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => chartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
-          {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
-          {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
+          {analysisView === 'graph' ? <>
+            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => chartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => chartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
+            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => chartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
+            {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
+            {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
+          </> : <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Elapsed time comparison</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
-          <AnalyzeChartSubscriber
-            isDark={isDark} selected={config.series}
-            deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
-            deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
-            currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
-            comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
-            distanceMode={selectedDistanceMode}
-            controlsRef={chartControlsRef}
-          />
+          <div className={`absolute inset-0 ${analysisView === 'graph' ? '' : 'hidden'}`}>
+            <AnalyzeChartSubscriber
+              isDark={isDark} selected={config.series}
+              deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
+              deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
+              currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
+              comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
+              distanceMode={selectedDistanceMode}
+              controlsRef={chartControlsRef}
+            />
+          </div>
+          {analysisView === 'map' && <AnalyzeMapComparison
+            current={current}
+            comparison={comparison}
+            currentColor={config.mapCurrentColor}
+            comparisonColor={config.mapComparisonColor}
+            fixedMode={fixedLapMode.enabled}
+            trackId={mapTrackId}
+            compatibleCircuit={compatibleMapCircuit}
+            isDark={isDark}
+            sectorColors={sectorColors}
+            reduceAnimations={reduceAnimations}
+            mapDimmed={mapDimmed}
+          />}
         </div>
       </section>
 
@@ -868,7 +964,7 @@ export default function AnalyzeScreen({
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
             <button onClick={() => setPendingCircuitMismatch(null)} className={TEXT_ACTION_BUTTON_CLASS}>Cancel</button>
             <button onClick={() => {
-              applySecondaryFile(pendingCircuitMismatch.filePath, pendingCircuitMismatch.data)
+              applySecondaryFile(pendingCircuitMismatch.filePath, pendingCircuitMismatch.data, pendingCircuitMismatch.trackId)
               setPendingCircuitMismatch(null)
             }} className={`${TEXT_ACTION_BUTTON_CLASS} !border-[var(--border-focus)] !bg-[var(--border-focus)] !text-white hover:brightness-110`}>Load Anyway</button>
           </div>

@@ -9,7 +9,7 @@ export const WINDOWS: { label: string; value: number }[] = [
 
 export type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
 export type TitlebarUpdateInterval = 0 | 250 | 500 | 1000
-export type DistanceChartMode = 'CL' | 'PL' | 'FL'
+export type DistanceChartMode = 'CL' | 'PL' | 'FL' | 'RL'
 export type ChartWindow = number | DistanceChartMode
 
 export interface CoreLayout {

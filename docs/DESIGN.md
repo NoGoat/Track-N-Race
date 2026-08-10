@@ -74,7 +74,7 @@ Three decoders exist and **must stay in lockstep** with the single C++ encoder:
 | Decoder | Used by |
 |---|---|
 | `tnrp::bin::decodeBatch` (BinaryRows.h) | Qt recorder (typed structs, in-process) |
-| `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths + session_time only, for the smoother) |
+| `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths used by hidden-window history filtering) |
 | `electron-frontend/src/renderer/src/lib/decodeBinaryBatch.ts` | Electron renderer (full decode to row objects) |
 
 A schema drift here is silent corruption; treat any field change in
@@ -149,7 +149,8 @@ TNRD V2/V3 Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
 builds a time/type index in one pass, and in the same pass builds the per-lap
 blocks, scanned lap list, event log and fastest lap. Streaming reads return raw
 JSONL lines (no re-parse); block reads (`readBlock`) fetch contiguous index
-ranges with one `fread` into a reused scratch buffer.
+ranges with one `fread` into a reused scratch buffer. Temp-file positions are
+64-bit on every platform because long sessions can decompress beyond 2 GiB.
 
 With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
 
@@ -209,7 +210,7 @@ overlay flows.
 |---|---|---|
 | libtnrp Engine | UDP receive, playback, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. The writer thread drains an event queue; the parse path never blocks on disk. |
 | node_addon | engine threads → 3 TSFNs → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
-| Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick — the engine's playback thread drives; one flush timer paces both live and playback hot rows. |
+| Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
 | Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves. |
 | Qt recorder | GUI thread + engine threads + playback load thread + export thread | `EngineSink` marshals rows to the GUI thread via queued signals. |
 
@@ -246,8 +247,8 @@ overlay flows.
 F1 game ──UDP:20777──> tnrp::Engine (in-process via node_addon)
                           │ onRow (JSON batch)      │ onBinary (packed hot rows)
                           ▼                          ▼
-main: bridgeManager.ts  'telemetry-batch' IPC   HotRowSmoother → 'telemetry-binary' IPC
-                          │  (visibility-gated)     │  (paced to measured frame period)
+main: bridgeManager.ts  'telemetry-batch' IPC   direct real batches → 'telemetry-binary' IPC
+                          │  (visibility-gated)     │  (addon-coalesced, visibility-gated)
                           └──── bounded hidden-window cache ────┘
                                       'telemetry-resume' IPC
 preload (contextBridge)   ▼                          ▼
@@ -291,16 +292,10 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   then per-line JSON.parse): `protocol_status` feeds a cached copy +
   `udp.lastDetectedProtocol` persistence; `playback_state`/`playback_close`
   drive the playback-state channel.
-- **Binary batches** accumulate in `binPending` and are flushed by a single
-  self-rescheduling timer through `HotRowSmoother`
-  (`binaryForwardFill.ts`): the smoother measures the real frame period
-  (median of telemetry session_time deltas, 0.01 ms granularity, so 20/40/60 Hz
-  and fps-capped rates all lock in), forward-fills empty ticks by re-emitting
-  the last telemetry/motion/motion_ex records with session_time advanced
-  exactly one frame (never more than one frame past the last real sample), and
-  the flush timer schedules against an **absolute deadline** so integer-ms
-  setTimeout rounding can't drift the cadence. Fills are display-only;
-  recording happened upstream in C++.
+- **Binary batches** are already coalesced by the addon's one-in-flight TSFN
+  flush and are forwarded unchanged as `'telemetry-binary'`. Electron does not
+  synthesize or retime hot rows, so chart samples retain the engine-provided
+  `session_time` values.
 - **Visibility gating** (`setRendererVisible`, fed by the renderer's
   `document.visibilityState` over IPC): while hidden, normal IPC forwarding
   stops and main retains only the selected chart window (hot chart records plus
@@ -311,11 +306,10 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   `requestStatus()` lets a renderer pull the cached status on demand (e.g.
   after mounting with fallback labels).
 - **Playback glue**: `playerLoad` closes any open clip first, tracks the
-  active file path, resets the smoother, and adapts the engine's
+  active file path, and adapts the engine's
   `playback_state` (relative time → absolute, adds filename/isScanning) for
-  the renderer. The seek-flush callback resets the smoother *before*
-  broadcasting `playback_seek_flush_bin` so a held fill can't leak a stale
-  session_time across the jump.
+  the renderer. The seek-flush callback clears hidden-window history before
+  broadcasting `playback_seek_flush_bin`.
 
 **`index.ts`** — window/app lifecycle: single-instance lock (second instance
 forwards a `.tnrd` path and exits pre-flash), tray icon + menu, frameless
@@ -463,7 +457,7 @@ MainWindow::onEngineBinary — tnrp::bin::decodeBatch → typed rows directly
 - **Typed rows everywhere**: the UI never touches dynamic JSON. Cold rows are
   glaze-parsed once into `AnyRow`; hot rows never round-trip through JSON at
   all (the engine is constructed with `hotRowsAsJson = false`).
-- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a C++ port of the Electron
+- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a Qt-specific
   smoother, driven by `hotFillTimer_` at the measured cadence
   (`periodMs()` re-applied each tick): on an interval with no fresh telemetry
   it re-emits the last telemetry/motion/motion_ex one frame forward (capped at
@@ -581,12 +575,6 @@ types, stylesheet, scrolling hook, and diagnostic plugin have been removed.
 ### ~~P1 — Delete the legacy headless pipe bridge~~ (done)
 The obsolete `protocol_parser/` executable and its misleading README have been
 deleted. Electron uses the N-API addon in-process.
-
-### P2 — De-duplicate the smoothing/forward-fill logic
-Two ports of the same algorithm: `qt_frontend/src/HotRowSmoother.h`
-(typed rows, Qt timer) and `electron-frontend/src/main/binaryForwardFill.ts` (packed bytes,
-absolute-deadline timer). Candidate for a libtnrp-owned implementation behind
-the Sink.
 
 ### P2 — Table-drive the versioned protocol parsers
 `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are ~500 lines each and largely
