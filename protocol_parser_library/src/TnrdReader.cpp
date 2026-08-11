@@ -818,6 +818,13 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
     return out;
 }
 
+void TnrdReader::setPlaybackRowMask(uint32_t mask, float cursorTime) {
+    if (playbackRowMask_ == mask) return;
+    playbackRowMask_ = mask;
+    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_)
+        setCursor(cursorTime);
+}
+
 bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
     if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){numOut=v4Archive_->lapAt(t);for(const auto&l:v4Archive_->laps())if((int)l.lapNumber==numOut){startOut=l.startSessionTime;return true;}return false;}
     // lapBlocks_ includes the final lap closed at EOF; scannedLaps_ only gains
@@ -862,7 +869,7 @@ std::string TnrdReader::lapBlocksMessage() const {
     return writeJson(msg);
 }
 
-std::string TnrdReader::getLapDataMessage(int lapNum) const {
+std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) const {
     auto it = lapBlocks_.find(lapNum);
     if (it == lapBlocks_.end()) return {};
     const LapBlock& b = it->second;
@@ -870,8 +877,9 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     msg.lapNum           = b.lapNum;
     msg.startSessionTime = b.startSessionTime;
     msg.endSessionTime   = b.endSessionTime;
+    msg.rowTypeMask      = rowTypeMask;
     if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
-        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13);
+        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=rowTypeMask&(detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13));
         if(!const_cast<detail::TnrdV4Archive*>(v4Archive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error))return {};
         for(const auto&r:rows){
             if(r.rowType==1)msg.telemetry.push_back(glz::raw_json{r.json});
@@ -881,25 +889,21 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
             else if(r.rowType==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,r.json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m});}
             else if(r.rowType==13){PositionsRow pos{};(void)glz::read<kPartialRead>(pos,r.json);if(pos.player_idx>=0&&(size_t)pos.player_idx<pos.cars.size())msg.playerPositions.push_back({r.sessionTime,pos.cars[(size_t)pos.player_idx].x,pos.cars[(size_t)pos.player_idx].z});}
         }
-        for(auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
+        if(mask&detail::v4TypeBit(3))for(auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
         return writeJson(msg);
     }
     auto fill = [](std::vector<glz::raw_json>& dst, const std::vector<TimedRaw>& src) {
         dst.reserve(src.size());
         for (const auto& e : src) dst.push_back(glz::raw_json{ e.json });
     };
-    fill(msg.telemetry,       b.telemetry);
-    fill(msg.statusHistory,   b.statusHistory);
-    fill(msg.motionHistory,   b.motionHistory);
-    fill(msg.motionExHistory, b.motionExHistory);
-    const auto damageRows = damageRowsAtCadence(
-        b.startSessionTime, b.endSessionTime);
-    for (const auto& row : damageRows) {
-        msg.damageHistory.push_back(glz::raw_json{ row });
-    }
-    if (loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4)
+    if(rowTypeMask&detail::v4TypeBit(1))fill(msg.telemetry, b.telemetry);
+    if(rowTypeMask&detail::v4TypeBit(2))fill(msg.statusHistory, b.statusHistory);
+    if(rowTypeMask&detail::v4TypeBit(11))fill(msg.motionHistory, b.motionHistory);
+    if(rowTypeMask&detail::v4TypeBit(12))fill(msg.motionExHistory, b.motionExHistory);
+    if(rowTypeMask&detail::v4TypeBit(3))for(const auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
+    if ((rowTypeMask&detail::v4TypeBit(4)) && (loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4))
         msg.lapProgress = b.lapProgress;
-    msg.playerPositions = b.playerPositions;
+    if(rowTypeMask&detail::v4TypeBit(13))msg.playerPositions = b.playerPositions;
     return writeJson(msg);
 }
 
@@ -907,7 +911,7 @@ bool TnrdReader::loadV4PlaybackLap(int lapNum) {
     v4PlaybackRows_.clear();v4PlaybackPos_=0;v4PlaybackLap_=lapNum;
     if(!v4Archive_||!v4Archive_->isOpen()||lapNum<0)return false;
     std::vector<detail::V4TimedRow> rows;std::string error;
-    if(!v4Archive_->rowsForLap((uint32_t)lapNum,0xFFFFFFFFu,rows,&error)){lastError_=error;return false;}
+    if(!v4Archive_->rowsForLap((uint32_t)lapNum,playbackRowMask_,rows,&error)){lastError_=error;return false;}
     v4PlaybackRows_.reserve(rows.size());for(auto&r:rows)v4PlaybackRows_.push_back({r.sessionTime,std::move(r.json)});return true;
 }
 
@@ -995,8 +999,8 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
                                 std::array<std::string, 16>* lastOfType) {
     const float cadenceEnd = std::isfinite(t) ? t : totalTime_;
     if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
-        auto rows=pullUntil(t);for(auto&row:rows){const uint8_t tid=scanType(row.data(),(int)row.size());seenTypes|=(1u<<tid);if(tid==1||tid==11||tid==12){(void)encodeV4HotRow(tid,row,binOut);continue;}if(tid==3){if(lastOfType)(*lastOfType)[3]=row;continue;}jsonOut+=row;jsonOut.push_back('\n');if(lastOfType&&tid<16)(*lastOfType)[tid]=row;}
-        for(auto&row:damageRowsAtCadence(damageCadenceCursor_,cadenceEnd,false)){jsonOut+=row;jsonOut.push_back('\n');seenTypes|=(1u<<3);if(lastOfType)(*lastOfType)[3]=row;}damageCadenceCursor_=cadenceEnd;return;
+        auto rows=pullUntil(t);for(auto&row:rows){const uint8_t tid=scanType(row.data(),(int)row.size());if(!(playbackRowMask_&(1u<<tid)))continue;seenTypes|=(1u<<tid);if(tid==1||tid==11||tid==12){(void)encodeV4HotRow(tid,row,binOut);continue;}if(tid==3){if(lastOfType)(*lastOfType)[3]=row;continue;}jsonOut+=row;jsonOut.push_back('\n');if(lastOfType&&tid<16)(*lastOfType)[tid]=row;}
+        if(playbackRowMask_&(1u<<3))for(auto&row:damageRowsAtCadence(damageCadenceCursor_,cadenceEnd,false)){jsonOut+=row;jsonOut.push_back('\n');seenTypes|=(1u<<3);if(lastOfType)(*lastOfType)[3]=row;}damageCadenceCursor_=cadenceEnd;return;
     }
     size_t end = pullEnd(t);
 
@@ -1004,10 +1008,12 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
     // whole tick's hot payload is a single byte-slice append.
     if (end > playPos_ && !hotCum_.empty()) {
         size_t hotLo = hotCum_[playPos_], hotHi = hotCum_[end];
-        if (hotHi > hotLo)
-            binOut.insert(binOut.end(),
-                          hotBin_->begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotLo]),
-                          hotBin_->begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotHi]));
+        if (hotHi > hotLo) {
+            const size_t byteBegin = hotStart_[hotLo];
+            const size_t byteEnd = hotStart_[hotHi];
+            (void)bin::appendFilteredBatch(binOut, hotBin_->data() + byteBegin,
+                                           byteEnd - byteBegin, playbackRowMask_);
+        }
     }
 
     // Cold rows: contiguous read, hot lines skipped (they went out as binary).
@@ -1016,6 +1022,7 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
         walkBlockLines(scratch_.data(), got, playPos_, end - playPos_,
                        [&](size_t idx, const char* ld, int ll) {
             uint8_t tid = index_[idx].type;
+            if (!(playbackRowMask_ & (1u << tid))) return;
             seenTypes |= (1u << tid);
             if (tid == 1 || tid == 11 || tid == 12) return;   // hot → binary path
             // Raw damage rows only advance the last-state cache. The emitted
@@ -1031,13 +1038,15 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
     }
     playPos_ = end;
 
-    auto damageRows = damageRowsAtCadence(
-        damageCadenceCursor_, cadenceEnd, false);
-    for (auto& row : damageRows) {
-        jsonOut += row;
-        jsonOut.push_back('\n');
-        seenTypes |= (1u << 3);
-        if (lastOfType) (*lastOfType)[3] = row;
+    if (playbackRowMask_ & (1u << 3)) {
+        auto damageRows = damageRowsAtCadence(
+            damageCadenceCursor_, cadenceEnd, false);
+        for (auto& row : damageRows) {
+            jsonOut += row;
+            jsonOut.push_back('\n');
+            seenTypes |= (1u << 3);
+            if (lastOfType) (*lastOfType)[3] = row;
+        }
     }
     damageCadenceCursor_ = cadenceEnd;
 }
@@ -1054,9 +1063,13 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
         : windowSeconds > 0.0f
             ? std::max(startTime_, target - windowSeconds)
             : currentLapStart;
+    const uint32_t mandatory = detail::v4TypeBit(2) |
+        detail::v4TypeBit(3) | detail::v4TypeBit(4);
+    const uint32_t mask = (allHistory || !includeMandatoryState)
+        ? requestedTypes : (requestedTypes | mandatory);
 
     if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
-        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mandatory=detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4);const uint32_t mask=(allHistory||!includeMandatoryState)?requestedTypes:(requestedTypes|mandatory);
+        std::vector<detail::V4TimedRow> rows;std::string error;
         if(!v4Archive_->rowsForRange(windowStart,target,mask,rows,&error)){lastError_=error;return f;}
         auto binary=std::make_shared<std::vector<uint8_t>>();for(const auto&r:rows){if(r.rowType==1||r.rowType==11||r.rowType==12)(void)encodeV4HotRow(r.rowType,r.json,*binary);else if(r.rowType!=3){f.coldJson+=r.json;f.coldJson.push_back('\n');}}
         if(mask&detail::v4TypeBit(3))for(auto&row:damageRowsAtCadence(windowStart,target)){f.coldJson+=row;f.coldJson.push_back('\n');}if(!f.coldJson.empty())f.coldJson.pop_back();if(!binary->empty()){f.binaryStore=binary;f.binaryBegin=0;f.binaryEnd=binary->size();}return f;
@@ -1066,27 +1079,34 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();
         size_t hi = std::upper_bound(hotTimes_.begin(), hotTimes_.end(), target) - hotTimes_.begin();
         if (hi > lo) {
-            f.binaryStore = hotBin_;
-            f.binaryBegin = hotStart_[lo];
-            f.binaryEnd = hotStart_[hi];
+            auto filtered = std::make_shared<std::vector<uint8_t>>();
+            const size_t begin = hotStart_[lo], end = hotStart_[hi];
+            filtered->reserve(end - begin);
+            if (bin::appendFilteredBatch(*filtered, hotBin_->data() + begin,
+                                         end - begin, mask) && !filtered->empty()) {
+                f.binaryStore = std::move(filtered);
+                f.binaryEnd = f.binaryStore->size();
+            }
         }
     }
 
     // Cold rows: full linear scan (small, ~2 Hz), robust to the occasional
     // out-of-order row — exactly like the TS gatherCold.
-    auto gather = [&](const std::vector<TimedRaw>& rows) {
+    auto gather = [&](uint8_t rowType, const std::vector<TimedRaw>& rows) {
+        if (!(mask & detail::v4TypeBit(rowType))) return;
         for (const auto& r : rows) {
             if (r.t > target || r.t < windowStart) continue;
             f.coldJson += r.json;
             f.coldJson.push_back('\n');
         }
     };
-    gather(coldStatus_);
-    for (auto& row : damageRowsAtCadence(windowStart, target)) {
-        f.coldJson += row;
-        f.coldJson.push_back('\n');
-    }
-    gather(coldLap_);
+    gather(2, coldStatus_);
+    if (mask & detail::v4TypeBit(3))
+        for (auto& row : damageRowsAtCadence(windowStart, target)) {
+            f.coldJson += row;
+            f.coldJson.push_back('\n');
+        }
+    gather(4, coldLap_);
     if (!f.coldJson.empty()) f.coldJson.pop_back();   // no trailing newline
     return f;
 }

@@ -23,6 +23,7 @@ import {
   playerGetLapData,
   playerGetAllLapsData,
   playerGetWindowData,
+  playerSetDataRequirements,
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
@@ -195,12 +196,14 @@ ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number) =>
   playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
-ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
+ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
+ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number) =>
+  playerSetDataRequirements(streamMask, historyMask, windowSeconds))
 ipcMain.on('player:close', () => playerClose())
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
-ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number) => analysisGetLapData(lapNum))
+ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number, rowTypeMask?: number) => analysisGetLapData(lapNum, rowTypeMask))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
 ipcMain.handle('player:export-xlsx', async (event) => {

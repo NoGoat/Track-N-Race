@@ -45,7 +45,7 @@ public:
     // always produced for the live channel. Packet cadence is controlled by the
     // game's UDP send-rate setting; the parser does not wall-clock throttle it.
     Result feed(const uint8_t* data, int length, const std::string& ts,
-                bool wantHotJson);
+                bool wantHotJson, uint32_t outputRowMask = 0xFFFFFFFFu);
 
     // The current protocol_status control row as a serialised JSON string.
     // The engine emits this on construction and after setOverride.

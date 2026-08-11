@@ -304,6 +304,7 @@ export interface AnalyzeLapData {
   damageHistory: DamageRow[]
   lapProgress: LapProgressPoint[]
   playerPositions: PlayerPositionPoint[]
+  rowTypeMask?: number
 }
 
 export interface PlayerPositionPoint {
@@ -324,6 +325,7 @@ export interface PlaybackLapDataMsg {
   damageHistory: DamageRow[]
   lapProgress: LapProgressPoint[]
   playerPositions: PlayerPositionPoint[]
+  rowTypeMask?: number
 }
 
 export interface PlaybackFastestLapMsg {
@@ -471,9 +473,10 @@ declare global {
       pause: () => void
       seek: (pct: number) => void
       setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
+      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => void
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       setSpeed: (mult: number) => void
-      getLapData: (lapNum: number) => void
+      getLapData: (lapNum: number, rowTypeMask?: number) => void
       getAllLapsData: (rowTypeMask?: number) => void
       getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void
@@ -485,7 +488,7 @@ declare global {
     }
     analysisBridge: {
       loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
-      getLapData: (lapNum: number) => Promise<unknown | null>
+      getLapData: (lapNum: number, rowTypeMask?: number) => Promise<unknown | null>
       closeFile: () => void
     }
 

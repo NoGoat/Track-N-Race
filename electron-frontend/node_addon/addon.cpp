@@ -130,11 +130,13 @@ private:
 class PlayerHistoryWorker : public Napi::AsyncWorker {
 public:
     PlayerHistoryWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
-                        uint64_t requestId, uint32_t rowTypeMask, float windowSeconds = 0.0f)
+                        uint64_t requestId, uint32_t rowTypeMask,
+                        float windowSeconds = 0.0f, bool windowRequest = false)
         : Napi::AsyncWorker(env), engine_(std::move(engine)), requestId_(requestId),
-          rowTypeMask_(rowTypeMask), windowSeconds_(windowSeconds) {}
+          rowTypeMask_(rowTypeMask), windowSeconds_(windowSeconds),
+          windowRequest_(windowRequest) {}
     void Execute() override {
-        if (windowSeconds_ > 0.0f) engine_->playerGetWindowData(windowSeconds_, requestId_, rowTypeMask_);
+        if (windowRequest_) engine_->playerGetWindowData(windowSeconds_, requestId_, rowTypeMask_);
         else engine_->playerGetAllLapsData(requestId_, rowTypeMask_);
     }
 private:
@@ -142,6 +144,27 @@ private:
     uint64_t requestId_;
     uint32_t rowTypeMask_;
     float windowSeconds_;
+    bool windowRequest_;
+};
+
+class DataRequirementsWorker : public Napi::AsyncWorker {
+public:
+    DataRequirementsWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                           uint32_t streamMask, uint32_t historyMask,
+                           float windowSeconds, uint64_t requestId)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)),
+          streamMask_(streamMask), historyMask_(historyMask),
+          windowSeconds_(windowSeconds), requestId_(requestId) {}
+    void Execute() override {
+        engine_->setDataRequirements(streamMask_, historyMask_, windowSeconds_,
+                                     requestId_);
+    }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    uint32_t streamMask_;
+    uint32_t historyMask_;
+    float windowSeconds_;
+    uint64_t requestId_;
 };
 
 struct AnalysisReaderState {
@@ -211,6 +234,7 @@ public:
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
             InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
             InstanceMethod("flushRecording", &TNRPAddon::FlushRecording),
+            InstanceMethod("setDataRequirements", &TNRPAddon::SetDataRequirements),
             InstanceMethod("playerLoad", &TNRPAddon::PlayerLoad),
             InstanceMethod("playerPlay", &TNRPAddon::PlayerPlay),
             InstanceMethod("playerPause", &TNRPAddon::PlayerPause),
@@ -393,7 +417,8 @@ public:
     void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
                      size_t binBegin, size_t binEnd, std::string&& coldJson,
                      float currentLapStart, int lapNum, bool allHistory,
-                     uint64_t requestId, bool authoritativeSeek) override {
+                     uint64_t requestId, bool authoritativeSeek,
+                     uint32_t rowTypeMask) override {
         if (!hasSeekCb_) return;
         struct SeekData {
             std::shared_ptr<const std::vector<uint8_t>> binStore;
@@ -405,9 +430,11 @@ public:
             bool allHistory;
             uint64_t requestId;
             bool authoritativeSeek;
+            uint32_t rowTypeMask;
         };
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
-                                currentLapStart, lapNum, allHistory, requestId, authoritativeSeek };
+                                currentLapStart, lapNum, allHistory, requestId,
+                                authoritativeSeek, rowTypeMask };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 if (env != nullptr && cb != nullptr) {
@@ -423,7 +450,8 @@ public:
                               Napi::Number::New(env, d->lapNum),
                               Napi::Boolean::New(env, d->allHistory),
                               Napi::Number::New(env, static_cast<double>(d->requestId)),
-                              Napi::Boolean::New(env, d->authoritativeSeek) });
+                              Napi::Boolean::New(env, d->authoritativeSeek),
+                              Napi::Number::New(env, d->rowTypeMask) });
                 }
                 delete d;
             });
@@ -550,6 +578,22 @@ private:
         return info.Env().Undefined();
     }
 
+    Napi::Value SetDataRequirements(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsNumber() &&
+            info[1].IsNumber()) {
+            const uint32_t streamMask = info[0].As<Napi::Number>().Uint32Value();
+            const uint32_t historyMask = info[1].As<Napi::Number>().Uint32Value();
+            const float windowSeconds = info.Length() >= 3 && info[2].IsNumber()
+                ? std::max(-1.0f, info[2].As<Napi::Number>().FloatValue()) : 0.0f;
+            const uint64_t requestId = info.Length() >= 4 && info[3].IsNumber()
+                ? static_cast<uint64_t>(info[3].As<Napi::Number>().Int64Value()) : 0;
+            engine->requestDataRequirements(requestId);
+            (new DataRequirementsWorker(info.Env(), engine, streamMask,
+                historyMask, windowSeconds, requestId))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
     Napi::Value PlayerSeek(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber()) {
             const bool allHistory = info.Length() >= 2 && info[1].IsBoolean() &&
@@ -582,7 +626,9 @@ private:
 
     Napi::Value PlayerGetLapData(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber() && engine) {
-            engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value());
+            const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
+                ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value(), rowTypeMask);
         }
         return info.Env().Undefined();
     }
@@ -606,7 +652,7 @@ private:
             const uint32_t rowTypeMask = info.Length() >= 3 && info[2].IsNumber()
                 ? info[2].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
             (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask,
-                                     windowSeconds))->Queue();
+                                     windowSeconds, true))->Queue();
         }
         return info.Env().Undefined();
     }
@@ -639,7 +685,9 @@ private:
         std::lock_guard<std::mutex> lock(analysisReader_->mutex);
         return Napi::String::New(
             info.Env(), analysisReader_->reader.getLapDataMessage(
-                info[0].As<Napi::Number>().Int32Value()));
+                info[0].As<Napi::Number>().Int32Value(),
+                info.Length() >= 2 && info[1].IsNumber()
+                    ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu));
     }
 
     Napi::Value AnalysisCloseFile(const Napi::CallbackInfo& info) {

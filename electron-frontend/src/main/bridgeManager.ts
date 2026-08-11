@@ -85,6 +85,7 @@ function sendResumeCache(): void {
 }
 
 let engine: any = null
+let nextDataRequirementsRequestId = 0
 let unsubLogging: Array<() => void> = []
 
 // ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
@@ -290,7 +291,7 @@ export function startBridge(): string | null {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean) => {
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number) => {
       // Superseded scrubs are discarded before the large payload crosses IPC
       // or is decoded into renderer objects.
       // Authoritative scrubs supersede one another. History-family requests are
@@ -301,7 +302,7 @@ export function startBridge(): string | null {
       } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
         clearResumeCache()
-        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek })
+        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask })
       } catch (error) {
         console.error('[bridge] Failed to forward playback seek history:', error)
         // Never leave the renderer's AL publication gate closed if IPC rejects
@@ -400,7 +401,9 @@ export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFF
   engine?.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
-export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
+export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
+  engine?.playerGetLapData(lapNum, rowTypeMask >>> 0)
+}
 export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
   const requestId = ++nextPlaybackRequestId
   engine?.playerGetAllLapsData(requestId, rowTypeMask >>> 0)
@@ -408,6 +411,12 @@ export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
 export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFFFFF): void {
   const requestId = ++nextPlaybackRequestId
   engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
+}
+export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
+                                          windowSeconds = 0): void {
+  const requestId = ++nextDataRequirementsRequestId
+  engine?.setDataRequirements(streamMask >>> 0, historyMask >>> 0,
+    Math.max(-1, windowSeconds), requestId)
 }
 export function playerClose(): void {
   latestSeekRequestId = ++nextPlaybackRequestId
@@ -425,9 +434,9 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
   }
 }
 
-export function analysisGetLapData(lapNum: number): unknown | null {
+export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): unknown | null {
   if (!engine) return null
-  const json = engine.analysisGetLapData(lapNum)
+  const json = engine.analysisGetLapData(lapNum, rowTypeMask >>> 0)
   if (!json) return null
   try {
     return JSON.parse(json)

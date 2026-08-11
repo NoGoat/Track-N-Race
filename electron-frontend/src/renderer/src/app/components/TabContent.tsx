@@ -55,6 +55,7 @@ interface TabContentProps {
   onAnalyzeCompareLapChange: (lapNum: number | null) => void
   analyzeFixedLapMode: AnalyzeFixedLapMode
   onAnalyzeFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
+  onAnalyzeDataMaskChange: (mask: number) => void
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
@@ -287,6 +288,7 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
       mapDimmed={props.mapDimmed}
       reduceAnimations={props.reduceAnimations}
       sectorColors={props.sectorColors}
+      onDataMaskChange={props.onAnalyzeDataMaskChange}
     />
   }
   if (props.tab === 'misc') {

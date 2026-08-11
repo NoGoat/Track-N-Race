@@ -13,6 +13,8 @@ import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
+import { dataMaskForAnalyze } from '../lib/historyDependencies'
+import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
@@ -29,6 +31,7 @@ interface Props {
   mapDimmed: boolean
   reduceAnimations: boolean
   sectorColors: boolean
+  onDataMaskChange: (mask: number) => void
 }
 
 export interface AnalyzeFixedLapMode {
@@ -156,6 +159,7 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
     damageHistory: payload.damageHistory ?? [],
     lapProgress: payload.lapProgress ?? [],
     playerPositions: payload.playerPositions ?? [],
+    rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
   }
 }
 
@@ -387,15 +391,19 @@ const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   lapNum: 0, startSessionTime: 0, endSessionTime: 0,
   telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
   lapProgress: [], playerPositions: [],
+  rowTypeMask: 0,
 }
 
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
   fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
+  onDataMaskChange,
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
   const analysisView = playbackFilename ? config.view : 'graph'
+  const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
+  useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
@@ -416,8 +424,8 @@ export default function AnalyzeScreen({
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
-  const requestedRef = useRef(new Set<number>())
-  const secondaryRequestedRef = useRef(new Set<number>())
+  const requestedRef = useRef(new Map<number, number>())
+  const secondaryRequestedRef = useRef(new Map<number, number>())
   const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
@@ -626,15 +634,16 @@ export default function AnalyzeScreen({
       : [compareLapNum, effectiveCurrentLapNum]
     for (const lapNum of targets) {
       if (lapNum === null) continue
-      if (lapCache[lapNum]) {
+      const loadedMask = lapCache[lapNum]?.rowTypeMask ?? 0
+      if ((loadedMask & dataMask) === dataMask) {
         requestedRef.current.delete(lapNum)
         continue
       }
-      if (requestedRef.current.has(lapNum)) continue
-      requestedRef.current.add(lapNum)
-      window.playerBridge.getLapData(lapNum)
+      if (((requestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask) continue
+      requestedRef.current.set(lapNum, dataMask)
+      window.playerBridge.getLapData(lapNum, dataMask)
     }
-  }, [compareLapNum, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
+  }, [compareLapNum, dataMask, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
 
   useEffect(() => {
     const targets = [
@@ -643,15 +652,20 @@ export default function AnalyzeScreen({
       fixedLapMode.enabled && lapBSource === 'file2' ? fixedLapMode.lapB : null,
     ]
     for (const lapNum of new Set(targets)) {
-      if (lapNum === null || secondaryLapCache[lapNum] || secondaryRequestedRef.current.has(lapNum)) continue
-      secondaryRequestedRef.current.add(lapNum)
-      window.analysisBridge.getLapData(lapNum).then(payload => {
+      const loadedMask = lapNum === null ? 0 : secondaryLapCache[lapNum]?.rowTypeMask ?? 0
+      if (lapNum === null || (loadedMask & dataMask) === dataMask ||
+          (((secondaryRequestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask)) continue
+      secondaryRequestedRef.current.set(lapNum, dataMask)
+      window.analysisBridge.getLapData(lapNum, dataMask).then(payload => {
         const lapData = parseAnalyzeLapData(payload)
-        if (lapData) setSecondaryLapCache(cache => ({ ...cache, [lapData.lapNum]: lapData }))
+        if (lapData) setSecondaryLapCache(cache => {
+          const prior = cache[lapData.lapNum]
+          return { ...cache, [lapData.lapNum]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData }
+        })
         else secondaryRequestedRef.current.delete(lapNum)
       })
     }
-  }, [fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
+  }, [dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return

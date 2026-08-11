@@ -116,6 +116,8 @@ playerSeek(...)
 playerSetSpeed(...)
 playerGetLapData(...)
 playerGetAllLapsData(...)
+playerGetWindowData(...)
+setDataRequirements(...)
 playerClose()
 ```
 
@@ -859,7 +861,13 @@ Track positions  -> positions
 lap distance     -> lap
 ```
 
-The frontend/runtime computes the **union** of dependencies.
+The Electron renderer computes the **union** of dependencies in one central
+registry. Components report visibility/configuration to that coordinator; they
+do not independently issue IPC subscriptions. The coordinator sends one
+generation-tagged pair of masks:
+
+- `streamMask`: current rows needed by visible cards, tables and maps;
+- `historyMask`: row families needing CL, finite-window or AL backfill.
 
 If three visible charts all require telemetry:
 
@@ -879,17 +887,20 @@ UI-to-row dependency mapping belongs in the application layer.
 
 This keeps TNRD stable when cards are renamed, reorganized, or replaced.
 
-### 13.3 Initial integration strategy
+### 13.3 Implemented integration
 
-To avoid stepping on existing behavior, introduce selective loading in phases.
+V4 history, seek, current-lap, AL and Analyze lap requests accept row-type
+masks. The Electron bridge forwards only the active union and V4 resolves it
+through an in-memory `(lap,rowType)` directory index. Analyze derives its mask
+from the visible series or map and merges partial per-lap responses in its
+cache, so adding a series decodes only its newly missing family.
 
-**Phase 1:** V4 storage/read architecture, but preserve the existing broad playback stream requests.
-
-**Phase 2:** add optional row-type masks to V4 history requests.
-
-**Phase 3:** wire visible chart/card dependency aggregation into Electron and Qt.
-
-This lets V4 ship without requiring the entire UI dependency system to land atomically.
+Live Electron playback support retains chart-capable families as compact native
+raw history. This is intentional: a newly revealed chart can be backfilled
+without having processed those rows in JavaScript while hidden. Only subscribed
+families cross N-API/IPC and become renderer objects. Recording always receives
+the complete parsed stream. Non-Electron/JSON-only hosts retain their existing
+behavior and API defaults.
 
 ---
 
@@ -901,7 +912,9 @@ For current-time streaming, `TnrdReader` needs to provide rows in chronological 
 
 ### 14.1 Per-lap merge
 
-For the current lap, load only row types required for active playback plus mandatory state types needed to preserve existing panels.
+For the current lap, load only row types in the active stream mask. Sparse state
+needed by visible panels is restored separately with indexed latest-at-time
+queries, rather than broadening every history request.
 
 Each loaded chunk contains rows sorted by session time.
 

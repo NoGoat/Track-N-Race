@@ -68,6 +68,10 @@ public:
     float totalTime() const { return totalTime_; }
 
     // ── Playback streaming ───────────────────────────────────────────────────
+    // Changes the logical row families loaded/emitted by sequential playback.
+    // V4 reloads only the current lap's selected chunks at the supplied cursor;
+    // legacy formats retain their index and filter the packed output.
+    void setPlaybackRowMask(uint32_t mask, float cursorTime);
     void setCursor(float t);
     std::vector<std::string> pullUntil(float t);
     std::vector<std::string> drainRest();
@@ -119,7 +123,7 @@ public:
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
-    std::string getLapDataMessage(int lapNum) const;  // "playback_lap_data" row, "" if unknown lap
+    std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu) const;
 
     // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
     // Walks the whole index in file order and writes one XLSX sheet per row
@@ -160,6 +164,7 @@ private:
     std::vector<TimedRaw> v4PlaybackRows_; // one lazily decompressed lap
     size_t      v4PlaybackPos_ = 0;
     int         v4PlaybackLap_ = 0;
+    uint32_t    playbackRowMask_ = 0xFFFFFFFFu;
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;

@@ -8,6 +8,7 @@ import type {
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -347,7 +348,8 @@ function handleMsg(msg: GatewayMsg): void {
         liveLapBoundaries = []
         set({ lapBoundaries: [] })
       }
-      appendRow(telBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.telemetry) appendRow(telBufRef, msg, MAX_ROWS)
+      else telBufRef.current = [msg]
       break
     }
     case 'motion':
@@ -365,12 +367,14 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      appendRow(stsBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.status) appendRow(stsBufRef, msg, MAX_ROWS)
+      else stsBufRef.current = [msg]
       break
     }
     case 'damage':
       set({ damage: msg })
-      appendRow(dmgBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.damage) appendRow(dmgBufRef, msg, MAX_ROWS)
+      else dmgBufRef.current = [msg]
       break
     case 'lap':
       onLap(msg as unknown as LapRow)
@@ -430,10 +434,15 @@ function handleMsg(msg: GatewayMsg): void {
         damageHistory: payload.damageHistory ?? [],
         lapProgress: payload.lapProgress ?? [],
         playerPositions: payload.playerPositions ?? [],
+        rowTypeMask: payload.rowTypeMask ?? 0xFFFFFFFF,
       }
       playbackLapCacheOrder = [...playbackLapCacheOrder.filter(lapNum => lapNum !== lapData.lapNum), lapData.lapNum]
       set(state => {
-        const cache = { ...state.playbackLapDataCache, [lapData.lapNum]: lapData }
+        const prior = state.playbackLapDataCache[lapData.lapNum]
+        const cache = {
+          ...state.playbackLapDataCache,
+          [lapData.lapNum]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData,
+        }
         while (playbackLapCacheOrder.length > MAX_ANALYZE_LAP_CACHE) {
           const evicted = playbackLapCacheOrder.shift()
           if (evicted !== undefined) delete cache[evicted]
@@ -594,7 +603,18 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'playback_lap_blocks': return DirtySlice.Derived
     case 'playback_close':
     case 'playback_seek_flush_failed':
-    case 'playback_seek_flush_bin': return DirtySlice.All
+    case 'playback_seek_flush_bin': {
+      const mask = Number((msg as any).rowTypeMask)
+      if (!Number.isFinite(mask)) return DirtySlice.All
+      let dirty = DirtySlice.Derived
+      if (mask & HISTORY_ROW.telemetry) dirty |= DirtySlice.Telemetry
+      if (mask & HISTORY_ROW.motion) dirty |= DirtySlice.Motion
+      if (mask & HISTORY_ROW.motionEx) dirty |= DirtySlice.MotionEx
+      if (mask & HISTORY_ROW.status) dirty |= DirtySlice.Status
+      if (mask & HISTORY_ROW.damage) dirty |= DirtySlice.Damage
+      if (mask & HISTORY_ROW.lap) dirty |= DirtySlice.Lap
+      return dirty
+    }
     default: return DirtySlice.None
   }
 }
@@ -625,9 +645,14 @@ function recompute(dirty: DirtySlice): void {
   let publishAnalyze = !pendingAnalyzeLapReset
   if (pendingAnalyzeLapReset) {
     const countSince = <T extends { session_time: number }>(rows: T[]) => rows.length - lowerBound(rows, lapStartSessionTime, true)
-    publishAnalyze = countSince(telBuf) >= 2 && countSince(motBufRef.current) >= 1 &&
-      countSince(motExBufRef.current) >= 1 && countSince(stsBufRef.current) >= 1 &&
-      countSince(dmgBufRef.current) >= 1 && countSince(lapProgressBufRef.current) >= 2
+    const ready = (bit: number, count: number, minimum: number) =>
+      !(historyRowMask & bit) || count >= minimum
+    publishAnalyze = ready(HISTORY_ROW.telemetry, countSince(telBuf), 2) &&
+      ready(HISTORY_ROW.motion, countSince(motBufRef.current), 1) &&
+      ready(HISTORY_ROW.motionEx, countSince(motExBufRef.current), 1) &&
+      ready(HISTORY_ROW.status, countSince(stsBufRef.current), 1) &&
+      ready(HISTORY_ROW.damage, countSince(dmgBufRef.current), 1) &&
+      ready(HISTORY_ROW.lap, countSince(lapProgressBufRef.current), 2)
     if (publishAnalyze) {
       pendingAnalyzeLapReset = false
       dirty |= DirtySlice.All
@@ -636,9 +661,11 @@ function recompute(dirty: DirtySlice): void {
 
   const next: Partial<TelemetryStoreState> = {}
   if (dirty & DirtySlice.Telemetry) {
-    next.telemetry = allLapsMode ? telBuf : fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
     next.latest = currentTelBuf.length > 0 ? currentTelBuf[currentTelBuf.length - 1] : null
-    if (publishAnalyze) next.analyzeLapTelemetry = fillRange(pools.analyzeTel, currentTelBuf, lowerBound(currentTelBuf, lapStartSessionTime, true), currentTelBuf.length)
+    if (historyRowMask & HISTORY_ROW.telemetry) {
+      next.telemetry = allLapsMode ? telBuf : fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
+      if (publishAnalyze) next.analyzeLapTelemetry = fillRange(pools.analyzeTel, currentTelBuf, lowerBound(currentTelBuf, lapStartSessionTime, true), currentTelBuf.length)
+    }
   }
   if (dirty & DirtySlice.Motion) {
     const buf = motBuf
@@ -653,16 +680,20 @@ function recompute(dirty: DirtySlice): void {
     if (publishAnalyze) next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, current, lowerBound(current, lapStartSessionTime, true), current.length)
   }
   if (dirty & DirtySlice.Status) {
-    const buf = stsBuf
-    next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
-    const current = stsBufRef.current
-    if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    if (historyRowMask & HISTORY_ROW.status) {
+      const buf = stsBuf
+      next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+      const current = stsBufRef.current
+      if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    }
   }
   if (dirty & DirtySlice.Damage) {
-    const buf = dmgBuf
-    next.damageHistory = allLapsMode ? buf : fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
-    const current = dmgBufRef.current
-    if (publishAnalyze) next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    if (historyRowMask & HISTORY_ROW.damage) {
+      const buf = dmgBuf
+      next.damageHistory = allLapsMode ? buf : fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+      const current = dmgBufRef.current
+      if (publishAnalyze) next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    }
   }
   if (dirty & DirtySlice.Lap) {
     const buf = lapProgressBufRef.current
@@ -689,8 +720,9 @@ function recompute(dirty: DirtySlice): void {
 
 // Set the visible time window (seconds). Infinity selects the full-session AL
 // publication. Recomputes the published slices at once.
-function requestFiniteWindowHistory(): void {
-  if (!finiteWindowBackfillEnabled || allLapsMode || !Number.isFinite(secondsVal) || secondsVal <= 0 || speedRpmBlocksVal === null) return
+function requestVisibleWindowHistory(): void {
+  if (allLapsMode || speedRpmBlocksVal === null) return
+  if (finiteWindowBackfillEnabled && (!Number.isFinite(secondsVal) || secondsVal <= 0)) return
   const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
   const currentTime = Math.max(
     telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0,
@@ -701,7 +733,9 @@ function requestFiniteWindowHistory(): void {
     lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? 0,
   )
   if (!Number.isFinite(fileStart) || currentTime <= fileStart) return
-  const requiredStart = Math.max(fileStart, currentTime - secondsVal)
+  const requiredStart = finiteWindowBackfillEnabled
+    ? Math.max(fileStart, currentTime - secondsVal)
+    : Math.max(fileStart, lapStartTime)
   let missingMask = 0
   const missing = (bit: number, firstTime: number | undefined): void => {
     if ((historyRowMask & bit) && (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
@@ -712,7 +746,8 @@ function requestFiniteWindowHistory(): void {
   missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
   missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
   missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
-  if (missingMask !== 0) window.playerBridge.getWindowData(secondsVal, missingMask)
+  if (missingMask !== 0) window.playerBridge.getWindowData(
+    finiteWindowBackfillEnabled ? secondsVal : 0, missingMask)
 }
 
 export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): void {
@@ -721,7 +756,7 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     finiteWindowBackfillEnabled === backfillFiniteWindow
   finiteWindowBackfillEnabled = backfillFiniteWindow
   if (sameConfiguration) {
-    requestFiniteWindowHistory()
+    requestVisibleWindowHistory()
     return
   }
   const wasAllLapsMode = allLapsMode
@@ -760,7 +795,7 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     requestedHistoryRowMask |= entryMissingMask
     window.playerBridge.getAllLapsData(entryMissingMask)
   }
-  requestFiniteWindowHistory()
+  requestVisibleWindowHistory()
 }
 
 // Sets the single coordinated minimum history requirement. While AL is active,
@@ -768,7 +803,36 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
 // are not decompressed or delivered again.
 export function setHistoryRowMask(mask: number): void {
   const normalized = mask >>> 0
+  const disabled = historyRowMask & ~normalized
   historyRowMask = normalized
+  requestedHistoryRowMask &= normalized
+  const cleared: Partial<TelemetryStoreState> = {}
+  if (disabled & HISTORY_ROW.telemetry) {
+    telBufRef.current = telBufRef.current.length ? [telBufRef.current[telBufRef.current.length - 1]] : []
+    cleared.telemetry = []
+    cleared.analyzeLapTelemetry = []
+  }
+  if (disabled & HISTORY_ROW.status) {
+    stsBufRef.current = stsBufRef.current.length ? [stsBufRef.current[stsBufRef.current.length - 1]] : []
+    cleared.statusHistory = []
+    cleared.analyzeLapStatusHistory = []
+  }
+  if (disabled & HISTORY_ROW.damage) {
+    dmgBufRef.current = dmgBufRef.current.length ? [dmgBufRef.current[dmgBufRef.current.length - 1]] : []
+    cleared.damageHistory = []
+    cleared.analyzeLapDamageHistory = []
+  }
+  if (disabled & HISTORY_ROW.motion) {
+    motBufRef.current = []
+    cleared.motion = []
+    cleared.analyzeLapMotion = []
+  }
+  if (disabled & HISTORY_ROW.motionEx) {
+    motExBufRef.current = []
+    cleared.motionEx = []
+    cleared.analyzeLapMotionEx = []
+  }
+  if (Object.keys(cleared).length) set(cleared)
   if (!allLapsMode || speedRpmBlocksVal === null) return
   const missing = normalized & ~requestedHistoryRowMask
   if (missing === 0) return

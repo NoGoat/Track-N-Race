@@ -19,7 +19,7 @@ import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import type { RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
-import { historyMaskForLayouts } from '../lib/historyDependencies'
+import { dataRequirementsForUi } from '../lib/historyDependencies'
 
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
@@ -42,6 +42,7 @@ export default function AppShell() {
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const [referenceLapNum, setReferenceLapNum] = useState<number | null>(null)
   const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
+  const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
 
@@ -93,16 +94,25 @@ export default function AppShell() {
     }
   }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
-  const historyRowMask = useMemo(
-    () => historyMaskForLayouts(tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView),
-    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView],
+  const dataRequirements = useMemo(
+    () => dataRequirementsForUi(
+      tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView,
+      Boolean(playback.state?.filename),
+      analyzeDataMask,
+    ),
+    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask],
   )
   useEffect(() => {
     const enabled = chartWindow === 'AL'
-    setHistoryRowMask(historyRowMask)
-    window.playerBridge.setAllLapsMode(enabled, historyRowMask, typeof chartWindow === 'number' ? seconds : 0)
+    setHistoryRowMask(dataRequirements.historyMask)
+    window.playerBridge.setDataRequirements(
+      dataRequirements.streamMask,
+      dataRequirements.historyMask,
+      chartWindow === 'AL' ? -1 : typeof chartWindow === 'number' ? seconds : 0,
+    )
+    window.playerBridge.setAllLapsMode(enabled, dataRequirements.historyMask, typeof chartWindow === 'number' ? seconds : 0)
     setTelemetrySeconds(enabled ? Infinity : seconds, typeof chartWindow === 'number')
-  }, [chartWindow, historyRowMask, seconds])
+  }, [chartWindow, dataRequirements, seconds])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we
@@ -238,7 +248,7 @@ export default function AppShell() {
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
-        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum}>
+        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask}>
         <TabContent key={chartCoordinateMode ?? 'time-window'}
           tab={tab}
           isDark={theme === 'dark'}
@@ -266,6 +276,7 @@ export default function AppShell() {
           onAnalyzeCompareLapChange={setAnalyzeCompareLapNum}
           analyzeFixedLapMode={analyzeFixedLapMode}
           onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
+          onAnalyzeDataMaskChange={setAnalyzeDataMask}
         />
         </ChartCoordinatesProvider>
       </main>

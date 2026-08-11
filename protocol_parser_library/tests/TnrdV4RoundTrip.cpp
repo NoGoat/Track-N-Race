@@ -1,5 +1,6 @@
 #include "TnrdV4.h"
 #include "TnrdCodec.h"
+#include "tnrp/BinaryRows.h"
 #include "tnrp/TnrdReader.h"
 
 #include <algorithm>
@@ -93,6 +94,36 @@ int main() {
     glz::generic lapBlocksJson;
     assert(!glz::read_json(lapBlocksJson, reader.lapBlocksMessage()));
     assert(reader.readRange(0, 200).size() == rows.size());
+    tnrp::PlaybackLapDataRow selectiveLap;
+    assert(!glz::read_json(selectiveLap, reader.getLapDataMessage(
+        1, tnrp::detail::v4TypeBit(1) | tnrp::detail::v4TypeBit(4))));
+    assert(selectiveLap.rowTypeMask ==
+        (tnrp::detail::v4TypeBit(1) | tnrp::detail::v4TypeBit(4)));
+    assert(selectiveLap.telemetry.size() == 1);
+    assert(selectiveLap.statusHistory.empty());
+    assert(selectiveLap.motionHistory.empty());
+    assert(selectiveLap.damageHistory.empty());
+    assert(!selectiveLap.lapProgress.empty());
+
+    // Packed hot-row filtering is record-aware: selecting Motion must not copy
+    // the adjacent Telemetry record or split either record.
+    std::vector<uint8_t> packed;
+    tnrp::TelemetryRow telemetryRow;
+    telemetryRow.session_time = 1.0f;
+    tnrp::MotionRow motionRow;
+    motionRow.session_time = 1.0f;
+    tnrp::bin::encodeTelemetry(packed, telemetryRow);
+    tnrp::bin::encodeMotion(packed, motionRow);
+    std::vector<uint8_t> filtered;
+    assert(tnrp::bin::appendFilteredBatch(
+        filtered, packed.data(), packed.size(), tnrp::detail::v4TypeBit(11)));
+    size_t filteredRows = 0;
+    assert(tnrp::bin::forEachPackedRecord(filtered.data(), filtered.size(),
+        [&](uint8_t rowType, const uint8_t*, size_t) {
+            assert(rowType == 11);
+            ++filteredRows;
+        }));
+    assert(filteredRows == 1);
     const auto finiteWindow = reader.seekFlush(
         91.15f, 91.0f, false, tnrp::detail::v4TypeBit(2), 100.0f, false);
     assert(finiteWindow.coldJson.find("\"fuel_kg\":50") != std::string::npos);

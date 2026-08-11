@@ -1,4 +1,5 @@
 #include "tnrp/Engine.h"
+#include "tnrp/BinaryRows.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 
@@ -6,7 +7,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
@@ -20,7 +24,48 @@ namespace tnrp {
 // lap_distance_m creates a false timing sample and corrupts distance-based
 // delta calculations. Only original recorded lap rows may advance lap data.
 static constexpr uint8_t kDupTypeIds[] = { 2, 5, 7, 9, 13 };
-static constexpr uint8_t kInitialPanelTypeIds[] = { 2, 3, 4, 5, 7, 9, 13 };
+static constexpr uint32_t kDupRowMask =
+    (1u << 2) | (1u << 5) | (1u << 7) | (1u << 9) | (1u << 13);
+static constexpr uint32_t kRestoreRowMask =
+    (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 7) |
+    (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13) | (1u << 14);
+static constexpr uint32_t kHistoricalRowMask =
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) |
+    (1u << 12);
+static constexpr size_t kMaxLiveHistoryRows = 750000;
+
+static uint8_t rowTypeOf(std::string_view json) {
+    static constexpr std::pair<std::string_view, uint8_t> TYPES[] = {
+        {"\"type\":\"telemetry\"", 1}, {"\"type\":\"status\"", 2},
+        {"\"type\":\"damage\"", 3}, {"\"type\":\"lap\"", 4},
+        {"\"type\":\"session\"", 5}, {"\"type\":\"race_event\"", 6},
+        {"\"type\":\"timing\"", 7}, {"\"type\":\"participants\"", 8},
+        {"\"type\":\"all_status\"", 9}, {"\"type\":\"tyre_sets\"", 10},
+        {"\"type\":\"motion\"", 11}, {"\"type\":\"motion_ex\"", 12},
+        {"\"type\":\"positions\"", 13},
+        {"\"type\":\"session_history_fastest\"", 14},
+    };
+    for (const auto& [needle, type] : TYPES)
+        if (json.find(needle) != std::string_view::npos) return type;
+    return 0;
+}
+
+static std::vector<uint8_t> typesInMask(uint32_t mask) {
+    std::vector<uint8_t> out;
+    for (uint8_t type = 1; type < 16; ++type)
+        if (mask & (1u << type)) out.push_back(type);
+    return out;
+}
+
+static double scanJsonNumber(std::string_view json, std::string_view key,
+                             double fallback = 0.0) {
+    const size_t at = json.find(key);
+    if (at == std::string_view::npos) return fallback;
+    const char* value = json.data() + at + key.size();
+    char* end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    return end == value ? fallback : parsed;
+}
 
 // Rewrites (or inserts, for row types that lack it, e.g. positions/session)
 // the top-level "session_time" of a raw JSON row to the playhead. A targeted
@@ -68,6 +113,10 @@ Engine::Engine(const Config& config, Sink* sink)
           sink->onRow(writeJson(row));
       }) {
     TRACE("Engine ctor: start");
+    // Electron declares its visible consumers immediately after renderer
+    // mount. Start that host closed so no telemetry can slip through before
+    // the first aggregate subscription; JSON-only/Qt hosts keep legacy-all.
+    if (config_.binaryPlayback) consumerRowMask_ = 0;
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
     emitRow(parser_.statusRow());
@@ -124,7 +173,12 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // hot rows as JSON (config_.hotRowsAsJson), in which case we also need them.
     const bool recording   = writer_.isRecording();
     const bool wantHotJson = recording || config_.hotRowsAsJson;
-    Parser::Result r = parser_.feed(data, length, ts, wantHotJson);
+    // Electron retains chart-capable families only as compact native history
+    // while hidden, so they can be backfilled without having crossed N-API or
+    // been decoded into renderer objects. Other packet bodies are skipped.
+    const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ |
+        (config_.binaryPlayback ? kHistoricalRowMask : 0u);
+    Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -135,14 +189,78 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
     }
 
-    // Cold rows always go to the live JSON channel. Hot rows go either to the
-    // live binary channel (default) or, for an in-process JSON-only consumer, to
-    // the JSON channel as well — mutually exclusive so a sink sees each hot row once.
-    for (const auto& row : r.rows) emitRow(row);
+    if (config_.binaryPlayback && std::isfinite(r.sessionTime) && r.sessionTime >= 0.0f &&
+        r.sessionTime < liveSessionTime_) {
+        for (auto& history : livePackedHistory_) {
+            while (!history.index.empty() &&
+                   history.index.back().sessionTime > r.sessionTime)
+                history.index.pop_back();
+            const size_t keep = history.index.empty() ? 0 :
+                history.index.back().offset + history.index.back().length;
+            if (keep < history.bytes.size()) history.bytes.resize(keep);
+            history.discardedBytes = std::min(history.discardedBytes, keep);
+        }
+        for (auto& history : liveJsonHistory_)
+            while (!history.empty() && history.back().sessionTime > r.sessionTime)
+                history.pop_back();
+    }
+    if (config_.binaryPlayback && std::isfinite(r.sessionTime) && r.sessionTime >= 0.0f)
+        liveSessionTime_ = r.sessionTime;
+
+    // Keep one native latest-state row even while its page is hidden, then only
+    // forward subscribed families. Recording above remains completely unmasked.
+    for (const auto& row : r.rows) {
+        const uint8_t type = rowTypeOf(row);
+        if (type < liveLatestRows_.size()) liveLatestRows_[type] = row;
+        if (config_.binaryPlayback && r.sessionTime >= 0.0f && type < liveJsonHistory_.size() &&
+            (kHistoricalRowMask & (1u << type))) {
+            auto& history = liveJsonHistory_[type];
+            history.push_back({r.sessionTime, row});
+            if (history.size() > kMaxLiveHistoryRows) history.pop_front();
+        }
+        if (config_.binaryPlayback && type == 4) {
+            liveLapNum_ = static_cast<int>(scanJsonNumber(
+                row, "\"lap_num\":", liveLapNum_));
+            const double lapMs = scanJsonNumber(row, "\"current_lap_ms\":", 0.0);
+            if (r.sessionTime >= 0.0f && lapMs >= 0.0)
+                liveLapStart_ = r.sessionTime - static_cast<float>(lapMs / 1000.0);
+        }
+        if (type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
+    }
+    if (config_.binaryPlayback && r.sessionTime >= 0.0f && !r.binary.empty()) {
+        (void)bin::forEachPackedRecord(r.binary.data(), r.binary.size(),
+            [&](uint8_t type, const uint8_t* record, size_t recordLen) {
+                if (!(kHistoricalRowMask & (1u << type))) return;
+                auto& history = livePackedHistory_[type];
+                const size_t offset = history.bytes.size();
+                history.bytes.insert(history.bytes.end(), record, record + recordLen);
+                history.index.push_back({r.sessionTime, offset, recordLen});
+                if (history.index.size() > kMaxLiveHistoryRows) {
+                    const auto& old = history.index.front();
+                    history.discardedBytes = old.offset + old.length;
+                    history.index.pop_front();
+                }
+                if (history.discardedBytes >= 8u * 1024u * 1024u &&
+                    history.discardedBytes * 2 >= history.bytes.size()) {
+                    const size_t discarded = history.discardedBytes;
+                    history.bytes.erase(history.bytes.begin(),
+                        history.bytes.begin() + static_cast<std::ptrdiff_t>(discarded));
+                    for (auto& entry : history.index) entry.offset -= discarded;
+                    history.discardedBytes = 0;
+                }
+            });
+    }
     if (config_.hotRowsAsJson) {
-        for (const auto& hj : r.hotJson) emitRow(hj);
+        for (const auto& hj : r.hotJson) {
+            const uint8_t type = rowTypeOf(hj);
+            if (type == 0 || (consumerRowMask_ & (1u << type))) emitRow(hj);
+        }
     } else if (!r.binary.empty() && sink_) {
-        sink_->onBinary(r.binary.data(), r.binary.size());
+        std::vector<uint8_t> selected;
+        selected.reserve(r.binary.size());
+        if (bin::appendFilteredBatch(selected, r.binary.data(), r.binary.size(),
+                                     consumerRowMask_) && !selected.empty())
+            sink_->onBinary(selected.data(), selected.size());
     }
 }
 
@@ -192,6 +310,107 @@ void Engine::flushRecording() {
     writer_.flushToDisk();
 }
 
+void Engine::requestDataRequirements(uint64_t requestId) {
+    if (requestId == 0) return;
+    uint64_t current = latestRequirementsRequestId_.load(std::memory_order_relaxed);
+    while (current < requestId &&
+           !latestRequirementsRequestId_.compare_exchange_weak(
+               current, requestId, std::memory_order_release,
+               std::memory_order_relaxed)) {}
+}
+
+void Engine::setDataRequirements(uint32_t streamRowMask,
+                                 uint32_t historyRowMask,
+                                 float windowSeconds,
+                                 uint64_t requestId) {
+    std::vector<std::string> restore;
+    std::shared_ptr<std::vector<uint8_t>> liveBackfillBinary;
+    std::string liveBackfillJson;
+    float liveBackfillLapStart = 0.0f;
+    int liveBackfillLapNum = 0;
+    uint32_t liveBackfillMask = 0;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (requestId != 0 && requestId !=
+            latestRequirementsRequestId_.load(std::memory_order_acquire)) return;
+        const uint32_t newlyEnabled = streamRowMask & ~consumerRowMask_;
+        const uint32_t oldHistoryMask = consumerHistoryMask_;
+        const float oldWindowSeconds = consumerWindowSeconds_;
+        consumerRowMask_ = streamRowMask;
+        consumerHistoryMask_ = historyRowMask & streamRowMask;
+        consumerWindowSeconds_ = std::max(-1.0f, windowSeconds);
+        const uint32_t backfillMask = oldWindowSeconds == consumerWindowSeconds_
+            ? consumerHistoryMask_ & ~oldHistoryMask
+            : consumerHistoryMask_;
+        reader_.setPlaybackRowMask(consumerRowMask_, currentTime_);
+
+        // Historical families are restored by the indexed range request. Only
+        // current-state/stream-only families need a latest-row snapshot here.
+        const uint32_t restoreMask = newlyEnabled & ~consumerHistoryMask_;
+        if (restoreMask != 0) {
+            if (inPlayback_.load()) {
+                auto tagged = reader_.latestOfTypesTagged(
+                    currentTime_, typesInMask(restoreMask));
+                for (auto& [type, row] : tagged) {
+                    if (type < dupCache_.size()) dupCache_[type] = row;
+                    restore.push_back(std::move(row));
+                }
+            } else {
+                for (uint8_t type = 1; type < liveLatestRows_.size(); ++type)
+                    if ((restoreMask & (1u << type)) &&
+                        !liveLatestRows_[type].empty())
+                        restore.push_back(liveLatestRows_[type]);
+            }
+        }
+
+        // Live mode keeps raw bounded history natively. Showing a previously
+        // hidden chart backfills packed/JSON rows without having processed them
+        // in Electron while the consumer was invisible.
+        if (config_.binaryPlayback && !inPlayback_.load() && backfillMask != 0 &&
+            liveSessionTime_ > 0.0f) {
+            const float fromTime = consumerWindowSeconds_ < 0.0f
+                ? 0.0f
+                : consumerWindowSeconds_ == 0.0f
+                    ? liveLapStart_
+                    : std::max(0.0f, liveSessionTime_ - consumerWindowSeconds_);
+            liveBackfillBinary = std::make_shared<std::vector<uint8_t>>();
+            for (uint8_t type = 1; type < 16; ++type) {
+                if (!(backfillMask & (1u << type))) continue;
+                for (const auto& entry : livePackedHistory_[type].index) {
+                    if (entry.sessionTime < fromTime ||
+                        entry.sessionTime > liveSessionTime_) continue;
+                    const auto& bytes = livePackedHistory_[type].bytes;
+                    if (entry.offset + entry.length > bytes.size()) continue;
+                    liveBackfillBinary->insert(liveBackfillBinary->end(),
+                        bytes.begin() + static_cast<std::ptrdiff_t>(entry.offset),
+                        bytes.begin() + static_cast<std::ptrdiff_t>(entry.offset + entry.length));
+                }
+                for (const auto& entry : liveJsonHistory_[type]) {
+                    if (entry.sessionTime < fromTime ||
+                        entry.sessionTime > liveSessionTime_) continue;
+                    liveBackfillJson += entry.json;
+                    liveBackfillJson.push_back('\n');
+                }
+            }
+            if (!liveBackfillJson.empty()) liveBackfillJson.pop_back();
+            liveBackfillLapStart = liveLapStart_;
+            liveBackfillLapNum = liveLapNum_;
+            liveBackfillMask = backfillMask;
+            if (liveBackfillBinary->empty() && liveBackfillJson.empty())
+                liveBackfillBinary.reset();
+        }
+    }
+    for (const auto& row : restore) emitRow(row);
+    if (sink_ && (liveBackfillBinary || !liveBackfillJson.empty())) {
+        const size_t binarySize = liveBackfillBinary
+            ? liveBackfillBinary->size() : 0;
+        sink_->onSeekFlush(liveBackfillBinary, 0, binarySize,
+                           std::move(liveBackfillJson), liveBackfillLapStart,
+                           liveBackfillLapNum, true, 0, false,
+                           liveBackfillMask);
+    }
+}
+
 // ── Playback ─────────────────────────────────────────────────────────────────
 
 bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
@@ -222,8 +441,13 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             // owner thread so it is complete and a later return to live starts
             // a fresh stream on the next session packet.
             writer_.closeActiveStream();
+            liveLatestRows_ = {};
+            for (auto& history : livePackedHistory_) history = {};
+            for (auto& history : liveJsonHistory_) history.clear();
+            liveSessionTime_ = 0.0f;
+            liveLapStart_ = 0.0f;
+            liveLapNum_ = 0;
             lapBlocksMsg = reader_.lapBlocksMessage();
-            initState = reader_.stateSnapshot(reader_.startTime());
             if (config_.binaryPlayback) {
                 // Label the clip with its recorded format's catalog (the TS
                 // glue caches/rebroadcasts protocol_status rows as usual).
@@ -232,10 +456,11 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
                 // Seed the dup cache and restore the panels the snapshot
                 // doesn't cover (status/damage/positions).
                 dupCache_ = {};
-                initPanels = reader_.latestOfTypesTagged(
-                    reader_.startTime(),
-                    { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
+                initPanels = reader_.latestOfTypesTagged(reader_.startTime(),
+                    typesInMask(consumerRowMask_ & kRestoreRowMask));
                 for (auto& [tid, line] : initPanels) dupCache_[tid] = line;
+            } else {
+                initState = reader_.stateSnapshot(reader_.startTime());
             }
         }
     }
@@ -247,9 +472,8 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     if (ok) {
         if (!statusMsg.empty()) emitRow(statusMsg);
         emitRow(lapBlocksMsg);
-        for (const auto& s : initState) emitRow(s);
-        for (const auto& [tid, line] : initPanels)
-            if (tid == 2 || tid == 3 || tid == 13) emitRow(line);
+        for (const auto& row : initState) emitRow(row);
+        for (const auto& [tid, line] : initPanels) emitRow(line);
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
         emitPlaybackState();
@@ -303,14 +527,16 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         float start  = reader_.startTime();
         float dur    = std::max(0.0f, reader_.totalTime() - start);
         target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
-        state    = reader_.stateSnapshot(target);
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
         if (config_.binaryPlayback) {
             binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
-                                         windowSeconds);
-            panels = reader_.latestOfTypesTagged(
-                target, { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
+                                         windowSeconds, false);
+            const uint32_t restoreMask = consumerRowMask_ & kRestoreRowMask &
+                (~rowTypeMask | kDupRowMask);
+            panels = reader_.latestOfTypesTagged(target, typesInMask(restoreMask));
+        } else {
+            state = reader_.stateSnapshot(target);
         }
         // A newer request may have arrived while this worker was extracting a
         // large AL prefix. An overtaken worker must not move the cursor or seed
@@ -328,12 +554,9 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     if (config_.binaryPlayback) {
         if (sink_) sink_->onSeekFlush(std::move(binFlush.binaryStore), binFlush.binaryBegin,
                                       binFlush.binaryEnd, std::move(binFlush.coldJson),
-                                      lapStart, lapNum, allHistory, requestId, true);
-        for (const auto& s : state) emitRow(s);
-        // status/damage already ride in the flush's coldJson; positions has no
-        // cold cache, so restore the track map explicitly.
-        for (const auto& [tid, line] : panels)
-            if (tid == 13) emitRow(line);
+                                      lapStart, lapNum, allHistory, requestId, true,
+                                      rowTypeMask);
+        for (const auto& [tid, line] : panels) emitRow(line);
     } else {
         PlaybackSeekFlushRow flush;
         flush.currentLapStart = lapStart;
@@ -352,12 +575,12 @@ void Engine::playerSetSpeed(float mult) {
     emitPlaybackState();
 }
 
-void Engine::playerGetLapData(int lapNum) {
+void Engine::playerGetLapData(int lapNum, uint32_t rowTypeMask) {
     std::string msg;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
-        msg = reader_.getLapDataMessage(lapNum);
+        msg = reader_.getLapDataMessage(lapNum, rowTypeMask);
     }
     if (!msg.empty()) emitRow(msg);
 }
@@ -376,7 +599,8 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     }
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
-                                  lapStart, lapNum, true, requestId, false);
+                                  lapStart, lapNum, true, requestId, false,
+                                  rowTypeMask);
 }
 
 void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
@@ -386,7 +610,7 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     TnrdReader::SeekFlush flush;
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        if (!inPlayback_.load() || !config_.binaryPlayback || windowSeconds <= 0.0f) return;
+        if (!inPlayback_.load() || !config_.binaryPlayback || windowSeconds < 0.0f) return;
         const float target = currentTime_;
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
@@ -397,7 +621,8 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     // request; it does not move the playhead or replace newer buffered rows.
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
-                                  lapStart, lapNum, true, requestId, false);
+                                  lapStart, lapNum, true, requestId, false,
+                                  rowTypeMask);
 }
 
 void Engine::playerClose() {
@@ -481,6 +706,7 @@ void Engine::playbackLoop() {
                 // delivered something — a fully idle tick stays silent).
                 if (seen != 0) {
                     for (uint8_t tid : kDupTypeIds) {
+                        if (!(consumerRowMask_ & (1u << tid))) continue;
                         if ((seen & (1u << tid)) || dupCache_[tid].empty()) continue;
                         std::string dup = dupCache_[tid];
                         setSessionTime(dup, currentTime_);

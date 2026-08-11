@@ -99,12 +99,17 @@ const playerBridge = {
     playerAllLapsRowMask = rowTypeMask >>> 0
     playerWindowSeconds = Number.isFinite(windowSeconds) ? Math.max(0, windowSeconds) : 0
   },
+  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => {
+    ipcRenderer.send('player:setDataRequirements', streamMask >>> 0, historyMask >>> 0,
+      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0)
+  },
   onSeekStart: (callback: (allHistory: boolean) => void) => {
     seekStartListeners.add(callback)
     return () => { seekStartListeners.delete(callback) }
   },
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
-  getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
+  getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
+    ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),
   getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),
   getWindowData: (windowSeconds: number, rowTypeMask?: number) => ipcRenderer.send('player:getWindowData', windowSeconds, rowTypeMask),
   close: () => ipcRenderer.send('player:close'),
@@ -134,8 +139,8 @@ const playerBridge = {
 const analysisBridge = {
   loadFile: (filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> =>
     ipcRenderer.invoke('analysis:load-file', filePath),
-  getLapData: (lapNum: number): Promise<unknown | null> =>
-    ipcRenderer.invoke('analysis:get-lap-data', lapNum),
+  getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF): Promise<unknown | null> =>
+    ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
 }
 

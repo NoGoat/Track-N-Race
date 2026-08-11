@@ -153,7 +153,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
                 buf.clear(); (void)glz::write_json(mr, buf); hot.hotJson.push_back(std::move(buf));
             }
 
-            if (length >= HEADER_SIZE + MAX_CARS * motionSize) {
+            if (hot.wants(13) && length >= HEADER_SIZE + MAX_CARS * motionSize) {
                 PositionsRow pr;
                 pr.ts         = timestamp;
                 pr.player_idx = hdr.playerCarIndex;
@@ -216,7 +216,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             (void)glz::write_json(lr, buf);
             rows.push_back(std::move(buf));
 
-            if (length >= HEADER_SIZE + MAX_CARS * lapSize) {
+            if (hot.wants(7) && length >= HEADER_SIZE + MAX_CARS * lapSize) {
                 TimingRow tr;
                 tr.ts           = timestamp;
                 tr.session_time = hdr.sessionTime;
@@ -349,7 +349,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             (void)glz::write_json(sr, buf);
             rows.push_back(std::move(buf));
 
-            if (length >= HEADER_SIZE + MAX_CARS * statusSize) {
+            if (hot.wants(9) && length >= HEADER_SIZE + MAX_CARS * statusSize) {
                 AllStatusRow ar;
                 ar.ts           = timestamp;
                 ar.session_time = hdr.sessionTime;

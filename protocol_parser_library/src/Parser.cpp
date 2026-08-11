@@ -1,6 +1,7 @@
 #include "tnrp/Parser.h"
 
 #include <array>
+#include <iterator>
 #include "tnrp/control_rows.h"
 #include "tnrp/Labels.h"
 #include "tnrp/CardColors.h"
@@ -113,7 +114,7 @@ std::string Parser::statusRowForFormat(uint16_t format) {
 }
 
 Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& ts,
-                            bool wantHotJson) {
+                            bool wantHotJson, uint32_t outputRowMask) {
     Result r;
     if (length < HEADER_SIZE) { r.dropped = true; return r; }
 
@@ -186,8 +187,34 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     hdr.overallFrameId = frameId;
     hdr.playerCarIndex = data[27];
 
+    // The header/detection/duplicate state above always advances. When no
+    // recording or JSON-only consumer needs the body, skip parsing packets that
+    // cannot produce a currently subscribed logical row family.
+    static constexpr uint32_t PACKET_ROWS[17] = {
+        (1u << 11) | (1u << 13), // Motion + Positions
+        (1u << 5),               // Session
+        (1u << 4) | (1u << 7),   // Lap + Timing
+        (1u << 6),               // Event
+        (1u << 8),               // Participants
+        0,
+        (1u << 1),               // Car Telemetry
+        (1u << 2) | (1u << 9),   // Car Status + All Status
+        0,
+        0,
+        (1u << 3),               // Car Damage
+        (1u << 14),              // Session History Fastest
+        (1u << 10),              // Tyre Sets
+        (1u << 12),              // Motion Ex
+        0, 0,
+        (1u << 1),               // F1 26 Telemetry 2 updates telemetry state
+    };
+    const uint32_t packetRows = packetId < std::size(PACKET_ROWS)
+        ? PACKET_ROWS[packetId] : 0;
+    if (!wantHotJson && (packetRows & outputRowMask) == 0) return r;
+
     HotOut hot;
     hot.wantHotJson = wantHotJson;
+    hot.outputRowMask = outputRowMask;
     r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot)
            : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot)
                            : F1_25::ParsePacket(data, length, hdr, ts, hot);

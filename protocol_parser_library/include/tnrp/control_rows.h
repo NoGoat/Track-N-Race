@@ -327,6 +327,7 @@ struct PlaybackLapDataRow {
     std::vector<glz::raw_json> damageHistory;
     std::vector<LapProgressPoint> lapProgress;
     std::vector<PlayerPositionPoint> playerPositions;
+    uint32_t                   rowTypeMask{};
 };
 
 } // namespace tnrp

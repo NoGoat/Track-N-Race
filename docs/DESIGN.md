@@ -175,10 +175,12 @@ an absolute session_time cursor scaled by speed:
   with their `session_time` string-spliced to the playhead. The cache is seeded
   on load and re-keyed on every seek via `latestOfTypesTagged` (a backward index
   walk reading only matching lines).
-- **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` — the hot
-  rows of `[min(target−600 s, currentLapStart), target]` as one binary slice
-  plus the window's cold status/damage/lap JSONL — then the state snapshot rows
-  and an explicit positions restore (positions has no cold cache). Legacy mode
+- **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` containing
+  exactly the active history families for the selected mode: current lap,
+  `[target-windowSeconds,target]`, or `[startTime,target]` for AL. V4 resolves
+  that range from its `(lap,rowType)` chunk directory and decodes only
+  intersecting ZSTD blocks. Visible sparse state is restored separately with a
+  single indexed latest-at-time query. Legacy mode
   emits a `playback_seek_flush` control row + snapshot instead.
   Electron All Laps seeks request `[startTime, target]` in that same flush;
   extraction runs on a libuv worker, the seek payload views the reader's
@@ -263,6 +265,14 @@ preload (contextBridge)   ▼                          ▼
 renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
                                         └─ TimeChartView (WebGL) per chart
 ```
+
+The active page/layout is reduced through `historyDependencies.ts`, the single
+declarative chart/table/map-to-row registry. `AppShell` sends the union as one
+generation-tagged stream/history subscription. The engine filters cold and
+packed-hot rows before N-API; V4 playback loads only selected chunk families.
+Hidden live chart families remain compact native raw history solely so a later
+visibility change can backfill them without prior renderer processing.
+Recording is never subscription-filtered.
 
 ### 3.2 node addon (`electron-frontend/node_addon/addon.cpp`)
 

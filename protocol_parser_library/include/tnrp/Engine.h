@@ -2,10 +2,13 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "tnrp/Config.h"
 #include "tnrp/Parser.h"
@@ -50,6 +53,13 @@ public:
     // shutdown/crash hooks.
     void flushRecording();
 
+    // One renderer-wide subscription, aggregated from the active page and its
+    // visible sections. Recording remains complete; these masks only control
+    // consumer forwarding, playback chunk loading, and history backfill.
+    void requestDataRequirements(uint64_t requestId);
+    void setDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
+                             float windowSeconds, uint64_t requestId = 0);
+
     // ── Playback ─────────────────────────────────────────────────────────
     // Loads a .tnrd, switches the engine into playback mode (UDP ignored),
     // emits the initial reconstructed snapshot, and stays paused.
@@ -62,7 +72,7 @@ public:
     void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0,
                     uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
     void playerSetSpeed(float mult);
-    void playerGetLapData(int lapNum);
+    void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);
@@ -84,6 +94,7 @@ private:
     float             currentTime_ = 0.0f;  // absolute session_time cursor
     float             speed_     = 1.0f;
     std::atomic<uint64_t> latestSeekRequestId_{0};
+    std::atomic<uint64_t> latestRequirementsRequestId_{0};
     uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
@@ -93,6 +104,22 @@ private:
     // streamed from TnrdReader's 10 Hz reconstruction; other dup types are
     // re-emitted with session_time set to the playhead between native updates.
     std::array<std::string, 16> dupCache_{};
+    std::array<std::string, 16> liveLatestRows_{};
+    struct LivePackedIndex { float sessionTime{}; size_t offset{}; size_t length{}; };
+    struct LivePackedHistory {
+        std::vector<uint8_t> bytes;
+        std::deque<LivePackedIndex> index;
+        size_t discardedBytes = 0;
+    };
+    struct LiveJsonHistoryRow { float sessionTime{}; std::string json; };
+    std::array<LivePackedHistory, 16> livePackedHistory_{};
+    std::array<std::deque<LiveJsonHistoryRow>, 16> liveJsonHistory_{};
+    float             liveSessionTime_ = 0.0f;
+    float             liveLapStart_ = 0.0f;
+    int               liveLapNum_ = 0;
+    uint32_t          consumerRowMask_ = 0xFFFFFFFFu;
+    uint32_t          consumerHistoryMask_ = 0;
+    float             consumerWindowSeconds_ = 0.0f;
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void emitRow(const std::string& json);               // forward to the sink

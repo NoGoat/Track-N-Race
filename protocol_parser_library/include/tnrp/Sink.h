@@ -39,7 +39,8 @@ public:
                              float /*currentLapStart*/, int /*lapNum*/,
                              bool /*allHistory*/ = false,
                              uint64_t /*requestId*/ = 0,
-                             bool /*authoritativeSeek*/ = true) {}
+                             bool /*authoritativeSeek*/ = true,
+                             uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu) {}
 };
 
 } // namespace tnrp

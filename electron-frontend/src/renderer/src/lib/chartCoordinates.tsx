@@ -2,11 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useRef } from 'react
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, LapProgressPoint } from '../types'
 import { buildLapProgressMap, buildLapProgressMapFromPoints, interpolateLapElapsed, type LapProgressMap } from './lapDelta'
-import type { ChartMode } from '../app/appConfig'
+import type { ChartMode, DistanceChartMode } from '../app/appConfig'
 import { playbackDebug } from './playbackDebug'
+import { DATA_ROW } from './historyDependencies'
 
 interface ChartCoordinates {
-  mode: ChartMode | null
+  mode: DistanceChartMode | null
   distanceMode: boolean
   allLapsMode: boolean
   comparisonMode: boolean
@@ -63,7 +64,7 @@ export function formatChartDistance(metres: number): string {
   return `${Math.round(metres)} m`
 }
 
-export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { mode: ChartMode | null; referenceLapNum: number | null; children: React.ReactNode }) {
+export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, children }: { mode: ChartMode | null; referenceLapNum: number | null; rowTypeMask: number; children: React.ReactNode }) {
   const currentProgress = useTelemetryStore(state => state.analyzeLapProgress)
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
@@ -87,11 +88,12 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
       : mode === 'PL' ? livePreviousLap : mode === 'FL' ? liveFastestLap : null
     : null
   useEffect(() => {
-    if (!isPlayback || mode === null || mode === 'AL') return
-    for (const lapNum of new Set([currentLapNum, comparisonLapNum])) {
-      if (lapNum !== null && !playbackCache[lapNum]) window.playerBridge.getLapData(lapNum)
+    if (!isPlayback || (mode !== 'PL' && mode !== 'FL' && mode !== 'RL') || comparisonLapNum === null) return
+    const requiredMask = (rowTypeMask | DATA_ROW.lap) >>> 0
+    if (((playbackCache[comparisonLapNum]?.rowTypeMask ?? 0) & requiredMask) !== requiredMask) {
+      window.playerBridge.getLapData(comparisonLapNum, requiredMask)
     }
-  }, [comparisonLapNum, currentLapNum, isPlayback, mode, playbackCache])
+  }, [comparisonLapNum, isPlayback, mode, playbackCache, rowTypeMask])
 
   const enabled = mode !== null && mode !== 'AL'
   const allLapsMode = mode === 'AL'
@@ -172,7 +174,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
     isPlayback, lapEndTime, lapStartTime, lastProgress, mode, playbackCurrentLap,
     progressRevision, rawProgress, currentProgress.length])
   return <Context.Provider value={{
-    mode,
+    mode: enabled ? mode as DistanceChartMode : null,
     distanceMode: enabled,
     allLapsMode,
     comparisonMode,
