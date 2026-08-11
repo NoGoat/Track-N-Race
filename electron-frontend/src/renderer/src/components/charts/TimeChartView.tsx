@@ -13,6 +13,7 @@ import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
+import { subscribeAllLapsData } from '../../stores/telemetryStore'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -223,9 +224,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   const latestT = rows.length > 0 ? effectiveGetX(rows[rows.length - 1]) : null
   const firstT = rows.length > 0 ? effectiveGetX(rows[0]) : null
-  const { attach, detach, wake } = useTimeChartScroll(
+  const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(
     !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
-    { fastFrames: fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
+    { fastFrames: fastScroll || coordinates.allLapsMode, fullFps: coordinates.allLapsMode ? 12 : 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
@@ -441,7 +442,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   }, [comparisonRows, coordinates])
 
   // --- feed new data ---
-  useEffect(() => {
+  const syncRowsRef = useRef<() => void>(() => {})
+  syncRowsRef.current = () => {
     const bridge = bridgeRef.current
     const chart = chartRef.current
     if (!bridge) return
@@ -488,6 +490,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       })
     }
     if (changed) {
+      if (syncEnd > 0) acceptDataRange(effectiveGetX(rows[syncEnd - 1]), effectiveGetX(rows[0]))
       dataDirtyRef.current = true
       wake()
     }
@@ -589,8 +592,16 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         dataDirtyRef.current = true
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }
+
+  useEffect(() => {
+    syncRowsRef.current()
   }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.lapRevision, coordinates.progressRevision, coordinates.trackLengthM])
+
+  useEffect(() => {
+    if (!coordinates.allLapsMode) return
+    return subscribeAllLapsData(() => syncRowsRef.current())
+  }, [coordinates.allLapsMode])
 
   useEffect(() => {
     axisCfgRef.current = {

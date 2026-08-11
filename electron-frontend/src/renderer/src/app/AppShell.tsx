@@ -92,7 +92,11 @@ export default function AppShell() {
     }
   }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
-  useEffect(() => { setTelemetrySeconds(chartWindow === 'AL' ? Infinity : seconds) }, [chartWindow, seconds])
+  useEffect(() => {
+    const enabled = chartWindow === 'AL'
+    window.playerBridge.setAllLapsMode(enabled)
+    setTelemetrySeconds(enabled ? Infinity : seconds)
+  }, [chartWindow, seconds])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we

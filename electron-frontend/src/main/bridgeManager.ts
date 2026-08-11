@@ -104,6 +104,7 @@ export interface PlaybackState {
 
 let activeFilePath: string | null = null
 let onPlaybackState: ((state: PlaybackState) => void) | null = null
+let latestSeekRequestId = 0
 
 function activeFilename(): string | null {
   return activeFilePath ? path.basename(activeFilePath) : null
@@ -288,9 +289,19 @@ export function startBridge(): string | null {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean) => {
-      clearResumeCache()
-      broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory })
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean) => {
+      // Superseded scrubs are discarded before the large payload crosses IPC
+      // or is decoded into renderer objects.
+      if (requestId !== 0 && requestId !== latestSeekRequestId) return
+      try {
+        clearResumeCache()
+        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek })
+      } catch (error) {
+        console.error('[bridge] Failed to forward playback seek history:', error)
+        // Never leave the renderer's AL publication gate closed if IPC rejects
+        // a payload. It can resume from the post-seek stream and retry later.
+        broadcast({ type: 'playback_seek_flush_failed', requestId })
+      }
     })
 
     engine.startUdp()
@@ -374,13 +385,17 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
 
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
-export function playerSeek(pct: number): void {
-  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, engineReady: Boolean(engine) })}`)
-  engine?.playerSeek(pct)
+export function playerSeek(pct: number, allHistory = false): void {
+  const requestId = ++latestSeekRequestId
+  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, requestId, engineReady: Boolean(engine) })}`)
+  engine?.playerSeek(pct, allHistory, requestId)
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
-export function playerGetAllLapsData(): void { engine?.playerGetAllLapsData() }
+export function playerGetAllLapsData(): void {
+  const requestId = ++latestSeekRequestId
+  engine?.playerGetAllLapsData(requestId)
+}
 export function playerClose(): void { engine?.playerClose() }
 
 export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {

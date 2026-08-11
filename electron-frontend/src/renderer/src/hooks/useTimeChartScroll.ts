@@ -145,7 +145,7 @@ export function useTimeChartScroll(
       c.lastMin = min
       c.lastMax = max
       chart.options.xRange = { min, max }
-      const needsFull = !config.fastFrames || dataDirtyRef.current || lastFullAtRef.current === 0 ||
+      const needsFull = !config.fastFrames || lastFullAtRef.current === 0 ||
         frameTime - lastFullAtRef.current >= 1000 / config.fullFps
       dataDirtyRef.current = false
       if (needsFull) {
@@ -197,6 +197,11 @@ export function useTimeChartScroll(
     c.wallAtT = now
     registrationRef.current?.wake()
   }, [])
+
+  const acceptDataRange = useCallback((latest: number, first: number) => {
+    clockRef.current.firstT = Number.isFinite(first) ? first : NaN
+    if (Number.isFinite(latest)) acceptLatest(latest, performance.now())
+  }, [acceptLatest])
 
   useEffect(() => {
     if (latestT == null) return
@@ -254,5 +259,5 @@ export function useTimeChartScroll(
 
   const wake = useCallback(() => registrationRef.current?.wake(), [])
 
-  return { chartRef, attach, detach, wake }
+  return { chartRef, attach, detach, wake, acceptDataRange }
 }

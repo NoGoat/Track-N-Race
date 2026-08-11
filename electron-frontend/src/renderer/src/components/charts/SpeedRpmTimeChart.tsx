@@ -9,6 +9,7 @@ import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/c
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { playbackDebug } from '../../lib/playbackDebug'
+import { subscribeAllLapsData } from '../../stores/telemetryStore'
 
 interface Props {
   isDark: boolean
@@ -111,7 +112,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
 
   const latestT = telemetry.length ? coordinates.getX(telemetry[telemetry.length - 1]) : null
   const firstT = telemetry.length ? coordinates.getX(telemetry[0]) : null
-  const { attach, detach, wake } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: 60, accumulateFromStart: coordinates.allLapsMode })
+  const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: coordinates.allLapsMode ? 12 : 60, accumulateFromStart: coordinates.allLapsMode })
 
   useEffect(() => {
     const host = hostRef.current
@@ -246,7 +247,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     chart.model.requestRedraw()
   }, [comparisonStatuses, comparisonTelemetry, coordinates])
 
-  useEffect(() => {
+  const syncRowsRef = useRef<() => void>(() => {})
+  syncRowsRef.current = () => {
     const buffer = bufferRef.current
     if (!buffer) return
     const rebuild = coordinates.distanceMode && syncRef.current.lapRevision !== coordinates.lapRevision
@@ -267,6 +269,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     }
     syncRef.current.lapRevision = coordinates.lapRevision
     if (!syncTelemetry(buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild)) return
+    if (telemetry.length) acceptDataRange(coordinates.getX(telemetry[telemetry.length - 1]), coordinates.getX(telemetry[0]))
     if (rebuild) {
       playbackDebug('speed-chart-lap-revision-synced', {
         revision: coordinates.lapRevision,
@@ -283,7 +286,16 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       chartRef.current.model.requestRedraw()
       dirtyRef.current = false
     } else wake()
+  }
+
+  useEffect(() => {
+    syncRowsRef.current()
   }, [coordinates, telemetry, statuses, wake])
+
+  useEffect(() => {
+    if (!coordinates.allLapsMode) return
+    return subscribeAllLapsData(() => syncRowsRef.current())
+  }, [coordinates.allLapsMode])
 
   useEffect(() => {
     if (chartRef.current && width > 0 && height > 0) chartRef.current.onResize()

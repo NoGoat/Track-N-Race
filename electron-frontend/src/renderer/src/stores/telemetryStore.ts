@@ -51,6 +51,15 @@ function appendRow<T extends { session_time: number }>(ref: { current: T[] }, ms
   const buf = ref.current
   const last = buf[buf.length - 1]
   if (last && msg.session_time < last.session_time) {
+    if (allLapsMode) {
+      // A rapid seek can leave a few superseded future rows in flight. AL owns
+      // the full prefix, so reconcile by truncating only that future tail;
+      // applying the ordinary 600-second recovery window here destroys laps.
+      const rebuilt = buf.slice(0, lowerBound(buf, msg.session_time, true))
+      rebuilt.push(msg)
+      ref.current = rebuilt
+      return
+    }
     const cutoff = msg.session_time - RETENTION_S
     const rebuilt = buf.filter(d => d.session_time < msg.session_time && d.session_time >= cutoff)
     rebuilt.push(msg)
@@ -179,6 +188,7 @@ const pools = {
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
+const allLapsDataListeners = new Set<() => void>()
 
 let lapState: LapRow | null = null
 let lapNum: number | null = null
@@ -453,10 +463,8 @@ function handleMsg(msg: GatewayMsg): void {
       // A seek must restore indexed session metadata, not derive it from the
       // first lap packet emitted around the new playhead position.
       set({ fastestLapNum: playbackFastestLapNum || null })
-      if (!allHistory) {
-        lapStartTime = payload.currentLapStart
-        lapNum = payload.lapNum
-      }
+      lapStartTime = payload.currentLapStart
+      lapNum = payload.lapNum
       const tel: any[] = [], mot: any[] = [], motEx: any[] = []
       for (const row of decodeBinaryBatch(payload.binary)) {
         if (row.type === 'telemetry') tel.push(row)
@@ -479,14 +487,6 @@ function handleMsg(msg: GatewayMsg): void {
           } catch (e) {}
         }
         start = end + 1
-      }
-      // A second seek can overtake a large prefix transfer. Never let an older
-      // response from a later playhead reintroduce rows beyond the newest seek.
-      const historyEnd = tel[tel.length - 1]?.session_time
-      const currentEnd = priorTel[priorTel.length - 1]?.session_time
-      if (allHistory && ((lapNum !== null && payload.lapNum !== lapNum) ||
-        (Number.isFinite(historyEnd) && Number.isFinite(currentEnd) && historyEnd > currentEnd + 0.5))) {
-        break
       }
       if (allHistory) waitingForAllLapsHistory = false
       const appendNewer = <T extends { session_time: number }>(base: T[], trailing: T[]): T[] => {
@@ -517,17 +517,14 @@ function handleMsg(msg: GatewayMsg): void {
         lastLapNumber: lastLap?.current_lap_num ?? null,
         lastLapTimeMs: lastLap?.current_lap_ms ?? null,
       })
-      if (!allHistory) {
-        if (sts.length) set({ status: sts[sts.length - 1] })
-        if (dmg.length) set({ damage: dmg[dmg.length - 1] })
-        if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
-      }
-      if (allLapsMode && !allHistory) {
-        waitingForAllLapsHistory = true
-        window.playerBridge.getAllLapsData()
-      }
+      if (stsBufRef.current.length) set({ status: stsBufRef.current[stsBufRef.current.length - 1] })
+      if (dmgBufRef.current.length) set({ damage: dmgBufRef.current[dmgBufRef.current.length - 1] })
+      if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
       break
     }
+    case 'playback_seek_flush_failed':
+      waitingForAllLapsHistory = false
+      break
     case 'playback_lap_blocks': {
       isPlaybackFlag = true
       analyzeLapRevisionVal++
@@ -584,6 +581,7 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'race_event':
     case 'playback_lap_blocks': return DirtySlice.Derived
     case 'playback_close':
+    case 'playback_seek_flush_failed':
     case 'playback_seek_flush_bin': return DirtySlice.All
     default: return DirtySlice.None
   }
@@ -626,31 +624,31 @@ function recompute(dirty: DirtySlice): void {
 
   const next: Partial<TelemetryStoreState> = {}
   if (dirty & DirtySlice.Telemetry) {
-    next.telemetry = fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
+    next.telemetry = allLapsMode ? telBuf : fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
     next.latest = currentTelBuf.length > 0 ? currentTelBuf[currentTelBuf.length - 1] : null
     if (publishAnalyze) next.analyzeLapTelemetry = fillRange(pools.analyzeTel, currentTelBuf, lowerBound(currentTelBuf, lapStartSessionTime, true), currentTelBuf.length)
   }
   if (dirty & DirtySlice.Motion) {
     const buf = motBuf
-    next.motion = fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.motion = allLapsMode ? buf : fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
     const current = motBufRef.current
     if (publishAnalyze) next.analyzeLapMotion = fillRange(pools.analyzeMot, current, lowerBound(current, lapStartSessionTime, true), current.length)
   }
   if (dirty & DirtySlice.MotionEx) {
     const buf = motExBuf
-    next.motionEx = fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.motionEx = allLapsMode ? buf : fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
     const current = motExBufRef.current
     if (publishAnalyze) next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, current, lowerBound(current, lapStartSessionTime, true), current.length)
   }
   if (dirty & DirtySlice.Status) {
     const buf = stsBuf
-    next.statusHistory = fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
     const current = stsBufRef.current
     if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
   }
   if (dirty & DirtySlice.Damage) {
     const buf = dmgBuf
-    next.damageHistory = fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+    next.damageHistory = allLapsMode ? buf : fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
     const current = dmgBufRef.current
     if (publishAnalyze) next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
   }
@@ -670,6 +668,9 @@ function recompute(dirty: DirtySlice): void {
     }
   }
   set(next)
+  if (allLapsMode && (dirty & (DirtySlice.Telemetry | DirtySlice.Motion | DirtySlice.MotionEx | DirtySlice.Status | DirtySlice.Damage))) {
+    for (const listener of allLapsDataListeners) listener()
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -684,14 +685,17 @@ export function setTelemetrySeconds(s: number): void {
   allLapsMode = nextAllLapsMode
   if (!allLapsMode) waitingForAllLapsHistory = false
   set({ seconds: s })
-  recompute(DirtySlice.All)
+  let requestHistory = false
   if (allLapsMode && !wasAllLapsMode && speedRpmBlocksVal !== null && lapNum !== null) {
     const firstBlockStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
     const firstBufferedTime = telBufRef.current[0]?.session_time ?? Infinity
     if (Number.isFinite(firstBlockStart) && firstBufferedTime > firstBlockStart + 1) {
-      window.playerBridge.getAllLapsData()
+      waitingForAllLapsHistory = true
+      requestHistory = true
     }
   }
+  recompute(DirtySlice.All)
+  if (requestHistory) window.playerBridge.getAllLapsData()
 }
 
 // Subscribe to live race events (transient banners). Delivered synchronously as
@@ -701,6 +705,14 @@ export function subscribeRaceEvent(cb: (e: RaceEventMsg) => void): () => void {
   return () => { raceEventListeners.delete(cb) }
 }
 
+// AL charts consume the in-place full-session arrays directly. This imperative
+// signal lets their WebGL bridges append new rows without cloning the growing
+// arrays through Zustand/React on every telemetry batch.
+export function subscribeAllLapsData(cb: () => void): () => void {
+  allLapsDataListeners.add(cb)
+  return () => { allLapsDataListeners.delete(cb) }
+}
+
 // Start the IPC subscription exactly once, at module load. The preload bridge is
 // present before the bundle runs, and the store lives for the app's lifetime, so
 // there is nothing to tear down.
@@ -708,6 +720,20 @@ let started = false
 export function startTelemetryBridge(): void {
   if (started) return
   started = true
+
+  window.playerBridge.onSeekStart((allHistory) => {
+    if (!allHistory) return
+    // Keep the currently published arrays intact while the worker extracts the
+    // new prefix. Fresh post-seek rows accumulate separately and are merged by
+    // the authoritative response.
+    waitingForAllLapsHistory = true
+    telBufRef.current = []
+    motBufRef.current = []
+    motExBufRef.current = []
+    stsBufRef.current = []
+    dmgBufRef.current = []
+    lapProgressBufRef.current = []
+  })
 
   window.telemetryBridge.onBatch((batchStr: string) => {
     let dirty = DirtySlice.None

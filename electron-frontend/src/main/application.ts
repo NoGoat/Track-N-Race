@@ -191,7 +191,7 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
 ipcMain.on('page-visibility', (_e, visible: boolean) => setRendererVisible(visible))
 ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
-ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
+ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean) => playerSeek(pct, allHistory === true))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
 ipcMain.on('player:getAllLapsData', () => playerGetAllLapsData())

@@ -81,12 +81,22 @@ const recordingBridge = {
 }
 
 
+let playerAllLapsMode = false
+const seekStartListeners = new Set<(allHistory: boolean) => void>()
 const playerBridge = {
   setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
   load: (filePath: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
   pause: () => ipcRenderer.send('player:pause'),
-  seek: (pct: number) => ipcRenderer.send('player:seek', pct),
+  seek: (pct: number) => {
+    for (const listener of seekStartListeners) listener(playerAllLapsMode)
+    ipcRenderer.send('player:seek', pct, playerAllLapsMode)
+  },
+  setAllLapsMode: (enabled: boolean) => { playerAllLapsMode = enabled },
+  onSeekStart: (callback: (allHistory: boolean) => void) => {
+    seekStartListeners.add(callback)
+    return () => { seekStartListeners.delete(callback) }
+  },
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
   getAllLapsData: () => ipcRenderer.send('player:getAllLapsData'),

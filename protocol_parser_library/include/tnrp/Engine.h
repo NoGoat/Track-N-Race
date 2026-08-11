@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -55,10 +56,13 @@ public:
     bool playerLoad(const std::string& path, std::string* errorOut = nullptr);
     void playerPlay();
     void playerPause();
-    void playerSeek(float pct);            // 0..1 of the recording duration
+    // Register on the caller thread before an async seek worker is queued.
+    // Playback remains gated until that exact generation is applied.
+    void playerRequestSeek(uint64_t requestId);
+    void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0);
     void playerSetSpeed(float mult);
     void playerGetLapData(int lapNum);
-    void playerGetAllLapsData();
+    void playerGetAllLapsData(uint64_t requestId = 0);
     void playerClose();                    // back to live mode
 
 private:
@@ -76,6 +80,8 @@ private:
     bool              playing_   = false;
     float             currentTime_ = 0.0f;  // absolute session_time cursor
     float             speed_     = 1.0f;
+    std::atomic<uint64_t> latestSeekRequestId_{0};
+    uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
 

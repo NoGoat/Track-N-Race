@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -102,7 +103,12 @@ public:
     // of [min(target-600, currentLapStart), target] as one packed binary slice,
     // plus the window's sparse cold rows (status/damage/lap) newline-joined.
     // allHistory expands the same packed payload to [startTime, target] for AL.
-    struct SeekFlush { std::vector<uint8_t> binary; std::string coldJson; };
+    struct SeekFlush {
+        std::shared_ptr<const std::vector<uint8_t>> binaryStore;
+        size_t binaryBegin = 0;
+        size_t binaryEnd = 0;
+        std::string coldJson;
+    };
     SeekFlush seekFlush(float target, float currentLapStart, bool allHistory = false);
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
@@ -160,7 +166,7 @@ private:
     // (hotCum_[i] = hot records among index_[0..i), length index_.size()+1) so
     // an index range maps to a contiguous store slice, and the sparse cold
     // rows kept whole for seek flushes.
-    std::vector<uint8_t>  hotBin_;
+    std::shared_ptr<std::vector<uint8_t>> hotBin_ = std::make_shared<std::vector<uint8_t>>();
     std::vector<float>    hotTimes_;
     std::vector<size_t>   hotStart_;
     std::vector<uint32_t> hotCum_;

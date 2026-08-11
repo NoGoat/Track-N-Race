@@ -105,6 +105,33 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// Large AL prefixes are extracted on libuv's worker pool. Generation checks in
+// Engine make rapid scrub requests monotonic even if workers begin out of order.
+class PlayerSeekWorker : public Napi::AsyncWorker {
+public:
+    PlayerSeekWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                     float pct, bool allHistory, uint64_t requestId)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), pct_(pct),
+          allHistory_(allHistory), requestId_(requestId) {}
+    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_); }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    float pct_;
+    bool allHistory_;
+    uint64_t requestId_;
+};
+
+class PlayerHistoryWorker : public Napi::AsyncWorker {
+public:
+    PlayerHistoryWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                        uint64_t requestId)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), requestId_(requestId) {}
+    void Execute() override { engine_->playerGetAllLapsData(requestId_); }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    uint64_t requestId_;
+};
+
 struct AnalysisReaderState {
     std::mutex mutex;
     tnrp::TnrdReader reader;
@@ -347,28 +374,43 @@ public:
         }
     }
 
-    // Playback seek flush (Config::binaryPlayback only). Seeks arrive at user
-    // rate, so no coalescing — each flush is copied once and handed to JS whole.
-    void onSeekFlush(const uint8_t* bin, size_t len, const std::string& coldJson,
-                     float currentLapStart, int lapNum, bool allHistory) override {
+    // Playback seek flush (Config::binaryPlayback only). The reader hands us a
+    // zero-copy view of its immutable packed store. Copy once into a normal V8
+    // Buffer here: Electron IPC cannot serialize an external-memory Buffer.
+    void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
+                     size_t binBegin, size_t binEnd, std::string&& coldJson,
+                     float currentLapStart, int lapNum, bool allHistory,
+                     uint64_t requestId, bool authoritativeSeek) override {
         if (!hasSeekCb_) return;
         struct SeekData {
-            std::vector<uint8_t> bin;
+            std::shared_ptr<const std::vector<uint8_t>> binStore;
+            size_t binBegin;
+            size_t binEnd;
             std::string cold;
             float lapStart;
             int lapNum;
             bool allHistory;
+            uint64_t requestId;
+            bool authoritativeSeek;
         };
-        auto* d = new SeekData{ std::vector<uint8_t>(bin, bin + len), coldJson,
-                                currentLapStart, lapNum, allHistory };
+        auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
+                                currentLapStart, lapNum, allHistory, requestId, authoritativeSeek };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 if (env != nullptr && cb != nullptr) {
-                    cb.Call({ Napi::Buffer<uint8_t>::Copy(env, d->bin.data(), d->bin.size()),
+                    const size_t len = d->binStore && d->binEnd > d->binBegin
+                        ? d->binEnd - d->binBegin : 0;
+                    auto buffer = len == 0
+                        ? Napi::Buffer<uint8_t>::New(env, 0)
+                        : Napi::Buffer<uint8_t>::Copy(
+                            env, d->binStore->data() + d->binBegin, len);
+                    cb.Call({ buffer,
                               Napi::String::New(env, d->cold),
                               Napi::Number::New(env, d->lapStart),
                               Napi::Number::New(env, d->lapNum),
-                              Napi::Boolean::New(env, d->allHistory) });
+                              Napi::Boolean::New(env, d->allHistory),
+                              Napi::Number::New(env, static_cast<double>(d->requestId)),
+                              Napi::Boolean::New(env, d->authoritativeSeek) });
                 }
                 delete d;
             });
@@ -497,7 +539,17 @@ private:
 
     Napi::Value PlayerSeek(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber()) {
-            engine->playerSeek(info[0].As<Napi::Number>().FloatValue());
+            const bool allHistory = info.Length() >= 2 && info[1].IsBoolean() &&
+                info[1].As<Napi::Boolean>().Value();
+            const uint64_t requestId = info.Length() >= 3 && info[2].IsNumber()
+                ? static_cast<uint64_t>(info[2].As<Napi::Number>().Int64Value()) : 0;
+            engine->playerRequestSeek(requestId);
+            if (allHistory) {
+                (new PlayerSeekWorker(info.Env(), engine,
+                    info[0].As<Napi::Number>().FloatValue(), true, requestId))->Queue();
+            } else {
+                engine->playerSeek(info[0].As<Napi::Number>().FloatValue(), false, requestId);
+            }
         }
         return info.Env().Undefined();
     }
@@ -517,7 +569,11 @@ private:
     }
 
     Napi::Value PlayerGetAllLapsData(const Napi::CallbackInfo& info) {
-        if (engine) engine->playerGetAllLapsData();
+        if (engine) {
+            const uint64_t requestId = info.Length() >= 1 && info[0].IsNumber()
+                ? static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()) : 0;
+            (new PlayerHistoryWorker(info.Env(), engine, requestId))->Queue();
+        }
         return info.Env().Undefined();
     }
 

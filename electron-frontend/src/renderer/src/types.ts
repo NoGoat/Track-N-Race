@@ -356,6 +356,7 @@ export interface PlaybackControlMsg {
   type:
     | 'playback_close'
     | 'playback_seek_flush_bin'
+    | 'playback_seek_flush_failed'
     | 'playback_lap_blocks'
 }
 
@@ -469,6 +470,8 @@ declare global {
       play: () => void
       pause: () => void
       seek: (pct: number) => void
+      setAllLapsMode: (enabled: boolean) => void
+      onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       setSpeed: (mult: number) => void
       getLapData: (lapNum: number) => void
       getAllLapsData: () => void

@@ -164,7 +164,7 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
-    hotBin_.clear();
+    hotBin_ = std::make_shared<std::vector<uint8_t>>();
     hotTimes_.clear();
     hotStart_.clear();
     hotCum_.clear();
@@ -231,21 +231,21 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
             std::string_view sv(ld, (size_t)ll);
             if (tid == 1) {
                 (void)glz::read<kPartialRead>(telRow, sv);
-                hotStart_.push_back(hotBin_.size());
+                hotStart_.push_back(hotBin_->size());
                 hotTimes_.push_back(t);
-                bin::encodeTelemetry(hotBin_, telRow);
+                bin::encodeTelemetry(*hotBin_, telRow);
             } else if (tid == 11) {
                 MotionRow r;
                 (void)glz::read<kPartialRead>(r, sv);
-                hotStart_.push_back(hotBin_.size());
+                hotStart_.push_back(hotBin_->size());
                 hotTimes_.push_back(t);
-                bin::encodeMotion(hotBin_, r);
+                bin::encodeMotion(*hotBin_, r);
             } else if (tid == 12) {
                 MotionExRow r;
                 (void)glz::read<kPartialRead>(r, sv);
-                hotStart_.push_back(hotBin_.size());
+                hotStart_.push_back(hotBin_->size());
                 hotTimes_.push_back(t);
-                bin::encodeMotionEx(hotBin_, r);
+                bin::encodeMotionEx(*hotBin_, r);
             } else if (tid == 2) {
                 if (initialFuelKg_ < 0.0) initialFuelKg_ = statusRow.fuel_kg;
                 coldStatus_.push_back({ t, std::string(ld, ll) });
@@ -406,7 +406,7 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
                       return a.session_time < b.session_time;
                   });
     }
-    if (binaryPlayback_) hotStart_.push_back(hotBin_.size());   // sentinel end offset
+    if (binaryPlayback_) hotStart_.push_back(hotBin_->size());   // sentinel end offset
     damageCadenceCursor_ = startTime_;
     return true;
 }
@@ -561,8 +561,9 @@ void TnrdReader::close() {
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
-    hotBin_.clear();
-    hotBin_.shrink_to_fit();     // the hot store can be tens of MB — release it
+    // Outstanding zero-copy seek buffers retain the old immutable store until
+    // Electron has serialized them; the reader immediately releases its copy.
+    hotBin_ = std::make_shared<std::vector<uint8_t>>();
     hotTimes_.clear();
     hotStart_.clear();
     hotCum_.clear();
@@ -874,8 +875,8 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
         size_t hotLo = hotCum_[playPos_], hotHi = hotCum_[end];
         if (hotHi > hotLo)
             binOut.insert(binOut.end(),
-                          hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotLo]),
-                          hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotHi]));
+                          hotBin_->begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotLo]),
+                          hotBin_->begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hotHi]));
     }
 
     // Cold rows: contiguous read, hot lines skipped (they went out as binary).
@@ -923,10 +924,11 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
     if (!hotTimes_.empty()) {
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();
         size_t hi = std::upper_bound(hotTimes_.begin(), hotTimes_.end(), target) - hotTimes_.begin();
-        if (hi > lo)
-            f.binary.assign(
-                hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[lo]),
-                hotBin_.begin() + static_cast<std::vector<uint8_t>::difference_type>(hotStart_[hi]));
+        if (hi > lo) {
+            f.binaryStore = hotBin_;
+            f.binaryBegin = hotStart_[lo];
+            f.binaryEnd = hotStart_[hi];
+        }
     }
 
     // Cold rows: full linear scan (small, ~2 Hz), robust to the occasional

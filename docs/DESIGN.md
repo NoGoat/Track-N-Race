@@ -180,6 +180,13 @@ an absolute session_time cursor scaled by speed:
   plus the window's cold status/damage/lap JSONL — then the state snapshot rows
   and an explicit positions restore (positions has no cold cache). Legacy mode
   emits a `playback_seek_flush` control row + snapshot instead.
+  Electron All Laps seeks request `[startTime, target]` in that same flush;
+  extraction runs on a libuv worker, the seek payload views the reader's
+  immutable packed store until one IPC-compatible V8 Buffer copy, and request ids
+  discard superseded scrubs before renderer IPC/decode.
+  A request generation is registered before its worker is queued: playback is
+  gated until that generation commits, so an overtaken worker cannot move the
+  cursor or leak stale future rows into the winning seek.
 - **Lifecycle rows**: `playback_loaded` (with the file header, or `ok:false`),
   `playback_lap_blocks`, `protocol_status` for the clip's format (binary mode),
   `playback_state` on every transition, `playback_finished` at the end,
@@ -211,7 +218,7 @@ overlay flows.
 | libtnrp Engine | UDP receive, playback, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. The writer thread drains an event queue; the parse path never blocks on disk. |
 | node_addon | engine threads → 3 TSFNs → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
 | Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
-| Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves. |
+| Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves; All Laps charts append directly from stable full-session arrays. |
 | Qt recorder | GUI thread + engine threads + playback load thread + export thread | `EngineSink` marshals rows to the GUI thread via queued signals. |
 
 ## 2. File format & shared conventions

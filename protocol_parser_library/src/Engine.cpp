@@ -217,6 +217,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             playing_     = false;
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
+            appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
             // Playback suspends live ingest. Finalize the live recording on its
             // owner thread so it is complete and a later return to live starts
             // a fresh stream on the next session packet.
@@ -279,7 +280,15 @@ void Engine::playerPause() {
     emitPlaybackState();
 }
 
-void Engine::playerSeek(float pct) {
+void Engine::playerRequestSeek(uint64_t requestId) {
+    if (requestId == 0) return;
+    uint64_t current = latestSeekRequestId_.load(std::memory_order_relaxed);
+    while (current < requestId &&
+           !latestSeekRequestId_.compare_exchange_weak(
+               current, requestId, std::memory_order_release, std::memory_order_relaxed)) {}
+}
+
+void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId) {
     std::vector<std::string> state;
     float lapStart = 0.0f;
     int   lapNum   = 0;
@@ -289,28 +298,35 @@ void Engine::playerSeek(float pct) {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
+        if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
         float start  = reader_.startTime();
         float dur    = std::max(0.0f, reader_.totalTime() - start);
         target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
-        currentTime_ = target;
-        reader_.setCursor(target);
         state    = reader_.stateSnapshot(target);
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
         if (config_.binaryPlayback) {
-            binFlush = reader_.seekFlush(target, lapStart);
-            // Re-key the dup cache to the seek point so the next tick's
-            // re-emissions carry the right panel data.
-            dupCache_ = {};
+            binFlush = reader_.seekFlush(target, lapStart, allHistory);
             panels = reader_.latestOfTypesTagged(
                 target, { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
+        }
+        // A newer request may have arrived while this worker was extracting a
+        // large AL prefix. An overtaken worker must not move the cursor or seed
+        // playback rows from its obsolete target.
+        if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
+        currentTime_ = target;
+        reader_.setCursor(target);
+        if (config_.binaryPlayback) {
+            dupCache_ = {};
             for (auto& [tid, line] : panels) dupCache_[tid] = line;
         }
+        appliedSeekRequestId_ = requestId;
     }
 
     if (config_.binaryPlayback) {
-        if (sink_) sink_->onSeekFlush(binFlush.binary.data(), binFlush.binary.size(),
-                                      binFlush.coldJson, lapStart, lapNum, false);
+        if (sink_) sink_->onSeekFlush(std::move(binFlush.binaryStore), binFlush.binaryBegin,
+                                      binFlush.binaryEnd, std::move(binFlush.coldJson),
+                                      lapStart, lapNum, allHistory, requestId, true);
         for (const auto& s : state) emitRow(s);
         // status/damage already ride in the flush's coldJson; positions has no
         // cold cache, so restore the track map explicitly.
@@ -344,7 +360,7 @@ void Engine::playerGetLapData(int lapNum) {
     if (!msg.empty()) emitRow(msg);
 }
 
-void Engine::playerGetAllLapsData() {
+void Engine::playerGetAllLapsData(uint64_t requestId) {
     float lapStart = 0.0f;
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
@@ -356,8 +372,9 @@ void Engine::playerGetAllLapsData() {
         reader_.currentLapAt(target, lapStart, lapNum);
         flush = reader_.seekFlush(target, lapStart, true);
     }
-    if (sink_) sink_->onSeekFlush(flush.binary.data(), flush.binary.size(),
-                                  flush.coldJson, lapStart, lapNum, true);
+    if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
+                                  flush.binaryEnd, std::move(flush.coldJson),
+                                  lapStart, lapNum, true, requestId, false);
 }
 
 void Engine::playerClose() {
@@ -368,6 +385,7 @@ void Engine::playerClose() {
         reader_.close();
         inPlayback_.store(false);
         playing_ = false;
+        appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
         if (config_.binaryPlayback) {
             dupCache_ = {};
             // Restore the live format's labels — playback may have switched
@@ -422,6 +440,7 @@ void Engine::playbackLoop() {
         {
             std::lock_guard<std::mutex> lk(mutex_);
             if (!playing_) continue;
+            if (latestSeekRequestId_.load(std::memory_order_acquire) != appliedSeekRequestId_) continue;
             double step = dt * speed_;
             if (step > 0.10) step = 0.10;
             currentTime_ += (float)step;

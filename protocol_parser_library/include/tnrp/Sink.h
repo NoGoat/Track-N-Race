@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace tnrp {
 
@@ -30,10 +32,13 @@ public:
     // allHistory marks AL's session-start-to-playhead prefix payload.
     // JSON-only consumers never receive this (legacy mode emits a
     // playback_seek_flush row via onRow instead).
-    virtual void onSeekFlush(const uint8_t* /*bin*/, size_t /*len*/,
-                             const std::string& /*coldJson*/,
+    virtual void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> /*binStore*/,
+                             size_t /*binBegin*/, size_t /*binEnd*/,
+                             std::string&& /*coldJson*/,
                              float /*currentLapStart*/, int /*lapNum*/,
-                             bool /*allHistory*/ = false) {}
+                             bool /*allHistory*/ = false,
+                             uint64_t /*requestId*/ = 0,
+                             bool /*authoritativeSeek*/ = true) {}
 };
 
 } // namespace tnrp
