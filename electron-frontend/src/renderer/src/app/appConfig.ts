@@ -63,7 +63,25 @@ export const TAB_LABELS: Record<Tab, string> = {
 
 export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])
   .map(value => ({ value, label: TAB_LABELS[value] }))
-export const WINDOW_OPTIONS = WINDOWS.map(({ value, label }) => ({ value, label }))
+export interface ChartWindowOption { value: ChartWindow; label: string }
+export interface ChartWindowOptionGroup { label: string; options: ChartWindowOption[] }
+
+export const WINDOW_OPTIONS: ChartWindowOption[] = WINDOWS.map(({ value, label }) => ({ value, label }))
+
+export function getChartWindowOptionGroups(clAvailable: boolean, recordingOpen: boolean): ChartWindowOptionGroup[] {
+  const lapOptions: ChartWindowOption[] = clAvailable
+    ? [
+        { value: 'CL', label: 'Current' },
+        { value: 'PL', label: 'Previous' },
+        { value: 'FL', label: 'Fastest' },
+        ...(recordingOpen ? [{ value: 'RL' as const, label: 'Selected' }] : []),
+      ]
+    : []
+  return [
+    { label: 'Laps', options: [...lapOptions, { value: 'AL', label: 'All Laps' }] },
+    { label: 'Time', options: WINDOW_OPTIONS },
+  ]
+}
 export const PLAYBACK_SPEED_OPTIONS = [
   { value: 0.25, label: '0.25x' },
   { value: 0.5, label: '0.5x' },

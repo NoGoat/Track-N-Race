@@ -22,6 +22,7 @@ interface Props {
   deltaNegativeColor: string
   zoomEnabled: boolean
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
+  onInspectMap?: (elapsedSeconds: number) => void
 }
 
 export interface AnalyzeChartControls {
@@ -310,7 +311,7 @@ function fmtDistance(metres: number): string {
 export default function AnalyzeTimeChart({
   isDark, current, currentRevision, comparison, selected, primaryLabel, comparisonLabel,
   distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
-  zoomEnabled, controlsRef,
+  zoomEnabled, controlsRef, onInspectMap,
 }: Props) {
   const { tooltipRef, show, hide } = useChartTooltip()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -331,6 +332,7 @@ export default function AnalyzeTimeChart({
   const comparisonLabelRef = useRef(comparisonLabel)
   const zoomEnabledRef = useRef(zoomEnabled)
   const distanceModeRef = useRef(distanceMode)
+  const onInspectMapRef = useRef(onInspectMap)
   const fullXRangeRef = useRef({ min: 0, max: 1 })
   const revisionsRef = useRef<Record<string, string>>({})
   const originsRef = useRef<Record<string, number>>({})
@@ -344,6 +346,7 @@ export default function AnalyzeTimeChart({
   comparisonLabelRef.current = comparisonLabel
   zoomEnabledRef.current = zoomEnabled
   distanceModeRef.current = distanceMode
+  onInspectMapRef.current = onInspectMap
   deltaColorsRef.current = { positive: deltaPositiveColor, negative: deltaNegativeColor }
 
   useEffect(() => {
@@ -438,6 +441,7 @@ export default function AnalyzeTimeChart({
     let dragPointer: number | null = null
     let dragX = 0
     let dragDomain: [number, number] = [0, 1]
+    let lastRightClick = { at: -Infinity, x: 0, y: 0 }
     const onWheel = (event: WheelEvent) => {
       if (!zoomEnabledRef.current) return
       event.preventDefault()
@@ -454,6 +458,32 @@ export default function AnalyzeTimeChart({
       }
     }
     const onPointerDown = (event: PointerEvent) => {
+      if (event.button === 2 && onInspectMapRef.current) {
+        event.preventDefault()
+        const now = performance.now()
+        const isDouble = now - lastRightClick.at <= 500 &&
+          Math.hypot(event.clientX - lastRightClick.x, event.clientY - lastRightClick.y) <= 12
+        if (!isDouble) {
+          lastRightClick = { at: now, x: event.clientX, y: event.clientY }
+          return
+        }
+        lastRightClick.at = -Infinity
+        const rect = interactionNode.getBoundingClientRect()
+        const contentX = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
+        const chartX = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
+        const lap = currentRef.current
+        const elapsed = distanceModeRef.current
+          ? (() => {
+              const progress = buildLapProgressMap(lap)
+              return progress ? interpolateLapElapsed(progress, chartX) : NaN
+            })()
+          : chartX
+        if (Number.isFinite(elapsed)) {
+          const duration = Math.max(0, lap.endSessionTime - lap.startSessionTime)
+          onInspectMapRef.current(Math.max(0, Math.min(duration, elapsed)))
+        }
+        return
+      }
       if (!zoomEnabledRef.current || event.button !== 0) return
       dragPointer = event.pointerId
       dragX = event.clientX
@@ -473,12 +503,19 @@ export default function AnalyzeTimeChart({
       if (interactionNode.hasPointerCapture(event.pointerId)) interactionNode.releasePointerCapture(event.pointerId)
       interactionNode.style.cursor = zoomEnabledRef.current ? 'grab' : ''
     }
+    const preventContextMenu = (event: MouseEvent) => {
+      if (onInspectMapRef.current) event.preventDefault()
+    }
+    const onDoubleClick = (event: MouseEvent) => {
+      if (event.button === 0) resetZoom()
+    }
     interactionNode.addEventListener('wheel', onWheel, { passive: false })
     interactionNode.addEventListener('pointerdown', onPointerDown)
     interactionNode.addEventListener('pointermove', onPointerMove)
     interactionNode.addEventListener('pointerup', stopDrag)
     interactionNode.addEventListener('pointercancel', stopDrag)
-    interactionNode.addEventListener('dblclick', resetZoom)
+    interactionNode.addEventListener('contextmenu', preventContextMenu)
+    interactionNode.addEventListener('dblclick', onDoubleClick)
     const records: SeriesRecord = { comparison: new Map(), current: new Map() }
     for (const option of chart.options.series) {
       if (option.name.startsWith('delta:')) continue
@@ -530,7 +567,8 @@ export default function AnalyzeTimeChart({
       interactionNode.removeEventListener('pointermove', onPointerMove)
       interactionNode.removeEventListener('pointerup', stopDrag)
       interactionNode.removeEventListener('pointercancel', stopDrag)
-      interactionNode.removeEventListener('dblclick', resetZoom)
+      interactionNode.removeEventListener('contextmenu', preventContextMenu)
+      interactionNode.removeEventListener('dblclick', onDoubleClick)
       if (controlsRef.current === controls) controlsRef.current = null
       stopTooltipSync(); chart.dispose()
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null

@@ -40,7 +40,7 @@ export default function AppShell() {
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
-  const [referenceLapNum, setReferenceLapNum] = useState<number | null>(null)
+  const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
   const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
   const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
@@ -89,8 +89,11 @@ export default function AppShell() {
   }, [playback.speedRpmBlocks])
 
   useEffect(() => {
-    if (referenceLapNum !== null && !referenceLapOptions.some(option => option.value === referenceLapNum)) {
-      setReferenceLapNum(null)
+    // The lap catalog arrives after the playback header. Keep RL on its Lap 1
+    // default while loading instead of clearing it to the dash placeholder.
+    if (referenceLapOptions.length > 0 &&
+        (referenceLapNum === null || !referenceLapOptions.some(option => option.value === referenceLapNum))) {
+      setReferenceLapNum(referenceLapOptions.find(option => option.value === 1)?.value ?? referenceLapOptions[0].value)
     }
   }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
@@ -103,16 +106,35 @@ export default function AppShell() {
     [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask],
   )
   useEffect(() => {
-    const enabled = chartWindow === 'AL'
+    // Analysis is always scoped to the current lap. Its distance-axis charts
+    // consume the store's dedicated analyzeLap* slices, so the title-bar time
+    // window must not truncate the native seek preload (15s/30s/etc.) or turn
+    // it into an unnecessarily large full-session AL preload.
+    const analysisLapScope = tab === 'analyze'
+    const allLapsEnabled = !analysisLapScope && chartWindow === 'AL'
+    const historyWindowSeconds = analysisLapScope
+      ? 0
+      : chartWindow === 'AL'
+        ? -1
+        : typeof chartWindow === 'number'
+          ? seconds
+          : 0
     setHistoryRowMask(dataRequirements.historyMask)
     window.playerBridge.setDataRequirements(
       dataRequirements.streamMask,
       dataRequirements.historyMask,
-      chartWindow === 'AL' ? -1 : typeof chartWindow === 'number' ? seconds : 0,
+      historyWindowSeconds,
     )
-    window.playerBridge.setAllLapsMode(enabled, dataRequirements.historyMask, typeof chartWindow === 'number' ? seconds : 0)
-    setTelemetrySeconds(enabled ? Infinity : seconds, typeof chartWindow === 'number')
-  }, [chartWindow, dataRequirements, seconds])
+    window.playerBridge.setAllLapsMode(
+      allLapsEnabled,
+      dataRequirements.historyMask,
+      analysisLapScope ? 0 : typeof chartWindow === 'number' ? seconds : 0,
+    )
+    setTelemetrySeconds(
+      allLapsEnabled ? Infinity : seconds,
+      !analysisLapScope && typeof chartWindow === 'number',
+    )
+  }, [chartWindow, dataRequirements, seconds, tab])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we

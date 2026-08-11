@@ -3,16 +3,16 @@ import Select from 'react-select'
 import { Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
-import { selectComponents, selectComponentsWithSeparator } from '../../lib/selectComponents'
+import { selectComponents } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
 import iconTransparent from '../../assets/icon_transparent.png'
 import iconTransparentLight from '../../assets/icon_transparent_light.png'
-import { TAB_OPTIONS, WINDOW_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
+import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 
 const selectStyles = buildSelectStyles(true)
-const windowSeparator = { value: 'separator' as const, label: '', isDisabled: true, isSeparator: true as const }
+const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
 
 interface AppHeaderProps {
   actualNativeTitlebar: boolean
@@ -61,10 +61,8 @@ export default memo(function AppHeader({
     : undefined
   const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const distanceOptions = clAvailable
-    ? [{ value: 'CL' as const, label: 'CL' }, { value: 'PL' as const, label: 'PL' }, { value: 'FL' as const, label: 'FL' }, ...(filename ? [{ value: 'RL' as const, label: 'RL' }] : [])]
-    : []
-  const windowOptions = [{ value: 'AL' as const, label: 'AL' }, ...distanceOptions, windowSeparator, ...WINDOW_OPTIONS]
+  const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
+  const windowOptions = windowOptionGroups.flatMap(group => group.options)
   const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
   return (
     <div
@@ -88,7 +86,7 @@ export default memo(function AppHeader({
         {!actualNativeTitlebar && (
           <div className="flex items-center gap-2 shrink-0">
             <img src={theme === 'dark' ? iconTransparent : iconTransparentLight} alt="F1 Logo" className="h-5 w-auto select-none pointer-events-none" draggable="false" />
-            <span className="font-semibold text-sm max-[1200px]:hidden">Track N Race</span>
+            <span className="font-semibold text-sm max-[1400px]:hidden">Track N Race</span>
           </div>
         )}
 
@@ -98,7 +96,7 @@ export default memo(function AppHeader({
 
         {filename ? (
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] truncate">{filename}</span>
+            <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] max-[1400px]:max-w-[100px] truncate">{filename}</span>
             <button onClick={onClosePlayback} title="Close session data" style={{ WebkitAppRegion: 'no-drag' }} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252] transition-colors"><X size={14} /></button>
           </div>
         ) : (
@@ -111,25 +109,24 @@ export default memo(function AppHeader({
           <span className="text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0 bg-[var(--bg-panel)] text-[var(--text-secondary)]">Offline</span>
         )}
 
-        <div className="flex-1" />
-        <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL' || (chartWindow === 'RL' && !!filename)) ? chartWindow : null} referenceLapNum={referenceLapNum} updateInterval={titlebarUpdateInterval} />
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="flex-1 min-w-0 overflow-hidden px-2 pointer-events-none">
           {activeBanner && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black uppercase tracking-[0.2em]" style={{ color: activeBanner.color }}>{activeBanner.label}</span>
-              {activeBanner.sub && <><span className="text-xs text-[var(--text-secondary)]">·</span><span className="text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span></>}
+            <div className="mx-auto flex max-w-full min-w-0 items-center justify-center gap-2 overflow-hidden">
+              <span className="max-w-full shrink-0 truncate text-xs font-black uppercase tracking-[0.2em]" style={{ color: activeBanner.color }}>{activeBanner.label}</span>
+              {activeBanner.sub && <><span className="shrink-0 text-xs text-[var(--text-secondary)]">·</span><span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span></>}
             </div>
           )}
         </div>
+        <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL' || (chartWindow === 'RL' && !!filename)) ? chartWindow : null} referenceLapNum={referenceLapNum} updateInterval={titlebarUpdateInterval} />
 
         {filename && chartWindow === 'RL' && (
-          <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3rem]">
-            <Select options={referenceLapOptions} value={referenceLapOptions.find(option => option.value === referenceLapNum) ?? null} onChange={option => setReferenceLapNum(option?.value ?? null)} placeholder="—" styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          <div style={{ WebkitAppRegion: 'no-drag' }}>
+            <Select options={referenceLapOptions} value={referenceLapOptions.find(option => option.value === referenceLapNum) ?? null} onChange={option => setReferenceLapNum(option?.value ?? null)} placeholder="1" styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
           </div>
         )}
 
-        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-[3.8rem]">
-          <Select options={windowOptions} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && option.value !== 'separator' && setChartWindow(option.value)} styles={selectStyles} components={selectComponentsWithSeparator} isSearchable={false} menuPortalTarget={document.body} />
+        <div style={{ WebkitAppRegion: 'no-drag' }}>
+          <Select options={windowOptionGroups} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={windowSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>

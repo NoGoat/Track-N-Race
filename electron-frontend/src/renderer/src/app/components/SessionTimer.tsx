@@ -93,7 +93,9 @@ function SessionTimerDisplay({ comparisonMode, sessionTime, lap, currentLapData,
   return (
     <div className="flex items-center gap-2 text-sm font-black tabular-nums shrink-0">
       {formattedTime && <span className="text-[var(--text-primary)]">{formattedTime}</span>}
-      <span className="min-w-[4.6rem] text-right" style={{ color: deltaColor }}>{formattedDelta}</span>
+      {delta !== null && (
+        <span className="pl-[5px]" style={{ color: deltaColor }}>{formattedDelta}</span>
+      )}
     </div>
   )
 }

@@ -397,7 +397,9 @@ export function playerPause(): void { engine?.playerPause() }
 export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
   const requestId = ++nextPlaybackRequestId
   latestSeekRequestId = requestId
-  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
+  if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
+    console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
+  }
   engine?.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }

@@ -17,6 +17,12 @@ interface Props {
   reduceAnimations: boolean
   sectorColors: boolean
   trackId: number | null
+  focus: AnalyzeMapFocus | null
+}
+
+export interface AnalyzeMapFocus {
+  id: number
+  elapsedSeconds: number
 }
 
 interface LocalClock {
@@ -80,12 +86,13 @@ function writeMarkerAt(
 export default function AnalyzeMapComparison({
   comparison, comparisonColor, compatibleCircuit, current, currentColor,
   fixedMode, isDark, mapDimmed, reduceAnimations,
-  sectorColors, trackId,
+  sectorColors, trackId, focus,
 }: Props) {
   const aeroMode = useTelemetryStore(state => state.protocolStatus?.aero_mode ?? 'drs')
   const total = Math.max(lapDuration(current), lapDuration(comparison))
-  const clockRef = useRef<LocalClock>({ cursor: 0, playing: false, speed: 1, startedAt: performance.now(), total })
-  const [barState, setBarState] = useState<BarState>({ currentTime: 0, isPlaying: false, progressPct: 0, speed: 1, totalTime: total })
+  const initialCursor = Math.max(0, Math.min(total, focus?.elapsedSeconds ?? 0))
+  const clockRef = useRef<LocalClock>({ cursor: initialCursor, playing: false, speed: 1, startedAt: performance.now(), total })
+  const [barState, setBarState] = useState<BarState>({ currentTime: initialCursor, isPlaying: false, progressPct: total > 0 ? initialCursor / total : 0, speed: 1, totalTime: total })
   const markerBufferRef = useRef<TrackMapMarker[]>([])
   const currentMarkerRef = useRef<TrackMapMarker>({ x: 0, z: 0, label: '', color: currentColor })
   const comparisonMarkerRef = useRef<TrackMapMarker>({ x: 0, z: 0, label: '', color: comparisonColor })
@@ -113,12 +120,13 @@ export default function AnalyzeMapComparison({
 
   useEffect(() => {
     const clock = clockRef.current
-    clock.cursor = 0
+    const cursor = Math.max(0, Math.min(total, focus?.elapsedSeconds ?? 0))
+    clock.cursor = cursor
     clock.playing = false
     clock.startedAt = performance.now()
     clock.total = total
-    publishClock(0, false)
-  }, [comparison, current, publishClock, total])
+    publishClock(cursor, false)
+  }, [comparison, current, focus, publishClock, total])
 
   useEffect(() => {
     if (!fixedMode) {
@@ -147,6 +155,8 @@ export default function AnalyzeMapComparison({
     const globalCursorTime = getPlaybackCursorTime()
     const elapsed = fixedMode
       ? readClock(clockRef.current)
+      : focus
+        ? Math.max(0, Math.min(total, focus.elapsedSeconds))
       : current && globalCursorTime !== null
         ? globalCursorTime - current.startSessionTime
         : 0
@@ -168,7 +178,7 @@ export default function AnalyzeMapComparison({
       if (writeMarkerAt(marker, comparison.playerPositions, target)) output.push(marker)
     }
     return output
-  }, [comparison, comparisonColor, current, currentColor, fixedMode])
+  }, [comparison, comparisonColor, current, currentColor, fixedMode, focus, total])
 
   const togglePlay = useCallback(() => {
     const clock = clockRef.current

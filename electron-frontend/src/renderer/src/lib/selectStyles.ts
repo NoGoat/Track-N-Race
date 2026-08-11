@@ -1,6 +1,6 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false } = {}): StylesConfig<any, false> {
+export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false, menuWidth, scrollableMenu = true }: { solidBg?: boolean; controlHeight?: number; labelStyleGroupHeadings?: boolean; menuWidth?: string | number; scrollableMenu?: boolean } = {}): StylesConfig<any, false> {
   return {
     container: (base) => ({
       ...base,
@@ -39,6 +39,7 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
     clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)', '&:hover': { color: '#e10600' } }),
     menu: (base) => ({
       ...base,
+      width: menuWidth ?? base.width,
       background: 'var(--bg-menu)',
       border: '1px solid var(--border)',
       borderRadius: 6,
@@ -50,7 +51,11 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       WebkitUserSelect: 'none',
     }),
     menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-    menuList:   (base) => ({ ...base, padding: 4 }),
+    menuList: (base) => ({
+      ...base,
+      padding: 4,
+      ...(scrollableMenu ? {} : { maxHeight: 'none', overflowY: 'visible' as const }),
+    }),
     group: (base) => labelStyleGroupHeadings ? ({
       ...base,
       paddingTop: 2,

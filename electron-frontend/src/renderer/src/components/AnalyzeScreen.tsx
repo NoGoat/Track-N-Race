@@ -18,7 +18,7 @@ import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
-import AnalyzeMapComparison from './AnalyzeMapComparison'
+import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
 
 interface Props {
   isDark: boolean
@@ -330,6 +330,7 @@ function DeltaColorPicker({
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
   currentLapNum, comparison, fixedMode, primaryOverride, distanceMode, controlsRef,
+  onInspectMap,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -341,6 +342,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   primaryOverride: AnalyzeLapData | null
   distanceMode: boolean
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
+  onInspectMap?: (elapsedSeconds: number) => void
 }) {
   const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
   const motion = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotion)
@@ -382,6 +384,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       distanceMode={distanceMode} trackLengthM={trackLengthM}
       deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
       zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
+      onInspectMap={onInspectMap}
     />
   </div>
 })
@@ -424,6 +427,8 @@ export default function AnalyzeScreen({
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
+  const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
+  const mapFocusIdRef = useRef(0)
   const requestedRef = useRef(new Map<number, number>())
   const secondaryRequestedRef = useRef(new Map<number, number>())
   const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
@@ -437,6 +442,11 @@ export default function AnalyzeScreen({
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
   const updateSeries = useCallback((series: AnalyzeSeriesConfig[]) => save({ ...config, series }), [config, save])
+  const inspectMapAt = useCallback((elapsedSeconds: number) => {
+    if (!playbackFilename) return
+    setMapFocus({ id: ++mapFocusIdRef.current, elapsedSeconds })
+    save({ ...config, view: 'map' })
+  }, [config, playbackFilename, save])
 
   const selectedIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
   const metricOptions = useMemo(() => ['Driving', 'Motion', 'Power', 'Tyres'].map(group => ({
@@ -709,7 +719,10 @@ export default function AnalyzeScreen({
                 <AnalysisViewSelector
                   value={analysisView}
                   mapDisabled={!playbackFilename}
-                  onChange={view => save({ ...config, view })}
+                  onChange={view => {
+                    setMapFocus(null)
+                    save({ ...config, view })
+                  }}
                 />
               </div>
             </div>
@@ -933,6 +946,7 @@ export default function AnalyzeScreen({
               comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
               distanceMode={selectedDistanceMode}
               controlsRef={chartControlsRef}
+              onInspectMap={playbackFilename ? inspectMapAt : undefined}
             />
           </div>
           {analysisView === 'map' && <AnalyzeMapComparison
@@ -947,6 +961,7 @@ export default function AnalyzeScreen({
             sectorColors={sectorColors}
             reduceAnimations={reduceAnimations}
             mapDimmed={mapDimmed}
+            focus={mapFocus}
           />}
         </div>
       </section>
