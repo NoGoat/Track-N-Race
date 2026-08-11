@@ -9,6 +9,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <iterator>
 #include <string_view>
 #include <unordered_set>
 
@@ -18,6 +19,7 @@
 
 #include "tnrp/BinaryRows.h"
 #include "TnrdCodec.h"
+#include "TnrdV4.h"
 
 namespace tnrp {
 
@@ -123,7 +125,19 @@ static uint8_t scanType(const char* d, int len) {
     return 0;
 }
 
+TnrdReader::TnrdReader() = default;
 TnrdReader::~TnrdReader() { close(); }
+
+bool TnrdReader::isLoaded() const {
+    return tempFile_ != nullptr || (v4Archive_ && v4Archive_->isOpen());
+}
+
+bool TnrdReader::hasMore() const {
+    if (loadedFormat_ != TnrdFormat::ChunkedV4) return playPos_ < index_.size();
+    if (!v4Archive_ || !v4Archive_->isOpen()) return false;
+    if(v4PlaybackPos_<v4PlaybackRows_.size())return true;
+    const auto& laps=v4Archive_->laps();if(v4PlaybackLap_==0)return !laps.empty();const auto it=std::find_if(laps.begin(),laps.end(),[&](const auto&l){return (int)l.lapNumber==v4PlaybackLap_;});return it!=laps.end()&&std::next(it)!=laps.end();
+}
 
 void TnrdReader::sweepStaleTempFiles() noexcept {
     try {
@@ -159,7 +173,7 @@ void TnrdReader::sweepStaleTempFiles() noexcept {
     }
 }
 
-bool TnrdReader::buildIndex(const std::string& filePath) {
+bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memoryFile) {
     index_.clear();
     lapBlocks_.clear();
     scannedLaps_.clear();
@@ -178,27 +192,34 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
     totalTime_ = 0.0f;
     playPos_   = 0;
 
-    std::FILE* f = std::fopen(filePath.c_str(), "rb");
-    if (!f) {
+    std::FILE* f = memoryFile ? nullptr : detail::openTnrdFile(filePath, "rb");
+    if (!memoryFile && !f) {
         std::fprintf(stderr, "[tnrd] buildIndex: cannot open '%s'\n", filePath.c_str());
         return false;
     }
     // Reserve against vector regrowth during the scan: rows average well under
     // ~96 bytes of JSONL, so this slightly over-reserves and settles in one go.
     {
-        if (!seekFile(f, 0, SEEK_END)) { std::fclose(f); return false; }
-        const std::int64_t sz = tellFile(f);
-        if (sz < 0 || !seekFile(f, 0, SEEK_SET)) { std::fclose(f); return false; }
+        const std::int64_t sz = memoryFile ? (std::int64_t)memoryFile->size()
+            : (seekFile(f, 0, SEEK_END) ? tellFile(f) : -1);
+        if (sz < 0 || (!memoryFile && !seekFile(f, 0, SEEK_SET))) { if (f) std::fclose(f); return false; }
         if (sz > 0) index_.reserve((size_t)sz / 96);
     }
-    { int c; while ((c = std::fgetc(f)) != EOF && c != '\n') {} }  // skip header
+    size_t memoryPos = 0;
+    if (memoryFile) {
+        memoryPos = memoryFile->find('\n');
+        if (memoryPos == std::string::npos) return false;
+        ++memoryPos;
+    } else {
+        int c; while ((c = std::fgetc(f)) != EOF && c != '\n') {}
+    }
     if (binaryPlayback_) hotCum_.push_back(0);
 
     constexpr size_t CHUNK = 2 * 1024 * 1024;
     std::vector<char> buf(CHUNK);
     std::string partial;
-    std::int64_t partialOffset = tellFile(f);
-    if (partialOffset < 0) { std::fclose(f); return false; }
+    std::int64_t partialOffset = memoryFile ? (std::int64_t)memoryPos : tellFile(f);
+    if (partialOffset < 0) { if (f) std::fclose(f); return false; }
     float lastT = 0.0f;
     bool  haveStart = false;
 
@@ -279,7 +300,8 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
                 auto it = lapBlocks_.find(curLapNum);
                 if (it != lapBlocks_.end()) {
                     it->second.endSessionTime = t;
-                    if (loadedFormat_ == TnrdFormat::ZstdV3 && trackLengthM_ > 0 &&
+                    if ((loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4) &&
+                        trackLengthM_ > 0 &&
                         lf.last_lap_ms > 0 &&
                         (it->second.lapProgress.empty() ||
                          it->second.lapProgress.back().lap_distance_m < trackLengthM_)) {
@@ -318,7 +340,8 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
                 if (player != positions.cars.end())
                     it->second.playerPositions.push_back({ t, player->x, player->z });
             }
-            else if (tid == 4 && loadedFormat_ == TnrdFormat::ZstdV3 &&
+            else if (tid == 4 &&
+                     (loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4) &&
                      lf.lap_num == curLapNum && std::isfinite(lf.lap_distance_m) &&
                      lf.lap_distance_m >= 0.0f) {
                 it->second.lapProgress.push_back(
@@ -340,12 +363,7 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
         }
     };
 
-    for (;;) {
-        const std::int64_t chunkStart = tellFile(f);
-        if (chunkStart < 0) { std::fclose(f); return false; }
-        size_t n = std::fread(buf.data(), 1, CHUNK, f);
-        if (n == 0) break;
-        const char* base = buf.data();
+    auto consumeChunk = [&](const char* base, size_t n, std::int64_t chunkStart) {
         const char* p = base;
         const char* end = base + n;
         while (p < end) {
@@ -365,13 +383,26 @@ bool TnrdReader::buildIndex(const std::string& filePath) {
             }
             p = nl + 1;
         }
+    };
+    if (memoryFile) {
+        while (memoryPos < memoryFile->size()) {
+            const size_t n = std::min(CHUNK, memoryFile->size() - memoryPos);
+            consumeChunk(memoryFile->data() + memoryPos, n, (std::int64_t)memoryPos);
+            memoryPos += n;
+        }
+    } else for (;;) {
+        const std::int64_t chunkStart = tellFile(f);
+        if (chunkStart < 0) { std::fclose(f); return false; }
+        size_t n = std::fread(buf.data(), 1, CHUNK, f);
+        if (n == 0) break;
+        consumeChunk(buf.data(), n, chunkStart);
     }
     // A leftover partial here means the file ended without a trailing newline.
     // The writer always terminates every row (and the header) with '\n', so a
     // cleanly closed stream leaves nothing pending — a non-empty partial marks a
     // truncated tail (crash mid-write). Drop it rather than index a corrupt row.
-    const bool readOk = std::ferror(f) == 0;
-    std::fclose(f);
+    const bool readOk = memoryFile || std::ferror(f) == 0;
+    if (f) std::fclose(f);
     if (!readOk) return false;
 
     if (curLapNum >= 0) {
@@ -439,7 +470,8 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     lastError_.clear();
     std::string detectError;
     const TnrdFormat detected = detail::detectTnrdFormat(path, &detectError);
-    const bool codecMatches = detected == format || (isZstd(detected) && isZstd(format));
+    const bool codecMatches = detected == format ||
+        (isLegacyZstdStream(detected) && isLegacyZstdStream(format));
     if (!codecMatches) {
         lastError_ = detected == TnrdFormat::Unknown
             ? (detectError.empty() ? "The file format could not be identified." : detectError)
@@ -448,7 +480,49 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                      toString(format), toString(detected), path.c_str());
         return false;
     }
-    std::fprintf(stderr, "[tnrd] load: '%s' (%s)\n", path.c_str(), toString(format));
+    if (isLegacyZstdStream(detected))
+        std::fprintf(stderr,"[tnrd] load: '%s' (Zstandard stream; TNRD version is in the header)\n",path.c_str());
+    else
+        std::fprintf(stderr, "[tnrd] load: '%s' (%s)\n", path.c_str(), toString(detected));
+    if (detected == TnrdFormat::ChunkedV4) {
+        std::string error;
+        v4Archive_ = std::make_unique<detail::TnrdV4Archive>();
+        if (!v4Archive_->open(path, outHeader, &error)) {
+            lastError_ = error.empty() ? "The V4 recording could not be read." : error;
+            close();
+            return false;
+        }
+        loadedFormat_ = TnrdFormat::ChunkedV4;
+        trackLengthM_ = outHeader.track_length_m.value_or(0);
+        startTime_ = v4Archive_->startTime();
+        totalTime_ = v4Archive_->totalTime();
+        initialFuelKg_ = v4Archive_->summary().initialFuelKg;
+        scannedEvents_.clear();
+        scannedEvents_.reserve(v4Archive_->summary().events.size());
+        for (std::string event : v4Archive_->summary().events) {
+            while (!event.empty() && (event.back() == '\n' || event.back() == '\r'))
+                event.pop_back();
+            glz::generic parsedEvent;
+            if (event.empty() || glz::read_json(parsedEvent, event)) {
+                lastError_ = "The V4 recording contains an invalid race-event summary.";
+                close();
+                return false;
+            }
+            scannedEvents_.push_back(std::move(event));
+        }
+        for (const auto& l : v4Archive_->laps()) {
+            LapBlock block{}; block.lapNum=(int)l.lapNumber; block.startSessionTime=l.startSessionTime; block.endSessionTime=l.endSessionTime;
+            lapBlocks_.emplace(block.lapNum, std::move(block));
+            scannedLaps_.push_back({(int)l.lapNumber,l.startSessionTime,l.endSessionTime,(int)l.lapTimeMs});
+            if (l.lapTimeMs && (!fastestLapMs_ || (int)l.lapTimeMs < fastestLapMs_)) { fastestLapMs_=(int)l.lapTimeMs; fastestLapNum_=(int)l.lapNumber; }
+        }
+        for (const auto& s : v4Archive_->summary().lapStatus) {
+            auto it=lapBlocks_.find((int)s.lapNumber);if(it!=lapBlocks_.end())it->second.slimStatus.push_back({"status",s.sessionTime,s.ersPct,s.tyreCompound,s.visualCompound});
+        }
+        setCursor(startTime_);
+        std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),v4Archive_->chunks().size(),v4Archive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
+        return true;
+    }
     namespace fs = std::filesystem;
     // Prefix shared with the Electron app ("tracknrace_temp_") so either app's
     // startup sweep reclaims the other's leftovers (see sweepStaleTempFiles).
@@ -471,7 +545,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                      toString(format));
 
     {
-        std::FILE* f = std::fopen(tempPath_.c_str(), "rb");
+        std::FILE* f = detail::openTnrdFile(tempPath_, "rb");
         if (!f) {
             lastError_ = "The decompressed temporary file could not be opened.";
             std::fprintf(stderr, "[tnrd] load FAILED: cannot reopen decompressed temp '%s'\n",
@@ -530,7 +604,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         return false;
     }
 
-    tempFile_ = std::fopen(tempPath_.c_str(), "rb");
+    tempFile_ = detail::openTnrdFile(tempPath_, "rb");
     if (!tempFile_) {
         lastError_ = "The decompressed recording could not be opened for playback.";
         std::fprintf(stderr, "[tnrd] load FAILED: final reopen of temp '%s' failed\n", tempPath_.c_str());
@@ -557,6 +631,11 @@ void TnrdReader::close() {
         tempPath_.clear();
     }
     loadedFormat_ = TnrdFormat::Unknown;
+    v4Archive_.reset();
+    v4PlaybackRows_.clear();
+    v4PlaybackRows_.shrink_to_fit();
+    v4PlaybackPos_ = 0;
+    v4PlaybackLap_ = 0;
     index_.clear();
     lapBlocks_.clear();
     scannedLaps_.clear();
@@ -596,6 +675,7 @@ size_t TnrdReader::lowerBoundTime(float t) const {
 
 // Returns the raw JSONL line at the given file offset (no JSON parse).
 std::string TnrdReader::readLine(FileOffset offset) {
+    if (loadedFormat_ == TnrdFormat::ChunkedV4) return {};
     if (!tempFile_) return {};
     if (!seekFile(tempFile_, offset, SEEK_SET)) return {};
     std::string line;
@@ -612,6 +692,12 @@ std::string TnrdReader::readLine(FileOffset offset) {
 }
 
 void TnrdReader::setCursor(float t) {
+    if (loadedFormat_ == TnrdFormat::ChunkedV4) {
+        v4PlaybackLap_ = v4Archive_ ? v4Archive_->lapAt(t) : 0;
+        (void)loadV4PlaybackLap(v4PlaybackLap_);
+        v4PlaybackPos_ = (size_t)(std::upper_bound(v4PlaybackRows_.begin(),v4PlaybackRows_.end(),t,[](float value,const TimedRaw&r){return value<r.t;})-v4PlaybackRows_.begin());
+        damageCadenceCursor_=t;return;
+    }
     playPos_ = upperBoundTime(t);
     damageCadenceCursor_ = t;
 }
@@ -619,7 +705,11 @@ void TnrdReader::setCursor(float t) {
 std::vector<std::string> TnrdReader::damageRowsAtCadence(
     float fromTime, float toTime, bool includeFrom) const {
     std::vector<std::string> out;
-    if (coldDamage_.empty() || !std::isfinite(fromTime) ||
+    std::vector<TimedRaw> v4Damage;
+    const std::vector<TimedRaw>* source=&coldDamage_;
+    if (loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){std::vector<detail::V4TimedRow> rows,initial;std::string error;auto* archive=const_cast<detail::TnrdV4Archive*>(v4Archive_.get());if(!archive->latestRows(fromTime,{3},initial,&error)||!archive->rowsForRange(fromTime,toTime,detail::v4TypeBit(3),rows,&error))return out;if(!initial.empty())v4Damage.push_back({initial.back().sessionTime,std::move(initial.back().json)});for(auto&r:rows)if(v4Damage.empty()||r.sessionTime!=v4Damage.back().t||r.json!=v4Damage.back().json)v4Damage.push_back({r.sessionTime,std::move(r.json)});source=&v4Damage;}
+    const auto& damage=*source;
+    if (damage.empty() || !std::isfinite(fromTime) ||
         !std::isfinite(toTime) || toTime < fromTime) {
         return out;
     }
@@ -634,25 +724,25 @@ std::vector<std::string> TnrdReader::damageRowsAtCadence(
     if (firstTick > lastTick) return out;
 
     auto nextState = std::upper_bound(
-        coldDamage_.begin(), coldDamage_.end(), (float)(firstTick / RATE),
+        damage.begin(), damage.end(), (float)(firstTick / RATE),
         [](float t, const TimedRaw& row) { return t < row.t; });
-    size_t stateIndex = nextState == coldDamage_.begin()
-        ? coldDamage_.size()
-        : (size_t)(nextState - coldDamage_.begin() - 1);
+    size_t stateIndex = nextState == damage.begin()
+        ? damage.size()
+        : (size_t)(nextState - damage.begin() - 1);
 
     out.reserve((size_t)(lastTick - firstTick + 1));
     for (long long tick = firstTick; tick <= lastTick; ++tick) {
         const float sampleTime = (float)((double)tick / RATE);
-        while (stateIndex != coldDamage_.size() &&
-               stateIndex + 1 < coldDamage_.size() &&
-               coldDamage_[stateIndex + 1].t <= sampleTime + (float)EPS) {
+        while (stateIndex != damage.size() &&
+               stateIndex + 1 < damage.size() &&
+               damage[stateIndex + 1].t <= sampleTime + (float)EPS) {
             ++stateIndex;
         }
-        if (stateIndex == coldDamage_.size()) {
-            if (coldDamage_.front().t > sampleTime + (float)EPS) continue;
+        if (stateIndex == damage.size()) {
+            if (damage.front().t > sampleTime + (float)EPS) continue;
             stateIndex = 0;
         }
-        std::string row = coldDamage_[stateIndex].json;
+        std::string row = damage[stateIndex].json;
         setSessionTime(row, sampleTime);
         out.push_back(std::move(row));
     }
@@ -665,6 +755,7 @@ std::vector<std::string> TnrdReader::damageRowsAtCadence(
 std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
     float t, const std::vector<uint8_t>& types) {
     std::vector<std::pair<uint8_t, std::string>> out;
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){std::vector<detail::V4TimedRow> rows;std::string error;if(!v4Archive_->latestRows(t,types,rows,&error)){lastError_=error;return out;}for(auto&r:rows)out.emplace_back(r.rowType,std::move(r.json));return out;}
     if (index_.empty() || types.empty()) return out;
     size_t pos = upperBoundTime(t);
     std::unordered_set<uint8_t> wanted(types.begin(), types.end());
@@ -694,7 +785,8 @@ std::vector<std::string> TnrdReader::stateSnapshot(float t) {
 
 std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
     std::vector<std::string> out;
-    if (!tempFile_ || index_.empty()) return out;
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){std::vector<detail::V4TimedRow> rows;std::string error;if(!v4Archive_->rowsForRange(fromTime,toTime,0xFFFFFFFFu,rows,&error)){lastError_=error;return out;}for(auto&r:rows)out.push_back(std::move(r.json));return out;}
+    if (!isLoaded() || index_.empty()) return out;
     size_t lo = lowerBoundTime(fromTime);
     size_t hi = upperBoundTime(toTime);
     if (lo >= hi) return out;
@@ -727,6 +819,7 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
 }
 
 bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){numOut=v4Archive_->lapAt(t);for(const auto&l:v4Archive_->laps())if((int)l.lapNumber==numOut){startOut=l.startSessionTime;return true;}return false;}
     // lapBlocks_ includes the final lap closed at EOF; scannedLaps_ only gains
     // an entry when the following lap begins, so it can never resolve the last
     // lap in a recording. At a shared boundary, prefer the block with the
@@ -756,11 +849,13 @@ std::string TnrdReader::lapBlocksMessage() const {
     }
     msg.fastestLapNum = fastestLapNum_;
     msg.initialFuelKg = initialFuelKg_;
-    msg.tnrdVersion = loadedFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
+    msg.tnrdVersion = loadedFormat_ == TnrdFormat::ChunkedV4 ? "TNRD_V4"
+                    : loadedFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
                     : loadedFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
                     : loadedFormat_ == TnrdFormat::GzipV1 ? "TNRD_V1" : "";
-    msg.deltaAvailable = loadedFormat_ == TnrdFormat::ZstdV3;
-    msg.trackLengthM = loadedFormat_ == TnrdFormat::ZstdV3 ? trackLengthM_ : 0;
+    msg.deltaAvailable = loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4;
+    msg.lapDistanceAvailable = msg.deltaAvailable;
+    msg.trackLengthM = msg.deltaAvailable ? trackLengthM_ : 0;
     msg.events.reserve(scannedEvents_.size());
     for (const auto& s : scannedEvents_) msg.events.push_back(glz::raw_json{ s });
     for (const auto& l : scannedLaps_)   msg.laps.push_back({ l.lapNum, l.lapTimeMs });
@@ -775,6 +870,20 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     msg.lapNum           = b.lapNum;
     msg.startSessionTime = b.startSessionTime;
     msg.endSessionTime   = b.endSessionTime;
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
+        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13);
+        if(!const_cast<detail::TnrdV4Archive*>(v4Archive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error))return {};
+        for(const auto&r:rows){
+            if(r.rowType==1)msg.telemetry.push_back(glz::raw_json{r.json});
+            else if(r.rowType==2)msg.statusHistory.push_back(glz::raw_json{r.json});
+            else if(r.rowType==11)msg.motionHistory.push_back(glz::raw_json{r.json});
+            else if(r.rowType==12)msg.motionExHistory.push_back(glz::raw_json{r.json});
+            else if(r.rowType==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,r.json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m});}
+            else if(r.rowType==13){PositionsRow pos{};(void)glz::read<kPartialRead>(pos,r.json);if(pos.player_idx>=0&&(size_t)pos.player_idx<pos.cars.size())msg.playerPositions.push_back({r.sessionTime,pos.cars[(size_t)pos.player_idx].x,pos.cars[(size_t)pos.player_idx].z});}
+        }
+        for(auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
+        return writeJson(msg);
+    }
     auto fill = [](std::vector<glz::raw_json>& dst, const std::vector<TimedRaw>& src) {
         dst.reserve(src.size());
         for (const auto& e : src) dst.push_back(glz::raw_json{ e.json });
@@ -788,10 +897,25 @@ std::string TnrdReader::getLapDataMessage(int lapNum) const {
     for (const auto& row : damageRows) {
         msg.damageHistory.push_back(glz::raw_json{ row });
     }
-    if (loadedFormat_ == TnrdFormat::ZstdV3)
+    if (loadedFormat_ == TnrdFormat::ZstdV3 || loadedFormat_ == TnrdFormat::ChunkedV4)
         msg.lapProgress = b.lapProgress;
     msg.playerPositions = b.playerPositions;
     return writeJson(msg);
+}
+
+bool TnrdReader::loadV4PlaybackLap(int lapNum) {
+    v4PlaybackRows_.clear();v4PlaybackPos_=0;v4PlaybackLap_=lapNum;
+    if(!v4Archive_||!v4Archive_->isOpen()||lapNum<0)return false;
+    std::vector<detail::V4TimedRow> rows;std::string error;
+    if(!v4Archive_->rowsForLap((uint32_t)lapNum,0xFFFFFFFFu,rows,&error)){lastError_=error;return false;}
+    v4PlaybackRows_.reserve(rows.size());for(auto&r:rows)v4PlaybackRows_.push_back({r.sessionTime,std::move(r.json)});return true;
+}
+
+bool TnrdReader::encodeV4HotRow(uint8_t type,std::string_view json,std::vector<uint8_t>& out){
+    if(type==1){TelemetryRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeTelemetry(out,row);return true;}
+    if(type==11){MotionRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeMotion(out,row);return true;}
+    if(type==12){MotionExRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeMotionEx(out,row);return true;}
+    return false;
 }
 
 // First index >= playPos_ whose sessionTime exceeds t. Linear (not a binary
@@ -808,7 +932,7 @@ size_t TnrdReader::pullEnd(float t) const {
 // scratch_. Replaces the old per-row fseek+fgets walk — one seek + one read per
 // tick instead of one per row, which dominated the playback tick cost.
 size_t TnrdReader::readBlock(size_t fromIdx, size_t toIdx) {
-    if (!tempFile_ || fromIdx >= toIdx || toIdx > index_.size()) return 0;
+    if (!isLoaded() || fromIdx >= toIdx || toIdx > index_.size()) return 0;
     const FileOffset startOff = index_[fromIdx].offset;
     const FileOffset endOff   = (toIdx < index_.size()) ? index_[toIdx].offset : tempFileSize_;
     const FileOffset len = endOff - startOff;
@@ -845,6 +969,9 @@ static void walkBlockLines(const char* data, size_t got,
 
 std::vector<std::string> TnrdReader::pullUntil(float t) {
     std::vector<std::string> out;
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
+        for(;;){while(v4PlaybackPos_<v4PlaybackRows_.size()&&v4PlaybackRows_[v4PlaybackPos_].t<=t)out.push_back(v4PlaybackRows_[v4PlaybackPos_++].json);if(v4PlaybackPos_<v4PlaybackRows_.size())break;const auto&laps=v4Archive_->laps();auto it=v4PlaybackLap_==0?laps.begin():std::find_if(laps.begin(),laps.end(),[&](const auto&l){return (int)l.lapNumber==v4PlaybackLap_;});if(v4PlaybackLap_!=0&&it!=laps.end())++it;if(it==laps.end()||it->startSessionTime>t)break;if(!loadV4PlaybackLap((int)it->lapNumber))break;}return out;
+    }
     size_t end = pullEnd(t);
     if (end == playPos_) return out;
     size_t got = readBlock(playPos_, end);
@@ -867,6 +994,10 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
                                 uint32_t& seenTypes,
                                 std::array<std::string, 16>* lastOfType) {
     const float cadenceEnd = std::isfinite(t) ? t : totalTime_;
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
+        auto rows=pullUntil(t);for(auto&row:rows){const uint8_t tid=scanType(row.data(),(int)row.size());seenTypes|=(1u<<tid);if(tid==1||tid==11||tid==12){(void)encodeV4HotRow(tid,row,binOut);continue;}if(tid==3){if(lastOfType)(*lastOfType)[3]=row;continue;}jsonOut+=row;jsonOut.push_back('\n');if(lastOfType&&tid<16)(*lastOfType)[tid]=row;}
+        for(auto&row:damageRowsAtCadence(damageCadenceCursor_,cadenceEnd,false)){jsonOut+=row;jsonOut.push_back('\n');seenTypes|=(1u<<3);if(lastOfType)(*lastOfType)[3]=row;}damageCadenceCursor_=cadenceEnd;return;
+    }
     size_t end = pullEnd(t);
 
     // Hot rows: the range's records are contiguous in the packed store, so the
@@ -912,14 +1043,24 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
 }
 
 TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
-                                            bool allHistory) {
+                                            bool allHistory, uint32_t requestedTypes,
+                                            float windowSeconds, bool includeMandatoryState) {
     SeekFlush f;
-    // Normal seeks restore the current lap. AL asks for the already-indexed
-    // prefix through the same packed path so the renderer receives one batch,
-    // not one enormous JSON message per completed lap.
-    float windowStart = allHistory
+    // Comparison seeks restore the current lap, finite time-window seeks use
+    // their exact session-time prefix, and AL asks for the full indexed prefix.
+    // Every mode travels through the same packed flush path.
+    const float windowStart = allHistory
         ? startTime_
-        : std::max(target - 600.0f, currentLapStart);
+        : windowSeconds > 0.0f
+            ? std::max(startTime_, target - windowSeconds)
+            : currentLapStart;
+
+    if(loadedFormat_==TnrdFormat::ChunkedV4&&v4Archive_){
+        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mandatory=detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4);const uint32_t mask=(allHistory||!includeMandatoryState)?requestedTypes:(requestedTypes|mandatory);
+        if(!v4Archive_->rowsForRange(windowStart,target,mask,rows,&error)){lastError_=error;return f;}
+        auto binary=std::make_shared<std::vector<uint8_t>>();for(const auto&r:rows){if(r.rowType==1||r.rowType==11||r.rowType==12)(void)encodeV4HotRow(r.rowType,r.json,*binary);else if(r.rowType!=3){f.coldJson+=r.json;f.coldJson.push_back('\n');}}
+        if(mask&detail::v4TypeBit(3))for(auto&row:damageRowsAtCadence(windowStart,target)){f.coldJson+=row;f.coldJson.push_back('\n');}if(!f.coldJson.empty())f.coldJson.pop_back();if(!binary->empty()){f.binaryStore=binary;f.binaryBegin=0;f.binaryEnd=binary->size();}return f;
+    }
 
     if (!hotTimes_.empty()) {
         size_t lo = std::lower_bound(hotTimes_.begin(), hotTimes_.end(), windowStart) - hotTimes_.begin();

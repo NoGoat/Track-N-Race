@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,12 +16,13 @@
 
 namespace tnrp {
 
-// Reads TNRD V1/gzip and TNRD V2/V3 Zstandard files for playback. load()
-// detects the codec signature, then the JSON header distinguishes V2 from V3.
-// Decompresses to a temp file, builds a
-// time/type index, and — in the same pass — builds the per-lap Speed/RPM/ERS
-// comparison blocks, the scanned lap list and the event log that the renderer
-// needs to enter true "playback mode".
+namespace detail { class TnrdV4Archive; }
+
+// Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4 indexed chunked
+// Zstandard files. load() detects the container signature; the legacy JSON
+// header distinguishes V2 from V3.
+// Legacy formats decompress to a temp file and build a time/type index. V4
+// opens only its uncompressed control plane and lazily reads indexed chunks.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
@@ -30,14 +32,14 @@ namespace tnrp {
 // Not thread-safe; the engine serializes access from its playback thread.
 class TnrdReader {
 public:
-    TnrdReader() = default;
+    TnrdReader();
     ~TnrdReader();
 
     bool load(const std::string& path, HeaderRow& outHeader);
     bool loadZstd(const std::string& path, HeaderRow& outHeader);
     bool loadGzip(const std::string& path, HeaderRow& outHeader);
     void close();
-    bool isLoaded() const { return tempFile_ != nullptr; }
+    bool isLoaded() const;
     TnrdFormat loadedFormat() const { return loadedFormat_; }
     const std::string& lastError() const { return lastError_; }
 
@@ -69,7 +71,7 @@ public:
     void setCursor(float t);
     std::vector<std::string> pullUntil(float t);
     std::vector<std::string> drainRest();
-    bool hasMore() const { return playPos_ < index_.size(); }
+    bool hasMore() const;
 
     // Binary-playback variant of pullUntil: due cold rows are appended to
     // jsonOut as newline-terminated JSONL, due hot rows are appended to binOut
@@ -100,16 +102,20 @@ public:
     bool currentLapAt(float t, float& startOut, int& numOut) const;
 
     // Binary seek flush (requires setBinaryPlayback before load): the hot rows
-    // of [min(target-600, currentLapStart), target] as one packed binary slice,
-    // plus the window's sparse cold rows (status/damage/lap) newline-joined.
-    // allHistory expands the same packed payload to [startTime, target] for AL.
+    // leading up to target as one packed binary slice, plus the same range's
+    // sparse cold rows (status/damage/lap) newline-joined. allHistory starts at
+    // the session start; a positive windowSeconds starts at target-windowSeconds;
+    // otherwise comparison/current-lap mode starts at currentLapStart.
     struct SeekFlush {
         std::shared_ptr<const std::vector<uint8_t>> binaryStore;
         size_t binaryBegin = 0;
         size_t binaryEnd = 0;
         std::string coldJson;
     };
-    SeekFlush seekFlush(float target, float currentLapStart, bool allHistory = false);
+    SeekFlush seekFlush(float target, float currentLapStart, bool allHistory = false,
+                        uint32_t requestedTypes = 0xFFFFFFFFu,
+                        float windowSeconds = 0.0f,
+                        bool includeMandatoryState = true);
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
@@ -150,6 +156,10 @@ private:
     std::vector<IndexEntry> index_;
     std::FILE*  tempFile_    = nullptr;
     std::string tempPath_;
+    std::unique_ptr<detail::TnrdV4Archive> v4Archive_;
+    std::vector<TimedRaw> v4PlaybackRows_; // one lazily decompressed lap
+    size_t      v4PlaybackPos_ = 0;
+    int         v4PlaybackLap_ = 0;
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
@@ -187,7 +197,7 @@ private:
     size_t lowerBoundTime(float t) const;
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
-    bool buildIndex(const std::string& filePath);
+    bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
     std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
 
     // Linear forward walk from playPos_ (same early-stop semantics as the old
@@ -197,6 +207,9 @@ private:
     // One contiguous fread of the lines behind index_[fromIdx..toIdx) into
     // scratch_; returns bytes read (0 on failure/empty range).
     size_t readBlock(size_t fromIdx, size_t toIdx);
+    bool loadV4PlaybackLap(int lapNum);
+    static bool encodeV4HotRow(uint8_t type, std::string_view json,
+                               std::vector<uint8_t>& out);
 };
 
 } // namespace tnrp

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
+import { setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
 import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
 import type { Tab } from './appConfig'
@@ -19,6 +19,7 @@ import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import type { RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
+import { historyMaskForLayouts } from '../lib/historyDependencies'
 
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
@@ -67,7 +68,7 @@ export default function AppShell() {
     ? 'live'
     : playbackTnrdVersion === null
       ? 'loading'
-      : playbackTnrdVersion === 'TNRD_V3' && recordingCurrentLapSupported
+      : recordingCurrentLapSupported
         ? 'supported'
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
@@ -92,11 +93,16 @@ export default function AppShell() {
     }
   }, [referenceLapNum, referenceLapOptions])
   // Publish the visible time window to the store so it computes the right slices.
+  const historyRowMask = useMemo(
+    () => historyMaskForLayouts(tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView),
+    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView],
+  )
   useEffect(() => {
     const enabled = chartWindow === 'AL'
-    window.playerBridge.setAllLapsMode(enabled)
-    setTelemetrySeconds(enabled ? Infinity : seconds)
-  }, [chartWindow, seconds])
+    setHistoryRowMask(historyRowMask)
+    window.playerBridge.setAllLapsMode(enabled, historyRowMask, typeof chartWindow === 'number' ? seconds : 0)
+    setTelemetrySeconds(enabled ? Infinity : seconds, typeof chartWindow === 'number')
+  }, [chartWindow, historyRowMask, seconds])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we

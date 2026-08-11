@@ -288,7 +288,8 @@ void Engine::playerRequestSeek(uint64_t requestId) {
                current, requestId, std::memory_order_release, std::memory_order_relaxed)) {}
 }
 
-void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId) {
+void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
+                        uint32_t rowTypeMask, float windowSeconds) {
     std::vector<std::string> state;
     float lapStart = 0.0f;
     int   lapNum   = 0;
@@ -306,7 +307,8 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId) {
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
         if (config_.binaryPlayback) {
-            binFlush = reader_.seekFlush(target, lapStart, allHistory);
+            binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
+                                         windowSeconds);
             panels = reader_.latestOfTypesTagged(
                 target, { std::begin(kInitialPanelTypeIds), std::end(kInitialPanelTypeIds) });
         }
@@ -360,7 +362,7 @@ void Engine::playerGetLapData(int lapNum) {
     if (!msg.empty()) emitRow(msg);
 }
 
-void Engine::playerGetAllLapsData(uint64_t requestId) {
+void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     float lapStart = 0.0f;
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
@@ -370,8 +372,29 @@ void Engine::playerGetAllLapsData(uint64_t requestId) {
         const float target = currentTime_;
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
-        flush = reader_.seekFlush(target, lapStart, true);
+        flush = reader_.seekFlush(target, lapStart, true, rowTypeMask);
     }
+    if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
+                                  flush.binaryEnd, std::move(flush.coldJson),
+                                  lapStart, lapNum, true, requestId, false);
+}
+
+void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
+                                 uint32_t rowTypeMask) {
+    float lapStart = 0.0f;
+    int lapNum = 0;
+    TnrdReader::SeekFlush flush;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!inPlayback_.load() || !config_.binaryPlayback || windowSeconds <= 0.0f) return;
+        const float target = currentTime_;
+        lapStart = target;
+        reader_.currentLapAt(target, lapStart, lapNum);
+        flush = reader_.seekFlush(target, lapStart, false, rowTypeMask, windowSeconds,
+                                  false);
+    }
+    // Finite-window backfill is additive at the renderer just like an AL family
+    // request; it does not move the playhead or replace newer buffered rows.
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
                                   lapStart, lapNum, true, requestId, false);

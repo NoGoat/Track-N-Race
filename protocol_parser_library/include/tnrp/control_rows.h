@@ -212,7 +212,7 @@ struct RecordingErrorRow {
 
 struct HeaderRow {
     std::string magic;
-    std::optional<std::string> compression;  // V2/V3: "zstd"; omitted by V1
+    std::optional<std::string> compression;  // V2/V3/V4: "zstd"; omitted by V1
     int         protocol{};
     int         track_id{};
     std::string track_name;
@@ -311,6 +311,7 @@ struct PlaybackLapBlocksRow {
     std::vector<LapMeta>       laps;
     std::string                tnrdVersion;
     bool                       deltaAvailable{};
+    bool                       lapDistanceAvailable{};
     int                        trackLengthM{};
 };
 

@@ -3,17 +3,26 @@
 #include "tnrp/TnrdReader.h"
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
+#include "TnrdCodec.h"
+#include "TnrdV4.h"
 
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#ifdef _WIN32
+#  include <windows.h>
+#endif
 
 // Raw-data XLSX export: walks a loaded TnrdReader's whole row index in file
 // order and writes one worksheet per row type encountered (first-seen
@@ -28,6 +37,11 @@ namespace {
 // Local copy of TnrdReader.cpp's partial-read options (that one lives in an
 // anonymous namespace there, so it isn't visible here).
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
+
+float rowSessionTime(std::string_view line) {
+    constexpr std::string_view key="\"session_time\":";
+    const size_t pos=line.find(key);return pos==std::string_view::npos?-1.0f:std::strtof(line.data()+pos+key.size(),nullptr);
+}
 
 const char* sheetNameForType(uint8_t type) {
     switch (type) {
@@ -454,12 +468,17 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
 
 bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath, std::string* errorOut,
                             const std::function<void(size_t, size_t, const std::string&)>& onProgress) {
-    if (!tempFile_) {
+    if (!isLoaded()) {
         if (errorOut) *errorOut = "no .tnrd loaded";
         return false;
     }
 
-    lxw_workbook* wb = workbook_new(outPath.c_str());
+    namespace fs = std::filesystem;
+    const fs::path stagingPath = fs::temp_directory_path() /
+        ("tracknrace_export_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".xlsx");
+    const std::string staging = stagingPath.string();
+    lxw_workbook* wb = workbook_new(staging.c_str());
     if (!wb) {
         if (errorOut) *errorOut = "could not create workbook (invalid destination path?)";
         return false;
@@ -470,7 +489,12 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
 
     (void)header;  // no longer written to an Info sheet; kept for API stability
 
-    const size_t total = index_.size();
+    size_t total = index_.size();
+    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+        total = 0;
+        for (const auto& chunk : v4Archive_->chunks())
+            if (sheetNameForType((uint8_t)chunk.rowType)) total += chunk.rowCount;
+    }
     // Throttle progress callbacks to ~500 calls over the whole export rather
     // than once per row (row counts can run into the hundreds of thousands).
     const size_t reportEvery = total > 0 ? std::max<size_t>(1, total / 500) : 1;
@@ -503,7 +527,12 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     // before the next lets us report an honest per-sheet stage message.
     std::vector<uint8_t> typeOrder;                       // first-seen order
     std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
-    for (const IndexEntry& e : index_) {
+    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+        for (const auto& chunk : v4Archive_->chunks())
+            if (sheetNameForType((uint8_t)chunk.rowType) &&
+                std::find(typeOrder.begin(),typeOrder.end(),(uint8_t)chunk.rowType)==typeOrder.end())
+                typeOrder.push_back((uint8_t)chunk.rowType);
+    } else for (const IndexEntry& e : index_) {
         if (!sheetNameForType(e.type)) continue;          // skip unknown/untabled types
         auto it = byType.find(e.type);
         if (it == byType.end()) {
@@ -534,7 +563,13 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         const bool firstOnly = (type == 8);
 
         bool wrote = false;
-        for (const IndexEntry* e : entries) {
+        if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+            std::string chunkError;
+            const bool ok=v4Archive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
+                size_t pos=0;while(pos<plain.size()){size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();if(nl>pos){std::string line(plain.substr(pos,nl-pos));if(!firstOnly||!wrote){const float t=rowSessionTime(line);writeDataRow(ws,nextRow,t,type,line);wrote=true;}++done;if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);}if(nl==plain.size())break;pos=nl+1;}return true;
+            },&chunkError);
+            if(!ok){workbook_close(wb);std::error_code cleanupError;fs::remove(stagingPath,cleanupError);if(errorOut)*errorOut=chunkError.empty()?"could not read V4 export chunk":chunkError;return false;}
+        } else for (const IndexEntry* e : entries) {
             if (!firstOnly || !wrote) {
                 std::string line = readLine(e->offset);
                 if (!line.empty()) {
@@ -553,7 +588,40 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     report(kRowBandTop, "Writing file to disk");
     lxw_error err = workbook_close(wb);
     if (err != LXW_NO_ERROR) {
+        std::error_code cleanupError;
+        fs::remove(stagingPath, cleanupError);
         if (errorOut) *errorOut = lxw_strerror(err);
+        return false;
+    }
+
+    bool installed = false;
+#ifdef _WIN32
+    const std::wstring src = detail::windowsExtendedPath(staging);
+    const std::wstring dst = detail::windowsExtendedPath(outPath);
+    installed = !src.empty() && !dst.empty() &&
+        MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING |
+                    MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) != 0;
+    const DWORD installError = installed ? ERROR_SUCCESS : GetLastError();
+#else
+    std::error_code moveError;
+    fs::rename(stagingPath, fs::u8path(outPath), moveError);
+    installed = !moveError;
+    if (!installed && moveError == std::errc::cross_device_link) {
+        moveError.clear();
+        fs::copy_file(stagingPath, fs::u8path(outPath), fs::copy_options::overwrite_existing, moveError);
+        installed = !moveError;
+        if (installed) fs::remove(stagingPath, moveError);
+    }
+#endif
+    if (!installed) {
+        std::error_code cleanupError;
+        fs::remove(stagingPath, cleanupError);
+#ifdef _WIN32
+        if (errorOut) *errorOut = "could not move the completed workbook to its destination (Windows error " +
+            std::to_string((unsigned long)installError) + ")";
+#else
+        if (errorOut) *errorOut = "could not move the completed workbook to its destination";
+#endif
         return false;
     }
 

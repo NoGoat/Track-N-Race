@@ -527,7 +527,7 @@ export default function AnalyzeScreen({
       blocks: Array.isArray(data?.blocks) ? data.blocks : [],
       fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
       lapTimesByNum: times,
-      deltaAvailable: data?.deltaAvailable === true && data?.tnrdVersion === 'TNRD_V3',
+      deltaAvailable: data?.lapDistanceAvailable === true || data?.deltaAvailable === true,
     })
     setSecondaryLapCache({})
     secondaryRequestedRef.current.clear()

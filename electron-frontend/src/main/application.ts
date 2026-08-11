@@ -22,6 +22,7 @@ import {
   playerSetSpeed,
   playerGetLapData,
   playerGetAllLapsData,
+  playerGetWindowData,
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
@@ -191,10 +192,12 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
 ipcMain.on('page-visibility', (_e, visible: boolean) => setRendererVisible(visible))
 ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
-ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean) => playerSeek(pct, allHistory === true))
+ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number) =>
+  playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
-ipcMain.on('player:getAllLapsData', () => playerGetAllLapsData())
+ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
+ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
 ipcMain.on('player:close', () => playerClose())
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
 ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number) => analysisGetLapData(lapNum))

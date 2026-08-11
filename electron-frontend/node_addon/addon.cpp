@@ -4,6 +4,7 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -105,31 +106,42 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
-// Large AL prefixes are extracted on libuv's worker pool. Generation checks in
-// Engine make rapid scrub requests monotonic even if workers begin out of order.
+// Indexed AL and finite-window prefixes are extracted on libuv's worker pool.
+// Generation checks in Engine make rapid scrub requests monotonic even if
+// workers begin out of order.
 class PlayerSeekWorker : public Napi::AsyncWorker {
 public:
     PlayerSeekWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
-                     float pct, bool allHistory, uint64_t requestId)
+                     float pct, bool allHistory, uint64_t requestId,
+                     uint32_t rowTypeMask, float windowSeconds)
         : Napi::AsyncWorker(env), engine_(std::move(engine)), pct_(pct),
-          allHistory_(allHistory), requestId_(requestId) {}
-    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_); }
+          allHistory_(allHistory), requestId_(requestId), rowTypeMask_(rowTypeMask),
+          windowSeconds_(windowSeconds) {}
+    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_, rowTypeMask_, windowSeconds_); }
 private:
     std::shared_ptr<tnrp::Engine> engine_;
     float pct_;
     bool allHistory_;
     uint64_t requestId_;
+    uint32_t rowTypeMask_;
+    float windowSeconds_;
 };
 
 class PlayerHistoryWorker : public Napi::AsyncWorker {
 public:
     PlayerHistoryWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
-                        uint64_t requestId)
-        : Napi::AsyncWorker(env), engine_(std::move(engine)), requestId_(requestId) {}
-    void Execute() override { engine_->playerGetAllLapsData(requestId_); }
+                        uint64_t requestId, uint32_t rowTypeMask, float windowSeconds = 0.0f)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), requestId_(requestId),
+          rowTypeMask_(rowTypeMask), windowSeconds_(windowSeconds) {}
+    void Execute() override {
+        if (windowSeconds_ > 0.0f) engine_->playerGetWindowData(windowSeconds_, requestId_, rowTypeMask_);
+        else engine_->playerGetAllLapsData(requestId_, rowTypeMask_);
+    }
 private:
     std::shared_ptr<tnrp::Engine> engine_;
     uint64_t requestId_;
+    uint32_t rowTypeMask_;
+    float windowSeconds_;
 };
 
 struct AnalysisReaderState {
@@ -206,6 +218,7 @@ public:
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
+            InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
@@ -543,12 +556,18 @@ private:
                 info[1].As<Napi::Boolean>().Value();
             const uint64_t requestId = info.Length() >= 3 && info[2].IsNumber()
                 ? static_cast<uint64_t>(info[2].As<Napi::Number>().Int64Value()) : 0;
+            const uint32_t rowTypeMask = info.Length() >= 4 && info[3].IsNumber()
+                ? info[3].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            const float windowSeconds = info.Length() >= 5 && info[4].IsNumber()
+                ? std::max(0.0f, info[4].As<Napi::Number>().FloatValue()) : 0.0f;
             engine->playerRequestSeek(requestId);
-            if (allHistory) {
+            if (allHistory || windowSeconds > 0.0f) {
                 (new PlayerSeekWorker(info.Env(), engine,
-                    info[0].As<Napi::Number>().FloatValue(), true, requestId))->Queue();
+                    info[0].As<Napi::Number>().FloatValue(), allHistory, requestId,
+                    rowTypeMask, windowSeconds))->Queue();
             } else {
-                engine->playerSeek(info[0].As<Napi::Number>().FloatValue(), false, requestId);
+                engine->playerSeek(info[0].As<Napi::Number>().FloatValue(), false,
+                                   requestId, rowTypeMask, 0.0f);
             }
         }
         return info.Env().Undefined();
@@ -572,7 +591,22 @@ private:
         if (engine) {
             const uint64_t requestId = info.Length() >= 1 && info[0].IsNumber()
                 ? static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()) : 0;
-            (new PlayerHistoryWorker(info.Env(), engine, requestId))->Queue();
+            const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
+                ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerGetWindowData(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            const float windowSeconds = std::max(0.0f, info[0].As<Napi::Number>().FloatValue());
+            const uint64_t requestId = info.Length() >= 2 && info[1].IsNumber()
+                ? static_cast<uint64_t>(info[1].As<Napi::Number>().Int64Value()) : 0;
+            const uint32_t rowTypeMask = info.Length() >= 3 && info[2].IsNumber()
+                ? info[2].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask,
+                                     windowSeconds))->Queue();
         }
         return info.Env().Undefined();
     }

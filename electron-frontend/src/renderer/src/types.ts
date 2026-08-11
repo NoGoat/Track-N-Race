@@ -470,11 +470,12 @@ declare global {
       play: () => void
       pause: () => void
       seek: (pct: number) => void
-      setAllLapsMode: (enabled: boolean) => void
+      setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       setSpeed: (mult: number) => void
       getLapData: (lapNum: number) => void
-      getAllLapsData: () => void
+      getAllLapsData: (rowTypeMask?: number) => void
+      getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void
       exportXlsx: () => Promise<{ ok: boolean; error?: string }>
       onExportProgress: (cb: (pct: number, stage: string) => void) => () => void

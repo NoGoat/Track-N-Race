@@ -17,7 +17,7 @@
     "dev:debug": "electron-vite dev --mode debug",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "build": "electron-vite build",
-    "start": "electron-vite preview",
+    "start": "npm run predev && electron-vite preview",
     "prepack": "node scripts/build-bridge.mjs",
     "pack": "electron-builder --dir",
     "predist": "node scripts/build-bridge.mjs",

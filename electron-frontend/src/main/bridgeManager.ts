@@ -104,6 +104,7 @@ export interface PlaybackState {
 
 let activeFilePath: string | null = null
 let onPlaybackState: ((state: PlaybackState) => void) | null = null
+let nextPlaybackRequestId = 0
 let latestSeekRequestId = 0
 
 function activeFilename(): string | null {
@@ -292,7 +293,12 @@ export function startBridge(): string | null {
     }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean) => {
       // Superseded scrubs are discarded before the large payload crosses IPC
       // or is decoded into renderer objects.
-      if (requestId !== 0 && requestId !== latestSeekRequestId) return
+      // Authoritative scrubs supersede one another. History-family requests are
+      // additive and may complete out of order; accept all of them unless a
+      // newer authoritative seek/load invalidated their timeline.
+      if (authoritativeSeek) {
+        if (requestId !== 0 && requestId !== latestSeekRequestId) return
+      } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
         clearResumeCache()
         broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek })
@@ -359,6 +365,8 @@ export function setOnPlaybackState(cb: (state: PlaybackState) => void): void {
 export interface PlayerLoadResult { ok: boolean; error?: string }
 
 export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
+  // Invalidate workers belonging to the previously loaded timeline.
+  latestSeekRequestId = ++nextPlaybackRequestId
   if (!engine) return { ok: false, error: 'The playback engine is not available.' }
   // Loading over an already-open clip: close it first so the renderer clears
   // its playback buffers (playback_close) before the new clip's rows arrive.
@@ -385,18 +393,26 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
 
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
-export function playerSeek(pct: number, allHistory = false): void {
-  const requestId = ++latestSeekRequestId
-  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, requestId, engineReady: Boolean(engine) })}`)
-  engine?.playerSeek(pct, allHistory, requestId)
+export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
+  const requestId = ++nextPlaybackRequestId
+  latestSeekRequestId = requestId
+  console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
+  engine?.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
-export function playerGetAllLapsData(): void {
-  const requestId = ++latestSeekRequestId
-  engine?.playerGetAllLapsData(requestId)
+export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
+  const requestId = ++nextPlaybackRequestId
+  engine?.playerGetAllLapsData(requestId, rowTypeMask >>> 0)
 }
-export function playerClose(): void { engine?.playerClose() }
+export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFFFFF): void {
+  const requestId = ++nextPlaybackRequestId
+  engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
+}
+export function playerClose(): void {
+  latestSeekRequestId = ++nextPlaybackRequestId
+  engine?.playerClose()
+}
 
 export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {
   if (!engine) return { ok: false, error: 'The telemetry engine is not available.' }

@@ -29,7 +29,8 @@ public:
     // Seek flush under Config::binaryPlayback: the hot rows of the window
     // leading up to the seek target as one packed binary slice, plus the sparse
     // cold rows (status/damage/lap) of the same window as newline-joined JSON.
-    // allHistory marks AL's session-start-to-playhead prefix payload.
+    // allHistory marks an additive historical payload (an AL prefix or finite
+    // window backfill) rather than an authoritative seek replacement.
     // JSON-only consumers never receive this (legacy mode emits a
     // playback_seek_flush row via onRow instead).
     virtual void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> /*binStore*/,

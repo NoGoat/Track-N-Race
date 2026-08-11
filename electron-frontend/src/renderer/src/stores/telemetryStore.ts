@@ -7,6 +7,7 @@ import type {
 } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { playbackDebug } from '../lib/playbackDebug'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -212,7 +213,10 @@ let liveLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
 
 let secondsVal = 30
 let allLapsMode = false
+let finiteWindowBackfillEnabled = true
 let waitingForAllLapsHistory = false
+let historyRowMask = 0xFFFFFFFF
+let requestedHistoryRowMask = 0
 
 function resetSession(): void {
   analyzeLapRevisionVal++
@@ -232,6 +236,7 @@ function resetSession(): void {
   liveLapBoundaries = []
   pendingAnalyzeLapReset = false
   waitingForAllLapsHistory = false
+  requestedHistoryRowMask = 0
   fuelMaxReceived = -Infinity
   set({
     status: null, damage: null, lap: null, timing: null, allStatus: null,
@@ -524,6 +529,7 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'playback_seek_flush_failed':
       waitingForAllLapsHistory = false
+      requestedHistoryRowMask = 0
       break
     case 'playback_lap_blocks': {
       isPlaybackFlag = true
@@ -549,10 +555,16 @@ function handleMsg(msg: GatewayMsg): void {
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1
           : null,
-        analyzeDeltaAvailable: data.deltaAvailable === true && data.tnrdVersion === 'TNRD_V3',
+        analyzeDeltaAvailable: data.lapDistanceAvailable === true || data.deltaAvailable === true,
         analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
         playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
       })
+      const missingHistory = historyRowMask & ~requestedHistoryRowMask
+      if (allLapsMode && missingHistory !== 0) {
+        waitingForAllLapsHistory = true
+        requestedHistoryRowMask |= missingHistory
+        window.playerBridge.getAllLapsData(missingHistory)
+      }
       break
     }
   }
@@ -677,25 +689,92 @@ function recompute(dirty: DirtySlice): void {
 
 // Set the visible time window (seconds). Infinity selects the full-session AL
 // publication. Recomputes the published slices at once.
-export function setTelemetrySeconds(s: number): void {
+function requestFiniteWindowHistory(): void {
+  if (!finiteWindowBackfillEnabled || allLapsMode || !Number.isFinite(secondsVal) || secondsVal <= 0 || speedRpmBlocksVal === null) return
+  const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
+  const currentTime = Math.max(
+    telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0,
+    motBufRef.current[motBufRef.current.length - 1]?.session_time ?? 0,
+    motExBufRef.current[motExBufRef.current.length - 1]?.session_time ?? 0,
+    stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? 0,
+    dmgBufRef.current[dmgBufRef.current.length - 1]?.session_time ?? 0,
+    lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? 0,
+  )
+  if (!Number.isFinite(fileStart) || currentTime <= fileStart) return
+  const requiredStart = Math.max(fileStart, currentTime - secondsVal)
+  let missingMask = 0
+  const missing = (bit: number, firstTime: number | undefined): void => {
+    if ((historyRowMask & bit) && (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
+  }
+  missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
+  if (missingMask !== 0) window.playerBridge.getWindowData(secondsVal, missingMask)
+}
+
+export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): void {
   const nextAllLapsMode = !Number.isFinite(s)
-  if (s === secondsVal && nextAllLapsMode === allLapsMode) return
+  const sameConfiguration = s === secondsVal && nextAllLapsMode === allLapsMode &&
+    finiteWindowBackfillEnabled === backfillFiniteWindow
+  finiteWindowBackfillEnabled = backfillFiniteWindow
+  if (sameConfiguration) {
+    requestFiniteWindowHistory()
+    return
+  }
   const wasAllLapsMode = allLapsMode
   secondsVal = s
   allLapsMode = nextAllLapsMode
-  if (!allLapsMode) waitingForAllLapsHistory = false
+  if (!allLapsMode) {
+    waitingForAllLapsHistory = false
+    // Normal playback can evict the old prefix from bounded renderer buffers.
+    // A later AL entry must therefore be allowed to request it again.
+    requestedHistoryRowMask = 0
+  }
   set({ seconds: s })
   let requestHistory = false
-  if (allLapsMode && !wasAllLapsMode && speedRpmBlocksVal !== null && lapNum !== null) {
+  let entryMissingMask = 0
+  if (allLapsMode && !wasAllLapsMode && speedRpmBlocksVal !== null) {
     const firstBlockStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
-    const firstBufferedTime = telBufRef.current[0]?.session_time ?? Infinity
-    if (Number.isFinite(firstBlockStart) && firstBufferedTime > firstBlockStart + 1) {
+    if (Number.isFinite(firstBlockStart)) {
+      const missing = (bit: number, firstTime: number | undefined): void => {
+        if ((historyRowMask & bit) && (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
+      }
+      missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
+    }
+    requestedHistoryRowMask |= historyRowMask & ~entryMissingMask
+    if (entryMissingMask !== 0) {
       waitingForAllLapsHistory = true
       requestHistory = true
     }
   }
   recompute(DirtySlice.All)
-  if (requestHistory) window.playerBridge.getAllLapsData()
+  if (requestHistory) {
+    requestedHistoryRowMask |= entryMissingMask
+    window.playerBridge.getAllLapsData(entryMissingMask)
+  }
+  requestFiniteWindowHistory()
+}
+
+// Sets the single coordinated minimum history requirement. While AL is active,
+// newly-visible row families are requested additively; already-loaded families
+// are not decompressed or delivered again.
+export function setHistoryRowMask(mask: number): void {
+  const normalized = mask >>> 0
+  historyRowMask = normalized
+  if (!allLapsMode || speedRpmBlocksVal === null) return
+  const missing = normalized & ~requestedHistoryRowMask
+  if (missing === 0) return
+  waitingForAllLapsHistory = true
+  requestedHistoryRowMask = (requestedHistoryRowMask | missing) >>> 0
+  window.playerBridge.getAllLapsData(missing)
 }
 
 // Subscribe to live race events (transient banners). Delivered synchronously as

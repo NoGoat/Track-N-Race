@@ -15,13 +15,14 @@
 #include <memory>
 
 #include "tnrp/TnrdFormat.h"
+#include "tnrp/control_rows.h"
 
-namespace tnrp::detail { class TnrdOutputStream; }
+namespace tnrp::detail { class TnrdOutputStream; class TnrdV4Writer; }
 
 namespace tnrp {
 
-// Records parsed rows to compressed JSONL .tnrd files. TNRD V3/Zstandard is
-// the default; TNRD V1/gzip remains available for legacy compatibility. Owns:
+// Records parsed rows to .tnrd files. TNRD V4/chunked Zstandard is the default;
+// TNRD V1/gzip remains available for legacy compatibility. Owns:
 //   - per-session file rotation (new track/session => new file),
 //   - a 30s rolling buffer so in-game flashbacks (<=30s) rewrite cleanly,
 //   - rewind/flashback timeline truncation,
@@ -37,7 +38,7 @@ public:
     explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
 
-    // Source-compatible default recording entry point: writes TNRD V3/zstd.
+    // Source-compatible default recording entry point: writes TNRD V4.
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
@@ -75,7 +76,7 @@ private:
         EventType             type;
         bool                  enabled;
         std::string           outputDir;
-        TnrdFormat            tnrdFormat{TnrdFormat::ZstdV3};
+        TnrdFormat            tnrdFormat{TnrdFormat::ChunkedV4};
         uint16_t              format;
         uint8_t               packetId;
         float                 sessionTime;
@@ -96,18 +97,21 @@ private:
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
-    TnrdFormat  writeFormat_        = TnrdFormat::ZstdV3;
+    TnrdFormat  writeFormat_        = TnrdFormat::ChunkedV4;
     std::string outputDirectory_;
     std::unique_ptr<detail::TnrdOutputStream> activeStream_;
+    std::unique_ptr<detail::TnrdV4Writer> v4Writer_;
     std::string activePath_;
     int         currentTrackId_     = -1;
     int         currentSessionType_ = -1;
     float       lastSessionTime_    = -1.0f;
+    float       v4LastCheckpointTime_ = -1.0f;
 
     // Durability: force a codec flush on a cadence so a crash/power-loss leaves
     // a stream that is still decodable up to the last complete flushed row.
     int         rowsSinceFlush_     = 0;
     static constexpr int FLUSH_EVERY_ROWS = 300;  // ~5 s at buffered cadence
+    static constexpr float V4_CHECKPOINT_INTERVAL_S = 30.0f;
 
     std::vector<BufferEntry>                     rollingBuffer_;
     std::unordered_map<std::string, std::string> dedupeCache_;
@@ -117,7 +121,8 @@ private:
     static const std::unordered_set<std::string>& dedupeTypes();
 
     void startNewStream(int trackId, int trackLengthM, int sessionType, int format);
-    bool flushBufferToDisk(const std::vector<BufferEntry>& entries);
+    bool flushBufferToDisk(const std::vector<BufferEntry>& entries,
+                           bool allowV4Checkpoint = true);
     void flushToDiskOnWriterThread();
     void closeActiveStreamOnWriterThread();
     void flushOldBufferEntries();
@@ -128,6 +133,7 @@ private:
     void clearReportedError();
 
     void setLoggingForFormat(bool enabled, const std::string& outputDir, TnrdFormat format);
+    bool streamActive() const { return activeStream_ != nullptr || v4Writer_ != nullptr; }
 };
 
 } // namespace tnrp

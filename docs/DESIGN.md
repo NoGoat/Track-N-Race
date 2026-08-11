@@ -29,8 +29,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 or QUdpSocket (ON, Qt recorder); one receive thread
   ├── Parser        pure decode: format detect + override + debounce +
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
-  ├── TnrdWriter    .tnrd recording (own disk thread)
-  ├── TnrdReader    .tnrd playback (index, per-lap blocks, binary stores)
+  ├── TnrdWriter    .tnrd V4 recording (own disk thread)
+  ├── TnrdReader    V1–V4 playback (index, per-lap blocks, binary stores)
   └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
 ```
 
@@ -144,11 +144,11 @@ intent so the per-packet fast path can skip the whole recording pipeline
 
 ### 1.6 Playback (`TnrdReader` + `Engine::player*`)
 
-`load()` detects the container signature and decompresses TNRD V1/gzip or
-TNRD V2/V3 Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
-builds a time/type index in one pass, and in the same pass builds the per-lap
-blocks, scanned lap list, event log and fastest lap. Streaming reads return raw
-JSONL lines (no re-parse); block reads (`readBlock`) fetch contiguous index
+`load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
+Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
+time/type index. V4 opens only its uncompressed metadata, lap table, chunk
+directory, control summary, and commit footer; telemetry chunks are decompressed
+on demand through a bounded cache. Legacy block reads (`readBlock`) fetch contiguous index
 ranges with one `fread` into a reused scratch buffer. Temp-file positions are
 64-bit on every platform because long sessions can decompress beyond 2 GiB.
 
@@ -204,7 +204,7 @@ playback stream unchanged.
 ### 1.7 XLSX export
 
 `exportTnrdFileToXlsx()` opens its **own throwaway reader** on the file
-(independent of any active playback), walks the whole index in file order and
+(independent of any active playback), walks the legacy index or V4 chunk directory and
 writes one sheet per row type plus an "Info" sheet from the header, reporting
 progress `(rowsDone, totalUnits, stage)`. Both apps run it off their UI thread
 (Electron: `AsyncProgressQueueWorker` on the libuv pool; Qt:
@@ -223,16 +223,17 @@ overlay flows.
 
 ## 2. File format & shared conventions
 
-- **`.tnrd`**: compressed JSONL with three supported generations. TNRD V1 uses
-  gzip and `magic: "TNRD_V1"`; TNRD V2 and V3 use Zstandard with matching
+- **`.tnrd`**: four supported generations. TNRD V1 uses
+  gzip and `magic: "TNRD_V1"`; TNRD V2 and V3 use monolithic Zstandard with matching
   `magic` and `compression: "zstd"` header values. V3 adds `track_length_m` to
   the header and `lap_distance_m` to lap rows. `TnrdReader::load()` detects the
   codec from its native bytes, then uses and validates the JSON header to
-  distinguish V2 from V3. Normal recording writes V3. Explicit
+  distinguish V2 from V3. Normal recording writes V4. Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
   subsequent line is one typed row with `session_time`; other telemetry row
-  schemas remain compatible. Electron Analyze distance alignment and delta are
-  enabled only for V3; V1/V2 recordings retain elapsed-time overlays.
+  schemas remain compatible. V4 uses an uncompressed indexed control plane and
+  independently checksummed `(lap,rowType,segment)` Zstandard JSONL chunks. Electron Analyze distance alignment and delta are
+  enabled for V3/V4; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,

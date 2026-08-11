@@ -343,6 +343,10 @@ bool decompressZstd(const std::string& srcPath, std::FILE* output,
 
 } // namespace
 
+std::FILE* openTnrdFile(const std::string& path, const char* mode) {
+    return openFile(path, mode);
+}
+
 TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
     std::FILE* file = openFile(path, "rb");
     if (!file) {
@@ -351,11 +355,12 @@ TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
             (openError ? std::strerror(openError) : "unknown file-system error"));
         return TnrdFormat::Unknown;
     }
-    unsigned char magic[4]{};
+    unsigned char magic[8]{};
     const size_t read = std::fread(magic, 1, sizeof(magic), file);
     std::fclose(file);
     if (read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b) return TnrdFormat::GzipV1;
-    if (read == 4 && magic[0] == 0x28 && magic[1] == 0xb5 &&
+    if (read == 8 && std::memcmp(magic, "TNRD_V4\0", 8) == 0) return TnrdFormat::ChunkedV4;
+    if (read >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 &&
         magic[2] == 0x2f && magic[3] == 0xfd) return TnrdFormat::ZstdV2;
     setError(errorOut, "unknown TNRD compression signature");
     return TnrdFormat::Unknown;

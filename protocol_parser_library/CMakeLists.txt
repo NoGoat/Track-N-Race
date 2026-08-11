@@ -7,11 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Dual-mode UDP backend. OFF (default) => raw winsock2/POSIX sockets, for the
 # headless bridge. ON => QUdpSocket, for linking into the native Qt recorder.
 option(TNRP_USE_QT "Use QUdpSocket instead of raw sockets for UDP" OFF)
+option(TNRP_BUILD_TESTS "Build libtnrp native regression tests" OFF)
 
 include(FetchContent)
 
 # All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
-# gzip compatibility; Zstandard is the default TNRD V3 codec.
+# gzip compatibility; chunked Zstandard is the default TNRD V4 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -95,6 +96,7 @@ add_library(tnrp STATIC
     src/Parser.cpp
     src/AnyRow.cpp
     src/TnrdCodec.cpp
+    src/TnrdV4.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -139,4 +141,12 @@ if(NOT MSVC)
 else()
     target_compile_options(tnrp PRIVATE $<$<NOT:$<CONFIG:Debug>>:/O2>)
     target_compile_definitions(tnrp PRIVATE NOMINMAX)
+endif()
+
+if(TNRP_BUILD_TESTS)
+    enable_testing()
+    add_executable(tnrd_v4_roundtrip tests/TnrdV4RoundTrip.cpp)
+    target_include_directories(tnrd_v4_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_v4_roundtrip PRIVATE tnrp)
+    add_test(NAME tnrd_v4_roundtrip COMMAND tnrd_v4_roundtrip)
 endif()

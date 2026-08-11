@@ -140,7 +140,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, children }: { 
       .sort((a, b) => a.sessionTime - b.sessionTime)
     : liveLapBoundaries
   const boundaryLabelsRef = useRef(new Map<number, string>())
-  boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, `Lap ${boundary.lapNum}`]))
+  boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, String(boundary.lapNum)]))
   const boundaryValuesRef = useRef<number[]>([])
   boundaryValuesRef.current = lapBoundaries.map(boundary => boundary.sessionTime)
   const getAllLapTicks = useCallback((min: number, max: number) => boundaryValuesRef.current

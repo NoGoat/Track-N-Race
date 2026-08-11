@@ -82,6 +82,8 @@ const recordingBridge = {
 
 
 let playerAllLapsMode = false
+let playerAllLapsRowMask = 0xFFFFFFFF
+let playerWindowSeconds = 0
 const seekStartListeners = new Set<(allHistory: boolean) => void>()
 const playerBridge = {
   setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
@@ -90,16 +92,21 @@ const playerBridge = {
   pause: () => ipcRenderer.send('player:pause'),
   seek: (pct: number) => {
     for (const listener of seekStartListeners) listener(playerAllLapsMode)
-    ipcRenderer.send('player:seek', pct, playerAllLapsMode)
+    ipcRenderer.send('player:seek', pct, playerAllLapsMode, playerAllLapsRowMask, playerWindowSeconds)
   },
-  setAllLapsMode: (enabled: boolean) => { playerAllLapsMode = enabled },
+  setAllLapsMode: (enabled: boolean, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0) => {
+    playerAllLapsMode = enabled
+    playerAllLapsRowMask = rowTypeMask >>> 0
+    playerWindowSeconds = Number.isFinite(windowSeconds) ? Math.max(0, windowSeconds) : 0
+  },
   onSeekStart: (callback: (allHistory: boolean) => void) => {
     seekStartListeners.add(callback)
     return () => { seekStartListeners.delete(callback) }
   },
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
-  getAllLapsData: () => ipcRenderer.send('player:getAllLapsData'),
+  getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),
+  getWindowData: (windowSeconds: number, rowTypeMask?: number) => ipcRenderer.send('player:getWindowData', windowSeconds, rowTypeMask),
   close: () => ipcRenderer.send('player:close'),
   exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
   onExportProgress: (cb: (pct: number, stage: string) => void) => {

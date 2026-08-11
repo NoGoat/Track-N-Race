@@ -59,10 +59,13 @@ public:
     // Register on the caller thread before an async seek worker is queued.
     // Playback remains gated until that exact generation is applied.
     void playerRequestSeek(uint64_t requestId);
-    void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0);
+    void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0,
+                    uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
     void playerSetSpeed(float mult);
     void playerGetLapData(int lapNum);
-    void playerGetAllLapsData(uint64_t requestId = 0);
+    void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
+    void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
+                             uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerClose();                    // back to live mode
 
 private:
