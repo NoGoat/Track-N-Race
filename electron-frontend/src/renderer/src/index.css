@@ -112,6 +112,33 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+.modal-backdrop {
+  opacity: 0;
+  transition: opacity 180ms ease-in;
+}
+
+.modal-backdrop[data-state='open'] {
+  opacity: 1;
+  transition-timing-function: ease-out;
+}
+
+.modal-panel {
+  opacity: 0;
+  transform: translateY(8px) scale(0.975);
+  transition:
+    opacity 150ms ease-in,
+    transform 180ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: opacity, transform;
+}
+
+.modal-backdrop[data-state='open'] .modal-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 180ms ease-out,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 @keyframes bannerSlideDown {
   from {
     opacity: 0;
@@ -178,4 +205,189 @@ body {
   width: 16px !important;
   height: 16px !important;
   flex: 0 0 16px;
+}
+
+@keyframes selectMenuEnterBottom {
+  from {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuEnterTop {
+  from {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitBottom {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitTop {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+}
+
+/* Each tyre graph responds to its own tile width, not the application width.
+   At compact widths the four-corner legend folds into a stable 2x2 grid. */
+.tyre-chart-container {
+  container-name: tyre-chart;
+  container-type: inline-size;
+}
+
+@container tyre-chart (max-width: 430px) {
+  .tyre-chart-legend {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 0.75rem;
+    row-gap: 0.125rem;
+  }
+}
+
+/* Titlebar mode changes are low-frequency. Animate their intrinsic layout
+   without putting animation work on the telemetry update path. */
+.titlebar-auto-width {
+  flex: 0 0 auto;
+  overflow: hidden;
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-delta-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-delta-slot > span {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.titlebar-delta-slot--visible {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.titlebar-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.75rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.titlebar-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.chart-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.25rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chart-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chart-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-auto-width,
+  .titlebar-delta-slot,
+  .titlebar-lap-slot,
+  .chart-lap-slot {
+    transition: none;
+  }
+
+  [class*='-menu'] {
+    animation: none !important;
+  }
+}
+
+html[data-reduce-animations='true'] *,
+html[data-reduce-animations='true'] *::before,
+html[data-reduce-animations='true'] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+.session-map-transition {
+  view-transition-name: session-map;
+}
+
+::view-transition-group(session-map) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(session-map),
+::view-transition-new(session-map) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(session-map),
+  ::view-transition-old(session-map),
+  ::view-transition-new(session-map) {
+    animation-duration: 0s;
+  }
 }

@@ -1,5 +1,7 @@
 import type { StylesConfig } from 'react-select'
 
+export const SELECT_MENU_ANIMATION_MS = 220
+
 export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false, menuWidth, scrollableMenu = true }: { solidBg?: boolean; controlHeight?: number; labelStyleGroupHeadings?: boolean; menuWidth?: string | number; scrollableMenu?: boolean } = {}): StylesConfig<any, false> {
   return {
     container: (base) => ({
@@ -37,7 +39,7 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       '&:hover': { color: 'var(--text-primary)' },
     }),
     clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)', '&:hover': { color: '#e10600' } }),
-    menu: (base) => ({
+    menu: (base, state) => ({
       ...base,
       width: menuWidth ?? base.width,
       background: 'var(--bg-menu)',
@@ -49,6 +51,9 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       overflow: 'hidden',
       userSelect: 'none',
       WebkitUserSelect: 'none',
+      transformOrigin: state.placement === 'top' ? 'bottom center' : 'top center',
+      animation: `${state.placement === 'top' ? 'selectMenuEnterTop' : 'selectMenuEnterBottom'} ${SELECT_MENU_ANIMATION_MS}ms cubic-bezier(0.2, 0, 0, 1) both`,
+      willChange: 'clip-path',
     }),
     menuPortal: (base) => ({ ...base, zIndex: 9999 }),
     menuList: (base) => ({

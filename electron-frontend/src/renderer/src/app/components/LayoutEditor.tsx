@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../appConfig'
+import { useModalPresence } from '../../lib/useModalPresence'
 
 interface LayoutEditorProps {
   coreLayout: CoreLayout
@@ -23,16 +24,19 @@ export default function LayoutEditor(props: LayoutEditorProps) {
   const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, setCoreLayout,
     setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setTyresLayout,
     tab, tyreView, tyreWearMode, tyresLayout } = props
+  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+  const modalPresence = useModalPresence(editOpen && editableTab)
   return (
     <>
       {/* Edit modal — centered overlay */}
-      {editOpen && (tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres') && (
+      {modalPresence.mounted && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+          data-state={modalPresence.visible ? 'open' : 'closed'}
+          className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
           onClick={() => setEditOpen(false)}
         >
           <div
-            className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[920px] max-h-[90vh] flex flex-col overflow-hidden"
+            className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[920px] max-h-[90vh] flex flex-col overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             {/* Header */}

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
-import Select, { type GroupBase, type SingleValue } from 'react-select'
+import { type GroupBase, type SingleValue } from 'react-select'
+import Select from '../lib/AnimatedSelect'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
 import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
@@ -13,6 +14,7 @@ import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
+import { useModalPresenceValue } from '../lib/useModalPresence'
 import { dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -427,6 +429,8 @@ export default function AnalyzeScreen({
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
+  const circuitMismatchPresence = useModalPresenceValue(pendingCircuitMismatch)
+  const displayedCircuitMismatch = circuitMismatchPresence.value
   const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
   const mapFocusIdRef = useRef(0)
   const requestedRef = useRef(new Map<number, number>())
@@ -619,7 +623,7 @@ export default function AnalyzeScreen({
     previousCollapsedRef.current = config.collapsed
 
     const startWidth = sidebar.getBoundingClientRect().width
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || startWidth === targetWidth) {
+    if (reduceAnimations || window.matchMedia('(prefers-reduced-motion: reduce)').matches || startWidth === targetWidth) {
       sidebar.style.width = `${targetWidth}px`
       return
     }
@@ -635,7 +639,7 @@ export default function AnalyzeScreen({
     }
     animationFrame = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(animationFrame)
-  }, [config.collapsed])
+  }, [config.collapsed, reduceAnimations])
 
   useEffect(() => {
     if (!playbackFilename) return
@@ -966,11 +970,12 @@ export default function AnalyzeScreen({
         </div>
       </section>
 
-      {pendingCircuitMismatch && <div
-        className="fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+      {circuitMismatchPresence.mounted && displayedCircuitMismatch && <div
+        data-state={circuitMismatchPresence.visible ? 'open' : 'closed'}
+        className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"
       >
-        <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+        <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
           <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
             <div id="analysis-circuit-mismatch-title" className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
               <AlertTriangle size={15} className="text-amber-500" />
@@ -986,14 +991,14 @@ export default function AnalyzeScreen({
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">Lap comparisons may not align correctly. You can cancel or load the file anyway.</p>
             <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] text-xs font-mono text-[var(--text-secondary)] space-y-2">
               <div><span className="text-[var(--text-muted)]">Loaded File: </span><span className="font-semibold">{primaryTrackName || `Circuit ${primaryTrackId}`}</span></div>
-              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{pendingCircuitMismatch.trackName}</span></div>
+              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{displayedCircuitMismatch.trackName}</span></div>
             </div>
           </div>
 
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
             <button onClick={() => setPendingCircuitMismatch(null)} className={TEXT_ACTION_BUTTON_CLASS}>Cancel</button>
             <button onClick={() => {
-              applySecondaryFile(pendingCircuitMismatch.filePath, pendingCircuitMismatch.data, pendingCircuitMismatch.trackId)
+              applySecondaryFile(displayedCircuitMismatch.filePath, displayedCircuitMismatch.data, displayedCircuitMismatch.trackId)
               setPendingCircuitMismatch(null)
             }} className={`${TEXT_ACTION_BUTTON_CLASS} !border-[var(--border-focus)] !bg-[var(--border-focus)] !text-white hover:brightness-110`}>Load Anyway</button>
           </div>

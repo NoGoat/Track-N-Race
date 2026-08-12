@@ -5,6 +5,7 @@ import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import type { AlignedTable, MotionExRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 
 interface Props {
   isDark: boolean
@@ -50,8 +51,9 @@ function computeYSplits(lower: number, upper: number): number[] {
   return splits
 }
 
-export default function RideHeightChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
 
   const tableData = useMemo((): AlignedTable => {
@@ -81,16 +83,17 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
   }, [coordinates, tooltipTimeColor])
 
   return (
-    <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
-        {view !== 'table' && (
-          <div className="flex gap-4 text-xs">
+    <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+      <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+        <div className="flex items-center gap-0">
+          <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
+          <ChartWindowOverrideSelect />
+        </div>
+        {view !== 'table' && <div className="flex items-center gap-4 text-xs">
             <span style={{ color: COLOR_FRONT }}>— Front</span>
             <span style={{ color: COLOR_REAR }}>— Rear</span>
             <span className="text-[var(--text-secondary)]">plank edge above road</span>
-          </div>
-        )}
+        </div>}
       </div>
       <div className="flex-1 min-h-0 relative">
         {data.length === 0 ? (
@@ -99,12 +102,13 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
           <GraphTable columns={TABLE_COLS} data={tableData} />
         ) : (
           <TimeChartView<MotionExRow>
+            key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={data}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motionEx : undefined}
             getX={d => d.session_time}
             series={SERIES}
-            windowSeconds={windowSeconds}
+            windowSeconds={scopedWindowSeconds}
             yRange={{
               kind: 'expand',
               initialLower: INITIAL_LOWER_MM,
@@ -122,4 +126,8 @@ export default function RideHeightChart({ isDark, view = 'chart', windowSeconds 
       </div>
     </div>
   )
+}
+
+export default function RideHeightChart(props: Props) {
+  return <ChartWindowScope section="miscRideHeight"><RideHeightChartContent {...props} /></ChartWindowScope>
 }

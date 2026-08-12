@@ -1,4 +1,5 @@
 import { useRef, useState, memo } from 'react'
+import { flushSync } from 'react-dom'
 import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type LucideIcon } from 'lucide-react'
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
 import TrackMap from './TrackMap'
@@ -185,7 +186,7 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants }: 
     .sort((a, b) => a.position - b.position)
 
   const player = active.find(c => c.idx === timing.player_idx)
-  if (!player) return <p className="text-xs text-[var(--text-secondary)] py-2">No position data</p>
+  if (!player) return <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No position data</p>
 
   const pos = player.position
   const isFirst = pos === 1
@@ -217,16 +218,12 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants }: 
   return (
     <div className="flex flex-col divide-y divide-[var(--border)]">
       {rows.map(({ car, isPlayer, deltaMs, sign }) => {
-        const livery = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
         return (
           <div
             key={car.idx}
             className="flex items-center gap-3 px-3 py-3"
           >
-            <span
-              className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
-              style={{ backgroundColor: livery + '28', color: livery }}
-            >
+            <span className="text-[10px] font-bold tabular-nums w-7 text-center text-[var(--text-primary)] shrink-0">
               P{car.position}
             </span>
             <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
@@ -307,6 +304,28 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
   const { t } = useLabels()
   const weatherLevel = Math.max(0, Math.min(2, compactWeather ?? 0))
 
+  const setMapFullscreenAnimated = (fullscreen: boolean) => {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => unknown
+    }
+    const motionReduced = reduceAnimations
+      || document.documentElement.dataset.reduceAnimations === 'true'
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      setMapFullscreen(fullscreen)
+      return
+    }
+
+    try {
+      transitionDocument.startViewTransition(() => {
+        flushSync(() => setMapFullscreen(fullscreen))
+      })
+    } catch {
+      setMapFullscreen(fullscreen)
+    }
+  }
+
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
   const accent  = session ? sessionAccent(session.session_type, isDark) : (isDark ? '#a0a8b8' : '#565B70')
@@ -340,31 +359,9 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     .reverse() as { event: RaceEventMsg; fmt: { label: string; color: string } }[]
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-
-      {/* ── Map fullscreen ── */}
-      {mapFullscreen && (
-        <div className="flex-1 min-h-0">
-          <TrackMap
-            trackId={session?.track_id ?? null}
-            participants={participants}
-            isDark={isDark}
-            sectorColors={sectorColors}
-            driversMode={driversMode}
-            mapTimeout={mapTimeout}
-            reduceAnimations={reduceAnimations}
-            mapDimmed={mapDimmed}
-            aeroMode={aeroMode}
-            slmTrackStatus={session?.active_aero_track_status ?? -1}
-            isFullscreen
-            onToggleFullscreen={() => setMapFullscreen(false)}
-          />
-        </div>
-      )}
+    <div className="relative flex flex-col h-full overflow-hidden">
 
       {/* ── Normal layout ── */}
-      {!mapFullscreen && <>
-
       {/* ── Header ── */}
       <div
         className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
@@ -454,9 +451,9 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
         <div className="flex flex-col flex-1 min-w-0 divide-y divide-[var(--border)]">
 
           {/* Track map */}
-          <div className="flex-1 min-h-0">
+          <div className={`session-map-transition ${mapFullscreen ? 'absolute inset-0 z-40 bg-[var(--bg-base)]' : 'flex-1 min-h-0'}`}>
             <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
+            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} />
           </div>
 
           {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
@@ -623,7 +620,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
         </div>
       </div>
 
-      </>}
     </div>
   )
 })

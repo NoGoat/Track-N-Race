@@ -5,6 +5,7 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_GEAR = '#5794F2'
@@ -23,8 +24,9 @@ const GEAR_TICKS = [1, 2, 3, 4, 5, 6, 7, 8]
 const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0), new Float64Array(0)]
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
 
-export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -42,15 +44,22 @@ export default function GearChart({ isDark, view = 'chart', windowSeconds = 30 }
     ].join('')
   }, [axisColor, coordinates])
 
-  return <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
-    <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest mb-3 shrink-0">Gear</h2>
+  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+    <div className="flex h-[22px] items-center gap-0 mb-3 shrink-0">
+      <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Gear</h2>
+      <ChartWindowOverrideSelect />
+    </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
-              windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+              windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
               refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} />}
     </div>
   </div>
+}
+
+export default function GearChart(props: Props) {
+  return <ChartWindowScope section="inputGear"><GearChartContent {...props} /></ChartWindowScope>
 }

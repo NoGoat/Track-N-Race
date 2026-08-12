@@ -45,19 +45,36 @@ function lowerBoundTime(rows: readonly { session_time: number }[], value: number
   return lo
 }
 
+interface SyncCursor {
+  lastSessionTime: number
+  statusFirstSessionTime: number
+  statusLength: number
+}
+
 function syncTelemetry(
   buffer: AlignedDataBuffer,
   telemetry: readonly TelemetryRow[],
   statuses: readonly StatusRow[],
   values: Float64Array,
   getX: (row: TelemetryRow) => number,
-  cursor: { lastSessionTime: number },
+  cursor: SyncCursor,
   rebuild: boolean,
 ): boolean {
+  const statusFirstSessionTime = statuses[0]?.session_time ?? Infinity
+  // Telemetry and status history can be restored by separate selective V4
+  // backfills. If telemetry wins that race, the existing points are initially
+  // aligned against no status rows. Revisit them when an older status prefix
+  // arrives; ordinary live status appends keep the incremental fast path.
+  const statusBackfilled = !rebuild && buffer.length > 0 && statuses.length > 0 && (
+    cursor.statusLength === 0 || statusFirstSessionTime < cursor.statusFirstSessionTime
+  )
+  rebuild ||= statusBackfilled
   if (rebuild) {
     buffer.clear()
     cursor.lastSessionTime = -Infinity
   }
+  cursor.statusFirstSessionTime = statusFirstSessionTime
+  cursor.statusLength = statuses.length
   if (telemetry.length === 0) {
     return rebuild
   }
@@ -101,8 +118,17 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
   const comparisonBufferRef = useRef<AlignedDataBuffer | null>(null)
   const scratchRef = useRef(new Float64Array(3))
-  const syncRef = useRef({ lastSessionTime: -Infinity, lapRevision: coordinates.lapRevision })
-  const comparisonSyncRef = useRef({ lastSessionTime: -Infinity })
+  const syncRef = useRef<SyncCursor & { lapRevision: number }>({
+    lastSessionTime: -Infinity,
+    statusFirstSessionTime: Infinity,
+    statusLength: 0,
+    lapRevision: coordinates.lapRevision,
+  })
+  const comparisonSyncRef = useRef<SyncCursor>({
+    lastSessionTime: -Infinity,
+    statusFirstSessionTime: Infinity,
+    statusLength: 0,
+  })
   const comparisonLapRef = useRef<number | null>(null)
   const dirtyRef = useRef(false)
   const tooltipFormatRef = useRef(tooltipFormat)
@@ -225,6 +251,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       if (buffer.length) buffer.clear()
       comparisonLapRef.current = null
       comparisonSyncRef.current.lastSessionTime = -Infinity
+      comparisonSyncRef.current.statusFirstSessionTime = Infinity
+      comparisonSyncRef.current.statusLength = 0
       chart.model.requestRedraw()
       return
     }

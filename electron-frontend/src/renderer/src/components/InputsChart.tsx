@@ -5,6 +5,7 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_THROTTLE = '#37872D', COLOR_BRAKE = '#C4162A'
@@ -20,8 +21,9 @@ const TABLE_COLS: GraphTableColumn[] = [
 const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0)]
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
 
-export default function InputsChart({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -42,18 +44,25 @@ export default function InputsChart({ isDark, view = 'chart', windowSeconds = 30
     ].join('')
   }, [axisColor, coordinates])
 
-  return <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
-    <div className="flex items-center justify-between mb-3 shrink-0">
-      <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Throttle</h2>
-      {view !== 'table' && <div className="flex gap-4 text-xs"><span style={{ color: COLOR_THROTTLE }}>▲ Throttle</span><span style={{ color: COLOR_BRAKE }}>▼ Brake</span></div>}
+  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+    <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+      <div className="flex items-center gap-0">
+        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Throttle</h2>
+        <ChartWindowOverrideSelect />
+      </div>
+      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: COLOR_THROTTLE }}>▲ Throttle</span><span style={{ color: COLOR_BRAKE }}>▼ Brake</span></div>}
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
-            windowSeconds={windowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={40}
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+            windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={40}
             yTickValues={() => Y_TICKS} yTickFormat={v => `${Math.round(Math.abs(v) * 100)}%`} xTickFormat={fmtTime}
             refLines={[{ y: 0, dashed: false }]} tooltipFormat={tooltipFormat} />}
     </div>
   </div>
+}
+
+export default function InputsChart(props: Props) {
+  return <ChartWindowScope section="inputThrottleBrake"><InputsChartContent {...props} /></ChartWindowScope>
 }

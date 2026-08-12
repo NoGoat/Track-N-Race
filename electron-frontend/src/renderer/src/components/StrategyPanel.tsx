@@ -469,7 +469,6 @@ const RivalsPanel = memo(function RivalsPanel({
       <div className="flex flex-col divide-y divide-[var(--border)]">
         {rows.map(({ idx, dir }) => {
           const car       = timing.cars.find(c => c.idx === idx)
-          const livery    = participants?.drivers.find(d => d.idx === idx)?.livery_color ?? '#8e8e8e'
           const isRetired = !car || car.result_status !== 2
           const dirColor  = dir === 'ahead' ? '#5794F2' : '#FADE2A'
 
@@ -493,10 +492,7 @@ const RivalsPanel = memo(function RivalsPanel({
                 {dir === 'ahead' ? '▲' : '▼'}
               </span>
               {car && !isRetired ? (
-                <span
-                  className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
-                  style={{ backgroundColor: livery + '28', color: livery }}
-                >
+                <span className="text-[10px] font-bold tabular-nums w-7 text-center text-[var(--text-primary)] shrink-0">
                   P{car.position}
                 </span>
               ) : (
@@ -618,7 +614,6 @@ const PositionPanel = memo(function PositionPanel({
             })),
           ].map(({ car, role, isImmediate }) => {
             const isPlayer = role === 'player'
-            const livery   = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
 
             let gapMs: number | null = null
             let gapColor = 'var(--text-secondary)'
@@ -650,10 +645,7 @@ const PositionPanel = memo(function PositionPanel({
 
             return (
               <div key={car.idx} className="flex items-center gap-3 px-5 py-3">
-                <span
-                  className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
-                  style={{ backgroundColor: livery + '28', color: livery }}
-                >
+                <span className="text-[10px] font-bold tabular-nums w-7 text-center text-[var(--text-primary)] shrink-0">
                   P{car.position}
                 </span>
                 <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>

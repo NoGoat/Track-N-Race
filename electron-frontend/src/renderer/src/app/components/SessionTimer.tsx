@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalyzeLapData, LapRow } from '../../types'
 import type { TitlebarUpdateInterval } from '../appConfig'
 import { DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR } from '../../lib/analyzeMetrics'
@@ -89,13 +89,19 @@ function SessionTimerDisplay({ comparisonMode, sessionTime, lap, currentLapData,
       : delta < 0
         ? DEFAULT_DELTA_NEGATIVE_COLOR
         : 'var(--text-primary)'
+  const lastDeltaRef = useRef({ text: '+0.000', color: 'var(--text-primary)' })
+  if (delta !== null) lastDeltaRef.current = { text: formattedDelta, color: deltaColor }
 
   return (
-    <div className="flex items-center gap-2 text-sm font-black tabular-nums shrink-0">
+    <div className="flex items-center text-sm font-black tabular-nums shrink-0">
       {formattedTime && <span className="text-[var(--text-primary)]">{formattedTime}</span>}
-      {delta !== null && (
-        <span className="pl-[5px]" style={{ color: deltaColor }}>{formattedDelta}</span>
-      )}
+      <span className={`titlebar-delta-slot ${delta !== null ? 'titlebar-delta-slot--visible' : ''}`}>
+        <span>
+          <span className="ml-[13px] whitespace-nowrap" style={{ color: lastDeltaRef.current.color }}>
+            {lastDeltaRef.current.text}
+          </span>
+        </span>
+      </span>
     </div>
   )
 }

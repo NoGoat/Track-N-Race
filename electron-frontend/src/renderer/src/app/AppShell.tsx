@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
 import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
-import type { Tab } from './appConfig'
+import { getChartWindowOptionGroups, type ChartWindow, type Tab } from './appConfig'
 import { useAppConfiguration } from './hooks/useAppConfiguration'
 import { useWindowState } from './hooks/useWindowState'
 import { usePlayback } from './hooks/usePlayback'
@@ -19,7 +19,13 @@ import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import type { RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
-import { dataRequirementsForUi } from '../lib/historyDependencies'
+import { dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
+import {
+  ChartWindowOverridesProvider,
+  type ChartReferenceLapOverrides,
+  type ChartWindowOverrides,
+} from '../lib/chartWindowOverrides'
+import type { GraphSection } from '../lib/graphSections'
 
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
@@ -43,8 +49,49 @@ export default function AppShell() {
   const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
   const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
   const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
+  const [chartWindowOverrides, setChartWindowOverrides] = useState<ChartWindowOverrides>({})
+  const [chartReferenceLapOverrides, setChartReferenceLapOverrides] = useState<ChartReferenceLapOverrides>({})
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
+
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    if (reduceAnimations) root.dataset.reduceAnimations = 'true'
+    else delete root.dataset.reduceAnimations
+    return () => { delete root.dataset.reduceAnimations }
+  }, [reduceAnimations])
+
+  const setChartWindowOverride = useCallback((section: GraphSection, value: ChartWindow | null) => {
+    setChartWindowOverrides(current => {
+      if (value === null) {
+        if (!(section in current)) return current
+        const next = { ...current }
+        delete next[section]
+        return next
+      }
+      return current[section] === value ? current : { ...current, [section]: value }
+    })
+  }, [])
+  const handleGlobalChartWindowChange = useCallback((value: ChartWindow) => {
+    setChartWindowOverrides({})
+    setChartReferenceLapOverrides({})
+    setChartWindow(value)
+  }, [setChartWindow])
+  const setChartReferenceLapOverride = useCallback((section: GraphSection, lapNum: number | null) => {
+    setChartReferenceLapOverrides(current => {
+      if (lapNum === null) {
+        if (!(section in current)) return current
+        const next = { ...current }
+        delete next[section]
+        return next
+      }
+      return current[section] === lapNum ? current : { ...current, [section]: lapNum }
+    })
+  }, [])
+  const handleGlobalReferenceLapChange = useCallback((lapNum: number | null) => {
+    setChartReferenceLapOverrides({})
+    setReferenceLapNum(lapNum)
+  }, [])
 
   useEffect(() => window.recordingBridge.onError(setRecordingError), [])
 
@@ -74,6 +121,27 @@ export default function AppShell() {
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
+  const availableChartWindows = useMemo(() => new Set(
+    getChartWindowOptionGroups(clAvailable, recordingOpen)
+      .flatMap(group => group.options)
+      .map(option => option.value),
+  ), [clAvailable, recordingOpen])
+  useEffect(() => {
+    setChartWindowOverrides(current => {
+      const next = Object.fromEntries(Object.entries(current)
+        .filter(([, value]) => availableChartWindows.has(value))) as ChartWindowOverrides
+      return Object.keys(next).length === Object.keys(current).length ? current : next
+    })
+    setChartReferenceLapOverrides(current => {
+      const next = Object.fromEntries(Object.entries(current)
+        .filter(([section]) => {
+          const graphSection = section as GraphSection
+          const effectiveWindow = chartWindowOverrides[graphSection] ?? chartWindow
+          return effectiveWindow === 'RL' && availableChartWindows.has(effectiveWindow)
+        })) as ChartReferenceLapOverrides
+      return Object.keys(next).length === Object.keys(current).length ? current : next
+    })
+  }, [availableChartWindows, chartWindow, chartWindowOverrides])
   const chartCoordinateMode = chartWindow === 'AL'
     ? 'AL'
     : clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
@@ -105,20 +173,32 @@ export default function AppShell() {
     ),
     [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask],
   )
+  const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
+    tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView,
+  ), [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView])
+  const visibleChartWindows = useMemo(() => visibleChartSections.length > 0
+    ? visibleChartSections.map(section => chartWindowOverrides[section] ?? chartWindow)
+    : [chartWindow],
+  [chartWindow, chartWindowOverrides, visibleChartSections])
   useEffect(() => {
     // Analysis is always scoped to the current lap. Its distance-axis charts
     // consume the store's dedicated analyzeLap* slices, so the title-bar time
     // window must not truncate the native seek preload (15s/30s/etc.) or turn
     // it into an unnecessarily large full-session AL preload.
     const analysisLapScope = tab === 'analyze'
-    const allLapsEnabled = !analysisLapScope && chartWindow === 'AL'
+    const allLapsEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'AL')
+    const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL')
+    const finiteWindows = visibleChartWindows.filter((value): value is number => typeof value === 'number')
+    const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
+    // A mixed lap/time page seeks the current lap first. The renderer then
+    // requests the older finite prefix additively only when that prefix starts
+    // before the lap, so overlapping V4 blocks are not decoded unnecessarily.
+    const mixedLapAndTime = hasLapWindow && finiteWindows.length > 0
     const historyWindowSeconds = analysisLapScope
       ? 0
-      : chartWindow === 'AL'
+      : allLapsEnabled
         ? -1
-        : typeof chartWindow === 'number'
-          ? seconds
-          : 0
+        : hasLapWindow ? 0 : maxFiniteWindow
     setHistoryRowMask(dataRequirements.historyMask)
     window.playerBridge.setDataRequirements(
       dataRequirements.streamMask,
@@ -128,13 +208,13 @@ export default function AppShell() {
     window.playerBridge.setAllLapsMode(
       allLapsEnabled,
       dataRequirements.historyMask,
-      analysisLapScope ? 0 : typeof chartWindow === 'number' ? seconds : 0,
+      analysisLapScope ? 0 : hasLapWindow ? 0 : maxFiniteWindow,
     )
     setTelemetrySeconds(
-      allLapsEnabled ? Infinity : seconds,
-      !analysisLapScope && typeof chartWindow === 'number',
+      allLapsEnabled ? Infinity : maxFiniteWindow,
+      !analysisLapScope && (finiteWindows.length > 0 || mixedLapAndTime),
     )
-  }, [chartWindow, dataRequirements, seconds, tab])
+  }, [dataRequirements, seconds, tab, visibleChartWindows])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we
@@ -189,8 +269,8 @@ export default function AppShell() {
         referenceLapOptions={referenceLapOptions}
         setEditOpen={setEditOpen}
         setHeaderVisible={setHeaderVisible}
-        setChartWindow={setChartWindow}
-        setReferenceLapNum={setReferenceLapNum}
+        setChartWindow={handleGlobalChartWindowChange}
+        setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
         setTab={setTab}
         settingsOpen={settingsOpen}
@@ -225,53 +305,62 @@ export default function AppShell() {
       />
 
       {/* Settings Modal */}
-      {settingsOpen && (
-        <Settings
-          isOpen={settingsOpen}
-          onClose={handleCloseSettings}
-          tyreView={tyreView}
-          onTyreViewChange={setTyreView}
-          tyreWearMode={tyreWearMode}
-          onTyreWearModeChange={setTyreWearMode}
-          bannerDuration={bannerDuration}
-          onBannerDurationChange={setBannerDuration}
-          theme={theme}
-          onThemeChange={setTheme}
-          sectorColors={sectorColors}
-          onSectorColorsChange={setSectorColors}
-          driversMode={driversMode}
-          onDriversModeChange={setDriversMode}
-          mapTimeout={mapTimeout}
-          onMapTimeoutChange={setMapTimeout}
-          detectedGameLabel={detectedGameLabel}
-          detectedWarningFormat={detectedWarningFormat}
-          forcedWarningFormat={forcedWarningFormat}
-          nativeTitlebar={nativeTitlebar}
-          onNativeTitlebarChange={setNativeTitlebar}
-          titlebarUpdateInterval={titlebarUpdateInterval}
-          onTitlebarUpdateIntervalChange={setTitlebarUpdateInterval}
-          reduceAnimations={reduceAnimations}
-          onReduceAnimationsChange={setReduceAnimations}
-          fpsInFocus={fpsInFocus}
-          onFpsInFocusChange={setFpsInFocus}
-          fpsOutOfFocus={fpsOutOfFocus}
-          onFpsOutOfFocusChange={setFpsOutOfFocus}
-          mapDimmed={mapDimmed}
-          onMapDimmedChange={setMapDimmed}
-          graphView={graphView}
-          onGraphViewChange={setGraphView}
-          compact={compact}
-          onCompactChange={setCompact}
-          chartYAxis={chartYAxis}
-          onChartYAxisChange={setChartYAxis}
-        />
-      )}
+      <Settings
+        isOpen={settingsOpen}
+        onClose={handleCloseSettings}
+        tyreView={tyreView}
+        onTyreViewChange={setTyreView}
+        tyreWearMode={tyreWearMode}
+        onTyreWearModeChange={setTyreWearMode}
+        bannerDuration={bannerDuration}
+        onBannerDurationChange={setBannerDuration}
+        theme={theme}
+        onThemeChange={setTheme}
+        sectorColors={sectorColors}
+        onSectorColorsChange={setSectorColors}
+        driversMode={driversMode}
+        onDriversModeChange={setDriversMode}
+        mapTimeout={mapTimeout}
+        onMapTimeoutChange={setMapTimeout}
+        detectedGameLabel={detectedGameLabel}
+        detectedWarningFormat={detectedWarningFormat}
+        forcedWarningFormat={forcedWarningFormat}
+        nativeTitlebar={nativeTitlebar}
+        onNativeTitlebarChange={setNativeTitlebar}
+        titlebarUpdateInterval={titlebarUpdateInterval}
+        onTitlebarUpdateIntervalChange={setTitlebarUpdateInterval}
+        reduceAnimations={reduceAnimations}
+        onReduceAnimationsChange={setReduceAnimations}
+        fpsInFocus={fpsInFocus}
+        onFpsInFocusChange={setFpsInFocus}
+        fpsOutOfFocus={fpsOutOfFocus}
+        onFpsOutOfFocusChange={setFpsOutOfFocus}
+        mapDimmed={mapDimmed}
+        onMapDimmedChange={setMapDimmed}
+        graphView={graphView}
+        onGraphViewChange={setGraphView}
+        compact={compact}
+        onCompactChange={setCompact}
+        chartYAxis={chartYAxis}
+        onChartYAxisChange={setChartYAxis}
+      />
 
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
       <main className="flex-1 min-h-0">
+        <ChartWindowOverridesProvider
+          globalWindow={chartWindow}
+          overrides={chartWindowOverrides}
+          setOverride={setChartWindowOverride}
+          clAvailable={clAvailable}
+          recordingOpen={recordingOpen}
+          referenceLapNum={referenceLapNum}
+          referenceLapOptions={referenceLapOptions}
+          referenceLapOverrides={chartReferenceLapOverrides}
+          setReferenceLapOverride={setChartReferenceLapOverride}
+        >
         <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask}>
-        <TabContent key={chartCoordinateMode ?? 'time-window'}
+        <TabContent
           tab={tab}
           isDark={theme === 'dark'}
           seconds={seconds}
@@ -301,6 +390,7 @@ export default function AppShell() {
           onAnalyzeDataMaskChange={setAnalyzeDataMask}
         />
         </ChartCoordinatesProvider>
+        </ChartWindowOverridesProvider>
       </main>
 
       {/* Playback Controls Bar */}

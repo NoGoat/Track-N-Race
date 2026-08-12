@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
-import Select, { type SingleValue } from 'react-select'
+import { type SingleValue } from 'react-select'
+import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { Maximize2, Minimize2 } from 'lucide-react'

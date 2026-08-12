@@ -1,5 +1,6 @@
 import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../app/appConfig'
 import { ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig } from './analyzeMetrics'
+import type { GraphSection } from './graphSections'
 
 // Logical recording row families. These bits are shared with TnrdReader's V4
 // directory and are deliberately not UDP packet ids: one game packet can feed
@@ -131,6 +132,58 @@ export function dataRequirementsForUi(
   result.streamMask >>>= 0
   result.historyMask >>>= 0
   return result
+}
+
+export function visibleChartSectionsForUi(
+  tab: Tab,
+  core: CoreLayout,
+  input: InputLayout,
+  misc: MiscLayout,
+  power: PowerLayout,
+  tyres: TyresLayout,
+  tyreView: 'cards' | 'graphs',
+): GraphSection[] {
+  if (tab === 'core') {
+    const sections: GraphSection[] = []
+    if (core.showSpeedChart) sections.push('overviewTelemetry')
+    if (core.showThermal && tyreView === 'graphs') {
+      if (core.thermalGraphs.surfaceTemp) sections.push('overviewTyreSurface')
+      if (core.thermalGraphs.innerTemp) sections.push('overviewTyreInner')
+      if (core.thermalGraphs.brakeTemp) sections.push('overviewTyreBrake')
+      if (core.thermalGraphs.tyreLife) sections.push('overviewTyreWear')
+    }
+    return sections
+  }
+  if (tab === 'input') {
+    return [
+      ...(input.showGear ? ['inputGear' as const] : []),
+      ...(input.showInputs ? ['inputThrottleBrake' as const] : []),
+      ...(input.showSteering ? ['inputSteering' as const] : []),
+    ]
+  }
+  if (tab === 'power') {
+    return [
+      ...(power.charts.powerSplit ? ['powerSplit' as const] : []),
+      ...(power.charts.ersHarvest ? ['powerHarvest' as const] : []),
+      ...(power.charts.ersStore ? ['powerStore' as const] : []),
+      ...(power.charts.fuelHistory ? ['powerFuel' as const] : []),
+    ]
+  }
+  if (tab === 'tyres') {
+    return [
+      ...(tyres.charts.surfaceTemp ? ['tyreSurface' as const] : []),
+      ...(tyres.charts.innerTemp ? ['tyreInner' as const] : []),
+      ...(tyres.charts.brakeTemp ? ['tyreBrake' as const] : []),
+      ...(tyres.charts.tyreLife ? ['tyreWear' as const] : []),
+    ]
+  }
+  if (tab === 'misc') {
+    return [
+      ...(misc.showGForce ? ['miscGForce' as const] : []),
+      ...(misc.showRideHeight ? ['miscRideHeight' as const] : []),
+    ]
+  }
+  return []
 }
 
 export function dataMaskForAnalyze(

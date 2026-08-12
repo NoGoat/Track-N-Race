@@ -301,6 +301,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             layout="grid"
             windowSeconds={windowSeconds}
             yAxis={yAxis}
+            sectionGroup="tyres"
           />
         </div>
       </div>

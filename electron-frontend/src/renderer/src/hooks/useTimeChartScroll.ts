@@ -134,10 +134,14 @@ export function useTimeChartScroll(
     const applyDraw = (): void => chart.model.update()
 
     const applyFastDraw = (): void => {
-      const plugins = chart.plugins as unknown as { lineChart?: { drawFrame: () => void } }
+      const plugins = chart.plugins as unknown as {
+        lineChart?: { drawFrame: () => void }
+        areaFill?: { drawFrame: () => void }
+      }
       if (!plugins.lineChart) { applyDraw(); return }
       chart.canvasLayer.clear()
       plugins.lineChart.drawFrame()
+      plugins.areaFill?.drawFrame()
       for (const series of chart.options.series) series.data.markSynced()
     }
 

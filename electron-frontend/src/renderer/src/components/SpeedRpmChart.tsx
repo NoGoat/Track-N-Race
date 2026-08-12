@@ -4,6 +4,8 @@ import GraphTable, { type GraphTableColumn } from './GraphTable'
 import SpeedRpmTimeChart from './charts/SpeedRpmTimeChart'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 
 interface Props {
   data: TelemetryRow[]
@@ -29,8 +31,12 @@ function raw(value: number, max: number): number {
   return Number.isNaN(value) ? NaN : Math.round(value * max)
 }
 
-export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function SpeedRpmChartContent(props: Props) {
+  const { isDark, view = 'chart', windowSeconds = 30 } = props
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
+  const statusHistory = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
       const values = [raw(source[0], 380), raw(source[1], 16000), raw(source[2], 100)]
@@ -64,13 +70,16 @@ export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'cha
     return [ts, speed, rpm, ers]
   }, [coordinates, data, statusHistory, view])
 
-  return <div className="bg-[var(--bg-panel)] p-4 flex flex-col h-full">
-    <div className="flex items-center justify-between mb-3 shrink-0">
-      <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
-      {view !== 'table' && <div className="flex gap-4 text-xs">
-        <span style={{ color: COLOR_SPEED }}>— Speed (kph)</span>
-        <span style={{ color: COLOR_RPM }}>— RPM</span>
-        <span style={{ color: COLOR_ERS }}>— ERS (%)</span>
+  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 flex flex-col h-full">
+    <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+      <div className="flex items-center gap-0">
+        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
+        <ChartWindowOverrideSelect />
+      </div>
+      {view !== 'table' && <div className="flex items-center gap-4 text-xs">
+          <span style={{ color: COLOR_SPEED }}>— Speed (kph)</span>
+          <span style={{ color: COLOR_RPM }}>— RPM</span>
+          <span style={{ color: COLOR_ERS }}>— ERS (%)</span>
       </div>}
     </div>
     <div className="flex-1 min-h-0 relative">
@@ -78,10 +87,14 @@ export default function SpeedRpmChart({ data, statusHistory, isDark, view = 'cha
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
           ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <SpeedRpmTimeChart key={isDark ? 'dark' : 'light'} isDark={isDark} telemetry={data} statuses={statusHistory}
+          : <SpeedRpmTimeChart key={`${isDark ? 'dark' : 'light'}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
-              windowSeconds={windowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
+              windowSeconds={scopedWindowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
     </div>
   </div>
+}
+
+export default function SpeedRpmChart(props: Props) {
+  return <ChartWindowScope section="overviewTelemetry"><SpeedRpmChartContent {...props} /></ChartWindowScope>
 }

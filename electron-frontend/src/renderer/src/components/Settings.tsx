@@ -12,6 +12,7 @@ import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 import type { TitlebarUpdateInterval } from '../app/appConfig'
+import { useModalPresence } from '../lib/useModalPresence'
 
 interface Props {
   isOpen: boolean
@@ -154,6 +155,7 @@ const Settings = memo(function Settings({
   chartYAxis,
   onChartYAxisChange,
 }: Props) {
+  const modalPresence = useModalPresence(isOpen)
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
@@ -169,7 +171,7 @@ const Settings = memo(function Settings({
     () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25' | 'f1_26')
   )
 
-  if (!isOpen) return null
+  if (!modalPresence.mounted) return null
 
   const portValid = Number.isInteger(port) && port >= 1 && port <= 65535
   const dirty     = port !== (window.electronStore.get('udp.port', 20777) as number)
@@ -251,7 +253,7 @@ const Settings = memo(function Settings({
       >
         <Toggle value={nativeTitlebar} onChange={onNativeTitlebarChange} />
       </Row>
-      <Row label="Titlebar Updates" description="How often the session timer and lap-comparison delta refresh.">
+      <Row label="Delta Updates" description="How often the session timer and lap-comparison delta refresh.">
         <SegmentedControl<TitlebarUpdateInterval>
           options={[
             { value: 0, label: 'Realtime' },
@@ -763,11 +765,12 @@ const Settings = memo(function Settings({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+      data-state={modalPresence.visible ? 'open' : 'closed'}
+      className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       onClick={onClose}
     >
       <div
-        className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
+        className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}

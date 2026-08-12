@@ -1066,7 +1066,7 @@ void StrategyPage::update(const LapRow* lap, const tnrp::SessionRow* session,
             std::sort(s4.begin(), s4.end(), std::greater<double>());
             if (maxWear - s4[1] > 10) {
                 if (maxWear == flW) cand.push_back({ "Front-left is the limit tyre",
-                    "Sustained right-handers push 70–80% of axle load onto the outside front — classic Silverstone/Lusail/Suzuka pattern; monitor cliff lap closely", kOrange, 1 });
+                    "Sustained right-handers push 70–80% of axle load onto the outside front, monitor cliff lap closely", kOrange, 1 });
                 else if (maxWear == frW) cand.push_back({ "Front-right is the limit tyre",
                     "Sustained left-handers are loading the outside front corner — ease entry speed and let steering unwind earlier", kOrange, 1 });
                 else if (maxWear == rlW) cand.push_back({ "Rear-left overheating under throttle",

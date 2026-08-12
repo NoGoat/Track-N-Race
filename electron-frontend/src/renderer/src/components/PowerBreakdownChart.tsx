@@ -5,6 +5,9 @@ import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeCha
 import type { YAxisBehavior } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import type { GraphSection } from '../lib/graphSections'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }
 
@@ -42,6 +45,7 @@ function fmtTime(s: number) {
 }
 
 interface PowerLineProps extends CP {
+  section: GraphSection
   title: string
   series: SeriesDef<StatusRow>[]
   columns: GraphTableColumn[]
@@ -51,11 +55,14 @@ interface PowerLineProps extends CP {
   tooltipDetails?: (values: number[], axisColor: string) => string
 }
 
-function PowerLineChart({
-  title, data, isDark, view = 'chart', windowSeconds = 30, series, columns,
-  yRange, yFormat, note, tooltipDetails,
-}: PowerLineProps) {
+function PowerLineChartContent(props: PowerLineProps) {
+  const {
+    title, isDark, view = 'chart', windowSeconds = 30, series, columns,
+    yRange, yFormat, note, tooltipDetails,
+  } = props
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
   const visibleEntries = useMemo(() => series
     .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
     .filter(({ series: s }) => s.visible !== false), [columns, series])
@@ -87,15 +94,16 @@ function PowerLineChart({
   }, [axisColor, coordinates, tooltipDetails, visibleEntries])
 
   return (
-    <div className="bg-[var(--bg-panel)] p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="text-[11px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
-        {view !== 'table' && (
-          <div className="flex gap-4 text-xs">
+    <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+      <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
+        <div className="flex items-center gap-0">
+          <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
+          <ChartWindowOverrideSelect />
+        </div>
+        {view !== 'table' && <div className="flex items-center gap-4 text-xs">
             {visibleEntries.map(({ series: s }) => <span key={s.label} style={{ color: s.color }}>— {s.label}</span>)}
             {note && <span className="text-[var(--text-secondary)]">{note}</span>}
-          </div>
-        )}
+        </div>}
       </div>
       <div className="flex-1 min-h-0 relative">
         {data.length === 0 ? (
@@ -104,12 +112,13 @@ function PowerLineChart({
           <GraphTable columns={visibleColumns} data={tableData} />
         ) : (
           <TimeChartView<StatusRow>
+            key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={data}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
             getX={d => d.session_time}
             series={series}
-            windowSeconds={windowSeconds}
+            windowSeconds={scopedWindowSeconds}
             yRange={yRange}
             yAxisSize={52}
             yTickValues={yRange.kind !== 'auto' ? (min, max) => {
@@ -129,10 +138,14 @@ function PowerLineChart({
   )
 }
 
+function PowerLineChart(props: PowerLineProps) {
+  return <ChartWindowScope section={props.section}><PowerLineChartContent {...props} /></ChartWindowScope>
+}
+
 function PowerSplitChart(props: CP) {
   const details = useCallback((v: number[], ac: string) =>
     `<div style="color:${ac}">Total: ${(v[0] + v[1]).toFixed(1)} kW</div>`, [])
-  return <PowerLineChart {...props} title="Power Split" series={SERIES_SPLIT} columns={COLS_SPLIT}
+  return <PowerLineChart {...props} section="powerSplit" title="Power Split" series={SERIES_SPLIT} columns={COLS_SPLIT}
     yRange={{ kind: 'fixed', min: 0, max: 1000 }} yFormat={v => `${v}kW`}
     tooltipDetails={details} />
 }
@@ -143,7 +156,7 @@ function ERSHarvestChart(props: CP) {
     i === 1 ? { ...s, visible: hasMguh } : s), [hasMguh])
   const details = useCallback((v: number[], ac: string) =>
     `<div style="color:${ac}">Total: ${(v[0] + (hasMguh ? v[1] : 0)).toFixed(1)} kJ</div>`, [hasMguh])
-  return <PowerLineChart {...props} title="ERS Harvest" series={series} columns={COLS_HARVEST}
+  return <PowerLineChart {...props} section="powerHarvest" title="ERS Harvest" series={series} columns={COLS_HARVEST}
     yRange={props.ersHarvestYAxis === 'dynamic'
       ? { kind: 'auto' }
       : { kind: 'expand', initialLower: 0, initialUpper: 8000, lowerPad: 0, upperPad: 0, expandLower: false }}
@@ -154,14 +167,14 @@ function ERSHarvestChart(props: CP) {
 function ERSStoreChart(props: CP) {
   const details = useCallback((v: number[], ac: string) =>
     `<div style="color:${ac}">${(v[0] / 100 * 4).toFixed(2)} / 4.00 MJ</div>`, [])
-  return <PowerLineChart {...props} title="ERS Store" series={SERIES_STORE} columns={COLS_STORE}
+  return <PowerLineChart {...props} section="powerStore" title="ERS Store" series={SERIES_STORE} columns={COLS_STORE}
     yRange={{ kind: 'fixed', min: 0, max: 100 }} yFormat={v => `${v}%`} note="max 4.0 MJ"
     tooltipDetails={details} />
 }
 
 function FuelHistoryChart(props: CP) {
   const upperLimit = props.fuelUpperLimit ?? Math.max(1, (props.data[0]?.fuel_kg ?? 0) + 1)
-  return <PowerLineChart {...props} title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
+  return <PowerLineChart {...props} section="powerFuel" title="Fuel History" series={SERIES_FUEL} columns={COLS_FUEL}
     yRange={{ kind: 'fixed', min: 0, max: upperLimit }} yFormat={v => `${v.toFixed(1)}kg`} />
 }
 

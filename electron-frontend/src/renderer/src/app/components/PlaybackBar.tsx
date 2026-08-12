@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
-import Select, { type SingleValue } from 'react-select'
+import { type SingleValue } from 'react-select'
+import Select from '../../lib/AnimatedSelect'
 import { ChevronLeft, ChevronRight, Download, Pause, Play } from 'lucide-react'
 import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
@@ -118,11 +119,23 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
   }, [sessionFileStart, speedRpmBlocks, state.currentTime, state.totalTime])
 
   const controlSize = compact ? 'w-6 h-6' : 'w-8 h-8'
+  const playControlSize = compact ? 'w-6 h-6' : 'w-7 h-7'
+  const playIconSize = compact ? 12 : 16
   return (
     <div className={`${compact ? 'h-10 gap-1' : 'h-14 gap-2'} border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 z-40 select-none`}>
       <div className={`flex items-center ${compact ? 'gap-1' : 'gap-3'}`}>
         <button onClick={onSeekBackward} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronLeft size={compact ? 14 : 18} /></button>
-        <button onClick={onTogglePlay} className={`${compact ? 'w-5 h-5' : 'w-7 h-7'} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}>{state.isPlaying ? <Pause size={compact ? 13 : 16} fill="currentColor" /> : <Play size={compact ? 13 : 16} fill="currentColor" className="ml-0.5" />}</button>
+        <button
+          type="button"
+          onClick={onTogglePlay}
+          title={state.isPlaying ? 'Pause' : 'Play'}
+          aria-label={state.isPlaying ? 'Pause playback' : 'Play playback'}
+          className={`${playControlSize} inline-flex shrink-0 items-center justify-center p-0 leading-none rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-focus)] transition-colors`}
+        >
+          {state.isPlaying
+            ? <Pause size={playIconSize} strokeWidth={2} fill="currentColor" className="block" />
+            : <Play size={playIconSize} strokeWidth={2} fill="currentColor" className="block translate-x-[0.5px]" />}
+        </button>
         <button onClick={onSeekForward} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronRight size={compact ? 14 : 18} /></button>
       </div>
       <ProgressTracker compact={compact} currentTime={state.currentTime} onSeekProgress={onSeekProgress} progressPct={state.progressPct} totalTime={state.totalTime} />

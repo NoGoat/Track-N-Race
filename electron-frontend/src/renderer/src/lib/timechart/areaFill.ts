@@ -109,7 +109,12 @@ export function createAreaFillPlugin(defs: AreaFillDef[]): TimeChartPlugin {
             previousY = y
             previousPixel = currentPixel
           }
-          ctx.lineTo(xScale(previousX), baselineY)
+          // Canvas cannot fill a zero-width polygon. Give the initial lone
+          // sample one CSS pixel until a second packet establishes a span.
+          const lastX = xScale(previousX)
+          const closeX = end === start ? Math.min(plotRight, lastX + 1) : lastX
+          if (closeX !== lastX) ctx.lineTo(closeX, yScale(previousY))
+          ctx.lineTo(closeX, baselineY)
           ctx.closePath()
           ctx.fillStyle = def.color
           ctx.fill()
@@ -121,6 +126,11 @@ export function createAreaFillPlugin(defs: AreaFillDef[]): TimeChartPlugin {
       chart.model.resized.on(draw)
       chart.model.disposing.on(() => canvas.remove())
       draw()
+
+      // Fast scroll frames update the WebGL series without emitting the full
+      // model.updated event. Let the shared scheduler keep this canvas overlay
+      // on the exact same x-domain as the line.
+      return { drawFrame: draw }
     },
   }
 }

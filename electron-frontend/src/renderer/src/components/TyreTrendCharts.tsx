@@ -1,12 +1,14 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
-import type { TyreYAxisGroupState } from '../lib/graphSections'
+import type { GraphSection, TyreYAxisGroupState } from '../lib/graphSections'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type ChartColors, type AxisLook, type YRangeSpec } from './charts/TimeChartView'
 import { niceTicks } from '../lib/timechart/ticks'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -88,7 +90,51 @@ const temperatureYTicks = (min: number, max: number) => {
   return [ticks[0], (ticks[0] + ticks[1]) / 2, ticks[1], (ticks[1] + ticks[2]) / 2, ...ticks.slice(2)]
 }
 
+function useTyreTitleWidth() {
+  const controlsRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef<HTMLSpanElement>(null)
+
+  useLayoutEffect(() => {
+    const controls = controlsRef.current
+    const title = titleRef.current
+    if (!controls || !title) return
+
+    let animationFrame = 0
+    const measure = () => {
+      const siblingWidth = Array.from(controls.children).reduce((width, child) => (
+        child === title ? width : width + child.getBoundingClientRect().width
+      ), 0)
+      const availableTitleWidth = Math.max(0, controls.clientWidth - siblingWidth)
+
+      title.style.whiteSpace = 'nowrap'
+      title.style.width = 'max-content'
+      const singleLineWidth = title.getBoundingClientRect().width
+      title.style.whiteSpace = 'normal'
+      title.style.width = availableTitleWidth + 0.5 < singleLineWidth ? 'min-content' : 'max-content'
+    }
+    const scheduleMeasure = () => {
+      cancelAnimationFrame(animationFrame)
+      animationFrame = requestAnimationFrame(measure)
+    }
+
+    measure()
+    const observer = new ResizeObserver(scheduleMeasure)
+    observer.observe(controls)
+    for (const child of controls.children) {
+      if (child !== title) observer.observe(child)
+    }
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      observer.disconnect()
+    }
+  }, [])
+
+  return { controlsRef, titleRef }
+}
+
 interface ChartProps<T extends { session_time: number }> {
+  section: GraphSection
+  source: 'telemetry' | 'damage'
   title: string
   unit: string
   rows: readonly T[]
@@ -104,16 +150,28 @@ interface ChartProps<T extends { session_time: number }> {
   yTickValues?: (min: number, max: number) => number[]
 }
 
-function TyreLineChartImpl<T extends { session_time: number }>({
-  title, unit, rows, comparisonRows, series, isDark, view = 'chart', windowSeconds = 30,
-  fastScroll, followSessionClock, minScrollStallS, yRange, yTickValues = tyreYTicks,
-}: ChartProps<T>) {
+function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps<T>) {
+  const {
+    title, unit, series, isDark, view = 'chart', windowSeconds = 30, source,
+    fastScroll, followSessionClock, minScrollStallS, yRange, yTickValues = tyreYTicks,
+  } = props
   const coordinates = useChartCoordinates()
+  const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const rows = useTelemetryStore(s => (source === 'telemetry'
+    ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry
+    : coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)) as unknown as readonly T[]
+  const comparisonRows = coordinates.comparisonMode
+    ? (source === 'telemetry' ? coordinates.lapData?.telemetry : coordinates.lapData?.damageHistory) as readonly T[] | undefined
+    : undefined
   const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const { controlsRef, titleRef } = useTyreTitleWidth()
 
-  // A single sample can't draw a line, so it counts as no data — otherwise the
-  // one damage row delivered by a playback load/seek shows a bare axis frame.
-  const hasData = rows.length > 1
+  // A single sample can't draw a line. Comparison modes can still render a
+  // complete selected/previous/fastest trace before the sparse current damage
+  // stream has advanced, so do not hide that trace behind the empty state.
+  const hasData = rows.length > 1 || (
+    view !== 'table' && coordinates.comparisonMode && (comparisonRows?.length ?? 0) > 1
+  )
 
   // AlignedData only for the table view.
   const tableData = useMemo((): AlignedTable => {
@@ -147,21 +205,22 @@ function TyreLineChartImpl<T extends { session_time: number }>({
   }, [series, unit, axisColor, coordinates])
 
   return (
-    <div className="flex-1 min-w-0 bg-[var(--bg-panel)] p-3 flex flex-col">
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
-        {view !== 'table' && (
-          <div className="flex gap-3">
+    <div className="tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] px-4 pb-4 pt-3 flex flex-col">
+      <div className="tyre-chart-header flex h-[22px] items-center justify-between mb-2 shrink-0">
+        <div ref={controlsRef} className="tyre-chart-controls flex min-w-0 flex-1 items-center gap-0">
+          <span ref={titleRef} className="tyre-chart-title min-w-min shrink-0 whitespace-normal pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
+          <ChartWindowOverrideSelect />
+        </div>
+        {view !== 'table' && <div className="tyre-chart-legend flex shrink-0 items-center gap-3">
             {series.map((s) => (
               <div key={s.label} className="flex items-center gap-1">
                 <svg width="16" height="4">
                   <line x1="0" y1="2" x2="16" y2="2" stroke={s.color} strokeWidth="2" />
                 </svg>
-                <span className="text-[9px] text-[var(--text-secondary)]">{s.label}</span>
+                <span className="text-[9px] leading-none text-[var(--text-secondary)]">{s.label}</span>
               </div>
             ))}
-          </div>
-        )}
+        </div>}
       </div>
       <div className="flex-1 min-h-0 relative">
         {!hasData ? (
@@ -170,12 +229,13 @@ function TyreLineChartImpl<T extends { session_time: number }>({
           <GraphTable columns={tableCols} data={tableData} edgePadRem={0.75} />
         ) : (
           <TimeChartView<T>
+            key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={rows}
             comparisonRows={comparisonRows}
             getX={(d) => d.session_time}
             series={series}
-            windowSeconds={windowSeconds}
+            windowSeconds={scopedWindowSeconds}
             yRange={yRange}
             yAxisSize={42}
             yTickValues={yTickValues}
@@ -199,6 +259,10 @@ function TyreLineChartImpl<T extends { session_time: number }>({
 // publications when its damage rows and configuration have not changed.
 const TyreLineChart = memo(TyreLineChartImpl) as typeof TyreLineChartImpl
 
+function ScopedTyreLineChart<T extends { session_time: number }>(props: ChartProps<T>) {
+  return <ChartWindowScope section={props.section}><TyreLineChart<T> {...props} /></ChartWindowScope>
+}
+
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 
 interface Props {
@@ -214,13 +278,11 @@ interface Props {
   windowSeconds?: number
   fastScroll?: boolean
   yAxis: TyreYAxisGroupState
+  sectionGroup: 'overview' | 'tyres'
 }
 
-export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis }: Props) {
-  const coordinates = useChartCoordinates()
+export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode, visibleGraphs, isDark, layout = 'row', graphViews, windowSeconds = 30, fastScroll, yAxis, sectionGroup }: Props) {
   const c = cornerColors(isDark)
-  const comparisonTelemetry = coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined
-  const comparisonDamage = coordinates.comparisonMode ? coordinates.lapData?.damageHistory : undefined
 
   const tempSeries = useCallback((corner: (row: TelemetryRow) => { fl: number; fr: number; rl: number; rr: number }): SeriesDef<TelemetryRow>[] => [
     { label: 'FL', color: c.fl, getY: (d) => corner(d).fl, lineWidth: 2 },
@@ -246,10 +308,13 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   // getY closures for the wear chart depend on tyreWearMode; TimeChartView
   // captures accessors at creation, so remount the wear chart when the mode
   // flips (an occasional user toggle) via a key.
-  const surfaceEl = <TyreLineChart<TelemetryRow> title="Surface Temp" unit="°C" rows={telemetry} comparisonRows={comparisonTelemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.surfaceTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
-  const innerEl   = <TyreLineChart<TelemetryRow> title="Inner Temp"   unit="°C" rows={telemetry} comparisonRows={comparisonTelemetry} series={innerSeries}   isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.innerTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
-  const brakeEl   = <TyreLineChart<TelemetryRow> title="Brake Temp"   unit="°C" rows={telemetry} comparisonRows={comparisonTelemetry} series={brakeSeries}   isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
-  const wearEl    = <TyreLineChart<DamageRow> key={tyreWearMode} title={wearTitle} unit="%" rows={damageHistory} comparisonRows={comparisonDamage} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
+  const sections = sectionGroup === 'overview'
+    ? { surface: 'overviewTyreSurface', inner: 'overviewTyreInner', brake: 'overviewTyreBrake', wear: 'overviewTyreWear' } as const
+    : { surface: 'tyreSurface', inner: 'tyreInner', brake: 'tyreBrake', wear: 'tyreWear' } as const
+  const surfaceEl = <ScopedTyreLineChart<TelemetryRow> section={sections.surface} source="telemetry" title="Surface Temp" unit="°C" rows={telemetry} series={surfaceSeries} isDark={isDark} view={graphViews?.surfaceTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.surfaceTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
+  const innerEl   = <ScopedTyreLineChart<TelemetryRow> section={sections.inner} source="telemetry" title="Inner Temp" unit="°C" rows={telemetry} series={innerSeries} isDark={isDark} view={graphViews?.innerTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.innerTemp === 'fixed' ? TEMP_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
+  const brakeEl   = <ScopedTyreLineChart<TelemetryRow> section={sections.brake} source="telemetry" title="Brake Temp" unit="°C" rows={telemetry} series={brakeSeries} isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
+  const wearEl    = <ScopedTyreLineChart<DamageRow> key={tyreWearMode} section={sections.wear} source="damage" title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 
   if (layout === 'grid') {
     const items = [

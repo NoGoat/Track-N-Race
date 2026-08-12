@@ -1,5 +1,5 @@
 import { memo, type Dispatch, type SetStateAction } from 'react'
-import Select from 'react-select'
+import Select from '../../lib/AnimatedSelect'
 import { Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
@@ -10,6 +10,7 @@ import iconTransparentLight from '../../assets/icon_transparent_light.png'
 import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
+import AnimatedAutoWidth from './AnimatedAutoWidth'
 
 const selectStyles = buildSelectStyles(true)
 const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
@@ -64,6 +65,7 @@ export default memo(function AppHeader({
   const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
   const windowOptions = windowOptionGroups.flatMap(group => group.options)
   const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
+  const selectedLapVisible = Boolean(filename) && chartWindow === 'RL'
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
@@ -119,14 +121,16 @@ export default memo(function AppHeader({
         </div>
         <SessionTimer comparisonMode={clAvailable && (chartWindow === 'PL' || chartWindow === 'FL' || (chartWindow === 'RL' && !!filename)) ? chartWindow : null} referenceLapNum={referenceLapNum} updateInterval={titlebarUpdateInterval} />
 
-        {filename && chartWindow === 'RL' && (
-          <div style={{ WebkitAppRegion: 'no-drag' }}>
+        <div className={`titlebar-lap-slot ${selectedLapVisible ? 'titlebar-lap-slot--visible' : ''}`}>
+          <div className="titlebar-lap-slot__inner" style={{ WebkitAppRegion: 'no-drag' }}>
             <Select options={referenceLapOptions} value={referenceLapOptions.find(option => option.value === referenceLapNum) ?? null} onChange={option => setReferenceLapNum(option?.value ?? null)} placeholder="1" styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
           </div>
-        )}
+        </div>
 
         <div style={{ WebkitAppRegion: 'no-drag' }}>
-          <Select options={windowOptionGroups} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={windowSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          <AnimatedAutoWidth measureKey={String(displayedWindow)}>
+            <Select options={windowOptionGroups} value={windowOptions.find(option => option.value === displayedWindow) ?? null} onChange={option => option && setChartWindow(option.value)} styles={windowSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          </AnimatedAutoWidth>
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>

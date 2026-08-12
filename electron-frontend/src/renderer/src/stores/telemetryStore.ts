@@ -534,6 +534,10 @@ function handleMsg(msg: GatewayMsg): void {
       if (stsBufRef.current.length) set({ status: stsBufRef.current[stsBufRef.current.length - 1] })
       if (dmgBufRef.current.length) set({ damage: dmgBufRef.current[dmgBufRef.current.length - 1] })
       if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
+      // Per-chart overrides can require both the complete current lap and a
+      // longer finite time window. The seek carries the lap range; request only
+      // the missing older finite prefix after inspecting the decoded bounds.
+      requestVisibleWindowHistory()
       break
     }
     case 'playback_seek_flush_failed':
