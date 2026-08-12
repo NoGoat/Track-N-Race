@@ -91,7 +91,7 @@ export default memo(function AppHeader({
         <div className="flex-1 min-w-0 overflow-hidden px-2 pointer-events-none">
           {activeBanner && (
             <div className="mx-auto flex max-w-full min-w-0 items-center justify-center gap-2 overflow-hidden">
-              <span className="max-w-full shrink-0 truncate text-xs font-black uppercase tracking-[0.2em]" style={{ color: activeBanner.color }}>{activeBanner.label}</span>
+              <span className="max-w-full shrink-0 truncate text-xs font-black uppercase tracking-[0.2em]" style={{ color: `color-mix(in srgb, ${activeBanner.color} 72%, var(--text-primary))` }}>{activeBanner.label}</span>
               {activeBanner.sub && <><span className="shrink-0 text-xs text-[var(--text-secondary)]">·</span><span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span></>}
             </div>
           )}

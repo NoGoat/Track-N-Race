@@ -6,6 +6,7 @@ import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { themeSeriesColor } from '../lib/themeColors'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_GEAR = '#5794F2'
@@ -27,6 +28,9 @@ function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(
 function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const colorGear = themeSeriesColor(COLOR_GEAR, isDark)
+  const chartSeries = useMemo(() => SERIES.map(series => ({ ...series, color: colorGear })), [colorGear])
+  const tableColumns = useMemo(() => TABLE_COLS.map(column => ({ ...column, color: colorGear })), [colorGear])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -34,15 +38,15 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
     data.forEach((d, i) => { ts[i] = d.session_time; gear[i] = d.gear })
     return [ts, gear]
   }, [data, view])
-  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => `<div style="color:${COLOR_GEAR}">Gear ${Math.round(values[0])}</div>`
+    const formatValues = (values: number[]) => `<div style="color:${colorGear}">Gear ${Math.round(values[0])}</div>`
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [axisColor, coordinates])
+  }, [axisColor, colorGear, coordinates])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center gap-0 mb-3 shrink-0">
@@ -51,8 +55,8 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+        : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} />
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
               windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
               refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} />}

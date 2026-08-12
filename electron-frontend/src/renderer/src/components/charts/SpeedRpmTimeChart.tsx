@@ -10,6 +10,7 @@ import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
+import { themeSeriesColor } from '../../lib/themeColors'
 
 interface Props {
   isDark: boolean
@@ -24,7 +25,8 @@ interface Props {
 
 const SPEED = '#37872D'
 const RPM = '#C4162A'
-const ERS = '#FADE2A'
+const ERS_DARK = '#FADE2A'
+const ERS_LIGHT = '#765900'
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 
 function nearestIndex(data: SeriesData, x: number): number {
@@ -143,22 +145,25 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    const axis = isDark ? '#7c8098' : '#6b7280'
+    const axis = isDark ? '#7c8098' : '#596168'
+    const speed = themeSeriesColor(SPEED, isDark)
+    const rpm = themeSeriesColor(RPM, isDark)
+    const ers = isDark ? ERS_DARK : ERS_LIGHT
     const buffer = new AlignedDataBuffer(3)
     const comparisonBuffer = new AlignedDataBuffer(3)
     bufferRef.current = buffer
     comparisonBufferRef.current = comparisonBuffer
     const blend = (hex: string) => {
       const value = Number.parseInt(hex.slice(1), 16)
-      const bg = isDark ? [0x12, 0x14, 0x1f] : [0xff, 0xff, 0xff]
+      const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
       const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
       return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
     }
     const axisCfg: { current: AxisConfig } = { current: {
       axisColor: axis,
-      yAxisColor: SPEED,
+      yAxisColor: speed,
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
-      borderColor: isDark ? '#1e2136' : '#d0d5e0',
+      borderColor: isDark ? '#1e2136' : '#afb1ae',
       font: '11px "Cascadia Code", ui-monospace, monospace',
       xTickSpacePx: 80,
       xTickFormat: x => coordinates.distanceMode || coordinates.allLapsMode ? coordinates.formatX(x) : xFormatRef.current(x),
@@ -169,8 +174,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       yTickFormat: v => String(Math.round(v * 380)),
       xGap: 2, yGap: 4, showYGrid: true,
       extraYAxes: [
-        { side: 'right', offset: 4, color: RPM, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * 16)}k` },
-        { side: 'right', offset: 54, color: ERS, values: Y_TICKS, format: v => `${Math.round(v * 100)}%` },
+        { side: 'right', offset: 4, color: rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * 16)}k` },
+        { side: 'right', offset: 54, color: ers, values: Y_TICKS, format: v => `${Math.round(v * 100)}%` },
       ],
     } }
     axisCfgRef.current = axisCfg
@@ -179,18 +184,18 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
-        { name: 'Previous Speed', color: blend(SPEED), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0] },
-        { name: 'Previous RPM', color: blend(RPM), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1] },
-        { name: 'Previous ERS', color: blend(ERS), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2] },
-        { name: 'Speed', color: SPEED, lineWidth: 1.5, data: buffer.series[0] },
-        { name: 'RPM', color: RPM, lineWidth: 1.5, data: buffer.series[1] },
-        { name: 'ERS', color: ERS, lineWidth: 1.5, data: buffer.series[2] },
+        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0] },
+        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1] },
+        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2] },
+        { name: 'Speed', color: speed, lineWidth: 1.5, data: buffer.series[0] },
+        { name: 'RPM', color: rpm, lineWidth: 1.5, data: buffer.series[1] },
+        { name: 'ERS', color: ers, lineWidth: 1.5, data: buffer.series[2] },
       ],
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
     chartRef.current = chart
     host.style.color = axis
-    host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#ffffff')
+    host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
 
     const tooltipValues = [NaN, NaN, NaN]
     const comparisonTooltipValues = [NaN, NaN, NaN]

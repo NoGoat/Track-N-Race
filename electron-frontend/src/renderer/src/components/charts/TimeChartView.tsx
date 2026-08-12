@@ -14,6 +14,7 @@ import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
+import { themeSeriesColor } from '../../lib/themeColors'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -27,7 +28,7 @@ import { subscribeAllLapsData } from '../../stores/telemetryStore'
 
 function zeroColorFor(isDark: boolean) { return isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.18)' }
 function refColorFor(isDark: boolean) { return isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)' }
-function overlayBgFor(isDark: boolean) { return isDark ? '#12141f' : '#ffffff' }
+function overlayBgFor(isDark: boolean) { return isDark ? '#12141f' : '#f1f0ec' }
 
 export interface ChartColors {
   axis: string
@@ -40,9 +41,9 @@ export interface ChartColors {
 // Default theme colours (matches the Misc-page charts).
 function defaultColors(isDark: boolean): ChartColors {
   return {
-    axis: isDark ? '#7c8098' : '#6b7280',
+    axis: isDark ? '#7c8098' : '#596168',
     grid: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
-    border: isDark ? '#1e2136' : '#d0d5e0',
+    border: isDark ? '#1e2136' : '#afb1ae',
   }
 }
 
@@ -238,7 +239,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     const match = /^#([0-9a-f]{6})$/i.exec(hex)
     if (!match) return hex
     const value = Number.parseInt(match[1], 16)
-    const bg = isDark ? [0x12, 0x14, 0x1f] : [0xff, 0xff, 0xff]
+    const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
     const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
     return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
   }
@@ -291,7 +292,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       series: [
         ...defs.map((s, index) => ({
           name: `comparison:${s.label}`,
-          color: blendColor(s.color),
+          color: blendColor(themeSeriesColor(s.color, isDark)),
           lineWidth: Math.max(1, (s.lineWidth ?? 1.5) - 0.5),
           lineType: s.lineType ?? TimeChart.LineType.Line,
           stepLocation: s.stepLocation ?? 1,
@@ -300,7 +301,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         })),
         ...defs.map((s, index) => ({
         name: s.label,
-        color: s.color,
+        color: themeSeriesColor(s.color, isDark),
         lineWidth: s.lineWidth ?? 1.5,
         lineType: s.lineType ?? TimeChart.LineType.Line,
         stepLocation: s.stepLocation ?? 1,
@@ -711,8 +712,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     series.forEach((s, i) => {
       const comparison = chart.options.series[i]
       const current = chart.options.series[i + count]
-      if (comparison) comparison.color = blendColor(s.color)
-      if (current) current.color = s.color
+      const color = themeSeriesColor(s.color, isDark)
+      if (comparison) comparison.color = blendColor(color)
+      if (current) current.color = color
     })
     chart.model.requestRedraw()
     // eslint-disable-next-line react-hooks/exhaustive-deps

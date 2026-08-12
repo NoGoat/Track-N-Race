@@ -8,6 +8,7 @@ import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import type { GraphSection } from '../lib/graphSections'
+import { themeSeriesColor } from '../lib/themeColors'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }
 
@@ -62,10 +63,12 @@ function PowerLineChartContent(props: PowerLineProps) {
   } = props
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const themedSeries = useMemo(() => series.map(item => ({ ...item, color: themeSeriesColor(item.color, isDark) })), [isDark, series])
+  const themedColumns = useMemo(() => columns.map(item => ({ ...item, color: themeSeriesColor(item.color, isDark) })), [columns, isDark])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
-  const visibleEntries = useMemo(() => series
-    .map((s, i) => ({ series: s, column: columns[i], sourceIndex: i }))
-    .filter(({ series: s }) => s.visible !== false), [columns, series])
+  const visibleEntries = useMemo(() => themedSeries
+    .map((s, i) => ({ series: s, column: themedColumns[i], sourceIndex: i }))
+    .filter(({ series: s }) => s.visible !== false), [themedColumns, themedSeries])
   const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -78,7 +81,7 @@ function PowerLineChartContent(props: PowerLineProps) {
     return [ts, ...values]
   }, [data, view, visibleEntries])
 
-  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => [
       ...visibleEntries.map(e =>
@@ -117,7 +120,7 @@ function PowerLineChartContent(props: PowerLineProps) {
             rows={data}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
             getX={d => d.session_time}
-            series={series}
+            series={themedSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
             yAxisSize={52}

@@ -6,6 +6,7 @@ import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { themeSeriesColor } from '../lib/themeColors'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_THROTTLE = '#37872D', COLOR_BRAKE = '#C4162A'
@@ -24,6 +25,10 @@ function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(
 function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const colorThrottle = themeSeriesColor(COLOR_THROTTLE, isDark)
+  const colorBrake = themeSeriesColor(COLOR_BRAKE, isDark)
+  const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
+  const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -31,18 +36,18 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
     data.forEach((d, i) => { ts[i] = d.session_time; throttle[i] = d.throttle; brake[i] = -d.brake })
     return [ts, throttle, brake]
   }, [data, view])
-  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
     const formatValues = (values: number[]) => [
-      `<div><span style="color:${COLOR_THROTTLE}">Throttle</span>: ${Math.round(values[0] * 100)}%</div>`,
-      `<div><span style="color:${COLOR_BRAKE}">Brake</span>: ${Math.round(Math.abs(values[1]) * 100)}%</div>`,
+      `<div><span style="color:${colorThrottle}">Throttle</span>: ${Math.round(values[0] * 100)}%</div>`,
+      `<div><span style="color:${colorBrake}">Brake</span>: ${Math.round(Math.abs(values[1]) * 100)}%</div>`,
     ].join('')
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [axisColor, coordinates])
+  }, [axisColor, colorBrake, colorThrottle, coordinates])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
@@ -50,12 +55,12 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
         <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Throttle</h2>
         <ChartWindowOverrideSelect />
       </div>
-      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: COLOR_THROTTLE }}>▲ Throttle</span><span style={{ color: COLOR_BRAKE }}>▼ Brake</span></div>}
+      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: colorThrottle }}>▲ Throttle</span><span style={{ color: colorBrake }}>▼ Brake</span></div>}
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+        : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} />
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
             windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={40}
             yTickValues={() => Y_TICKS} yTickFormat={v => `${Math.round(Math.abs(v) * 100)}%`} xTickFormat={fmtTime}
             refLines={[{ y: 0, dashed: false }]} tooltipFormat={tooltipFormat} />}

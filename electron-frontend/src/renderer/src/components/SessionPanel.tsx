@@ -35,8 +35,8 @@ const FLAG_BG: Record<number, string> = {
 }
 
 export function sessionAccent(t: number, isDark: boolean): string {
-  if (t >= 1  && t <= 4)  return isDark ? '#FB923C' : '#C2660A'
-  if (t >= 5  && t <= 14) return isDark ? '#ffd700' : '#B7950B'
+  if (t >= 1  && t <= 4)  return isDark ? '#FB923C' : '#A04300'
+  if (t >= 5  && t <= 14) return isDark ? '#ffd700' : '#765900'
   if (t >= 15 && t <= 17) return isDark ? '#5794F2' : '#0B57D0'
   return isDark ? '#a0a8b8' : '#565B70'
 }
@@ -84,7 +84,7 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
   const name = (idx?: number) => driverName(p, idx ?? 0)
   const fmtLap = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`
   switch (ev.code) {
-    case 'FTLP': return { label: `Fastest Lap — ${name(ev.car_idx)}  ${fmtLap(ev.lap_time_s ?? 0)}`, color: isDark ? '#BF5FFF' : '#9B5DE5' }
+    case 'FTLP': return { label: `Fastest Lap — ${name(ev.car_idx)}  ${fmtLap(ev.lap_time_s ?? 0)}`, color: isDark ? '#BF5FFF' : '#7C3BA6' }
     case 'DRSE': return { label: 'DRS Enabled', color: isDark ? '#37872D' : '#137333' }
     case 'DRSD': return { label: 'DRS Disabled', color: isDark ? '#6e7177' : '#565B70' }
     case 'RDFL': return { label: 'Red Flag', color: '#e10600' }
@@ -93,20 +93,20 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
     case 'SSTA': return { label: 'Session Start', color: isDark ? '#5794F2' : '#0B57D0' }
     case 'SEND': return { label: 'Session End', color: isDark ? '#5794F2' : '#0B57D0' }
     case 'RTMT': return { label: `Retired — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
-    case 'RCWN': return { label: `Race Winner — ${name(ev.car_idx)}`, color: isDark ? '#FFD700' : '#B7950B' }
+    case 'RCWN': return { label: `Race Winner — ${name(ev.car_idx)}`, color: isDark ? '#FFD700' : '#765900' }
     case 'DTSV': return { label: `DT Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SGSV': return { label: `SG Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SCAR': {
       const T: Record<number, string> = { 1: 'Safety Car', 2: 'Virtual SC', 3: 'Formation Lap' }
       const A: Record<number, string> = { 0: 'Deployed', 1: 'Returning', 2: 'Returned', 3: 'Resume Race' }
-      return { label: `${T[ev.safety_car_type ?? 0] ?? 'SC'} — ${A[ev.event_type ?? 0] ?? ''}`, color: isDark ? '#ffd700' : '#B7950B' }
+      return { label: `${T[ev.safety_car_type ?? 0] ?? 'SC'} — ${A[ev.event_type ?? 0] ?? ''}`, color: isDark ? '#ffd700' : '#765900' }
     }
     case 'PENA': {
       const pt = ev.penalty_type ?? 0
       const L: Record<number, string> = { 0: 'Drive Through', 1: 'Stop-Go', 2: 'Grid Penalty', 4: 'Time Penalty', 5: 'Warning', 6: 'DSQ' }
       const C: Record<number, string> = isDark
         ? { 0: '#e10600', 1: '#e10600', 2: '#c47d0e', 4: '#c47d0e', 5: '#ffd700', 6: '#e10600' }
-        : { 0: '#C4162A', 1: '#C4162A', 2: '#C26400', 4: '#C26400', 5: '#B7950B', 6: '#C4162A' }
+        : { 0: '#C4162A', 1: '#C4162A', 2: '#A04300', 4: '#A04300', 5: '#765900', 6: '#C4162A' }
       if (!(pt in L)) return null
       const ts = (pt === 1 || pt === 4) && ev.penalty_time_s ? ` ${ev.penalty_time_s}s` : ''
       const inf = ev.infringement_type != null ? INFRINGEMENT_LABELS[ev.infringement_type] : undefined

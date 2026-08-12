@@ -1465,7 +1465,7 @@ const StrategyPanel = memo(function StrategyPanel({
   const avgWear   = strategyData?.avgWear ?? 0
 
   const blueAccent  = isDark ? '#5794F2' : '#0B57D0'
-  const amberAccent = isDark ? '#FADE2A' : '#B06000'
+  const amberAccent = isDark ? '#FADE2A' : '#8B5200'
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

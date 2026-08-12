@@ -21,7 +21,7 @@ function cornerColors(isDark: boolean) {
     fl: FL,
     fr: isDark ? FR : '#0B57D0',
     rl: isDark ? RL : '#137333',
-    rr: isDark ? RR : '#B38F00',
+    rr: isDark ? RR : '#765900',
   }
 }
 
@@ -42,10 +42,10 @@ const TYRE_AXIS_LOOK: AxisLook = {
 
 function tyreColorsFor(isDark: boolean): ChartColors {
   return {
-    axis: isDark ? '#7c8098' : '#6b7280',
-    grid: isDark ? '#1e2136' : '#d0d5e0',
-    border: isDark ? '#1e2136' : '#d0d5e0',
-    tickMark: isDark ? '#555' : '#b0b8cc',
+    axis: isDark ? '#7c8098' : '#596168',
+    grid: isDark ? '#1e2136' : '#afb1ae',
+    border: isDark ? '#1e2136' : '#afb1ae',
+    tickMark: isDark ? '#555' : '#898e8a',
   }
 }
 
@@ -163,7 +163,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   const comparisonRows = coordinates.comparisonMode
     ? (source === 'telemetry' ? coordinates.lapData?.telemetry : coordinates.lapData?.damageHistory) as readonly T[] | undefined
     : undefined
-  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const axisColor = isDark ? '#7c8098' : '#596168'
   const { controlsRef, titleRef } = useTyreTitleWidth()
 
   // A single sample can't draw a line. Comparison modes can still render a

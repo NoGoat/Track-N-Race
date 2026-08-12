@@ -148,7 +148,7 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
       {!pinned && (
         <button
           onClick={scrollToBottom}
-          className={`${TEXT_ACTION_BUTTON_CLASS} absolute bottom-3 right-3 z-10`}
+          className={`${TEXT_ACTION_BUTTON_CLASS} absolute bottom-3 right-3 z-10 bg-[var(--bg-menu)] shadow-[0_2px_8px_rgba(0,0,0,0.35)] hover:bg-[var(--bg-hover)]`}
         >
           <ChevronDown size={12} />
           <span>Scroll to Bottom</span>

@@ -47,7 +47,7 @@ function aeroOverlayFromTelemetry(aeroMode: 'drs' | 'slm', slmTrackStatus: numbe
 
 
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
-const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']
+const SECTOR_COLORS_LIGHT = ['#B3132B', '#0D47A1', '#765900']
 const SECTOR_COLORS       = SECTOR_COLORS_DARK
 const DRS_COLOR_DARK      = '#39B54A'
 const DRS_COLOR_LIGHT     = '#237A32'
@@ -561,7 +561,7 @@ function drawLabel(
     spriteCtx.shadowOffsetY = 2
     spriteCtx.beginPath()
     spriteCtx.roundRect(x, y, LABEL_W, LABEL_H, LABEL_R)
-    spriteCtx.fillStyle = isDark ? 'rgba(10,15,30,0.92)' : 'rgba(255,255,255,0.96)'
+    spriteCtx.fillStyle = isDark ? 'rgba(10,15,30,0.92)' : 'rgba(241,240,236,0.97)'
     spriteCtx.fill()
     if (!isDark) {
       spriteCtx.strokeStyle = 'rgba(0,0,0,0.15)'

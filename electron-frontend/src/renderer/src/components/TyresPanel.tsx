@@ -1,4 +1,5 @@
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, useCallback, useRef, memo } from 'react'
+import { flushSync } from 'react-dom'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
@@ -31,6 +32,11 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
 
 const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
 type Corner = typeof CORNERS[number]
+type TyresViewTransition = {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
 
 function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>): Record<Corner, AlignedTable> {
   return useMemo(() => {
@@ -140,7 +146,7 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
   const statusColor =
     isFitted             ? (isDark ? '#5794F2' : '#0B57D0') :
     status === 'NEW'     ? (isDark ? '#37872D' : '#137333') :
-    status === 'USED'    ? (isDark ? '#d4ad04' : '#B06000') :
+    status === 'USED'    ? (isDark ? '#d4ad04' : '#8B5200') :
     isReserved           ? (isDark ? '#a78bfa' : '#6d28d9') :
     (isDark ? '#484c62' : '#565B70')
 
@@ -241,6 +247,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
+  const activeViewTransitionRef = useRef<TyresViewTransition | null>(null)
   const { ref: cardsRef, height: cardsHeight } = useSize()
   // Expanded mode renders the shared TimeCharts directly. Building thirteen
   // full-window Float64 columns for the hidden wheel cards was pure allocation
@@ -262,9 +269,60 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   const noData = !latest
   const compact = cardsHeight > 0 && cardsHeight < 720
 
+  const setExpandedAnimated = useCallback((next: boolean) => {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => TyresViewTransition
+    }
+    const motionReduced = document.documentElement.dataset.reduceAnimations === 'true'
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const root = document.documentElement
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      activeViewTransitionRef.current?.skipTransition?.()
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+      return
+    }
+
+    // A click during the tail of the previous animation should reverse it,
+    // rather than being lost while Chromium finishes the old transition.
+    activeViewTransitionRef.current?.skipTransition?.()
+    root.dataset.tyresViewTransition = next ? 'graphs' : 'allocation'
+    root.dataset.tyresViewTransitionPhase = 'preparing'
+    try {
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => setExpanded(next))
+      })
+      activeViewTransitionRef.current = transition
+      void transition.ready.then(() => {
+        // WebGL chart construction can occupy the first frame after capture.
+        // Keep the compositor animation paused until that work has yielded so
+        // its first presented frame really is animation frame zero.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activeViewTransitionRef.current !== transition) return
+          root.dataset.tyresViewTransitionPhase = 'running'
+        }))
+      }, () => {})
+      const clearTransition = () => {
+        if (activeViewTransitionRef.current !== transition) return
+        activeViewTransitionRef.current = null
+        delete root.dataset.tyresViewTransition
+        delete root.dataset.tyresViewTransitionPhase
+      }
+      void transition.finished.then(clearTransition, clearTransition)
+    } catch {
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+    }
+  }, [])
+
   if (expanded) {
     return (
-      <div className="h-full flex flex-col bg-[var(--bg-panel)] overflow-hidden">
+      <div className="tyres-view-transition h-full flex flex-col bg-[var(--bg-panel)] overflow-hidden">
         <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center">
           <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest w-32 shrink-0">Tyre Conditions</span>
           <div className="flex-1 flex justify-center items-center gap-2">
@@ -283,8 +341,8 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             })()}
           </div>
           <button
-            onClick={() => setExpanded(false)}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-32 shrink-0 justify-end"
+            onClick={() => setExpandedAnimated(false)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-32 shrink-0 justify-end"
           >
             <Minimize2 size={11} />
             <span>Allocation</span>
@@ -309,7 +367,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   }
 
   return (
-    <div className="h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+    <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
       {/* Left: allocation table */}
       <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
         {drySets
@@ -327,8 +385,8 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
         <div className="shrink-0 px-3 py-2 flex items-center justify-between">
           <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">Conditions</span>
           <button
-            onClick={() => setExpanded(true)}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => setExpandedAnimated(true)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <Maximize2 size={11} />
             <span>Graphs</span>

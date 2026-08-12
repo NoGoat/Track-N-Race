@@ -6,6 +6,7 @@ import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { buildLapProgressMap, interpolateLapElapsed, type LapProgressMap } from '../../lib/lapDelta'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
+import { themeSeriesColor } from '../../lib/themeColors'
 import type { AnalyzeLapData } from '../../types'
 
 interface Props {
@@ -295,7 +296,7 @@ function blendColor(hex: string, isDark: boolean): string {
   const match = /^#([0-9a-f]{6})$/i.exec(hex)
   if (!match) return hex
   const value = Number.parseInt(match[1], 16)
-  const bg = isDark ? [0x12, 0x14, 0x1f] : [0xff, 0xff, 0xff]
+  const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
   const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
   return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
 }
@@ -313,6 +314,8 @@ export default function AnalyzeTimeChart({
   distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
   zoomEnabled, controlsRef, onInspectMap,
 }: Props) {
+  const themedDeltaPositive = themeSeriesColor(deltaPositiveColor, isDark)
+  const themedDeltaNegative = themeSeriesColor(deltaNegativeColor, isDark)
   const { tooltipRef, show, hide } = useChartTooltip()
   const containerRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -323,7 +326,7 @@ export default function AnalyzeTimeChart({
   const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
   const deltaRangeRef = useRef(0.5)
   const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0 })
-  const deltaColorsRef = useRef({ positive: deltaPositiveColor, negative: deltaNegativeColor })
+  const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
   const selectedRef = useRef(selected)
   const isDarkRef = useRef(isDark)
   const currentRef = useRef(current)
@@ -347,7 +350,7 @@ export default function AnalyzeTimeChart({
   zoomEnabledRef.current = zoomEnabled
   distanceModeRef.current = distanceMode
   onInspectMapRef.current = onInspectMap
-  deltaColorsRef.current = { positive: deltaPositiveColor, negative: deltaNegativeColor }
+  deltaColorsRef.current = { positive: themedDeltaPositive, negative: themedDeltaNegative }
 
   useEffect(() => {
     const host = hostRef.current
@@ -366,7 +369,7 @@ export default function AnalyzeTimeChart({
       for (const def of ANALYZE_METRICS) {
         const channel = METRICS_BY_SOURCE[def.source].findIndex(candidate => candidate.id === def.id)
         rawSeries.push({
-          name: `${role}:${def.id}`, color: def.defaultColor, visible: false,
+          name: `${role}:${def.id}`, color: themeSeriesColor(def.defaultColor, isDark), visible: false,
           lineWidth: role === 'comparison' ? 1.25 : 1.75,
           lineType: def.lineType === 'step' ? TimeChart.LineType.Step : TimeChart.LineType.Line,
           stepLocation: def.lineType === 'step' ? 1 : 0,
@@ -376,11 +379,11 @@ export default function AnalyzeTimeChart({
     }
     const deltaSeries = {
       positive: {
-        name: 'delta:positive', color: deltaPositiveColor, visible: false, lineWidth: 2,
+        name: 'delta:positive', color: themedDeltaPositive, visible: false, lineWidth: 2,
         lineType: TimeChart.LineType.Line, data: buffers.deltaPositive.series[0],
       },
       negative: {
-        name: 'delta:negative', color: deltaNegativeColor, visible: false, lineWidth: 2,
+        name: 'delta:negative', color: themedDeltaNegative, visible: false, lineWidth: 2,
         lineType: TimeChart.LineType.Line, data: buffers.deltaNegative.series[0],
       },
     }
@@ -594,8 +597,9 @@ export default function AnalyzeTimeChart({
       const visible = visibleIds.has(def.id)
       const currentOption = records.current.get(def.id)
       const comparisonOption = records.comparison.get(def.id)
-      if (currentOption) { currentOption.visible = visible; currentOption.color = item?.color ?? def.defaultColor }
-      if (comparisonOption) { comparisonOption.visible = visible && !!comparison; comparisonOption.color = blendColor(item?.color ?? def.defaultColor, isDark) }
+      const color = themeSeriesColor(item?.color ?? def.defaultColor, isDark)
+      if (currentOption) { currentOption.visible = visible; currentOption.color = color }
+      if (comparisonOption) { comparisonOption.visible = visible && !!comparison; comparisonOption.color = blendColor(color, isDark) }
     }
     // WebGL paints later series over earlier ones, so reverse the sidebar order:
     // the first row in the sidebar is drawn last and remains visually on top.
@@ -604,9 +608,9 @@ export default function AnalyzeTimeChart({
     const deltaSeries = deltaSeriesRef.current
     if (deltaSeries) {
       deltaSeries.positive.visible = showDelta
-      deltaSeries.positive.color = deltaPositiveColor
+      deltaSeries.positive.color = themedDeltaPositive
       deltaSeries.negative.visible = showDelta
-      deltaSeries.negative.color = deltaNegativeColor
+      deltaSeries.negative.color = themedDeltaNegative
     }
     const drawOrder = [...selected].reverse().flatMap(item => {
       if (!item.visible) return []
@@ -644,7 +648,7 @@ export default function AnalyzeTimeChart({
     const rightCount = Math.floor(axisCount / 2)
     const left = axisCount > 0 ? Math.max(44, 12 + leftCount * 54) : 12
     const right = axisCount > 0 ? Math.max(12, 12 + rightCount * 54) : 12
-    const axis = isDark ? '#7c8098' : '#6b7280'
+    const axis = isDark ? '#7c8098' : '#596168'
     const first = axes[0]
     const extraYAxes = axes.slice(1).map((entry, index) => {
       const axisIndex = index + 1
@@ -652,9 +656,9 @@ export default function AnalyzeTimeChart({
       const slot = Math.floor(axisIndex / 2)
       return {
         side, offset: 4 + slot * 54,
-        color: entry.kind === 'delta' ? deltaPositiveColor : entry.item.color,
+        color: entry.kind === 'delta' ? themedDeltaPositive : themeSeriesColor(entry.item.color, isDark),
         colorForValue: entry.kind === 'delta'
-          ? (normalized: number) => normalized < 0.5 ? deltaNegativeColor : normalized > 0.5 ? deltaPositiveColor : axis
+          ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
           : undefined,
         values: Y_TICKS,
         format: (normalized: number) => entry.kind === 'delta'
@@ -664,14 +668,14 @@ export default function AnalyzeTimeChart({
     })
     axisHolder.current = {
       axisColor: axis,
-      yAxisColor: first?.kind === 'delta' ? deltaPositiveColor : first?.item.color ?? axis,
+      yAxisColor: first?.kind === 'delta' ? themedDeltaPositive : themeSeriesColor(first?.item.color ?? axis, isDark),
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
-      borderColor: isDark ? '#1e2136' : '#d0d5e0',
+      borderColor: isDark ? '#1e2136' : '#afb1ae',
       font: '10px "Cascadia Code", ui-monospace, monospace',
       xTickSpacePx: 80, xTickFormat: distanceMode ? fmtDistance : fmtLapTime,
       yTickValues: () => first ? Y_TICKS : [],
       yTickColor: first?.kind === 'delta'
-        ? normalized => normalized < 0.5 ? deltaNegativeColor : normalized > 0.5 ? deltaPositiveColor : axis
+        ? normalized => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
         : undefined,
       yTickFormat: normalized => first?.kind === 'delta'
         ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
@@ -681,11 +685,11 @@ export default function AnalyzeTimeChart({
     }
     Object.assign(chart.options, { paddingLeft: left, paddingRight: right, renderPaddingLeft: left, renderPaddingRight: right })
     chart.contentBoxDetector.setPadding(left, right, chart.options.paddingTop, chart.options.paddingBottom)
-    hostRef.current?.style.setProperty('--background-overlay', isDark ? '#12141f' : '#ffffff')
+    hostRef.current?.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
     if (hostRef.current) hostRef.current.style.color = axis
     chart.update()
     chart.model.resize(chart.clientWidth, chart.clientHeight)
-  }, [comparison, deltaNegativeColor, deltaPositiveColor, distanceMode, isDark, selected])
+  }, [comparison, distanceMode, isDark, selected, themedDeltaNegative, themedDeltaPositive])
 
   useEffect(() => {
     const chart = chartRef.current

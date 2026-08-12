@@ -48,43 +48,49 @@
   --text-muted: #484c62;
   --text-dim: #5a5e78;
   --text-inactive: #262a3a;
+  --color-info: #5794F2;
+  --color-fastest: #BF5FFF;
   --chart-grid: rgba(255,255,255,0.04);
   --chart-ref: rgba(255,255,255,0.08);
   --chart-axis: #7c8098;
   --chart-zero: rgba(255,255,255,0.2);
+  --shadow-overlay: 0 10px 28px rgba(0,0,0,0.48), 0 2px 6px rgba(0,0,0,0.32);
 }
 
 [data-theme='light'] {
   color-scheme: light;
   --compound-soft:   #c8001a;
-  --compound-medium: #9e7a00;
+  --compound-medium: #765900;
   --compound-hard:   #555555;
   --compound-inter:  #1e7a2e;
   --compound-wet:    #1a55bb;
-  --bg-base: #eff1f5;
-  --bg-panel: #ffffff;
-  --bg-card: #f8f9fc;
-  --bg-input: #f1f4f8;
-  --bg-menu: #ffffff;
-  --bg-hover: #eaecf2;
-  --bg-accent: #e3e7f0;
-  --bg-modal: rgba(0,0,0,0.35);
-  --bg-selected: #d8e8f8;
-  --bg-widget-active: #d0dcf0;
-  --border: #d0d5e0;
-  --border-subtle: #e4e8f0;
-  --border-muted: #d8dce8;
-  --border-focus: #4a5f9e;
-  --border-focus-hover: #5a72be;
-  --text-primary: #1a1c26;
-  --text-secondary: #565b70;
-  --text-muted: #8890a8;
-  --text-dim: #9298b0;
-  --text-inactive: #b0b8cc;
-  --chart-grid: rgba(0,0,0,0.07);
-  --chart-ref: rgba(0,0,0,0.1);
-  --chart-axis: #6b7280;
-  --chart-zero: rgba(0,0,0,0.18);
+  --bg-base: #dededa;
+  --bg-panel: #ebeae6;
+  --bg-card: #e5e4e0;
+  --bg-input: #dcdcd8;
+  --bg-menu: #f1f0ec;
+  --bg-hover: #d7d7d3;
+  --bg-accent: #d2d3d1;
+  --bg-modal: rgba(35,37,39,0.32);
+  --bg-selected: #cfd9e1;
+  --bg-widget-active: #c4d0da;
+  --border: #afb1ae;
+  --border-subtle: #cecfcb;
+  --border-muted: #bec0bc;
+  --border-focus: #687e96;
+  --border-focus-hover: #566f8b;
+  --text-primary: #24272b;
+  --text-secondary: #454b51;
+  --shadow-overlay: 0 10px 28px rgba(35,37,39,0.14), 0 2px 6px rgba(35,37,39,0.1);
+  --text-muted: #5f656b;
+  --text-dim: #63696f;
+  --text-inactive: #a9acae;
+  --color-info: #0B57D0;
+  --color-fastest: #7C3BA6;
+  --chart-grid: rgba(36,39,43,0.075);
+  --chart-ref: rgba(36,39,43,0.11);
+  --chart-axis: #596168;
+  --chart-zero: rgba(36,39,43,0.2);
 }
 
 * {
@@ -111,6 +117,12 @@ body {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* Legacy utility colours still used by the layout editor and compact badges. */
+[data-theme='light'] .text-\[\#5794F2\] { color: var(--color-info); }
+[data-theme='light'] .text-\[\#5794F2\].opacity-60 { opacity: 1; }
+[data-theme='light'] .text-\[\#37872D\] { color: #0D6B2F; }
+[data-theme='light'] .text-\[\#9f7aea\] { color: var(--color-fastest); }
 
 .modal-backdrop {
   opacity: 0;
@@ -139,19 +151,20 @@ body {
     transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-@keyframes bannerSlideDown {
+@keyframes fullscreenEventBannerEnter {
   from {
     opacity: 0;
-    transform: translateY(-10px) scale(0.96);
+    transform: translateY(-100%);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
-.animate-banner-in {
-  animation: bannerSlideDown 0.38s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+.fullscreen-event-banner {
+  animation: fullscreenEventBannerEnter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  box-shadow: var(--shadow-overlay);
 }
 
 /* Scrollbars */
@@ -373,6 +386,90 @@ html[data-reduce-animations='true'] *::after {
   view-transition-name: session-map;
 }
 
+html[data-page-transition='true'] .session-map-transition {
+  view-transition-name: none;
+}
+
+.app-page-transition {
+  view-transition-name: app-page;
+}
+
+.tyres-view-transition {
+  view-transition-name: tyres-view;
+}
+
+html[data-page-transition='true'] .tyres-view-transition {
+  view-transition-name: none;
+}
+
+@keyframes appPageExitLeft {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-44px); }
+}
+
+@keyframes appPageEnterRight {
+  from { opacity: 0; transform: translateX(44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes appPageExitRight {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(44px); }
+}
+
+@keyframes appPageEnterLeft {
+  from { opacity: 0; transform: translateX(-44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+html[data-page-transition-direction='right']::view-transition-old(app-page) {
+  animation: appPageExitLeft 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='right']::view-transition-new(app-page) {
+  animation: appPageEnterRight 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-old(app-page) {
+  animation: appPageExitRight 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-new(app-page) {
+  animation: appPageEnterLeft 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Allocation and Graphs are sibling states, so use a quiet fade-through rather
+   than implying spatial navigation. These remain compositor snapshots, keeping
+   the live WebGL charts out of the animation path. */
+@keyframes tyresViewFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes tyresViewFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-tyres-view-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-tyres-view-transition]::view-transition-old(tyres-view) {
+  z-index: 1;
+  animation: tyresViewFadeOut 140ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-tyres-view-transition]::view-transition-new(tyres-view) {
+  z-index: 2;
+  animation: tyresViewFadeIn 180ms 70ms cubic-bezier(0.4, 1, 0.6, 1) both;
+}
+
+html[data-tyres-view-transition-phase='preparing']::view-transition-new(tyres-view),
+html[data-tyres-view-transition-phase='preparing']::view-transition-old(tyres-view) {
+  animation-play-state: paused;
+}
+
 ::view-transition-group(session-map) {
   animation-duration: 360ms;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
@@ -385,6 +482,10 @@ html[data-reduce-animations='true'] *::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(app-page),
+  ::view-transition-new(app-page),
+  ::view-transition-old(tyres-view),
+  ::view-transition-new(tyres-view),
   ::view-transition-group(session-map),
   ::view-transition-old(session-map),
   ::view-transition-new(session-map) {

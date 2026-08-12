@@ -6,6 +6,7 @@ import type { AlignedTable, MotionExRow } from '../types'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { themeSeriesColor } from '../lib/themeColors'
 
 interface Props {
   isDark: boolean
@@ -54,6 +55,10 @@ function computeYSplits(lower: number, upper: number): number[] {
 function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const colorFront = themeSeriesColor(COLOR_FRONT, isDark)
+  const colorRear = themeSeriesColor(COLOR_REAR, isDark)
+  const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
+  const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
 
   const tableData = useMemo((): AlignedTable => {
@@ -69,18 +74,18 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
     return [ts, front, rear]
   }, [data, view])
 
-  const tooltipTimeColor = isDark ? '#7c8098' : '#6b7280'
+  const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
     const formatValues = (values: number[]) => [
-      `<div><span style="color:${COLOR_FRONT}">Front</span>: ${values[0].toFixed(1)} mm</div>`,
-      `<div><span style="color:${COLOR_REAR}">Rear</span>:  ${values[1].toFixed(1)} mm</div>`,
+      `<div><span style="color:${colorFront}">Front</span>: ${values[0].toFixed(1)} mm</div>`,
+      `<div><span style="color:${colorRear}">Rear</span>:  ${values[1].toFixed(1)} mm</div>`,
     ].join('')
     return [
       `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [coordinates, tooltipTimeColor])
+  }, [colorFront, colorRear, coordinates, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
@@ -90,8 +95,8 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-            <span style={{ color: COLOR_FRONT }}>— Front</span>
-            <span style={{ color: COLOR_REAR }}>— Rear</span>
+            <span style={{ color: colorFront }}>— Front</span>
+            <span style={{ color: colorRear }}>— Rear</span>
             <span className="text-[var(--text-secondary)]">plank edge above road</span>
         </div>}
       </div>
@@ -99,7 +104,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={TABLE_COLS} data={tableData} />
+          <GraphTable columns={tableColumns} data={tableData} />
         ) : (
           <TimeChartView<MotionExRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
@@ -107,7 +112,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
             rows={data}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motionEx : undefined}
             getX={d => d.session_time}
-            series={SERIES}
+            series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={{
               kind: 'expand',

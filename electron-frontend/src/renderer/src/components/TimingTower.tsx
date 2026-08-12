@@ -65,7 +65,7 @@ const PosCell = memo(function PosCell({ pos, isDark }: { pos: number; isDark: bo
        pos === 2 ? '#C0C0C0' :
        pos === 3 ? '#CD7F32' :
        '#8e8e8e')
-    : (pos === 1 ? '#B7950B' :
+    : (pos === 1 ? '#765900' :
        pos === 2 ? '#5E6475' :
        pos === 3 ? '#9C5B23' :
        '#565B70')
@@ -211,9 +211,9 @@ const TowerRow = memo(function TowerRow({
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded"
               style={{
-                color: isDark ? 'var(--compound-medium)' : '#B7950B',
-                backgroundColor: isDark ? 'rgba(255, 215, 0, 0.1)' : 'rgba(183, 149, 11, 0.1)',
-                border: `1px solid ${isDark ? 'var(--compound-medium)' : 'rgba(183, 149, 11, 0.4)'}`
+                color: isDark ? 'var(--compound-medium)' : '#765900',
+                backgroundColor: isDark ? 'rgba(255, 215, 0, 0.1)' : 'rgba(118, 89, 0, 0.1)',
+                border: `1px solid ${isDark ? 'var(--compound-medium)' : 'rgba(118, 89, 0, 0.45)'}`
               }}
             >
               {pitStatus === 1 ? 'PIT' : 'PIT LANE'}
@@ -228,9 +228,9 @@ const TowerRow = memo(function TowerRow({
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded border"
               style={{
-                color: isDark ? '#c47d0e' : '#B06000',
-                borderColor: isDark ? '#c47d0e' : '#B06000',
-                backgroundColor: isDark ? 'rgba(196, 125, 14, 0.1)' : 'rgba(176, 96, 0, 0.1)'
+                color: isDark ? '#c47d0e' : '#8B5200',
+                borderColor: isDark ? '#c47d0e' : '#8B5200',
+                backgroundColor: isDark ? 'rgba(196, 125, 14, 0.1)' : 'rgba(139, 82, 0, 0.1)'
               }}
             >
               +{penaltiesS}s

@@ -104,7 +104,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
   const ersBarWidth = Math.min(100, Math.max(0, ersPct))
   const ersBarColor =
     ersPct > 60 ? (isDark ? '#5794F2' : '#0B57D0') :
-    ersPct > 30 ? (isDark ? '#d4ad04' : '#B7950B') :
+    ersPct > 30 ? (isDark ? '#d4ad04' : '#765900') :
     '#C4162A'
 
   const tyreName  = activeStatus ? tn('tyre.actual', activeStatus.tyre_compound) : null
@@ -286,7 +286,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                   style={{
                     color: activeStatus.ers_mode === 0 ? 'var(--text-secondary)' :
                            activeStatus.ers_mode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
-                           activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#B7950B') :
+                           activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
                            '#C4162A'
                   }}
                 >
@@ -357,7 +357,7 @@ const RacePanel = memo(function RacePanel({ lap, status, selectedCar, selectedDr
                   className="text-3xl font-black tabular-nums"
                   style={{
                     color: activeStatus.fuel_laps > 1 ? (isDark ? '#37872D' : '#137333') :
-                           activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#B06000') :
+                           activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
                            '#C4162A'
                   }}
                 >

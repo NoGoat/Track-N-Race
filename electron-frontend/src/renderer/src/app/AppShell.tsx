@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
 import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
-import { getChartWindowOptionGroups, type ChartWindow, type Tab } from './appConfig'
+import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab } from './appConfig'
 import { useAppConfiguration } from './hooks/useAppConfiguration'
 import { useWindowState } from './hooks/useWindowState'
 import { usePlayback } from './hooks/usePlayback'
@@ -92,6 +93,41 @@ export default function AppShell() {
     setChartReferenceLapOverrides({})
     setReferenceLapNum(lapNum)
   }, [])
+
+  const handleTabChange = useCallback((nextTab: Tab) => {
+    if (nextTab === tab) return
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => { finished: Promise<unknown> }
+    }
+    const motionReduced = reduceAnimations
+      || document.documentElement.dataset.reduceAnimations === 'true'
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      setTab(nextTab)
+      return
+    }
+
+    try {
+      const root = document.documentElement
+      const currentIndex = TAB_OPTIONS.findIndex(option => option.value === tab)
+      const nextIndex = TAB_OPTIONS.findIndex(option => option.value === nextTab)
+      root.dataset.pageTransition = 'true'
+      root.dataset.pageTransitionDirection = nextIndex > currentIndex ? 'right' : 'left'
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => setTab(nextTab))
+      })
+      const clearPageTransition = () => {
+        delete root.dataset.pageTransition
+        delete root.dataset.pageTransitionDirection
+      }
+      void transition.finished.then(clearPageTransition, clearPageTransition)
+    } catch {
+      delete document.documentElement.dataset.pageTransition
+      delete document.documentElement.dataset.pageTransitionDirection
+      setTab(nextTab)
+    }
+  }, [reduceAnimations, tab])
 
   useEffect(() => window.recordingBridge.onError(setRecordingError), [])
 
@@ -272,7 +308,7 @@ export default function AppShell() {
         setChartWindow={handleGlobalChartWindowChange}
         setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
-        setTab={setTab}
+        setTab={handleTabChange}
         settingsOpen={settingsOpen}
         tab={tab}
         theme={theme}
@@ -347,7 +383,7 @@ export default function AppShell() {
 
       {/* Content */}
       <RaceLeaderWatcher enabled={!playback.state?.filename} onLeaderChange={handleLeaderChange} />
-      <main className="flex-1 min-h-0">
+      <main className="app-page-transition flex-1 min-h-0">
         <ChartWindowOverridesProvider
           globalWindow={chartWindow}
           overrides={chartWindowOverrides}

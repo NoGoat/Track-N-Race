@@ -95,7 +95,7 @@ function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | nu
 function FastestLapChip() {
   return <span
     className="ml-2 text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0"
-    style={{ backgroundColor: '#BF5FFF22', color: '#BF5FFF' }}
+    style={{ backgroundColor: 'color-mix(in srgb, var(--color-fastest) 14%, transparent)', color: 'var(--color-fastest)' }}
   >FL</span>
 }
 

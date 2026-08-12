@@ -6,6 +6,7 @@ import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { themeSeriesColor } from '../lib/themeColors'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_STEER = '#BF5FFF'
@@ -23,6 +24,9 @@ function fmtSteer(v: number) {
 function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
+  const colorSteer = themeSeriesColor(COLOR_STEER, isDark)
+  const chartSeries = useMemo(() => SERIES.map(series => ({ ...series, color: colorSteer })), [colorSteer])
+  const tableColumns = useMemo(() => TABLE_COLS.map(column => ({ ...column, color: colorSteer })), [colorSteer])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table') return EMPTY_ALIGNED
@@ -30,15 +34,15 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
     data.forEach((d, i) => { ts[i] = d.session_time; steer[i] = d.steering })
     return [ts, steer]
   }, [data, view])
-  const axisColor = isDark ? '#7c8098' : '#6b7280'
+  const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => `<div><span style="color:${COLOR_STEER}">Steering</span>: ${fmtSteer(values[0])}</div>`
+    const formatValues = (values: number[]) => `<div><span style="color:${colorSteer}">Steering</span>: ${fmtSteer(values[0])}</div>`
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [axisColor, coordinates])
+  }, [axisColor, colorSteer, coordinates])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
@@ -46,12 +50,12 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
         <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
         <ChartWindowOverrideSelect />
       </div>
-      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: COLOR_STEER }}>— Input</span><span className="text-[var(--text-secondary)]">L = left / R = right</span></div>}
+      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: colorSteer }}>— Input</span><span className="text-[var(--text-secondary)]">L = left / R = right</span></div>}
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={TABLE_COLS} data={tableData} />
-          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={SERIES}
+        : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} />
+          : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
             windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
             yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
             tooltipFormat={tooltipFormat} />}
