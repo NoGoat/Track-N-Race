@@ -91,7 +91,7 @@ body.modal-open {
     left: 0;
     width: 100%;
     background: var(--bg-glass);
-    backdrop-filter: blur(16px);
+    backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--border);
     z-index: 1000;
@@ -1458,6 +1458,7 @@ body.modal-open {
 }
 
 @media (max-width: 968px) {
+
     .feature-detail-grid,
     .feature-detail-grid.reverse {
         grid-template-columns: 1fr;
