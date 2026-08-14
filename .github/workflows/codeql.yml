@@ -1,0 +1,69 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "31 2 * * 4"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: none
+            os: ubuntu-latest
+
+          - language: javascript-typescript
+            build-mode: none
+            os: ubuntu-latest
+
+          - language: swift
+            build-mode: manual
+            os: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build Swift frontend
+        if: matrix.language == 'swift'
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+
+          cmake \
+            -S minimal_frontend \
+            -B minimal_frontend/build-codeql \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="$arch" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+
+          cmake \
+            --build minimal_frontend/build-codeql \
+            --config Release \
+            --target minimal_app
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
