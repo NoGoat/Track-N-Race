@@ -4,6 +4,22 @@ import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
+interface UdpForwardTarget { address: string; port: number }
+
+function storedForwardTargets(): UdpForwardTarget[] {
+  if (!(store.get('udp.forwardingEnabled', false) as boolean)) return []
+  const value = store.get('udp.forwardTargets', [])
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 15).flatMap((item): UdpForwardTarget[] => {
+    if (!item || typeof item !== 'object') return []
+    const candidate = item as Record<string, unknown>
+    const address = typeof candidate.address === 'string' ? candidate.address.trim() : ''
+    const port = Number(candidate.port)
+    return address && Number.isInteger(port) && port >= 1 && port <= 65535
+      ? [{ address, port }]
+      : []
+  })
+}
 
 let lastStatus: { override: ProtocolOverride; detected: number | null; active: number | null } = {
   override: (store.get('udp.protocol', 'auto') as ProtocolOverride),
@@ -241,6 +257,7 @@ export function startBridge(): string | null {
       format: store.get('udp.protocol', 'auto'),
       port: store.get('udp.port', 20777),
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
+      forwardTargets: storedForwardTargets(),
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true
@@ -311,7 +328,12 @@ export function startBridge(): string | null {
       }
     })
 
-    engine.startUdp()
+    if (!engine.startUdp()) {
+      const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
+      engine.destroy()
+      engine = null
+      return error
+    }
     pushLogging()
     
     // Listen for logging changes
@@ -520,8 +542,8 @@ export function getProtocolConfig(): {
   }
 }
 
-export function restartUdp(): void {
+export function restartUdp(): string | null {
   // To restart UDP on port changes, we stop and recreate the engine
   stopBridge()
-  startBridge()
+  return startBridge()
 }

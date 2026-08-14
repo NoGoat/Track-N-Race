@@ -64,11 +64,14 @@ function PowerLineChartContent(props: PowerLineProps) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const themedSeries = useMemo(() => series.map(item => ({ ...item, color: themeSeriesColor(item.color, isDark) })), [isDark, series])
-  const themedColumns = useMemo(() => columns.map(item => ({ ...item, color: themeSeriesColor(item.color, isDark) })), [columns, isDark])
+  const themedColumns = useMemo(() => columns.map(item => item.color
+    ? { ...item, color: themeSeriesColor(item.color, isDark) }
+    : item), [columns, isDark])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
-  const visibleEntries = useMemo(() => themedSeries
-    .map((s, i) => ({ series: s, column: themedColumns[i], sourceIndex: i }))
-    .filter(({ series: s }) => s.visible !== false), [themedColumns, themedSeries])
+  const visibleEntries = useMemo(() => themedSeries.flatMap((series, sourceIndex) => {
+    const column = themedColumns[sourceIndex]
+    return series.visible !== false && column ? [{ series, column, sourceIndex }] : []
+  }), [themedColumns, themedSeries])
   const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
   const getTableValues = useCallback((row: StatusRow) => visibleEntries.map(entry => entry.series.getY(row)), [visibleEntries])
   const tableData = useMemo((): AlignedTable => {

@@ -136,8 +136,8 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
   if (compact) {
     // Single-line: label · value+unit — the row collapses to one line.
     return (
-      <div className="flex-1 flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
-        <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
+      <div className="flex-1 min-w-0 overflow-hidden flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
+        <span className="min-w-0 text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
         <span className="flex items-baseline gap-1 shrink-0">
           <span className="text-lg font-black tabular-nums leading-none" style={{ color: accent ?? 'var(--text-primary)' }}>{value}</span>
           {unit && <span className="text-[10px] text-[var(--text-secondary)]">{unit}</span>}
@@ -146,10 +146,10 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
     )
   }
   return (
-    <div className="flex-1 flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
-      <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)]">{label}</span>
+    <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
+      <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
       <div>
-        <div className="text-3xl font-black tabular-nums leading-none mt-2" style={{ color: accent ?? 'var(--text-primary)' }}>
+        <div className="text-3xl font-black tabular-nums leading-none mt-2 truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
           {value}
         </div>
         {unit && <div className="text-xs text-[var(--text-secondary)] mt-1">{unit}</div>}
@@ -429,7 +429,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="shrink-0 flex border-b border-[var(--border)]">
+      <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
         <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />
         {remainingLaps !== null
           ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />

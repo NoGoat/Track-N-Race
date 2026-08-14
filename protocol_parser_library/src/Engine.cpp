@@ -138,7 +138,8 @@ void Engine::emitRow(const std::string& json) {
 bool Engine::startUdp() {
     TRACE("Engine::startUdp: start");
     bool ok = udp_.start(config_.port, config_.bindAddress,
-                      [this](const uint8_t* d, int n) { onDatagram(d, n); });
+                      [this](const uint8_t* d, int n) { onDatagram(d, n); },
+                      config_.udpForwardTargets);
     TRACE("Engine::startUdp: udp_.start returned");
     return ok;
 }
@@ -152,7 +153,8 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         parser_.reset();
     }
     return udp_.start(port, bindAddress,
-                      [this](const uint8_t* d, int n) { onDatagram(d, n); });
+                      [this](const uint8_t* d, int n) { onDatagram(d, n); },
+                      config_.udpForwardTargets);
 }
 
 std::string Engine::udpLastError() const {
@@ -356,7 +358,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                     restore.push_back(std::move(row));
                 }
             } else {
-                for (uint8_t type = 1; type < liveLatestRows_.size(); ++type)
+                for (size_t type = 1; type < liveLatestRows_.size(); ++type)
                     if ((restoreMask & (1u << type)) &&
                         !liveLatestRows_[type].empty())
                         restore.push_back(liveLatestRows_[type]);

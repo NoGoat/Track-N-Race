@@ -228,8 +228,8 @@ ipcMain.handle('player:export-xlsx', async (event) => {
 
 ipcMain.on('udp-restart', (event) => {
   try {
-    restartUdp()
-    event.reply('udp-restart-result', { ok: true })
+    const error = restartUdp()
+    event.reply('udp-restart-result', error ? { ok: false, error } : { ok: true })
   } catch (err) {
     event.reply('udp-restart-result', { ok: false, error: String(err) })
   }

@@ -124,6 +124,24 @@ const Row = memo(function Row({ label, description, warning, children }: {
 })
 
 type RestartStatus = 'idle' | 'applying' | 'ok' | 'error'
+type UdpForwardTarget = { address: string; port: number }
+
+function loadForwardTargets(): UdpForwardTarget[] {
+  const value = window.electronStore.get('udp.forwardTargets', [])
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 15).flatMap((item): UdpForwardTarget[] => {
+    if (!item || typeof item !== 'object') return []
+    const candidate = item as Record<string, unknown>
+    return typeof candidate.address === 'string' && typeof candidate.port === 'number'
+      ? [{ address: candidate.address, port: candidate.port }]
+      : []
+  })
+}
+
+function isIpv4Address(value: string): boolean {
+  const parts = value.trim().split('.')
+  return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
 
 const Settings = memo(function Settings({
   isOpen, onClose,
@@ -210,6 +228,10 @@ const Settings = memo(function Settings({
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
+  const [forwardingEnabled, setForwardingEnabled] = useState<boolean>(
+    () => window.electronStore.get('udp.forwardingEnabled', false) as boolean,
+  )
+  const [forwardTargets, setForwardTargets] = useState<UdpForwardTarget[]>(loadForwardTargets)
   const [udpStatus, setUdpStatus] = useState<RestartStatus>('idle')
   const [errorMsg, setErrorMsg]   = useState('')
   const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25' | 'f1_26'>(
@@ -219,14 +241,26 @@ const Settings = memo(function Settings({
   if (!modalPresence.mounted) return null
 
   const portValid = Number.isInteger(port) && port >= 1 && port <= 65535
+  const forwardTargetsValid = !forwardingEnabled || forwardTargets.every(target =>
+    isIpv4Address(target.address) && Number.isInteger(target.port) && target.port >= 1 && target.port <= 65535 &&
+    !(target.port === port && (target.address.trim().startsWith('127.') || target.address.trim() === addr.trim())),
+  )
   const dirty     = port !== (window.electronStore.get('udp.port', 20777) as number)
                  || addr !== (window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
+                 || forwardingEnabled !== (window.electronStore.get('udp.forwardingEnabled', false) as boolean)
+                 || JSON.stringify(forwardTargets) !== JSON.stringify(loadForwardTargets())
 
   async function applyUdp() {
-    if (!portValid || udpStatus === 'applying') return
+    if (!portValid || !forwardTargetsValid || udpStatus === 'applying') return
     setUdpStatus('applying')
+    const normalizedForwardTargets = forwardTargets.map(target => ({
+      address: target.address.trim(), port: target.port,
+    }))
+    setForwardTargets(normalizedForwardTargets)
     window.electronStore.set('udp.port', port)
     window.electronStore.set('udp.bindAddress', addr)
+    window.electronStore.set('udp.forwardingEnabled', forwardingEnabled)
+    window.electronStore.set('udp.forwardTargets', normalizedForwardTargets)
     const result = await window.udpBridge.restart()
     if (result.ok) {
       setUdpStatus('ok')
@@ -571,6 +605,74 @@ const Settings = memo(function Settings({
           />
         </div>
       </Row>
+
+      <Row
+        label="UDP Forward Mode"
+        description="Forward every received packet unchanged to the configured destinations."
+      >
+        <Toggle value={forwardingEnabled} onChange={setForwardingEnabled} />
+      </Row>
+
+      {forwardingEnabled && (
+        <div className="mx-4 my-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-[var(--border-muted)] bg-[var(--bg-input)]/40">
+            <div>
+              <p className="text-xs font-semibold text-[var(--text-primary)]">Forwarding channels</p>
+              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">IPv4 destination and port · {forwardTargets.length}/15 configured</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setForwardTargets([...forwardTargets, { address: '', port: 20777 }])}
+              disabled={forwardTargets.length >= 15}
+              className={TEXT_ACTION_BUTTON_CLASS}
+            >
+              Add channel
+            </button>
+          </div>
+          {forwardTargets.length === 0 ? (
+            <p className="px-3 py-4 text-xs text-center text-[var(--text-muted)]">No forwarding channels configured.</p>
+          ) : forwardTargets.map((target, index) => {
+            const targetValid = isIpv4Address(target.address) && Number.isInteger(target.port) &&
+              target.port >= 1 && target.port <= 65535 &&
+              !(target.port === port && (target.address.trim().startsWith('127.') || target.address.trim() === addr.trim()))
+            return (
+              <div key={index} className="flex items-center gap-2 px-3 py-2 border-t first:border-t-0 border-[var(--border-muted)]">
+                <span className="w-5 text-[10px] text-[var(--text-muted)] tabular-nums">{index + 1}</span>
+                <input
+                  type="text"
+                  aria-label={`Forwarding channel ${index + 1} address`}
+                  value={target.address}
+                  placeholder="192.168.1.100"
+                  onChange={event => setForwardTargets(forwardTargets.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, address: event.target.value } : item))}
+                  className={`${inputCls} flex-1 ${!targetValid ? 'border-red-600/60' : ''}`}
+                />
+                <input
+                  type="number"
+                  aria-label={`Forwarding channel ${index + 1} port`}
+                  min={1}
+                  max={65535}
+                  value={target.port}
+                  onChange={event => setForwardTargets(forwardTargets.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, port: Number(event.target.value) } : item))}
+                  className={`${inputCls} no-number-spinner !w-20 shrink-0 ${!targetValid ? 'border-red-600/60' : ''}`}
+                />
+                <button
+                  type="button"
+                  aria-label={`Remove forwarding channel ${index + 1}`}
+                  onClick={() => setForwardTargets(forwardTargets.filter((_, itemIndex) => itemIndex !== index))}
+                  className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )
+          })}
+          {!forwardTargetsValid && (
+            <p className="px-3 pb-2 text-[10px] text-red-400">Enter valid IPv4 destinations and ports. Forwarding back to this listener would create a packet loop.</p>
+          )}
+        </div>
+      )}
       
       {/* Seamless Action Bar */}
       <div className="flex items-center justify-between px-4 py-3.5 mt-2">
@@ -585,7 +687,7 @@ const Settings = memo(function Settings({
         </p>
         <button
           onClick={applyUdp}
-          disabled={!portValid || udpStatus === 'applying'}
+          disabled={!portValid || !forwardTargetsValid || udpStatus === 'applying'}
           className={TEXT_ACTION_BUTTON_CLASS}
         >
           {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}

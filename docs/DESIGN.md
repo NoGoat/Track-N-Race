@@ -26,7 +26,8 @@ UIs.
 ```
 tnrp::Engine  — orchestrator; the only class hosts construct directly
   ├── UdpListener   dual backend: raw winsock2/POSIX (TNRP_USE_QT=OFF, addon)
-  │                 or QUdpSocket (ON, Qt recorder); one receive thread
+  │                 or QUdpSocket (ON, Qt recorder); one receive thread;
+  │                 optionally forwards each raw datagram to ≤15 IPv4 targets
   ├── Parser        pure decode: format detect + override + debounce +
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
   ├── TnrdWriter    .tnrd V4 recording (own disk thread)
@@ -42,7 +43,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   thread-safe. Both optional methods default to no-ops so JSON-only sinks stay
   trivial.
 - **`Config` (Config.h)** — host-supplied at construction: port, bind address,
-  protocol override, logging, plus two host-shape flags:
+  protocol override, logging, optional raw-UDP forwarding targets (maximum 15),
+  plus two host-shape flags:
   `binaryPlayback` (Electron: playback hot rows go out via `onBinary`, seeks
   via `onSeekFlush`) and `hotRowsAsJson` (emit live hot rows as JSON instead of
   binary; both apps currently leave this **off** and take the binary channel).

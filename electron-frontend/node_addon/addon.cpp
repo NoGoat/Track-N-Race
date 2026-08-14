@@ -229,6 +229,7 @@ public:
         TRACE("Init: before DefineClass");
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
+            InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
@@ -285,6 +286,24 @@ public:
         }
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();
+        }
+        if (configObj.Has("forwardTargets") && configObj.Get("forwardTargets").IsArray()) {
+            Napi::Array targets = configObj.Get("forwardTargets").As<Napi::Array>();
+            const uint32_t count = std::min<uint32_t>(targets.Length(), tnrp::kMaxUdpForwardTargets);
+            config.udpForwardTargets.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                Napi::Value value = targets.Get(i);
+                if (!value.IsObject()) continue;
+                Napi::Object targetObj = value.As<Napi::Object>();
+                if (!targetObj.Has("address") || !targetObj.Get("address").IsString() ||
+                    !targetObj.Has("port") || !targetObj.Get("port").IsNumber()) continue;
+                const uint32_t targetPort = targetObj.Get("port").As<Napi::Number>().Uint32Value();
+                if (targetPort == 0 || targetPort > 65535) continue;
+                config.udpForwardTargets.push_back({
+                    targetObj.Get("address").As<Napi::String>().Utf8Value(),
+                    static_cast<uint16_t>(targetPort)
+                });
+            }
         }
         if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
             config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
@@ -492,6 +511,10 @@ private:
         bool ok = engine->startUdp();
         TRACE("StartUdp: returned");
         return Napi::Boolean::New(info.Env(), ok);
+    }
+
+    Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine->udpLastError());
     }
 
     Napi::Value SetOverride(const Napi::CallbackInfo& info) {

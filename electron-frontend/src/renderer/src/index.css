@@ -97,6 +97,18 @@
   box-sizing: border-box;
 }
 
+.no-number-spinner {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.no-number-spinner::-webkit-inner-spin-button,
+.no-number-spinner::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
 body {
   margin: 0;
   font-family: 'Cascadia Code', ui-monospace, 'Fira Code', Consolas, monospace;
