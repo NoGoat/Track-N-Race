@@ -45,11 +45,12 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorLat : colorLong })), [colorLat, colorLong])
   const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorLat : colorLong })), [colorLat, colorLong])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion)
+  const getTableValues = useCallback((row: MotionRow) => [row.g_lat, row.g_long], [])
 
   // Only the table view needs the columnar AlignedData; the chart feeds rows
   // straight into TimeChartView.
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table') return EMPTY_ALIGNED
+    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     const ts   = new Float64Array(data.length)
     const lat  = new Float64Array(data.length)
     const long = new Float64Array(data.length)
@@ -59,7 +60,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
       long[i] = d.g_long
     })
     return [ts, lat, long]
-  }, [data, view])
+  }, [coordinates.allLapsMode, data, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
@@ -91,7 +92,7 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableColumns} data={tableData} />
+          <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
         ) : (
           <TimeChartView<MotionRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}

@@ -30,12 +30,13 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
   const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
+  const getTableValues = useCallback((row: TelemetryRow) => [row.throttle, -row.brake], [])
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table') return EMPTY_ALIGNED
+    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     const ts = new Float64Array(data.length), throttle = new Float64Array(data.length), brake = new Float64Array(data.length)
     data.forEach((d, i) => { ts[i] = d.session_time; throttle[i] = d.throttle; brake[i] = -d.brake })
     return [ts, throttle, brake]
-  }, [data, view])
+  }, [coordinates.allLapsMode, data, view])
   const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
     const formatValues = (values: number[]) => [
@@ -59,7 +60,7 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
-        : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} />
+        : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
             windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={40}
             yTickValues={() => Y_TICKS} yTickFormat={v => `${Math.round(Math.abs(v) * 100)}%`} xTickFormat={fmtTime}

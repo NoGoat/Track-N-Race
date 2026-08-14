@@ -333,7 +333,7 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
 forwards a `.tnrd` path and exits pre-flash), tray icon + menu, frameless
 window with custom titlebar (optional native titlebar setting), window sized to
 60% of the work area (min 1200×700), Windows taskbar/tray icon theme detection
-(sync `reg query` + 1.5 s poll + `nativeTheme` events), `.tnrd` open-file
+(async `reg.exe query` + 1.5 s poll + `nativeTheme` events), `.tnrd` open-file
 handling (argv, macOS `open-file`, drag/drop confirm flow), and the IPC surface
 (store get/set, dialogs, player controls, protocol config, UDP restart, XLSX
 export with progress relay). `stopBridge()` on `will-quit` closes the player
@@ -617,9 +617,6 @@ There are currently no tests. Highest-value, lowest-effort targets:
   emits; conversely the `playerGetLapData` chain (renderer preload → IPC →
   addon → `playback_lap_data`) is emitted but no renderer code consumes it.
   Delete both halves or wire them up.
-- Windows taskbar-theme detection shells out to `reg query` synchronously on a
-  1.5 s poll in the main process; replace with an async query or a registry
-  watcher.
 - `speedRpmBlocks` and the playback lap-block plumbing are typed `any[]` in
   the store and `App.tsx`.
 - Repo hygiene: sample `.tnrd`, `test_loop*.js`, `*.tsbuildinfo` at the root;

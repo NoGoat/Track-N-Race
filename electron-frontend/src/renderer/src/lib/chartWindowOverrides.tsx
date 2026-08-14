@@ -10,7 +10,6 @@ import {
   getChartWindowOptionGroups,
   type ChartWindow,
   type ChartWindowOption,
-  type DistanceChartMode,
 } from '../app/appConfig'
 import AnimatedAutoWidth from '../app/components/AnimatedAutoWidth'
 
@@ -103,9 +102,9 @@ export function ChartWindowScope({ section, children }: { section: GraphSection;
   const titlebarWindow = isAvailable(context.globalWindow) ? context.globalWindow : 30
   const override = context.overrides[section]
   const window = override !== undefined && isAvailable(override) ? override : titlebarWindow
-  const validLapMode = typeof window !== 'number' && window !== 'AL' &&
+  const validLapMode = typeof window !== 'number' && window !== 'AL' && window !== 'SL' &&
     context.clAvailable && (window !== 'RL' || context.recordingOpen)
-  const mode: DistanceChartMode | 'AL' | null = window === 'AL' ? 'AL' : validLapMode ? window : null
+  const mode = window === 'AL' || window === 'SL' ? window : validLapMode ? window : null
   const windowSeconds = typeof window === 'number' ? window : 30
   const referenceLapNum = context.referenceLapOverrides[section] ?? context.referenceLapNum
   return (

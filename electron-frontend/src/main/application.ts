@@ -2,7 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImag
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
-import { execSync, spawn } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { configStore as store } from './configStore'
 import { setFatalFlushHandler } from './diagnostics'
 import {
@@ -249,22 +249,38 @@ ipcMain.on('protocol-request-status', () => {
 
 
 
-function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
-  if (process.platform !== 'win32') return 'dark'
-  try {
-    const stdout = execSync(
-      'reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize /v SystemUsesLightTheme',
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+type TaskbarTheme = 'light' | 'dark'
+
+function nativeTaskbarTheme(): TaskbarTheme {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
+function getWindowsTaskbarTheme(): Promise<TaskbarTheme> {
+  if (process.platform !== 'win32') return Promise.resolve(nativeTaskbarTheme())
+
+  return new Promise((resolve) => {
+    execFile(
+      'reg.exe',
+      [
+        'query',
+        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize',
+        '/v',
+        'SystemUsesLightTheme'
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 1000 },
+      (error, stdout) => {
+        if (!error) {
+          const match = /SystemUsesLightTheme\s+REG_DWORD\s+(0x\d+)/.exec(stdout)
+          if (match) {
+            resolve(parseInt(match[1], 16) === 1 ? 'light' : 'dark')
+            return
+          }
+        }
+
+        resolve(nativeTaskbarTheme())
+      }
     )
-    const match = /SystemUsesLightTheme\s+REG_DWORD\s+(0x\d+)/.exec(stdout)
-    if (match) {
-      const value = parseInt(match[1], 16)
-      return value === 1 ? 'light' : 'dark'
-    }
-  } catch (e) {
-    // Ignore error, fallback to dark
-  }
-  return 'dark'
+  })
 }
 
 function windowsTitleBarSymbolColor(theme: unknown): string {
@@ -284,7 +300,7 @@ function updateWindowsTitleBarSymbolColor(theme: unknown): void {
 
 function createWindow(): void {
   console.log('[main] createWindow() start')
-  const taskbarTheme = getWindowsTaskbarThemeSync()
+  const taskbarTheme = nativeTaskbarTheme()
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
   const isMacOS = process.platform === 'darwin'
@@ -480,12 +496,13 @@ app.whenReady().then(() => {
 
   // Tray icons are decoded by a different, more restrictive loader than
   // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.
-  function trayPngForTheme(theme: 'light' | 'dark'): Electron.NativeImage {
+  function trayPngForTheme(theme: TaskbarTheme): Electron.NativeImage {
     const path = theme === 'light' ? iconTransparentLightPng : iconTransparentPng
     return nativeImage.createFromPath(path).resize({ width: 32, height: 32 })
   }
 
-  tray = new Tray(trayPngForTheme(getWindowsTaskbarThemeSync()))
+  const initialTheme = nativeTaskbarTheme()
+  tray = new Tray(trayPngForTheme(initialTheme))
   tray.setToolTip('Track N Race')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: showWindow },
@@ -494,35 +511,44 @@ app.whenReady().then(() => {
   tray.on('click', showWindow)
 
   // Track the current icon path to prevent redundant win.setIcon calls
-  let lastIconPath = ''
+  let lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
+  let taskbarThemeQueryInFlight = false
 
-  function updateTaskbarIconIfNeeded(): void {
-    const taskbarTheme = getWindowsTaskbarThemeSync()
-    const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
+  async function updateTaskbarIconIfNeeded(): Promise<void> {
+    if (taskbarThemeQueryInFlight) return
+    taskbarThemeQueryInFlight = true
 
-    if (currentIconPath !== lastIconPath) {
-      lastIconPath = currentIconPath
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.setIcon(currentIconPath)
+    try {
+      const taskbarTheme = await getWindowsTaskbarTheme()
+      const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
+
+      if (currentIconPath !== lastIconPath) {
+        lastIconPath = currentIconPath
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) {
+            win.setIcon(currentIconPath)
+          }
+        }
+        if (tray && !tray.isDestroyed()) {
+          tray.setImage(trayPngForTheme(taskbarTheme))
         }
       }
-      tray?.setImage(trayPngForTheme(taskbarTheme))
+    } finally {
+      taskbarThemeQueryInFlight = false
     }
   }
 
-  // Initialize with startup icon theme
-  const initialTheme = getWindowsTaskbarThemeSync()
-  lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
-
   // Update on nativeTheme change
   nativeTheme.on('updated', () => {
-    updateTaskbarIconIfNeeded()
+    void updateTaskbarIconIfNeeded()
   })
+
+  // Reconcile the immediate nativeTheme fallback with the Windows taskbar setting.
+  void updateTaskbarIconIfNeeded()
 
   // Poll fallback (1.5s interval) to guarantee detection of custom taskbar theme changes
   const pollInterval = setInterval(() => {
-    updateTaskbarIconIfNeeded()
+    void updateTaskbarIconIfNeeded()
   }, 1500)
 
   app.on('will-quit', () => {

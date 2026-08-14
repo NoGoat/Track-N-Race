@@ -1,15 +1,18 @@
-import { useRef, useState, useLayoutEffect, useCallback } from 'react'
+import { useRef, useState, useLayoutEffect, useCallback, useEffect } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
 import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import { subscribeAllLapsData } from '../stores/telemetryStore'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from qt_frontend's GraphTable). One leading time column + one column
 // per series, oldest at the top / newest at the bottom, holding every sample in the
-// data the chart already built. Auto-scrolls to the newest row unless the user has
-// scrolled up to inspect history. Only the handful of on-screen rows are rendered
-// (fixed-height virtualisation), so a 10-minute window of streaming data stays cheap.
+// data the chart already built. Full-lap modes read the store's in-place source
+// rows directly and share its imperative update signal with the WebGL charts.
+// Auto-scrolls to the newest row unless the user has scrolled up to inspect
+// history. Only the handful of on-screen rows are rendered (fixed-height
+// virtualisation), so a full race of streaming data stays cheap.
 
 export interface GraphTableColumn {
   header: string
@@ -19,6 +22,17 @@ export interface GraphTableColumn {
 
 const ROW_H = 26
 const OVERSCAN = 6
+const FULL_LAP_REFRESH_MS = 200
+
+function lowerBoundSessionTime(rows: readonly { session_time: number }[], value: number): number {
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows[mid].session_time < value) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
 
 function fmtTime(s: number): string {
   const m   = Math.floor(s / 60)
@@ -27,9 +41,14 @@ function fmtTime(s: number): string {
   return `${m}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
 }
 
-export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop = false }: {
+export default function GraphTable<T extends { session_time: number }>({ columns, data, liveRows, getLiveValues, edgePadRem = 1, noBorderTop = false }: {
   columns: GraphTableColumn[]
   data: AlignedTable
+  // Full-lap store arrays grow in place to avoid cloning an entire race on
+  // every packet. Read those rows directly and repaint this virtual table at a
+  // bounded UI rate; finite/distance modes continue using `data` unchanged.
+  liveRows?: readonly T[]
+  getLiveValues?: (row: T) => readonly number[]
   // How far (in rem) the table should break out of its container's padding on the
   // left/right/bottom so it sits flush against the panel edge/border instead of
   // floating with a gap — matches the parent's own p-* padding (defaults to p-4's 1rem).
@@ -40,21 +59,45 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
 }) {
   const coordinates = useChartCoordinates()
   const lapRevisionRef = useRef(coordinates.lapRevision)
+  const historyRevisionRef = useRef(coordinates.historyRevision)
   const scrollRef   = useRef<HTMLDivElement>(null)
   const pinnedRef   = useRef(true)              // are we pinned to the live edge?
   const frozenNRef  = useRef<number | null>(null) // row count snapshot while scrolled away
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH]         = useState(0)
   const [pinned, setPinned]       = useState(true) // mirrors pinnedRef; drives the "scroll to bottom" button
+  const [, forceLiveRender]       = useState(0)
 
-  if (coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) {
+  if ((coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision) ||
+      historyRevisionRef.current !== coordinates.historyRevision) {
     lapRevisionRef.current = coordinates.lapRevision
+    historyRevisionRef.current = coordinates.historyRevision
     pinnedRef.current = true
     frozenNRef.current = null
   }
 
-  const xs    = (data[0] as Float64Array | undefined) ?? new Float64Array()
-  const liveN = xs.length
+  useEffect(() => {
+    if (!coordinates.allLapsMode || !liveRows || !getLiveValues) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = subscribeAllLapsData(() => {
+      if (!pinnedRef.current || timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        if (pinnedRef.current) forceLiveRender(revision => revision + 1)
+      }, FULL_LAP_REFRESH_MS)
+    })
+    return () => {
+      unsubscribe()
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [coordinates.allLapsMode, getLiveValues, liveRows])
+
+  const xs = (data[0] as Float64Array | undefined) ?? new Float64Array()
+  const useLiveRows = coordinates.allLapsMode && liveRows !== undefined && getLiveValues !== undefined
+  const liveStart = useLiveRows && coordinates.stintLapsMode
+    ? lowerBoundSessionTime(liveRows, coordinates.historyStartTime)
+    : 0
+  const liveN = useLiveRows ? liveRows.length - liveStart : xs.length
   // While scrolled away from the bottom, freeze the rendered row count at the
   // snapshot taken when the user scrolled off — new samples keep landing in `data`
   // in the background, but the table itself doesn't grow/shift under the user.
@@ -104,22 +147,25 @@ export default function GraphTable({ columns, data, edgePadRem = 1, noBorderTop 
   // width (left-aligned cells, Standings styling).
   const gridCols = Array(columns.length + 1).fill('minmax(0, 1fr)').join(' ')
   const total    = n * ROW_H
-  const first    = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
-  const count    = Math.min(n - first, Math.ceil(viewH / ROW_H) + OVERSCAN * 2)
+  const first    = Math.max(0, Math.min(Math.max(0, n - 1), Math.floor(scrollTop / ROW_H) - OVERSCAN))
+  const count    = Math.max(0, Math.min(n - first, Math.ceil(viewH / ROW_H) + OVERSCAN * 2))
 
   const rows: React.ReactNode[] = []
   for (let k = 0; k < count; k++) {
     const i = first + k
+    const liveRow = useLiveRows ? liveRows[liveStart + i] : undefined
+    const rowTime = liveRow?.session_time ?? xs[i]
+    const liveValues = liveRow && getLiveValues ? getLiveValues(liveRow) : undefined
     rows.push(
       <div
         key={i}
         style={{ position: 'absolute', top: i * ROW_H, height: ROW_H, left: 0, right: 0, gridTemplateColumns: gridCols }}
         className={`grid items-center hover:bg-[var(--bg-hover)] ${i < n - 1 ? 'border-b border-[var(--border)]' : ''}`}
       >
-        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX({ session_time: xs[i] })) : fmtTime(xs[i])}</span>
+        <span className="px-3 text-[13px] tabular-nums text-[var(--text-secondary)]">{coordinates.distanceMode ? coordinates.formatX(coordinates.getX({ session_time: rowTime })) : fmtTime(rowTime)}</span>
         {columns.map((c, ci) => (
           <span key={ci} className="px-3 text-[13px] font-medium tabular-nums truncate" style={{ color: c.color }}>
-            {c.format((data[ci + 1] as Float64Array)[i])}
+            {c.format(liveValues?.[ci] ?? (data[ci + 1] as Float64Array)[i])}
           </span>
         ))}
       </div>,

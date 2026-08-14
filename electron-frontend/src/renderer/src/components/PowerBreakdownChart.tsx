@@ -70,8 +70,9 @@ function PowerLineChartContent(props: PowerLineProps) {
     .map((s, i) => ({ series: s, column: themedColumns[i], sourceIndex: i }))
     .filter(({ series: s }) => s.visible !== false), [themedColumns, themedSeries])
   const visibleColumns = useMemo(() => visibleEntries.map(e => e.column), [visibleEntries])
+  const getTableValues = useCallback((row: StatusRow) => visibleEntries.map(entry => entry.series.getY(row)), [visibleEntries])
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table') return EMPTY_ALIGNED
+    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     const ts = new Float64Array(data.length)
     const values = visibleEntries.map(() => new Float64Array(data.length))
     data.forEach((row, i) => {
@@ -79,7 +80,7 @@ function PowerLineChartContent(props: PowerLineProps) {
       visibleEntries.forEach((e, k) => { values[k][i] = e.series.getY(row) })
     })
     return [ts, ...values]
-  }, [data, view, visibleEntries])
+  }, [coordinates.allLapsMode, data, view, visibleEntries])
 
   const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
@@ -112,7 +113,7 @@ function PowerLineChartContent(props: PowerLineProps) {
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={visibleColumns} data={tableData} />
+          <GraphTable columns={visibleColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
         ) : (
           <TimeChartView<StatusRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}

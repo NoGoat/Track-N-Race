@@ -42,6 +42,15 @@ function SpeedRpmChartContent(props: Props) {
   ], [colorErs, colorRpm, colorSpeed])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const statusHistory = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
+  const getTableValues = useCallback((row: TelemetryRow) => {
+    let lo = 0, hi = statusHistory.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (statusHistory[mid].session_time <= row.session_time) lo = mid + 1
+      else hi = mid
+    }
+    return [row.speed_kph, row.rpm, statusHistory[Math.max(0, lo - 1)]?.ers_pct ?? 0]
+  }, [statusHistory])
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
       const values = [raw(source[0], 380), raw(source[1], 16000), raw(source[2], 100)]
@@ -59,7 +68,7 @@ function SpeedRpmChartContent(props: Props) {
   }, [colorErs, colorRpm, colorSpeed, coordinates])
 
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table' || data.length === 0) return EMPTY_TABLE
+    if (view !== 'table' || data.length === 0 || coordinates.allLapsMode) return EMPTY_TABLE
     const ts = new Float64Array(data.length)
     const speed = new Float64Array(data.length)
     const rpm = new Float64Array(data.length)
@@ -91,7 +100,7 @@ function SpeedRpmChartContent(props: Props) {
       {data.length === 0
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
-          ? <GraphTable columns={tableColumns} data={tableData} />
+          ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <SpeedRpmTimeChart key={`${isDark ? 'dark' : 'light'}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}

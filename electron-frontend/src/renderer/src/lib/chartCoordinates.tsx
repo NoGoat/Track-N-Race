@@ -10,6 +10,9 @@ interface ChartCoordinates {
   mode: DistanceChartMode | null
   distanceMode: boolean
   allLapsMode: boolean
+  stintLapsMode: boolean
+  historyStartTime: number
+  historyRevision: string
   comparisonMode: boolean
   trackLengthM: number
   lapRevision: number
@@ -27,6 +30,9 @@ const DEFAULT: ChartCoordinates = {
   mode: null,
   distanceMode: false,
   allLapsMode: false,
+  stintLapsMode: false,
+  historyStartTime: -Infinity,
+  historyRevision: '',
   comparisonMode: false,
   trackLengthM: 0,
   lapRevision: 0,
@@ -76,6 +82,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
   const liveFastestLap = useTelemetryStore(state => state.liveFastestLapData)
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
   const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
+  const currentStintStartTime = useTelemetryStore(state => state.currentStintStartTime)
   const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as Array<{ lapNum: number; startSessionTime: number; endSessionTime: number }> | null
   const playbackCurrentLap = isPlayback && currentLapNum !== null
     ? playbackCache[currentLapNum] ?? null
@@ -95,8 +102,9 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
     }
   }, [comparisonLapNum, isPlayback, mode, playbackCache, rowTypeMask])
 
-  const enabled = mode !== null && mode !== 'AL'
-  const allLapsMode = mode === 'AL'
+  const enabled = mode !== null && mode !== 'AL' && mode !== 'SL'
+  const allLapsMode = mode === 'AL' || mode === 'SL'
+  const stintLapsMode = mode === 'SL'
   const comparisonMode = mode === 'PL' || mode === 'FL' || mode === 'RL'
   // Match Analysis: after a playback seek, use the indexed lap's canonical
   // origin/progress instead of mixing seek-backfill progress with cached
@@ -141,10 +149,13 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
       .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
       .sort((a, b) => a.sessionTime - b.sessionTime)
     : liveLapBoundaries
+  const stintStartTime = stintLapsMode ? currentStintStartTime : -Infinity
   const boundaryLabelsRef = useRef(new Map<number, string>())
   boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, String(boundary.lapNum)]))
   const boundaryValuesRef = useRef<number[]>([])
-  boundaryValuesRef.current = lapBoundaries.map(boundary => boundary.sessionTime)
+  boundaryValuesRef.current = lapBoundaries
+    .filter(boundary => !stintLapsMode || boundary.sessionTime >= stintStartTime)
+    .map(boundary => boundary.sessionTime)
   const getAllLapTicks = useCallback((min: number, max: number) => boundaryValuesRef.current
     .filter(time => time >= min && time <= max), [])
   const formatAllLapX = useCallback((x: number) => boundaryLabelsRef.current.get(x) ?? '', [])
@@ -177,6 +188,9 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
     mode: enabled ? mode as DistanceChartMode : null,
     distanceMode: enabled,
     allLapsMode,
+    stintLapsMode,
+    historyStartTime: stintStartTime,
+    historyRevision: stintLapsMode ? `SL:${stintStartTime}` : mode === 'AL' ? 'AL' : '',
     comparisonMode,
     trackLengthM,
     lapRevision,
@@ -188,7 +202,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
     formatX: enabled ? formatChartDistance : allLapsMode ? formatAllLapX : DEFAULT.formatX,
     xTickValues: allLapsMode ? getAllLapTicks : undefined,
     axisRevision: allLapsMode
-      ? lapBoundaries.map(boundary => `${boundary.lapNum}:${boundary.sessionTime}`).join('|')
+      ? `${mode}:${stintStartTime}:` + lapBoundaries.map(boundary => `${boundary.lapNum}:${boundary.sessionTime}`).join('|')
       : progressRevision,
   }}>{children}</Context.Provider>
 }

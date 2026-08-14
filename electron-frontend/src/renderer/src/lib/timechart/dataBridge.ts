@@ -43,31 +43,32 @@ export class TimeChartDataBridge<T> {
     return changed
   }
 
-  sync(rows: readonly T[], end = rows.length): DataSyncResult {
+  sync(rows: readonly T[], end = rows.length, start = 0): DataSyncResult {
     const n = Math.max(0, Math.min(end, rows.length))
-    if (n === 0) {
+    const sourceStart = Math.max(0, Math.min(start, n))
+    if (sourceStart === n) {
       return { changed: this.clear(), syncedFrom: null }
     }
 
-    const firstX = this.getX(rows[0])
+    const firstX = this.getX(rows[sourceStart])
     const lastRowX = this.getX(rows[n - 1])
     // A larger visible window republishes older rows at the front. The
     // incremental path can append and trim, but it cannot prepend, so rebuild
     // once when the earliest representable source point moves backwards.
     // Compare against the capped source start to avoid repeatedly rebuilding
     // publications larger than the renderer's hard point limit.
-    const retainedStart = Math.max(0, n - ALIGNED_MAX_POINTS)
+    const retainedStart = Math.max(sourceStart, n - ALIGNED_MAX_POINTS)
     const retainedFirstX = this.getX(rows[retainedStart])
     const needsBackfill = this.data.length > 0 && retainedFirstX < this.data.firstX
     const contiguous = this.data.length > 0 && !Number.isNaN(this.lastX) &&
       lastRowX >= this.lastX && firstX <= this.lastX && !needsBackfill
     if (!contiguous) {
-      const syncedFrom = this.rebuild(rows, n)
+      const syncedFrom = this.rebuild(rows, sourceStart, n)
       this.lastX = lastRowX
       return { changed: true, syncedFrom }
     }
 
-    let lo = 0
+    let lo = sourceStart
     let hi = n
     while (lo < hi) {
       const mid = (lo + hi) >> 1
@@ -95,11 +96,11 @@ export class TimeChartDataBridge<T> {
     this.data.append(this.getX(row), this.yScratch)
   }
 
-  private rebuild(rows: readonly T[], end: number): number {
+  private rebuild(rows: readonly T[], sourceStart: number, end: number): number {
     this.data.clear()
     // If an input publication exceeds the hard renderer cap, retain its newest
     // samples. Normal 10-minute/60 Hz windows remain within one 65,536 page.
-    const start = Math.max(0, end - ALIGNED_MAX_POINTS)
+    const start = Math.max(sourceStart, end - ALIGNED_MAX_POINTS)
     for (let i = start; i < end; i++) this.appendRow(rows[i])
     return start
   }

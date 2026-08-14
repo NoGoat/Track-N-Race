@@ -20,7 +20,7 @@ import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
 import type { RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
-import { dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
+import { DATA_ROW, dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
 import {
   ChartWindowOverridesProvider,
   type ChartReferenceLapOverrides,
@@ -178,8 +178,8 @@ export default function AppShell() {
       return Object.keys(next).length === Object.keys(current).length ? current : next
     })
   }, [availableChartWindows, chartWindow, chartWindowOverrides])
-  const chartCoordinateMode = chartWindow === 'AL'
-    ? 'AL'
+  const chartCoordinateMode = chartWindow === 'AL' || chartWindow === 'SL'
+    ? chartWindow
     : clAvailable && typeof chartWindow !== 'number' && (chartWindow !== 'RL' || recordingOpen)
       ? chartWindow
       : null
@@ -222,32 +222,35 @@ export default function AppShell() {
     // window must not truncate the native seek preload (15s/30s/etc.) or turn
     // it into an unnecessarily large full-session AL preload.
     const analysisLapScope = tab === 'analyze'
-    const allLapsEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'AL')
-    const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL')
+    const fullLapHistoryEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'AL' || value === 'SL')
+    const stintLapsEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'SL')
+    const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL' && value !== 'SL')
     const finiteWindows = visibleChartWindows.filter((value): value is number => typeof value === 'number')
     const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
+    const streamMask = stintLapsEnabled ? dataRequirements.streamMask | DATA_ROW.status : dataRequirements.streamMask
+    const historyMask = stintLapsEnabled ? dataRequirements.historyMask | DATA_ROW.status : dataRequirements.historyMask
     // A mixed lap/time page seeks the current lap first. The renderer then
     // requests the older finite prefix additively only when that prefix starts
     // before the lap, so overlapping V4 blocks are not decoded unnecessarily.
     const mixedLapAndTime = hasLapWindow && finiteWindows.length > 0
     const historyWindowSeconds = analysisLapScope
       ? 0
-      : allLapsEnabled
+      : fullLapHistoryEnabled
         ? -1
         : hasLapWindow ? 0 : maxFiniteWindow
-    setHistoryRowMask(dataRequirements.historyMask)
+    setHistoryRowMask(historyMask)
     window.playerBridge.setDataRequirements(
-      dataRequirements.streamMask,
-      dataRequirements.historyMask,
+      streamMask,
+      historyMask,
       historyWindowSeconds,
     )
     window.playerBridge.setAllLapsMode(
-      allLapsEnabled,
-      dataRequirements.historyMask,
+      fullLapHistoryEnabled,
+      historyMask,
       analysisLapScope ? 0 : hasLapWindow ? 0 : maxFiniteWindow,
     )
     setTelemetrySeconds(
-      allLapsEnabled ? Infinity : maxFiniteWindow,
+      fullLapHistoryEnabled ? Infinity : maxFiniteWindow,
       !analysisLapScope && (finiteWindows.length > 0 || mixedLapAndTime),
     )
   }, [dataRequirements, seconds, tab, visibleChartWindows])

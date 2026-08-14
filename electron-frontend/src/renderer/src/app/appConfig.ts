@@ -10,7 +10,7 @@ export const WINDOWS: { label: string; value: number }[] = [
 export type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
 export type TitlebarUpdateInterval = 0 | 250 | 500 | 1000
 export type DistanceChartMode = 'CL' | 'PL' | 'FL' | 'RL'
-export type ChartMode = DistanceChartMode | 'AL'
+export type ChartMode = DistanceChartMode | 'AL' | 'SL'
 export type ChartWindow = number | ChartMode
 
 export interface CoreLayout {
@@ -78,7 +78,7 @@ export function getChartWindowOptionGroups(clAvailable: boolean, recordingOpen: 
       ]
     : []
   return [
-    { label: 'Laps', options: [...lapOptions, { value: 'AL', label: 'All Laps' }] },
+    { label: 'Laps', options: [...lapOptions, { value: 'SL', label: 'Stint Laps' }, { value: 'AL', label: 'All Laps' }] },
     { label: 'Time', options: WINDOW_OPTIONS },
   ]
 }

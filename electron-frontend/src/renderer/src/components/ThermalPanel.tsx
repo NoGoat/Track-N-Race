@@ -1,9 +1,12 @@
-import { memo, useMemo } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import TyreTrendCharts from './TyreTrendCharts'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import { useColorFn } from '../lib/cards'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
+import { useChartCoordinates } from '../lib/chartCoordinates'
+
+type Corner = 'fl' | 'fr' | 'rl' | 'rr'
 
 type TyreGraphViews = { surfaceTemp?: 'chart' | 'table'; innerTemp?: 'chart' | 'table'; brakeTemp?: 'chart' | 'table'; tyreLife?: 'chart' | 'table' }
 export type TyreCardViews = { fl?: 'chart' | 'table'; fr?: 'chart' | 'table'; rl?: 'chart' | 'table'; rr?: 'chart' | 'table' }
@@ -83,13 +86,18 @@ export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, i
 })
 
 export const WheelCard = memo(function WheelCard({
-  pos, surface, inner, brake, wear, blisters, noData, compact, level, isDark = true, view, history,
+  pos, corner, surface, inner, brake, wear, blisters, noData, compact, level, isDark = true, view, history, telemetry,
 }: {
-  pos: string; surface: number; inner: number; brake: number
+  pos: string; corner: Corner; surface: number; inner: number; brake: number
   wear: number | null; blisters: number | null; noData?: boolean; compact?: boolean; level?: number; isDark?: boolean
-  view?: 'chart' | 'table'; history?: AlignedTable
+  view?: 'chart' | 'table'; history?: AlignedTable; telemetry?: readonly TelemetryRow[]
 }) {
   const ramp = useColorFn(null, null, isDark)
+  const getTableValues = useCallback((row: TelemetryRow) => [
+    row[`tyre_temp_surface_${corner}`],
+    row[`tyre_temp_inner_${corner}`],
+    row[`brake_temp_${corner}`],
+  ], [corner])
 
   const tableCols = useMemo((): GraphTableColumn[] => [
     { header: 'Surface', color: ramp('temp.tyre', surface) ?? '#888',  format: v => `${Math.round(v)}°C` },
@@ -103,7 +111,7 @@ export const WheelCard = memo(function WheelCard({
     // relying on flex-1 against an ancestor that may not itself have a definite height.
     return (
       <div className="flex-1 min-w-0 overflow-hidden relative h-64">
-        <GraphTable columns={tableCols} data={history} edgePadRem={0} noBorderTop />
+        <GraphTable columns={tableCols} data={history} liveRows={telemetry} getLiveValues={getTableValues} edgePadRem={0} noBorderTop />
       </div>
     )
   }
@@ -198,10 +206,10 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
 }
 
 const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
-type Corner = typeof CORNERS[number]
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>): Record<Corner, AlignedTable> {
+function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
   return useMemo(() => {
+    if (skip) return EMPTY_CORNER_HISTORIES
     const requested = CORNERS.filter(corner => enabled[corner])
     if (requested.length === 0) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
@@ -218,10 +226,11 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, b
       }
     })
     return histories
-  }, [telemetry, enabled])
+  }, [telemetry, enabled, skip])
 }
 
 const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, damageHistory, view, tyreWearMode, thermalGraphs, thermalCards, isDark, tyresLevel = 0, graphViews, cardViews, windowSeconds = 30, yAxis }: Props) {
+  const fullLapMode = useChartCoordinates().allLapsMode
   const sf = { fl: latest?.tyre_temp_surface_fl ?? 0, fr: latest?.tyre_temp_surface_fr ?? 0, rl: latest?.tyre_temp_surface_rl ?? 0, rr: latest?.tyre_temp_surface_rr ?? 0 }
   const inn = { fl: latest?.tyre_temp_inner_fl   ?? 0, fr: latest?.tyre_temp_inner_fr   ?? 0, rl: latest?.tyre_temp_inner_rl   ?? 0, rr: latest?.tyre_temp_inner_rr   ?? 0 }
   const brk = { fl: latest?.brake_temp_fl        ?? 0, fr: latest?.brake_temp_fr        ?? 0, rl: latest?.brake_temp_rl        ?? 0, rr: latest?.brake_temp_rr        ?? 0 }
@@ -232,7 +241,7 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
     corner,
     view !== 'graphs' && thermalCards[corner] && cardViews?.[corner] === 'table',
   ])) as Record<Corner, boolean>, [cardViews, thermalCards, view])
-  const cornerHistory = useCornerHistories(telemetry, tableCorners)
+  const cornerHistory = useCornerHistories(telemetry, tableCorners, fullLapMode)
 
   // Tyre cards are content-height (at every density level) so the strip is short —
   // stretching them to fill the flex region just spreads the rows apart with gaps.
@@ -246,18 +255,18 @@ const ThermalPanel = memo(function ThermalPanel({ latest, damage, telemetry, dam
         </div>
       ) : (
         <div className={`flex divide-x divide-[var(--border)] ${compactCards ? '' : 'h-full'}`}>
-          {thermalCards.fl && <WheelCard pos="Front Left"  surface={sf.fl}  inner={inn.fl}  brake={brk.fl}
+          {thermalCards.fl && <WheelCard pos="Front Left" corner="fl" surface={sf.fl}  inner={inn.fl}  brake={brk.fl}
             wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={!latest} level={tyresLevel} isDark={isDark}
-            view={cardViews?.fl} history={cornerHistory.fl} />}
-          {thermalCards.fr && <WheelCard pos="Front Right" surface={sf.fr}  inner={inn.fr}  brake={brk.fr}
+            view={cardViews?.fl} history={cornerHistory.fl} telemetry={telemetry} />}
+          {thermalCards.fr && <WheelCard pos="Front Right" corner="fr" surface={sf.fr}  inner={inn.fr}  brake={brk.fr}
             wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={!latest} level={tyresLevel} isDark={isDark}
-            view={cardViews?.fr} history={cornerHistory.fr} />}
-          {thermalCards.rl && <WheelCard pos="Rear Left"   surface={sf.rl}  inner={inn.rl}  brake={brk.rl}
+            view={cardViews?.fr} history={cornerHistory.fr} telemetry={telemetry} />}
+          {thermalCards.rl && <WheelCard pos="Rear Left" corner="rl" surface={sf.rl}  inner={inn.rl}  brake={brk.rl}
             wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={!latest} level={tyresLevel} isDark={isDark}
-            view={cardViews?.rl} history={cornerHistory.rl} />}
-          {thermalCards.rr && <WheelCard pos="Rear Right"  surface={sf.rr}  inner={inn.rr}  brake={brk.rr}
+            view={cardViews?.rl} history={cornerHistory.rl} telemetry={telemetry} />}
+          {thermalCards.rr && <WheelCard pos="Rear Right" corner="rr" surface={sf.rr}  inner={inn.rr}  brake={brk.rr}
             wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={!latest} level={tyresLevel} isDark={isDark}
-            view={cardViews?.rr} history={cornerHistory.rr} />}
+            view={cardViews?.rr} history={cornerHistory.rr} telemetry={telemetry} />}
         </div>
       )}
     </div>

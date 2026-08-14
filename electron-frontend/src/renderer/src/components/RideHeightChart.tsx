@@ -60,9 +60,10 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
   const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
+  const getTableValues = useCallback((row: MotionExRow) => [row.front_aero_height_mm, row.rear_aero_height_mm], [])
 
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table') return EMPTY_ALIGNED
+    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     const ts    = new Float64Array(data.length)
     const front = new Float64Array(data.length)
     const rear  = new Float64Array(data.length)
@@ -72,7 +73,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
       rear[i]  = d.rear_aero_height_mm
     })
     return [ts, front, rear]
-  }, [data, view])
+  }, [coordinates.allLapsMode, data, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
@@ -104,7 +105,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableColumns} data={tableData} />
+          <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
         ) : (
           <TimeChartView<MotionExRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}

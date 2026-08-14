@@ -175,7 +175,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
 
   // AlignedData only for the table view.
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table') return EMPTY_ALIGNED
+    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
     const ts = new Float64Array(rows.length)
     const cols = series.map(() => new Float64Array(rows.length))
     rows.forEach((d, i) => {
@@ -183,12 +183,13 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
       series.forEach((s, k) => { cols[k][i] = s.getY(d) })
     })
     return [ts, ...cols]
-  }, [rows, series, view])
+  }, [coordinates.allLapsMode, rows, series, view])
 
   const tableCols = useMemo((): GraphTableColumn[] =>
     series.map((s) => ({ header: s.label, color: s.color, format: (v: number) => `${v.toFixed(1)}${unit}` })),
     [series, unit],
   )
+  const getTableValues = useCallback((row: T) => series.map(item => item.getY(row)), [series])
 
   const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
@@ -226,7 +227,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
         {!hasData ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableCols} data={tableData} edgePadRem={0.75} />
+          <GraphTable columns={tableCols} data={tableData} liveRows={rows} getLiveValues={getTableValues} edgePadRem={0.75} />
         ) : (
           <TimeChartView<T>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}

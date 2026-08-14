@@ -46,6 +46,15 @@ function lowerBoundTime(rows: readonly { session_time: number }[], value: number
   }
   return lo
 }
+function lowerBoundTimeInclusive(rows: readonly { session_time: number }[], value: number): number {
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows[mid].session_time < value) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
 
 interface SyncCursor {
   lastSessionTime: number
@@ -61,6 +70,7 @@ function syncTelemetry(
   getX: (row: TelemetryRow) => number,
   cursor: SyncCursor,
   rebuild: boolean,
+  startSessionTime = -Infinity,
 ): boolean {
   const statusFirstSessionTime = statuses[0]?.session_time ?? Infinity
   // Telemetry and status history can be restored by separate selective V4
@@ -80,17 +90,24 @@ function syncTelemetry(
   if (telemetry.length === 0) {
     return rebuild
   }
+  const sourceStart = lowerBoundTimeInclusive(telemetry, startSessionTime)
+  if (sourceStart === telemetry.length) {
+    const changed = buffer.length > 0
+    if (changed) buffer.clear()
+    cursor.lastSessionTime = -Infinity
+    return rebuild || changed
+  }
 
   const needsRebuild = !rebuild && buffer.length > 0 && (
     getX(telemetry[telemetry.length - 1]) < buffer.lastX ||
-    getX(telemetry[0]) < buffer.firstX
+    getX(telemetry[sourceStart]) < buffer.firstX
   )
   if (needsRebuild) {
     buffer.clear()
     cursor.lastSessionTime = -Infinity
   }
 
-  const appendStart = lowerBoundTime(telemetry, cursor.lastSessionTime)
+  const appendStart = Math.max(sourceStart, lowerBoundTime(telemetry, cursor.lastSessionTime))
   let statusIndex = Math.max(0, lowerBoundTime(statuses, telemetry[appendStart]?.session_time ?? 0) - 1)
   for (let i = appendStart; i < telemetry.length; i++) {
     const row = telemetry[i]
@@ -105,7 +122,7 @@ function syncTelemetry(
     cursor.lastSessionTime = row.session_time
   }
 
-  const trim = buffer.lowerBoundX(getX(telemetry[0]))
+  const trim = buffer.lowerBoundX(getX(telemetry[sourceStart]))
   if (trim > 0) buffer.evictFront(trim)
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
@@ -120,11 +137,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
   const comparisonBufferRef = useRef<AlignedDataBuffer | null>(null)
   const scratchRef = useRef(new Float64Array(3))
-  const syncRef = useRef<SyncCursor & { lapRevision: number }>({
+  const syncRef = useRef<SyncCursor & { lapRevision: number; historyRevision: string }>({
     lastSessionTime: -Infinity,
     statusFirstSessionTime: Infinity,
     statusLength: 0,
     lapRevision: coordinates.lapRevision,
+    historyRevision: coordinates.historyRevision,
   })
   const comparisonSyncRef = useRef<SyncCursor>({
     lastSessionTime: -Infinity,
@@ -138,8 +156,11 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const xFormatRef = useRef(xTickFormat)
   xFormatRef.current = xTickFormat
 
-  const latestT = telemetry.length ? coordinates.getX(telemetry[telemetry.length - 1]) : null
-  const firstT = telemetry.length ? coordinates.getX(telemetry[0]) : null
+  const historyStartIndex = coordinates.stintLapsMode
+    ? lowerBoundTimeInclusive(telemetry, coordinates.historyStartTime)
+    : 0
+  const latestT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[telemetry.length - 1]) : null
+  const firstT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[historyStartIndex]) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: coordinates.allLapsMode ? 12 : 60, accumulateFromStart: coordinates.allLapsMode })
 
   useEffect(() => {
@@ -284,7 +305,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   syncRowsRef.current = () => {
     const buffer = bufferRef.current
     if (!buffer) return
-    const rebuild = coordinates.distanceMode && syncRef.current.lapRevision !== coordinates.lapRevision
+    const rebuild = (coordinates.distanceMode && syncRef.current.lapRevision !== coordinates.lapRevision) ||
+      syncRef.current.historyRevision !== coordinates.historyRevision
     if (rebuild) {
       playbackDebug('speed-chart-lap-revision', {
         previousRevision: syncRef.current.lapRevision,
@@ -301,8 +323,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       })
     }
     syncRef.current.lapRevision = coordinates.lapRevision
-    if (!syncTelemetry(buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild)) return
-    if (telemetry.length) acceptDataRange(coordinates.getX(telemetry[telemetry.length - 1]), coordinates.getX(telemetry[0]))
+    syncRef.current.historyRevision = coordinates.historyRevision
+    if (!syncTelemetry(
+      buffer, telemetry, statuses, scratchRef.current, coordinates.getX, syncRef.current, rebuild,
+      coordinates.stintLapsMode ? coordinates.historyStartTime : -Infinity,
+    )) return
+    if (telemetry.length > historyStartIndex) acceptDataRange(
+      coordinates.getX(telemetry[telemetry.length - 1]),
+      coordinates.getX(telemetry[historyStartIndex]),
+    )
     if (rebuild) {
       playbackDebug('speed-chart-lap-revision-synced', {
         revision: coordinates.lapRevision,

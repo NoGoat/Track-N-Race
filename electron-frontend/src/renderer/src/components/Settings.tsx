@@ -1,4 +1,5 @@
-import { Fragment, useState, memo } from 'react'
+import { Fragment, useRef, useState, memo } from 'react'
+import { flushSync } from 'react-dom'
 import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
@@ -159,6 +160,50 @@ const Settings = memo(function Settings({
   const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
+  const settingsContentRef = useRef<HTMLDivElement>(null)
+  const settingsNavigationSequence = useRef(0)
+
+  function navigateToSettingsView(
+    nextView: 'category' | 'about' | 'attributions',
+    nextCategory = activeCategory,
+  ): void {
+    if (nextView === view && (nextView !== 'category' || nextCategory === activeCategory)) return
+
+    const updateView = () => {
+      setActiveCategory(nextCategory)
+      setView(nextView)
+    }
+    const content = settingsContentRef.current
+    if (reduceAnimations || !content) {
+      settingsNavigationSequence.current += 1
+      content?.getAnimations().forEach(animation => animation.cancel())
+      updateView()
+      return
+    }
+
+    const sequence = ++settingsNavigationSequence.current
+    content.getAnimations().forEach(animation => animation.cancel())
+    const currentOpacity = getComputedStyle(content).opacity
+    const fadeOut = content.animate(
+      [{ opacity: currentOpacity }, { opacity: 0 }],
+      { duration: 90, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'both' },
+    )
+
+    void fadeOut.finished.then(() => {
+      if (sequence !== settingsNavigationSequence.current) return
+      flushSync(updateView)
+      fadeOut.cancel()
+
+      const fadeIn = content.animate(
+        [
+          { opacity: 0, transform: 'translateY(10px)' },
+          { opacity: 1, transform: 'translateY(0)' },
+        ],
+        { duration: 210, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' },
+      )
+      void fadeIn.finished.then(() => fadeIn.cancel(), () => {})
+    }, () => {})
+  }
   
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
@@ -227,7 +272,7 @@ const Settings = memo(function Settings({
   ]
 
   const renderAppearance = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="Theme" description="Switch between dark and light interface">
         <SegmentedControl
           options={[{ value: 'dark' as const, label: 'Dark' }, { value: 'light' as const, label: 'Light' }]}
@@ -322,7 +367,7 @@ const Settings = memo(function Settings({
     const setAll = (v: GraphView) =>
       onGraphViewChange(Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, v])) as GraphViewState)
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+      <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between px-4 py-3">
           <p className="text-xs text-[var(--text-muted)]">Show each telemetry graph as its line chart or a raw-values table.</p>
           <BulkButton label={anyChart ? 'Set All Table' : 'Set All Chart'} onClick={() => setAll(anyChart ? 'table' : 'chart')} />
@@ -353,7 +398,7 @@ const Settings = memo(function Settings({
       onCompactChange(next)
     }
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+      <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between px-4 py-3">
           <p className="text-xs text-[var(--text-muted)]">Collapse a section's cards to a denser single-line layout.</p>
           <BulkButton label={anyCompact ? 'Set All Normal' : 'Set All Compact'} onClick={() => setAll(!anyCompact)} />
@@ -410,7 +455,7 @@ const Settings = memo(function Settings({
       onChartYAxisChange({ overview: { ...tyres }, tyres: { ...tyres }, power })
     }
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+      <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between px-4 py-3">
           <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each graph to its visible data.</p>
           <BulkButton
@@ -455,7 +500,7 @@ const Settings = memo(function Settings({
   }
 
   const renderNotifications = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="Event Banner Duration" description="How long each race event notification is shown before the next one">
         <SegmentedControl
           options={[2, 3, 5, 8, 10].map(v => ({ value: v, label: `${v}s` }))}
@@ -466,7 +511,7 @@ const Settings = memo(function Settings({
   )
 
   const renderMap = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="Map Opacity" description="Dims the track outline to 40% opacity so driver dots and labels stand out.">
         <Toggle value={mapDimmed} onChange={onMapDimmedChange} />
       </Row>
@@ -504,7 +549,7 @@ const Settings = memo(function Settings({
   )
 
   const renderNetwork = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="UDP Port" description="Port the game broadcasts telemetry to (2025 default: 20777)">
         <div className="w-28">
           <input
@@ -550,7 +595,7 @@ const Settings = memo(function Settings({
   )
 
   const renderProtocol = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row
         label="Detected Protocol"
         description="The protocol version currently detected from incoming UDP packets"
@@ -596,7 +641,7 @@ const Settings = memo(function Settings({
   )
 
   const renderStorage = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row
         label="Record Session Data"
         description="Write live telemetry to disk in .tnrd format for later playback or analysis. This may consume disk space."
@@ -627,7 +672,7 @@ const Settings = memo(function Settings({
   )
 
   const renderAbout = () => (
-    <div className="flex flex-col items-center justify-center text-center py-12 animate-[eventFadeIn_0.2s_ease-out] w-full max-w-[640px] select-none mx-auto my-auto">
+    <div className="flex flex-col items-center justify-center text-center py-12 w-full max-w-[640px] select-none mx-auto my-auto">
       {/* Logo */}
       <img
         src={theme === 'dark' ? iconTransparent : iconTransparentLight}
@@ -665,7 +710,7 @@ const Settings = memo(function Settings({
   )
 
   const renderAttributions = () => (
-    <div className="w-full animate-[eventFadeIn_0.2s_ease-out] select-none">
+    <div className="w-full select-none">
       <h2 className="text-xs font-bold font-mono uppercase tracking-widest text-[var(--text-primary)]">
         Attribution
       </h2>
@@ -682,15 +727,19 @@ const Settings = memo(function Settings({
               {section.label}
             </div>
             <div className="flex flex-col gap-2">
-              {items.map(item => {
+              {items.map((item, itemIndex) => {
                 const expanded = expandedLicense === item.name
+                const licensePanelId = `attribution-license-${section.category}-${itemIndex}`
                 return (
                   <div
                     key={item.name}
                     className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)]/40 overflow-hidden"
                   >
                     <button
+                      type="button"
                       onClick={() => setExpandedLicense(expanded ? null : item.name)}
+                      aria-expanded={expanded}
+                      aria-controls={licensePanelId}
                       className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
                     >
                       <ChevronDown
@@ -725,11 +774,17 @@ const Settings = memo(function Settings({
                         <ExternalLink size={13} />
                       </a>
                     </button>
-                    {expanded && (
-                      <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words bg-[var(--bg-input)] border-t border-[var(--border)] p-3 text-[10px] leading-relaxed font-mono text-[var(--text-secondary)]">
-                        {item.licenseText.trim()}
-                      </pre>
-                    )}
+                    <div
+                      id={licensePanelId}
+                      aria-hidden={!expanded}
+                      className={`attribution-license-panel grid ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words bg-[var(--bg-input)] border-t border-[var(--border)] p-3 text-[10px] leading-relaxed font-mono text-[var(--text-secondary)]">
+                          {item.licenseText.trim()}
+                        </pre>
+                      </div>
+                    </div>
                   </div>
                 )
               })}
@@ -800,10 +855,7 @@ const Settings = memo(function Settings({
               return (
                 <button
                   key={cat.id}
-                  onClick={() => {
-                    setActiveCategory(cat.id)
-                    setView('category')
-                  }}
+                  onClick={() => navigateToSettingsView('category', cat.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                     active && view === 'category'
                       ? 'bg-[var(--border-focus)] text-white shadow-sm'
@@ -821,7 +873,7 @@ const Settings = memo(function Settings({
 
             {/* Attribution Button */}
             <button
-              onClick={() => setView('attributions')}
+              onClick={() => navigateToSettingsView('attributions')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                 view === 'attributions'
                   ? 'bg-[var(--border-focus)] text-white shadow-sm'
@@ -834,7 +886,7 @@ const Settings = memo(function Settings({
 
             {/* About Button */}
             <button
-              onClick={() => setView('about')}
+              onClick={() => navigateToSettingsView('about')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
                 view === 'about'
                   ? 'bg-[var(--border-focus)] text-white shadow-sm'
@@ -852,7 +904,7 @@ const Settings = memo(function Settings({
               ? 'items-center justify-center'
               : 'items-start justify-start'
           }`}>
-            <div className="w-full max-w-[858px]">
+            <div ref={settingsContentRef} className="w-full max-w-[858px]">
               {view === 'about'
                 ? renderAbout()
                 : view === 'attributions'

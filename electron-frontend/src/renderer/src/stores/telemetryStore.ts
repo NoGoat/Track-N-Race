@@ -144,6 +144,7 @@ export interface TelemetryStoreState {
   fuelUpperLimit: number | null
   seconds: number
   lapBoundaries: Array<{ lapNum: number; sessionTime: number }>
+  currentStintStartTime: number
 }
 
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
@@ -163,6 +164,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
   lapBoundaries: [],
+  currentStintStartTime: -Infinity,
 }))
 
 const set = useTelemetryStore.setState
@@ -211,6 +213,7 @@ let playbackLapCacheOrder: number[] = []
 let analyzeLapRevisionVal = 0
 let pendingAnalyzeLapReset = false
 let liveLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
+let currentStintStartTime = -Infinity
 
 let secondsVal = 30
 let allLapsMode = false
@@ -235,6 +238,7 @@ function resetSession(): void {
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
   playbackLapCacheOrder = []
   liveLapBoundaries = []
+  currentStintStartTime = -Infinity
   pendingAnalyzeLapReset = false
   waitingForAllLapsHistory = false
   requestedHistoryRowMask = 0
@@ -252,7 +256,31 @@ function resetSession(): void {
     livePreviousLapData: null,
     liveFastestLapData: null,
     lapBoundaries: [],
+    currentStintStartTime: -Infinity,
   })
+}
+
+function isNewTyreStint(previous: StatusRow, current: StatusRow): boolean {
+  const validCompounds = previous.tyre_compound > 0 && current.tyre_compound > 0
+  const compoundChanged = validCompounds && (
+    current.tyre_compound !== previous.tyre_compound ||
+    current.visual_compound !== previous.visual_compound
+  )
+  const ageDelta = current.tyre_age_laps - previous.tyre_age_laps
+  // A larger age can mean a used set was fitted. Only treat a short-interval
+  // jump as a stop; a long gap can legitimately span several completed laps
+  // after the renderer was hidden or status streaming was interrupted.
+  const usedSetFitted = ageDelta > 1 && current.session_time - previous.session_time < 30
+  return compoundChanged || ageDelta < 0 || usedSetFitted
+}
+
+function findCurrentStintStart(rows: readonly StatusRow[]): number {
+  if (rows.length === 0) return -Infinity
+  let start = rows[0].session_time
+  for (let i = 1; i < rows.length; i++) {
+    if (isNewTyreStint(rows[i - 1], rows[i])) start = rows[i].session_time
+  }
+  return start
 }
 
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
@@ -360,6 +388,14 @@ function handleMsg(msg: GatewayMsg): void {
       break
     case 'status': {
       const next: Partial<TelemetryStoreState> = { status: msg }
+      const previous = stsBufRef.current[stsBufRef.current.length - 1]
+      const previousStintStartTime = currentStintStartTime
+      if (!previous || msg.session_time < previous.session_time) {
+        currentStintStartTime = msg.session_time
+      } else if (isNewTyreStint(previous, msg)) {
+        currentStintStartTime = msg.session_time
+      }
+      if (previousStintStartTime !== currentStintStartTime) next.currentStintStartTime = currentStintStartTime
       if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
         fuelMaxReceived = msg.fuel_kg
         // Keep exactly one kilogram of breathing room above the highest value
@@ -512,6 +548,7 @@ function handleMsg(msg: GatewayMsg): void {
       motBufRef.current = appendNewer(mot, priorMot)
       motExBufRef.current = appendNewer(motEx, priorMotEx)
       stsBufRef.current = appendNewer(sts, priorSts)
+      currentStintStartTime = findCurrentStintStart(stsBufRef.current)
       dmgBufRef.current = appendNewer(dmg, priorDmg)
       lapProgressBufRef.current = appendNewer(lapProgress, priorLapProgress)
       playbackDebug('seek-flush-decoded', {
@@ -531,7 +568,12 @@ function handleMsg(msg: GatewayMsg): void {
         lastLapNumber: lastLap?.current_lap_num ?? null,
         lastLapTimeMs: lastLap?.current_lap_ms ?? null,
       })
-      if (stsBufRef.current.length) set({ status: stsBufRef.current[stsBufRef.current.length - 1] })
+      set({
+        ...(stsBufRef.current.length
+          ? { status: stsBufRef.current[stsBufRef.current.length - 1] }
+          : {}),
+        currentStintStartTime,
+      })
       if (dmgBufRef.current.length) set({ damage: dmgBufRef.current[dmgBufRef.current.length - 1] })
       if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
       // Per-chart overrides can require both the complete current lap and a
@@ -722,8 +764,8 @@ function recompute(dirty: DirtySlice): void {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// Set the visible time window (seconds). Infinity selects the full-session AL
-// publication. Recomputes the published slices at once.
+// Set the visible time window (seconds). Infinity selects the full-session
+// publication used by All Laps and Stint Laps. Recomputes slices at once.
 function requestVisibleWindowHistory(): void {
   if (allLapsMode || speedRpmBlocksVal === null) return
   if (finiteWindowBackfillEnabled && (!Number.isFinite(secondsVal) || secondsVal <= 0)) return
@@ -852,9 +894,9 @@ export function subscribeRaceEvent(cb: (e: RaceEventMsg) => void): () => void {
   return () => { raceEventListeners.delete(cb) }
 }
 
-// AL charts consume the in-place full-session arrays directly. This imperative
-// signal lets their WebGL bridges append new rows without cloning the growing
-// arrays through Zustand/React on every telemetry batch.
+// Full-lap charts consume the in-place full-session arrays directly. This
+// imperative signal lets their WebGL bridges append new rows without cloning
+// the growing arrays through Zustand/React on every telemetry batch.
 export function subscribeAllLapsData(cb: () => void): () => void {
   allLapsDataListeners.add(cb)
   return () => { allLapsDataListeners.delete(cb) }

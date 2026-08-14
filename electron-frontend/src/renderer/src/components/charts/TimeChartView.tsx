@@ -85,6 +85,16 @@ function nearestIndex(source: XIndexedData | null, targetX: number): number {
   return index
 }
 
+function lowerBoundSessionTime(rows: readonly { session_time: number }[], value: number): number {
+  let lo = 0, hi = rows.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rows[mid].session_time < value) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 export interface SeriesDef<T> {
   label: string
   color: string
@@ -170,6 +180,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const comparisonLapRef = useRef<number | null>(null)
   const lapRevisionRef = useRef(coordinates.lapRevision)
+  const historyRevisionRef = useRef(coordinates.historyRevision)
   const seriesBuffersRef = useRef<readonly AlignedSeriesData[]>([])
   const dataDirtyRef = useRef(false)
   // Auto y-range state: running min/max plus the last full-rescan timestamp.
@@ -223,8 +234,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     ? `${coordinates.progressRevision}:${coordinates.lapData?.lapNum ?? ''}`
     : ''
 
-  const latestT = rows.length > 0 ? effectiveGetX(rows[rows.length - 1]) : null
-  const firstT = rows.length > 0 ? effectiveGetX(rows[0]) : null
+  const historyStartIndex = coordinates.stintLapsMode
+    ? lowerBoundSessionTime(rows, coordinates.historyStartTime)
+    : 0
+  const latestT = rows.length > historyStartIndex ? effectiveGetX(rows[rows.length - 1]) : null
+  const firstT = rows.length > historyStartIndex ? effectiveGetX(rows[historyStartIndex]) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(
     !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
     { fastFrames: fastScroll || coordinates.allLapsMode, fullFps: coordinates.allLapsMode ? 12 : 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
@@ -449,7 +463,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     const chart = chartRef.current
     if (!bridge) return
     const lapRevisionChanged = coordinates.distanceMode && lapRevisionRef.current !== coordinates.lapRevision
-    if (lapRevisionChanged) {
+    const historyRevisionChanged = historyRevisionRef.current !== coordinates.historyRevision
+    if (lapRevisionChanged || historyRevisionChanged) {
       playbackDebug('chart-lap-revision', {
         chart: debugChartName,
         previousRevision: lapRevisionRef.current,
@@ -464,6 +479,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       })
       bridge.clear()
       lapRevisionRef.current = coordinates.lapRevision
+      historyRevisionRef.current = coordinates.historyRevision
       autoRef.current = { min: Infinity, max: -Infinity, lastFull: 0 }
     }
     let syncEnd = rows.length
@@ -476,7 +492,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       }
       syncEnd = lo
     }
-    const { changed, syncedFrom } = bridge.sync(rows, syncEnd)
+    const syncStart = coordinates.stintLapsMode
+      ? lowerBoundSessionTime(rows, coordinates.historyStartTime)
+      : 0
+    const { changed, syncedFrom } = bridge.sync(rows, syncEnd, syncStart)
     if (lapRevisionChanged) {
       playbackDebug('chart-lap-revision-synced', {
         chart: debugChartName,
@@ -491,7 +510,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       })
     }
     if (changed) {
-      if (syncEnd > 0) acceptDataRange(effectiveGetX(rows[syncEnd - 1]), effectiveGetX(rows[0]))
+      if (syncEnd > syncStart) acceptDataRange(effectiveGetX(rows[syncEnd - 1]), effectiveGetX(rows[syncStart]))
       dataDirtyRef.current = true
       wake()
     }
@@ -513,7 +532,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     if (changed && chart && yRange.kind === 'auto') {
       const a = autoRef.current
       if (coordinates.allLapsMode && syncedFrom !== null) {
-        // AL never evicts a visible prefix, so its range only needs to expand.
+        // Full-lap modes never evict a visible prefix within their active
+        // range, so the range only needs to expand between stint resets.
         // Scan exactly the newly synchronized chunk (or the complete buffer
         // after a backfill rebuild) instead of rescanning the whole race.
         for (let rowIndex = syncedFrom; rowIndex < syncEnd; rowIndex++) {
@@ -597,7 +617,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   useEffect(() => {
     syncRowsRef.current()
-  }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.lapRevision, coordinates.progressRevision, coordinates.trackLengthM])
+  }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.historyRevision, coordinates.historyStartTime, coordinates.lapRevision, coordinates.progressRevision, coordinates.stintLapsMode, coordinates.trackLengthM])
 
   useEffect(() => {
     if (!coordinates.allLapsMode) return

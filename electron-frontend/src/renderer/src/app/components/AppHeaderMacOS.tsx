@@ -11,6 +11,7 @@ import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, ty
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 import AnimatedAutoWidth from './AnimatedAutoWidth'
+import { formatTabOptionLabel } from './TabOptionLabel'
 
 const selectStyles = buildSelectStyles(true)
 const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
@@ -52,7 +53,7 @@ export default memo(function AppHeader({
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
   const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
   const windowOptions = windowOptionGroups.flatMap(group => group.options)
-  const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
+  const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && chartWindow !== 'SL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
   const selectedLapVisible = Boolean(filename) && chartWindow === 'RL'
 
   return (
@@ -69,8 +70,8 @@ export default memo(function AppHeader({
           ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }
           : { background: 'var(--bg-panel)', borderColor: 'var(--border)', WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }}
       >
-        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-full max-w-[100px]">
-          <Select options={TAB_OPTIONS} value={TAB_OPTIONS.find(option => option.value === tab) ?? null} onChange={option => option && setTab(option.value as Tab)} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-full max-w-[120px]">
+          <Select options={TAB_OPTIONS} value={TAB_OPTIONS.find(option => option.value === tab) ?? null} onChange={option => option && setTab(option.value as Tab)} formatOptionLabel={formatTabOptionLabel} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
         </div>
 
         {filename ? (

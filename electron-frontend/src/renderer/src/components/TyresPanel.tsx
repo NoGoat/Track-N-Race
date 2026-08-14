@@ -8,6 +8,7 @@ import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
+import { useChartCoordinates } from '../lib/chartCoordinates'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -38,8 +39,9 @@ type TyresViewTransition = {
   skipTransition?: () => void
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>): Record<Corner, AlignedTable> {
+function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
   return useMemo(() => {
+    if (skip) return EMPTY_CORNER_HISTORIES
     const requested = CORNERS.filter(corner => enabled[corner])
     if (requested.length === 0) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
@@ -56,7 +58,7 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, b
       }
     })
     return histories
-  }, [telemetry, enabled])
+  }, [telemetry, enabled, skip])
 }
 
 const WET_COMPOUNDS = new Set([7, 8])
@@ -244,6 +246,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
 })
 
 export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis }: Props) {
+  const fullLapMode = useChartCoordinates().allLapsMode
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
@@ -256,7 +259,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
     corner,
     !expanded && cardViews?.[corner] === 'table',
   ])) as Record<Corner, boolean>, [cardViews, expanded])
-  const cornerHistory = useCornerHistories(telemetry, tableCorners)
+  const cornerHistory = useCornerHistories(telemetry, tableCorners, fullLapMode)
 
   const drySets = useMemo(() => {
     return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
@@ -393,18 +396,18 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
           </button>
         </div>
         <div ref={cardsRef} className="flex-1 flex flex-col divide-y divide-[var(--border)]">
-          <WheelCard pos="Front Left"  surface={latest?.tyre_temp_surface_fl ?? 0} inner={latest?.tyre_temp_inner_fl ?? 0} brake={latest?.brake_temp_fl ?? 0}
+          <WheelCard pos="Front Left" corner="fl" surface={latest?.tyre_temp_surface_fl ?? 0} inner={latest?.tyre_temp_inner_fl ?? 0} brake={latest?.brake_temp_fl ?? 0}
             wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.fl} history={cornerHistory.fl} />
-          <WheelCard pos="Front Right" surface={latest?.tyre_temp_surface_fr ?? 0} inner={latest?.tyre_temp_inner_fr ?? 0} brake={latest?.brake_temp_fr ?? 0}
+            view={cardViews?.fl} history={cornerHistory.fl} telemetry={telemetry} />
+          <WheelCard pos="Front Right" corner="fr" surface={latest?.tyre_temp_surface_fr ?? 0} inner={latest?.tyre_temp_inner_fr ?? 0} brake={latest?.brake_temp_fr ?? 0}
             wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.fr} history={cornerHistory.fr} />
-          <WheelCard pos="Rear Left"   surface={latest?.tyre_temp_surface_rl ?? 0} inner={latest?.tyre_temp_inner_rl ?? 0} brake={latest?.brake_temp_rl ?? 0}
+            view={cardViews?.fr} history={cornerHistory.fr} telemetry={telemetry} />
+          <WheelCard pos="Rear Left" corner="rl" surface={latest?.tyre_temp_surface_rl ?? 0} inner={latest?.tyre_temp_inner_rl ?? 0} brake={latest?.brake_temp_rl ?? 0}
             wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.rl} history={cornerHistory.rl} />
-          <WheelCard pos="Rear Right"  surface={latest?.tyre_temp_surface_rr ?? 0} inner={latest?.tyre_temp_inner_rr ?? 0} brake={latest?.brake_temp_rr ?? 0}
+            view={cardViews?.rl} history={cornerHistory.rl} telemetry={telemetry} />
+          <WheelCard pos="Rear Right" corner="rr" surface={latest?.tyre_temp_surface_rr ?? 0} inner={latest?.tyre_temp_inner_rr ?? 0} brake={latest?.brake_temp_rr ?? 0}
             wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.rr} history={cornerHistory.rr} />
+            view={cardViews?.rr} history={cornerHistory.rr} telemetry={telemetry} />
         </div>
       </div>
     </div>
