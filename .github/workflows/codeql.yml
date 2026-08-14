@@ -50,20 +50,32 @@ jobs:
         shell: bash
         run: |
           arch="$(uname -m)"
+          build_dir="minimal_frontend/build-codeql"
 
           cmake \
             -S minimal_frontend \
-            -B minimal_frontend/build-codeql \
+            -B "$build_dir" \
+            -G Xcode \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="$arch" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
 
-          cmake \
-            --build minimal_frontend/build-codeql \
-            --config Release \
-            --target minimal_app
+          xcodebuild \
+            -project "$build_dir/TrackNRaceMinimalRecorder.xcodeproj" \
+            -target minimal_app \
+            -configuration Release \
+            -arch "$arch" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
 
       - name: Analyze
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+
+      - name: Upload Swift CodeQL diagnostics
+        if: failure() && matrix.language == 'swift'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-swift-diagnostics
+          path: ${{ env.CODEQL_EXTRACTOR_SWIFT_LOG_DIR }}
