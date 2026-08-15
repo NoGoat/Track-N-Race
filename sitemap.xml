@@ -8,16 +8,17 @@
   </url>
 
   <url>
-    <loc>https://track-n-race.com/setup.html</loc>
+    <loc>https://track-n-race.com/setup</loc>
     <lastmod>2026-08-15</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://track-n-race.com/credits.html</loc>
+    <loc>https://track-n-race.com/credits</loc>
     <lastmod>2026-08-15</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
 </urlset>
+
 
