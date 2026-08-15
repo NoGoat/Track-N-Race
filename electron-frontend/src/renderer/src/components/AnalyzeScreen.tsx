@@ -12,7 +12,7 @@ import {
 } from '../lib/analyzeMetrics'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
-import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
 import { useModalPresenceValue } from '../lib/useModalPresence'
 import { dataMaskForAnalyze } from '../lib/historyDependencies'
@@ -834,7 +834,7 @@ export default function AnalyzeScreen({
               <button
                 type="button"
                 onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
-                className={`${TEXT_ACTION_BUTTON_CLASS} w-full`}
+                className={`${BUTTON_CLASS} w-full`}
               >
                 <span>Toggle Y-Axes</span>
               </button>
@@ -996,11 +996,11 @@ export default function AnalyzeScreen({
           </div>
 
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
-            <button onClick={() => setPendingCircuitMismatch(null)} className={TEXT_ACTION_BUTTON_CLASS}>Cancel</button>
+            <button onClick={() => setPendingCircuitMismatch(null)} className={BUTTON_CLASS}>Cancel</button>
             <button onClick={() => {
               applySecondaryFile(displayedCircuitMismatch.filePath, displayedCircuitMismatch.data, displayedCircuitMismatch.trackId)
               setPendingCircuitMismatch(null)
-            }} className={`${TEXT_ACTION_BUTTON_CLASS} !border-[var(--border-focus)] !bg-[var(--border-focus)] !text-white hover:brightness-110`}>Load Anyway</button>
+            }} className={PRIMARY_BUTTON_CLASS}>Load Anyway</button>
           </div>
         </div>
       </div>}

@@ -80,6 +80,12 @@ const recordingBridge = {
   },
 }
 
+const updateBridge = {
+  checkOnStartup: (): Promise<unknown> => ipcRenderer.invoke('updates:check-on-startup'),
+  skipVersion: (version: string): void => ipcRenderer.send('updates:skip-version', version),
+  openDownloadPage: (): Promise<void> => ipcRenderer.invoke('updates:open-download-page'),
+}
+
 
 let playerAllLapsMode = false
 let playerAllLapsRowMask = 0xFFFFFFFF
@@ -152,5 +158,6 @@ contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
+contextBridge.exposeInMainWorld('updateBridge', updateBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
 contextBridge.exposeInMainWorld('analysisBridge', analysisBridge)

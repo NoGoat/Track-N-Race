@@ -429,6 +429,13 @@ export interface RecordingErrorMsg {
   path: string
 }
 
+export interface AvailableUpdate {
+  currentVersion: string
+  latestVersion: string
+  releaseUrl: string
+  publishedAt: string | null
+}
+
 declare global {
   const __ENABLE_PERFORMANCE_DIAGNOSTICS__: boolean
 
@@ -465,6 +472,11 @@ declare global {
     }
     recordingBridge: {
       onError: (cb: (error: RecordingErrorMsg) => void) => () => void
+    }
+    updateBridge: {
+      checkOnStartup: () => Promise<AvailableUpdate | null>
+      skipVersion: (version: string) => void
+      openDownloadPage: () => Promise<void>
     }
     playerBridge: {
       setPageVisible: (visible: boolean) => void

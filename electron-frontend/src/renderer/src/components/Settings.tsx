@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, memo } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
 import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
@@ -11,7 +11,7 @@ import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
-import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS } from '../lib/buttonStyles'
 import type { TitlebarUpdateInterval } from '../app/appConfig'
 import { useModalPresence } from '../lib/useModalPresence'
 
@@ -107,7 +107,7 @@ const Row = memo(function Row({ label, description, warning, children }: {
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-8 px-4 py-3.5 hover:bg-[var(--bg-hover)]/30 rounded-xl transition-all duration-150">
+    <div className="flex items-center justify-between gap-8 px-4 py-3.5 rounded-xl">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-[var(--text-primary)] leading-none">{label}</p>
         <p className="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">{description}</p>
@@ -180,6 +180,29 @@ const Settings = memo(function Settings({
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
   const settingsNavigationSequence = useRef(0)
+  const settingsSidebarRef = useRef<HTMLDivElement>(null)
+  const settingsSidebarItemRefs = useRef(new globalThis.Map<string, HTMLButtonElement>())
+  const [sidebarIndicator, setSidebarIndicator] = useState<{ top: number; height: number } | null>(null)
+  const selectedSidebarItem = view === 'category' ? activeCategory : view
+
+  useLayoutEffect(() => {
+    const sidebar = settingsSidebarRef.current
+    const item = settingsSidebarItemRefs.current.get(selectedSidebarItem)
+    if (!sidebar || !item) return
+
+    const updateIndicator = () => {
+      setSidebarIndicator(current => {
+        const next = { top: item.offsetTop, height: item.offsetHeight }
+        return current !== null && current.top === next.top && current.height === next.height ? current : next
+      })
+    }
+
+    updateIndicator()
+    const resizeObserver = new ResizeObserver(updateIndicator)
+    resizeObserver.observe(sidebar)
+    resizeObserver.observe(item)
+    return () => resizeObserver.disconnect()
+  }, [modalPresence.mounted, selectedSidebarItem])
 
   function navigateToSettingsView(
     nextView: 'category' | 'about' | 'attributions',
@@ -224,6 +247,7 @@ const Settings = memo(function Settings({
   }
   
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
+  const [updateChecksEnabled, setUpdateChecksEnabled] = useState<boolean>(() => window.electronStore.get('updates.enabled', true) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
@@ -287,6 +311,11 @@ const Settings = memo(function Settings({
   function handleLoggingToggle(val: boolean) {
     setLoggingEnabled(val)
     window.electronStore.set('logging.enabled', val)
+  }
+
+  function handleUpdateChecksToggle(value: boolean) {
+    setUpdateChecksEnabled(value)
+    window.electronStore.set('updates.enabled', value)
   }
 
 
@@ -390,7 +419,7 @@ const Settings = memo(function Settings({
   const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
     <button
       onClick={onClick}
-      className={TEXT_ACTION_BUTTON_CLASS}
+      className={BUTTON_CLASS}
     >
       {label}
     </button>
@@ -541,6 +570,12 @@ const Settings = memo(function Settings({
           value={bannerDuration} onChange={onBannerDurationChange}
         />
       </Row>
+      <Row
+        label="Check for Updates"
+        description="Check GitHub for a newer Track N Race release when the app starts, at most once per day."
+      >
+        <Toggle value={updateChecksEnabled} onChange={handleUpdateChecksToggle} />
+      </Row>
     </div>
   )
 
@@ -624,7 +659,7 @@ const Settings = memo(function Settings({
               type="button"
               onClick={() => setForwardTargets([...forwardTargets, { address: '', port: 20777 }])}
               disabled={forwardTargets.length >= 15}
-              className={TEXT_ACTION_BUTTON_CLASS}
+              className={BUTTON_CLASS}
             >
               Add channel
             </button>
@@ -688,7 +723,7 @@ const Settings = memo(function Settings({
         <button
           onClick={applyUdp}
           disabled={!portValid || !forwardTargetsValid || udpStatus === 'applying'}
-          className={TEXT_ACTION_BUTTON_CLASS}
+          className={BUTTON_CLASS}
         >
           {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}
         </button>
@@ -764,7 +799,7 @@ const Settings = memo(function Settings({
           />
           <button
             onClick={handleSelectDirectory}
-            className={TEXT_ACTION_BUTTON_CLASS}
+            className={BUTTON_CLASS}
           >
             Browse
           </button>
@@ -951,17 +986,28 @@ const Settings = memo(function Settings({
         {/* Body Container (Sidebar + Content) */}
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
-          <div className="w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none h-full">
+          <div ref={settingsSidebarRef} className="relative w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none h-full">
+            {sidebarIndicator && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute left-4 top-0 z-10 w-0.5 rounded-r-full bg-[var(--border-focus)] transition-[transform,height] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                style={{ height: sidebarIndicator.height, transform: `translateY(${sidebarIndicator.top}px)` }}
+              />
+            )}
             {CATEGORIES.map(cat => {
               const active = activeCategory === cat.id
               return (
                 <button
                   key={cat.id}
+                  ref={node => {
+                    if (node) settingsSidebarItemRefs.current.set(cat.id, node)
+                    else settingsSidebarItemRefs.current.delete(cat.id)
+                  }}
                   onClick={() => navigateToSettingsView('category', cat.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                     active && view === 'category'
-                      ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                      ? 'text-[var(--text-primary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
                   <span style={{ color: cat.color }}>{cat.icon}</span>
@@ -975,11 +1021,15 @@ const Settings = memo(function Settings({
 
             {/* Attribution Button */}
             <button
+              ref={node => {
+                if (node) settingsSidebarItemRefs.current.set('attributions', node)
+                else settingsSidebarItemRefs.current.delete('attributions')
+              }}
               onClick={() => navigateToSettingsView('attributions')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                 view === 'attributions'
-                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
               <ScrollText size={14} style={{ color: '#a0a8b8' }} />
@@ -988,11 +1038,15 @@ const Settings = memo(function Settings({
 
             {/* About Button */}
             <button
+              ref={node => {
+                if (node) settingsSidebarItemRefs.current.set('about', node)
+                else settingsSidebarItemRefs.current.delete('about')
+              }}
               onClick={() => navigateToSettingsView('about')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                 view === 'about'
-                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
               <Info size={14} style={{ color: '#a0a8b8' }} />

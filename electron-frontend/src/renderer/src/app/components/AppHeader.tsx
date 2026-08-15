@@ -14,6 +14,7 @@ import AnimatedAutoWidth from './AnimatedAutoWidth'
 import { formatTabOptionLabel } from './TabOptionLabel'
 
 const selectStyles = buildSelectStyles(true)
+const tabSelectStyles = buildSelectStyles(true, { menuWidth: '120px' })
 const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
 
 interface AppHeaderProps {
@@ -93,13 +94,15 @@ export default memo(function AppHeader({
           </div>
         )}
 
-        <div style={{ WebkitAppRegion: 'no-drag' }} className="w-full max-w-[120px]">
-          <Select options={TAB_OPTIONS} value={TAB_OPTIONS.find(option => option.value === tab) ?? null} onChange={option => option && setTab(option.value as Tab)} formatOptionLabel={formatTabOptionLabel} styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+        <div style={{ WebkitAppRegion: 'no-drag' }}>
+          <AnimatedAutoWidth measureKey={tab}>
+            <Select options={TAB_OPTIONS} value={TAB_OPTIONS.find(option => option.value === tab) ?? null} onChange={option => option && setTab(option.value as Tab)} formatOptionLabel={formatTabOptionLabel} styles={tabSelectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
+          </AnimatedAutoWidth>
         </div>
 
         {filename ? (
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] font-mono text-[var(--text-secondary)] max-w-[200px] max-[1400px]:max-w-[100px] truncate">{filename}</span>
+            <span className="titlebar-filename text-[11px] font-mono text-[var(--text-secondary)] truncate">{filename}</span>
             <button onClick={onClosePlayback} title="Close session data" style={{ WebkitAppRegion: 'no-drag' }} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252] transition-colors"><X size={14} /></button>
           </div>
         ) : (

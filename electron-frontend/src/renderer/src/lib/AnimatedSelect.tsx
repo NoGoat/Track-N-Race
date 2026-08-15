@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Select, { type GroupBase, type Props, type StylesConfig } from 'react-select'
+import Select, { type ClassNamesConfig, type GroupBase, type Props, type StylesConfig } from 'react-select'
 import { SELECT_MENU_ANIMATION_MS } from './selectStyles'
 
 type MenuPhase = 'closed' | 'open' | 'closing'
@@ -16,6 +16,8 @@ export default function AnimatedSelect<
   Group extends GroupBase<Option> = GroupBase<Option>,
 >(props: Props<Option, IsMulti, Group>) {
   const {
+    className,
+    classNames,
     defaultMenuIsOpen = false,
     menuIsOpen: controlledMenuIsOpen,
     onMenuClose,
@@ -76,9 +78,16 @@ export default function AnimatedSelect<
     },
   }), [phase, styles])
 
+  const noDragClassNames = useMemo<ClassNamesConfig<Option, IsMulti, Group>>(() => ({
+    ...classNames,
+    menuPortal: state => [classNames?.menuPortal?.(state), 'react-select-no-drag'].filter(Boolean).join(' '),
+  }), [classNames])
+
   return (
     <Select<Option, IsMulti, Group>
       {...selectProps}
+      className={[className, 'react-select-no-drag'].filter(Boolean).join(' ')}
+      classNames={noDragClassNames}
       defaultMenuIsOpen={defaultMenuIsOpen}
       menuIsOpen={phase !== 'closed'}
       onMenuOpen={openMenu}

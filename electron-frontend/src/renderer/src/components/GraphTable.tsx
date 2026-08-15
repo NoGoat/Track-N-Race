@@ -1,7 +1,7 @@
 import { useRef, useState, useLayoutEffect, useCallback, useEffect } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { AlignedTable } from '../types'
-import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS } from '../lib/buttonStyles'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { subscribeAllLapsData } from '../stores/telemetryStore'
 
@@ -194,7 +194,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
       {!pinned && (
         <button
           onClick={scrollToBottom}
-          className={`${TEXT_ACTION_BUTTON_CLASS} absolute bottom-3 right-3 z-10 bg-[var(--bg-menu)] shadow-[0_2px_8px_rgba(0,0,0,0.35)] hover:bg-[var(--bg-hover)]`}
+          className={`${BUTTON_CLASS} absolute bottom-3 right-3 z-10 !bg-[var(--bg-menu)] shadow-[0_2px_8px_rgba(0,0,0,0.35)] hover:!bg-[var(--bg-hover)]`}
         >
           <ChevronDown size={12} />
           <span>Scroll to Bottom</span>

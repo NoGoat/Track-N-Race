@@ -1,5 +1,5 @@
 import { AlertTriangle, X } from 'lucide-react'
-import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
+import { BUTTON_CLASS } from '../../lib/buttonStyles'
 import { useModalPresenceValue } from '../../lib/useModalPresence'
 
 interface PlaybackDialogsProps {
@@ -63,7 +63,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
               <button
                 onClick={() => setConfirmOpenFilePath(null)}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 No
               </button>
@@ -72,7 +72,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
                   window.playerBridge.load(displayedFilePath)
                   setConfirmOpenFilePath(null)
                 }}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 Yes
               </button>
@@ -122,7 +122,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               <button
                 autoFocus
                 onClick={() => setPlaybackLoadError(null)}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 OK
               </button>
@@ -133,4 +133,3 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
     </>
   )
 }
-

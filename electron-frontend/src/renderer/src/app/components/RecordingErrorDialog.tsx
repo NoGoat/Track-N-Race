@@ -1,6 +1,6 @@
 import { AlertTriangle, X } from 'lucide-react'
 import type { RecordingErrorMsg } from '../../types'
-import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
+import { BUTTON_CLASS } from '../../lib/buttonStyles'
 import { useModalPresenceValue } from '../../lib/useModalPresence'
 
 interface RecordingErrorDialogProps {
@@ -68,7 +68,7 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
           <button
             autoFocus
             onClick={onClose}
-            className={TEXT_ACTION_BUTTON_CLASS}
+            className={BUTTON_CLASS}
           >
             OK
           </button>

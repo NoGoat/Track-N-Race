@@ -292,6 +292,25 @@ body {
   transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.titlebar-filename {
+  max-width: 200px;
+  transition: max-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* React Select controls can live inside a draggable Electron titlebar, while
+   their menus are portaled to the document body. Exclude both complete trees
+   from native titlebar hit testing so rapid clicks remain control interactions. */
+.react-select-no-drag,
+.react-select-no-drag * {
+  -webkit-app-region: no-drag;
+}
+
+@media (max-width: 1400px) {
+  .titlebar-filename {
+    max-width: 100px;
+  }
+}
+
 .titlebar-delta-slot {
   display: grid;
   grid-template-columns: 0fr;
@@ -378,6 +397,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .titlebar-auto-width,
+  .titlebar-filename,
   .titlebar-delta-slot,
   .titlebar-lap-slot,
   .chart-lap-slot {

@@ -18,7 +18,8 @@ import LayoutEditor from './components/LayoutEditor'
 import PlaybackDialogs from './components/PlaybackDialogs'
 import RaceLeaderWatcher from './components/RaceLeaderWatcher'
 import RecordingErrorDialog from './components/RecordingErrorDialog'
-import type { RecordingErrorMsg } from '../types'
+import UpdateAvailableDialog from './components/UpdateAvailableDialog'
+import type { AvailableUpdate, RecordingErrorMsg } from '../types'
 import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
 import { DATA_ROW, dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
 import {
@@ -45,6 +46,7 @@ export default function AppShell() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
@@ -130,6 +132,16 @@ export default function AppShell() {
   }, [reduceAnimations, tab])
 
   useEffect(() => window.recordingBridge.onError(setRecordingError), [])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.updateBridge.checkOnStartup().then(update => {
+      if (!cancelled && update) setAvailableUpdate(update)
+    }).catch(error => {
+      console.warn('[updates] could not request the startup update check:', error)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
@@ -461,6 +473,11 @@ export default function AppShell() {
       <RecordingErrorDialog
         error={recordingError}
         onClose={() => setRecordingError(null)}
+      />
+
+      <UpdateAvailableDialog
+        update={availableUpdate}
+        onClose={() => setAvailableUpdate(null)}
       />
 
     </div>

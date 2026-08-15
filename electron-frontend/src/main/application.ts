@@ -5,6 +5,7 @@ import { join } from 'path'
 import { execFile, spawn } from 'child_process'
 import { configStore as store } from './configStore'
 import { setFatalFlushHandler } from './diagnostics'
+import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
   restartUdp,
@@ -70,6 +71,7 @@ let macStartupFilePath: string | null = null
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const LAST_DIALOG_DIRECTORY_KEY = 'dialogs.lastDirectory'
+let startupUpdateCheck: Promise<AvailableUpdate | null> | null = null
 
 function lastDialogDirectory(): string | undefined {
   const value = store.get(LAST_DIALOG_DIRECTORY_KEY)
@@ -156,6 +158,17 @@ ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
   if (key === 'theme') updateWindowsTitleBarSymbolColor(value)
 })
+
+ipcMain.handle('updates:check-on-startup', () => {
+  startupUpdateCheck ??= checkForUpdateOnStartup(__APP_VERSION__)
+  return startupUpdateCheck
+})
+
+ipcMain.on('updates:skip-version', (_event, version: string) => {
+  skipUpdateVersion(version)
+})
+
+ipcMain.handle('updates:open-download-page', () => shell.openExternal(RELEASE_PAGE_URL))
 
 ipcMain.handle('dialog:showOpenDialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -498,7 +511,8 @@ app.whenReady().then(() => {
   // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.
   function trayPngForTheme(theme: TaskbarTheme): Electron.NativeImage {
     const path = theme === 'light' ? iconTransparentLightPng : iconTransparentPng
-    return nativeImage.createFromPath(path).resize({ width: 32, height: 32 })
+    const size = process.platform === 'darwin' ? 20 : 32
+    return nativeImage.createFromPath(path).resize({ width: size, height: size })
   }
 
   const initialTheme = nativeTaskbarTheme()
