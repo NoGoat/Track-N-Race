@@ -6,33 +6,110 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <!-- Primary Meta Tags -->
-    <title>Telemetry Setup Guide — Track N Race</title>
-    <meta name="title" content="Telemetry Setup Guide — Track N Race">
+    <title>F1 Game telemetry Setup Guide — Configure UDP for Track N Race</title>
+    <meta name="title" content="F1 Game telemetry Setup Guide — Configure UDP for Track N Race">
     <meta name="description"
-        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, port configuration, and Windows & macOS IP discovery.">
+        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, UDP port 20777, packet rate, and IP discovery for PC, PS5, and Xbox.">
     <meta name="keywords"
-        content="F1 Telemetry Setup, Track N Race Configuration, F1 24 UDP Port, F1 25 Telemetry Settings, F1 2026 Telemetry, Sim Racing Setup">
+        content="F1 Game telemetry setup, F1 UDP telemetry guide, Track N Race setup, F1 25 UDP telemetry settings, F1 24 UDP configuration, F1 2026 telemetry setup, F1 UDP port 20777, configure F1 Game telemetry PC PS5 Xbox, sim racing UDP setup, F1 broadcast settings, F1 Game telemetry IP address">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
     <meta name="author" content="NoGoat">
     <meta name="theme-color" content="#090b10">
 
     <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Track N Race">
+    <meta property="og:locale" content="en_US">
     <meta property="og:url" content="https://track-n-race.com/setup">
-    <meta property="og:title" content="Telemetry Setup Guide — Track N Race">
+    <meta property="og:title" content="F1 Game telemetry Setup Guide — Configure UDP for Track N Race">
     <meta property="og:description"
-        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, port configuration, and Windows & macOS IP discovery.">
+        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, UDP port 20777, packet rate, and IP discovery for PC, PS5, and Xbox.">
     <meta property="og:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
+    <meta property="og:image:width" content="1920">
+    <meta property="og:image:height" content="1080">
+    <meta property="og:image:alt" content="Track N Race F1 UDP Telemetry Setup Guide">
 
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
     <meta property="twitter:url" content="https://track-n-race.com/setup">
-    <meta property="twitter:title" content="Telemetry Setup Guide — Track N Race">
+    <meta property="twitter:title" content="F1 Game telemetry Setup Guide — Configure UDP for Track N Race">
     <meta property="twitter:description"
-        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, port configuration, and Windows & macOS IP discovery.">
+        content="Step-by-step guide to configure UDP Telemetry in F1 24, F1 25, and 2026 DLC for Track N Race. Protocol setup, UDP port 20777, packet rate, and IP discovery for PC, PS5, and Xbox.">
     <meta property="twitter:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
+    <meta property="twitter:image:alt" content="Track N Race F1 UDP Telemetry Setup Guide">
 
     <!-- Canonical URL -->
     <link rel="canonical" href="https://track-n-race.com/setup">
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://track-n-race.com/setup#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "Home",
+              "item": "https://track-n-race.com/"
+            },
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "Setup Guide",
+              "item": "https://track-n-race.com/setup"
+            }
+          ]
+        },
+        {
+          "@type": "HowTo",
+          "@id": "https://track-n-race.com/setup#howto",
+          "name": "How to Setup UDP Telemetry in F1 Games for Track N Race",
+          "description": "Step-by-step instructions to configure UDP broadcast telemetry settings in F1 24, F1 25, and 2026 DLC for real-time data recording and lap analysis with Track N Race.",
+          "totalTime": "PT3M",
+          "supply": [
+            {
+              "@type": "HowToSupply",
+              "name": "Track N Race Application"
+            },
+            {
+              "@type": "HowToSupply",
+              "name": "F1 24, F1 25, or 2026 DLC Game (PC, PlayStation, or Xbox)"
+            }
+          ],
+          "step": [
+            {
+              "@type": "HowToStep",
+              "position": 1,
+              "name": "Turn On Telemetry",
+              "text": "Open F1 Game Settings -> Telemetry Settings, and toggle UDP Telemetry to On. Set UDP Send Rate between 10Hz and 60Hz."
+            },
+            {
+              "@type": "HowToStep",
+              "position": 2,
+              "name": "Set Protocol Format",
+              "text": "Select the latest UDP format supported by your game version (2026, 2025, or 2024)."
+            },
+            {
+              "@type": "HowToStep",
+              "position": 3,
+              "name": "Set UDP Port",
+              "text": "Configure UDP Port to match Track N Race application (default is 20777)."
+            },
+            {
+              "@type": "HowToStep",
+              "position": 4,
+              "name": "Configure UDP IP Address",
+              "text": "For playing on the same PC, enter 127.0.0.1. For playing on a Console (PS5, Xbox) or secondary PC, enter your Track N Race host machine local IP address."
+            }
+          ]
+        }
+      ]
+    }
+    </script>
 
     <!-- Favicon -->
     <link rel="icon" type="image/webp" href="assets/icons/icon_transparent.webp">
