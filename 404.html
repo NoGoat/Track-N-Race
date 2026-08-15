@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Primary Meta Tags -->
+    <title>404 — Page Not Found | Track N Race</title>
+    <meta name="title" content="404 — Page Not Found | Track N Race">
+    <meta name="description" content="The page you were looking for could not be found on Track N Race.">
+    <meta name="robots" content="noindex, follow">
+    <meta name="theme-color" content="#090b10">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/webp" href="assets/icons/icon_transparent.webp">
+    <link rel="apple-touch-icon" href="assets/icons/icon_solid.webp">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="brand-link" aria-label="Track N Race Home">
+                <div class="brand">
+                    <img src="assets/icons/icon_transparent.webp" alt="Track N Race Logo" class="brand-logo-img"
+                        width="512" height="512" loading="lazy">
+                    <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
+                </div>
+            </a>
+            <nav class="nav-menu">
+                <a href="index.html" class="nav-btn">Home</a>
+                <a href="setup.html" class="nav-btn">Setup</a>
+                <a href="credits.html" class="nav-btn">Credits</a>
+            </nav>
+            <div class="nav-actions">
+                <a href="https://github.com/NoGoat/Track-N-Race" target="_blank" class="github-link-btn"
+                    aria-label="GitHub Repository">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <path
+                            d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+                <button class="mobile-toggle-btn" id="mobileToggleBtn" aria-label="Toggle Navigation Menu"
+                    aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="6" x2="20" y2="6"></line>
+                        <line x1="4" y1="12" x2="20" y2="12"></line>
+                        <line x1="4" y1="18" x2="20" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="section error-section">
+            <div class="error-container">
+                <span class="error-code">404</span>
+                <h1 class="main-title" style="margin-bottom: 0.8rem;">Off-Track <span class="gradient-text">Warning</span></h1>
+                <p class="subtitle" style="margin-bottom: 2rem; max-width: 480px;">
+                    You went off the racing line. The page you requested doesn't exist or has moved to a different circuit.
+                </p>
+                <div class="cta-group">
+                    <a href="index.html" class="primary-btn">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                        </svg>
+                        <span>Return to Pit / Home</span>
+                    </a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+        <div class="footer-container">
+            <div class="footer-left">
+                <span class="footer-brand"><span class="brand-accent">Track</span> N Race</span>
+                <p class="footer-desc">
+                    Copyright &copy; 2026 NoGoat. Track N Race is distributed under the <span
+                        class="attribution-title footer-license" data-license="GPL-3.0.txt" style="cursor: pointer;">GNU
+                        General Public License v3.0</span>
+                </p>
+                <p class="footer-disclaimer">
+                    Track N Race is not affiliated with, endorsed by, or associated with EA, Codemasters, F1, or the
+                    FIA.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- License Modal -->
+    <div class="license-modal" id="licenseModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="licenseModalTitle">License Details</h3>
+                <button class="modal-close" id="closeLicenseModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="licenseTextContent">Loading...</pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js" defer></script>
+</body>
+
+</html>

@@ -6,38 +6,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <!-- Primary Meta Tags -->
-    <title>Track-N-Race — F1 Telemetry & Performance Analysis</title>
-    <meta name="title" content="Track-N-Race — F1 Telemetry & Performance Analysis">
+    <title>Track N Race — F1 Telemetry & Performance Analysis</title>
+    <meta name="title" content="Track N Race — F1 Telemetry & Performance Analysis">
     <meta name="description"
-        content="Track-N-Race is a telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+        content="Track N Race is a telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
     <meta name="keywords"
-        content="F1, Telemetry, Racing, Track-N-Race, F1 24, F1 25, Telemetry Analysis, Lap Time, Sim Racing">
+        content="F1, Telemetry, Racing, Track N Race, F1 24, F1 25, Telemetry Analysis, Lap Time, Sim Racing">
     <meta name="google-site-verification" content="a99yyZ8By73b5OfZIi8xfglDVZORy-lbVjhQqVKTKwg" />
     <meta name="author" content="NoGoat">
     <meta name="theme-color" content="#090b10">
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://nogoat.github.io/Track-N-Race/">
-    <meta property="og:title" content="Track-N-Race | Telemetry Analysis">
+    <meta property="og:url" content="https://track-n-race.com/">
+    <meta property="og:title" content="Track N Race | Telemetry Analysis">
     <meta property="og:description"
-        content="Track-N-Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
-    <meta property="og:image" content="https://nogoat.github.io/Track-N-Race/assets/screenshots/overview.webp">
+        content="Track N Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+    <meta property="og:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
 
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://nogoat.github.io/Track-N-Race/">
-    <meta property="twitter:title" content="Track-N-Race | Telemetry Analysis">
+    <meta property="twitter:url" content="https://track-n-race.com/">
+    <meta property="twitter:title" content="Track N Race | Telemetry Analysis">
     <meta property="twitter:description"
-        content="Track-N-Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
-    <meta property="twitter:image" content="https://nogoat.github.io/Track-N-Race/assets/screenshots/overview.webp">
+        content="Track N Race is a comprehensive telemetry recording and analysis tool designed for F1 games. Analyze and find out where you lose that extra tenth over your competitors.">
+    <meta property="twitter:image" content="https://track-n-race.com/assets/screenshots/overview.webp">
 
     <!-- Canonical URL -->
-    <link rel="canonical" href="https://nogoat.github.io/Track-N-Race/" />
+    <link rel="canonical" href="https://track-n-race.com/">
 
     <!-- Favicon -->
     <link rel="icon" type="image/webp" href="assets/icons/icon_transparent.webp">
     <link rel="apple-touch-icon" href="assets/icons/icon_solid.webp">
+
+    <!-- Preload Hero Image -->
+    <link rel="preload" as="image" href="assets/screenshots/overview.webp" fetchpriority="high">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -51,21 +54,17 @@
 </head>
 
 <body>
-    <div class="ambient-glow top-left"></div>
-    <div class="ambient-glow bottom-right"></div>
-
     <header class="navbar">
         <div class="nav-container">
-            <a href="index.html" class="brand-link" aria-label="Track-N-Race Home">
+            <a href="index.html" class="brand-link" aria-label="Track N Race Home">
                 <div class="brand">
-                    <img src="assets/icons/icon_transparent.webp" alt="Track-N-Race Logo" class="brand-logo-img"
+                    <img src="assets/icons/icon_transparent.webp" alt="Track N Race Logo" class="brand-logo-img"
                         width="512" height="512" loading="lazy">
-                    <span class="brand-text"><span class="brand-accent">Track</span>-N-Race</span>
+                    <span class="brand-text"><span class="brand-accent">Track</span> N Race</span>
                 </div>
             </a>
             <nav class="nav-menu">
                 <a href="index.html" class="nav-btn active">Home</a>
-                <a href="features.html" class="nav-btn">Features</a>
                 <a href="setup.html" class="nav-btn">Setup</a>
                 <a href="credits.html" class="nav-btn">Credits</a>
             </nav>
@@ -123,7 +122,7 @@
                     <div class="app-window">
                         <div class="img-zoom-wrapper">
                             <img src="assets/screenshots/overview.webp" alt="Overview Interface" class="mockup-img"
-                                width="1920" height="1080" loading="lazy">
+                                width="1920" height="1080" fetchpriority="high">
                             <div class="zoom-badge">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2">
@@ -433,7 +432,8 @@
                         </div>
                         <div class="card-content">
                             <h4 class="card-title">Race Strategy</h4>
-                            <p class="card-desc">This is a work in progress so expect strategies to be ... kinda meh.
+                            <p class="card-desc">This is a work in progress so expect strategies to be ... closer to
+                                Monaco 2022.
                             </p>
                         </div>
                     </div>
@@ -498,7 +498,7 @@
                         </div>
                         <div class="card-content">
                             <h4 class="card-title">Data Tables</h4>
-                            <p class="card-desc">If you don't want graphs, you can't swap them out for tables.</p>
+                            <p class="card-desc">If you don't want graphs, you can swap them out for tables.</p>
                         </div>
                     </div>
                 </div>
@@ -510,14 +510,14 @@
     <footer class="site-footer">
         <div class="footer-container">
             <div class="footer-left">
-                <span class="footer-brand"><span class="brand-accent">Track</span>-N-Race</span>
+                <span class="footer-brand"><span class="brand-accent">Track</span> N Race</span>
                 <p class="footer-desc">
-                    Copyright &copy; 2026 NoGoat. Track-N-Race is distributed under the <span
+                    Copyright &copy; 2026 NoGoat. Track N Race is distributed under the <span
                         class="attribution-title footer-license" data-license="GPL-3.0.txt" style="cursor: pointer;">GNU
                         General Public License v3.0</span>
                 </p>
                 <p class="footer-disclaimer">
-                    Track-N-Race is not affiliated with, endorsed by, or associated with EA, Codemasters, F1, or the
+                    Track N Race is not affiliated with, endorsed by, or associated with EA, Codemasters, F1, or the
                     FIA.
                 </p>
             </div>
