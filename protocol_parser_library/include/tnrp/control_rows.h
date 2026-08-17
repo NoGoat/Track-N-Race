@@ -161,6 +161,8 @@ struct RaceEventRow {
     std::optional<int>   penalty_type;
     std::optional<int>   infringement_type;
     std::optional<int>   penalty_time_s;
+    std::optional<uint32_t> flashback_frame_identifier;
+    std::optional<float> flashback_session_time;
 };
 
 // ── protocol_status / protocol_warning (control) — emit explicit null ───────

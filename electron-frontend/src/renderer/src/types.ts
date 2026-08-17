@@ -54,6 +54,7 @@ export interface LapRow {
   sector: number       // current sector 0/1/2
   lap_invalid: boolean
   penalties_s: number
+  driver_status?: number // 0=garage 1=flying 2=inlap 3=outlap 4=ontrack; absent in older files
 }
 
 export interface LapProgressPoint {
@@ -237,6 +238,8 @@ export interface RaceEventMsg {
   penalty_type?: number           // 0=DT 1=SG 2=Grid 4=Time 5=Warning 6=DSQ
   infringement_type?: number      // see INFRINGEMENT_LABELS
   penalty_time_s?: number         // seconds (SG and time penalties)
+  flashback_frame_identifier?: number
+  flashback_session_time?: number
   overtaking_car_idx?: number     // OVTK: car doing the overtake
   being_overtaken_car_idx?: number // OVTK: car being overtaken
   speed_kph?: number              // SPTP: speed at the speed trap

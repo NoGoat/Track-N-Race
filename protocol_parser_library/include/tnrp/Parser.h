@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,8 @@ public:
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
         float                    sessionTime = -1.0f;
+        std::optional<float>     rewindSessionTime;
+        std::optional<uint32_t>  rewindFrameIdentifier;
         std::vector<std::string> rows;                // cold rows: serialised JSON (record + live)
         std::vector<std::string> control;             // serialised protocol_status / protocol_warning
         std::vector<std::string> hotJson;             // hot rows as JSON (only when wantHotJson)

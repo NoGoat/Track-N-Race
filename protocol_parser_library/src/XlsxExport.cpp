@@ -91,7 +91,7 @@ const std::vector<const char*>& columnsForType(uint8_t type) {
     };
     static const std::vector<const char*> lap = {
         "row_index", "session_time", "ts", "last_lap_ms", "current_lap_ms", "s1_ms", "s2_ms",
-        "position", "lap_num", "pit_status", "num_pit_stops", "sector", "lap_invalid", "penalties_s"
+        "position", "lap_num", "pit_status", "num_pit_stops", "sector", "lap_invalid", "penalties_s", "driver_status"
     };
     static const std::vector<const char*> session = {
         "row_index", "session_time", "ts", "weather", "track_temp", "air_temp", "track_length_m",
@@ -104,7 +104,8 @@ const std::vector<const char*>& columnsForType(uint8_t type) {
     };
     static const std::vector<const char*> raceEvent = {
         "row_index", "session_time", "ts", "code", "car_idx", "lap_time_s", "safety_car_type",
-        "event_type", "penalty_type", "infringement_type", "penalty_time_s"
+        "event_type", "penalty_type", "infringement_type", "penalty_time_s",
+        "flashback_frame_identifier", "flashback_session_time"
     };
     static const std::vector<const char*> timing = {
         "row_index", "session_time", "ts", "player_idx", "car_idx", "position", "lap_num",
@@ -273,6 +274,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         worksheet_write_number(ws, row, c++, r.sector, nullptr);
         worksheet_write_boolean(ws, row, c++, r.lap_invalid ? 1 : 0, nullptr);
         worksheet_write_number(ws, row, c++, r.penalties_s, nullptr);
+        worksheet_write_number(ws, row, c++, r.driver_status, nullptr);
         ++row;
         break;
     }
@@ -323,6 +325,8 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         if (r.penalty_type)      worksheet_write_number(ws, row, c, *r.penalty_type, nullptr);      ++c;
         if (r.infringement_type) worksheet_write_number(ws, row, c, *r.infringement_type, nullptr); ++c;
         if (r.penalty_time_s)    worksheet_write_number(ws, row, c, *r.penalty_time_s, nullptr);    ++c;
+        if (r.flashback_frame_identifier) worksheet_write_number(ws, row, c, *r.flashback_frame_identifier, nullptr); ++c;
+        if (r.flashback_session_time) worksheet_write_number(ws, row, c, *r.flashback_session_time, nullptr); ++c;
         ++row;
         break;
     }

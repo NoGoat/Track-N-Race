@@ -162,6 +162,38 @@ std::string Engine::udpLastError() const {
     return udp_.lastError();
 }
 
+void Engine::rewindLiveTimeline(float sessionTime) {
+    for (auto& history : livePackedHistory_) {
+        while (!history.index.empty() && history.index.back().sessionTime > sessionTime)
+            history.index.pop_back();
+        const size_t keep = history.index.empty() ? 0 :
+            history.index.back().offset + history.index.back().length;
+        if (keep < history.bytes.size()) history.bytes.resize(keep);
+        history.discardedBytes = std::min(history.discardedBytes, keep);
+    }
+    for (auto& history : liveJsonHistory_)
+        while (!history.empty() && history.back().sessionTime > sessionTime)
+            history.pop_back();
+
+    // State rows newer than the target must not leak back into a page restored
+    // after the rewind. Historical families can be restored from their tails.
+    for (uint8_t type = 1; type < liveLatestRows_.size(); ++type) {
+        if (!(kHistoricalRowMask & (1u << type))) continue;
+        liveLatestRows_[type] = liveJsonHistory_[type].empty()
+            ? std::string{} : liveJsonHistory_[type].back().json;
+    }
+    liveLapNum_ = 0;
+    liveLapStart_ = sessionTime;
+    if (!liveJsonHistory_[4].empty()) {
+        const std::string& lap = liveJsonHistory_[4].back().json;
+        liveLapNum_ = static_cast<int>(scanJsonNumber(lap, "\"lap_num\":", 0));
+        const double lapMs = scanJsonNumber(lap, "\"current_lap_ms\":", 0.0);
+        liveLapStart_ = liveJsonHistory_[4].back().sessionTime -
+            static_cast<float>(std::max(0.0, lapMs) / 1000.0);
+    }
+    liveSessionTime_ = sessionTime;
+}
+
 void Engine::onDatagram(const uint8_t* data, int length) {
     if (inPlayback_.load()) return;
 
@@ -185,29 +217,22 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
 
+    const float timelineTime = r.rewindSessionTime.value_or(r.sessionTime);
     if (recording) {
-        writer_.notePacket(r.format, r.packetId, r.sessionTime, data, length);
-        for (const auto& row : r.rows)    writer_.record(row, r.sessionTime);
-        for (const auto& hj  : r.hotJson) writer_.record(hj, r.sessionTime);
+        if (r.rewindSessionTime) writer_.rewind(*r.rewindSessionTime);
+        writer_.notePacket(r.format, r.packetId, timelineTime, data, length);
+        for (const auto& row : r.rows)    writer_.record(row, timelineTime);
+        for (const auto& hj  : r.hotJson) writer_.record(hj, timelineTime);
     }
 
-    if (config_.binaryPlayback && std::isfinite(r.sessionTime) && r.sessionTime >= 0.0f &&
-        r.sessionTime < liveSessionTime_) {
-        for (auto& history : livePackedHistory_) {
-            while (!history.index.empty() &&
-                   history.index.back().sessionTime > r.sessionTime)
-                history.index.pop_back();
-            const size_t keep = history.index.empty() ? 0 :
-                history.index.back().offset + history.index.back().length;
-            if (keep < history.bytes.size()) history.bytes.resize(keep);
-            history.discardedBytes = std::min(history.discardedBytes, keep);
-        }
-        for (auto& history : liveJsonHistory_)
-            while (!history.empty() && history.back().sessionTime > r.sessionTime)
-                history.pop_back();
+    if (config_.binaryPlayback && std::isfinite(timelineTime) && timelineTime >= 0.0f) {
+        // Prefer FLBK's exact target. If the event is absent/lost, retain the
+        // existing session-time regression detector as the fallback.
+        if (r.rewindSessionTime || timelineTime < liveSessionTime_)
+            rewindLiveTimeline(timelineTime);
+        else
+            liveSessionTime_ = timelineTime;
     }
-    if (config_.binaryPlayback && std::isfinite(r.sessionTime) && r.sessionTime >= 0.0f)
-        liveSessionTime_ = r.sessionTime;
 
     // Keep one native latest-state row even while its page is hidden, then only
     // forward subscribed families. Recording above remains completely unmasked.
@@ -227,7 +252,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             if (r.sessionTime >= 0.0f && lapMs >= 0.0)
                 liveLapStart_ = r.sessionTime - static_cast<float>(lapMs / 1000.0);
         }
-        if (type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
+        if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
     }
     if (config_.binaryPlayback && r.sessionTime >= 0.0f && !r.binary.empty()) {
         (void)bin::forEachPackedRecord(r.binary.data(), r.binary.size(),

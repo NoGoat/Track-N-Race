@@ -1,6 +1,8 @@
 #include "tnrp/Parser.h"
 
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <iterator>
 #include "tnrp/control_rows.h"
 #include "tnrp/Labels.h"
@@ -186,6 +188,28 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     hdr.sessionTime    = sessionTime;
     hdr.overallFrameId = frameId;
     hdr.playerCarIndex = data[27];
+
+    // FLBK is identical in every supported protocol: the event payload carries
+    // the authoritative frame/time to which the game restored. Decode it here
+    // so timeline correction does not depend on a UI's event subscription and
+    // does not mistake the monotonic overallFrameIdentifier for game time.
+    if (packetId == 3 && length >= HEADER_SIZE + 12 &&
+        std::memcmp(data + HEADER_SIZE, "FLBK", 4) == 0) {
+        const uint32_t targetFrame = ReadUInt32(data, HEADER_SIZE + 4);
+        const float targetTime = ReadFloat(data, HEADER_SIZE + 8);
+        if (std::isfinite(targetTime) && targetTime >= 0.0f) {
+            r.rewindSessionTime = targetTime;
+            r.rewindFrameIdentifier = targetFrame;
+            RaceEventRow ev;
+            ev.ts = ts;
+            ev.session_time = targetTime;
+            ev.code = "FLBK";
+            ev.flashback_frame_identifier = targetFrame;
+            ev.flashback_session_time = targetTime;
+            r.rows.push_back(writeJsonNullable(ev));
+            return r;
+        }
+    }
 
     // The header/detection/duplicate state above always advances. When no
     // recording or JSON-only consumer needs the body, skip parsing packets that

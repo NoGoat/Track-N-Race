@@ -66,6 +66,7 @@ private:
     float        totalTime_   = 0.0f;
     float        currentTime_ = 0.0f;
     float        speed_       = 1.0f;
+    int          sessionType_ = 0;
     bool         playing_     = false;
     bool         loading_     = false;
 

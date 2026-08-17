@@ -58,6 +58,9 @@ public:
     void notePacket(uint16_t format, uint8_t packetId, float sessionTime,
                     const uint8_t* data, int length);
 
+    // Apply an authoritative FLBK target before recording the event/new timeline.
+    void rewind(float sessionTime);
+
     // Append one serialised JSON row to the rolling buffer (deduped, flushed lazily).
     void record(const std::string& json, float sessionTime);
 
@@ -70,7 +73,7 @@ public:
 private:
     struct BufferEntry { std::string line; float sessionTime; };
 
-    enum class EventType { SetLogging, NotePacket, Record, Flush, Close };
+    enum class EventType { SetLogging, Rewind, NotePacket, Record, Flush, Close };
 
     struct WriterEvent {
         EventType             type;

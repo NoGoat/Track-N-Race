@@ -95,6 +95,7 @@ void TnrdPlayer::load(const QString& path) {
         startTime_   = reader_.startTime();
         totalTime_   = reader_.totalTime();
         currentTime_ = startTime_;
+        sessionType_ = header.session_type;
         qInfo("[player] reader loaded: start=%.2f total=%.2f duration=%.2f",
               startTime_, totalTime_, totalTime_ - startTime_);
 
@@ -280,7 +281,8 @@ void TnrdPlayer::scanIntoSessionData() {
             lastDmg[3] = (float)d->tyre_wear_rr;
             scanned_.onDamage(d->session_time, lastDmg[0], lastDmg[1], lastDmg[2], lastDmg[3]);
         } else if (const LapRow* l = std::get_if<LapRow>(&*parsed)) {
-            scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+            scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
+                           l->driver_status, sessionType_ >= 1 && sessionType_ <= 14);
         } else if (const MotionRow* m = std::get_if<MotionRow>(&*parsed)) {
             scanned_.onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
         } else if (const MotionExRow* me = std::get_if<MotionExRow>(&*parsed)) {

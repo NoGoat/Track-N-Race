@@ -882,6 +882,11 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
         std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=rowTypeMask&(detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13));
         if(!const_cast<detail::TnrdV4Archive*>(v4Archive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error))return {};
         for(const auto&r:rows){
+            // A timed practice/quali lap number is reused across the in-lap,
+            // garage and following out-lap. Those rows can share a V4 chunk
+            // key with the next flying attempt, so honour the indexed flying
+            // interval when materialising a lap.
+            if(r.sessionTime<b.startSessionTime||r.sessionTime>b.endSessionTime)continue;
             if(r.rowType==1)msg.telemetry.push_back(glz::raw_json{r.json});
             else if(r.rowType==2)msg.statusHistory.push_back(glz::raw_json{r.json});
             else if(r.rowType==11)msg.motionHistory.push_back(glz::raw_json{r.json});
@@ -912,7 +917,8 @@ bool TnrdReader::loadV4PlaybackLap(int lapNum) {
     if(!v4Archive_||!v4Archive_->isOpen()||lapNum<0)return false;
     std::vector<detail::V4TimedRow> rows;std::string error;
     if(!v4Archive_->rowsForLap((uint32_t)lapNum,playbackRowMask_,rows,&error)){lastError_=error;return false;}
-    v4PlaybackRows_.reserve(rows.size());for(auto&r:rows)v4PlaybackRows_.push_back({r.sessionTime,std::move(r.json)});return true;
+    const auto block=lapBlocks_.find(lapNum);
+    v4PlaybackRows_.reserve(rows.size());for(auto&r:rows)if(block==lapBlocks_.end()||(r.sessionTime>=block->second.startSessionTime&&r.sessionTime<=block->second.endSessionTime))v4PlaybackRows_.push_back({r.sessionTime,std::move(r.json)});return true;
 }
 
 bool TnrdReader::encodeV4HotRow(uint8_t type,std::string_view json,std::vector<uint8_t>& out){

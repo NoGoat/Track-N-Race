@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -159,6 +160,16 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     cv_.notify_one();
 }
 
+void TnrdWriter::rewind(float sessionTime) {
+    if (!std::isfinite(sessionTime) || sessionTime < 0.0f) return;
+    std::unique_lock<std::mutex> lk(mu_);
+    WriterEvent ev;
+    ev.type = EventType::Rewind;
+    ev.sessionTime = sessionTime;
+    queue_.push(std::move(ev));
+    cv_.notify_one();
+}
+
 void TnrdWriter::record(const std::string& json, float sessionTime) {
     std::unique_lock<std::mutex> lk(mu_);
     WriterEvent ev;
@@ -191,6 +202,9 @@ void TnrdWriter::writerLoop() {
             // directory, instead of requiring an application restart.
             if (!ev.enabled || formatChanged || directoryChanged)
                 closeActiveStreamOnWriterThread();
+        } else if (ev.type == EventType::Rewind) {
+            if (streamActive() && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
+                truncateTimeline(ev.sessionTime);
         } else if (ev.type == EventType::NotePacket) {
             if (streamActive() && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime);

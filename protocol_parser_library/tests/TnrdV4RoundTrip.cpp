@@ -1,6 +1,7 @@
 #include "TnrdV4.h"
 #include "TnrdCodec.h"
 #include "tnrp/BinaryRows.h"
+#include "tnrp/rows.h"
 #include "tnrp/TnrdReader.h"
 
 #include <algorithm>
@@ -44,7 +45,9 @@ int main() {
         {R"({"type":"positions","ts":"2026-08-11T00:00:01.150Z","player_idx":0,"cars":[{"idx":0,"x":10,"z":20}]})", 1.15f},
         {R"({"type":"status","session_time":1.2,"fuel_kg":50,"ers_pct":80,"tyre_compound":16,"visual_compound":16})", 1.2f},
         {R"({"type":"race_event","session_time":2,"code":"SCAR","event_type":3})" "\n", 2.0f},
-        {R"({"type":"lap","session_time":91,"lap_num":2,"current_lap_ms":0,"last_lap_ms":90000,"lap_distance_m":0})", 91},
+        // Lap packets are menu-rate snapshots, so the first row of a new lap
+        // commonly arrives one frame after the true boundary.
+        {R"({"type":"lap","session_time":91.016,"lap_num":2,"current_lap_ms":16,"last_lap_ms":90000,"lap_distance_m":0})", 91.016f},
         {R"({"type":"telemetry","session_time":91.1,"speed_kph":110,"throttle":0.6,"brake":0,"steer":0,"gear":4,"rpm":9500,"drs":1,"rev_lights_pct":60})", 91.1f},
         {R"({"type":"positions","ts":"2026-08-11T00:01:31.150Z","player_idx":0,"cars":[{"idx":0,"x":30,"z":40}]})", 91.15f},
     };
@@ -77,6 +80,8 @@ int main() {
     assert(complete.rowsForRange(complete.startTime(),complete.totalTime(),0xFFFFFFFFu,completeRows,&error));
     assert(loadedHeader.magic == "TNRD_V4");
     assert(loadedHeader.track_length_m.value_or(0) == 5000);
+    assert(complete.laps().size() == 2);
+    assert(complete.laps()[0].endSessionTime == complete.laps()[1].startSessionTime);
     assert(std::any_of(completeRows.begin(),completeRows.end(),[](const auto&r){return r.json.find("\"speed_kph\":110")!=std::string::npos;}));
     assert(std::any_of(completeRows.begin(),completeRows.end(),[](const auto&r){return r.rowType==13&&r.sessionTime==1.15f&&r.json.find("\"session_time\":")!=std::string::npos;}));
     std::vector<tnrp::detail::V4TimedRow> positionWindow;
@@ -108,9 +113,9 @@ int main() {
     // Packed hot-row filtering is record-aware: selecting Motion must not copy
     // the adjacent Telemetry record or split either record.
     std::vector<uint8_t> packed;
-    tnrp::TelemetryRow telemetryRow;
+    TelemetryRow telemetryRow;
     telemetryRow.session_time = 1.0f;
-    tnrp::MotionRow motionRow;
+    MotionRow motionRow;
     motionRow.session_time = 1.0f;
     tnrp::bin::encodeTelemetry(packed, telemetryRow);
     tnrp::bin::encodeMotion(packed, motionRow);

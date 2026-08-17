@@ -197,6 +197,7 @@ const allLapsDataListeners = new Set<() => void>()
 let lapState: LapRow | null = null
 let lapNum: number | null = null
 let lapStartTime = 0
+let lapTrackingActive = false
 let fastestLapTime = Infinity
 let fastestLapSet = false
 const sessionHistoryBest = new Map<number, number>()
@@ -230,7 +231,7 @@ function resetSession(): void {
   stsBufRef.current = []
   dmgBufRef.current = []
   lapProgressBufRef.current = []
-  lapState = null; lapNum = null; lapStartTime = 0
+  lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
   sessionHistoryBest.clear()
   raceEventsArr = []
@@ -283,15 +284,155 @@ function findCurrentStintStart(rows: readonly StatusRow[]): number {
   return start
 }
 
+function truncateAt<T extends { session_time: number }>(ref: { current: T[] }, target: number): void {
+  ref.current = ref.current.slice(0, lowerBound(ref.current, target, false))
+}
+
+function liveLapData(
+  boundary: { lapNum: number; sessionTime: number } | undefined,
+  endSessionTime: number,
+): AnalyzeLapData | null {
+  if (!boundary || endSessionTime < boundary.sessionTime) return null
+  const range = <T extends { session_time: number }>(rows: T[]): T[] => rows.slice(
+    lowerBound(rows, boundary.sessionTime, true),
+    lowerBound(rows, endSessionTime, false),
+  )
+  return {
+    lapNum: boundary.lapNum,
+    startSessionTime: boundary.sessionTime,
+    endSessionTime,
+    telemetry: range(telBufRef.current),
+    motion: range(motBufRef.current),
+    motionEx: range(motExBufRef.current),
+    statusHistory: range(stsBufRef.current),
+    damageHistory: range(dmgBufRef.current),
+    lapProgress: range(lapProgressBufRef.current),
+    playerPositions: [],
+  }
+}
+
+function applyLiveRewind(target: number): void {
+  if (isPlaybackFlag || !Number.isFinite(target) || target < 0) return
+
+  truncateAt(telBufRef, target)
+  truncateAt(motBufRef, target)
+  truncateAt(motExBufRef, target)
+  truncateAt(stsBufRef, target)
+  truncateAt(dmgBufRef, target)
+  truncateAt(lapProgressBufRef, target)
+  raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= target)
+  liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.sessionTime <= target)
+
+  const currentIndex = liveLapBoundaries.length - 1
+  const currentBoundary = liveLapBoundaries[currentIndex]
+  const previousBoundary = liveLapBoundaries[currentIndex - 1]
+  lapNum = currentBoundary?.lapNum ?? null
+  lapStartTime = currentBoundary?.sessionTime ?? target
+  const lastLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  lapState = lastLap ?? null
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const garageAware = sessionType != null && sessionType >= 1 && sessionType <= 14 &&
+    lastLap?.driver_status != null && lastLap.driver_status >= 0
+  lapTrackingActive = !garageAware || lastLap?.driver_status === 1
+  if (!lapTrackingActive) lapNum = null
+
+  const survivingTimes: Record<number, number> = {}
+  for (let i = 0; i + 1 < liveLapBoundaries.length; i++) {
+    const n = liveLapBoundaries[i].lapNum
+    if (liveLapTimes[n] != null) survivingTimes[n] = liveLapTimes[n]
+  }
+  liveLapTimes = survivingTimes
+  let fastestNum: number | null = null
+  fastestLapTime = Infinity
+  for (const [n, ms] of Object.entries(liveLapTimes)) {
+    if (ms > 0 && ms < fastestLapTime) { fastestLapTime = ms; fastestNum = Number(n) }
+  }
+
+  const previousData = liveLapData(previousBoundary, currentBoundary?.sessionTime ?? target)
+  const fastestIndex = fastestNum == null
+    ? -1 : liveLapBoundaries.findIndex(boundary => boundary.lapNum === fastestNum)
+  const fastestBoundary = fastestIndex >= 0 ? liveLapBoundaries[fastestIndex] : undefined
+  const fastestEnd = fastestIndex >= 0 && fastestIndex + 1 < liveLapBoundaries.length
+    ? liveLapBoundaries[fastestIndex + 1].sessionTime : target
+  const fastestData = fastestNum == null ? null : liveLapData(fastestBoundary, fastestEnd)
+  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  analyzeLapRevisionVal++
+  pendingAnalyzeLapReset = false
+
+  set({
+    lap: lapState,
+    status: stsBufRef.current[stsBufRef.current.length - 1] ?? null,
+    damage: dmgBufRef.current[dmgBufRef.current.length - 1] ?? null,
+    lapBoundaries: liveLapBoundaries,
+    livePreviousLapData: previousData,
+    liveFastestLapData: fastestData,
+    fastestLapNum: fastestNum,
+    lapTimesByNum: liveLapTimes,
+    raceEvents: raceEventsArr,
+    currentStintStartTime,
+    analyzeLapRevision: analyzeLapRevisionVal,
+  })
+}
+
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
 // and update live lap times / fastest lap. Runs in the 'lap' handler now.
 function onLap(lap: LapRow): void {
   if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressBufRef, lap, MAX_ROWS)
   lapState = lap
   set({ lap })
-  const prevLapNum = lapNum
-  lapNum = lap.lap_num
   const packetLapStart = lap.session_time - Math.max(0, lap.current_lap_ms) / 1000
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const timedSession = sessionType != null && sessionType >= 1 && sessionType <= 14
+  const hasDriverStatus = lap.driver_status != null && lap.driver_status >= 0
+  const garageAware = timedSession && hasDriverStatus
+
+  if (garageAware && lap.driver_status !== 1) {
+    if (lapTrackingActive) {
+      liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.lapNum !== lapNum)
+      lapNum = null
+      lapStartTime = lap.session_time
+      lapTrackingActive = false
+      pendingAnalyzeLapReset = false
+      analyzeLapRevisionVal++
+      set({
+        lapBoundaries: liveLapBoundaries,
+        analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+        analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+        analyzeLapStartTime: lapStartTime,
+        analyzeLapRevision: analyzeLapRevisionVal,
+      })
+    }
+    return
+  }
+
+  if (garageAware && !lapTrackingActive) {
+    lapNum = lap.lap_num
+    lapStartTime = packetLapStart
+    lapTrackingActive = true
+    liveLapBoundaries = [
+      ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
+      { lapNum: lap.lap_num, sessionTime: packetLapStart },
+    ].sort((a, b) => a.sessionTime - b.sessionTime)
+    analyzeLapRevisionVal++
+    pendingAnalyzeLapReset = true
+    set({
+      lapBoundaries: liveLapBoundaries,
+      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+      analyzeLapStartTime: lapStartTime,
+      analyzeLapRevision: analyzeLapRevisionVal,
+    })
+    return
+  }
+
+  const prevLapNum = lapNum
+  // A replay opened without FLBK can emit one stale lap snapshot after the
+  // timeline has already advanced. Explicit rewind handling lowers lapNum
+  // before packets resume; an otherwise decreasing number is just stale and
+  // must not create a backwards chart boundary.
+  if (prevLapNum !== null && lap.lap_num < prevLapNum) return
+  lapNum = lap.lap_num
+  lapTrackingActive = true
 
   if (prevLapNum === null) {
     lapStartTime = packetLapStart
@@ -368,13 +509,7 @@ function handleMsg(msg: GatewayMsg): void {
         // boundary. appendRow reconciles the renderer history below, but this
         // must not clear the Analyze GPU buffers. Explicit seek flushes carry
         // the revision that identifies a real timeline reset.
-        fastestLapTime = Infinity
-        set({ fastestLapNum: null, liveFastestLapData: null })
-        raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= msg.session_time)
-        lapStartTime = msg.session_time
-        lapNum = null
-        liveLapBoundaries = []
-        set({ lapBoundaries: [] })
+        applyLiveRewind(msg.session_time)
       }
       if (historyRowMask & HISTORY_ROW.telemetry) appendRow(telBufRef, msg, MAX_ROWS)
       else telBufRef.current = [msg]
@@ -436,6 +571,10 @@ function handleMsg(msg: GatewayMsg): void {
     }
     case 'tyre_sets':    set({ tyreSets: msg }); break
     case 'race_event':
+      if ((msg as RaceEventMsg).code === 'FLBK') {
+        const target = Number((msg as RaceEventMsg).flashback_session_time)
+        if (Number.isFinite(target) && target >= 0) applyLiveRewind(target)
+      }
       for (const cb of raceEventListeners) cb(msg as RaceEventMsg)
       raceEventsArr = [...raceEventsArr, msg as RaceEventMsg]
       if (raceEventsArr.length > MAX_RACE_EVENTS) raceEventsArr = raceEventsArr.slice(-MAX_RACE_EVENTS)
@@ -515,6 +654,7 @@ function handleMsg(msg: GatewayMsg): void {
       set({ fastestLapNum: playbackFastestLapNum || null })
       lapStartTime = payload.currentLapStart
       lapNum = payload.lapNum
+      lapTrackingActive = true
       const tel: any[] = [], mot: any[] = [], motEx: any[] = []
       for (const row of decodeBinaryBatch(payload.binary)) {
         if (row.type === 'telemetry') tel.push(row)
@@ -646,6 +786,7 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'damage': return DirtySlice.Damage
     case 'lap': return DirtySlice.Lap | DirtySlice.Derived
     case 'race_event':
+      return (msg as RaceEventMsg).code === 'FLBK' ? DirtySlice.All : DirtySlice.Derived
     case 'playback_lap_blocks': return DirtySlice.Derived
     case 'playback_close':
     case 'playback_seek_flush_failed':
@@ -684,11 +825,11 @@ function recompute(dirty: DirtySlice): void {
   // `current_lap_ms` is legitimately zero at rollover. Falling back to session
   // origin in that state prepends the previous lap to every Analyze/CL slice,
   // so distance mapping stops at the stale prefix and charts retain one point.
-  const lapStartSessionTime = lapState ? lapStartTime : 0
+  const lapStartSessionTime = lapTrackingActive ? lapStartTime : latestSessionTime
   const isPlayback = speedRpmBlocksVal !== null
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
-  let publishAnalyze = !pendingAnalyzeLapReset
+  let publishAnalyze = lapTrackingActive && !pendingAnalyzeLapReset
   if (pendingAnalyzeLapReset) {
     const countSince = <T extends { session_time: number }>(rows: T[]) => rows.length - lowerBound(rows, lapStartSessionTime, true)
     const ready = (bit: number, count: number, minimum: number) =>

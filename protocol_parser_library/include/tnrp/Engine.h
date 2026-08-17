@@ -122,6 +122,7 @@ private:
     float             consumerWindowSeconds_ = 0.0f;
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
+    void rewindLiveTimeline(float sessionTime);          // mutex_ held
     void emitRow(const std::string& json);               // forward to the sink
     void playbackLoop();                                 // playback thread body
     void stopPlaybackThread();

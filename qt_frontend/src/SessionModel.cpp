@@ -46,7 +46,15 @@ void SessionData::onTyre(float t,
     trim();
 }
 
-void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {
+void SessionData::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid,
+                        int driverStatus, bool timedSession) {
+    const bool garageAware = timedSession && driverStatus >= 0;
+    if (garageAware && driverStatus != 1) {
+        curLap = LapBlock{};
+        curLapNum = -1;
+        lapStartTime = latestTime;
+        return;
+    }
     if (curLapNum < 0) {
         // First lap seen: backtrack its start from the elapsed lap time.
         curLapNum    = lapNum;
@@ -255,9 +263,10 @@ void SessionModel::onTyre(float t,
     scheduleFlush();
 }
 
-void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid) {
+void SessionModel::onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid,
+                         int driverStatus, bool timedSession) {
     const int before = d_.laps.size();
-    d_.onLap(lapNum, currentLapMs, lastLapMs, invalid);
+    d_.onLap(lapNum, currentLapMs, lastLapMs, invalid, driverStatus, timedSession);
     if (d_.laps.size() != before) emit lapsChanged();
 }
 

@@ -181,6 +181,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             uint8_t sector     = data[o++];
             bool    invalid    = data[o++] != 0;
             uint8_t penaltiesS = data[o];
+            uint8_t driverStatus = data[o + 6];
 
             LapRow lr;
             lr.ts             = timestamp;
@@ -197,6 +198,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             lr.sector         = sector;
             lr.lap_invalid    = invalid;
             lr.penalties_s    = penaltiesS;
+            lr.driver_status  = driverStatus;
 
             buf.clear();
             (void)glz::write_json(lr, buf);

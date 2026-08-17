@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+
+#include <cmath>
 #include "AppToolbar.h"
 #include "PlaybackController.h"
 #include "SessionModel.h"
@@ -1120,7 +1122,12 @@ void MainWindow::flushUiRefresh() {
 // owns chart state; the chart re-queries the model on its change signals.
 void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
     if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
-    if (const auto* t = std::get_if<TelemetryRow>(&row)) {
+    if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
+        if (ev->code == "FLBK" && ev->flashback_session_time &&
+            std::isfinite(*ev->flashback_session_time) && *ev->flashback_session_time >= 0.0f)
+            model_->truncateAfter(*ev->flashback_session_time);
+    }
+    else if (const auto* t = std::get_if<TelemetryRow>(&row)) {
         // A backward jump in session time is an in-game flashback/rewind: drop only the
         // samples newer than the rewind point and keep the rest (NOT a full reset — that
         // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
@@ -1154,8 +1161,11 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         model_->onDamage(d->session_time,
                          (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
                          (float)d->tyre_wear_rl, (float)d->tyre_wear_rr);
-    else if (const auto* l = std::get_if<LapRow>(&row))
-        model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+    else if (const auto* l = std::get_if<LapRow>(&row)) {
+        const int sessionType = lastSessionData ? lastSessionData->session_type : 0;
+        model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
+                      l->driver_status, sessionType >= 1 && sessionType <= 14);
+    }
     else if (const auto* m = std::get_if<MotionRow>(&row))
         model_->onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
     else if (const auto* me = std::get_if<MotionExRow>(&row))
