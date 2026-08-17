@@ -1711,6 +1711,20 @@ kbd {
         padding: 0.75rem 1.25rem;
     }
 
+    .github-link-btn {
+        padding: 0.45rem;
+        border-radius: var(--radius-sm);
+    }
+
+    .github-link-btn span {
+        display: none;
+    }
+
+    .github-link-btn svg {
+        width: 20px;
+        height: 20px;
+    }
+
     .mobile-toggle-btn {
         display: flex;
     }
