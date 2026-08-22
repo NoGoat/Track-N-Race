@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/Strategy.h"
 #include "tnrp/TnrdFormat.h"
 
 namespace tnrp {
@@ -98,6 +99,10 @@ public:
     std::vector<std::pair<uint8_t, std::string>> latestOfTypesTagged(
         float t, const std::vector<uint8_t>& types);
     std::vector<std::string> readRange(float fromTime, float toTime);
+    // Derived strategy seek state. Replays only the strategy dependency rows in
+    // chronological order, materializing reusable checkpoints at completed lap
+    // boundaries. Checkpoints are never written to the recording.
+    StrategySnapshotRow strategySnapshotAt(float t, StrategyProcessor* restoredProcessor = nullptr);
     // Reconstruct deduplicated Car Damage state at the UDP specification's
     // fixed 10 Hz cadence. Each returned row has session_time rewritten to its
     // sample tick and carries the latest recorded state at/before that tick.
@@ -188,11 +193,16 @@ private:
     std::vector<TimedRaw> coldStatus_;
     std::vector<TimedRaw> coldDamage_;
     std::vector<TimedRaw> coldLap_;
+    // Legacy V1–V3 files are already scanned in full to build their index. Keep
+    // just the cold strategy inputs so a seek never rereads/parses hot JSONL.
+    std::vector<TimedRaw> legacyStrategyRows_;
     std::vector<char>     scratch_;   // reused block-read buffer (pull/drain)
 
     std::map<int, LapBlock>  lapBlocks_;
     std::vector<ScanLap>     scannedLaps_;
     std::vector<std::string> scannedEvents_;   // raw race_event JSONL lines
+    std::vector<std::pair<float, StrategyProcessor>> strategyCheckpoints_;
+    uint16_t                 strategyProtocol_ = 2025;
     int                      fastestLapNum_ = 0;
     int                      fastestLapMs_  = 0;
     double                   initialFuelKg_ = -1.0;
@@ -213,6 +223,9 @@ private:
     // scratch_; returns bytes read (0 on failure/empty range).
     size_t readBlock(size_t fromIdx, size_t toIdx);
     bool loadV4PlaybackLap(int lapNum);
+    bool forEachStrategyRow(
+        float fromTime, float toTime, bool includeFrom,
+        const std::function<void(float, std::string_view)>& callback);
     static bool encodeV4HotRow(uint8_t type, std::string_view json,
                                std::vector<uint8_t>& out);
 };

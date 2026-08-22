@@ -13,6 +13,7 @@
 #include "tnrp/Config.h"
 #include "tnrp/Parser.h"
 #include "tnrp/Sink.h"
+#include "tnrp/Strategy.h"
 #include "tnrp/TnrdReader.h"
 #include "tnrp/TnrdWriter.h"
 #include "tnrp/UdpListener.h"
@@ -83,6 +84,7 @@ private:
     Sink*         sink_;
     Parser        parser_;
     TnrdWriter    writer_;
+    StrategyProcessor strategy_;
     TnrdReader    reader_;
     UdpListener   udp_;
 
@@ -105,6 +107,7 @@ private:
     // re-emitted with session_time set to the playhead between native updates.
     std::array<std::string, 16> dupCache_{};
     std::array<std::string, 16> liveLatestRows_{};
+    std::string lastStrategyJson_;
     struct LivePackedIndex { float sessionTime{}; size_t offset{}; size_t length{}; };
     struct LivePackedHistory {
         std::vector<uint8_t> bytes;
@@ -114,6 +117,7 @@ private:
     struct LiveJsonHistoryRow { float sessionTime{}; std::string json; };
     std::array<LivePackedHistory, 16> livePackedHistory_{};
     std::array<std::deque<LiveJsonHistoryRow>, 16> liveJsonHistory_{};
+    std::deque<LiveJsonHistoryRow> liveStrategyJournal_;
     float             liveSessionTime_ = 0.0f;
     float             liveLapStart_ = 0.0f;
     int               liveLapNum_ = 0;
@@ -124,6 +128,11 @@ private:
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void rewindLiveTimeline(float sessionTime);          // mutex_ held
     void emitRow(const std::string& json);               // forward to the sink
+    void ingestStrategyRow(const std::string& json);
+    void emitStrategy(bool force = false);
+    // Rebuilds and commits the derived playback strategy while mutex_ is held.
+    // The returned row is emitted only after the caller releases the lock.
+    std::string rebuildPlaybackStrategyLocked(float target);
     void playbackLoop();                                 // playback thread body
     void stopPlaybackThread();
     void emitPlaybackState();

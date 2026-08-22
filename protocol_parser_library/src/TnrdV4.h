@@ -95,6 +95,7 @@ public:
     void setCacheLimitBytes(size_t bytes);
     size_t cacheBytes() const;
     uint64_t decompressedChunkCount() const;
+    size_t peakConcurrentChunkLoads() const;
 
 private:
     struct Impl;

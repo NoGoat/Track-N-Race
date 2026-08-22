@@ -44,6 +44,7 @@ static uint8_t rowTypeOf(std::string_view json) {
         {"\"type\":\"motion\"", 11}, {"\"type\":\"motion_ex\"", 12},
         {"\"type\":\"positions\"", 13},
         {"\"type\":\"session_history_fastest\"", 14},
+        {"\"type\":\"strategy\"", 15},
     };
     for (const auto& [needle, type] : TYPES)
         if (json.find(needle) != std::string_view::npos) return type;
@@ -151,6 +152,9 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         config_.port        = port;
         config_.bindAddress = bindAddress;
         parser_.reset();
+        strategy_.reset();
+        liveStrategyJournal_.clear();
+        lastStrategyJson_.clear();
     }
     return udp_.start(port, bindAddress,
                       [this](const uint8_t* d, int n) { onDatagram(d, n); },
@@ -174,6 +178,12 @@ void Engine::rewindLiveTimeline(float sessionTime) {
     for (auto& history : liveJsonHistory_)
         while (!history.empty() && history.back().sessionTime > sessionTime)
             history.pop_back();
+    while (!liveStrategyJournal_.empty() &&
+           liveStrategyJournal_.back().sessionTime > sessionTime)
+        liveStrategyJournal_.pop_back();
+    strategy_.reset();
+    for (const auto& entry : liveStrategyJournal_) ingestStrategyRow(entry.json);
+    lastStrategyJson_.clear();
 
     // State rows newer than the target must not leak back into a page restored
     // after the rewind. Historical families can be restored from their tails.
@@ -194,6 +204,29 @@ void Engine::rewindLiveTimeline(float sessionTime) {
     liveSessionTime_ = sessionTime;
 }
 
+void Engine::ingestStrategyRow(const std::string& json) {
+    const uint8_t type = rowTypeOf(json);
+    if (!(kStrategyDependencyMask & (1u << type))) return;
+    strategy_.ingestJson(json);
+}
+
+void Engine::emitStrategy(bool force) {
+    std::string json = strategy_.snapshotJson();
+    liveLatestRows_[kStrategyRowType] = json;
+    if ((consumerRowMask_ & kStrategyRowBit) && (force || json != lastStrategyJson_)) {
+        lastStrategyJson_ = json;
+        emitRow(json);
+    }
+}
+
+std::string Engine::rebuildPlaybackStrategyLocked(float target) {
+    StrategySnapshotRow snapshot = reader_.strategySnapshotAt(target, &strategy_);
+    std::string json = writeJson(snapshot);
+    liveLatestRows_[kStrategyRowType] = json;
+    lastStrategyJson_ = json;
+    return (consumerRowMask_ & kStrategyRowBit) ? json : std::string{};
+}
+
 void Engine::onDatagram(const uint8_t* data, int length) {
     if (inPlayback_.load()) return;
 
@@ -210,9 +243,10 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     // Electron retains chart-capable families only as compact native history
     // while hidden, so they can be backfilled without having crossed N-API or
     // been decoded into renderer objects. Other packet bodies are skipped.
-    const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ |
+    const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ | kStrategyDependencyMask |
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
+    strategy_.setFormat(r.format);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -236,8 +270,16 @@ void Engine::onDatagram(const uint8_t* data, int length) {
 
     // Keep one native latest-state row even while its page is hidden, then only
     // forward subscribed families. Recording above remains completely unmasked.
+    bool strategyInput = false;
     for (const auto& row : r.rows) {
+        ingestStrategyRow(row);
         const uint8_t type = rowTypeOf(row);
+        strategyInput = strategyInput || (kStrategyDependencyMask & (1u << type));
+        if ((kStrategyDependencyMask & (1u << type)) && r.sessionTime >= 0.0f) {
+            liveStrategyJournal_.push_back({r.sessionTime, row});
+            if (liveStrategyJournal_.size() > kMaxLiveHistoryRows)
+                liveStrategyJournal_.pop_front();
+        }
         if (type < liveLatestRows_.size()) liveLatestRows_[type] = row;
         if (config_.binaryPlayback && r.sessionTime >= 0.0f && type < liveJsonHistory_.size() &&
             (kHistoricalRowMask & (1u << type))) {
@@ -254,6 +296,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         }
         if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
     }
+    if (strategyInput && (consumerRowMask_ & kStrategyRowBit)) emitStrategy();
     if (config_.binaryPlayback && r.sessionTime >= 0.0f && !r.binary.empty()) {
         (void)bin::forEachPackedRecord(r.binary.data(), r.binary.size(),
             [&](uint8_t type, const uint8_t* record, size_t recordLen) {
@@ -369,11 +412,26 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         const uint32_t backfillMask = oldWindowSeconds == consumerWindowSeconds_
             ? consumerHistoryMask_ & ~oldHistoryMask
             : consumerHistoryMask_;
-        reader_.setPlaybackRowMask(consumerRowMask_, currentTime_);
+        const uint32_t playbackMask = consumerRowMask_ |
+            ((consumerRowMask_ & kStrategyRowBit) ? kStrategyDependencyMask : 0u);
+        reader_.setPlaybackRowMask(playbackMask, currentTime_);
+
+        // Strategy dependencies are retained while hidden. Materialize one fresh
+        // derived row at subscription time so opening the tab never waits for the
+        // next UDP packet (or playback tick).
+        if (newlyEnabled & kStrategyRowBit) {
+            if (inPlayback_.load()) {
+                (void)reader_.strategySnapshotAt(currentTime_, &strategy_);
+            }
+            std::string row = strategy_.snapshotJson();
+            liveLatestRows_[kStrategyRowType] = row;
+            lastStrategyJson_ = row;
+            restore.push_back(std::move(row));
+        }
 
         // Historical families are restored by the indexed range request. Only
         // current-state/stream-only families need a latest-row snapshot here.
-        const uint32_t restoreMask = newlyEnabled & ~consumerHistoryMask_;
+        const uint32_t restoreMask = newlyEnabled & ~consumerHistoryMask_ & ~kStrategyRowBit;
         if (restoreMask != 0) {
             if (inPlayback_.load()) {
                 auto tagged = reader_.latestOfTypesTagged(
@@ -447,6 +505,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
     HeaderRow header;
     std::string lapBlocksMsg;
     std::string statusMsg;
+    std::string strategyMsg;
     std::vector<std::string> initState;
     std::vector<std::pair<uint8_t, std::string>> initPanels;
     {
@@ -459,6 +518,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         ok = reader_.load(path, header);
         if (!ok && errorOut) *errorOut = reader_.lastError();
         if (ok) {
+            strategy_.reset();
+            strategy_.setFormat(header.protocol >= 2024 ? (uint16_t)header.protocol : 2025);
+            lastStrategyJson_.clear();
             inPlayback_.store(true);
             playing_     = false;
             currentTime_ = reader_.startTime();
@@ -489,6 +551,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             } else {
                 initState = reader_.stateSnapshot(reader_.startTime());
             }
+            strategyMsg = rebuildPlaybackStrategyLocked(reader_.startTime());
         }
     }
 
@@ -501,6 +564,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         emitRow(lapBlocksMsg);
         for (const auto& row : initState) emitRow(row);
         for (const auto& [tid, line] : initPanels) emitRow(line);
+        if (!strategyMsg.empty()) emitRow(strategyMsg);
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
         emitPlaybackState();
@@ -509,6 +573,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
 }
 
 void Engine::playerPlay() {
+    std::string strategyMsg;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -516,10 +581,12 @@ void Engine::playerPlay() {
             // Replay from the top: the cursor has to rewind with the clock, or
             // the drained index never yields another row.
             currentTime_ = reader_.startTime();
+            strategyMsg = rebuildPlaybackStrategyLocked(currentTime_);
             reader_.setCursor(currentTime_);
         }
         playing_ = true;
     }
+    if (!strategyMsg.empty()) emitRow(strategyMsg);
     emitPlaybackState();
 }
 
@@ -545,6 +612,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     float lapStart = 0.0f;
     int   lapNum   = 0;
     float target   = 0.0f;
+    std::string strategyMsg;
     TnrdReader::SeekFlush binFlush;
     std::vector<std::pair<uint8_t, std::string>> panels;
     {
@@ -565,10 +633,24 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         } else {
             state = reader_.stateSnapshot(target);
         }
+
+        // Strategy is derived rather than stored. Fast-forward its small set of
+        // dependency rows to the target before publishing this seek generation,
+        // so playback cannot resume against strategy state from the old cursor.
+        StrategyProcessor rebuiltStrategy;
+        StrategySnapshotRow rebuiltSnapshot =
+            reader_.strategySnapshotAt(target, &rebuiltStrategy);
+        std::string rebuiltStrategyJson = writeJson(rebuiltSnapshot);
+
         // A newer request may have arrived while this worker was extracting a
-        // large AL prefix. An overtaken worker must not move the cursor or seed
-        // playback rows from its obsolete target.
+        // large history or strategy prefix. An overtaken worker must not move
+        // the cursor or seed playback rows from its obsolete target.
         if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
+        strategy_ = std::move(rebuiltStrategy);
+        liveLatestRows_[kStrategyRowType] = rebuiltStrategyJson;
+        lastStrategyJson_ = rebuiltStrategyJson;
+        if (consumerRowMask_ & kStrategyRowBit)
+            strategyMsg = std::move(rebuiltStrategyJson);
         currentTime_ = target;
         reader_.setCursor(target);
         if (config_.binaryPlayback) {
@@ -591,6 +673,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         emitRow(writeJson(flush));
         for (const auto& s : state) emitRow(s);
     }
+    if (!strategyMsg.empty()) emitRow(strategyMsg);
     emitPlaybackState();
 }
 
@@ -668,6 +751,8 @@ void Engine::playerClose() {
             // live packet was seen the parser falls back to the 2025 catalog.
             liveStatus = parser_.statusRow();
         }
+        strategy_.reset();
+        lastStrategyJson_.clear();
     }
     emitRow(writeJson(TypeOnlyRow{"playback_close"}));
     if (!liveStatus.empty()) emitRow(liveStatus);
@@ -711,11 +796,15 @@ void Engine::playbackLoop() {
         std::vector<std::string> batch;
         jsonBatch.clear();
         binBatch.clear();
+        std::string strategyMsg;
+        uint32_t emitMask = 0;
+        uint64_t tickSeekRequestId = 0;
         bool finished = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
             if (!playing_) continue;
             if (latestSeekRequestId_.load(std::memory_order_acquire) != appliedSeekRequestId_) continue;
+            tickSeekRequestId = appliedSeekRequestId_;
             double step = dt * speed_;
             if (step > 0.10) step = 0.10;
             currentTime_ += (float)step;
@@ -747,13 +836,68 @@ void Engine::playbackLoop() {
                 batch = reader_.pullUntil(currentTime_);
             }
 
+            // Consume derived-state inputs before releasing the same lock used
+            // by seek reconstruction. A seek can then replace strategy_ only
+            // after every row from the preceding playback tick is accounted for.
+            bool strategyInput = false;
+            for (const auto& row : batch) {
+                const uint8_t type = rowTypeOf(row);
+                if (kStrategyDependencyMask & (1u << type)) {
+                    ingestStrategyRow(row);
+                    strategyInput = true;
+                }
+            }
+            size_t strategyStart = 0;
+            while (strategyStart < jsonBatch.size()) {
+                size_t nl = jsonBatch.find('\n', strategyStart);
+                if (nl == std::string::npos) nl = jsonBatch.size();
+                if (nl > strategyStart) {
+                    std::string_view row(jsonBatch.data() + strategyStart,
+                                         nl - strategyStart);
+                    const uint8_t type = rowTypeOf(row);
+                    if (kStrategyDependencyMask & (1u << type)) {
+                        strategy_.ingestJson(row);
+                        strategyInput = true;
+                    }
+                }
+                strategyStart = nl + 1;
+            }
+            if (strategyInput) {
+                std::string row = strategy_.snapshotJson();
+                liveLatestRows_[kStrategyRowType] = row;
+                if ((consumerRowMask_ & kStrategyRowBit) && row != lastStrategyJson_)
+                    strategyMsg = row;
+                lastStrategyJson_ = std::move(row);
+            }
+            emitMask = consumerRowMask_;
+
             if (atEnd) {
                 playing_ = false;
                 finished = true;
             }
         }
-        for (const auto& row : batch) emitRow(row);
-        if (!jsonBatch.empty()) emitLines(sink_, jsonBatch);
+        // A request registered after this tick was decoded owns the renderer
+        // from here on. Drop the old batch and let its seek flush replace it.
+        if (latestSeekRequestId_.load(std::memory_order_acquire) != tickSeekRequestId)
+            continue;
+        for (const auto& row : batch) {
+            const uint8_t type = rowTypeOf(row);
+            if (type == 0 || (emitMask & (1u << type))) emitRow(row);
+        }
+        if (!jsonBatch.empty()) {
+            size_t start = 0;
+            while (start < jsonBatch.size()) {
+                size_t nl = jsonBatch.find('\n', start);
+                if (nl == std::string::npos) nl = jsonBatch.size();
+                if (nl > start) {
+                    std::string row = jsonBatch.substr(start, nl - start);
+                    const uint8_t type = rowTypeOf(row);
+                    if (type == 0 || (emitMask & (1u << type))) emitRow(row);
+                }
+                start = nl + 1;
+            }
+        }
+        if (!strategyMsg.empty()) emitRow(strategyMsg);
         if (!binBatch.empty() && sink_) sink_->onBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();
         if (finished) emitRow(writeJson(TypeOnlyRow{"playback_finished"}));

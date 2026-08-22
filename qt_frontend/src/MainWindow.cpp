@@ -1037,6 +1037,9 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
     } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
         lastAllStatusData = *as;
         dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+    } else if (const auto* strategy = std::get_if<tnrp::StrategySnapshotRow>(&row)) {
+        lastStrategyData = *strategy;
+        dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (const auto* fl = std::get_if<tnrp::FastestLapRow>(&row)) {
         if (standingsPage_) standingsPage_->noteFastestLap(fl->car_idx);
         dirtyTiming_ = true; scheduleUiRefresh();
@@ -1055,17 +1058,7 @@ QWidget* MainWindow::buildStrategyPage() {
 
 void MainWindow::updateStrategyPage() {
     if (!strategyPage_) return;
-    // Actual lap times for the per-stint target tables, sourced from the
-    // authoritative SessionModel laps (live ingest or the playback pre-scan), so
-    // the table stays correct under playback seeking — not just sequential replay.
-    std::map<int, int> lapTimesByNum;
-    if (model_)
-        for (const LapBlock& lb : model_->data().laps)
-            if (lb.lapTimeMs > 0) lapTimesByNum[lb.lapNum] = lb.lapTimeMs;
-    strategyPage_->update(optPtr(lastPlayerLapData), optPtr(lastSessionData),
-                          optPtr(lastPlayerStatusData), optPtr(lastPlayerDamageData),
-                          optPtr(lastTimingData), optPtr(lastParticipantsData),
-                          optPtr(lastTyreSetsData), optPtr(lastAllStatusData), lapTimesByNum);
+    strategyPage_->update(optPtr(lastStrategyData));
 }
 
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed

@@ -140,9 +140,9 @@ private:
     std::optional<tnrp::TyreSetsRow> lastTyreSetsData;
 
     // ── Strategy page ─────────────────────────────────────────────
-    // Self-contained: fed the cached JSON rows below on refresh, runs its own
-    // stint/undercut/wear calculations internally. No SessionModel binding.
+    // Snapshot-only renderer; libtnrp owns all strategy state and calculations.
     StrategyPage* strategyPage_ = nullptr;
+    std::optional<tnrp::StrategySnapshotRow> lastStrategyData;
 
     // ── Session page ──────────────────────────────────────────────
     // Self-contained page widget (header, stat cards, track map, proximity,

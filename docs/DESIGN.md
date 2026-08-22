@@ -150,7 +150,11 @@ intent so the per-packet fast path can skip the whole recording pipeline
 Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
 time/type index. V4 opens only its uncompressed metadata, lap table, chunk
 directory, control summary, and commit footer; telemetry chunks are decompressed
-on demand through a bounded cache. Legacy block reads (`readBlock`) fetch contiguous index
+on demand through a bounded cache. Every selected V4 chunk is an independent job
+on an eight-worker reader pool, so long All Laps/range requests decode up to eight
+chunks in parallel regardless of row type. Concurrent consumers of the same chunk
+share one in-flight read and decompression before the result enters the LRU.
+Legacy block reads (`readBlock`) fetch contiguous index
 ranges with one `fread` into a reused scratch buffer. Temp-file positions are
 64-bit on every platform because long sessions can decompress beyond 2 GiB.
 

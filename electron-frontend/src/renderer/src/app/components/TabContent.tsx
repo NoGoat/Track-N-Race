@@ -85,6 +85,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
   const isConnected      = useTelemetryStore(s => s.isConnected)
   const protocolStatus   = useTelemetryStore(s => s.protocolStatus)
   const fuelUpperLimit   = useTelemetryStore(s => s.fuelUpperLimit)
+  const strategy         = useTelemetryStore(s => s.strategy)
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
   const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
@@ -233,15 +234,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       {tab === 'strategy' && (
         <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
           <StrategyPanel
-            lap={lap}
-            session={session}
-            status={status}
-            damage={damage}
-            timing={timing}
-            participants={participants}
-            tyreSets={tyreSets}
-            allStatus={allStatus}
-            lapTimesByNum={lapTimesByNum}
+            strategy={strategy}
             isDark={isDark}
             compact={compact.strategySummary}
           />

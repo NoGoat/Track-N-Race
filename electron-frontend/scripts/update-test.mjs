@@ -7,6 +7,7 @@ delete childEnvironment.ELECTRON_RUN_AS_NODE
 const child = spawn(npmCommand, ['run', 'dev'], {
   cwd: process.cwd(),
   env: childEnvironment,
+  shell: process.platform === 'win32',
   stdio: 'inherit',
 })
 

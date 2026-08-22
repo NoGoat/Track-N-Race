@@ -5,15 +5,22 @@
 #include <array>
 #include <cerrno>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <future>
 #include <limits>
 #include <list>
 #include <map>
+#include <mutex>
+#include <queue>
 #include <set>
 #include <string_view>
+#include <thread>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -38,6 +45,7 @@ constexpr uint64_t MAX_CHUNK_PLAIN = 512ull * 1024ull * 1024ull;
 constexpr uint64_t MAX_METADATA_BYTES = 16ull * 1024ull * 1024ull;
 constexpr uint64_t MAX_SUMMARY_BYTES = 64ull * 1024ull * 1024ull;
 constexpr size_t DEFAULT_CACHE_BYTES = 64ull * 1024ull * 1024ull;
+constexpr size_t MAX_PARALLEL_CHUNKS = 8;
 const std::array<uint8_t, 8> MAGIC{{'T','N','R','D','_','V','4','\0'}};
 
 void put16(std::vector<uint8_t>& b, uint16_t v) { b.push_back((uint8_t)v); b.push_back((uint8_t)(v >> 8)); }
@@ -205,22 +213,85 @@ bool writeTnrdV4(const std::string& path,const HeaderRow& header,const std::vect
 struct TnrdV4Archive::Impl {
     struct CacheEntry{std::shared_ptr<std::string> plain;std::list<size_t>::iterator lru;};
     struct TimeBounds{float first{};float last{};bool known{};};
+    struct ChunkResult{bool ok{};bool permanentError{};std::shared_ptr<std::string> plain;std::string error;};
+    struct RowsResult{bool ok{true};std::string error;std::vector<V4TimedRow> rows;};
+    class Executor {
+    public:
+        ~Executor(){stop();}
+        template<class Fn> auto submit(const std::string& path,Fn&& fn){
+            using R=std::invoke_result_t<Fn,std::FILE*>;
+            auto task=std::make_shared<std::packaged_task<R(std::FILE*)>>(std::forward<Fn>(fn));
+            auto future=task->get_future();ensureStarted(path);
+            {std::lock_guard<std::mutex> lock(mutex_);jobs_.push([task](std::FILE* file){(*task)(file);});}
+            cv_.notify_one();return future;
+        }
+        void stop(){
+            {std::lock_guard<std::mutex> lock(mutex_);if(workers_.empty())return;stopping_=true;}
+            cv_.notify_all();for(auto& worker:workers_)if(worker.joinable())worker.join();
+            std::lock_guard<std::mutex> lock(mutex_);workers_.clear();while(!jobs_.empty())jobs_.pop();stopping_=false;
+        }
+    private:
+        void ensureStarted(const std::string& path){
+            std::lock_guard<std::mutex> lock(mutex_);if(!workers_.empty())return;workers_.reserve(MAX_PARALLEL_CHUNKS);
+            for(size_t i=0;i<MAX_PARALLEL_CHUNKS;++i)workers_.emplace_back([this,path]{
+                std::FILE* file=openTnrdFile(path,"rb");
+                for(;;){std::function<void(std::FILE*)> job;{std::unique_lock<std::mutex> lock(mutex_);cv_.wait(lock,[this]{return stopping_||!jobs_.empty();});if(stopping_&&jobs_.empty())break;job=std::move(jobs_.front());jobs_.pop();}job(file);}
+                if(file)std::fclose(file);
+            });
+        }
+        std::mutex mutex_;std::condition_variable cv_;bool stopping_{};
+        std::queue<std::function<void(std::FILE*)>> jobs_;std::vector<std::thread> workers_;
+    };
     std::FILE* file{};uint64_t fileSize{};HeaderRow header;std::vector<V4LapInfo> laps;std::vector<V4ChunkInfo> chunks;V4ControlSummary summary;
     std::map<std::pair<uint32_t,uint16_t>,std::vector<size_t>> chunkIndex;
     std::vector<TimeBounds> chunkTimeBounds;
-    size_t cacheLimit{DEFAULT_CACHE_BYTES},cacheBytes{};uint64_t decompressions{};std::list<size_t> lru;std::unordered_map<size_t,CacheEntry> cache;
+    std::string path;Executor executor;mutable std::mutex stateMutex;
+    size_t cacheLimit{DEFAULT_CACHE_BYTES},cacheBytes{},activeLoads{},peakActiveLoads{};uint64_t decompressions{};std::list<size_t> lru;std::unordered_map<size_t,CacheEntry> cache;
+    std::unordered_map<size_t,std::shared_future<ChunkResult>> inFlight;std::unordered_map<size_t,std::string> failedChunks;
 
-    void clear(){if(file)std::fclose(file);file=nullptr;fileSize=0;laps.clear();chunks.clear();summary={};chunkIndex.clear();chunkTimeBounds.clear();cache.clear();lru.clear();cacheBytes=0;decompressions=0;}
-    bool loadChunk(size_t index,std::shared_ptr<std::string>& result,std::string* errorOut){
-        auto hit=cache.find(index);if(hit!=cache.end()){lru.erase(hit->second.lru);lru.push_front(index);hit->second.lru=lru.begin();result=hit->second.plain;return true;}
-        const auto& c=chunks[index];std::array<uint8_t,CHUNK_PREFIX_SIZE> prefix{};if(!readAt(file,c.offset-CHUNK_PREFIX_SIZE,prefix.data(),prefix.size())||get32(prefix.data())!=CHUNK_MAGIC||get32(prefix.data()+4)!=c.lapNumber||get16(prefix.data()+8)!=c.rowType||get16(prefix.data()+10)!=c.flags||get64(prefix.data()+12)!=c.compressedSize||get64(prefix.data()+20)!=c.uncompressedSize||get32(prefix.data()+28)!=c.rowCount){fail(errorOut,"V4 chunk prefix does not match its directory entry");return false;}std::vector<uint8_t> compressed((size_t)c.compressedSize);auto plain=std::make_shared<std::string>((size_t)c.uncompressedSize,'\0');
-        if(!readAt(file,c.offset,compressed.data(),compressed.size())){fail(errorOut,"truncated V4 chunk at lap "+std::to_string(c.lapNumber));return false;}
-        const size_t got=ZSTD_decompress(plain->data(),plain->size(),compressed.data(),compressed.size());++decompressions;
-        if(ZSTD_isError(got)||got!=c.uncompressedSize||(uint32_t)::crc32(0,(const Bytef*)plain->data(),(uInt)plain->size())!=c.checksum){fail(errorOut,"V4 chunk integrity check failed for lap "+std::to_string(c.lapNumber)+" type "+std::to_string(c.rowType));return false;}
-        result=plain;if(plain->size()>cacheLimit)return true;while(cacheBytes+plain->size()>cacheLimit&&!lru.empty()){const size_t old=lru.back();lru.pop_back();auto it=cache.find(old);cacheBytes-=it->second.plain->size();cache.erase(it);}lru.push_front(index);cache[index]={plain,lru.begin()};cacheBytes+=plain->size();return true;
+    void clear(){
+        executor.stop();if(file)std::fclose(file);file=nullptr;fileSize=0;path.clear();laps.clear();chunks.clear();summary={};chunkIndex.clear();chunkTimeBounds.clear();
+        std::lock_guard<std::mutex> lock(stateMutex);cache.clear();lru.clear();inFlight.clear();failedChunks.clear();cacheBytes=0;activeLoads=0;peakActiveLoads=0;decompressions=0;
     }
-    bool splitChunk(size_t index,std::vector<V4TimedRow>& out,std::string* errorOut){
-        const auto& c=chunks[index];std::shared_ptr<std::string> plain;if(!loadChunk(index,plain,errorOut))return false;
+    bool loadChunk(size_t index,std::FILE* reader,std::shared_ptr<std::string>& result,std::string* errorOut){
+        std::shared_future<ChunkResult> shared;std::shared_ptr<std::promise<ChunkResult>> promise;bool producer=false;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            auto hit=cache.find(index);if(hit!=cache.end()){lru.erase(hit->second.lru);lru.push_front(index);hit->second.lru=lru.begin();result=hit->second.plain;return true;}
+            auto failed=failedChunks.find(index);if(failed!=failedChunks.end()){fail(errorOut,failed->second);return false;}
+            auto active=inFlight.find(index);if(active!=inFlight.end())shared=active->second;
+            else{promise=std::make_shared<std::promise<ChunkResult>>();shared=promise->get_future().share();inFlight.emplace(index,shared);producer=true;}
+        }
+        if(!producer){const auto loaded=shared.get();if(!loaded.ok){fail(errorOut,loaded.error);return false;}result=loaded.plain;return true;}
+        {std::lock_guard<std::mutex> lock(stateMutex);++activeLoads;peakActiveLoads=std::max(peakActiveLoads,activeLoads);}
+        ChunkResult loaded;
+        if(!reader)loaded.error="could not open a parallel V4 reader handle";
+        else if(index>=chunks.size()){loaded.error="V4 chunk index is out of bounds";loaded.permanentError=true;}
+        else{
+            const auto& c=chunks[index];std::array<uint8_t,CHUNK_PREFIX_SIZE> prefix{};
+            if(!readAt(reader,c.offset-CHUNK_PREFIX_SIZE,prefix.data(),prefix.size())||get32(prefix.data())!=CHUNK_MAGIC||get32(prefix.data()+4)!=c.lapNumber||get16(prefix.data()+8)!=c.rowType||get16(prefix.data()+10)!=c.flags||get64(prefix.data()+12)!=c.compressedSize||get64(prefix.data()+20)!=c.uncompressedSize||get32(prefix.data()+28)!=c.rowCount){loaded.error="V4 chunk prefix does not match its directory entry";loaded.permanentError=true;}
+            else{
+                std::vector<uint8_t> compressed((size_t)c.compressedSize);auto plain=std::make_shared<std::string>((size_t)c.uncompressedSize,'\0');
+                if(!readAt(reader,c.offset,compressed.data(),compressed.size())){loaded.error="truncated V4 chunk at lap "+std::to_string(c.lapNumber);loaded.permanentError=true;}
+                else{
+                    {std::lock_guard<std::mutex> lock(stateMutex);++decompressions;}
+                    const size_t got=ZSTD_decompress(plain->data(),plain->size(),compressed.data(),compressed.size());
+                    if(ZSTD_isError(got)||got!=c.uncompressedSize||(uint32_t)::crc32(0,(const Bytef*)plain->data(),(uInt)plain->size())!=c.checksum){loaded.error="V4 chunk integrity check failed for lap "+std::to_string(c.lapNumber)+" type "+std::to_string(c.rowType);loaded.permanentError=true;}
+                    else{loaded.ok=true;loaded.plain=std::move(plain);}
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            --activeLoads;
+            if(loaded.ok&&loaded.plain->size()<=cacheLimit){while(cacheBytes+loaded.plain->size()>cacheLimit&&!lru.empty()){const size_t old=lru.back();lru.pop_back();auto it=cache.find(old);cacheBytes-=it->second.plain->size();cache.erase(it);}lru.push_front(index);cache[index]={loaded.plain,lru.begin()};cacheBytes+=loaded.plain->size();}
+            else if(!loaded.ok&&loaded.permanentError)failedChunks[index]=loaded.error;
+        }
+        promise->set_value(loaded);{std::lock_guard<std::mutex> lock(stateMutex);inFlight.erase(index);}
+        if(!loaded.ok){fail(errorOut,loaded.error);return false;}result=std::move(loaded.plain);return true;
+    }
+    bool splitChunk(size_t index,std::FILE* reader,std::vector<V4TimedRow>& out,std::string* errorOut,std::shared_ptr<std::string> plain={}){
+        const auto& c=chunks[index];if(!plain&&!loadChunk(index,reader,plain,errorOut))return false;
         const size_t firstOutput=out.size();
         const std::string_view plainView(*plain);const size_t firstEnd=plainView.find('\n');const std::string_view first=plainView.substr(0,firstEnd);
         if(scanTime(first)>=0){if(!splitRows(*plain,(uint8_t)c.rowType,c.sequence,out,c.rowCount,errorOut))return false;rememberBounds(index,out,firstOutput);return true;}
@@ -232,12 +303,20 @@ struct TnrdV4Archive::Impl {
         // nearest Telemetry segment and interpolate within its time bounds.
         const uint16_t referenceType=c.rowType==13?11:1;size_t best=SIZE_MAX;bool bestExact=false;uint64_t bestDistance=UINT64_MAX;
         for(size_t i=0;i<chunks.size();++i){const auto& candidate=chunks[i];if(candidate.lapNumber!=c.lapNumber||candidate.rowType!=referenceType)continue;const bool exact=candidate.rowCount==c.rowCount;const uint64_t distance=candidate.sequence>c.sequence?candidate.sequence-c.sequence:c.sequence-candidate.sequence;if(best==SIZE_MAX||(exact&&!bestExact)||(exact==bestExact&&distance<bestDistance)){best=i;bestExact=exact;bestDistance=distance;}}
-        std::vector<float> referenceTimes;if(best!=SIZE_MAX){std::shared_ptr<std::string> reference;if(!loadChunk(best,reference,errorOut))return false;size_t pos=0;while(pos<reference->size()){size_t nl=reference->find('\n',pos);if(nl==std::string::npos)nl=reference->size();if(nl>pos){const float time=scanTime(std::string_view(*reference).substr(pos,nl-pos));if(time>=0)referenceTimes.push_back(time);}if(nl==reference->size())break;pos=nl+1;}}
+        std::vector<float> referenceTimes;if(best!=SIZE_MAX){std::shared_ptr<std::string> reference;if(!loadChunk(best,reader,reference,errorOut))return false;size_t pos=0;while(pos<reference->size()){size_t nl=reference->find('\n',pos);if(nl==std::string::npos)nl=reference->size();if(nl>pos){const float time=scanTime(std::string_view(*reference).substr(pos,nl-pos));if(time>=0)referenceTimes.push_back(time);}if(nl==reference->size())break;pos=nl+1;}}
         std::vector<float> inferred(c.rowCount);if(referenceTimes.size()==c.rowCount)inferred=std::move(referenceTimes);else{float from=0,to=0;if(!referenceTimes.empty()){from=referenceTimes.front();to=referenceTimes.back();}else{auto lap=std::find_if(laps.begin(),laps.end(),[&](const auto& value){return value.lapNumber==c.lapNumber;});if(lap!=laps.end()){from=lap->startSessionTime;to=lap->endSessionTime;}}for(uint32_t i=0;i<c.rowCount;++i)inferred[i]=c.rowCount>1?from+(to-from)*(float)i/(float)(c.rowCount-1):from;}
         if(!splitRows(*plain,(uint8_t)c.rowType,c.sequence,out,c.rowCount,errorOut,&inferred))return false;rememberBounds(index,out,firstOutput);return true;
     }
     void rememberBounds(size_t index,const std::vector<V4TimedRow>& rows,size_t firstOutput){
-        if(index>=chunkTimeBounds.size()||firstOutput>=rows.size())return;float first=std::numeric_limits<float>::infinity(),last=-std::numeric_limits<float>::infinity();for(size_t i=firstOutput;i<rows.size();++i)if(std::isfinite(rows[i].sessionTime)){first=std::min(first,rows[i].sessionTime);last=std::max(last,rows[i].sessionTime);}if(std::isfinite(first)&&std::isfinite(last))chunkTimeBounds[index]={first,last,true};
+        if(index>=chunkTimeBounds.size()||firstOutput>=rows.size())return;float first=std::numeric_limits<float>::infinity(),last=-std::numeric_limits<float>::infinity();for(size_t i=firstOutput;i<rows.size();++i)if(std::isfinite(rows[i].sessionTime)){first=std::min(first,rows[i].sessionTime);last=std::max(last,rows[i].sessionTime);}if(std::isfinite(first)&&std::isfinite(last)){std::lock_guard<std::mutex> lock(stateMutex);chunkTimeBounds[index]={first,last,true};}
+    }
+    TimeBounds bounds(size_t index)const{std::lock_guard<std::mutex> lock(stateMutex);return chunkTimeBounds[index];}
+    template<class Fn>std::vector<RowsResult> runChunkJobs(const std::vector<size_t>& indices,Fn fn){
+        using Pending=std::pair<size_t,std::future<RowsResult>>;std::deque<Pending> pending;std::vector<RowsResult> results;results.reserve(indices.size());size_t next=0;
+        auto schedule=[&](size_t ordinal){const size_t index=indices[ordinal];pending.emplace_back(ordinal,executor.submit(path,[fn,index](std::FILE* file){return fn(file,index);}));};
+        while(next<indices.size()&&pending.size()<MAX_PARALLEL_CHUNKS)schedule(next++);
+        while(!pending.empty()){results.push_back(pending.front().second.get());pending.pop_front();if(next<indices.size())schedule(next++);}
+        return results;
     }
 };
 
@@ -253,7 +332,7 @@ float TnrdV4Archive::totalTime()const{return std::max(impl_->summary.totalSessio
 int TnrdV4Archive::lapAt(float time)const{int found=0;for(const auto&lap:impl_->laps){if(lap.startSessionTime>time)break;found=(int)lap.lapNumber;}return found;}
 
 bool TnrdV4Archive::open(const std::string& path,HeaderRow& header,std::string* errorOut){
-    close();impl_->file=openTnrdFile(path,"rb");if(!impl_->file){fail(errorOut,"could not open V4 file");return false;}if(!seekEnd(impl_->file)){fail(errorOut,"could not size V4 file");close();return false;}impl_->fileSize=tell(impl_->file);
+    close();impl_->file=openTnrdFile(path,"rb");if(!impl_->file){fail(errorOut,"could not open V4 file");return false;}impl_->path=path;if(!seekEnd(impl_->file)){fail(errorOut,"could not size V4 file");close();return false;}impl_->fileSize=tell(impl_->file);
     std::array<uint8_t,HEADER_SIZE> h{};if(!readAt(impl_->file,0,h.data(),h.size())||!std::equal(MAGIC.begin(),MAGIC.end(),h.begin())||get16(h.data()+8)!=4||get16(h.data()+10)!=HEADER_SIZE){fail(errorOut,"invalid V4 header");close();return false;}
     const uint32_t stored=get32(h.data()+88);auto copy=h;std::fill(copy.begin()+88,copy.begin()+92,0);const bool headerCrcOk=stored==(uint32_t)::crc32(0,copy.data(),88);
     if(headerCrcOk&&(get32(h.data()+12)!=0||get32(h.data()+92)!=0)){fail(errorOut,"V4 file uses unsupported feature flags");close();return false;}
@@ -291,20 +370,40 @@ bool TnrdV4Archive::open(const std::string& path,HeaderRow& header,std::string* 
 }
 
 bool TnrdV4Archive::rowsForLap(uint32_t lap,V4RowTypeMask mask,std::vector<V4TimedRow>& out,std::string* errorOut){
-    out.clear();auto it=impl_->chunkIndex.lower_bound({lap,0});for(;it!=impl_->chunkIndex.end()&&it->first.first==lap;++it){if(!(mask&v4TypeBit((uint8_t)it->first.second)))continue;for(size_t index:it->second)if(!impl_->splitChunk(index,out,errorOut))return false;}sortRows(out);return true;
+    std::vector<size_t> selected;auto it=impl_->chunkIndex.lower_bound({lap,0});for(;it!=impl_->chunkIndex.end()&&it->first.first==lap;++it)if(mask&v4TypeBit((uint8_t)it->first.second))selected.insert(selected.end(),it->second.begin(),it->second.end());
+    auto results=impl_->runChunkJobs(selected,[state=impl_.get()](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error))result.ok=false;return result;});
+    out.clear();for(const auto& result:results)if(!result.ok){fail(errorOut,result.error);return false;}for(auto& result:results)for(auto& row:result.rows)out.push_back(std::move(row));sortRows(out);return true;
 }
 bool TnrdV4Archive::rowsForRange(float from,float to,V4RowTypeMask mask,std::vector<V4TimedRow>& out,std::string* errorOut){
-    out.clear();for(const auto&[key,indices]:impl_->chunkIndex){const auto[lapNumber,rowType]=key;if(!(mask&v4TypeBit((uint8_t)rowType)))continue;if(lapNumber){auto lap=std::lower_bound(impl_->laps.begin(),impl_->laps.end(),lapNumber,[](const auto&value,uint32_t number){return value.lapNumber<number;});if(lap!=impl_->laps.end()&&lap->lapNumber==lapNumber&&(lap->endSessionTime<from||lap->startSessionTime>to))continue;}for(size_t index:indices){const auto&bounds=impl_->chunkTimeBounds[index];if(bounds.known&&(bounds.last<from||bounds.first>to))continue;std::vector<V4TimedRow> rows;if(!impl_->splitChunk(index,rows,errorOut))return false;for(auto&r:rows)if(r.sessionTime>=from&&r.sessionTime<=to)out.push_back(std::move(r));}}sortRows(out);return true;
+    std::vector<size_t> selected;
+    for(const auto&[key,indices]:impl_->chunkIndex){const auto[lapNumber,rowType]=key;if(!(mask&v4TypeBit((uint8_t)rowType)))continue;if(lapNumber){auto lap=std::lower_bound(impl_->laps.begin(),impl_->laps.end(),lapNumber,[](const auto&value,uint32_t number){return value.lapNumber<number;});if(lap!=impl_->laps.end()&&lap->lapNumber==lapNumber&&(lap->endSessionTime<from||lap->startSessionTime>to))continue;}selected.insert(selected.end(),indices.begin(),indices.end());}
+    auto results=impl_->runChunkJobs(selected,[state=impl_.get(),from,to](std::FILE* file,size_t index){Impl::RowsResult result;const auto bounds=state->bounds(index);if(bounds.known&&(bounds.last<from||bounds.first>to))return result;std::vector<V4TimedRow> rows;if(!state->splitChunk(index,file,rows,&result.error)){result.ok=false;return result;}for(auto& row:rows)if(row.sessionTime>=from&&row.sessionTime<=to)result.rows.push_back(std::move(row));return result;});
+    out.clear();for(const auto& result:results)if(!result.ok){fail(errorOut,result.error);return false;}for(auto& result:results)for(auto& row:result.rows)out.push_back(std::move(row));sortRows(out);return true;
 }
 bool TnrdV4Archive::latestRows(float at,const std::vector<uint8_t>& types,std::vector<V4TimedRow>& out,std::string* errorOut){
-    out.clear();const int targetLap=lapAt(at);
-    for(uint8_t type:types){bool found=false;V4TimedRow best;for(int lapNumber=targetLap;lapNumber>=0&&!found;--lapNumber){auto bucket=impl_->chunkIndex.find({(uint32_t)lapNumber,type});if(bucket==impl_->chunkIndex.end())continue;for(size_t index:bucket->second){const auto&bounds=impl_->chunkTimeBounds[index];if(bounds.known&&bounds.first>at)continue;std::vector<V4TimedRow> rows;if(!impl_->splitChunk(index,rows,errorOut))return false;for(auto&r:rows)if(r.sessionTime<=at&&(!found||r.sessionTime>best.sessionTime||(r.sessionTime==best.sessionTime&&r.sequence>best.sequence))){best=std::move(r);found=true;}}}
-        if(found)out.push_back(std::move(best));
-    }sortRows(out);return true;
+    struct Search{uint8_t type{};int lap{};bool done{};bool found{};V4TimedRow best;};struct Span{size_t search{};size_t begin{};size_t end{};};
+    const int targetLap=lapAt(at);std::vector<Search> searches;searches.reserve(types.size());for(uint8_t type:types)searches.push_back({type,targetLap});
+    for(;;){
+        std::vector<size_t> selected;std::vector<Span> spans;
+        for(size_t i=0;i<searches.size();++i){auto& search=searches[i];if(search.done)continue;decltype(impl_->chunkIndex)::iterator bucket;for(;;){if(search.lap<0){search.done=true;break;}bucket=impl_->chunkIndex.find({(uint32_t)search.lap,search.type});if(bucket!=impl_->chunkIndex.end())break;--search.lap;}if(search.done)continue;const size_t begin=selected.size();selected.insert(selected.end(),bucket->second.begin(),bucket->second.end());spans.push_back({i,begin,selected.size()});}
+        if(selected.empty())break;
+        auto results=impl_->runChunkJobs(selected,[state=impl_.get(),at](std::FILE* file,size_t index){Impl::RowsResult result;const auto bounds=state->bounds(index);if(bounds.known&&bounds.first>at)return result;if(!state->splitChunk(index,file,result.rows,&result.error))result.ok=false;return result;});
+        for(const auto& span:spans){auto& search=searches[span.search];for(size_t i=span.begin;i<span.end;++i){const auto& result=results[i];if(!result.ok){fail(errorOut,result.error);return false;}for(const auto& row:result.rows)if(row.sessionTime<=at&&(!search.found||row.sessionTime>search.best.sessionTime||(row.sessionTime==search.best.sessionTime&&row.sequence>search.best.sequence))){search.best=row;search.found=true;}}if(search.found)search.done=true;else--search.lap;}
+    }
+    out.clear();for(auto& search:searches)if(search.found)out.push_back(std::move(search.best));sortRows(out);return true;
 }
-bool TnrdV4Archive::forEachChunk(V4RowTypeMask mask,const std::function<bool(const V4ChunkInfo&,std::string_view)>& callback,std::string* errorOut){std::vector<size_t> selected;for(size_t i=0;i<impl_->chunks.size();++i)if(mask&v4TypeBit((uint8_t)impl_->chunks[i].rowType))selected.push_back(i);std::sort(selected.begin(),selected.end(),[&](size_t a,size_t b){const auto&x=impl_->chunks[a];const auto&y=impl_->chunks[b];if(x.rowType!=y.rowType)return x.rowType<y.rowType;if(x.lapNumber!=y.lapNumber)return x.lapNumber<y.lapNumber;return x.sequence<y.sequence;});for(size_t i:selected){const auto&c=impl_->chunks[i];std::shared_ptr<std::string> plain;if(!impl_->loadChunk(i,plain,errorOut))return false;const std::string_view plainView(*plain);const size_t firstEnd=plainView.find('\n');if(scanTime(plainView.substr(0,firstEnd))>=0){if(!callback(c,*plain))return false;continue;}std::vector<V4TimedRow> rows;if(!impl_->splitChunk(i,rows,errorOut))return false;std::string normalized;normalized.reserve(plain->size()+rows.size()*24);for(const auto&row:rows){normalized+=withSessionTime(row.json,row.sessionTime);normalized.push_back('\n');}if(!callback(c,normalized))return false;}return true;}
-void TnrdV4Archive::setCacheLimitBytes(size_t bytes){impl_->cacheLimit=bytes;while(impl_->cacheBytes>bytes&&!impl_->lru.empty()){const size_t old=impl_->lru.back();impl_->lru.pop_back();auto it=impl_->cache.find(old);impl_->cacheBytes-=it->second.plain->size();impl_->cache.erase(it);}}
-size_t TnrdV4Archive::cacheBytes()const{return impl_->cacheBytes;}
-uint64_t TnrdV4Archive::decompressedChunkCount()const{return impl_->decompressions;}
+bool TnrdV4Archive::forEachChunk(V4RowTypeMask mask,const std::function<bool(const V4ChunkInfo&,std::string_view)>& callback,std::string* errorOut){
+    struct Prepared{bool ok{};std::string error;std::shared_ptr<std::string> plain;};
+    std::vector<size_t> selected;for(size_t i=0;i<impl_->chunks.size();++i)if(mask&v4TypeBit((uint8_t)impl_->chunks[i].rowType))selected.push_back(i);std::sort(selected.begin(),selected.end(),[&](size_t a,size_t b){const auto&x=impl_->chunks[a];const auto&y=impl_->chunks[b];if(x.rowType!=y.rowType)return x.rowType<y.rowType;if(x.lapNumber!=y.lapNumber)return x.lapNumber<y.lapNumber;return x.sequence<y.sequence;});
+    using Pending=std::pair<size_t,std::future<Prepared>>;std::deque<Pending> pending;size_t next=0;
+    auto schedule=[&](size_t index){pending.emplace_back(index,impl_->executor.submit(impl_->path,[state=impl_.get(),index](std::FILE* file){Prepared result;std::shared_ptr<std::string> plain;if(!state->loadChunk(index,file,plain,&result.error))return result;const std::string_view view(*plain);const size_t firstEnd=view.find('\n');if(scanTime(view.substr(0,firstEnd))>=0){result.ok=true;result.plain=std::move(plain);return result;}std::vector<V4TimedRow> rows;if(!state->splitChunk(index,file,rows,&result.error,plain))return result;auto normalized=std::make_shared<std::string>();normalized->reserve(plain->size()+rows.size()*24);for(const auto& row:rows){*normalized+=withSessionTime(row.json,row.sessionTime);normalized->push_back('\n');}result.ok=true;result.plain=std::move(normalized);return result;}));};
+    while(next<selected.size()&&pending.size()<MAX_PARALLEL_CHUNKS)schedule(selected[next++]);
+    while(!pending.empty()){const size_t index=pending.front().first;auto prepared=pending.front().second.get();pending.pop_front();if(!prepared.ok){while(!pending.empty()){pending.front().second.wait();pending.pop_front();}fail(errorOut,prepared.error);return false;}if(!callback(impl_->chunks[index],*prepared.plain)){while(!pending.empty()){pending.front().second.wait();pending.pop_front();}return false;}if(next<selected.size())schedule(selected[next++]);}
+    return true;
+}
+void TnrdV4Archive::setCacheLimitBytes(size_t bytes){std::lock_guard<std::mutex> lock(impl_->stateMutex);impl_->cacheLimit=bytes;while(impl_->cacheBytes>bytes&&!impl_->lru.empty()){const size_t old=impl_->lru.back();impl_->lru.pop_back();auto it=impl_->cache.find(old);impl_->cacheBytes-=it->second.plain->size();impl_->cache.erase(it);}}
+size_t TnrdV4Archive::cacheBytes()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->cacheBytes;}
+uint64_t TnrdV4Archive::decompressedChunkCount()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->decompressions;}
+size_t TnrdV4Archive::peakConcurrentChunkLoads()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->peakActiveLoads;}
 
 } // namespace tnrp::detail

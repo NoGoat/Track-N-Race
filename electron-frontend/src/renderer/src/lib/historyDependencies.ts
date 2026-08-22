@@ -20,6 +20,7 @@ export const DATA_ROW = {
   motionEx: 1 << 12,
   positions: 1 << 13,
   sessionHistoryFastest: 1 << 14,
+  strategy: 1 << 15,
 } as const
 
 // Kept as an alias for the finite/AL backfill code while the broader registry
@@ -55,7 +56,7 @@ export const DATA_CONSUMERS = {
   powerCards: { stream: DATA_ROW.status },
   powerHistory: { stream: DATA_ROW.status, history: DATA_ROW.status },
   tyrePageState: { stream: DATA_ROW.tyreSets | DATA_ROW.telemetry | DATA_ROW.damage | DATA_ROW.session },
-  strategyPage: { stream: DATA_ROW.lap | DATA_ROW.session | DATA_ROW.status | DATA_ROW.damage | DATA_ROW.timing | DATA_ROW.participants | DATA_ROW.tyreSets | DATA_ROW.allStatus },
+  strategyPage: { stream: DATA_ROW.strategy },
   gForceHistory: { stream: DATA_ROW.motion, history: DATA_ROW.motion },
   rideHeightHistory: { stream: DATA_ROW.motionEx, history: DATA_ROW.motionEx },
   analyzeLapCoordinates: { stream: DATA_ROW.lap, history: DATA_ROW.lap },

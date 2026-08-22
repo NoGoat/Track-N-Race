@@ -4,6 +4,7 @@ import type {
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
   AnalyzeLapData, PlaybackLapDataMsg,
+  StrategySnapshotMsg,
 } from '../types'
 import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 import { playbackDebug } from '../lib/playbackDebug'
@@ -117,6 +118,7 @@ export interface TelemetryStoreState {
   raceEvents: RaceEventMsg[]
   session: SessionMsg | null
   tyreSets: TyreSetsMsg | null
+  strategy: StrategySnapshotMsg | null
   latest: TelemetryRow | null
   fastestLapNum: number | null
   analyzeLapTelemetry: TelemetryRow[]
@@ -150,7 +152,7 @@ export interface TelemetryStoreState {
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   telemetry: [], motion: [], motionEx: [],
   status: null, statusHistory: [], damage: null, damageHistory: [],
-  lap: null, timing: null, participants: null, allStatus: null,
+  lap: null, timing: null, participants: null, allStatus: null, strategy: null,
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
   latest: null, fastestLapNum: null,
   analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
@@ -246,7 +248,7 @@ function resetSession(): void {
   fuelMaxReceived = -Infinity
   set({
     status: null, damage: null, lap: null, timing: null, allStatus: null,
-    participants: null, session: null, fastestLapCarIdx: null, tyreSets: null,
+    participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
     analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
     analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
@@ -570,6 +572,7 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'tyre_sets':    set({ tyreSets: msg }); break
+    case 'strategy':     set({ strategy: msg as StrategySnapshotMsg }); break
     case 'race_event':
       if ((msg as RaceEventMsg).code === 'FLBK') {
         const target = Number((msg as RaceEventMsg).flashback_session_time)

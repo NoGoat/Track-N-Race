@@ -185,6 +185,7 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
     coldStatus_.clear();
     coldDamage_.clear();
     coldLap_.clear();
+    legacyStrategyRows_.clear();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
     initialFuelKg_ = -1.0;
@@ -237,6 +238,8 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
         uint8_t tid = scanType(ld, ll);
         index_.push_back({ lineOffset, t, tid });
         totalTime_ = std::max(totalTime_, t);
+        if (kStrategyDependencyMask & (1u << tid))
+            legacyStrategyRows_.push_back({t, std::string(ld, (size_t)ll)});
 
         // Binary playback: pre-encode the hot rows into the packed store (so a
         // playback tick / seek flush is a byte slice, not a re-serialisation)
@@ -419,6 +422,7 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
         }
     }
     auto byT = [](const TimedRaw& a, const TimedRaw& b) { return a.t < b.t; };
+    std::stable_sort(legacyStrategyRows_.begin(), legacyStrategyRows_.end(), byT);
     std::sort(coldDamage_.begin(), coldDamage_.end(), byT);
     for (auto& kv : lapBlocks_) {
         std::sort(kv.second.telemetry.begin(), kv.second.telemetry.end(), byT);
@@ -520,6 +524,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             auto it=lapBlocks_.find((int)s.lapNumber);if(it!=lapBlocks_.end())it->second.slimStatus.push_back({"status",s.sessionTime,s.ersPct,s.tyreCompound,s.visualCompound});
         }
         setCursor(startTime_);
+        strategyProtocol_ = static_cast<uint16_t>(outHeader.protocol >= 2024 ? outHeader.protocol : 2025);
         std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),v4Archive_->chunks().size(),v4Archive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         return true;
     }
@@ -617,6 +622,7 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         close();
         return false;
     }
+    strategyProtocol_ = static_cast<uint16_t>(outHeader.protocol >= 2024 ? outHeader.protocol : 2025);
     std::fprintf(stderr, "[tnrd] load OK: format=%s rows=%zu start=%.2f total=%.2f track='%s' session='%s'\n",
                  toString(loadedFormat_), index_.size(), startTime_, totalTime_,
                  outHeader.track_name.c_str(), outHeader.session_name.c_str());
@@ -640,6 +646,8 @@ void TnrdReader::close() {
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
+    strategyCheckpoints_.clear();
+    strategyProtocol_ = 2025;
     // Outstanding zero-copy seek buffers retain the old immutable store until
     // Electron has serialized them; the reader immediately releases its copy.
     hotBin_ = std::make_shared<std::vector<uint8_t>>();
@@ -649,6 +657,7 @@ void TnrdReader::close() {
     coldStatus_.clear();
     coldDamage_.clear();
     coldLap_.clear();
+    legacyStrategyRows_.clear();
     scratch_.clear();
     scratch_.shrink_to_fit();
     fastestLapNum_ = 0;
@@ -816,6 +825,82 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
         p = nl + 1;
     }
     return out;
+}
+
+StrategySnapshotRow TnrdReader::strategySnapshotAt(float t, StrategyProcessor* restoredProcessor) {
+    t = std::clamp(t, startTime_, totalTime_);
+    StrategyProcessor processor(strategyProtocol_);
+    float cursor = startTime_;
+    bool restored = false;
+    for (const auto& checkpoint : strategyCheckpoints_) {
+        if (checkpoint.first > t) break;
+        cursor = checkpoint.first;
+        processor = checkpoint.second;
+        restored = true;
+    }
+
+    // Decode the uncached prefix once, in chronological order, and take lap
+    // checkpoints while walking it. V4 selects only the nine cold strategy row
+    // families, so a late-race seek does not inflate telemetry/motion chunks.
+    std::vector<float> boundaries;
+    for (const auto& lap : scannedLaps_) {
+        const float boundary = lap.endSessionTime;
+        if (boundary <= cursor || boundary > t) continue;
+        boundaries.push_back(boundary);
+    }
+    size_t nextBoundary = 0;
+    auto checkpoint = [&] {
+        const float boundary = boundaries[nextBoundary++];
+        (void)processor.snapshot();
+        strategyCheckpoints_.emplace_back(boundary, processor);
+        cursor = boundary;
+    };
+
+    bool replayOk = true;
+    if (cursor < t || !restored)
+        replayOk = forEachStrategyRow(cursor, t, !restored,
+                                      [&](float rowTime, std::string_view json) {
+            // Rows stamped exactly at a boundary belong to the completed lap.
+            // Finalize only when the first later row is encountered.
+            while (nextBoundary < boundaries.size() && boundaries[nextBoundary] < rowTime)
+                checkpoint();
+            processor.ingestJson(json);
+        });
+    if (replayOk)
+        while (nextBoundary < boundaries.size()) checkpoint();
+    StrategySnapshotRow result = processor.snapshot();
+    if (restoredProcessor) *restoredProcessor = std::move(processor);
+    return result;
+}
+
+bool TnrdReader::forEachStrategyRow(
+    float fromTime, float toTime, bool includeFrom,
+    const std::function<void(float, std::string_view)>& callback) {
+    if (toTime < fromTime) return true;
+    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!v4Archive_->rowsForRange(fromTime, toTime, kStrategyDependencyMask,
+                                      rows, &error)) {
+            lastError_ = error;
+            return false;
+        }
+        for (const auto& row : rows) {
+            if (!includeFrom && row.sessionTime <= fromTime) continue;
+            callback(row.sessionTime, row.json);
+        }
+        return true;
+    }
+    if (!isLoaded()) return false;
+    const auto begin = includeFrom
+        ? std::lower_bound(legacyStrategyRows_.begin(), legacyStrategyRows_.end(), fromTime,
+            [](const TimedRaw& row, float value) { return row.t < value; })
+        : std::upper_bound(legacyStrategyRows_.begin(), legacyStrategyRows_.end(), fromTime,
+            [](float value, const TimedRaw& row) { return value < row.t; });
+    const auto end = std::upper_bound(begin, legacyStrategyRows_.end(), toTime,
+        [](float value, const TimedRaw& row) { return value < row.t; });
+    for (auto it = begin; it != end; ++it) callback(it->t, it->json);
+    return true;
 }
 
 void TnrdReader::setPlaybackRowMask(uint32_t mask, float cursorTime) {

@@ -210,6 +210,28 @@ export interface TyreSetsMsg {
   fitted_idx: number
 }
 
+export interface StrategyLapTarget { lap_num:number; required_ms:number; actual_ms:number; delta_lap_ms:number; delta_stint_ms:number; delta_total_ms:number; has_actual:boolean }
+export interface StrategyStint { compound_name:string; actual_compound:number; visual_compound:number; stint_number:number; start_lap:number; end_lap:number; expected_laps:number; actual_laps:number; is_last:boolean; rows:StrategyLapTarget[] }
+export interface StrategyPlan { stops:number; mode:'defensive'|'attacking'; target_idx:number; target_name:string; reason:string; confidence:number; legal:boolean; legality_reason:string; requires_compound_change:boolean; stints:StrategyStint[] }
+export interface StrategyCallMsg { kind:'cover'|'undercut'|'overcut'; target_idx:number; target_name:string; gap_ms:number; crossover_laps?:number; reason:string; detected_lap:number }
+export interface StrategyRival { idx:number; name:string; direction:'ahead'|'behind'; position:number; result_status:number; gap_ms:number; retired:boolean; threat_score:number; pace_ms:number; pace_delta_ms:number; closing_ms_per_lap:number; tyre_age_laps:number; actual_compound:number; visual_compound:number; last_pit_lap:number; pit_reaction:string }
+export interface StrategyPosition { idx:number; name:string; livery_color:string; role:'ahead'|'player'|'behind'; position:number; pit_status:number; num_pit_stops:number; gap_ms:number; gap_trend:-1|0|1; immediate:boolean }
+export interface StrategyWearWarning { text:string; severity:'danger'|'warning'|'caution'; priority:number }
+export interface StrategyFactor { code:string; text:string; impact_ms:number }
+export interface StrategyNeutralisation { kind:'safety_car'|'virtual_safety_car'; recommendation:'box'|'stay_out'; reason:string; normal_pit_loss_ms:number; effective_pit_loss_ms:number; queue_loss_ms:number; recoverable_time_ms:number; net_time_ms:number; box_now_cost_ms:number; box_later_cost_ms:number; box_now_advantage_ms:number; box_later_lap:number; current_position:number; projected_box_position:number; projected_stay_position:number; projected_later_box_position:number; positions_lost:number; rivals_boxing:number; decision_lap:number; confidence:number; data_age_s:number; position_basis:'deployment_gaps'; laps_to_recover?:number; factors:StrategyFactor[] }
+export interface StrategyWeatherDecision { recommendation:'stay_dry'|'stay_wet'|'prepare_intermediates'|'prepare_wets'|'prepare_slicks'; target_compound:string; forecast_weather:number; rain_percentage:number; crossover_lap:number; minutes_until_change:number; confidence:number; reason:string }
+export interface StrategyDecisionRecord { event:'lap_plan'|'neutralisation'; lap_num:number; session_time:number; recommendation:string; reason:string; target_idx:number; target_name:string; start_position:number; projected_position:number; start_num_pit_stops:number; actual_position?:number; followed?:boolean; successful?:boolean }
+export interface StrategySnapshotMsg {
+  type:'strategy'; session_time:number; state:'non_race'|'waiting'|'ready'; lap_num:number; total_laps:number
+  current_actual_compound:number; current_visual_compound:number; current_compound_name:string
+  current_tyre_age_laps:number
+  average_wear:number; wear_per_lap:number; limiting_corner:string; limiting_wear:number; limiting_wear_per_lap:number
+  cliff_lap:number; laps_until_cliff:number; is_monaco:boolean; confidence:number; data_age_s:number; explanation:StrategyFactor[]
+  conservative:StrategyPlan; aggressive:StrategyPlan
+  call?:StrategyCallMsg; neutralisation?:StrategyNeutralisation; weather_strategy?:StrategyWeatherDecision; decision_history:StrategyDecisionRecord[]; rivals:StrategyRival[]; positions:StrategyPosition[]
+  wear_fl:number; wear_fr:number; wear_rl:number; wear_rr:number; wear_warnings:StrategyWearWarning[]
+}
+
 export interface FastestLapMsg {
   type: 'fastest_lap'
   ts: string
@@ -383,6 +405,7 @@ export type GatewayMsg =
   | PositionsMsg
   | ProtocolStatusMsg
   | ProtocolWarningMsg
+  | StrategySnapshotMsg
   | PlaybackFastestLapMsg
   | PlaybackPreviousLapMsg
   | PlaybackSeekFlushMsg

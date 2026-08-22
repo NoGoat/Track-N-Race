@@ -93,6 +93,7 @@ add_library(tnrp STATIC
     src/DisplayNames.cpp
     src/Labels.cpp
     src/CardColors.cpp
+    src/Strategy.cpp
     src/Parser.cpp
     src/AnyRow.cpp
     src/TnrdCodec.cpp
@@ -156,4 +157,7 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(v4_lap_boundary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(v4_lap_boundary PRIVATE tnrp)
     add_test(NAME v4_lap_boundary COMMAND v4_lap_boundary)
+    add_executable(strategy_processor tests/StrategyProcessor.cpp)
+    target_link_libraries(strategy_processor PRIVATE tnrp)
+    add_test(NAME strategy_processor COMMAND strategy_processor)
 endif()

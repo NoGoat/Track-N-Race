@@ -5,11 +5,14 @@
 #include "tnrp/TnrdReader.h"
 
 #include <algorithm>
+#include <array>
+#include <barrier>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 int main() {
@@ -73,6 +76,70 @@ int main() {
     assert(archive.cacheBytes() <= 1);
     archive.close();
 
+    // Chunk payloads are loaded concurrently, while requests that converge
+    // on one chunk share its single in-flight read/decompression. Use a payload
+    // larger than the deliberately tiny cache so this exercises single-flight,
+    // not an LRU hit after the first caller finishes.
+    const fs::path parallelPath = longDir / "parallel_channel_reader.tnrd";
+    std::string largeTelemetry =
+        R"({"type":"telemetry","session_time":1.1,"speed_kph":100,"padding":")";
+    largeTelemetry.append(8 * 1024 * 1024, 'x');
+    largeTelemetry += R"("})";
+    const std::vector<V4SourceRow> parallelRows = {
+        {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0})", 1.0f},
+        {std::move(largeTelemetry), 1.1f},
+        {R"({"type":"status","session_time":1.2})", 1.2f},
+        {R"({"type":"damage","session_time":1.3})", 1.3f},
+        {R"({"type":"session","session_time":1.4})", 1.4f},
+        {R"({"type":"race_event","session_time":1.5,"code":"TEST"})", 1.5f},
+        {R"({"type":"timing","session_time":1.6})", 1.6f},
+        {R"({"type":"participants","session_time":1.7})", 1.7f},
+        {R"({"type":"all_status","session_time":1.8})", 1.8f},
+        {R"({"type":"tyre_sets","session_time":1.9})", 1.9f},
+        {R"({"type":"motion","session_time":2.0})", 2.0f},
+    };
+    assert(tnrp::detail::writeTnrdV4(parallelPath.string(), header, parallelRows, &error));
+    tnrp::detail::TnrdV4Archive parallel;
+    assert(parallel.open(parallelPath.string(), archiveHeader, &error));
+    parallel.setCacheLimitBytes(1);
+    const uint64_t beforeSharedRead = parallel.decompressedChunkCount();
+    std::barrier startTogether(9);
+    std::array<std::thread, 8> readers;
+    std::array<bool, 8> readerOk{};
+    for (size_t i = 0; i < readers.size(); ++i) {
+        readers[i] = std::thread([&, i] {
+            std::vector<tnrp::detail::V4TimedRow> sharedRows;
+            std::string threadError;
+            startTogether.arrive_and_wait();
+            readerOk[i] = parallel.rowsForLap(
+                1, tnrp::detail::v4TypeBit(1), sharedRows, &threadError) &&
+                sharedRows.size() == 1 &&
+                sharedRows.front().json.find("\"speed_kph\":100") != std::string::npos;
+        });
+    }
+    startTogether.arrive_and_wait();
+    for (auto& readerThread : readers) readerThread.join();
+    assert(std::all_of(readerOk.begin(), readerOk.end(), [](bool ok) { return ok; }));
+    assert(parallel.decompressedChunkCount() == beforeSharedRead + 1);
+    std::vector<tnrp::detail::V4TimedRow> parallelRead;
+    assert(parallel.rowsForRange(0, 3, 0xFFFFFFFFu, parallelRead, &error));
+    assert(parallelRead.size() == parallelRows.size());
+    assert(std::is_sorted(parallelRead.begin(), parallelRead.end(), [](const auto& a, const auto& b) {
+        return a.sessionTime < b.sessionTime ||
+            (a.sessionTime == b.sessionTime && a.sequence < b.sequence);
+    }));
+    std::vector<tnrp::detail::V4TimedRow> latestParallel;
+    assert(parallel.latestRows(3, {1,2,3,4,5,6,7,8,9,10,11}, latestParallel, &error));
+    assert(latestParallel.size() == parallelRows.size());
+    size_t callbackChunks = 0;
+    assert(parallel.forEachChunk(0xFFFFFFFFu,
+        [&](const tnrp::detail::V4ChunkInfo&, std::string_view) {
+            ++callbackChunks;
+            return true;
+        }, &error));
+    assert(callbackChunks == parallel.chunks().size());
+    parallel.close();
+
     tnrp::HeaderRow loadedHeader;
     tnrp::detail::TnrdV4Archive complete;
     assert(complete.open(path.string(), loadedHeader, &error));
@@ -99,6 +166,12 @@ int main() {
     glz::generic lapBlocksJson;
     assert(!glz::read_json(lapBlocksJson, reader.lapBlocksMessage()));
     assert(reader.readRange(0, 200).size() == rows.size());
+    const auto derivedStrategy = reader.strategySnapshotAt(91.15f);
+    assert(derivedStrategy.type == "strategy");
+    assert(derivedStrategy.state == "non_race");
+    assert(std::none_of(rows.begin(), rows.end(), [](const auto& r) {
+        return r.line.find("\"type\":\"strategy\"") != std::string::npos;
+    }));
     tnrp::PlaybackLapDataRow selectiveLap;
     assert(!glz::read_json(selectiveLap, reader.getLapDataMessage(
         1, tnrp::detail::v4TypeBit(1) | tnrp::detail::v4TypeBit(4))));
@@ -149,6 +222,7 @@ int main() {
     tnrp::detail::TnrdV4Writer incremental;
     assert(incremental.open(incrementalPath.string(), header, &error));
     size_t expectedRows = 0;
+    const std::string chunkPadding(32 * 1024, 'p');
     for (int batch = 0; batch < 12; ++batch) {
         std::vector<V4SourceRow> delta;
         if (batch == 0) {
@@ -157,7 +231,7 @@ int main() {
         for (int i = 0; i < 25; ++i) {
             const float t = 1.1f + batch * 2.5f + i * 0.1f;
             delta.push_back({"{\"type\":\"telemetry\",\"session_time\":" + std::to_string(t) +
-                ",\"speed_kph\":100,\"throttle\":0.5,\"brake\":0,\"steer\":0,\"gear\":3,\"rpm\":9000,\"drs\":0,\"rev_lights_pct\":50}", t});
+                ",\"speed_kph\":100,\"throttle\":0.5,\"brake\":0,\"steer\":0,\"gear\":3,\"rpm\":9000,\"drs\":0,\"rev_lights_pct\":50,\"padding\":\"" + chunkPadding + "\"}", t});
         }
         expectedRows += delta.size();
         assert(incremental.append(delta, &error));
@@ -172,7 +246,7 @@ int main() {
     assert(incremental.finish(&error));
     const auto finishGrowth = fs::file_size(incrementalFsPath) - beforeFinish;
     assert(finishGrowth < 64 * 1024); // directory/footer only; never a session rewrite
-    tnrp::detail::TnrdV4Archive incrementalRead;assert(incrementalRead.open(incrementalPath.string(),loadedHeader,&error));completeRows.clear();assert(incrementalRead.rowsForRange(incrementalRead.startTime(),incrementalRead.totalTime(),0xFFFFFFFFu,completeRows,&error));assert(completeRows.size()==expectedRows);incrementalRead.close();
+    tnrp::detail::TnrdV4Archive incrementalRead;assert(incrementalRead.open(incrementalPath.string(),loadedHeader,&error));completeRows.clear();assert(incrementalRead.rowsForRange(incrementalRead.startTime(),incrementalRead.totalTime(),0xFFFFFFFFu,completeRows,&error));assert(completeRows.size()==expectedRows);assert(incrementalRead.peakConcurrentChunkLoads()>=2);assert(incrementalRead.peakConcurrentChunkLoads()<=8);incrementalRead.close();
 
     // Formation-lap/session-scope rows remain addressable as logical lap 0,
     // and a flashback behind committed data supersedes only affected chunks.
@@ -252,7 +326,28 @@ int main() {
         f.seekp(-1, std::ios::cur);
         f.write(&byte, 1);
     }
-    tnrp::detail::TnrdV4Archive corrupted;assert(corrupted.open(path.string(),loadedHeader,&error));completeRows.clear();assert(!corrupted.rowsForRange(corrupted.startTime(),corrupted.totalTime(),0xFFFFFFFFu,completeRows,&error));corrupted.close();
+    tnrp::detail::TnrdV4Archive corrupted;
+    assert(corrupted.open(path.string(), loadedHeader, &error));
+    std::barrier corruptTogether(9);
+    std::array<std::thread, 8> corruptReaders;
+    std::array<bool, 8> corruptFailed{};
+    std::array<std::string, 8> corruptErrors;
+    for (size_t i = 0; i < corruptReaders.size(); ++i) {
+        corruptReaders[i] = std::thread([&, i] {
+            std::vector<tnrp::detail::V4TimedRow> corruptRows;
+            corruptTogether.arrive_and_wait();
+            corruptFailed[i] = !corrupted.rowsForLap(
+                1, tnrp::detail::v4TypeBit(1), corruptRows, &corruptErrors[i]);
+        });
+    }
+    corruptTogether.arrive_and_wait();
+    for (auto& corruptThread : corruptReaders) corruptThread.join();
+    assert(std::all_of(corruptFailed.begin(), corruptFailed.end(), [](bool failed) { return failed; }));
+    assert(std::all_of(corruptErrors.begin(), corruptErrors.end(), [&](const auto& value) {
+        return value == corruptErrors.front();
+    }));
+    assert(corrupted.decompressedChunkCount() == 1);
+    corrupted.close();
     std::error_code ec;
 #ifdef _WIN32
     fs::remove_all(fs::path(tnrp::detail::windowsExtendedPath(root.string())), ec);
