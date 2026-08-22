@@ -57,7 +57,8 @@ public:
     // protocol_status row for a fixed packet format, independent of any live
     // parser state. Playback uses this to label a recorded clip with its own
     // format's i18n catalog / capabilities / aero mode.
-    static std::string statusRowForFormat(uint16_t format);
+    static std::string statusRowForFormat(uint16_t format,
+                                          std::optional<int> formula = std::nullopt);
 
     // Reset duplicate-frame / debounce state (e.g. on UDP restart).
     void reset();
@@ -66,6 +67,7 @@ private:
     Override  override_v_        = Override::Auto;
     uint16_t  detectedFormat_    = 0;
     uint16_t  activeFormat_      = 0;
+    std::optional<int> formula_;
     uint16_t  debounceCandidate_ = 0;
     int       debounceCount_     = 0;
 

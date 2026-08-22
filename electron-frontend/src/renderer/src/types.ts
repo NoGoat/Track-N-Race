@@ -288,6 +288,7 @@ export interface SessionMsg {
   air_temp: number
   track_length_m: number
   track_id: number
+  formula?: number
   session_type: number
   total_laps: number
   session_time_left: number
@@ -376,7 +377,7 @@ export interface PlaybackSeekFlushMsg {
 export interface PlaybackLoadedMsg {
   type: 'playback_loaded'
   ok: boolean
-  header: { track_id: number; track_name: string } | null
+  header: { track_id: number; track_name: string; formula?: number } | null
 }
 
 export interface PlaybackControlMsg {
@@ -436,6 +437,7 @@ export interface ProtocolStatusMsg {
   type:            'protocol_status'
   detected_format: 2024 | 2025 | 2026 | null
   active_format:   2024 | 2025 | 2026 | null
+  presentation_format?: 2024 | 2025 | 2026 | null // Formula-gated UI format
   override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
   capabilities:    ProtocolCapabilities
   labels?:         Record<string, string>

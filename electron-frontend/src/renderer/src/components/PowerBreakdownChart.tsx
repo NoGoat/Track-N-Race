@@ -10,7 +10,7 @@ import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } fr
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
 
-interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }
+interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }
 
 const C_ICE    = '#5794F2'
 const C_MGUK   = '#FADE2A'
@@ -166,7 +166,7 @@ function ERSHarvestChart(props: CP) {
   return <PowerLineChart {...props} section="powerHarvest" title="ERS Harvest" series={series} columns={COLS_HARVEST}
     yRange={props.ersHarvestYAxis === 'dynamic'
       ? { kind: 'auto' }
-      : { kind: 'expand', initialLower: 0, initialUpper: 8000, lowerPad: 0, upperPad: 0, expandLower: false }}
+      : { kind: 'expand', initialLower: 0, initialUpper: props.harvestUpperLimit ?? 8000, lowerPad: 0, upperPad: 0, expandLower: false }}
     yFormat={v => `${v}kJ`} note="resets each lap"
     tooltipDetails={details} />
 }
@@ -191,10 +191,10 @@ export interface PowerViews {
   ersStore?: 'chart' | 'table'; fuelHistory?: 'chart' | 'table'
 }
 
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, ersHarvestYAxis = 'fixed' }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; ersHarvestYAxis?: YAxisBehavior }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, harvestUpperLimit = 8000, ersHarvestYAxis = 'fixed' }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }) {
   const items = [
     { key: 'powerSplit', el: <PowerSplitChart data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
-    { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} hasMguh={hasMguh} ersHarvestYAxis={ersHarvestYAxis} /> },
+    { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} hasMguh={hasMguh} harvestUpperLimit={harvestUpperLimit} ersHarvestYAxis={ersHarvestYAxis} /> },
     { key: 'ersStore', el: <ERSStoreChart data={data} isDark={isDark} view={views?.ersStore} windowSeconds={windowSeconds} /> },
     { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} fuelUpperLimit={fuelUpperLimit} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])

@@ -541,7 +541,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
                 // Label the clip with its recorded format's catalog (the TS
                 // glue caches/rebroadcasts protocol_status rows as usual).
                 uint16_t fmt = header.protocol >= 2024 ? (uint16_t)header.protocol : 2025;
-                statusMsg = Parser::statusRowForFormat(fmt);
+                statusMsg = Parser::statusRowForFormat(fmt, header.formula);
                 // Seed the dup cache and restore the panels the snapshot
                 // doesn't cover (status/damage/positions).
                 dupCache_ = {};

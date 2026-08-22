@@ -91,7 +91,7 @@ export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRang
 ]
 
 export const POWER_Y_AXIS_SECTIONS: { key: PowerYAxisKey; label: string; fixedRange: string }[] = [
-  { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–8000 kJ; expands above 8000 kJ when needed' },
+  { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–4000/8000 kJ by Formula; expands above when needed' },
 ]
 
 const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {

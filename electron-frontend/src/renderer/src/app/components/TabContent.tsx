@@ -208,7 +208,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={isDark} compact={compact.powerCards} />
           </div>
           <div className="flex-1 min-h-0">
-            <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} ersHarvestYAxis={chartYAxis.power.ersHarvest} />
+            <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} harvestUpperLimit={(protocolStatus?.presentation_format ?? protocolStatus?.active_format) === 2026 ? 8000 : 4000} ersHarvestYAxis={chartYAxis.power.ersHarvest} />
           </div>
         </div>
       )}

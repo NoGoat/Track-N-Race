@@ -95,7 +95,7 @@ const std::vector<const char*>& columnsForType(uint8_t type) {
     };
     static const std::vector<const char*> session = {
         "row_index", "session_time", "ts", "weather", "track_temp", "air_temp", "track_length_m",
-        "track_id", "session_type", "total_laps", "session_time_left", "session_duration",
+        "track_id", "formula", "session_type", "total_laps", "session_time_left", "session_duration",
         "pit_speed_limit", "pit_stop_window_ideal_lap", "pit_stop_window_latest_lap",
         "pit_stop_rejoin_position", "num_marshal_zones", "marshal_zones_json",
         "weather_forecast_samples_json", "safety_car_status", "forecast_accuracy", "ai_difficulty",
@@ -289,6 +289,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         worksheet_write_number(ws, row, c++, r.air_temp, nullptr);
         worksheet_write_number(ws, row, c++, r.track_length_m, nullptr);
         worksheet_write_number(ws, row, c++, r.track_id, nullptr);
+        if (r.formula) worksheet_write_number(ws, row, c++, *r.formula, nullptr); else ++c;
         worksheet_write_number(ws, row, c++, r.session_type, nullptr);
         worksheet_write_number(ws, row, c++, r.total_laps, nullptr);
         worksheet_write_number(ws, row, c++, r.session_time_left, nullptr);
@@ -494,9 +495,9 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     (void)header;  // no longer written to an Info sheet; kept for API stability
 
     size_t total = index_.size();
-    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         total = 0;
-        for (const auto& chunk : v4Archive_->chunks())
+        for (const auto& chunk : indexedArchive_->chunks())
             if (sheetNameForType((uint8_t)chunk.rowType)) total += chunk.rowCount;
     }
     // Throttle progress callbacks to ~500 calls over the whole export rather
@@ -531,8 +532,8 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     // before the next lets us report an honest per-sheet stage message.
     std::vector<uint8_t> typeOrder;                       // first-seen order
     std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
-    if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
-        for (const auto& chunk : v4Archive_->chunks())
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        for (const auto& chunk : indexedArchive_->chunks())
             if (sheetNameForType((uint8_t)chunk.rowType) &&
                 std::find(typeOrder.begin(),typeOrder.end(),(uint8_t)chunk.rowType)==typeOrder.end())
                 typeOrder.push_back((uint8_t)chunk.rowType);
@@ -567,12 +568,12 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         const bool firstOnly = (type == 8);
 
         bool wrote = false;
-        if (loadedFormat_ == TnrdFormat::ChunkedV4 && v4Archive_) {
+        if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
             std::string chunkError;
-            const bool ok=v4Archive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
+            const bool ok=indexedArchive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
                 size_t pos=0;while(pos<plain.size()){size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();if(nl>pos){std::string line(plain.substr(pos,nl-pos));if(!firstOnly||!wrote){const float t=rowSessionTime(line);writeDataRow(ws,nextRow,t,type,line);wrote=true;}++done;if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);}if(nl==plain.size())break;pos=nl+1;}return true;
             },&chunkError);
-            if(!ok){workbook_close(wb);std::error_code cleanupError;fs::remove(stagingPath,cleanupError);if(errorOut)*errorOut=chunkError.empty()?"could not read V4 export chunk":chunkError;return false;}
+            if(!ok){workbook_close(wb);std::error_code cleanupError;fs::remove(stagingPath,cleanupError);if(errorOut)*errorOut=chunkError.empty()?"could not read indexed export chunk":chunkError;return false;}
         } else for (const IndexEntry* e : entries) {
             if (!firstOnly || !wrote) {
                 std::string line = readLine(e->offset);

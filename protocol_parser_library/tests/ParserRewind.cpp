@@ -1,4 +1,5 @@
 #include "tnrp/Parser.h"
+#include "tnrp/Capabilities.h"
 
 #include <cassert>
 #include <cmath>
@@ -19,6 +20,38 @@ void putFloat(std::vector<uint8_t>& packet, size_t offset, float value) {
 }
 
 int main() {
+    assert(tnrp::presentationFormat(2026, std::nullopt) == 2026);
+    assert(tnrp::presentationFormat(2026, 13) == 2026);
+    assert(tnrp::presentationFormat(2026, 0) == 2025);
+    assert(tnrp::presentationFormat(2025, 13) == 2025);
+
+    const std::string missingFormula = tnrp::Parser::statusRowForFormat(2026);
+    assert(missingFormula.find("\"active_format\":2026") != std::string::npos);
+    assert(missingFormula.find("\"presentation_format\":2026") != std::string::npos);
+    assert(missingFormula.find("\"aero_mode\":\"slm\"") != std::string::npos);
+    const std::string legacyFormula = tnrp::Parser::statusRowForFormat(2026, 0);
+    assert(legacyFormula.find("\"active_format\":2026") != std::string::npos);
+    assert(legacyFormula.find("\"presentation_format\":2025") != std::string::npos);
+    assert(legacyFormula.find("\"hasMguh\":true") != std::string::npos);
+    assert(legacyFormula.find("\"aero_mode\":\"drs\"") != std::string::npos);
+
+    std::vector<uint8_t> legacySession(926, 0);
+    put16(legacySession, 0, 2026);
+    legacySession[2] = 26;
+    legacySession[5] = 1;
+    legacySession[6] = 1;
+    legacySession[37] = 0;
+    tnrp::Parser formulaParser(tnrp::Override::F1_26);
+    const auto legacyResult = formulaParser.feed(legacySession.data(),
+        static_cast<int>(legacySession.size()), "2026-08-16T00:00:00Z", false, 0);
+    assert(legacyResult.control.size() == 1);
+    assert(legacyResult.control[0].find("\"presentation_format\":2025") != std::string::npos);
+    legacySession[37] = 13;
+    const auto modernResult = formulaParser.feed(legacySession.data(),
+        static_cast<int>(legacySession.size()), "2026-08-16T00:00:01Z", false, 0);
+    assert(modernResult.control.size() == 1);
+    assert(modernResult.control[0].find("\"presentation_format\":2026") != std::string::npos);
+
     const struct Case { uint16_t format; tnrp::Override overrideValue; } cases[] = {
         {2024, tnrp::Override::F1_24},
         {2025, tnrp::Override::F1_25},

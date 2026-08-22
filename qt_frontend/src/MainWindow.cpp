@@ -334,10 +334,11 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
-        // Resolve labels against the recorded clip's format (DRS vs Straight Line
-        // Mode, etc.) for the duration of playback.
+        // Resolve labels against the recorded clip's Formula-gated presentation
+        // format (DRS vs Straight Line Mode, etc.) for playback.
         if (hdr.protocol > 0) {
-            const uint16_t fmt = (uint16_t)hdr.protocol;
+            const uint16_t fmt = tnrp::presentationFormat(
+                (uint16_t)hdr.protocol, hdr.formula);
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
@@ -911,7 +912,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     if (const auto* ps = std::get_if<tnrp::ProtocolStatusRow>(&*parsed)) {
         if (ps->detected_format) lastDetectedProtocolFormat_ = *ps->detected_format;
         if (ps->active_format) {
-            const uint16_t fmt = (uint16_t)*ps->active_format;
+            const uint16_t fmt = (uint16_t)ps->presentation_format.value_or(
+                *ps->active_format);
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));

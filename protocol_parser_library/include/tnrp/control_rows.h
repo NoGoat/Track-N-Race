@@ -67,6 +67,7 @@ struct SessionRow {
     int air_temp{};
     int track_length_m{};
     int track_id{};
+    std::optional<int> formula; // F1 formula/game mode; absent in older recordings
     int session_type{};
     int total_laps{};
     int session_time_left{};
@@ -179,6 +180,9 @@ struct ProtocolStatusRow {
     std::string        type{"protocol_status"};
     std::optional<int> detected_format;
     std::optional<int> active_format;
+    // UI/catalog format after applying the 2026 Formula gate. The parser still
+    // routes packets using active_format.
+    std::optional<int> presentation_format;
     std::string        override_;   // mapped to "override" below
     Capabilities       capabilities;
     // Library-owned i18n label catalog for the active format (see tnrp/Labels.h).
@@ -214,11 +218,12 @@ struct RecordingErrorRow {
 
 struct HeaderRow {
     std::string magic;
-    std::optional<std::string> compression;  // V2/V3/V4: "zstd"; omitted by V1
+    std::optional<std::string> compression;  // V2–V5: "zstd"; omitted by V1
     int         protocol{};
     int         track_id{};
     std::string track_name;
     std::optional<int> track_length_m;         // V3; omitted by V1/V2
+    std::optional<int> formula;                // V5; omitted by V1–V4
     int         session_type{};
     std::string session_name;
     int64_t     start_time{};
@@ -343,6 +348,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "type",            &T::type,
         "detected_format", &T::detected_format,
         "active_format",   &T::active_format,
+        "presentation_format", &T::presentation_format,
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
         "labels",          &T::labels,

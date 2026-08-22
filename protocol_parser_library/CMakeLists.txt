@@ -12,7 +12,7 @@ option(TNRP_BUILD_TESTS "Build libtnrp native regression tests" OFF)
 include(FetchContent)
 
 # All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
-# gzip compatibility; chunked Zstandard is the default TNRD V4 codec.
+# gzip compatibility; chunked Zstandard is the default TNRD V5 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -101,6 +101,7 @@ add_library(tnrp STATIC
     src/tnrd/TNRD_V2.cpp
     src/tnrd/TNRD_V3.cpp
     src/tnrd/TNRD_V4.cpp
+    src/tnrd/TNRD_V5.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -153,6 +154,10 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(tnrd_v4_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(tnrd_v4_roundtrip PRIVATE tnrp)
     add_test(NAME tnrd_v4_roundtrip COMMAND tnrd_v4_roundtrip)
+    add_executable(tnrd_v5_roundtrip tests/TnrdV5RoundTrip.cpp)
+    target_include_directories(tnrd_v5_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_v5_roundtrip PRIVATE tnrp)
+    add_test(NAME tnrd_v5_roundtrip COMMAND tnrd_v5_roundtrip)
     add_executable(tnrd_reader_versions tests/TnrdReaderVersions.cpp)
     target_include_directories(tnrd_reader_versions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(tnrd_reader_versions PRIVATE tnrp)

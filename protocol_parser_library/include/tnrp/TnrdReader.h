@@ -17,12 +17,12 @@
 
 namespace tnrp {
 
-namespace detail { class TnrdV4Archive; }
+namespace detail { class TnrdIndexedArchive; }
 
-// Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4 indexed chunked
+// Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
 // header distinguishes V2 from V3.
-// Legacy formats decompress to a temp file and build a time/type index. V4
+// Legacy formats decompress to a temp file and build a time/type index. V4/V5
 // opens only its uncompressed control plane and lazily reads indexed chunks.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
@@ -70,7 +70,7 @@ public:
 
     // ── Playback streaming ───────────────────────────────────────────────────
     // Changes the logical row families loaded/emitted by sequential playback.
-    // V4 reloads only the current lap's selected chunks at the supplied cursor;
+    // Indexed V4/V5 reload only the current lap's selected chunks at the supplied cursor;
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
     void setCursor(float t);
@@ -165,7 +165,7 @@ private:
     std::vector<IndexEntry> index_;
     std::FILE*  tempFile_    = nullptr;
     std::string tempPath_;
-    std::unique_ptr<detail::TnrdV4Archive> v4Archive_;
+    std::unique_ptr<detail::TnrdIndexedArchive> indexedArchive_;
     std::vector<TimedRaw> v4PlaybackRows_; // one lazily decompressed lap
     size_t      v4PlaybackPos_ = 0;
     int         v4PlaybackLap_ = 0;

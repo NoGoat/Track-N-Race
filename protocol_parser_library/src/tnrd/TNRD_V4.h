@@ -63,9 +63,34 @@ struct V4TimedRow {
 using V4RowTypeMask = uint32_t;
 constexpr V4RowTypeMask v4TypeBit(uint8_t type) { return type < 32 ? (1u << type) : 0; }
 
+// Common read-only interface for indexed chunked generations. Each format keeps
+// its own reader implementation while playback/export share the query surface.
+class TnrdIndexedArchive {
+public:
+    virtual ~TnrdIndexedArchive() = default;
+    virtual bool open(const std::string&, HeaderRow&, std::string*) = 0;
+    virtual void close() = 0;
+    virtual bool isOpen() const = 0;
+    virtual const std::vector<V4LapInfo>& laps() const = 0;
+    virtual const std::vector<V4ChunkInfo>& chunks() const = 0;
+    virtual const V4ControlSummary& summary() const = 0;
+    virtual float startTime() const = 0;
+    virtual float totalTime() const = 0;
+    virtual int lapAt(float) const = 0;
+    virtual bool rowsForLap(uint32_t, V4RowTypeMask, std::vector<V4TimedRow>&, std::string*) = 0;
+    virtual bool rowsForRange(float, float, V4RowTypeMask, std::vector<V4TimedRow>&, std::string*) = 0;
+    virtual bool latestRows(float, const std::vector<uint8_t>&, std::vector<V4TimedRow>&, std::string*) = 0;
+    virtual bool forEachChunk(V4RowTypeMask,
+        const std::function<bool(const V4ChunkInfo&, std::string_view)>&, std::string*) = 0;
+    virtual void setCacheLimitBytes(size_t) = 0;
+    virtual size_t cacheBytes() const = 0;
+    virtual uint64_t decompressedChunkCount() const = 0;
+    virtual size_t peakConcurrentChunkLoads() const = 0;
+};
+
 // Direct indexed V4 reader. open() reads and validates only the uncompressed
 // control plane. Chunk payloads are decompressed on demand into a bounded LRU.
-class TnrdV4Archive {
+class TnrdV4Archive final : public TnrdIndexedArchive {
 public:
     TnrdV4Archive();
     ~TnrdV4Archive();

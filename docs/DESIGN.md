@@ -30,8 +30,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 optionally forwards each raw datagram to ≤15 IPv4 targets
   ├── Parser        pure decode: format detect + override + debounce +
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
-  ├── TnrdWriter    .tnrd V4 recording (own disk thread)
-  ├── TnrdReader    V1–V4 playback (index, per-lap blocks, binary stores)
+  ├── TnrdWriter    .tnrd V5 recording (own disk thread)
+  ├── TnrdReader    V1–V5 playback (index, per-lap blocks, binary stores)
   └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
 ```
 
@@ -120,6 +120,11 @@ declarative data**, so both UIs render from one model:
   `protocol_status`; selects the track-map overlay (DRS zones vs SLM dry/wet
   zones).
 
+For protocol 2026, `Session m_formula` gates those 2026 presentation overrides:
+Formula 13 uses the F1 26 catalog/capabilities, while any other captured value
+uses the legacy 2025 presentation without changing the 2026 wire parser. Missing
+Formula metadata (older recordings or pre-session live state) defaults to F1 26.
+
 `Parser::statusRow()` (live) and `Parser::statusRowForFormat()` (playback —
 labels a loaded clip with *its* recorded format) both emit the full
 `protocol_status` row: detected/active format, override, capabilities
@@ -148,9 +153,9 @@ intent so the per-packet fast path can skip the whole recording pipeline
 
 `load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
 Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
-time/type index. V4 opens only its uncompressed metadata, lap table, chunk
+time/type index. V4/V5 open only their uncompressed metadata, lap table, chunk
 directory, control summary, and commit footer; telemetry chunks are decompressed
-on demand through a bounded cache. Every selected V4 chunk is an independent job
+on demand through a bounded cache. Every selected indexed chunk is an independent job
 on an eight-worker reader pool, so long All Laps/range requests decode up to eight
 chunks in parallel regardless of row type. Concurrent consumers of the same chunk
 share one in-flight read and decompression before the result enters the LRU.
@@ -183,7 +188,7 @@ an absolute session_time cursor scaled by speed:
   walk reading only matching lines).
 - **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` containing
   exactly the active history families for the selected mode: current lap,
-  `[target-windowSeconds,target]`, or `[startTime,target]` for AL. V4 resolves
+  `[target-windowSeconds,target]`, or `[startTime,target]` for AL. V4/V5 resolve
   that range from its `(lap,rowType)` chunk directory and decodes only
   intersecting ZSTD blocks. Visible sparse state is restored separately with a
   single indexed latest-at-time query. Legacy mode
@@ -212,7 +217,7 @@ playback stream unchanged.
 ### 1.7 XLSX export
 
 `exportTnrdFileToXlsx()` opens its **own throwaway reader** on the file
-(independent of any active playback), walks the legacy index or V4 chunk directory and
+(independent of any active playback), walks the legacy index or V4/V5 chunk directory and
 writes one sheet per row type plus an "Info" sheet from the header, reporting
 progress `(rowsDone, totalUnits, stage)`. Both apps run it off their UI thread
 (Electron: `AsyncProgressQueueWorker` on the libuv pool; Qt:
@@ -236,12 +241,12 @@ overlay flows.
   `magic` and `compression: "zstd"` header values. V3 adds `track_length_m` to
   the header and `lap_distance_m` to lap rows. `TnrdReader::load()` detects the
   codec from its native bytes, then uses and validates the JSON header to
-  distinguish V2 from V3. Normal recording writes V4. Explicit
+  distinguish V2 from V3. Normal recording writes V5. Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
   subsequent line is one typed row with `session_time`; other telemetry row
-  schemas remain compatible. V4 uses an uncompressed indexed control plane and
+  schemas remain compatible. V4/V5 use an uncompressed indexed control plane and
   independently checksummed `(lap,rowType,segment)` Zstandard JSONL chunks. Electron Analyze distance alignment and delta are
-  enabled for V3/V4; V1/V2 recordings retain elapsed-time overlays.
+  enabled for V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,
@@ -275,7 +280,7 @@ renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
 The active page/layout is reduced through `historyDependencies.ts`, the single
 declarative chart/table/map-to-row registry. `AppShell` sends the union as one
 generation-tagged stream/history subscription. The engine filters cold and
-packed-hot rows before N-API; V4 playback loads only selected chunk families.
+packed-hot rows before N-API; V4/V5 playback loads only selected chunk families.
 Hidden live chart families remain compact native raw history solely so a later
 visibility change can backfill them without prior renderer processing.
 Recording is never subscription-filtered.

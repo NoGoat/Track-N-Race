@@ -22,6 +22,7 @@ static constexpr int DEBOUNCE_COUNT = 3;
 
 // Packet IDs
 static constexpr int PID_MOTION       = 0;
+static constexpr int PID_SESSION      = 1;
 static constexpr int PID_CAR_TEL      = 6;
 static constexpr int PID_MOTION_EX    = 13;
 
@@ -48,6 +49,7 @@ Parser::Parser(Override ovr) : override_v_(ovr) {
 void Parser::reset() {
     lastFrameId_.fill(0);
     haveFrameId_.fill(false);
+    formula_.reset();
 }
 
 void Parser::setOverride(Override ovr) {
@@ -71,47 +73,51 @@ uint16_t Parser::effectiveFormat(uint16_t incoming) const {
 }
 
 std::string Parser::statusRow() const {
-    int gameYear = activeFormat_ == 2026 ? 26
-                 : (activeFormat_ == 2025 ? 25
-                 : (activeFormat_ == 2024 ? 24 : -1));
+    const uint16_t displayFormat = presentationFormat(activeFormat_, formula_);
+    int gameYear = displayFormat == 2026 ? 26
+                 : (displayFormat == 2025 ? 25
+                 : (displayFormat == 2024 ? 24 : -1));
     // 2026 is a superset of 2025 — these capabilities hold from 2025 onward.
-    bool isF125OrLater = activeFormat_ >= 2025;
+    bool isF125OrLater = displayFormat >= 2025;
     ProtocolStatusRow row;
     if (gameYear >= 0)   row.capabilities.gameYear = gameYear;
     row.capabilities.hasBlisters     = isF125OrLater;
     row.capabilities.hasLiveryColors = isF125OrLater;
     row.capabilities.hasLapPositions = isF125OrLater;
-    row.capabilities.hasMguh         = hasMguh(activeFormat_);
+    row.capabilities.hasMguh         = hasMguh(displayFormat);
     if (detectedFormat_) row.detected_format = detectedFormat_;
     if (activeFormat_)   row.active_format   = activeFormat_;
+    if (displayFormat)   row.presentation_format = displayFormat;
     row.override_ = toString(override_v_);
     // Ship the i18n catalog for the active format (default to 2025 before any
     // packet is seen) so the renderer always has labels to resolve against.
-    const auto& cat = labelsFor(activeFormat_ ? activeFormat_ : 2025);
+    const auto& cat = labelsFor(displayFormat ? displayFormat : 2025);
     row.labels.insert(cat.all().begin(), cat.all().end());
     row.cardColors = cardColors();   // format-independent colour model
-    row.aero_mode  = aeroMode(activeFormat_ ? activeFormat_ : 2025);
+    row.aero_mode  = aeroMode(displayFormat ? displayFormat : 2025);
     return writeJsonNullable(row);
 }
 
-std::string Parser::statusRowForFormat(uint16_t format) {
-    int gameYear = format == 2026 ? 26
-                 : (format == 2025 ? 25
-                 : (format == 2024 ? 24 : -1));
-    bool isF125OrLater = format >= 2025;
+std::string Parser::statusRowForFormat(uint16_t format, std::optional<int> formula) {
+    const uint16_t displayFormat = presentationFormat(format, formula);
+    int gameYear = displayFormat == 2026 ? 26
+                 : (displayFormat == 2025 ? 25
+                 : (displayFormat == 2024 ? 24 : -1));
+    bool isF125OrLater = displayFormat >= 2025;
     ProtocolStatusRow row;
     if (gameYear >= 0)   row.capabilities.gameYear = gameYear;
     row.capabilities.hasBlisters     = isF125OrLater;
     row.capabilities.hasLiveryColors = isF125OrLater;
     row.capabilities.hasLapPositions = isF125OrLater;
-    row.capabilities.hasMguh         = hasMguh(format);
+    row.capabilities.hasMguh         = hasMguh(displayFormat);
     row.detected_format = format;
     row.active_format   = format;
+    row.presentation_format = displayFormat;
     row.override_ = toString(Override::Auto);
-    const auto& cat = labelsFor(format);
+    const auto& cat = labelsFor(displayFormat);
     row.labels.insert(cat.all().begin(), cat.all().end());
     row.cardColors = cardColors();
-    row.aero_mode  = aeroMode(format);
+    row.aero_mode  = aeroMode(displayFormat);
     return writeJsonNullable(row);
 }
 
@@ -137,7 +143,9 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
         if (override_v_ == Override::Auto) {
             uint16_t prevActive = activeFormat_;
             activeFormat_ = incoming;
-            if (prevActive != activeFormat_) reset();
+            if (prevActive != activeFormat_) {
+                reset();
+            }
         }
         if (prev != detectedFormat_) r.control.push_back(statusRow());
     }
@@ -171,6 +179,16 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     r.format      = eff;
     r.packetId    = packetId;
     r.sessionTime = sessionTime;
+
+    // Formula is presentation state, not a wire-format selector. A known
+    // non-F1-26 formula on the 2026 protocol switches labels/capabilities back
+    // to the legacy presentation; no captured value preserves the 2026 default.
+    if (eff == 2026 && packetId == PID_SESSION && length > 37) {
+        const uint16_t previousPresentation = presentationFormat(activeFormat_, formula_);
+        formula_ = static_cast<int>(data[37]);
+        if (presentationFormat(activeFormat_, formula_) != previousPresentation)
+            r.control.push_back(statusRow());
+    }
 
     if (packetId < PID_TABLE_SIZE && kFrameSampled[packetId]) {
         if (haveFrameId_[packetId] && lastFrameId_[packetId] == frameId) {

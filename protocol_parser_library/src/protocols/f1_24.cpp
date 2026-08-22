@@ -86,6 +86,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             sr.track_length_m             = ReadUInt16(data, 33);
             sr.session_type               = data[35];
             sr.track_id                   = ReadInt8(data, 36);
+            sr.formula                    = data[37];
             sr.session_time_left          = ReadUInt16(data, 38);
             sr.session_duration           = ReadUInt16(data, 40);
             sr.pit_speed_limit            = data[42];

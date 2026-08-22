@@ -250,6 +250,7 @@ TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
     std::fclose(file);
     if (read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b) return TnrdFormat::GzipV1;
     if (read == 8 && std::memcmp(magic, "TNRD_V4\0", 8) == 0) return TnrdFormat::ChunkedV4;
+    if (read == 8 && std::memcmp(magic, "TNRD_V5\0", 8) == 0) return TnrdFormat::ChunkedV5;
     if (read >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 &&
         magic[2] == 0x2f && magic[3] == 0xfd) return detectZstdVersion(path, errorOut);
     setError(errorOut, "unknown TNRD compression signature");

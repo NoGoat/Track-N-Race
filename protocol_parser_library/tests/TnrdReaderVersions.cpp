@@ -3,6 +3,7 @@
 #include "tnrd/TNRD_V2.h"
 #include "tnrd/TNRD_V3.h"
 #include "tnrd/TNRD_V4.h"
+#include "tnrd/TNRD_V5.h"
 #include "tnrp/TnrdReader.h"
 
 #include <array>
@@ -20,6 +21,7 @@ std::string magicFor(tnrp::TnrdFormat format) {
         case tnrp::TnrdFormat::ZstdV2: return "TNRD_V2";
         case tnrp::TnrdFormat::ZstdV3: return "TNRD_V3";
         case tnrp::TnrdFormat::ChunkedV4: return "TNRD_V4";
+        case tnrp::TnrdFormat::ChunkedV5: return "TNRD_V5";
         default: return {};
     }
 }
@@ -31,8 +33,9 @@ tnrp::HeaderRow headerFor(tnrp::TnrdFormat format) {
     header.protocol = 2026;
     header.track_id = 7;
     header.track_name = "Version Test Track";
-    if (format == tnrp::TnrdFormat::ZstdV3 || format == tnrp::TnrdFormat::ChunkedV4)
+    if (format == tnrp::TnrdFormat::ZstdV3 || tnrp::isChunkedTnrd(format))
         header.track_length_m = 5000;
+    if (format == tnrp::TnrdFormat::ChunkedV5) header.formula = 13;
     header.session_type = 10;
     header.session_name = "Race";
     header.start_time = 123456789;
@@ -73,6 +76,7 @@ int main() {
         tnrp::TnrdFormat::ZstdV2,
         tnrp::TnrdFormat::ZstdV3,
         tnrp::TnrdFormat::ChunkedV4,
+        tnrp::TnrdFormat::ChunkedV5,
     };
     std::string error;
     for (const auto format : formats) {
@@ -80,6 +84,8 @@ int main() {
         const tnrp::HeaderRow header = headerFor(format);
         if (format == tnrp::TnrdFormat::ChunkedV4) {
             assert(tnrp::detail::writeTnrdV4(path.string(), header, rows, &error));
+        } else if (format == tnrp::TnrdFormat::ChunkedV5) {
+            assert(tnrp::detail::writeTnrdV5(path.string(), header, rows, &error));
         } else {
             auto stream = openWriter(format, path.string(), error);
             assert(stream);
@@ -94,6 +100,7 @@ int main() {
         assert(reader.load(path.string(), loadedHeader));
         assert(reader.loadedFormat() == format);
         assert(loadedHeader.magic == magicFor(format));
+        assert(loadedHeader.formula == header.formula);
         assert(reader.readRange(0.0f, 2.0f).size() == rows.size());
         reader.close();
     }

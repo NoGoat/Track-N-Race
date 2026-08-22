@@ -6,7 +6,7 @@
 #include "tnrd/TNRD_V1.h"
 #include "tnrd/TNRD_V2.h"
 #include "tnrd/TNRD_V3.h"
-#include "tnrd/TNRD_V4.h"
+#include "tnrd/TNRD_V5.h"
 
 #include <algorithm>
 #include <chrono>
@@ -52,7 +52,7 @@ void prepareVersionHeader(TnrdFormat format, HeaderRow& header) {
         case TnrdFormat::GzipV1: detail::TNRD_V1::prepareHeader(header); break;
         case TnrdFormat::ZstdV2: detail::TNRD_V2::prepareHeader(header); break;
         case TnrdFormat::ZstdV3: detail::TNRD_V3::prepareHeader(header); break;
-        default: break; // V4 stamps its metadata in TnrdV4Writer::open().
+        default: break; // Indexed formats stamp metadata in their writer's open().
     }
 }
 }
@@ -145,7 +145,7 @@ void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
 }
 
 void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
-    setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV4);
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV5);
 }
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
@@ -237,9 +237,10 @@ void TnrdWriter::writerLoop() {
                 uint16_t trackLengthM = ReadUInt16(ev.packetData.data(), 33);
                 int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
                 uint8_t sessionType = ev.packetData[35];
+                uint8_t formula     = ev.packetData[37];
                 if (wantRecord_ && (trackId != currentTrackId_ ||
                                     sessionType != currentSessionType_ || !streamActive()))
-                    startNewStream(trackId, trackLengthM, sessionType, ev.format);
+                    startNewStream(trackId, trackLengthM, formula, sessionType, ev.format);
             }
         } else if (ev.type == EventType::Record) {
             if (!streamActive()) continue;
@@ -265,10 +266,10 @@ void TnrdWriter::writerLoop() {
 
 void TnrdWriter::flushToDiskOnWriterThread() {
     if (!streamActive()) return;
-    if (v4Writer_) {
+    if (v5Writer_) {
         if (flushBufferToDisk(rollingBuffer_, false)) rollingBuffer_.clear();
         std::string err;
-        if (!v4Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
+        if (!v5Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
         else v4LastCheckpointTime_ = lastSessionTime_;
         rowsSinceFlush_ = 0;
         return;
@@ -280,11 +281,11 @@ void TnrdWriter::flushToDiskOnWriterThread() {
 }
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
-    if (v4Writer_) {
+    if (v5Writer_) {
         (void)flushBufferToDisk(rollingBuffer_, false);
         std::string err;
-        if (!v4Writer_->finish(&err)) reportError("close", err, activePath_);
-        v4Writer_.reset();
+        if (!v5Writer_->finish(&err)) reportError("close", err, activePath_);
+        v5Writer_.reset();
     }
     if (activeStream_) {
         (void)flushBufferToDisk(rollingBuffer_);
@@ -302,7 +303,7 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
     dedupeCache_.clear();
 }
 
-void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, int format) {
+void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int sessionType, int format) {
     closeActiveStreamOnWriterThread();
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
@@ -330,6 +331,7 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
     hdr.track_id     = trackId;
     hdr.track_name   = resolvedTrackName;
     hdr.track_length_m = trackLengthM;
+    if (writeFormat_ == TnrdFormat::ChunkedV5) hdr.formula = formula;
     hdr.session_type = sessionType;
     hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
     hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -337,9 +339,9 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
     prepareVersionHeader(writeFormat_, hdr);
 
     std::string openError;
-    if (writeFormat_ == TnrdFormat::ChunkedV4) {
-        v4Writer_ = std::make_unique<detail::TnrdV4Writer>();
-        if (!v4Writer_->open(activePath_, hdr, &openError)) v4Writer_.reset();
+    if (writeFormat_ == TnrdFormat::ChunkedV5) {
+        v5Writer_ = std::make_unique<detail::TnrdV5Writer>();
+        if (!v5Writer_->open(activePath_, hdr, &openError)) v5Writer_.reset();
     } else {
         activeStream_ = openVersionWriter(writeFormat_, activePath_, false, openError);
     }
@@ -367,19 +369,19 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
 
 bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries,
                                    bool allowV4Checkpoint) {
-    if (v4Writer_) {
+    if (v5Writer_) {
         if (entries.empty()) return true;
-        std::vector<detail::V4SourceRow> rows; rows.reserve(entries.size());
+        std::vector<detail::V5SourceRow> rows; rows.reserve(entries.size());
         for (const auto& e : entries) rows.push_back({e.line, e.sessionTime});
         std::string err;
-        if (!v4Writer_->append(rows, &err)) {
+        if (!v5Writer_->append(rows, &err)) {
             reportError("data write", err, activePath_);
             return false;
         }
         const float newestTime = entries.back().sessionTime;
         if (allowV4Checkpoint && (v4LastCheckpointTime_ < 0.0f ||
             newestTime - v4LastCheckpointTime_ >= V4_CHECKPOINT_INTERVAL_S)) {
-            if (!v4Writer_->checkpoint(&err)) {
+            if (!v5Writer_->checkpoint(&err)) {
                 reportError("checkpoint", err, activePath_);
                 // append() already transferred ownership of these rows to the
                 // V4 backend. Keep recording without duplicating them in the
@@ -448,14 +450,14 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
     float bufStart = rollingBuffer_.empty()
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
-    if (v4Writer_) {
+    if (v5Writer_) {
         rollingBuffer_.erase(
             std::remove_if(rollingBuffer_.begin(),rollingBuffer_.end(),
                 [newSessionTime](const BufferEntry& e){return e.sessionTime>newSessionTime;}),
             rollingBuffer_.end());
         if (newSessionTime < bufStart) {
             std::string err;
-            if (!v4Writer_->rewind(newSessionTime,&err))
+            if (!v5Writer_->rewind(newSessionTime,&err))
                 reportError("flashback",err,activePath_);
         }
         dedupeCache_.clear();lastSessionTime_=newSessionTime;return;
