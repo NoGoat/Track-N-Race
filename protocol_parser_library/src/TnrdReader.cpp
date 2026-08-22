@@ -1,7 +1,6 @@
 #include "tnrp/TnrdReader.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -19,7 +18,10 @@
 
 #include "tnrp/BinaryRows.h"
 #include "TnrdCodec.h"
-#include "TnrdV4.h"
+#include "tnrd/TNRD_V1.h"
+#include "tnrd/TNRD_V2.h"
+#include "tnrd/TNRD_V3.h"
+#include "tnrd/TNRD_V4.h"
 
 namespace tnrp {
 
@@ -484,18 +486,15 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                      toString(format), toString(detected), path.c_str());
         return false;
     }
-    if (isLegacyZstdStream(detected))
-        std::fprintf(stderr,"[tnrd] load: '%s' (Zstandard stream; TNRD version is in the header)\n",path.c_str());
-    else
-        std::fprintf(stderr, "[tnrd] load: '%s' (%s)\n", path.c_str(), toString(detected));
+    std::fprintf(stderr, "[tnrd] load: '%s' (%s)\n", path.c_str(), toString(detected));
     if (detected == TnrdFormat::ChunkedV4) {
-        std::string error;
-        v4Archive_ = std::make_unique<detail::TnrdV4Archive>();
-        if (!v4Archive_->open(path, outHeader, &error)) {
-            lastError_ = error.empty() ? "The V4 recording could not be read." : error;
+        detail::V4LoadResult loaded;
+        if (!detail::TNRD_V4::load(path, loaded, lastError_)) {
             close();
             return false;
         }
+        outHeader = std::move(loaded.header);
+        v4Archive_ = std::move(loaded.archive);
         loadedFormat_ = TnrdFormat::ChunkedV4;
         trackLengthM_ = outHeader.track_length_m.value_or(0);
         startTime_ = v4Archive_->startTime();
@@ -528,73 +527,47 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),v4Archive_->chunks().size(),v4Archive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         return true;
     }
-    namespace fs = std::filesystem;
-    // Prefix shared with the Electron app ("tracknrace_temp_") so either app's
-    // startup sweep reclaims the other's leftovers (see sweepStaleTempFiles).
-    auto tmpName = "tracknrace_temp_" + std::to_string(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count()) + ".tmp";
-    tempPath_ = (fs::temp_directory_path() / tmpName).string();
-
+    bool loadedOk = false;
     bool partial = false;
-    std::string decompressError;
-    if (!detail::decompressTnrd(path, tempPath_, format, &partial, &decompressError)) {
-        lastError_ = decompressError.empty() ? "The recording could not be decompressed." : decompressError;
-        std::fprintf(stderr, "[tnrd] load FAILED: decompress step for '%s': %s\n",
-                     path.c_str(), lastError_.c_str());
+    auto acceptLoaded = [&](auto&& loaded) {
+        outHeader = std::move(loaded.header);
+        tempPath_ = std::move(loaded.tempPath);
+        partial = loaded.partial;
+    };
+    switch (detected) {
+        case TnrdFormat::GzipV1: {
+            detail::TNRD_V1::LoadResult loaded;
+            loadedOk = detail::TNRD_V1::load(path, loaded, lastError_);
+            if (loadedOk) acceptLoaded(std::move(loaded));
+            break;
+        }
+        case TnrdFormat::ZstdV2: {
+            detail::TNRD_V2::LoadResult loaded;
+            loadedOk = detail::TNRD_V2::load(path, loaded, lastError_);
+            if (loadedOk) acceptLoaded(std::move(loaded));
+            break;
+        }
+        case TnrdFormat::ZstdV3: {
+            detail::TNRD_V3::LoadResult loaded;
+            loadedOk = detail::TNRD_V3::load(path, loaded, lastError_);
+            if (loadedOk) acceptLoaded(std::move(loaded));
+            break;
+        }
+        default:
+            lastError_ = "The recording format has no reader implementation.";
+            break;
+    }
+    if (!loadedOk) {
+        std::fprintf(stderr, "[tnrd] load FAILED: %s for '%s'\n",
+                     lastError_.c_str(), path.c_str());
         close();
         return false;
     }
+    loadedFormat_ = detected;
+    trackLengthM_ = outHeader.track_length_m.value_or(0);
     if (partial)
         std::fprintf(stderr, "[tnrd] load: recovered a truncated %s stream; final partial row will be dropped\n",
-                     toString(format));
-
-    {
-        std::FILE* f = detail::openTnrdFile(tempPath_, "rb");
-        if (!f) {
-            lastError_ = "The decompressed temporary file could not be opened.";
-            std::fprintf(stderr, "[tnrd] load FAILED: cannot reopen decompressed temp '%s'\n",
-                         tempPath_.c_str());
-            close();
-            return false;
-        }
-        std::string line;
-        char hb[8192];
-        while (std::fgets(hb, sizeof(hb), f)) {
-            line += hb;
-            if (!line.empty() && line.back() == '\n') break;
-            if (std::strlen(hb) < sizeof(hb) - 1) break;
-        }
-        std::fclose(f);
-        outHeader = HeaderRow{};
-        auto ec = glz::read<kPartialRead>(outHeader, line);
-        if (ec) {
-            lastError_ = "The recording header is missing or contains invalid JSON.";
-            std::fprintf(stderr, "[tnrd] load FAILED: header JSON parse error (first line, %zu bytes)\n",
-                         line.size());
-            close();
-            return false;
-        }
-        TnrdFormat headerFormat = TnrdFormat::Unknown;
-        if (outHeader.magic == "TNRD_V1") headerFormat = TnrdFormat::GzipV1;
-        else if (outHeader.magic == "TNRD_V2") headerFormat = TnrdFormat::ZstdV2;
-        else if (outHeader.magic == "TNRD_V3") headerFormat = TnrdFormat::ZstdV3;
-        const bool compressionOk = isZstd(detected)
-            ? (isZstd(headerFormat) && outHeader.compression && *outHeader.compression == "zstd")
-            : (headerFormat == TnrdFormat::GzipV1 &&
-               (!outHeader.compression || *outHeader.compression == "gzip"));
-        if (!compressionOk) {
-            lastError_ = "The recording header does not match its compression format.";
-            std::fprintf(stderr,
-                         "[tnrd] load FAILED: header/container mismatch: container=%s magic='%s' compression='%s'\n",
-                         toString(format), outHeader.magic.c_str(),
-                         outHeader.compression ? outHeader.compression->c_str() : "");
-            close();
-            return false;
-        }
-        loadedFormat_ = headerFormat;
-        trackLengthM_ = outHeader.track_length_m.value_or(0);
-    }
+                     toString(detected));
 
     if (!buildIndex(tempPath_)) {
         lastError_ = "The decompressed recording could not be indexed.";

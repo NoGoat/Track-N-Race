@@ -97,7 +97,10 @@ add_library(tnrp STATIC
     src/Parser.cpp
     src/AnyRow.cpp
     src/TnrdCodec.cpp
-    src/TnrdV4.cpp
+    src/tnrd/TNRD_V1.cpp
+    src/tnrd/TNRD_V2.cpp
+    src/tnrd/TNRD_V3.cpp
+    src/tnrd/TNRD_V4.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -150,6 +153,10 @@ if(TNRP_BUILD_TESTS)
     target_include_directories(tnrd_v4_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(tnrd_v4_roundtrip PRIVATE tnrp)
     add_test(NAME tnrd_v4_roundtrip COMMAND tnrd_v4_roundtrip)
+    add_executable(tnrd_reader_versions tests/TnrdReaderVersions.cpp)
+    target_include_directories(tnrd_reader_versions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_reader_versions PRIVATE tnrp)
+    add_test(NAME tnrd_reader_versions COMMAND tnrd_reader_versions)
     add_executable(parser_rewind tests/ParserRewind.cpp)
     target_link_libraries(parser_rewind PRIVATE tnrp)
     add_test(NAME parser_rewind COMMAND parser_rewind)

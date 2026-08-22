@@ -31,9 +31,6 @@ public:
 
 TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut = nullptr);
 
-std::unique_ptr<TnrdOutputStream> openTnrdOutput(
-    const std::string& path, TnrdFormat format, bool append, std::string* errorOut = nullptr);
-
 // Decompresses one or more concatenated frames/members into a plain JSONL
 // file. A truncated tail is accepted when at least some bytes were recovered;
 // TnrdReader will discard the unfinished final JSONL line while indexing.

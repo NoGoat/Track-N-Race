@@ -1,4 +1,4 @@
-#include "TnrdV4.h"
+#include "TNRD_V4.h"
 #include "TnrdCodec.h"
 
 #include <algorithm>
@@ -209,6 +209,8 @@ bool TnrdV4Writer::rewind(float sessionTime,std::string* errorOut){
 
 bool TnrdV4Writer::finish(std::string* errorOut){if(!isOpen())return true;const bool ok=checkpoint(errorOut);const bool closeOk=std::fclose(impl_->file)==0;impl_->file=nullptr;if(!closeOk&&ok)fail(errorOut,"failed to close V4 file");return ok&&closeOk;}
 bool writeTnrdV4(const std::string& path,const HeaderRow& header,const std::vector<V4SourceRow>& rows,std::string* errorOut){TnrdV4Writer writer;return writer.open(path,header,errorOut)&&writer.append(rows,errorOut)&&writer.finish(errorOut);}
+
+bool TNRD_V4::load(const std::string& path,V4LoadResult& result,std::string& error){result=V4LoadResult{};result.archive=std::make_unique<TnrdV4Archive>();if(result.archive->open(path,result.header,&error))return true;result.archive.reset();if(error.empty())error="The V4 recording could not be read.";return false;}
 
 struct TnrdV4Archive::Impl {
     struct CacheEntry{std::shared_ptr<std::string> plain;std::list<size_t>::iterator lru;};

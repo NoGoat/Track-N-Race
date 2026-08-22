@@ -3,7 +3,10 @@
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
-#include "TnrdV4.h"
+#include "tnrd/TNRD_V1.h"
+#include "tnrd/TNRD_V2.h"
+#include "tnrd/TNRD_V3.h"
+#include "tnrd/TNRD_V4.h"
 
 #include <algorithm>
 #include <chrono>
@@ -33,6 +36,25 @@ static constexpr int PID_SESSION = 1;
 struct SessionTimeOnly { float session_time{}; };
 namespace {
 constexpr glz::opts kPartialReadW{ .null_terminated = false, .error_on_unknown_keys = false };
+
+std::unique_ptr<detail::TnrdOutputStream> openVersionWriter(
+        TnrdFormat format, const std::string& path, bool append, std::string& error) {
+    switch (format) {
+        case TnrdFormat::GzipV1: return detail::TNRD_V1::openWriter(path, append, error);
+        case TnrdFormat::ZstdV2: return detail::TNRD_V2::openWriter(path, append, error);
+        case TnrdFormat::ZstdV3: return detail::TNRD_V3::openWriter(path, append, error);
+        default: error = "The selected TNRD format does not use a streaming writer."; return nullptr;
+    }
+}
+
+void prepareVersionHeader(TnrdFormat format, HeaderRow& header) {
+    switch (format) {
+        case TnrdFormat::GzipV1: detail::TNRD_V1::prepareHeader(header); break;
+        case TnrdFormat::ZstdV2: detail::TNRD_V2::prepareHeader(header); break;
+        case TnrdFormat::ZstdV3: detail::TNRD_V3::prepareHeader(header); break;
+        default: break; // V4 stamps its metadata in TnrdV4Writer::open().
+    }
+}
 }
 
 static std::string extractType(const std::string& json) {
@@ -304,26 +326,22 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
 
     activePath_ = outputDirectory_ + "/" + filename;
     HeaderRow hdr;
-    hdr.magic        = writeFormat_ == TnrdFormat::ChunkedV4 ? "TNRD_V4"
-                         : writeFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
-                         : writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
-                                                              : "TNRD_V1";
-    if (usesZstdCompression(writeFormat_)) hdr.compression = "zstd";
     hdr.protocol     = format;
     hdr.track_id     = trackId;
     hdr.track_name   = resolvedTrackName;
-    if (writeFormat_ == TnrdFormat::ZstdV3 || writeFormat_ == TnrdFormat::ChunkedV4) hdr.track_length_m = trackLengthM;
+    hdr.track_length_m = trackLengthM;
     hdr.session_type = sessionType;
     hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
     hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
+    prepareVersionHeader(writeFormat_, hdr);
 
     std::string openError;
     if (writeFormat_ == TnrdFormat::ChunkedV4) {
         v4Writer_ = std::make_unique<detail::TnrdV4Writer>();
         if (!v4Writer_->open(activePath_, hdr, &openError)) v4Writer_.reset();
     } else {
-        activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, false, &openError);
+        activeStream_ = openVersionWriter(writeFormat_, activePath_, false, openError);
     }
 
     if (streamActive()) {
@@ -484,7 +502,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
             bool replaced = false;
             codecError.clear();
             auto rewritten = decompressed && !kept.empty()
-                ? detail::openTnrdOutput(compressedPath, writeFormat_, false, &codecError)
+                ? openVersionWriter(writeFormat_, compressedPath, false, codecError)
                 : nullptr;
             if (rewritten) {
                 bool writeOk = true;
@@ -523,7 +541,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
 #endif
 
             codecError.clear();
-            activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, true, &codecError);
+            activeStream_ = openVersionWriter(writeFormat_, activePath_, true, codecError);
             if (!activeStream_)
                 reportError("flashback append reopen", codecError, activePath_);
         }

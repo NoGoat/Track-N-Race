@@ -130,4 +130,13 @@ private:
 bool writeTnrdV4(const std::string& path, const HeaderRow& header,
                  const std::vector<V4SourceRow>& rows, std::string* errorOut);
 
+struct V4LoadResult {
+    HeaderRow header;
+    std::unique_ptr<TnrdV4Archive> archive;
+};
+
+namespace TNRD_V4 {
+bool load(const std::string& path, V4LoadResult& result, std::string& error);
+}
+
 } // namespace tnrp::detail

@@ -4,7 +4,7 @@
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
-#include "TnrdV4.h"
+#include "tnrd/TNRD_V4.h"
 
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
