@@ -57,6 +57,51 @@ export const DEFAULT_POWER_LAYOUT: PowerLayout = {
 export interface TyresLayout { charts: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean } }
 export const DEFAULT_TYRES_LAYOUT: TyresLayout = { charts: { surfaceTemp: true, innerTemp: true, brakeTemp: true, tyreLife: true } }
 
+export interface SessionLayout {
+  header: {
+    gpName: boolean
+    marshalZones: boolean
+    timeLeft: boolean
+  }
+  showMap: boolean
+  showProximity: boolean
+  showEvents: boolean
+  showWeather: boolean
+  statsCards: {
+    totalLaps: boolean
+    lapsRemaining: boolean
+    pitSpeedLimit: boolean
+    pitWindow: boolean
+    pitRejoin: boolean
+    trackTemp: boolean
+    airTemp: boolean
+    trackLength: boolean
+    timeOfDay: boolean
+  }
+}
+export const DEFAULT_SESSION_LAYOUT: SessionLayout = {
+  header: {
+    gpName: true,
+    marshalZones: true,
+    timeLeft: true,
+  },
+  showMap: true,
+  showProximity: true,
+  showEvents: true,
+  showWeather: true,
+  statsCards: {
+    totalLaps: true,
+    lapsRemaining: true,
+    pitSpeedLimit: true,
+    pitWindow: true,
+    pitRejoin: true,
+    trackTemp: true,
+    airTemp: true,
+    trackLength: true,
+    timeOfDay: true,
+  }
+}
+
 export const TAB_LABELS: Record<Tab, string> = {
   core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
 }

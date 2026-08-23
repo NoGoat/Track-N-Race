@@ -230,8 +230,18 @@ SessionPage::SessionPage(QWidget* parent)
     // Preserve the former boolean Compact appearance as the new Compact 2.
     weatherCompactLevel_ = legacyWeatherBool
         ? (weatherDensity.toBool() ? 2 : 0)
-        : qBound(0, weatherDensity.toInt(), 2);
-    headerCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::SessionHeader),  false).toBool();
+        : qBound(0, weatherDensity.toInt(), 3);
+    const QVariant headerDensity = settings_.value(tnr::compactKey(tnr::CompactSection::SessionHeader), 0);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const bool legacyHeaderBool = headerDensity.metaType().id() == QMetaType::Bool;
+#else
+    const bool legacyHeaderBool = headerDensity.type() == QVariant::Bool;
+#endif
+    headerCompactLevel_ = legacyHeaderBool
+        ? (headerDensity.toBool() ? 1 : 0)
+        : qBound(0, headerDensity.toInt(), 2);
+    eventsCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::SessionEvents),  false).toBool();
+    proximityCompact_ = settings_.value(tnr::compactKey(tnr::CompactSection::SessionProximity), false).toBool();
 
     QVBoxLayout* root = new QVBoxLayout(this);
     // No left/top padding here so the full-width separator lines reach the left edge
@@ -249,7 +259,9 @@ SessionPage::SessionPage(QWidget* parent)
     root->addWidget(sp_header_);
     mapFsHide_.push_back(sp_header_);
 
-    { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
+    sp_headerSep_ = tnrui::hline();
+    root->addWidget(sp_headerSep_);
+    mapFsHide_.push_back(sp_headerSep_);
 
     // ── Stat cards ───────────────────────────────────────────────
     spStatsRow_ = new QWidget;
@@ -261,7 +273,9 @@ SessionPage::SessionPage(QWidget* parent)
     root->addWidget(spStatsRow_);
     mapFsHide_.push_back(spStatsRow_);
 
-    { QWidget* hl = tnrui::hline(); root->addWidget(hl); mapFsHide_.push_back(hl); }
+    sp_statsSep_ = tnrui::hline();
+    root->addWidget(sp_statsSep_);
+    mapFsHide_.push_back(sp_statsSep_);
 
     // ── Content ──────────────────────────────────────────────────
     QWidget* content = new QWidget;
@@ -270,8 +284,8 @@ SessionPage::SessionPage(QWidget* parent)
     ch->setSpacing(0);
 
     // ── Left area: map placeholder + weather strip at bottom ──────
-    QWidget* leftArea = new QWidget;
-    QVBoxLayout* lv = new QVBoxLayout(leftArea);
+    leftArea_ = new QWidget;
+    QVBoxLayout* lv = new QVBoxLayout(leftArea_);
     lv->setContentsMargins(0, 0, 0, 0);
     lv->setSpacing(0);
 
@@ -284,7 +298,9 @@ SessionPage::SessionPage(QWidget* parent)
     trackMap_->setShowLabels(settings_.value("ui/toolbarShowLabels", false).toBool());
 
     // Weather strip pinned to bottom
-    { QWidget* hl = tnrui::hline(); lv->addWidget(hl); mapFsHide_.push_back(hl); }
+    sp_weatherSep_ = tnrui::hline();
+    lv->addWidget(sp_weatherSep_);
+    mapFsHide_.push_back(sp_weatherSep_);
 
     sp_weatherStrip_ = new QWidget;
     mapFsHide_.push_back(sp_weatherStrip_);
@@ -297,34 +313,43 @@ SessionPage::SessionPage(QWidget* parent)
     buildWeatherStrip();   // populates the strip (rebuilt on compact toggle)
 
     lv->addWidget(sp_weatherStrip_);
-    ch->addWidget(leftArea, 1);
+    ch->addWidget(leftArea_, 1);
 
     // VLine between map and right panel
-    { QWidget* vl = tnrui::vline(); ch->addWidget(vl); mapFsHide_.push_back(vl); }
+    midVLine_ = tnrui::vline();
+    ch->addWidget(midVLine_);
+    mapFsHide_.push_back(midVLine_);
 
     // ── Right panel: Proximity + Events ──────────────────────────
-    QWidget* rightPanel = new QWidget;
-    rightPanel->setFixedWidth(240);
-    mapFsHide_.push_back(rightPanel);
-    QVBoxLayout* rv = new QVBoxLayout(rightPanel);
+    rightPanel_ = new QWidget;
+    rightPanel_->setFixedWidth(240);
+    mapFsHide_.push_back(rightPanel_);
+    QVBoxLayout* rv = new QVBoxLayout(rightPanel_);
     rv->setContentsMargins(0, 0, 0, 0);
     rv->setSpacing(6);
 
-    auto makeSection = [&](const QString& title, int topPad = 0) {
-        rv->addWidget(tnrui::makeSectionLabel(title, 14, topPad));
-    };
-
-    auto rpDivider = [&]() {
-        rv->addWidget(tnrui::hline());
-    };
-
     // PROXIMITY
-    makeSection("PROXIMITY", 10);
+    if (proximityCompact_) {
+        sp_proxHeader = new QLabel("PROXIMITY");
+        QFont f; f.setPointSize(8); f.setBold(true); f.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+        sp_proxHeader->setFont(f);
+        sp_proxHeader->setForegroundRole(QPalette::PlaceholderText);
+        sp_proxHeader->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        sp_proxHeader->setFixedHeight(32);
+        sp_proxHeader->setContentsMargins(14, 0, 14, 0);
+    } else {
+        sp_proxHeader = tnrui::makeSectionLabel("PROXIMITY", 14, 10);
+    }
+    rv->addWidget(sp_proxHeader);
+
     for (int i = 0; i < 3; ++i) {
         QWidget* row = new QWidget;
         sp_proxRow[i] = row;
+        if (proximityCompact_) {
+            row->setFixedHeight(32);
+        }
         QHBoxLayout* ph = new QHBoxLayout(row);
-        ph->setContentsMargins(14, 4, 14, 4);
+        ph->setContentsMargins(14, proximityCompact_ ? 0 : 4, 14, proximityCompact_ ? 0 : 4);
         ph->setSpacing(6);
 
         sp_proxPos[i] = new QLabel("—");
@@ -333,7 +358,7 @@ SessionPage::SessionPage(QWidget* parent)
         sp_proxPos[i]->setForegroundRole(QPalette::PlaceholderText);
 
         sp_proxName[i] = new QLabel("—");
-        QFont nmf; nmf.setPointSize(10); nmf.setBold(true); sp_proxName[i]->setFont(nmf);
+        QFont nmf; nmf.setPointSize(proximityCompact_ ? 9 : 10); nmf.setBold(true); sp_proxName[i]->setFont(nmf);
 
         sp_proxGap[i] = new QLabel("—");
         QFont gf; gf.setPointSize(8); sp_proxGap[i]->setFont(gf);
@@ -346,10 +371,22 @@ SessionPage::SessionPage(QWidget* parent)
         rv->addWidget(row);
     }
 
-    rpDivider();
+    sp_proxSep_ = tnrui::hline();
+    rv->addWidget(sp_proxSep_);
 
     // EVENTS
-    makeSection("EVENTS");
+    if (eventsCompact_) {
+        sp_eventsHeader = new QLabel("EVENTS");
+        QFont f; f.setPointSize(8); f.setBold(true); f.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+        sp_eventsHeader->setFont(f);
+        sp_eventsHeader->setForegroundRole(QPalette::PlaceholderText);
+        sp_eventsHeader->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        sp_eventsHeader->setFixedHeight(32);
+        sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
+    } else {
+        sp_eventsHeader = tnrui::makeSectionLabel("EVENTS", 14, 0);
+    }
+    rv->addWidget(sp_eventsHeader);
     sp_eventsList = new QListWidget;
     sp_eventsList->setSelectionMode(QAbstractItemView::NoSelection);
     sp_eventsList->setFocusPolicy(Qt::NoFocus);
@@ -364,8 +401,10 @@ SessionPage::SessionPage(QWidget* parent)
         "QListWidget::item{border-bottom:1px solid rgba(255,255,255,0.06);}");
     sp_eventsList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     rv->addWidget(sp_eventsList, 1);
-    ch->addWidget(rightPanel);
+    ch->addWidget(rightPanel_);
     root->addWidget(content, 1);
+
+    applyLayout(loadLayout());
 }
 
 // ── Event log maintenance ─────────────────────────────────────────────────
@@ -389,12 +428,19 @@ void SessionPage::setRenderingActive(bool on) {
 void SessionPage::buildHeader() {
     QHBoxLayout* hh = qobject_cast<QHBoxLayout*>(sp_header_->layout());
     clearLayout(hh);
-    const bool compact = headerCompact_;
+    sp_gpBlock_ = nullptr;
+    sp_zoneBlock_ = nullptr;
+    sp_tmBlock_ = nullptr;
+    sp_headerDiv1_ = nullptr;
+    sp_headerDiv2_ = nullptr;
+    const bool compact = headerCompactLevel_ > 0;
+    const bool compact2 = headerCompactLevel_ == 2;
     sp_header_->setFixedHeight(compact ? 32 : 58);
     hh->setSpacing(compact ? 12 : 16);
 
     // GP block — name always; the circuit name only in the full layout.
     QWidget* gpBlock = new QWidget;
+    sp_gpBlock_ = gpBlock;
     QVBoxLayout* gpv = new QVBoxLayout(gpBlock);
     gpv->setContentsMargins(0, 0, 0, 0);
     gpv->setSpacing(3);
@@ -414,56 +460,35 @@ void SessionPage::buildHeader() {
     }
     hh->addWidget(gpBlock);
 
-    hh->addWidget(tnrui::vline());   // Heading | Marshal Strip
+    sp_headerDiv1_ = tnrui::vline();
+    hh->addWidget(sp_headerDiv1_);   // Heading | Marshal Strip
 
-    // Shared pieces: the ZONES label, the marshal strip, and the colour legend.
+    // Shared pieces: the ZONES label and the marshal strip.
     QLabel* zonesLbl = new QLabel("ZONES");
     QFont zlf; zlf.setPointSize(7); zlf.setBold(true);
     zonesLbl->setFont(zlf);
     zonesLbl->setForegroundRole(QPalette::PlaceholderText);
 
-    QWidget* legend = new QWidget;
-    QHBoxLayout* lh = new QHBoxLayout(legend);
-    lh->setContentsMargins(0, 0, 0, 0);
-    lh->setSpacing(12);
-    struct LegItem { const char* col; const char* name; };
-    LegItem legItems[] = {{"#fdd835","Yellow"},{"#00c853","Green"},{"#2196f3","Blue"},{"rgba(255,255,255,0.07)","Clear"}};
-    for (auto& li : legItems) {
-        QLabel* dot = new QLabel; dot->setFixedSize(12, 12);
-        dot->setStyleSheet(QString("background:%1; border: 1px solid rgba(255,255,255,0.1); border-radius:2px;").arg(li.col));
-        QLabel* txt = new QLabel(li.name);
-        QFont ltf; ltf.setPointSize(7); txt->setFont(ltf);
-        txt->setForegroundRole(QPalette::PlaceholderText);
-
-        QWidget* wrap = new QWidget;
-        QHBoxLayout* wl = new QHBoxLayout(wrap);
-        wl->setContentsMargins(0, 0, 0, 0);
-        wl->setSpacing(4);
-        wl->addWidget(dot); wl->addWidget(txt);
-        lh->addWidget(wrap);
-    }
-
     auto* strip = new MarshalStripWidget;
     sp_marshalStrip = strip;
 
     if (compact) {
-        // One line: ZONES · [marshal strip] · legend. No L/R inset — the header's
-        // own spacing already separates this row from the flanking separators, so
-        // an extra margin here just wastes width.
+        // One line: ZONES · [marshal strip] (or just [marshal strip] stretching full width in Compact 2).
         QWidget* zoneRow = new QWidget;
+        sp_zoneBlock_ = zoneRow;
         QHBoxLayout* zl = new QHBoxLayout(zoneRow);
         zl->setContentsMargins(0, 0, 0, 0);
         zl->setSpacing(12);
         zl->setAlignment(Qt::AlignVCenter);
-        zl->addWidget(zonesLbl);
-        zl->addWidget(strip, 1);   // strip stretches to fill the middle
-        zl->addWidget(legend);
+        if (!compact2) {
+            zl->addWidget(zonesLbl);
+        }
+        zl->addWidget(strip, 1);   // strip stretches to fill the rest of the row
         hh->addWidget(zoneRow, 1);
     } else {
-        // ZONES + legend on one row, the marshal strip below it. Kept a tight,
-        // vertically-centred group so the 4px strip sits just under the label
-        // instead of being pushed to the bottom of the 58px header.
+        // ZONES on top row, the marshal strip below it.
         QWidget* zoneWrap = new QWidget;
+        sp_zoneBlock_ = zoneWrap;
         QVBoxLayout* zv = new QVBoxLayout(zoneWrap);
         zv->setContentsMargins(16, 6, 16, 6);
         zv->setSpacing(8);
@@ -473,18 +498,18 @@ void SessionPage::buildHeader() {
         QHBoxLayout* headerL = new QHBoxLayout(headerWrap);
         headerL->setContentsMargins(0, 0, 0, 0);
         headerL->addWidget(zonesLbl);
-        headerL->addStretch();
-        headerL->addWidget(legend);
 
         zv->addWidget(headerWrap);
         zv->addWidget(strip);
         hh->addWidget(zoneWrap, 1);
     }
 
-    hh->addWidget(tnrui::vline());   // Marshal Strip | Timer
+    sp_headerDiv2_ = tnrui::vline();
+    hh->addWidget(sp_headerDiv2_);   // Marshal Strip | Timer
 
     // Clock — no session-type sub-line, so it centres on its own.
     QWidget* tmBlock = new QWidget;
+    sp_tmBlock_ = tmBlock;
     QVBoxLayout* tmv = new QVBoxLayout(tmBlock);
     tmv->setContentsMargins(0, 0, 16, 0);   // right padding so the timer isn't flush to the edge
     tmv->setSpacing(0);
@@ -495,6 +520,8 @@ void SessionPage::buildHeader() {
     sp_timeLeft->setAlignment(Qt::AlignRight);
     tmv->addWidget(sp_timeLeft);
     hh->addWidget(tmBlock);
+
+    applyLayout(layout_);
 }
 
 // Build (or rebuild in place) the key-driven stat cards into spStatsRow_. Called
@@ -505,6 +532,8 @@ void SessionPage::buildSessionCards() {
     QHBoxLayout* sh = qobject_cast<QHBoxLayout*>(spStatsRow_->layout());
     clearLayout(sh);
     spCardValue_.clear();
+    for (int i = 0; i < SessionLayout::StatCardCount; ++i) sp_statCardFrames_[i] = nullptr;
+    for (int i = 0; i < SessionLayout::StatCardCount - 1; ++i) sp_statCardDivs_[i] = nullptr;
     spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : 58);
     // Compact cards carry their own 12px left margin, so the row's extra left inset
     // would over-indent the first card ("TOTAL LAPS") relative to the rest — drop it
@@ -546,35 +575,34 @@ void SessionPage::buildSessionCards() {
         return card;
     };
 
-    auto addVSep = [&]() {
-        sh->addWidget(tnrui::vline());
+    auto addCard = [&](int idx, const QString& key, const QString& cap, QLabel*& out, const QString& colorSpec = "") {
+        if (idx > 0) {
+            sp_statCardDivs_[idx - 1] = tnrui::vline();
+            sh->addWidget(sp_statCardDivs_[idx - 1]);
+        }
+        sp_statCardFrames_[idx] = makeStatCard(key, cap, out, colorSpec);
+        sh->addWidget(sp_statCardFrames_[idx], 1);
     };
 
-    sh->addWidget(makeStatCard("totalLaps", "TOTAL LAPS", sp_statTotalLaps),                    1);
-    addVSep();
-    sh->addWidget(makeStatCard("remaining", "REMAINING",  sp_statRemain),                       1);
-    addVSep();
-    sh->addWidget(makeStatCard("pitSpeed",  "PIT SPEED",  sp_statPitSpeed, "session.pitSpeed"), 1);
-    addVSep();
-    sh->addWidget(makeStatCard("pitWindow", "PIT WINDOW", sp_statPitWin,   "session.pitWindow"),1);
-    addVSep();
-    sh->addWidget(makeStatCard("rejoin",    "REJOIN",     sp_statRejoin,   "session.rejoin"),   1);
-    addVSep();
-    sh->addWidget(makeStatCard("trackTemp", "TRACK TEMP", sp_trackTemp),                        1);
-    addVSep();
-    sh->addWidget(makeStatCard("airTemp",   "AIR TEMP",   sp_airTemp),                          1);
-    addVSep();
-    // Shorter labels in compact mode where they share the row with the value.
-    sh->addWidget(makeStatCard("trackLen",  compact ? "LENGTH" : "TRACK LENGTH", sp_trackLen),  1);
-    addVSep();
-    sh->addWidget(makeStatCard("timeOfDay", compact ? "TIME" : "TIME OF DAY", sp_timeOfDay),    1);
+    addCard(0, "totalLaps", "TOTAL LAPS", sp_statTotalLaps);
+    addCard(1, "remaining", "REMAINING",  sp_statRemain);
+    addCard(2, "pitSpeed",  "PIT SPEED",  sp_statPitSpeed, "session.pitSpeed");
+    addCard(3, "pitWindow", "PIT WINDOW", sp_statPitWin,   "session.pitWindow");
+    addCard(4, "rejoin",    "REJOIN",     sp_statRejoin,   "session.rejoin");
+    addCard(5, "trackTemp", "TRACK TEMP", sp_trackTemp);
+    addCard(6, "airTemp",   "AIR TEMP",   sp_airTemp);
+    addCard(7, "trackLen",  compact ? "LENGTH" : "TRACK LENGTH", sp_trackLen);
+    addCard(8, "timeOfDay", compact ? "TIME" : "TIME OF DAY", sp_timeOfDay);
+
+    applyLayout(layout_);
 }
 
 // Build (or rebuild in place) the bottom weather strip: a NOW card plus five
 // forecast cards. Compact 1 uses a medium-height horizontal row with a smaller
 // icon. Compact 2 is the original short icon-free row: time (left) · weather name
-// in the icon's colour (centre) · rain % (right). The leaf labels are recreated,
-// so updateSession repaints them (and tints compact weather names).
+// in the icon's colour (centre) · rain % (right). Compact 3 is the single-line layout:
+// icon + weather (left) · time + rain % (right).
+// The leaf labels are recreated, so updateSession repaints them (and tints compact weather names).
 void SessionPage::buildWeatherStrip() {
     QHBoxLayout* wh = qobject_cast<QHBoxLayout*>(sp_weatherStrip_->layout());
     clearLayout(wh);
@@ -585,17 +613,18 @@ void SessionPage::buildWeatherStrip() {
 
     const bool compact = weatherCompactLevel_ > 0;
     const bool compact2 = weatherCompactLevel_ == 2;
-    sp_weatherStrip_->setFixedHeight(compact2 ? 30 : compact ? 58 : 92);
+    const bool compact3 = weatherCompactLevel_ == 3;
+    sp_weatherStrip_->setFixedHeight(compact2 || compact3 ? 32 : compact ? 58 : 92);
     const int padX   = compact ? 8 : 12;
-    const int padY   = compact2 ? 3 : compact ? 6 : 12;
+    const int padY   = (compact2 || compact3) ? 3 : compact ? 6 : 12;
     const int gap    = compact ? 7 : 10;
-    const int iconSz = compact ? 30 : 44;
+    const int iconSz = compact3 ? 18 : compact ? 30 : 44;
 
     // NOW card — current reading, so no forecast rain %.
     QWidget* nowCard = new QWidget;
     QHBoxLayout* nh = new QHBoxLayout(nowCard);
     nh->setContentsMargins(padX, padY, padX, padY);
-    nh->setSpacing(gap);
+    nh->setSpacing(compact3 ? 6 : gap);
 
     QLabel* nowCap = new QLabel("NOW");
     QFont nowCapF; nowCapF.setPointSize(7); nowCapF.setBold(true);
@@ -612,6 +641,16 @@ void SessionPage::buildWeatherStrip() {
         nh->addStretch();
         nh->addWidget(sp_weatherNow);
         nh->addStretch();
+    } else if (compact3) {
+        // Single row: icon + weather (left) · NOW (right).
+        sp_weatherNowIcon = new QLabel;
+        sp_weatherNowIcon->setFixedSize(iconSz, iconSz);
+        sp_weatherNowIcon->setAlignment(Qt::AlignCenter);
+
+        nh->addWidget(sp_weatherNowIcon);
+        nh->addWidget(sp_weatherNow);
+        nh->addStretch();
+        nh->addWidget(nowCap);
     } else {
         sp_weatherNowIcon = new QLabel;
         sp_weatherNowIcon->setFixedSize(iconSz, iconSz);
@@ -648,19 +687,20 @@ void SessionPage::buildWeatherStrip() {
         QWidget* fcCard = new QWidget;
         QHBoxLayout* fh = new QHBoxLayout(fcCard);
         fh->setContentsMargins(padX, padY, padX, padY);
-        fh->setSpacing(gap);
+        fh->setSpacing(compact3 ? 6 : gap);
 
         sp_fcTime[i] = new QLabel("");
-        QFont ftf; ftf.setPointSize(compact && !compact2 ? 9 : 7);
+        QFont ftf; ftf.setPointSize(compact && !compact2 && !compact3 ? 9 : 7);
         sp_fcTime[i]->setFont(ftf);
         sp_fcTime[i]->setForegroundRole(QPalette::PlaceholderText);
 
         sp_fcWeather[i] = new QLabel("");
-        QFont fwf; fwf.setPointSize(compact && !compact2 ? 10 : 9); fwf.setBold(true);
+        QFont fwf; fwf.setPointSize(compact && !compact2 && !compact3 ? 10 : 9); fwf.setBold(true);
         sp_fcWeather[i]->setFont(fwf);
 
         sp_fcRain[i] = new QLabel("");
-        QFont frf; frf.setPointSize(compact && !compact2 ? 9 : 8);
+        QFont frf; frf.setPointSize(compact && !compact2 && !compact3 ? 9 : 8);
+        if (compact3) frf.setBold(true);
         sp_fcRain[i]->setFont(frf);
         sp_fcRain[i]->setStyleSheet("color:#5794F2;");
 
@@ -670,6 +710,17 @@ void SessionPage::buildWeatherStrip() {
             fh->addStretch();
             fh->addWidget(sp_fcWeather[i]);
             fh->addStretch();
+            fh->addWidget(sp_fcRain[i]);
+        } else if (compact3) {
+            // Single row: icon + weather (left) · time + rain % (right).
+            sp_fcIcon[i] = new QLabel;
+            sp_fcIcon[i]->setFixedSize(iconSz, iconSz);
+            sp_fcIcon[i]->setAlignment(Qt::AlignCenter);
+
+            fh->addWidget(sp_fcIcon[i]);
+            fh->addWidget(sp_fcWeather[i]);
+            fh->addStretch();
+            fh->addWidget(sp_fcTime[i]);
             fh->addWidget(sp_fcRain[i]);
         } else {
             sp_fcIcon[i] = new QLabel;
@@ -714,16 +765,72 @@ void SessionPage::setCardsCompact(bool on) {
 }
 
 void SessionPage::setWeatherCompactLevel(int level) {
-    level = qBound(0, level, 2);
+    level = qBound(0, level, 3);
     if (weatherCompactLevel_ == level) return;
     weatherCompactLevel_ = level;
     buildWeatherStrip();
 }
 
-void SessionPage::setHeaderCompact(bool on) {
-    if (headerCompact_ == on) return;
-    headerCompact_ = on;
+void SessionPage::setHeaderCompactLevel(int level) {
+    level = qBound(0, level, 2);
+    if (headerCompactLevel_ == level) return;
+    headerCompactLevel_ = level;
     buildHeader();
+}
+
+void SessionPage::setEventsCompact(bool on) {
+    if (eventsCompact_ == on) return;
+    eventsCompact_ = on;
+    if (sp_eventsHeader) {
+        if (on) {
+            sp_eventsHeader->setFixedHeight(32);
+            sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
+            sp_eventsHeader->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        } else {
+            sp_eventsHeader->setMinimumHeight(0);
+            sp_eventsHeader->setMaximumHeight(QWIDGETSIZE_MAX);
+            sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
+            sp_eventsHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        }
+    }
+}
+
+void SessionPage::setProximityCompact(bool on) {
+    if (proximityCompact_ == on) return;
+    proximityCompact_ = on;
+    if (sp_proxHeader) {
+        if (on) {
+            sp_proxHeader->setFixedHeight(32);
+            sp_proxHeader->setContentsMargins(14, 0, 14, 0);
+            sp_proxHeader->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        } else {
+            sp_proxHeader->setMinimumHeight(0);
+            sp_proxHeader->setMaximumHeight(QWIDGETSIZE_MAX);
+            sp_proxHeader->setContentsMargins(14, 10, 14, 0);
+            sp_proxHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (sp_proxRow[i]) {
+            if (on) {
+                sp_proxRow[i]->setFixedHeight(32);
+                if (auto* ph = sp_proxRow[i]->layout()) ph->setContentsMargins(14, 0, 14, 0);
+            } else {
+                sp_proxRow[i]->setMinimumHeight(0);
+                sp_proxRow[i]->setMaximumHeight(QWIDGETSIZE_MAX);
+                if (auto* ph = sp_proxRow[i]->layout()) ph->setContentsMargins(14, 4, 14, 4);
+            }
+        }
+        if (sp_proxPos[i]) {
+            QFont pf = sp_proxPos[i]->font(); pf.setPointSize(8); sp_proxPos[i]->setFont(pf);
+        }
+        if (sp_proxName[i]) {
+            QFont nmf = sp_proxName[i]->font(); nmf.setPointSize(on ? 9 : 10); sp_proxName[i]->setFont(nmf);
+        }
+        if (sp_proxGap[i]) {
+            QFont gf = sp_proxGap[i]->font(); gf.setPointSize(8); sp_proxGap[i]->setFont(gf);
+        }
+    }
 }
 
 // ── Session page updater ──────────────────────────────────────────────────
@@ -800,7 +907,7 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
     // Compact 1 uses the standard card text colour beside its tinted icon.
     // Compact 2 has no icon, so the name carries the weather tint instead.
     if (weatherCompactLevel_ == 2) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
-    applyWeatherIcon(sp_weatherNowIcon, weather, weatherCompactLevel_ == 1 ? 26 : 40);
+    applyWeatherIcon(sp_weatherNowIcon, weather, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
 
     {
         const auto& fc = session->weather_forecast_samples;
@@ -811,7 +918,7 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
                 sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].time_offset));
                 sp_fcWeather[i]->setText(weatherLabel(fw));
                 if (weatherCompactLevel_ == 2) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
-                applyWeatherIcon(sp_fcIcon[i], fw, weatherCompactLevel_ == 1 ? 26 : 40);
+                applyWeatherIcon(sp_fcIcon[i], fw, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
                 int rain = fc[i].rain_percentage;
                 sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");
             } else {
@@ -931,64 +1038,100 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
         QColor c = colorOverride.isValid() ? colorOverride : eventCodeColor(code);
         if (!c.isValid()) c = QColor("#c8ccd4");
 
-        const int hPad = 8, vPad = 6, gap = 2;
-        int avail = sp_eventsList->viewport()->width();
-        if (avail <= 0) avail = sp_eventsList->width() - 4;
-        if (avail <= 0) avail = 240;
+        if (eventsCompact_) {
+            const int hPad = 8;
+            QWidget* rowW = new QWidget;
+            rowW->setObjectName("eventRow");
+            rowW->setFixedHeight(32);
+            rowW->setStyleSheet(QString(
+                "#eventRow {"
+                "  border-left: 3px solid %1;"
+                "}"
+            ).arg(c.name()));
 
-        QWidget* rowW = new QWidget;
-        rowW->setObjectName("eventRow");
-        rowW->setStyleSheet(QString(
-            "#eventRow {"
-            "  border-left: 3px solid %1;"
-            "}"
-        ).arg(c.name()));
+            QHBoxLayout* hl = new QHBoxLayout(rowW);
+            hl->setContentsMargins(hPad, 0, hPad, 0);
+            hl->setSpacing(6);
 
-        QVBoxLayout* vl = new QVBoxLayout(rowW);
-        vl->setContentsMargins(hPad, vPad, hPad, vPad);
-        vl->setSpacing(gap);
+            QString fullText = !text.isEmpty() ? (eventType + " – " + text) : eventType;
+            QLabel* descLbl = new QLabel(fullText);
+            QFont df; df.setPointSize(8); df.setBold(true);
+            descLbl->setFont(df);
+            descLbl->setStyleSheet("color: " + c.name() + "; background: transparent;");
+            descLbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-        QHBoxLayout* topH = new QHBoxLayout;
-        topH->setContentsMargins(0, 0, 0, 0);
+            QLabel* timeLbl = new QLabel(timeStr);
+            QFont tf; tf.setPointSize(7); tf.setBold(true);
+            tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
+            timeLbl->setFont(tf);
+            timeLbl->setStyleSheet("color: #a0a8b8;");
+            timeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        QLabel* timeLbl = new QLabel(timeStr);
-        QFont tf; tf.setPointSize(7); tf.setBold(true);
-        tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
-        timeLbl->setFont(tf);
-        timeLbl->setStyleSheet("color: #a0a8b8;");
+            hl->addWidget(descLbl, 1);
+            hl->addWidget(timeLbl);
 
-        QLabel* typeLbl = new QLabel(eventType);
-        QFont typeF; typeF.setPointSize(7); typeF.setBold(true);
-        typeLbl->setFont(typeF);
-        typeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        typeLbl->setStyleSheet("color: " + c.name() + ";");
+            const int rowH = 32;
 
-        topH->addWidget(timeLbl);
-        topH->addWidget(typeLbl, 1);
-        vl->addLayout(topH);
+            auto* item = new QListWidgetItem;
+            item->setSizeHint(QSize(avail, rowH));
+            sp_eventsList->addItem(item);
+            sp_eventsList->setItemWidget(item, rowW);
+        } else {
+            const int hPad = 8, vPad = 6, gap = 2;
+            QWidget* rowW = new QWidget;
+            rowW->setObjectName("eventRow");
+            rowW->setStyleSheet(QString(
+                "#eventRow {"
+                "  border-left: 3px solid %1;"
+                "}"
+            ).arg(c.name()));
 
-        int timeH = std::max(QFontMetrics(tf).height(), QFontMetrics(typeF).height());
-        int textH = 0;
+            QVBoxLayout* vl = new QVBoxLayout(rowW);
+            vl->setContentsMargins(hPad, vPad, hPad, vPad);
+            vl->setSpacing(gap);
 
-        if (!text.isEmpty()) {
-            QLabel* textLbl = new QLabel(text);
-            QFont lf; lf.setPointSize(9); lf.setWeight(QFont::DemiBold);
-            textLbl->setFont(lf);
-            textLbl->setWordWrap(true);
-            textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
-            vl->addWidget(textLbl);
+            QHBoxLayout* topH = new QHBoxLayout;
+            topH->setContentsMargins(0, 0, 0, 0);
 
-            textH = QFontMetrics(lf).boundingRect(
-                QRect(0, 0, avail - (2 * hPad), 10000), Qt::TextWordWrap, text).height();
+            QLabel* timeLbl = new QLabel(timeStr);
+            QFont tf; tf.setPointSize(7); tf.setBold(true);
+            tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
+            timeLbl->setFont(tf);
+            timeLbl->setStyleSheet("color: #a0a8b8;");
+
+            QLabel* typeLbl = new QLabel(eventType);
+            QFont typeF; typeF.setPointSize(7); typeF.setBold(true);
+            typeLbl->setFont(typeF);
+            typeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            typeLbl->setStyleSheet("color: " + c.name() + ";");
+
+            topH->addWidget(timeLbl);
+            topH->addWidget(typeLbl, 1);
+            vl->addLayout(topH);
+
+            int timeH = std::max(QFontMetrics(tf).height(), QFontMetrics(typeF).height());
+            int textH = 0;
+
+            if (!text.isEmpty()) {
+                QLabel* textLbl = new QLabel(text);
+                QFont lf; lf.setPointSize(9); lf.setWeight(QFont::DemiBold);
+                textLbl->setFont(lf);
+                textLbl->setWordWrap(true);
+                textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
+                vl->addWidget(textLbl);
+
+                textH = QFontMetrics(lf).boundingRect(
+                    QRect(0, 0, avail - (2 * hPad), 10000), Qt::TextWordWrap, text).height();
+            }
+
+            int rowH = (2 * vPad) + timeH;
+            if (textH > 0) rowH += gap + textH;
+
+            auto* item = new QListWidgetItem;
+            item->setSizeHint(QSize(avail, rowH));
+            sp_eventsList->addItem(item);
+            sp_eventsList->setItemWidget(item, rowW);
         }
-
-        int rowH = (2 * vPad) + timeH;
-        if (textH > 0) rowH += gap + textH;
-
-        auto* item = new QListWidgetItem;
-        item->setSizeHint(QSize(avail, rowH));
-        sp_eventsList->addItem(item);
-        sp_eventsList->setItemWidget(item, rowW);
     }
 }
 
@@ -1113,8 +1256,103 @@ void SessionPage::setMapFullscreen(bool on) {
     if (mapFullscreen_ == on) return;
     mapFullscreen_ = on;
     // Hide every sibling so the map's left area (and the map within it) expands to
-    // fill the whole session view; restore them on exit.
-    for (QWidget* w : mapFsHide_)
-        if (w) w->setVisible(!on);
+    // fill the whole session view; restore them on exit according to layout_.
+    if (on) {
+        for (QWidget* w : mapFsHide_)
+            if (w) w->setVisible(false);
+    } else {
+        applyLayout(layout_);
+    }
     if (trackMap_) trackMap_->setFullscreenState(on);
 }
+
+SessionLayout SessionPage::loadLayout() {
+    SessionLayout L;
+    settings_.beginGroup("sessionLayout");
+    L.showGpName       = settings_.value("showGpName", true).toBool();
+    L.showMarshalZones = settings_.value("showMarshalZones", true).toBool();
+    L.showTimeLeft     = settings_.value("showTimeLeft", true).toBool();
+    L.showMap          = settings_.value("showMap", true).toBool();
+    L.showProximity    = settings_.value("showProximity", true).toBool();
+    L.showEvents       = settings_.value("showEvents", true).toBool();
+    L.showWeather      = settings_.value("showWeather", true).toBool();
+    for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
+        L.cards[i] = settings_.value(SessionLayout::cardKey(i), true).toBool();
+    }
+    settings_.endGroup();
+    return L;
+}
+
+void SessionPage::saveLayout(const SessionLayout& L) {
+    settings_.beginGroup("sessionLayout");
+    settings_.setValue("showGpName", L.showGpName);
+    settings_.setValue("showMarshalZones", L.showMarshalZones);
+    settings_.setValue("showTimeLeft", L.showTimeLeft);
+    settings_.setValue("showMap", L.showMap);
+    settings_.setValue("showProximity", L.showProximity);
+    settings_.setValue("showEvents", L.showEvents);
+    settings_.setValue("showWeather", L.showWeather);
+    for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
+        settings_.setValue(SessionLayout::cardKey(i), L.cards[i]);
+    }
+    settings_.endGroup();
+}
+
+void SessionPage::applyLayout(const SessionLayout& L) {
+    layout_ = L;
+    if (mapFullscreen_) return;
+
+    bool anyHeader = L.showHeader();
+    if (sp_header_) sp_header_->setVisible(anyHeader);
+    if (sp_headerSep_) sp_headerSep_->setVisible(anyHeader);
+
+    if (sp_gpBlock_) sp_gpBlock_->setVisible(L.showGpName);
+    if (sp_zoneBlock_) sp_zoneBlock_->setVisible(L.showMarshalZones);
+    if (sp_tmBlock_) sp_tmBlock_->setVisible(L.showTimeLeft);
+
+    if (sp_headerDiv1_) sp_headerDiv1_->setVisible(L.showGpName && (L.showMarshalZones || L.showTimeLeft));
+    if (sp_headerDiv2_) sp_headerDiv2_->setVisible(L.showMarshalZones && L.showTimeLeft);
+
+    bool anyCard = false;
+    for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
+        if (sp_statCardFrames_[i]) sp_statCardFrames_[i]->setVisible(L.cards[i]);
+        anyCard = anyCard || L.cards[i];
+    }
+    int lastVisibleIdx = -1;
+    for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
+        if (i > 0 && sp_statCardDivs_[i - 1]) {
+            sp_statCardDivs_[i - 1]->setVisible(false);
+        }
+        if (L.cards[i]) {
+            if (lastVisibleIdx != -1 && i > 0) {
+                if (sp_statCardDivs_[i - 1]) sp_statCardDivs_[i - 1]->setVisible(true);
+            }
+            lastVisibleIdx = i;
+        }
+    }
+    if (spStatsRow_) spStatsRow_->setVisible(anyCard);
+    if (sp_statsSep_) sp_statsSep_->setVisible(anyCard);
+
+    if (trackMap_) trackMap_->setVisible(L.showMap);
+    if (sp_weatherStrip_) sp_weatherStrip_->setVisible(L.showWeather);
+    if (sp_weatherSep_) sp_weatherSep_->setVisible(L.showWeather && L.showMap);
+    if (leftArea_) leftArea_->setVisible(L.showMap || L.showWeather);
+
+    if (sp_proxHeader) sp_proxHeader->setVisible(L.showProximity);
+    for (int i = 0; i < 3; ++i) {
+        if (sp_proxRow[i]) sp_proxRow[i]->setVisible(L.showProximity);
+    }
+    if (sp_proxSep_) sp_proxSep_->setVisible(L.showProximity && L.showEvents);
+
+    if (sp_eventsHeader) sp_eventsHeader->setVisible(L.showEvents);
+    if (sp_eventsList) sp_eventsList->setVisible(L.showEvents);
+
+    if (rightPanel_) rightPanel_->setVisible(L.showProximity || L.showEvents);
+    if (midVLine_) midVLine_->setVisible((L.showMap || L.showWeather) && (L.showProximity || L.showEvents));
+}
+
+void SessionPage::applyAndSaveLayout(const SessionLayout& L) {
+    applyLayout(L);
+    saveLayout(L);
+}
+

@@ -38,8 +38,8 @@ export default function AppShell() {
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSectorColors, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
-    theme, tyreView, tyreWearMode, tyresLayout,
+    setSectorColors, setSessionLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    sessionLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -343,11 +343,13 @@ export default function AppShell() {
         inputLayout={inputLayout}
         miscLayout={miscLayout}
         powerLayout={powerLayout}
+        sessionLayout={sessionLayout}
         setCoreLayout={setCoreLayout}
         setEditOpen={setEditOpen}
         setInputLayout={setInputLayout}
         setMiscLayout={setMiscLayout}
         setPowerLayout={setPowerLayout}
+        setSessionLayout={setSessionLayout}
         setTyresLayout={setTyresLayout}
         tab={tab}
         tyreView={tyreView}
@@ -417,6 +419,7 @@ export default function AppShell() {
           seconds={seconds}
           coreLayout={coreLayout}
           powerLayout={powerLayout}
+          sessionLayout={sessionLayout}
           tyresLayout={tyresLayout}
           inputLayout={inputLayout}
           miscLayout={miscLayout}

@@ -6,6 +6,7 @@ import TrackMap from './TrackMap'
 import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
 import { TRACK_MAPS } from '../lib/trackMaps'
+import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
 })
 
 function areProximityPropsEqual(prev: any, next: any) {
+  if (prev.compact !== next.compact) return false
   if (prev.participants !== next.participants) return false
   if (!prev.timing || !next.timing) return prev.timing === next.timing
   if (prev.timing.player_idx !== next.timing.player_idx) return false
@@ -178,8 +180,8 @@ function areProximityPropsEqual(prev: any, next: any) {
   return true
 }
 
-const ProximityWidget = memo(function ProximityWidget({ timing, participants }: {
-  timing: TimingMsg; participants: ParticipantsMsg | null
+const ProximityWidget = memo(function ProximityWidget({ timing, participants, compact }: {
+  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: boolean
 }) {
   const active = timing.cars
     .filter(c => c.result_status === 2 && c.position > 0)
@@ -221,16 +223,16 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants }: 
         return (
           <div
             key={car.idx}
-            className="flex items-center gap-3 px-3 py-3"
+            className={compact ? "flex items-center gap-3 px-3 h-[32px]" : "flex items-center gap-3 px-3 py-3"}
           >
             <span className="text-[10px] font-bold tabular-nums w-7 text-center text-[var(--text-primary)] shrink-0">
               P{car.position}
             </span>
-            <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+            <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
               {driverName(participants, car.idx)}
             </span>
             {deltaMs != null && deltaMs > 0 && (
-              <span className="text-xs font-semibold tabular-nums" style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
+              <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-semibold tabular-nums`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
                 {fmtDelta(deltaMs, sign!)}
               </span>
             )}
@@ -293,16 +295,21 @@ interface Props {
   reduceAnimations: boolean
   mapDimmed?: boolean
   aeroMode: 'drs' | 'slm'
-  compactHeader?: boolean
+  compactHeader?: boolean | number
   compactCards?: boolean
   compactWeather?: number
+  compactEvents?: boolean
+  compactProximity?: boolean
+  layout?: SessionLayout
 }
 
-const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather, compactEvents, compactProximity, layout = DEFAULT_SESSION_LAYOUT }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
   const { t } = useLabels()
-  const weatherLevel = Math.max(0, Math.min(2, compactWeather ?? 0))
+  const weatherLevel = Math.max(0, Math.min(3, compactWeather ?? 0))
+  const headerLevel = typeof compactHeader === 'boolean' ? (compactHeader ? 1 : 0) : Math.max(0, Math.min(2, compactHeader ?? 0))
+  const isCompactHeader = headerLevel > 0
 
   const setMapFullscreenAnimated = (fullscreen: boolean) => {
     const transitionDocument = document as Document & {
@@ -363,109 +370,122 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
       {/* ── Normal layout ── */}
       {/* ── Header ── */}
-      <div
-        className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
-      >
-        {/* GP name */}
-        <div className={`flex flex-col justify-center shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          <div className={`flex items-center gap-3 ${compactHeader ? '' : 'mb-0.5'}`}>
-            <h1 className={`${compactHeader ? 'text-base' : 'text-xl'} font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
-              {gpName}
-            </h1>
-          </div>
-          {circuit && !compactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
-        </div>
-
-        {/* Zones strip. Compact: ZONES · marshal strip · legend all on one row. */}
-        <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          {(() => {
-            const legend = (
-              <div className="flex items-center gap-4 shrink-0">
-                {[{ c: '#fdd835', l: 'Yellow' }, { c: '#00c853', l: 'Green' }, { c: '#2196f3', l: 'Blue' }, { c: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)', l: 'Clear' }].map(({ c, l }) => (
-                  <div key={l} className="flex items-center gap-1.5">
-                    <div
-                      className="w-3 h-3 rounded-sm"
-                      style={{
-                        backgroundColor: c,
-                        border: `1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.15)'}`
-                      }}
-                    />
-                    <span className="text-[10px] text-[var(--text-secondary)]">{l}</span>
-                  </div>
-                ))}
+      {(layout.header.gpName || layout.header.marshalZones || layout.header.timeLeft) && (
+        <div
+          className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
+        >
+          {/* GP name */}
+          {layout.header.gpName && (
+            <div className={`flex flex-col justify-center ${!layout.header.marshalZones && !layout.header.timeLeft ? 'flex-1' : 'shrink-0'} px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
+              <div className={`flex items-center gap-3 ${isCompactHeader ? '' : 'mb-0.5'}`}>
+                <h1 className={`${isCompactHeader ? 'text-base' : 'text-xl'} font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                  {gpName}
+                </h1>
               </div>
-            )
-            const zonesLbl = <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
-            return compactHeader ? (
-              <div className="flex items-center gap-3">
-                {zonesLbl}
-                <div className="flex-1 min-w-0"><MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} /></div>
-                {legend}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between mb-2">
-                  {zonesLbl}
-                  {legend}
-                </div>
-                <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
-              </>
-            )
-          })()}
-        </div>
-
-        {/* Time left */}
-        <div className={`flex flex-col justify-center items-end shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          {!compactHeader && (
-            <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
+              {circuit && !isCompactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
+            </div>
           )}
-          <div
-            className={`${compactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
-            style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-          >
-            {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
-          </div>
+
+          {/* Zones strip */}
+          {layout.header.marshalZones && (
+            <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
+              {headerLevel === 2 ? (
+                <div className="w-full">
+                  <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                </div>
+              ) : headerLevel === 1 ? (
+                <div className="flex items-center gap-3 w-full">
+                  <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
+                  <div className="flex-1 min-w-0"><MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} /></div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center mb-2">
+                    <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
+                  </div>
+                  <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Time left */}
+          {layout.header.timeLeft && (
+            <div className={`flex flex-col justify-center items-end ${!layout.header.gpName && !layout.header.marshalZones ? 'flex-1' : 'shrink-0'} ${!layout.header.marshalZones && layout.header.gpName ? 'ml-auto' : ''} px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
+              {!isCompactHeader && (
+                <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
+              )}
+              <div
+                className={`${isCompactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
+                style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+              >
+                {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {/* ── Stat cards ── */}
-      <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
-        <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />
-        {remainingLaps !== null
-          ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />
-          : <StatCard label="Remaining" value="—" compact={compactCards} />
-        }
-        <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} compact={compactCards} />
-        <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} compact={compactCards} />
-        <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} compact={compactCards} />
-        <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} compact={compactCards} />
-        <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} compact={compactCards} />
-        <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} compact={compactCards} />
-        <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} compact={compactCards} />
-      </div>
+      {Object.values(layout.statsCards).some(Boolean) && (
+        <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
+          {layout.statsCards.totalLaps && <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />}
+          {layout.statsCards.lapsRemaining && (remainingLaps !== null
+            ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />
+            : <StatCard label="Remaining" value="—" compact={compactCards} />
+          )}
+          {layout.statsCards.pitSpeedLimit && <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} compact={compactCards} />}
+          {layout.statsCards.pitWindow && <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} compact={compactCards} />}
+          {layout.statsCards.pitRejoin && <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} compact={compactCards} />}
+          {layout.statsCards.trackTemp && <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} compact={compactCards} />}
+          {layout.statsCards.airTemp && <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} compact={compactCards} />}
+          {layout.statsCards.trackLength && <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} compact={compactCards} />}
+          {layout.statsCards.timeOfDay && <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} compact={compactCards} />}
+        </div>
+      )}
 
       {/* ── Main body — two columns that both fill the available height ── */}
-      <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
+      {(layout.showMap || layout.showWeather || layout.showProximity || layout.showEvents) && (
+        <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
 
-        {/* Col 1 — Weather: empty top (reserved), Now+forecast strip at bottom */}
-        <div className="flex flex-col flex-1 min-w-0 divide-y divide-[var(--border)]">
+          {/* Col 1 — Weather: empty top (reserved), Now+forecast strip at bottom */}
+          {(layout.showMap || layout.showWeather) && (
+            <div className="flex flex-col flex-1 min-w-0 divide-y divide-[var(--border)]">
 
-          {/* Track map */}
-          <div className={`session-map-transition ${mapFullscreen ? 'absolute inset-0 z-40 bg-[var(--bg-base)]' : 'flex-1 min-h-0'}`}>
-            <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} />
-          </div>
+              {/* Track map */}
+              {layout.showMap && (
+                <div className={`session-map-transition ${mapFullscreen ? 'absolute inset-0 z-40 bg-[var(--bg-base)]' : 'flex-1 min-h-0'}`}>
+                  <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
+                  driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} />
+                </div>
+              )}
 
-          {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
-              in the horizontal row; Compact 2 is the original icon-free strip. */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 1 ? 58 : 90 }}>
+              {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
+                  in the horizontal row; Compact 2 is the original icon-free strip;
+                  Compact 3 is the single-line layout: [Icon] Condition ... +Time Rain%. */}
+              {layout.showWeather && (
+                <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 3 ? 34 : weatherLevel === 1 ? 58 : 90 }}>
 
-            {/* Now card — same width as the forecast cards either way */}
-            {weatherLevel === 2 ? (
-              <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
+                  {/* Now card — same width as the forecast cards */}
+                  {weatherLevel === 2 ? (
+                    <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
                 <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
                 <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: session ? weatherColor(session.weather, isDark) : 'var(--text-secondary)' }}>
                   {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                </span>
+              </div>
+            ) : weatherLevel === 3 ? (
+              <div className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="shrink-0 flex items-center justify-center">
+                    <WeatherIcon id={session?.weather ?? 2} size={18} isDark={isDark} />
+                  </span>
+                  <span className={`text-xs font-semibold truncate ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                    {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] shrink-0">
+                  NOW
                 </span>
               </div>
             ) : weatherLevel === 1 ? (
@@ -503,6 +523,19 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                   <span className="flex-1 text-center text-xs text-[var(--text-secondary)]">—</span>
                   <span className="text-[10px] font-bold tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
                 </div>
+              ) : weatherLevel === 3 ? (
+                <div key={i} className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="shrink-0 flex items-center justify-center text-[var(--text-secondary)]">
+                      <WeatherIcon id={2} size={18} isDark={isDark} />
+                    </span>
+                    <span className="text-xs text-[var(--text-secondary)] truncate">—</span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5 shrink-0">
+                    <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">—</span>
+                    <span className="text-xs font-bold tabular-nums text-[var(--text-secondary)]">—</span>
+                  </div>
+                </div>
               ) : weatherLevel === 1 ? (
                 <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
                   <span className="text-xs tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
@@ -535,6 +568,23 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                       {s.rain_percentage}%
                     </span>
                   </div>
+                ) : weatherLevel === 3 ? (
+                  <div key={i} className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="shrink-0 flex items-center justify-center">
+                        <WeatherIcon id={s.weather} size={18} isDark={isDark} />
+                      </span>
+                      <span className="text-xs font-semibold truncate text-[var(--text-primary)]">
+                        {WEATHER_LABELS[s.weather] ?? '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline gap-1.5 shrink-0">
+                      <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
+                      <span className="text-xs font-bold tabular-nums" style={{ color: rainColor }}>
+                        {s.rain_percentage}%
+                      </span>
+                    </div>
+                  </div>
                 ) : weatherLevel === 1 ? (
                   <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
                     <span className="text-xs tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
@@ -548,79 +598,118 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                   </div>
                 ) : (
                   <div key={i} className="flex-1 flex items-center justify-center gap-3 px-2 py-2 min-w-0">
-                    <div className="shrink-0 text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={32} isDark={isDark} /></div>
+                    <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={s.weather} size={32} isDark={isDark} /></div>
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
-                      <span className="text-[10px] text-[var(--text-primary)] truncate">
-                        {WEATHER_LABELS[s.weather] ?? '—'}
-                      </span>
-                      <span className="text-[11px] font-bold tabular-nums" style={{ color: rainColor }}>
-                        {s.rain_percentage}%
-                      </span>
+                      <span className="text-[10px] text-[var(--text-secondary)] truncate">{WEATHER_LABELS[s.weather] ?? '—'}</span>
+                      <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">{s.rain_percentage}%</span>
                     </div>
                   </div>
                 )
-              })
-            }
-          </div>
+              })}
+            </div>
+          )}
         </div>
+      )}
 
-        {/* Col 2 — Proximity (content-height) + Events (fills remainder) */}
-        <div className="flex flex-col w-72 shrink-0">
+      {/* Col 2 — Proximity (content-height) + Events (fills remainder) */}
+      {(layout.showProximity || layout.showEvents) && (
+        <div className={`flex flex-col ${layout.showMap || layout.showWeather ? 'w-72 shrink-0' : 'flex-1 min-w-0'}`}>
 
-          <div className="shrink-0 border-b border-[var(--border)]">
-            <div className="px-4 py-2 border-b border-[var(--border)]">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">
-                Proximity
-              </span>
+          {layout.showProximity && (
+            <div className="shrink-0 border-b border-[var(--border)]">
+              <div className={compactProximity
+                ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : "px-4 py-2 border-b border-[var(--border)]"
+              }>
+                <span className={compactProximity
+                  ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
+                }>
+                  Proximity
+                </span>
+              </div>
+              {timing
+                ? <ProximityWidget timing={timing} participants={participants} compact={compactProximity} />
+                : <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No timing data</p>
+              }
             </div>
-            {timing
-              ? <ProximityWidget timing={timing} participants={participants} />
-              : <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No timing data</p>
-            }
-          </div>
+          )}
 
-          <div className="flex flex-col flex-1 min-h-0">
-            <div className="shrink-0 px-4 py-2 border-b border-[var(--border)]">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">
-                Events
-              </span>
-            </div>
-            <div ref={logRef} className="flex-1 overflow-y-auto">
-              {visibleEvents.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-[10px] text-[var(--text-secondary)]">
-                  No events yet
-                </div>
-              ) : (
-                <div className="flex flex-col">
-                  {visibleEvents.map(({ event, fmt }, i) => (
-                    <div
-                      key={i}
-                      className="flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
-                    >
-                      <span
-                        className="text-[9px] tabular-nums font-mono font-semibold"
-                        style={{ color: `${fmt.color}aa` }}
+          {layout.showEvents && (
+            <div className="flex flex-col flex-1 min-h-0">
+              <div className={compactEvents
+                ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : "px-4 py-2 border-b border-[var(--border)]"
+              }>
+                <span className={compactEvents
+                  ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
+                }>
+                  Events
+                </span>
+              </div>
+              <div ref={logRef} className="flex-1 overflow-y-auto">
+                {visibleEvents.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-[10px] text-[var(--text-secondary)]">
+                    No events yet
+                  </div>
+                ) : (
+                  <div className="flex flex-col">
+                    {visibleEvents.map(({ event, fmt }, i) => (
+                      <div
+                        key={i}
+                        className={compactEvents
+                          ? "flex items-center justify-between gap-2 px-3 h-[32px] border-b border-[var(--border)] min-w-0"
+                          : "flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
+                        }
                       >
-                        {fmtSessionTime(event.session_time)}
-                      </span>
-                      <span
-                        className="text-[11px] font-bold leading-snug"
-                        style={{ color: fmt.color }}
-                      >
-                        {fmt.label}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                        {compactEvents ? (
+                          <>
+                            <span
+                              className="text-[11px] font-bold leading-tight truncate min-w-0 flex-1"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
+                            </span>
+                            <span
+                              className="text-[9px] tabular-nums font-mono font-semibold shrink-0"
+                              style={{ color: `${fmt.color}aa` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className="text-[9px] tabular-nums font-mono font-semibold"
+                              style={{ color: `${fmt.color}aa` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                            <span
+                              className="text-[11px] font-bold leading-snug"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
         </div>
-      </div>
+      )}
 
     </div>
+  )}
+
+</div>
   )
 })
 export default SessionPanel

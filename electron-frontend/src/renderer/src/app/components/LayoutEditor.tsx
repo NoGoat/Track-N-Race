@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, Tab, TyresLayout } from '../appConfig'
 import { useModalPresence } from '../../lib/useModalPresence'
 
 interface LayoutEditorProps {
@@ -8,11 +8,13 @@ interface LayoutEditorProps {
   inputLayout: InputLayout
   miscLayout: MiscLayout
   powerLayout: PowerLayout
+  sessionLayout: SessionLayout
   setCoreLayout: (layout: CoreLayout) => void
   setEditOpen: (open: boolean) => void
   setInputLayout: (layout: InputLayout) => void
   setMiscLayout: (layout: MiscLayout) => void
   setPowerLayout: (layout: PowerLayout) => void
+  setSessionLayout: (layout: SessionLayout) => void
   setTyresLayout: (layout: TyresLayout) => void
   tab: Tab
   tyreView: 'cards' | 'graphs'
@@ -21,10 +23,10 @@ interface LayoutEditorProps {
 }
 
 export default function LayoutEditor(props: LayoutEditorProps) {
-  const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, setCoreLayout,
-    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setTyresLayout,
+  const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, sessionLayout, setCoreLayout,
+    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setTyresLayout,
     tab, tyreView, tyreWearMode, tyresLayout } = props
-  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
+  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session'
   const modalPresence = useModalPresence(editOpen && editableTab)
   return (
     <>
@@ -43,7 +45,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest">
-                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : 'Edit Overview Layout'}
+                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : tab === 'session' ? 'Edit Session Layout' : 'Edit Overview Layout'}
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-secondary)] mt-1 uppercase tracking-wider">Toggle sections to show or hide</div>
               </div>
@@ -57,7 +59,162 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
             {/* Body */}
             <div className="overflow-y-auto p-6 flex flex-col gap-6">
-              {tab === 'tyres' ? (<>
+              {tab === 'session' ? (<>
+
+                <div className="flex flex-col gap-6">
+                  {/* Screen Layout Schematic */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Screen Layout Schematic</div>
+                    <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] bg-[var(--bg-input)] divide-y divide-[var(--border)]">
+
+                      {/* 1. Header Components */}
+                      <div className="w-full flex divide-x divide-[var(--border)]">
+                        <button
+                          onClick={() => setSessionLayout({ ...sessionLayout, header: { ...sessionLayout.header, gpName: !sessionLayout.header.gpName } })}
+                          className={`h-14 w-60 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            sessionLayout.header.gpName
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">GP & Circuit</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.header.gpName ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {sessionLayout.header.gpName ? 'ON' : 'OFF'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => setSessionLayout({ ...sessionLayout, header: { ...sessionLayout.header, marshalZones: !sessionLayout.header.marshalZones } })}
+                          className={`h-14 flex-1 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            sessionLayout.header.marshalZones
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">Marshal Zones</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.header.marshalZones ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {sessionLayout.header.marshalZones ? 'ON' : 'OFF'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => setSessionLayout({ ...sessionLayout, header: { ...sessionLayout.header, timeLeft: !sessionLayout.header.timeLeft } })}
+                          className={`h-14 w-48 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            sessionLayout.header.timeLeft
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">Time Left</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.header.timeLeft ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {sessionLayout.header.timeLeft ? 'ON' : 'OFF'}
+                          </span>
+                        </button>
+                      </div>
+
+                      {/* 2. Stat Cards Row */}
+                      <div className="w-full flex divide-x divide-[var(--border)]">
+                        {([
+                          { key: 'totalLaps',     label: 'Total Laps' },
+                          { key: 'lapsRemaining', label: 'Laps Rem'   },
+                          { key: 'pitSpeedLimit', label: 'Pit Speed'  },
+                          { key: 'pitWindow',     label: 'Pit Window' },
+                          { key: 'pitRejoin',     label: 'Rejoin'     },
+                          { key: 'trackTemp',     label: 'Track Temp' },
+                          { key: 'airTemp',       label: 'Air Temp'   },
+                          { key: 'trackLength',   label: 'Track Len'  },
+                          { key: 'timeOfDay',     label: 'Time/Day'   },
+                        ] as { key: keyof SessionLayout['statsCards']; label: string }[]).map(({ key, label }) => {
+                          const on = sessionLayout.statsCards[key]
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => setSessionLayout({ ...sessionLayout, statsCards: { ...sessionLayout.statsCards, [key]: !on } })}
+                              className={`flex-1 py-4 flex flex-col items-center justify-center rounded-none font-mono text-[10px] font-bold transition-all relative ${
+                                on
+                                  ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                  : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                              }`}
+                            >
+                              <span>{label}</span>
+                              <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                                {on ? 'ON' : 'OFF'}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+
+                      {/* 3. Main Area (Left: Map & Weather; Right: Proximity & Events) */}
+                      <div className="w-full flex divide-x divide-[var(--border)]">
+                        {/* Left Column: Track Map on top, Weather Strip on bottom */}
+                        <div className="flex-1 flex flex-col divide-y divide-[var(--border)]">
+                          <button
+                            onClick={() => setSessionLayout({ ...sessionLayout, showMap: !sessionLayout.showMap })}
+                            className={`h-48 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                              sessionLayout.showMap
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="text-sm font-bold uppercase tracking-wider">Track Map</span>
+                            <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${sessionLayout.showMap ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {sessionLayout.showMap ? 'ACTIVE' : 'HIDDEN'}
+                            </span>
+                          </button>
+
+                          <button
+                            onClick={() => setSessionLayout({ ...sessionLayout, showWeather: !sessionLayout.showWeather })}
+                            className={`h-20 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                              sessionLayout.showWeather
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider">Weather Forecast Strip</span>
+                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.showWeather ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {sessionLayout.showWeather ? 'ACTIVE' : 'HIDDEN'}
+                            </span>
+                          </button>
+                        </div>
+
+                        {/* Right Column: Proximity on top, Events on bottom */}
+                        <div className="w-64 flex flex-col divide-y divide-[var(--border)]">
+                          <button
+                            onClick={() => setSessionLayout({ ...sessionLayout, showProximity: !sessionLayout.showProximity })}
+                            className={`flex-1 min-h-[136px] flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                              sessionLayout.showProximity
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider">Proximity</span>
+                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.showProximity ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {sessionLayout.showProximity ? 'ACTIVE' : 'HIDDEN'}
+                            </span>
+                          </button>
+
+                          <button
+                            onClick={() => setSessionLayout({ ...sessionLayout, showEvents: !sessionLayout.showEvents })}
+                            className={`flex-1 min-h-[136px] flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                              sessionLayout.showEvents
+                                ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                                : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                            }`}
+                          >
+                            <span className="text-xs font-bold uppercase tracking-wider">Events Log</span>
+                            <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${sessionLayout.showEvents ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                              {sessionLayout.showEvents ? 'ACTIVE' : 'HIDDEN'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                </div>
+
+              </>) : tab === 'tyres' ? (<>
 
                 <div className="flex flex-col gap-2">
                   <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts (Graph View)</div>

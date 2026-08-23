@@ -72,6 +72,8 @@ public:
     void    setCompactSection(tnr::CompactSection s, bool on);
     int     weatherCompactLevel() const;
     void    setWeatherCompactLevel(int level);
+    int     headerCompactLevel() const;
+    void    setHeaderCompactLevel(int level);
     // Overview tyre cards have four density levels (0 Full … 3 Ultra Compact 2),
     // so they use an int level rather than the on/off compactSection() path.
     int     tyresCompactLevel() const { return settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(); }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAppConfig } from '../../hooks/useAppConfig'
 import { configureChartFrameRates, type ChartFrameRate } from '../../lib/timechart/frameRate'
 import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
-import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
+import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type SessionLayout, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
@@ -20,6 +20,7 @@ export function useAppConfiguration() {
   const [inputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
   const [miscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
+  const [rawSessionLayout, setSessionLayout] = useAppConfig<SessionLayout>('sessionLayout', DEFAULT_SESSION_LAYOUT)
   const [rawTyresLayout, setTyresLayout] = useAppConfig<TyresLayout>('tyresLayout', DEFAULT_TYRES_LAYOUT)
   const [rawGraphView, setGraphView] = useAppConfig<GraphViewState>('graphView', DEFAULT_GRAPH_VIEW)
   const [rawCompact, setCompact] = useAppConfig<CompactState>('compact', DEFAULT_COMPACT)
@@ -54,11 +55,19 @@ export function useAppConfiguration() {
     charts: { ...DEFAULT_POWER_LAYOUT.charts, ...(rawPowerLayout?.charts ?? {}) },
   }), [rawPowerLayout])
   const tyresLayout = useMemo<TyresLayout>(() => ({ charts: { ...DEFAULT_TYRES_LAYOUT.charts, ...(rawTyresLayout?.charts ?? {}) } }), [rawTyresLayout])
+  const sessionLayout = useMemo<SessionLayout>(() => ({
+    ...DEFAULT_SESSION_LAYOUT,
+    ...(rawSessionLayout ?? {}),
+    header: { ...DEFAULT_SESSION_LAYOUT.header, ...(rawSessionLayout?.header ?? {}) },
+    statsCards: { ...DEFAULT_SESSION_LAYOUT.statsCards, ...(rawSessionLayout?.statsCards ?? {}) },
+  }), [rawSessionLayout])
   const graphView = useMemo<GraphViewState>(() => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
   const compact = useMemo<CompactState>(() => {
     const merged = { ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }
     const legacyWeather = (rawCompact as unknown as { sessionWeather?: unknown } | null)?.sessionWeather
-    merged.sessionWeather = typeof legacyWeather === 'boolean' ? (legacyWeather ? 2 : 0) : Math.max(0, Math.min(2, Number(merged.sessionWeather) || 0))
+    merged.sessionWeather = typeof legacyWeather === 'boolean' ? (legacyWeather ? 2 : 0) : Math.max(0, Math.min(3, Number(merged.sessionWeather) || 0))
+    const legacyHeader = (rawCompact as unknown as { sessionHeader?: unknown } | null)?.sessionHeader
+    merged.sessionHeader = typeof legacyHeader === 'boolean' ? (legacyHeader ? 1 : 0) : Math.max(0, Math.min(2, Number(merged.sessionHeader) || 0))
     return merged
   }, [rawCompact])
   const chartYAxis = useMemo<ChartYAxisState>(() => {
@@ -78,11 +87,11 @@ export function useAppConfiguration() {
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
-    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
+    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSectorColors, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    setSectorColors, setSessionLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }
 }

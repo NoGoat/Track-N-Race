@@ -468,10 +468,15 @@ QWidget* SettingsDialog::buildCompactPage() {
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
         } else if (s == tnr::CompactSection::SessionWeather) {
-            addSeg("Normal"); addSeg("Compact 1"); addSeg("Compact 2");
+            addSeg("Normal"); addSeg("Compact 1"); addSeg("Compact 2"); addSeg("Compact 3");
             group->button(mainWindow_->weatherCompactLevel())->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setWeatherCompactLevel(idx); });
+        } else if (s == tnr::CompactSection::SessionHeader) {
+            addSeg("Normal"); addSeg("Compact 1"); addSeg("Compact 2");
+            group->button(mainWindow_->headerCompactLevel())->setChecked(true);
+            connect(group, &QButtonGroup::idClicked, this,
+                    [this](int idx) { mainWindow_->setHeaderCompactLevel(idx); });
         } else {
             addSeg("Normal"); addSeg("Compact");
             group->button(mainWindow_->compactSection(s) ? 1 : 0)->setChecked(true);
@@ -492,6 +497,8 @@ QWidget* SettingsDialog::buildCompactPage() {
         { tnr::CompactSection::OverviewDamage,  "Overview", "Damage cards" },
         { tnr::CompactSection::OverviewTyres,   "Overview", "Tyre cards" },
         { tnr::CompactSection::SessionCards,    "Session",  "Info cards" },
+        { tnr::CompactSection::SessionProximity, "Session", "Proximity" },
+        { tnr::CompactSection::SessionEvents,   "Session",  "Events" },
         { tnr::CompactSection::SessionWeather,  "Session",  "Weather strip" },
         { tnr::CompactSection::SessionHeader,   "Session",  "Header" },
         { tnr::CompactSection::PowerCards,      "Power",    "Cards" },
@@ -563,7 +570,9 @@ QWidget* SettingsDialog::buildCompactPage() {
                 ? mainWindow_->tyresCompactLevel() != 0
                 : c.s == tnr::CompactSection::SessionWeather
                     ? mainWindow_->weatherCompactLevel() != 0
-                    : mainWindow_->compactSection(c.s);
+                    : c.s == tnr::CompactSection::SessionHeader
+                        ? mainWindow_->headerCompactLevel() != 0
+                        : mainWindow_->compactSection(c.s);
             if (compact) return true;
         }
         return false;
@@ -584,6 +593,10 @@ QWidget* SettingsDialog::buildCompactPage() {
             } else if (c.s == tnr::CompactSection::SessionWeather) {
                 const int lvl = makeCompact ? 1 : 0;
                 mainWindow_->setWeatherCompactLevel(lvl);
+                c.group->button(lvl)->setChecked(true);
+            } else if (c.s == tnr::CompactSection::SessionHeader) {
+                const int lvl = makeCompact ? 1 : 0;
+                mainWindow_->setHeaderCompactLevel(lvl);
                 c.group->button(lvl)->setChecked(true);
             } else {
                 mainWindow_->setCompactSection(c.s, makeCompact);

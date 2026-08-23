@@ -18,7 +18,7 @@ import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
 import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 
 // The tab content is the only part of the UI that consumes the hot (per-frame)
@@ -34,6 +34,7 @@ interface TabContentProps {
   seconds: number
   coreLayout: CoreLayout
   powerLayout: PowerLayout
+  sessionLayout: SessionLayout
   tyresLayout: TyresLayout
   inputLayout: InputLayout
   miscLayout: MiscLayout
@@ -59,7 +60,7 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, tyresLayout, inputLayout, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, tyresLayout, inputLayout, miscLayout,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
@@ -173,7 +174,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       )}
       {tab === 'session' && (
         <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
-          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} />
+          <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} compactEvents={compact.sessionEvents} compactProximity={compact.sessionProximity} layout={sessionLayout} />
         </div>
       )}
       {tab === 'input' && (

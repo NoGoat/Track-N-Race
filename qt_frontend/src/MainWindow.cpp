@@ -10,6 +10,7 @@
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
+#include "components/EditSessionLayoutDialog.h"
 #include "components/OverviewPage.h"
 #include "components/AnalyzePage.h"
 #include "components/StandingsPage.h"
@@ -171,6 +172,10 @@ MainWindow::MainWindow(QWidget* parent)
             EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(miscPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == Session) {
+            EditSessionLayoutDialog* dlg = new EditSessionLayoutDialog(sessionPage_, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
         }
     });
     connect(toolbar_, &AppToolbar::settingsRequested, this, [this] {
@@ -286,7 +291,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
-                                       currentPage_ == Power || currentPage_ == Misc);
+                                       currentPage_ == Power || currentPage_ == Misc ||
+                                       currentPage_ == Session);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
         flushUiRefresh();
     });
@@ -751,13 +757,33 @@ int MainWindow::weatherCompactLevel() const {
 #endif
     // The former boolean Compact layout is now named Compact 2.
     if (legacyBool) return value.toBool() ? 2 : 0;
-    return qBound(0, value.toInt(), 2);
+    return qBound(0, value.toInt(), 3);
 }
 
 void MainWindow::setWeatherCompactLevel(int level) {
-    level = qBound(0, level, 2);
+    level = qBound(0, level, 3);
     settings.setValue(tnr::compactKey(tnr::CompactSection::SessionWeather), level);
     if (sessionPage_) sessionPage_->setWeatherCompactLevel(level);
+    dirtySession_ = true;
+    scheduleUiRefresh();
+}
+
+int MainWindow::headerCompactLevel() const {
+    const QVariant value = settings.value(
+        tnr::compactKey(tnr::CompactSection::SessionHeader), 0);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const bool legacyBool = value.metaType().id() == QMetaType::Bool;
+#else
+    const bool legacyBool = value.type() == QVariant::Bool;
+#endif
+    if (legacyBool) return value.toBool() ? 1 : 0;
+    return qBound(0, value.toInt(), 2);
+}
+
+void MainWindow::setHeaderCompactLevel(int level) {
+    level = qBound(0, level, 2);
+    settings.setValue(tnr::compactKey(tnr::CompactSection::SessionHeader), level);
+    if (sessionPage_) sessionPage_->setHeaderCompactLevel(level);
     dirtySession_ = true;
     scheduleUiRefresh();
 }
@@ -765,6 +791,10 @@ void MainWindow::setWeatherCompactLevel(int level) {
 void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
     if (s == tnr::CompactSection::SessionWeather) {
         setWeatherCompactLevel(on ? 1 : 0);
+        return;
+    }
+    if (s == tnr::CompactSection::SessionHeader) {
+        setHeaderCompactLevel(on ? 1 : 0);
         return;
     }
     settings.setValue(tnr::compactKey(s), on);
@@ -778,8 +808,10 @@ void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
         case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageCompact(on); break;
         case CS::OverviewTyres:   setTyresCompactLevel(on ? 1 : 0); return;   // tyres use the int-level path
         case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsCompact(on);   dirtySession_  = true; break;
+        case CS::SessionProximity: if (sessionPage_) sessionPage_->setProximityCompact(on); dirtySession_ = true; break;
+        case CS::SessionEvents:   if (sessionPage_)  sessionPage_->setEventsCompact(on);  dirtyEvents_   = true; break;
         case CS::SessionWeather:  break; // handled by the integer-level path above
-        case CS::SessionHeader:   if (sessionPage_)  sessionPage_->setHeaderCompact(on);  dirtySession_  = true; break;
+        case CS::SessionHeader:   break; // handled by the integer-level path above
         case CS::PowerCards:      if (powerPage_)    powerPage_->setCompactMode(on);      dirtyPower_    = true; break;
         case CS::StrategySummary: if (strategyPage_) strategyPage_->setCompactMode(on);   dirtyStrategy_ = true; break;
         default: break;

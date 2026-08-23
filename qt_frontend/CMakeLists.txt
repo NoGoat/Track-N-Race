@@ -138,6 +138,8 @@ set(SOURCES
     src/components/MiscPage.cpp
     src/components/EditMiscLayoutDialog.h
     src/components/EditMiscLayoutDialog.cpp
+    src/components/EditSessionLayoutDialog.h
+    src/components/EditSessionLayoutDialog.cpp
     src/components/PowerChartsWidget.cpp
     src/components/PowerChartsWidget.h
     src/components/InputChartsWidget.cpp

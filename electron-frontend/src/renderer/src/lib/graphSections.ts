@@ -109,18 +109,23 @@ export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
 
 // ── Compact density ─────────────────────────────────────────────────────────
 
-// 6 boolean sections + two integer density controls. overviewTyres has six levels:
+// 5 boolean sections + three integer density controls. overviewTyres has six levels:
 //   0 Normal, 1–4 native Compact 1–4, 5 = the app's existing height-derived
 //   compact tyre-card layout, kept as a selectable level.
-// sessionWeather has three levels: 0 Normal, 1 Compact 1 (icons), and
-// 2 Compact 2 (the original icon-free single-line compact layout).
+// sessionWeather has four levels: 0 Normal, 1 Compact 1 (icons),
+// 2 Compact 2 (the original icon-free single-line compact layout), and
+// 3 Compact 3 (the single-line compact layout: [Icon] Condition ... +Time Rain%).
+// sessionHeader has three levels: 0 Normal, 1 Compact 1 (with Zones label),
+// 2 Compact 2 (removes Zones label, marshal strip stretches full width).
 export interface CompactState {
   overviewStats:   boolean
   overviewDamage:  boolean
   overviewTyres:   number
   sessionCards:    boolean
+  sessionProximity: boolean
+  sessionEvents:   boolean
   sessionWeather:  number
-  sessionHeader:   boolean
+  sessionHeader:   number
   powerCards:      boolean
   strategySummary: boolean
   playbackBar:     boolean
@@ -131,8 +136,10 @@ export const DEFAULT_COMPACT: CompactState = {
   overviewDamage:  false,
   overviewTyres:   0,
   sessionCards:    false,
+  sessionProximity: false,
+  sessionEvents:   false,
   sessionWeather:  0,
-  sessionHeader:   false,
+  sessionHeader:   0,
   powerCards:      false,
   strategySummary: false,
   playbackBar:     false,
@@ -140,7 +147,7 @@ export const DEFAULT_COMPACT: CompactState = {
 
 // Boolean (Normal/Compact) compact sections — the integer controls are handled
 // separately because they expose more than two density levels.
-export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather'>
+export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather' | 'sessionHeader'>
 
 export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; label: string }[] }[] = [
   { group: 'Overview', sections: [
@@ -149,8 +156,10 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
     // overviewTyres (Tyre Cards) rendered as the 6-level control in Settings.
   ] },
   { group: 'Session', sections: [
-    { key: 'sessionCards',   label: 'Info Cards' },
-    { key: 'sessionHeader',  label: 'Header' },
+    { key: 'sessionCards',     label: 'Info Cards' },
+    { key: 'sessionProximity', label: 'Proximity' },
+    { key: 'sessionEvents',    label: 'Events' },
+    // sessionHeader and sessionWeather rendered as integer-level controls in Settings.
   ] },
   { group: 'Power', sections: [
     { key: 'powerCards', label: 'Power Cards' },
@@ -176,6 +185,13 @@ export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
 ]
 
 export const WEATHER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'Normal' },
+  { value: 1, label: 'Compact 1' },
+  { value: 2, label: 'Compact 2' },
+  { value: 3, label: 'Compact 3' },
+]
+
+export const HEADER_LEVEL_OPTIONS: { value: number; label: string }[] = [
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },
