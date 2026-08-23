@@ -4,11 +4,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include "tnrp/control_rows.h"
@@ -17,13 +19,15 @@
 
 namespace tnrp {
 
-namespace detail { class TnrdIndexedArchive; }
+namespace detail { class TnrdIndexedArchive; struct V4TimedRow; }
 
 // Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
 // header distinguishes V2 from V3.
-// Legacy formats decompress to a temp file and build a time/type index. V4/V5
-// opens only its uncompressed control plane and lazily reads indexed chunks.
+// Legacy formats decompress to a temp file and build a time/type index. In
+// Electron binary-playback mode V4/V5 use their asynchronous load phase to
+// validate every indexed chunk and build a compact seek cache; JSON-only hosts
+// retain the metadata-only/lazy-chunk path.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
@@ -74,6 +78,9 @@ public:
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
     void setCursor(float t);
+    // Prepare the indexed chunk frontier at the current cursor without
+    // emitting rows. Engine seek calls this before releasing its seek gate.
+    void primeCursor();
     std::vector<std::string> pullUntil(float t);
     std::vector<std::string> drainRest();
     bool hasMore() const;
@@ -90,24 +97,29 @@ public:
                         std::array<std::string, 16>* lastOfType = nullptr);
 
     // ── Seek support ─────────────────────────────────────────────────────────
-    std::vector<std::string> stateSnapshot(float t);
+    std::vector<std::string> stateSnapshot(float t,
+                                           const std::function<bool()>& cancelled = {});
     // Latest row of each requested type at/before t (backward index walk; reads
     // only matched lines). Used to restore status/damage/positions panels on seek.
-    std::vector<std::string> latestOfTypes(float t, const std::vector<uint8_t>& types);
+    std::vector<std::string> latestOfTypes(float t, const std::vector<uint8_t>& types,
+                                           const std::function<bool()>& cancelled = {});
     // Same walk as latestOfTypes but each line is returned tagged with its type
     // id, so the caller can key a per-type cache without re-scanning the JSON.
     std::vector<std::pair<uint8_t, std::string>> latestOfTypesTagged(
-        float t, const std::vector<uint8_t>& types);
+        float t, const std::vector<uint8_t>& types,
+        const std::function<bool()>& cancelled = {});
     std::vector<std::string> readRange(float fromTime, float toTime);
     // Derived strategy seek state. Replays only the strategy dependency rows in
     // chronological order, materializing reusable checkpoints at completed lap
     // boundaries. Checkpoints are never written to the recording.
-    StrategySnapshotRow strategySnapshotAt(float t, StrategyProcessor* restoredProcessor = nullptr);
+    StrategySnapshotRow strategySnapshotAt(float t, StrategyProcessor* restoredProcessor = nullptr,
+                                            const std::function<bool()>& cancelled = {});
     // Reconstruct deduplicated Car Damage state at the UDP specification's
     // fixed 10 Hz cadence. Each returned row has session_time rewritten to its
     // sample tick and carries the latest recorded state at/before that tick.
     std::vector<std::string> damageRowsAtCadence(
-        float fromTime, float toTime, bool includeFrom = true) const;
+        float fromTime, float toTime, bool includeFrom = true,
+        const std::function<bool()>& cancelled = {}) const;
     bool currentLapAt(float t, float& startOut, int& numOut) const;
 
     // Binary seek flush (requires setBinaryPlayback before load): the hot rows
@@ -124,7 +136,8 @@ public:
     SeekFlush seekFlush(float target, float currentLapStart, bool allHistory = false,
                         uint32_t requestedTypes = 0xFFFFFFFFu,
                         float windowSeconds = 0.0f,
-                        bool includeMandatoryState = true);
+                        bool includeMandatoryState = true,
+                        const std::function<bool()>& cancelled = {});
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
@@ -144,7 +157,23 @@ private:
     struct IndexEntry { FileOffset offset; float sessionTime; uint8_t type; };
     // A stored raw JSONL row plus its session_time (for ordering). The json is
     // emitted verbatim into the playback payload via glz::raw_json.
-    struct TimedRaw { float t; std::string json; };
+    struct TimedRaw { float t; std::string json; uint64_t sequence{}; };
+    struct PackedHistoryLane {
+        std::vector<uint8_t> bytes;
+        std::vector<float> times;
+        // One start per record plus a sentinel end offset.
+        std::vector<size_t> offsets;
+    };
+    struct V4PlaybackRow { float t; uint64_t sequence; std::string json; };
+    struct V4PlaybackLane {
+        std::vector<size_t> chunks;
+        size_t nextChunk{};
+        bool nextPrefetched{};
+        std::vector<V4PlaybackRow> rows;
+        size_t rowPos{};
+        float maxDecodedTime{};
+        float safeThrough{};
+    };
     struct LapBlock {
         int   lapNum;
         float startSessionTime;
@@ -166,9 +195,28 @@ private:
     std::FILE*  tempFile_    = nullptr;
     std::string tempPath_;
     std::unique_ptr<detail::TnrdIndexedArchive> indexedArchive_;
-    std::vector<TimedRaw> v4PlaybackRows_; // one lazily decompressed lap
-    size_t      v4PlaybackPos_ = 0;
+    // Load-time V4/V5 seek cache. Hot history is retained in the same compact
+    // packed form sent to Electron. Sparse rows stay as JSON because they are
+    // small and must be restored verbatim. Positions intentionally remain in
+    // the archive LRU: retaining every multi-car snapshot would dominate RAM.
+    std::array<PackedHistoryLane, 16> indexedPackedHistory_;
+    std::array<std::vector<TimedRaw>, 16> indexedSparseRows_;
+    bool indexedSeekCacheReady_ = false;
+    struct PackedSeekCacheEntry {
+        std::vector<uint8_t> bytes;
+        std::list<uint64_t>::iterator lru;
+    };
+    std::list<uint64_t> packedSeekLru_;
+    std::unordered_map<uint64_t, PackedSeekCacheEntry> packedSeekCache_;
+    size_t packedSeekCacheBytes_ = 0;
+    static constexpr size_t PACKED_SEEK_CACHE_LIMIT = 32ull * 1024ull * 1024ull;
+    std::array<V4PlaybackLane, 16> v4PlaybackLanes_;
     int         v4PlaybackLap_ = 0;
+    float       v4PlaybackCursor_ = 0.0f;
+    bool        v4PlaybackPrepared_ = false;
+    bool        v4PlaybackPrefetchOutstanding_ = false;
+    TimedRaw    v4PlaybackDamageState_;
+    bool        v4PlaybackDamageStateReady_ = false;
     uint32_t    playbackRowMask_ = 0xFFFFFFFFu;
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
@@ -212,6 +260,7 @@ private:
     size_t lowerBoundTime(float t) const;
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
+    bool buildIndexedSeekCache();
     bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
     std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
 
@@ -222,12 +271,17 @@ private:
     // One contiguous fread of the lines behind index_[fromIdx..toIdx) into
     // scratch_; returns bytes read (0 on failure/empty range).
     size_t readBlock(size_t fromIdx, size_t toIdx);
-    bool loadV4PlaybackLap(int lapNum);
+    void prepareV4PlaybackLap();
+    bool loadV4PlaybackFrontier(float throughTime);
+    void prefetchV4PlaybackChunk();
     bool forEachStrategyRow(
         float fromTime, float toTime, bool includeFrom,
-        const std::function<void(float, std::string_view)>& callback);
+        const std::function<void(float, std::string_view)>& callback,
+        const std::function<bool()>& cancelled = {});
     static bool encodeV4HotRow(uint8_t type, std::string_view json,
                                std::vector<uint8_t>& out);
+    bool encodeV4HotRowCached(const detail::V4TimedRow& row,
+                              std::vector<uint8_t>& out);
 };
 
 } // namespace tnrp

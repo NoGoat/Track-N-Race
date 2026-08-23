@@ -6,7 +6,8 @@ import type {
   AnalyzeLapData, PlaybackLapDataMsg,
   StrategySnapshotMsg,
 } from '../types'
-import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
+import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
+import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTask'
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
@@ -195,6 +196,34 @@ const pools = {
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
 const allLapsDataListeners = new Set<() => void>()
+let allLapsNotificationRunning = false
+let allLapsNotificationPending = false
+
+function scheduleAllLapsDataNotification(): void {
+  allLapsNotificationPending = true
+  if (allLapsNotificationRunning) return
+  allLapsNotificationRunning = true
+  const runCycle = (): void => {
+    allLapsNotificationPending = false
+    const listeners = [...allLapsDataListeners]
+    let index = 0
+    const runNext = (): void => {
+      if (index < listeners.length) {
+        try {
+          listeners[index++]()
+        } finally {
+          scheduleCooperativeTask(runNext)
+        }
+      } else if (allLapsNotificationPending) {
+        scheduleCooperativeTask(runCycle)
+      } else {
+        allLapsNotificationRunning = false
+      }
+    }
+    scheduleCooperativeTask(runNext)
+  }
+  runCycle()
+}
 
 let lapState: LapRow | null = null
 let lapNum: number | null = null
@@ -224,8 +253,36 @@ let finiteWindowBackfillEnabled = true
 let waitingForAllLapsHistory = false
 let historyRowMask = 0xFFFFFFFF
 let requestedHistoryRowMask = 0
+let seekTimelineGeneration = 0
+let seekRendererPending = false
+const historyCoverageStart = new Map<number, number>()
+const HISTORY_ROW_BITS = [
+  HISTORY_ROW.telemetry,
+  HISTORY_ROW.status,
+  HISTORY_ROW.damage,
+  HISTORY_ROW.lap,
+  HISTORY_ROW.motion,
+  HISTORY_ROW.motionEx,
+]
+
+function markHistoryCoverage(maskValue: unknown, startValue: unknown): void {
+  const mask = Number(maskValue) >>> 0
+  const start = Number(startValue)
+  if (!Number.isFinite(start)) return
+  for (const bit of HISTORY_ROW_BITS) {
+    if (mask & bit) historyCoverageStart.set(bit, Math.min(historyCoverageStart.get(bit) ?? Infinity, start))
+  }
+}
+
+function historyCovers(bit: number, requiredStart: number): boolean {
+  return (historyCoverageStart.get(bit) ?? Infinity) <= requiredStart + 1
+}
 
 function resetSession(): void {
+  // Invalidate a seek payload that is still being cooperatively decoded.
+  seekTimelineGeneration++
+  historyCoverageStart.clear()
+  seekRendererPending = false
   analyzeLapRevisionVal++
   telBufRef.current = []
   motBufRef.current = []
@@ -630,103 +687,20 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'playback_seek_flush_bin': {
-      const payload = msg as any
-      const allHistory = payload.allHistory === true
-      const priorTel = allHistory ? telBufRef.current : []
-      const priorMot = allHistory ? motBufRef.current : []
-      const priorMotEx = allHistory ? motExBufRef.current : []
-      const priorSts = allHistory ? stsBufRef.current : []
-      const priorDmg = allHistory ? dmgBufRef.current : []
-      const priorLapProgress = allHistory ? lapProgressBufRef.current : []
-      analyzeLapRevisionVal++
-      playbackDebug('seek-flush-received', {
-        lapNum: payload.lapNum,
-        currentLapStart: payload.currentLapStart,
-        revision: analyzeLapRevisionVal,
-        binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
-        coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : null,
-        fastestLapNum: playbackFastestLapNum || null,
+      void processPlaybackSeekFlush(msg as any).catch(error => {
+        console.error('Failed to decode playback seek flush:', error)
+        waitingForAllLapsHistory = false
+        if ((msg as any).authoritativeSeek !== false) seekRendererPending = false
+        recompute(DirtySlice.All)
+        const requestId = Number((msg as any).requestId)
+        if (Number.isFinite(requestId) && requestId > 0)
+          window.playerBridge.seekInstalled(requestId)
       })
-      // The rollover warm-up gate is only for naturally streaming lap changes.
-      // A seek flush is an authoritative replacement, and selecting an exact
-      // lap start can validly contain only one sample. Publish that short slice
-      // so paused charts clear the old lap instead of retaining/remapping it.
-      pendingAnalyzeLapReset = false
-      // A seek must restore indexed session metadata, not derive it from the
-      // first lap packet emitted around the new playhead position.
-      set({ fastestLapNum: playbackFastestLapNum || null })
-      lapStartTime = payload.currentLapStart
-      lapNum = payload.lapNum
-      lapTrackingActive = true
-      const tel: any[] = [], mot: any[] = [], motEx: any[] = []
-      for (const row of decodeBinaryBatch(payload.binary)) {
-        if (row.type === 'telemetry') tel.push(row)
-        else if (row.type === 'motion') mot.push(row)
-        else if (row.type === 'motion_ex') motEx.push(row)
-      }
-      const sts: any[] = [], dmg: any[] = [], lapProgress: LapProgressPoint[] = []
-      let lastLap: any = null
-      const coldJson = (payload.coldJson as string) || ''
-      let start = 0
-      while (start < coldJson.length) {
-        let end = coldJson.indexOf('\n', start)
-        if (end === -1) end = coldJson.length
-        if (end > start) {
-          try {
-            const row = JSON.parse(coldJson.slice(start, end))
-            if (row.type === 'status') sts.push(row)
-            else if (row.type === 'damage') dmg.push(row)
-            else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
-          } catch (e) {}
-        }
-        start = end + 1
-      }
-      if (allHistory) waitingForAllLapsHistory = false
-      const appendNewer = <T extends { session_time: number }>(base: T[], trailing: T[]): T[] => {
-        const lastTime = base[base.length - 1]?.session_time ?? -Infinity
-        for (const row of trailing) if (row.session_time > lastTime) base.push(row)
-        return base.length > MAX_ROWS ? base.slice(-MAX_ROWS) : base
-      }
-      telBufRef.current = appendNewer(tel, priorTel)
-      motBufRef.current = appendNewer(mot, priorMot)
-      motExBufRef.current = appendNewer(motEx, priorMotEx)
-      stsBufRef.current = appendNewer(sts, priorSts)
-      currentStintStartTime = findCurrentStintStart(stsBufRef.current)
-      dmgBufRef.current = appendNewer(dmg, priorDmg)
-      lapProgressBufRef.current = appendNewer(lapProgress, priorLapProgress)
-      playbackDebug('seek-flush-decoded', {
-        lapNum,
-        lapStartTime,
-        revision: analyzeLapRevisionVal,
-        telemetryRows: tel.length,
-        telemetryFirstTime: tel[0]?.session_time ?? null,
-        telemetryLastTime: tel[tel.length - 1]?.session_time ?? null,
-        motionRows: mot.length,
-        motionExRows: motEx.length,
-        statusRows: sts.length,
-        damageRows: dmg.length,
-        lapProgressRows: lapProgress.length,
-        lapProgressFirstTime: lapProgress[0]?.session_time ?? null,
-        lapProgressLastTime: lapProgress[lapProgress.length - 1]?.session_time ?? null,
-        lastLapNumber: lastLap?.current_lap_num ?? null,
-        lastLapTimeMs: lastLap?.current_lap_ms ?? null,
-      })
-      set({
-        ...(stsBufRef.current.length
-          ? { status: stsBufRef.current[stsBufRef.current.length - 1] }
-          : {}),
-        currentStintStartTime,
-      })
-      if (dmgBufRef.current.length) set({ damage: dmgBufRef.current[dmgBufRef.current.length - 1] })
-      if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
-      // Per-chart overrides can require both the complete current lap and a
-      // longer finite time window. The seek carries the lap range; request only
-      // the missing older finite prefix after inspecting the decoded bounds.
-      requestVisibleWindowHistory()
       break
     }
     case 'playback_seek_flush_failed':
       waitingForAllLapsHistory = false
+      seekRendererPending = false
       requestedHistoryRowMask = 0
       break
     case 'playback_lap_blocks': {
@@ -792,19 +766,8 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
       return (msg as RaceEventMsg).code === 'FLBK' ? DirtySlice.All : DirtySlice.Derived
     case 'playback_lap_blocks': return DirtySlice.Derived
     case 'playback_close':
-    case 'playback_seek_flush_failed':
-    case 'playback_seek_flush_bin': {
-      const mask = Number((msg as any).rowTypeMask)
-      if (!Number.isFinite(mask)) return DirtySlice.All
-      let dirty = DirtySlice.Derived
-      if (mask & HISTORY_ROW.telemetry) dirty |= DirtySlice.Telemetry
-      if (mask & HISTORY_ROW.motion) dirty |= DirtySlice.Motion
-      if (mask & HISTORY_ROW.motionEx) dirty |= DirtySlice.MotionEx
-      if (mask & HISTORY_ROW.status) dirty |= DirtySlice.Status
-      if (mask & HISTORY_ROW.damage) dirty |= DirtySlice.Damage
-      if (mask & HISTORY_ROW.lap) dirty |= DirtySlice.Lap
-      return dirty
-    }
+    case 'playback_seek_flush_failed': return DirtySlice.All
+    case 'playback_seek_flush_bin': return DirtySlice.None
     default: return DirtySlice.None
   }
 }
@@ -902,8 +865,152 @@ function recompute(dirty: DirtySlice): void {
   }
   set(next)
   if (allLapsMode && (dirty & (DirtySlice.Telemetry | DirtySlice.Motion | DirtySlice.MotionEx | DirtySlice.Status | DirtySlice.Damage))) {
-    for (const listener of allLapsDataListeners) listener()
+    scheduleAllLapsDataNotification()
   }
+}
+
+function dirtySliceForHistoryMask(value: unknown): DirtySlice {
+  const mask = Number(value)
+  if (!Number.isFinite(mask)) return DirtySlice.All
+  let dirty = DirtySlice.Derived
+  if (mask & HISTORY_ROW.telemetry) dirty |= DirtySlice.Telemetry
+  if (mask & HISTORY_ROW.motion) dirty |= DirtySlice.Motion
+  if (mask & HISTORY_ROW.motionEx) dirty |= DirtySlice.MotionEx
+  if (mask & HISTORY_ROW.status) dirty |= DirtySlice.Status
+  if (mask & HISTORY_ROW.damage) dirty |= DirtySlice.Damage
+  if (mask & HISTORY_ROW.lap) dirty |= DirtySlice.Lap
+  return dirty
+}
+
+async function processPlaybackSeekFlush(payload: any): Promise<void> {
+  const allHistory = payload.allHistory === true
+  const authoritative = payload.authoritativeSeek !== false
+  const generation = authoritative ? ++seekTimelineGeneration : seekTimelineGeneration
+  const cancelled = () => generation !== seekTimelineGeneration
+
+  playbackDebug('seek-flush-received', {
+    lapNum: payload.lapNum,
+    currentLapStart: payload.currentLapStart,
+    binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
+    coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : null,
+    fastestLapNum: playbackFastestLapNum || null,
+  })
+
+  if (authoritative) {
+    historyCoverageStart.clear()
+    // AL cleared these at seek-start. Other modes retain the last publication
+    // for display, but their working buffers must start collecting only rows
+    // from the newly committed timeline while the backfill decodes.
+    if (!allHistory) {
+      telBufRef.current = []
+      motBufRef.current = []
+      motExBufRef.current = []
+      stsBufRef.current = []
+      dmgBufRef.current = []
+      lapProgressBufRef.current = []
+    }
+    analyzeLapRevisionVal++
+    pendingAnalyzeLapReset = false
+    lapStartTime = payload.currentLapStart
+    lapNum = payload.lapNum
+    lapTrackingActive = true
+    set({ fastestLapNum: playbackFastestLapNum || null })
+  }
+
+  // Let Chromium service the input/paint that delivered this IPC message
+  // before allocating and decoding the history payload.
+  await yieldToMainThread()
+  if (cancelled()) return
+
+  const tel: TelemetryRow[] = []
+  const mot: MotionRow[] = []
+  const motEx: MotionExRow[] = []
+  const binary = payload.binary as Uint8Array | ArrayBuffer
+  const binaryLength = binary instanceof Uint8Array ? binary.byteLength : binary?.byteLength ?? 0
+  let binaryOffset = 0
+  while (binaryOffset < binaryLength) {
+    binaryOffset = decodeBinaryBatchRange(binary, row => {
+      if (row.type === 'telemetry') tel.push(row)
+      else if (row.type === 'motion') mot.push(row)
+      else if (row.type === 'motion_ex') motEx.push(row)
+    }, binaryOffset, 4096)
+    if (binaryOffset < binaryLength) {
+      await yieldToMainThread()
+      if (cancelled()) return
+    }
+  }
+
+  const sts: StatusRow[] = []
+  const dmg: DamageRow[] = []
+  const lapProgress: LapProgressPoint[] = []
+  let lastLap: LapRow | null = null
+  const coldJson = (payload.coldJson as string) || ''
+  let start = 0
+  let rowsSinceYield = 0
+  while (start < coldJson.length) {
+    let end = coldJson.indexOf('\n', start)
+    if (end === -1) end = coldJson.length
+    if (end > start) {
+      try {
+        const row = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow | LapRow
+        if (row.type === 'status') sts.push(row)
+        else if (row.type === 'damage') dmg.push(row)
+        else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
+      } catch (e) {}
+    }
+    start = end + 1
+    if (++rowsSinceYield >= 512 && start < coldJson.length) {
+      rowsSinceYield = 0
+      await yieldToMainThread()
+      if (cancelled()) return
+    }
+  }
+  if (cancelled()) return
+
+  // Rows streamed after the native seek committed accumulated while decoding.
+  // Append only that newer tail to the authoritative or additive backfill.
+  const appendNewer = <T extends { session_time: number }>(base: T[], trailing: T[]): T[] => {
+    const lastTime = base[base.length - 1]?.session_time ?? -Infinity
+    for (const row of trailing) if (row.session_time > lastTime) base.push(row)
+    return base.length > MAX_ROWS ? base.slice(-MAX_ROWS) : base
+  }
+  telBufRef.current = appendNewer(tel, telBufRef.current)
+  motBufRef.current = appendNewer(mot, motBufRef.current)
+  motExBufRef.current = appendNewer(motEx, motExBufRef.current)
+  stsBufRef.current = appendNewer(sts, stsBufRef.current)
+  dmgBufRef.current = appendNewer(dmg, dmgBufRef.current)
+  lapProgressBufRef.current = appendNewer(lapProgress, lapProgressBufRef.current)
+  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  if (allHistory) waitingForAllLapsHistory = false
+  markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
+
+  playbackDebug('seek-flush-decoded', {
+    lapNum,
+    lapStartTime,
+    revision: analyzeLapRevisionVal,
+    telemetryRows: tel.length,
+    telemetryFirstTime: tel[0]?.session_time ?? null,
+    telemetryLastTime: tel[tel.length - 1]?.session_time ?? null,
+    motionRows: mot.length,
+    motionExRows: motEx.length,
+    statusRows: sts.length,
+    damageRows: dmg.length,
+    lapProgressRows: lapProgress.length,
+    lastLapNumber: lastLap?.lap_num ?? null,
+    lastLapTimeMs: lastLap?.current_lap_ms ?? null,
+  })
+  set({
+    ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
+    ...(dmgBufRef.current.length ? { damage: dmgBufRef.current[dmgBufRef.current.length - 1] } : {}),
+    currentStintStartTime,
+  })
+  const latestLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  if (latestLap) { lapState = latestLap; set({ lap: latestLap }) }
+  recompute(dirtySliceForHistoryMask(payload.rowTypeMask))
+  requestVisibleWindowHistory()
+  if (authoritative) seekRendererPending = false
+  if (authoritative && Number.isFinite(Number(payload.requestId)) && Number(payload.requestId) > 0)
+    window.playerBridge.seekInstalled(Number(payload.requestId))
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -928,7 +1035,8 @@ function requestVisibleWindowHistory(): void {
     : Math.max(fileStart, lapStartTime)
   let missingMask = 0
   const missing = (bit: number, firstTime: number | undefined): void => {
-    if ((historyRowMask & bit) && (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
+    if ((historyRowMask & bit) && !historyCovers(bit, requiredStart) &&
+        (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
   }
   missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
   missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
@@ -965,7 +1073,8 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     const firstBlockStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
     if (Number.isFinite(firstBlockStart)) {
       const missing = (bit: number, firstTime: number | undefined): void => {
-        if ((historyRowMask & bit) && (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
+        if ((historyRowMask & bit) && !historyCovers(bit, firstBlockStart) &&
+            (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
       }
       missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
       missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
@@ -1055,6 +1164,10 @@ export function startTelemetryBridge(): void {
   started = true
 
   window.playerBridge.onSeekStart((allHistory) => {
+    // Freeze the published timeline immediately, before the seek IPC can race
+    // with already-queued playback batches. Electron main holds all rows from
+    // the new cursor until processPlaybackSeekFlush acknowledges installation.
+    seekRendererPending = true
     if (!allHistory) return
     // Keep the currently published arrays intact while the worker extracts the
     // new prefix. Fresh post-seek rows accumulate separately and are merged by
@@ -1069,6 +1182,9 @@ export function startTelemetryBridge(): void {
   })
 
   window.telemetryBridge.onBatch((batchStr: string) => {
+    if (seekRendererPending &&
+        !batchStr.includes('"type":"playback_close"') &&
+        !batchStr.includes('"type":"playback_loaded"')) return
     let dirty = DirtySlice.None
     let start = 0
     while (start < batchStr.length) {
@@ -1094,25 +1210,27 @@ export function startTelemetryBridge(): void {
   })
 
   window.telemetryBridge.onBinary((batch) => {
+    if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
-      for (const row of decodeBinaryBatch(batch)) {
+      forEachDecodedBinaryRow(batch, row => {
         const msg = row as GatewayMsg
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
-      }
+      })
     } catch (e) { console.error('Failed to decode binary batch:', e) }
     recompute(dirty)
   })
 
   window.telemetryBridge.onResume(({ binary, coldJson }) => {
+    if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
-      for (const row of decodeBinaryBatch(binary)) {
+      forEachDecodedBinaryRow(binary, row => {
         const msg = row as GatewayMsg
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
-      }
+      })
     } catch (e) { console.error('Failed to decode resume binary batch:', e) }
 
     let latestStatus: StatusRow | null = null

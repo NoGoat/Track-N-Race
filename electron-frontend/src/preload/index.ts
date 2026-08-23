@@ -113,6 +113,7 @@ const playerBridge = {
     seekStartListeners.add(callback)
     return () => { seekStartListeners.delete(callback) }
   },
+  seekInstalled: (requestId: number) => ipcRenderer.send('player:seek-installed', requestId),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
     ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),

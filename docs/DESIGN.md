@@ -153,9 +153,14 @@ intent so the per-packet fast path can skip the whole recording pipeline
 
 `load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
 Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
-time/type index. V4/V5 open only their uncompressed metadata, lap table, chunk
-directory, control summary, and commit footer; telemetry chunks are decompressed
-on demand through a bounded cache. Every selected indexed chunk is an independent job
+time/type index. V4/V5 first open their uncompressed metadata, lap table, chunk
+directory, control summary, and commit footer. JSON-only consumers then decompress
+telemetry chunks on demand through a bounded cache. Electron's binary-playback load
+uses its existing asynchronous loading overlay to validate every chunk once, retain
+compact packed hot-row seek lanes plus sparse state rows, discover all chunk time
+bounds, and materialize completed-lap strategy checkpoints. Raw decompressed JSON
+still remains bounded by the LRU rather than being duplicated for the whole session.
+Every selected indexed chunk is an independent job
 on an eight-worker reader pool, so long All Laps/range requests decode up to eight
 chunks in parallel regardless of row type. Concurrent consumers of the same chunk
 share one in-flight read and decompression before the result enters the LRU.
@@ -197,9 +202,18 @@ an absolute session_time cursor scaled by speed:
   extraction runs on a libuv worker, the seek payload views the reader's
   immutable packed store until one IPC-compatible V8 Buffer copy, and request ids
   discard superseded scrubs before renderer IPC/decode.
+  For V4/V5, the packed history and sparse rows come from the load-time warm cache,
+  so the first random seek does not pay JSON decompression/encoding or progressively
+  build strategy checkpoints.
   A request generation is registered before its worker is queued: playback is
   gated until that generation commits, so an overtaken worker cannot move the
-  cursor or leak stale future rows into the winning seek.
+  cursor or leak stale future rows into the winning seek. Electron adds a
+  delivery barrier across the seek, JSON, and binary IPC channels: queued rows
+  from the old cursor are discarded until the authoritative flush arrives,
+  rows produced while the renderer installs that flush are bounded and buffered,
+  and the renderer explicitly acknowledges the new timeline before those rows
+  are released. A seek is therefore published atomically instead of briefly
+  displaying samples from both sides of the cursor change.
 - **Lifecycle rows**: `playback_loaded` (with the file header, or `ok:false`),
   `playback_lap_blocks`, `protocol_status` for the clip's format (binary mode),
   `playback_state` on every transition, `playback_finished` at the end,

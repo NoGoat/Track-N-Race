@@ -515,6 +515,7 @@ declare global {
       setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
       setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => void
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
+      seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void
       getLapData: (lapNum: number, rowTypeMask?: number) => void
       getAllLapsData: (rowTypeMask?: number) => void

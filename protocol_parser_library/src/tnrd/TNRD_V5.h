@@ -33,12 +33,25 @@ public:
     float totalTime() const;
     int lapAt(float sessionTime) const;
 
+    void chunkIndicesForLap(uint32_t lap, V5RowTypeMask mask,
+                            std::vector<size_t>& out) const;
+    bool chunkTimeBounds(size_t chunkIndex, float& firstOut, float& lastOut) const;
+    void prefetchChunk(size_t chunkIndex);
+    void cancelPrefetch();
+    bool rowsForChunks(const std::vector<size_t>& chunkIndices,
+                       std::vector<std::vector<V5TimedRow>>& out,
+                       std::string* errorOut);
     bool rowsForLap(uint32_t lap, V5RowTypeMask mask,
                     std::vector<V5TimedRow>& out, std::string* errorOut);
+    bool rowsForLapRange(uint32_t lap, float fromTime, float toTime,
+                         V5RowTypeMask mask, std::vector<V5TimedRow>& out,
+                         std::string* errorOut, const IndexedCancelCheck& cancelled = {});
     bool rowsForRange(float fromTime, float toTime, V5RowTypeMask mask,
-                      std::vector<V5TimedRow>& out, std::string* errorOut);
+                      std::vector<V5TimedRow>& out, std::string* errorOut,
+                      const IndexedCancelCheck& cancelled = {});
     bool latestRows(float atTime, const std::vector<uint8_t>& types,
-                    std::vector<V5TimedRow>& out, std::string* errorOut);
+                    std::vector<V5TimedRow>& out, std::string* errorOut,
+                    const IndexedCancelCheck& cancelled = {});
     bool forEachChunk(V5RowTypeMask mask,
                       const std::function<bool(const V5ChunkInfo&, std::string_view)>& callback,
                       std::string* errorOut);

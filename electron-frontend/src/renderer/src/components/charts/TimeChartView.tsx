@@ -13,6 +13,7 @@ import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
+import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { themeSeriesColor } from '../../lib/themeColors'
 
@@ -458,6 +459,15 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   // --- feed new data ---
   const syncRowsRef = useRef<() => void>(() => {})
+  const syncTaskPendingRef = useRef(false)
+  const scheduleRowsSync = (): void => {
+    if (syncTaskPendingRef.current) return
+    syncTaskPendingRef.current = true
+    scheduleCooperativeTask(() => {
+      syncTaskPendingRef.current = false
+      syncRowsRef.current()
+    })
+  }
   syncRowsRef.current = () => {
     const bridge = bridgeRef.current
     const chart = chartRef.current
@@ -616,12 +626,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   }
 
   useEffect(() => {
-    syncRowsRef.current()
+    scheduleRowsSync()
   }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.historyRevision, coordinates.historyStartTime, coordinates.lapRevision, coordinates.progressRevision, coordinates.stintLapsMode, coordinates.trackLengthM])
 
   useEffect(() => {
     if (!coordinates.allLapsMode) return
-    return subscribeAllLapsData(() => syncRowsRef.current())
+    return subscribeAllLapsData(scheduleRowsSync)
   }, [coordinates.allLapsMode])
 
   useEffect(() => {

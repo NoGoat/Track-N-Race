@@ -72,6 +72,17 @@ int main() {
     const uint64_t afterFirstRead = archive.decompressedChunkCount();
     assert(archive.rowsForLap(1, tnrp::detail::v4TypeBit(1), lazyRows, &error));
     assert(archive.decompressedChunkCount() == afterFirstRead); // LRU hit
+    std::vector<tnrp::detail::V4TimedRow> narrowLapRows;
+    assert(archive.rowsForLapRange(1, 1.15f, 1.25f,
+        tnrp::detail::v4TypeBit(1) | tnrp::detail::v4TypeBit(2),
+        narrowLapRows, &error));
+    assert(narrowLapRows.size() == 1 && narrowLapRows.front().rowType == 2);
+    const uint64_t beforeCancelledRead = archive.decompressedChunkCount();
+    error.clear();
+    assert(!archive.rowsForRange(0.0f, 100.0f, 0xFFFFFFFFu, narrowLapRows,
+        &error, [] { return true; }));
+    assert(error == "indexed read cancelled");
+    assert(archive.decompressedChunkCount() == beforeCancelledRead);
     archive.setCacheLimitBytes(1);
     assert(archive.cacheBytes() <= 1);
     archive.close();
@@ -205,6 +216,12 @@ int main() {
     const auto finiteWindow = reader.seekFlush(
         91.15f, 91.0f, false, tnrp::detail::v4TypeBit(2), 100.0f, false);
     assert(finiteWindow.coldJson.find("\"fuel_kg\":50") != std::string::npos);
+    const auto packedWindow = reader.seekFlush(
+        91.15f, 91.0f, false, tnrp::detail::v4TypeBit(1), 100.0f, false);
+    const auto cachedPackedWindow = reader.seekFlush(
+        91.15f, 91.0f, false, tnrp::detail::v4TypeBit(1), 100.0f, false);
+    assert(packedWindow.binaryStore && cachedPackedWindow.binaryStore);
+    assert(*packedWindow.binaryStore == *cachedPackedWindow.binaryStore);
     const fs::path xlsxPath = longDir /
         "export_with_a_deliberately_long_filename_for_extended_windows_path_testing.xlsx";
     assert(reader.exportXlsx(loadedHeader, xlsxPath.string(), &error));
@@ -348,6 +365,14 @@ int main() {
     }));
     assert(corrupted.decompressedChunkCount() == 1);
     corrupted.close();
+    // Electron's binary-playback load performs the complete warm pass while
+    // its loading overlay is visible, so latent payload corruption is rejected
+    // before the first seek instead of surfacing interactively.
+    tnrp::TnrdReader warmValidated;
+    warmValidated.setBinaryPlayback(true);
+    tnrp::HeaderRow warmHeader;
+    assert(!warmValidated.load(path.string(), warmHeader));
+    assert(!warmValidated.lastError().empty());
     std::error_code ec;
 #ifdef _WIN32
     fs::remove_all(fs::path(tnrp::detail::windowsExtendedPath(root.string())), ec);

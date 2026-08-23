@@ -123,6 +123,67 @@ let activeFilePath: string | null = null
 let onPlaybackState: ((state: PlaybackState) => void) | null = null
 let nextPlaybackRequestId = 0
 let latestSeekRequestId = 0
+type SeekForwardPhase = 'idle' | 'waiting-flush' | 'waiting-renderer'
+let seekForwardPhase: SeekForwardPhase = 'idle'
+let seekForwardRequestId = 0
+let seekBufferedBinary: Buffer[] = []
+let seekBufferedJson: string[] = []
+let seekBufferedBytes = 0
+const MAX_SEEK_FORWARD_BYTES = 64 * 1024 * 1024
+
+function resetSeekForwarding(): void {
+  seekForwardPhase = 'idle'
+  seekForwardRequestId = 0
+  seekBufferedBinary = []
+  seekBufferedJson = []
+  seekBufferedBytes = 0
+}
+
+function trimSeekForwardBuffer(): void {
+  while (seekBufferedBytes > MAX_SEEK_FORWARD_BYTES && seekBufferedBinary.length > 0) {
+    seekBufferedBytes -= seekBufferedBinary[0].byteLength
+    seekBufferedBinary.shift()
+  }
+  while (seekBufferedBytes > MAX_SEEK_FORWARD_BYTES && seekBufferedJson.length > 0) {
+    seekBufferedBytes -= Buffer.byteLength(seekBufferedJson[0])
+    seekBufferedJson.shift()
+  }
+}
+
+function bufferSeekJson(batch: string): void {
+  seekBufferedJson.push(batch)
+  seekBufferedBytes += Buffer.byteLength(batch)
+  trimSeekForwardBuffer()
+}
+
+function bufferSeekBinary(batch: Uint8Array): void {
+  const retained = Buffer.from(batch)
+  seekBufferedBinary.push(retained)
+  seekBufferedBytes += retained.byteLength
+  trimSeekForwardBuffer()
+}
+
+function releaseSeekForwarding(requestId: number): void {
+  if (seekForwardPhase !== 'waiting-renderer' || requestId !== seekForwardRequestId) return
+  const binary = seekBufferedBinary.length > 0 ? Buffer.concat(seekBufferedBinary) : null
+  const json = seekBufferedJson.join('')
+  resetSeekForwarding()
+  if (!rendererVisible) {
+    const now = performance.now()
+    if (binary?.length) {
+      const history = chartHistoryRecords(binary)
+      if (history.length > 0) hiddenBinary.push({ at: now, data: history })
+    }
+    if (json) cacheResumeJson(json, now)
+    trimResumeCache(now)
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (binary?.length) win.webContents.send('telemetry-binary', binary)
+    if (json) win.webContents.send('telemetry-batch', json)
+  }
+}
 
 function activeFilename(): string | null {
   return activeFilePath ? path.basename(activeFilePath) : null
@@ -146,6 +207,11 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // flight. Forward each real batch unchanged so display data keeps the engine's
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
+  if (seekForwardPhase === 'waiting-flush') return
+  if (seekForwardPhase === 'waiting-renderer') {
+    bufferSeekBinary(batch)
+    return
+  }
   if (rendererVisible) {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
@@ -271,7 +337,9 @@ export function startBridge(): string | null {
         batch.includes('"type":"playback_lap_blocks"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
-      if (rendererVisible || forwardWhileHidden) {
+      if (seekForwardPhase === 'waiting-renderer' && !forwardWhileHidden) {
+        bufferSeekJson(batch)
+      } else if (seekForwardPhase !== 'waiting-flush' && (rendererVisible || forwardWhileHidden)) {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
         }
@@ -308,7 +376,7 @@ export function startBridge(): string | null {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number) => {
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number) => {
       // Superseded scrubs are discarded before the large payload crosses IPC
       // or is decoded into renderer objects.
       // Authoritative scrubs supersede one another. History-family requests are
@@ -316,15 +384,18 @@ export function startBridge(): string | null {
       // newer authoritative seek/load invalidated their timeline.
       if (authoritativeSeek) {
         if (requestId !== 0 && requestId !== latestSeekRequestId) return
+        if (requestId !== 0 && requestId === seekForwardRequestId)
+          seekForwardPhase = 'waiting-renderer'
       } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
         clearResumeCache()
-        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask })
+        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart })
       } catch (error) {
         console.error('[bridge] Failed to forward playback seek history:', error)
         // Never leave the renderer's AL publication gate closed if IPC rejects
         // a payload. It can resume from the post-seek stream and retry later.
         broadcast({ type: 'playback_seek_flush_failed', requestId })
+        if (requestId === seekForwardRequestId) resetSeekForwarding()
       }
     })
 
@@ -356,6 +427,7 @@ export function stopBridge(): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
   clearResumeCache()
+  resetSeekForwarding()
   activeFilePath = null
   if (engine) {
     // Synchronous native barrier: preserve queued rows and the rolling buffer
@@ -390,6 +462,7 @@ export interface PlayerLoadResult { ok: boolean; error?: string }
 export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
   // Invalidate workers belonging to the previously loaded timeline.
   latestSeekRequestId = ++nextPlaybackRequestId
+  resetSeekForwarding()
   if (!engine) return { ok: false, error: 'The playback engine is not available.' }
   // Loading over an already-open clip: close it first so the renderer clears
   // its playback buffers (playback_close) before the new clip's rows arrive.
@@ -419,10 +492,22 @@ export function playerPause(): void { engine?.playerPause() }
 export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
   const requestId = ++nextPlaybackRequestId
   latestSeekRequestId = requestId
+  if (!engine) {
+    resetSeekForwarding()
+    return
+  }
+  seekForwardPhase = 'waiting-flush'
+  seekForwardRequestId = requestId
+  seekBufferedBinary = []
+  seekBufferedJson = []
+  seekBufferedBytes = 0
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
     console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
   }
-  engine?.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
+  engine.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
+}
+export function playerSeekInstalled(requestId: number): void {
+  releaseSeekForwarding(requestId)
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
 export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
@@ -444,6 +529,7 @@ export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask =
 }
 export function playerClose(): void {
   latestSeekRequestId = ++nextPlaybackRequestId
+  resetSeekForwarding()
   engine?.playerClose()
 }
 

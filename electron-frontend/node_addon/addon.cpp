@@ -437,7 +437,7 @@ public:
                      size_t binBegin, size_t binEnd, std::string&& coldJson,
                      float currentLapStart, int lapNum, bool allHistory,
                      uint64_t requestId, bool authoritativeSeek,
-                     uint32_t rowTypeMask) override {
+                     uint32_t rowTypeMask, float historyStart) override {
         if (!hasSeekCb_) return;
         struct SeekData {
             std::shared_ptr<const std::vector<uint8_t>> binStore;
@@ -450,10 +450,11 @@ public:
             uint64_t requestId;
             bool authoritativeSeek;
             uint32_t rowTypeMask;
+            float historyStart;
         };
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
                                 currentLapStart, lapNum, allHistory, requestId,
-                                authoritativeSeek, rowTypeMask };
+                                authoritativeSeek, rowTypeMask, historyStart };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 if (env != nullptr && cb != nullptr) {
@@ -470,7 +471,8 @@ public:
                               Napi::Boolean::New(env, d->allHistory),
                               Napi::Number::New(env, static_cast<double>(d->requestId)),
                               Napi::Boolean::New(env, d->authoritativeSeek),
-                              Napi::Number::New(env, d->rowTypeMask) });
+                              Napi::Number::New(env, d->rowTypeMask),
+                              Napi::Number::New(env, d->historyStart) });
                 }
                 delete d;
             });
@@ -628,14 +630,12 @@ private:
             const float windowSeconds = info.Length() >= 5 && info[4].IsNumber()
                 ? std::max(0.0f, info[4].As<Napi::Number>().FloatValue()) : 0.0f;
             engine->playerRequestSeek(requestId);
-            if (allHistory || windowSeconds > 0.0f) {
-                (new PlayerSeekWorker(info.Env(), engine,
-                    info[0].As<Napi::Number>().FloatValue(), allHistory, requestId,
-                    rowTypeMask, windowSeconds))->Queue();
-            } else {
-                engine->playerSeek(info[0].As<Napi::Number>().FloatValue(), false,
-                                   requestId, rowTypeMask, 0.0f);
-            }
+            // Every indexed seek can decompress, rebuild sparse state and prime
+            // the streaming frontier. Never charge that work to Electron's
+            // main thread, including current-lap/zero-window seeks.
+            (new PlayerSeekWorker(info.Env(), engine,
+                info[0].As<Napi::Number>().FloatValue(), allHistory, requestId,
+                rowTypeMask, windowSeconds))->Queue();
         }
         return info.Env().Undefined();
     }

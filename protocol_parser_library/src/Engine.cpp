@@ -397,6 +397,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
     std::shared_ptr<std::vector<uint8_t>> liveBackfillBinary;
     std::string liveBackfillJson;
     float liveBackfillLapStart = 0.0f;
+    float liveBackfillStart = 0.0f;
     int liveBackfillLapNum = 0;
     uint32_t liveBackfillMask = 0;
     {
@@ -420,6 +421,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         // derived row at subscription time so opening the tab never waits for the
         // next UDP packet (or playback tick).
         if (newlyEnabled & kStrategyRowBit) {
+            strategyRebuildPending_ = false;
             if (inPlayback_.load()) {
                 (void)reader_.strategySnapshotAt(currentTime_, &strategy_);
             }
@@ -479,6 +481,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
             }
             if (!liveBackfillJson.empty()) liveBackfillJson.pop_back();
             liveBackfillLapStart = liveLapStart_;
+            liveBackfillStart = fromTime;
             liveBackfillLapNum = liveLapNum_;
             liveBackfillMask = backfillMask;
             if (liveBackfillBinary->empty() && liveBackfillJson.empty())
@@ -492,7 +495,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         sink_->onSeekFlush(liveBackfillBinary, 0, binarySize,
                            std::move(liveBackfillJson), liveBackfillLapStart,
                            liveBackfillLapNum, true, 0, false,
-                           liveBackfillMask);
+                           liveBackfillMask, liveBackfillStart);
     }
 }
 
@@ -526,6 +529,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
             appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
+            strategyRebuildPending_ = false;
             // Playback suspends live ingest. Finalize the live recording on its
             // owner thread so it is complete and a later return to live starts
             // a fresh stream on the next session packet.
@@ -612,6 +616,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     float lapStart = 0.0f;
     int   lapNum   = 0;
     float target   = 0.0f;
+    float historyStart = 0.0f;
     std::string strategyMsg;
     TnrdReader::SeekFlush binFlush;
     std::vector<std::pair<uint8_t, std::string>> panels;
@@ -624,35 +629,51 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         target = start + std::clamp(pct, 0.0f, 1.0f) * dur;
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
+        historyStart = allHistory ? start
+            : windowSeconds > 0.0f ? std::max(start, target - windowSeconds)
+            : lapStart;
+        const auto cancelled = [this, requestId] {
+            return requestId != 0 && requestId !=
+                latestSeekRequestId_.load(std::memory_order_acquire);
+        };
         if (config_.binaryPlayback) {
             binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
-                                         windowSeconds, false);
+                                         windowSeconds, false, cancelled);
+            if (cancelled()) return;
             const uint32_t restoreMask = consumerRowMask_ & kRestoreRowMask &
                 (~rowTypeMask | kDupRowMask);
-            panels = reader_.latestOfTypesTagged(target, typesInMask(restoreMask));
+            panels = reader_.latestOfTypesTagged(target, typesInMask(restoreMask), cancelled);
+            if (cancelled()) return;
         } else {
-            state = reader_.stateSnapshot(target);
+            state = reader_.stateSnapshot(target, cancelled);
+            if (cancelled()) return;
         }
 
-        // Strategy is derived rather than stored. Fast-forward its small set of
-        // dependency rows to the target before publishing this seek generation,
-        // so playback cannot resume against strategy state from the old cursor.
+        const bool strategyVisible = (consumerRowMask_ & kStrategyRowBit) != 0;
         StrategyProcessor rebuiltStrategy;
-        StrategySnapshotRow rebuiltSnapshot =
-            reader_.strategySnapshotAt(target, &rebuiltStrategy);
-        std::string rebuiltStrategyJson = writeJson(rebuiltSnapshot);
+        std::string rebuiltStrategyJson;
+        if (strategyVisible) {
+            StrategySnapshotRow rebuiltSnapshot =
+                reader_.strategySnapshotAt(target, &rebuiltStrategy, cancelled);
+            rebuiltStrategyJson = writeJson(rebuiltSnapshot);
+        }
 
         // A newer request may have arrived while this worker was extracting a
         // large history or strategy prefix. An overtaken worker must not move
         // the cursor or seed playback rows from its obsolete target.
         if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
-        strategy_ = std::move(rebuiltStrategy);
-        liveLatestRows_[kStrategyRowType] = rebuiltStrategyJson;
-        lastStrategyJson_ = rebuiltStrategyJson;
-        if (consumerRowMask_ & kStrategyRowBit)
+        if (strategyVisible) {
+            strategy_ = std::move(rebuiltStrategy);
+            liveLatestRows_[kStrategyRowType] = rebuiltStrategyJson;
+            lastStrategyJson_ = rebuiltStrategyJson;
             strategyMsg = std::move(rebuiltStrategyJson);
+            strategyRebuildPending_ = false;
+        } else {
+            strategyRebuildPending_ = true;
+        }
         currentTime_ = target;
         reader_.setCursor(target);
+        reader_.primeCursor();
         if (config_.binaryPlayback) {
             dupCache_ = {};
             for (auto& [tid, line] : panels) dupCache_[tid] = line;
@@ -664,7 +685,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         if (sink_) sink_->onSeekFlush(std::move(binFlush.binaryStore), binFlush.binaryBegin,
                                       binFlush.binaryEnd, std::move(binFlush.coldJson),
                                       lapStart, lapNum, allHistory, requestId, true,
-                                      rowTypeMask);
+                                      rowTypeMask, historyStart);
         for (const auto& [tid, line] : panels) emitRow(line);
     } else {
         PlaybackSeekFlushRow flush;
@@ -699,6 +720,7 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     float lapStart = 0.0f;
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
+    float historyStart = 0.0f;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load() || !config_.binaryPlayback) return;
@@ -706,11 +728,12 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
         flush = reader_.seekFlush(target, lapStart, true, rowTypeMask);
+        historyStart = reader_.startTime();
     }
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
                                   lapStart, lapNum, true, requestId, false,
-                                  rowTypeMask);
+                                  rowTypeMask, historyStart);
 }
 
 void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
@@ -718,6 +741,7 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     float lapStart = 0.0f;
     int lapNum = 0;
     TnrdReader::SeekFlush flush;
+    float historyStart = 0.0f;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load() || !config_.binaryPlayback || windowSeconds < 0.0f) return;
@@ -726,13 +750,14 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
         reader_.currentLapAt(target, lapStart, lapNum);
         flush = reader_.seekFlush(target, lapStart, false, rowTypeMask, windowSeconds,
                                   false);
+        historyStart = std::max(reader_.startTime(), target - windowSeconds);
     }
     // Finite-window backfill is additive at the renderer just like an AL family
     // request; it does not move the playhead or replace newer buffered rows.
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
                                   lapStart, lapNum, true, requestId, false,
-                                  rowTypeMask);
+                                  rowTypeMask, historyStart);
 }
 
 void Engine::playerClose() {
@@ -744,6 +769,7 @@ void Engine::playerClose() {
         inPlayback_.store(false);
         playing_ = false;
         appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
+        strategyRebuildPending_ = false;
         if (config_.binaryPlayback) {
             dupCache_ = {};
             // Restore the live format's labels — playback may have switched
@@ -802,6 +828,11 @@ void Engine::playbackLoop() {
         bool finished = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
+            if (strategyRebuildPending_ &&
+                latestSeekRequestId_.load(std::memory_order_acquire) == appliedSeekRequestId_) {
+                strategyRebuildPending_ = false;
+                (void)rebuildPlaybackStrategyLocked(currentTime_);
+            }
             if (!playing_) continue;
             if (latestSeekRequestId_.load(std::memory_order_acquire) != appliedSeekRequestId_) continue;
             tickSeekRequestId = appliedSeekRequestId_;

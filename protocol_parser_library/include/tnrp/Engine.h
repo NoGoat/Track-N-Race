@@ -98,6 +98,7 @@ private:
     std::atomic<uint64_t> latestSeekRequestId_{0};
     std::atomic<uint64_t> latestRequirementsRequestId_{0};
     uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_
+    bool              strategyRebuildPending_ = false;
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
 

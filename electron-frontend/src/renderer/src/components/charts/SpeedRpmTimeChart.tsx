@@ -9,6 +9,7 @@ import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/c
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { playbackDebug } from '../../lib/playbackDebug'
+import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { themeSeriesColor } from '../../lib/themeColors'
 
@@ -302,6 +303,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   }, [comparisonStatuses, comparisonTelemetry, coordinates])
 
   const syncRowsRef = useRef<() => void>(() => {})
+  const syncTaskPendingRef = useRef(false)
+  const scheduleRowsSync = (): void => {
+    if (syncTaskPendingRef.current) return
+    syncTaskPendingRef.current = true
+    scheduleCooperativeTask(() => {
+      syncTaskPendingRef.current = false
+      syncRowsRef.current()
+    })
+  }
   syncRowsRef.current = () => {
     const buffer = bufferRef.current
     if (!buffer) return
@@ -351,12 +361,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   }
 
   useEffect(() => {
-    syncRowsRef.current()
+    scheduleRowsSync()
   }, [coordinates, telemetry, statuses, wake])
 
   useEffect(() => {
     if (!coordinates.allLapsMode) return
-    return subscribeAllLapsData(() => syncRowsRef.current())
+    return subscribeAllLapsData(scheduleRowsSync)
   }, [coordinates.allLapsMode])
 
   useEffect(() => {

@@ -40,7 +40,8 @@ public:
                              bool /*allHistory*/ = false,
                              uint64_t /*requestId*/ = 0,
                              bool /*authoritativeSeek*/ = true,
-                             uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu) {}
+                             uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu,
+                             float /*historyStart*/ = 0.0f) {}
 };
 
 } // namespace tnrp

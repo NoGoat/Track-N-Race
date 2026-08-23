@@ -58,10 +58,12 @@ struct V4TimedRow {
     uint8_t rowType{};
     uint64_t sequence{};
     std::string json;
+    uint32_t sourceOffset{};
 };
 
 using V4RowTypeMask = uint32_t;
 constexpr V4RowTypeMask v4TypeBit(uint8_t type) { return type < 32 ? (1u << type) : 0; }
+using IndexedCancelCheck = std::function<bool()>;
 
 // Common read-only interface for indexed chunked generations. Each format keeps
 // its own reader implementation while playback/export share the query surface.
@@ -77,9 +79,19 @@ public:
     virtual float startTime() const = 0;
     virtual float totalTime() const = 0;
     virtual int lapAt(float) const = 0;
+    virtual void chunkIndicesForLap(uint32_t, V4RowTypeMask, std::vector<size_t>&) const = 0;
+    virtual bool chunkTimeBounds(size_t, float&, float&) const = 0;
+    virtual void prefetchChunk(size_t) = 0;
+    virtual void cancelPrefetch() = 0;
+    virtual bool rowsForChunks(const std::vector<size_t>&,
+        std::vector<std::vector<V4TimedRow>>&, std::string*) = 0;
     virtual bool rowsForLap(uint32_t, V4RowTypeMask, std::vector<V4TimedRow>&, std::string*) = 0;
-    virtual bool rowsForRange(float, float, V4RowTypeMask, std::vector<V4TimedRow>&, std::string*) = 0;
-    virtual bool latestRows(float, const std::vector<uint8_t>&, std::vector<V4TimedRow>&, std::string*) = 0;
+    virtual bool rowsForLapRange(uint32_t, float, float, V4RowTypeMask,
+        std::vector<V4TimedRow>&, std::string*, const IndexedCancelCheck& = {}) = 0;
+    virtual bool rowsForRange(float, float, V4RowTypeMask, std::vector<V4TimedRow>&,
+        std::string*, const IndexedCancelCheck& = {}) = 0;
+    virtual bool latestRows(float, const std::vector<uint8_t>&, std::vector<V4TimedRow>&,
+        std::string*, const IndexedCancelCheck& = {}) = 0;
     virtual bool forEachChunk(V4RowTypeMask,
         const std::function<bool(const V4ChunkInfo&, std::string_view)>&, std::string*) = 0;
     virtual void setCacheLimitBytes(size_t) = 0;
@@ -107,12 +119,25 @@ public:
     float totalTime() const;
     int lapAt(float sessionTime) const;
 
+    void chunkIndicesForLap(uint32_t lap, V4RowTypeMask mask,
+                            std::vector<size_t>& out) const;
+    bool chunkTimeBounds(size_t chunkIndex, float& firstOut, float& lastOut) const;
+    void prefetchChunk(size_t chunkIndex);
+    void cancelPrefetch();
+    bool rowsForChunks(const std::vector<size_t>& chunkIndices,
+                       std::vector<std::vector<V4TimedRow>>& out,
+                       std::string* errorOut);
     bool rowsForLap(uint32_t lap, V4RowTypeMask mask,
                     std::vector<V4TimedRow>& out, std::string* errorOut);
+    bool rowsForLapRange(uint32_t lap, float fromTime, float toTime,
+                         V4RowTypeMask mask, std::vector<V4TimedRow>& out,
+                         std::string* errorOut, const IndexedCancelCheck& cancelled = {});
     bool rowsForRange(float fromTime, float toTime, V4RowTypeMask mask,
-                      std::vector<V4TimedRow>& out, std::string* errorOut);
+                      std::vector<V4TimedRow>& out, std::string* errorOut,
+                      const IndexedCancelCheck& cancelled = {});
     bool latestRows(float atTime, const std::vector<uint8_t>& types,
-                    std::vector<V4TimedRow>& out, std::string* errorOut);
+                    std::vector<V4TimedRow>& out, std::string* errorOut,
+                    const IndexedCancelCheck& cancelled = {});
     bool forEachChunk(V4RowTypeMask mask,
                       const std::function<bool(const V4ChunkInfo&, std::string_view)>& callback,
                       std::string* errorOut);

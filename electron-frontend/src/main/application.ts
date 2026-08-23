@@ -20,6 +20,7 @@ import {
   playerPlay,
   playerPause,
   playerSeek,
+  playerSeekInstalled,
   playerSetSpeed,
   playerGetLapData,
   playerGetAllLapsData,
@@ -208,6 +209,8 @@ ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
 ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number) =>
   playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds))
+ipcMain.on('player:seek-installed', (_event, requestId: number) =>
+  playerSeekInstalled(requestId))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
