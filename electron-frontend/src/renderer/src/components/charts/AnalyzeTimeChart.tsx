@@ -7,6 +7,7 @@ import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/c
 import { buildLapProgressMap, interpolateLapElapsed, type LapProgressMap } from '../../lib/lapDelta'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { themeSeriesColor } from '../../lib/themeColors'
+import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
 import type { AnalyzeLapData } from '../../types'
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
   deltaPositiveColor: string
   deltaNegativeColor: string
   zoomEnabled: boolean
+  realtimeCurrent: boolean
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
 }
@@ -88,7 +90,15 @@ function nearestIndex(data: SeriesData, x: number): number {
   return x - data.xAt(after - 1) <= data.xAt(after) - x ? after - 1 : after
 }
 
-function syncSource(buffer: AlignedDataBuffer, rows: any[], source: AnalyzeSource, origin: number, rebuild: boolean, scratch: Float64Array): boolean {
+function syncSource(
+  buffer: AlignedDataBuffer,
+  rows: any[],
+  source: AnalyzeSource,
+  origin: number,
+  rebuild: boolean,
+  scratch: Float64Array,
+  maxSessionTime: number,
+): boolean {
   const defs = METRICS_BY_SOURCE[source]
   if (rebuild) buffer.clear()
   if (rows.length === 0) {
@@ -110,7 +120,7 @@ function syncSource(buffer: AlignedDataBuffer, rows: any[], source: AnalyzeSourc
   // The same timestamp can continue arriving across separate renderer
   // updates. Replace the buffered value with the final row published for that
   // timestamp instead of retaining the first value or appending a duplicate X.
-  if (buffer.length && lo > 0 && rows[lo - 1].session_time - origin === lastX) {
+  if (buffer.length && lo > 0 && rows[lo - 1].session_time <= maxSessionTime && rows[lo - 1].session_time - origin === lastX) {
     const row = rows[lo - 1]
     let differs = false
     for (let channel = 0; channel < defs.length; channel++) {
@@ -135,6 +145,7 @@ function syncSource(buffer: AlignedDataBuffer, rows: any[], source: AnalyzeSourc
     let next = i + 1
     while (next < rows.length && rows[next].session_time === rows[i].session_time) next++
     const row = rows[next - 1]
+    if (row.session_time > maxSessionTime) break
     for (let channel = 0; channel < defs.length; channel++) {
       const def = defs[channel]
       const value = def.getValue(row)
@@ -160,6 +171,7 @@ function syncSourceDistance(
   rebuild: boolean,
   scratch: Float64Array,
   cursor: { value: number },
+  maxSessionTime: number,
 ): boolean {
   if (rebuild) { buffer.clear(); cursor.value = -Infinity }
   if (!progress || rows.length === 0) return rebuild
@@ -175,7 +187,7 @@ function syncSourceDistance(
     let next = i + 1
     while (next < rows.length && rows[next].session_time === rows[i].session_time) next++
     const row = rows[next - 1]
-    if (row.session_time > progress.maxSessionTime) break
+    if (row.session_time > progress.maxSessionTime || row.session_time > maxSessionTime) break
     cursor.value = row.session_time
     const distance = interpolateDistance(progress, row.session_time)
     if (!Number.isFinite(distance)) { i = next; continue }
@@ -231,6 +243,7 @@ function syncDelta(
   current: LapProgressMap | null,
   comparison: LapProgressMap | null,
   state: DeltaSampleState,
+  currentMaxDistance: number,
 ): { range: number; changed: boolean } {
   if (!current || !comparison) {
     const changed = positive.length > 0 || negative.length > 0
@@ -241,7 +254,7 @@ function syncDelta(
     negative.clear()
     return { range: 0.5, changed }
   }
-  const maxDistance = Math.min(current.maxDistance, comparison.maxDistance)
+  const maxDistance = Math.min(current.maxDistance, comparison.maxDistance, currentMaxDistance)
   if (maxDistance <= 0) return { range: state.renderedRange || 0.5, changed: false }
   const startDistance = state.samples.length
     ? state.samples[state.samples.length - 1][0] + DELTA_GRID_METRES
@@ -312,7 +325,7 @@ function fmtDistance(metres: number): string {
 export default function AnalyzeTimeChart({
   isDark, current, currentRevision, comparison, selected, primaryLabel, comparisonLabel,
   distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
-  zoomEnabled, controlsRef, onInspectMap,
+  zoomEnabled, realtimeCurrent, controlsRef, onInspectMap,
 }: Props) {
   const themedDeltaPositive = themeSeriesColor(deltaPositiveColor, isDark)
   const themedDeltaNegative = themeSeriesColor(deltaNegativeColor, isDark)
@@ -340,6 +353,8 @@ export default function AnalyzeTimeChart({
   const revisionsRef = useRef<Record<string, string>>({})
   const originsRef = useRef<Record<string, number>>({})
   const distanceCursorsRef = useRef<Record<string, { value: number }>>({})
+  const lastRealtimeCutoffRef = useRef(-Infinity)
+  const syncPlaybackCursorRef = useRef<(() => void) | null>(null)
   const scratchRef = useRef<Record<AnalyzeSource, Float64Array>>(Object.fromEntries(SOURCES.map(source => [source, new Float64Array(METRICS_BY_SOURCE[source].length)])) as Record<AnalyzeSource, Float64Array>)
   selectedRef.current = selected
   isDarkRef.current = isDark
@@ -692,88 +707,131 @@ export default function AnalyzeTimeChart({
   }, [comparison, distanceMode, isDark, selected, themedDeltaNegative, themedDeltaPositive])
 
   useEffect(() => {
+    let animationFrame = 0
+    const unsubscribe = subscribePlaybackCursor(() => {
+      if (!realtimeCurrent || animationFrame) return
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0
+        syncPlaybackCursorRef.current?.()
+      })
+    })
+    return () => {
+      unsubscribe()
+      if (animationFrame) cancelAnimationFrame(animationFrame)
+    }
+  }, [realtimeCurrent])
+
+  useEffect(() => {
     const chart = chartRef.current
     const buffers = buffersRef.current
     if (!chart || !buffers) return
+    // The indexed lap is immutable. Build its distance lookup once when the
+    // cache/revision changes, not on every playback-cursor animation frame.
     const progressByRole: Record<Role, LapProgressMap | null> = {
       current: distanceMode ? buildLapProgressMap(current) : null,
       comparison: distanceMode ? buildLapProgressMap(comparison) : null,
     }
-    let changed = false
-    for (const role of ['current', 'comparison'] as Role[]) {
-      const lap = role === 'current' ? current : comparison
-      for (const source of SOURCES) {
-        // Current-lap rows, lap metadata and the playback-state cursor arrive on
-        // separate channels. Keep the origin fixed for the lifetime of a lap;
-        // otherwise a one-frame metadata mismatch shifts every X value and
-        // alternates the chart between a full lap and a one-point rebuild.
-        const revision = lap
-          ? role === 'current'
-            ? `${distanceMode ? 'distance' : 'time'}:${currentRevision}:${source}`
-            : `${distanceMode ? 'distance' : 'time'}:${lap.lapNum}:${lap.startSessionTime}:${source}`
-          : `${distanceMode ? 'distance' : 'time'}:none:${source}`
-        const revisionKey = `${role}:${source}`
-        let rebuild = revisionsRef.current[revisionKey] !== revision
-        revisionsRef.current[revisionKey] = revision
-        if (rebuild) {
-          originsRef.current[revisionKey] = lap?.startSessionTime ?? 0
-        }
-        const rows = lap ? rowsFor(lap, source) : []
-        const buffer = buffers[role][source]
-        if (distanceMode) {
-          const cursor = distanceCursorsRef.current[revisionKey] ??= { value: -Infinity }
-          if (syncSourceDistance(
-            buffer, rows, source, progressByRole[role], rebuild,
-            scratchRef.current[source], cursor,
-          )) changed = true
-          continue
-        }
-        if (rows.length === 0) {
-          if (syncSource(buffer, rows, source, 0, rebuild, scratchRef.current[source])) changed = true
-          // Only an explicit revision is allowed to invalidate the origin.
-          // A normal cross-channel empty publication must remain a no-op.
-          if (role === 'current' && rebuild) originsRef.current[revisionKey] = NaN
-          continue
-        }
-        let origin = originsRef.current[revisionKey]
-        if (!Number.isFinite(origin)) {
-          origin = lap?.startSessionTime ?? 0
-          originsRef.current[revisionKey] = origin
-          rebuild = true
-        }
-        if (syncSource(buffer, rows, source, origin, rebuild, scratchRef.current[source])) changed = true
+    const syncData = () => {
+      const currentCutoff = realtimeCurrent ? getPlaybackCursorTime() ?? -Infinity : Infinity
+      const cursorRewound = realtimeCurrent &&
+        Number.isFinite(currentCutoff) &&
+        Number.isFinite(lastRealtimeCutoffRef.current) &&
+        currentCutoff < lastRealtimeCutoffRef.current
+      lastRealtimeCutoffRef.current = realtimeCurrent ? currentCutoff : -Infinity
+      if (cursorRewound) {
+        // Cursor notifications can beat the seek-flush revision by one frame.
+        // Force the current buffers to rebuild immediately so future samples
+        // from the old cursor are never left visible during that gap.
+        for (const source of SOURCES) revisionsRef.current[`current:${source}`] = ''
+        deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
       }
-    }
-    if (distanceMode) {
-      const deltaRevision = `${currentRevision}:${comparison?.lapNum ?? 0}:${comparison?.startSessionTime ?? 0}`
-      if (deltaSamplesRef.current.revision !== deltaRevision) {
-        deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0 }
+      let changed = false
+      for (const role of ['current', 'comparison'] as Role[]) {
+        const lap = role === 'current' ? current : comparison
+        const maxSessionTime = role === 'current' ? currentCutoff : Infinity
+        for (const source of SOURCES) {
+          // Current-lap rows, lap metadata and the playback-state cursor arrive on
+          // separate channels. Keep the origin fixed for the lifetime of a lap;
+          // otherwise a one-frame metadata mismatch shifts every X value and
+          // alternates the chart between a full lap and a one-point rebuild.
+          const revision = lap
+            ? role === 'current'
+              ? `${distanceMode ? 'distance' : 'time'}:${currentRevision}:${source}`
+              : `${distanceMode ? 'distance' : 'time'}:${lap.lapNum}:${lap.startSessionTime}:${source}`
+            : `${distanceMode ? 'distance' : 'time'}:none:${source}`
+          const revisionKey = `${role}:${source}`
+          let rebuild = revisionsRef.current[revisionKey] !== revision
+          revisionsRef.current[revisionKey] = revision
+          if (rebuild) {
+            originsRef.current[revisionKey] = lap?.startSessionTime ?? 0
+          }
+          const rows = lap ? rowsFor(lap, source) : []
+          const buffer = buffers[role][source]
+          if (distanceMode) {
+            const cursor = distanceCursorsRef.current[revisionKey] ??= { value: -Infinity }
+            if (syncSourceDistance(
+              buffer, rows, source, progressByRole[role], rebuild,
+              scratchRef.current[source], cursor, maxSessionTime,
+            )) changed = true
+            continue
+          }
+          if (rows.length === 0) {
+            if (syncSource(buffer, rows, source, 0, rebuild, scratchRef.current[source], maxSessionTime)) changed = true
+            // Only an explicit revision is allowed to invalidate the origin.
+            // A normal cross-channel empty publication must remain a no-op.
+            if (role === 'current' && rebuild) originsRef.current[revisionKey] = NaN
+            continue
+          }
+          let origin = originsRef.current[revisionKey]
+          if (!Number.isFinite(origin)) {
+            origin = lap?.startSessionTime ?? 0
+            originsRef.current[revisionKey] = origin
+            rebuild = true
+          }
+          if (syncSource(buffer, rows, source, origin, rebuild, scratchRef.current[source], maxSessionTime)) changed = true
+        }
       }
-      const deltaResult = syncDelta(
-        buffers.deltaPositive, buffers.deltaNegative,
-        progressByRole.current, progressByRole.comparison,
-        deltaSamplesRef.current,
-      )
-      deltaRangeRef.current = deltaResult.range
-      if (deltaResult.changed) changed = true
-    } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
-      deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
-      buffers.deltaPositive.clear()
-      buffers.deltaNegative.clear()
-      changed = true
-    }
-    if (!changed) return
-    let max = distanceMode && trackLengthM > 0 ? trackLengthM : 1
-    for (const role of ['current', 'comparison'] as Role[]) {
-      for (const source of SOURCES) {
-        const buffer = buffers[role][source]
-        if (buffer.length) max = Math.max(max, buffer.lastX)
+      if (distanceMode) {
+        const deltaRevision = `${currentRevision}:${comparison?.lapNum ?? 0}:${comparison?.startSessionTime ?? 0}`
+        if (deltaSamplesRef.current.revision !== deltaRevision) {
+          deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0 }
+        }
+        const currentProgress = progressByRole.current
+        const cursorDistance = realtimeCurrent && currentProgress
+          ? interpolateDistance(currentProgress, currentCutoff)
+          : Infinity
+        const deltaResult = syncDelta(
+          buffers.deltaPositive, buffers.deltaNegative,
+          currentProgress, progressByRole.comparison,
+          deltaSamplesRef.current,
+          Number.isFinite(cursorDistance) ? cursorDistance : 0,
+        )
+        deltaRangeRef.current = deltaResult.range
+        if (deltaResult.changed) changed = true
+      } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
+        deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
+        buffers.deltaPositive.clear()
+        buffers.deltaNegative.clear()
+        changed = true
       }
+      if (!changed) return
+      let max = distanceMode && trackLengthM > 0 ? trackLengthM : 1
+      for (const role of ['current', 'comparison'] as Role[]) {
+        for (const source of SOURCES) {
+          const buffer = buffers[role][source]
+          if (buffer.length) max = Math.max(max, buffer.lastX)
+        }
+      }
+      chart.options.xRange = { min: 0, max }
+      fullXRangeRef.current = { min: 0, max }
+      chart.model.requestRedraw()
     }
-    chart.options.xRange = { min: 0, max }
-    fullXRangeRef.current = { min: 0, max }
-    chart.model.requestRedraw()
-  }, [comparison, current, currentRevision, distanceMode, trackLengthM])
+    syncPlaybackCursorRef.current = syncData
+    syncData()
+    return () => {
+      if (syncPlaybackCursorRef.current === syncData) syncPlaybackCursorRef.current = null
+    }
+  }, [comparison, current, currentRevision, distanceMode, realtimeCurrent, trackLengthM])
 
   useEffect(() => {
     const node = chartRef.current?.contentBoxDetector.node

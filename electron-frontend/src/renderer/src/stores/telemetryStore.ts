@@ -272,6 +272,12 @@ function historyCovers(bit: number, requiredStart: number): boolean {
   return (historyCoverageStart.get(bit) ?? Infinity) <= requiredStart + 1
 }
 
+function invalidateHistoryCoverage(mask: number): void {
+  for (const bit of HISTORY_ROW_BITS) {
+    if (mask & bit) historyCoverageStart.delete(bit)
+  }
+}
+
 function resetSession(): void {
   // Invalidate a seek payload that is still being cooperatively decoded.
   seekTimelineGeneration++
@@ -1143,6 +1149,13 @@ export function setHistoryRowMask(mask: number): void {
   const disabled = historyRowMask & ~normalized
   historyRowMask = normalized
   requestedHistoryRowMask &= normalized
+  // Dropping a hidden tab's source buffer also drops the history represented
+  // by that buffer. Keeping its old coverage marker made a later tab activation
+  // believe the missing prefix was still installed, so only rows streamed after
+  // the switch appeared. Invalidate exactly the disabled families: the normal
+  // finite/current-lap or AL request below can then issue one selective native
+  // indexed backfill, without replaying unrelated row types through the DOM.
+  invalidateHistoryCoverage(disabled)
   const cleared: Partial<TelemetryStoreState> = {}
   if (disabled & HISTORY_ROW.telemetry) {
     telBufRef.current = telBufRef.current.length ? [telBufRef.current[telBufRef.current.length - 1]] : []

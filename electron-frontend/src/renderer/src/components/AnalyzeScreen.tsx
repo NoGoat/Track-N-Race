@@ -15,7 +15,7 @@ import { selectComponents } from '../lib/selectComponents'
 import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
 import { useModalPresenceValue } from '../lib/useModalPresence'
-import { dataMaskForAnalyze } from '../lib/historyDependencies'
+import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
@@ -346,36 +346,63 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
 }) {
-  const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
-  const motion = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotion)
-  const motionEx = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotionEx)
-  const statusHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapStatusHistory)
-  const damageHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapDamageHistory)
-  const lapProgress = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapProgress)
-  const startSessionTime = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapStartTime)
-  const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
-  const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
   const playbackCurrentLap = useTelemetryStore(s =>
     !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
       ? s.playbackLapDataCache[currentLapNum] ?? null
       : null)
+  const cachedMask = playbackCurrentLap?.rowTypeMask ?? 0
+  const telemetry = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.telemetry) !== 0 ? EMPTY_ROWS : s.analyzeLapTelemetry)
+  const motion = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.motion) !== 0 ? EMPTY_ROWS : s.analyzeLapMotion)
+  const motionEx = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.motionEx) !== 0 ? EMPTY_ROWS : s.analyzeLapMotionEx)
+  const statusHistory = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.status) !== 0 ? EMPTY_ROWS : s.analyzeLapStatusHistory)
+  const damageHistory = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.damage) !== 0 ? EMPTY_ROWS : s.analyzeLapDamageHistory)
+  const lapProgress = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.lap) !== 0 ? EMPTY_ROWS : s.analyzeLapProgress)
+  const startSessionTime = useTelemetryStore(s =>
+    fixedMode || playbackCurrentLap !== null ? 0 : s.analyzeLapStartTime)
+  const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
+  const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
 
   const liveCurrent = useMemo<AnalyzeLapData>(() => {
-    const ends = [telemetry, motion, motionEx, statusHistory, damageHistory]
+    // Playback Analysis already requests the current lap through the native
+    // indexed lap cache. Consume each installed family directly from that
+    // cache instead of relying on transient active-tab streaming slices: those
+    // slices are deliberately discarded while Analysis is hidden and can be
+    // incomplete for a frame (or indefinitely when their old coverage marker
+    // survives a tab switch). Live sessions continue using the rolling slices.
+    const currentTelemetry = playbackCurrentLap && (cachedMask & DATA_ROW.telemetry) ? playbackCurrentLap.telemetry : telemetry
+    const currentMotion = playbackCurrentLap && (cachedMask & DATA_ROW.motion) ? playbackCurrentLap.motion : motion
+    const currentMotionEx = playbackCurrentLap && (cachedMask & DATA_ROW.motionEx) ? playbackCurrentLap.motionEx : motionEx
+    const currentStatus = playbackCurrentLap && (cachedMask & DATA_ROW.status) ? playbackCurrentLap.statusHistory : statusHistory
+    const currentDamage = playbackCurrentLap && (cachedMask & DATA_ROW.damage) ? playbackCurrentLap.damageHistory : damageHistory
+    const currentProgress = playbackCurrentLap && (cachedMask & DATA_ROW.lap) ? playbackCurrentLap.lapProgress : lapProgress
+    const ends = [currentTelemetry, currentMotion, currentMotionEx, currentStatus, currentDamage]
       .flatMap(rows => rows.length ? [rows[rows.length - 1].session_time] : [])
     return {
       lapNum: currentLapNum ?? 0,
       startSessionTime: playbackCurrentLap?.startSessionTime ?? startSessionTime,
-      endSessionTime: ends.length ? Math.max(...ends) : startSessionTime,
-      telemetry, motion, motionEx, statusHistory, damageHistory,
-      lapProgress: playbackCurrentLap?.lapProgress ?? lapProgress,
+      endSessionTime: playbackCurrentLap?.endSessionTime ?? (ends.length ? Math.max(...ends) : startSessionTime),
+      telemetry: currentTelemetry,
+      motion: currentMotion,
+      motionEx: currentMotionEx,
+      statusHistory: currentStatus,
+      damageHistory: currentDamage,
+      lapProgress: currentProgress,
       playerPositions: playbackCurrentLap?.playerPositions ?? [],
+      rowTypeMask: cachedMask,
     }
-  }, [currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
+  }, [cachedMask, currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
   const current = fixedMode ? primaryOverride ?? EMPTY_ANALYZE_LAP : liveCurrent
   const currentRevision = fixedMode
     ? `fixed:${current.lapNum}:${current.startSessionTime}:${current.endSessionTime}`
-    : `${liveRevision}:${current.lapNum}:${playbackCurrentLap ? `cached:${playbackCurrentLap.startSessionTime}` : 'stream'}`
+    : `${liveRevision}:${current.lapNum}:${playbackCurrentLap
+      ? `cached:${playbackCurrentLap.startSessionTime}:${playbackCurrentLap.rowTypeMask ?? 0}`
+      : 'stream'}`
 
   return <div className="absolute inset-0">
     <AnalyzeTimeChart
@@ -385,7 +412,8 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
       distanceMode={distanceMode} trackLengthM={trackLengthM}
       deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
-      zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
+      zoomEnabled={fixedMode && primaryOverride !== null} realtimeCurrent={playbackCurrentLap !== null}
+      controlsRef={controlsRef}
       onInspectMap={onInspectMap}
     />
   </div>
