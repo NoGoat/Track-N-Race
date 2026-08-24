@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import LiveStats from '../../components/LiveStats'
 import SpeedRpmChart from '../../components/SpeedRpmChart'
@@ -20,6 +20,8 @@ import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/Analyz
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+
+const EMPTY_ROWS: never[] = []
 
 // The tab content is the only part of the UI that consumes the hot (per-frame)
 // telemetry slices. Extracting it into its own store-subscribing component is
@@ -66,27 +68,65 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
   mapDimmed, currentPlaybackLapNum,
 }: TabContentProps) {
   const coordinates = useChartCoordinates()
-  // Hot + cold slices this subtree needs. Only components that render these
-  // re-render per frame; App does not.
-  const telemetry        = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
-  const statusHistory    = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory)
-  const damage           = useTelemetryStore(s => s.damage)
-  const damageHistory    = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory)
-  const lap              = useTelemetryStore(s => s.lap)
-  const timing           = useTelemetryStore(s => s.timing)
-  const latest           = useTelemetryStore(s => s.latest)
-  const allStatus        = useTelemetryStore(s => s.allStatus)
-  const status           = useTelemetryStore(s => s.status)
-  const participants     = useTelemetryStore(s => s.participants)
-  const session          = useTelemetryStore(s => s.session)
-  const tyreSets         = useTelemetryStore(s => s.tyreSets)
-  const raceEvents       = useTelemetryStore(s => s.raceEvents)
-  const fastestLapCarIdx = useTelemetryStore(s => s.fastestLapCarIdx)
-  const lapTimesByNum    = useTelemetryStore(s => s.lapTimesByNum)
-  const isConnected      = useTelemetryStore(s => s.isConnected)
-  const protocolStatus   = useTelemetryStore(s => s.protocolStatus)
-  const fuelUpperLimit   = useTelemetryStore(s => s.fuelUpperLimit)
-  const strategy         = useTelemetryStore(s => s.strategy)
+  // Subscribe only to slices the active tab renders. Previously every normal
+  // tab subscribed to `latest`, so playback forced the entire tab subtree
+  // through React for every telemetry batch even on chart-only pages. AL chart
+  // history itself remains on the imperative store-to-WebGL path.
+  const needsTelemetry = tab === 'core' || tab === 'tyres'
+  const needsDamage = tab === 'core' || tab === 'tyres'
+  const needsLap = tab === 'core' || tab === 'timing_tower'
+  const needsTiming = tab === 'timing_tower' || tab === 'session'
+  const needsStatus = tab === 'core' || tab === 'timing_tower' || tab === 'power'
+  const needsParticipants = tab === 'timing_tower' || tab === 'session'
+  const needsSession = tab === 'session' || tab === 'tyres'
+  const needsProtocol = tab === 'session' || tab === 'power'
+  const needsLatest = tab === 'tyres' || (tab === 'core' && (
+    coreLayout.showStats || (coreLayout.showThermal && tyreView === 'cards')
+  ))
+
+  const telemetry        = useTelemetryStore(s => needsTelemetry ? coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry : EMPTY_ROWS)
+  const statusHistory    = useTelemetryStore(s => tab === 'core' || tab === 'power' ? coordinates.distanceMode ? s.analyzeLapStatusHistory : s.statusHistory : EMPTY_ROWS)
+  const damage           = useTelemetryStore(s => needsDamage ? s.damage : null)
+  const damageHistory    = useTelemetryStore(s => needsDamage ? coordinates.distanceMode ? s.analyzeLapDamageHistory : s.damageHistory : EMPTY_ROWS)
+  const lap              = useTelemetryStore(s => needsLap ? s.lap : null)
+  const timing           = useTelemetryStore(s => needsTiming ? s.timing : null)
+  const latest           = useTelemetryStore(s => needsLatest ? s.latest : null)
+  const allStatus        = useTelemetryStore(s => tab === 'timing_tower' ? s.allStatus : null)
+  const status           = useTelemetryStore(s => needsStatus ? s.status : null)
+  const participants     = useTelemetryStore(s => needsParticipants ? s.participants : null)
+  const session          = useTelemetryStore(s => needsSession ? s.session : null)
+  const tyreSets         = useTelemetryStore(s => tab === 'tyres' ? s.tyreSets : null)
+  const raceEvents       = useTelemetryStore(s => tab === 'session' ? s.raceEvents : EMPTY_ROWS)
+  const fastestLapCarIdx = useTelemetryStore(s => tab === 'timing_tower' ? s.fastestLapCarIdx : null)
+  const isConnected      = useTelemetryStore(s => tab === 'core' ? s.isConnected : false)
+  const protocolStatus   = useTelemetryStore(s => needsProtocol ? s.protocolStatus : null)
+  const fuelUpperLimit   = useTelemetryStore(s => tab === 'power' ? s.fuelUpperLimit : null)
+  const strategy         = useTelemetryStore(s => tab === 'strategy' ? s.strategy : null)
+
+  const overviewThermalGraphViews = useMemo(() => ({
+    surfaceTemp: graphView.overviewTyreSurface,
+    innerTemp: graphView.overviewTyreInner,
+    brakeTemp: graphView.overviewTyreBrake,
+    tyreLife: graphView.overviewTyreWear,
+  }), [graphView.overviewTyreBrake, graphView.overviewTyreInner, graphView.overviewTyreSurface, graphView.overviewTyreWear])
+  const overviewThermalCardViews = useMemo(() => ({
+    fl: graphView.overviewTyreCardFL,
+    fr: graphView.overviewTyreCardFR,
+    rl: graphView.overviewTyreCardRL,
+    rr: graphView.overviewTyreCardRR,
+  }), [graphView.overviewTyreCardFL, graphView.overviewTyreCardFR, graphView.overviewTyreCardRL, graphView.overviewTyreCardRR])
+  const tyreGraphViews = useMemo(() => ({
+    surfaceTemp: graphView.tyreSurface,
+    innerTemp: graphView.tyreInner,
+    brakeTemp: graphView.tyreBrake,
+    tyreLife: graphView.tyreWear,
+  }), [graphView.tyreBrake, graphView.tyreInner, graphView.tyreSurface, graphView.tyreWear])
+  const tyreCardViews = useMemo(() => ({
+    fl: graphView.tyreCardFL,
+    fr: graphView.tyreCardFR,
+    rl: graphView.tyreCardRL,
+    rr: graphView.tyreCardRR,
+  }), [graphView.tyreCardFL, graphView.tyreCardFR, graphView.tyreCardRL, graphView.tyreCardRR])
 
   const selectedCar        = timing?.cars.find(c => c.idx === selectedIdx) ?? null
   const playerDriver       = participants?.drivers.find(d => d.idx === (timing?.player_idx ?? -1)) ?? null
@@ -131,7 +171,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             )}
             {showThermalPanel && (
               <div className={thermalCompactCards ? 'shrink-0' : `${thermalFlex} min-h-0`}>
-                <ThermalPanel latest={latest} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={{ surfaceTemp: graphView.overviewTyreSurface, innerTemp: graphView.overviewTyreInner, brakeTemp: graphView.overviewTyreBrake, tyreLife: graphView.overviewTyreWear }} cardViews={{ fl: graphView.overviewTyreCardFL, fr: graphView.overviewTyreCardFR, rl: graphView.overviewTyreCardRL, rr: graphView.overviewTyreCardRR }} windowSeconds={seconds} yAxis={chartYAxis.overview} />
+                <ThermalPanel latest={tyreView === 'cards' ? latest : null} damage={damage} telemetry={telemetry} damageHistory={damageHistory} view={tyreView} tyreWearMode={tyreWearMode} thermalGraphs={coreLayout.thermalGraphs} thermalCards={coreLayout.thermalCards} isDark={isDark} tyresLevel={compact.overviewTyres} graphViews={overviewThermalGraphViews} cardViews={overviewThermalCardViews} windowSeconds={seconds} yAxis={chartYAxis.overview} />
               </div>
             )}
             {visibleDamageCount > 0 && (
@@ -224,8 +264,8 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             tyreWearMode={tyreWearMode}
             isDark={isDark}
             visibleGraphs={tyresLayout.charts}
-            graphViews={{ surfaceTemp: graphView.tyreSurface, innerTemp: graphView.tyreInner, brakeTemp: graphView.tyreBrake, tyreLife: graphView.tyreWear }}
-            cardViews={{ fl: graphView.tyreCardFL, fr: graphView.tyreCardFR, rl: graphView.tyreCardRL, rr: graphView.tyreCardRR }}
+            graphViews={tyreGraphViews}
+            cardViews={tyreCardViews}
             sessionType={session?.session_type ?? null}
             windowSeconds={seconds}
             yAxis={chartYAxis.tyres}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
+import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
 import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
 import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab } from './appConfig'
@@ -251,6 +251,7 @@ export default function AppShell() {
         ? -1
         : hasLapWindow ? 0 : maxFiniteWindow
     setHistoryRowMask(historyMask)
+    setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
     window.playerBridge.setDataRequirements(
       streamMask,
       historyMask,

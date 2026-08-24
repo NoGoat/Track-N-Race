@@ -102,6 +102,9 @@ export interface TimeChartSeriesOptions {
     lineWidth?: number;
     name: string;
     color?: ColorSpecifier;
+    /** Optional WebGL area fill rendered beneath this series. */
+    fill?: ColorSpecifier;
+    fillBaseline?: number;
     visible: boolean;
     lineType: LineType;
     stepLocation: number;

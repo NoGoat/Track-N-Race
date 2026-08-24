@@ -11,6 +11,7 @@ import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
+import { HISTORY_ROW } from '../../lib/historyDependencies'
 import { themeSeriesColor } from '../../lib/themeColors'
 
 interface Props {
@@ -130,7 +131,7 @@ function syncTelemetry(
 
 export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, windowSeconds, xTickFormat, tooltipFormat }: Props) {
   const coordinates = useChartCoordinates()
-  const { ref: sizeRef, width, height } = useSize()
+  const { ref: sizeRef, width, height } = useSize(120)
   const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<TChart | null>(null)
@@ -162,7 +163,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     : 0
   const latestT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[telemetry.length - 1]) : null
   const firstT = telemetry.length > historyStartIndex ? coordinates.getX(telemetry[historyStartIndex]) : null
-  const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: true, fullFps: coordinates.allLapsMode ? 12 : 60, accumulateFromStart: coordinates.allLapsMode })
+  const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(!coordinates.distanceMode, latestT, firstT, coordinates.distanceMode ? Math.max(coordinates.trackLengthM, 1) : windowSeconds, dirtyRef, { fastFrames: !coordinates.allLapsMode, fullFps: 60, accumulateFromStart: coordinates.allLapsMode })
 
   useEffect(() => {
     const host = hostRef.current
@@ -206,12 +207,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
-        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0] },
-        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1] },
-        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2] },
-        { name: 'Speed', color: speed, lineWidth: 1.5, data: buffer.series[0] },
-        { name: 'RPM', color: rpm, lineWidth: 1.5, data: buffer.series[1] },
-        { name: 'ERS', color: ers, lineWidth: 1.5, data: buffer.series[2] },
+        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Speed', color: speed, lineWidth: 1.5, data: buffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'RPM', color: rpm, lineWidth: 1.5, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'ERS', color: ers, lineWidth: 1.5, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
       ],
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
@@ -366,7 +367,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
 
   useEffect(() => {
     if (!coordinates.allLapsMode) return
-    return subscribeAllLapsData(scheduleRowsSync)
+    return subscribeAllLapsData(HISTORY_ROW.telemetry | HISTORY_ROW.status, scheduleRowsSync)
   }, [coordinates.allLapsMode])
 
   useEffect(() => {

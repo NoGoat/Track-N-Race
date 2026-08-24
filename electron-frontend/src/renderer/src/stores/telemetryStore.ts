@@ -195,34 +195,27 @@ const pools = {
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
-const allLapsDataListeners = new Set<() => void>()
+const allLapsDataListeners = new Map<() => void, number>()
 let allLapsNotificationRunning = false
-let allLapsNotificationPending = false
+let allLapsNotificationPendingMask = 0
 
-function scheduleAllLapsDataNotification(): void {
-  allLapsNotificationPending = true
+function scheduleAllLapsDataNotification(mask: number): void {
+  allLapsNotificationPendingMask |= mask
   if (allLapsNotificationRunning) return
   allLapsNotificationRunning = true
-  const runCycle = (): void => {
-    allLapsNotificationPending = false
-    const listeners = [...allLapsDataListeners]
-    let index = 0
-    const runNext = (): void => {
-      if (index < listeners.length) {
-        try {
-          listeners[index++]()
-        } finally {
-          scheduleCooperativeTask(runNext)
-        }
-      } else if (allLapsNotificationPending) {
-        scheduleCooperativeTask(runCycle)
-      } else {
-        allLapsNotificationRunning = false
-      }
+  const flush = (): void => {
+    const pendingMask = allLapsNotificationPendingMask
+    allLapsNotificationPendingMask = 0
+    for (const [listener, sourceMask] of allLapsDataListeners) {
+      if (sourceMask & pendingMask) listener()
     }
-    scheduleCooperativeTask(runNext)
+    if (allLapsNotificationPendingMask !== 0) {
+      scheduleCooperativeTask(flush)
+    } else {
+      allLapsNotificationRunning = false
+    }
   }
-  runCycle()
+  scheduleCooperativeTask(flush)
 }
 
 let lapState: LapRow | null = null
@@ -249,6 +242,7 @@ let currentStintStartTime = -Infinity
 
 let secondsVal = 30
 let allLapsMode = false
+let analyzeLapEnabled = true
 let finiteWindowBackfillEnabled = true
 let waitingForAllLapsHistory = false
 let historyRowMask = 0xFFFFFFFF
@@ -795,8 +789,13 @@ function recompute(dirty: DirtySlice): void {
   const isPlayback = speedRpmBlocksVal !== null
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
 
-  let publishAnalyze = lapTrackingActive && !pendingAnalyzeLapReset
-  if (pendingAnalyzeLapReset) {
+  // Live sessions always retain these slices because the completed current lap
+  // becomes the in-memory previous/fastest-lap cache at rollover. Playback has
+  // an indexed lap cache, so it can skip the copies when no distance view uses
+  // them without losing data needed by a later view switch.
+  const needsAnalyzeSlices = analyzeLapEnabled || !isPlayback
+  let publishAnalyze = needsAnalyzeSlices && lapTrackingActive && !pendingAnalyzeLapReset
+  if (needsAnalyzeSlices && pendingAnalyzeLapReset) {
     const countSince = <T extends { session_time: number }>(rows: T[]) => rows.length - lowerBound(rows, lapStartSessionTime, true)
     const ready = (bit: number, count: number, minimum: number) =>
       !(historyRowMask & bit) || count >= minimum
@@ -855,9 +854,22 @@ function recompute(dirty: DirtySlice): void {
   }
   if (dirty & DirtySlice.Derived) {
     next.lapTimesByNum = lapTimesByNum
-    next.raceEvents = isPlayback
-      ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
-      : raceEventsArr
+    if (isPlayback) {
+      // Playback events are sorted once at load. Resolve the visible prefix by
+      // binary search and only publish a new array when an event boundary is
+      // actually crossed; telemetry frames between events stay allocation-free.
+      let lo = 0, hi = playbackEvents.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if ((playbackEvents[mid].session_time ?? 0) <= latestSessionTime) lo = mid + 1
+        else hi = mid
+      }
+      if (useTelemetryStore.getState().raceEvents.length !== lo) {
+        next.raceEvents = playbackEvents.slice(0, lo)
+      }
+    } else if (useTelemetryStore.getState().raceEvents !== raceEventsArr) {
+      next.raceEvents = raceEventsArr
+    }
     if (publishAnalyze) {
       next.analyzeLapStartTime = lapStartSessionTime
       next.analyzeLapRevision = analyzeLapRevisionVal
@@ -865,7 +877,13 @@ function recompute(dirty: DirtySlice): void {
   }
   set(next)
   if (allLapsMode && (dirty & (DirtySlice.Telemetry | DirtySlice.Motion | DirtySlice.MotionEx | DirtySlice.Status | DirtySlice.Damage))) {
-    scheduleAllLapsDataNotification()
+    let changedHistoryMask = 0
+    if (dirty & DirtySlice.Telemetry) changedHistoryMask |= HISTORY_ROW.telemetry
+    if (dirty & DirtySlice.Motion) changedHistoryMask |= HISTORY_ROW.motion
+    if (dirty & DirtySlice.MotionEx) changedHistoryMask |= HISTORY_ROW.motionEx
+    if (dirty & DirtySlice.Status) changedHistoryMask |= HISTORY_ROW.status
+    if (dirty & DirtySlice.Damage) changedHistoryMask |= HISTORY_ROW.damage
+    scheduleAllLapsDataNotification(changedHistoryMask)
   }
 }
 
@@ -1097,6 +1115,26 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
   requestVisibleWindowHistory()
 }
 
+// Current-lap distance slices are intentionally separate from the append-only
+// All Laps sources. Building them copies every row accumulated in the current
+// lap, so doing that on every playback batch is quadratic when the visible page
+// contains only time-axis charts. AppShell enables this only when at least one
+// lap-distance view actually consumes the slices.
+export function setAnalyzeLapEnabled(enabled: boolean): void {
+  if (enabled === analyzeLapEnabled) return
+  analyzeLapEnabled = enabled
+  if (enabled) {
+    recompute(DirtySlice.All)
+    return
+  }
+  if (speedRpmBlocksVal !== null) {
+    set({
+      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+    })
+  }
+}
+
 // Sets the single coordinated minimum history requirement. While AL is active,
 // newly-visible row families are requested additively; already-loaded families
 // are not decompressed or delivered again.
@@ -1150,8 +1188,8 @@ export function subscribeRaceEvent(cb: (e: RaceEventMsg) => void): () => void {
 // Full-lap charts consume the in-place full-session arrays directly. This
 // imperative signal lets their WebGL bridges append new rows without cloning
 // the growing arrays through Zustand/React on every telemetry batch.
-export function subscribeAllLapsData(cb: () => void): () => void {
-  allLapsDataListeners.add(cb)
+export function subscribeAllLapsData(sourceMask: number, cb: () => void): () => void {
+  allLapsDataListeners.set(cb, sourceMask >>> 0)
   return () => { allLapsDataListeners.delete(cb) }
 }
 

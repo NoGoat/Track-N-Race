@@ -784,18 +784,18 @@ export default function AnalyzeTimeChart({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    let animationFrame = 0
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
     const observer = new ResizeObserver(() => {
-      if (animationFrame) return
-      animationFrame = requestAnimationFrame(() => {
-        animationFrame = 0
+      if (resizeTimer !== null) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null
         chartRef.current?.onResize()
-      })
+      }, 120)
     })
     observer.observe(container)
     return () => {
       observer.disconnect()
-      cancelAnimationFrame(animationFrame)
+      if (resizeTimer !== null) clearTimeout(resizeTimer)
     }
   }, [])
 

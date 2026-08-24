@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { AlignedTable, StatusRow, TelemetryRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import SpeedRpmTimeChart from './charts/SpeedRpmTimeChart'
@@ -7,6 +7,7 @@ import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 interface Props {
   data: TelemetryRow[]
@@ -100,7 +101,7 @@ function SpeedRpmChartContent(props: Props) {
       {data.length === 0
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
-          ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
+          ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.telemetry | HISTORY_ROW.status} />
           : <SpeedRpmTimeChart key={`${isDark ? 'dark' : 'light'}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
@@ -109,6 +110,8 @@ function SpeedRpmChartContent(props: Props) {
   </div>
 }
 
-export default function SpeedRpmChart(props: Props) {
+function SpeedRpmChart(props: Props) {
   return <ChartWindowScope section="overviewTelemetry"><SpeedRpmChartContent {...props} /></ChartWindowScope>
 }
+
+export default memo(SpeedRpmChart)

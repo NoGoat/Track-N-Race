@@ -9,6 +9,7 @@
 #include <barrier>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -66,6 +67,11 @@ int main() {
     assert(archive.open(path.string(), archiveHeader, &error));
     assert(archive.decompressedChunkCount() == 0);
     assert(!archive.chunks().empty());
+    for (size_t i = 0; i < archive.chunks().size(); ++i) {
+        float first = 0, last = 0;
+        assert(archive.chunkTimeBounds(i, first, last));
+        assert(std::isfinite(first) && std::isfinite(last) && first <= last);
+    }
     const uint64_t firstPayloadOffset = archive.chunks().front().offset;
     std::vector<tnrp::detail::V5TimedRow> lazyRows;
     assert(archive.rowsForLap(1, tnrp::detail::v5TypeBit(1), lazyRows, &error));
@@ -87,6 +93,26 @@ int main() {
     archive.setCacheLimitBytes(1);
     assert(archive.cacheBytes() <= 1);
     archive.close();
+
+    // Hot families use 64-row block metadata. A boundary query must inspect
+    // only the matching block after the containing chunk is decompressed.
+    const fs::path hotIndexPath = longDir / "hot_row_block_index.tnrd";
+    std::vector<V5SourceRow> hotRows{{R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0})", 1.0f}};
+    for (int i = 0; i < 130; ++i) {
+        const float time = 10.0f + i;
+        hotRows.push_back({"{\"type\":\"telemetry\",\"session_time\":" +
+            std::to_string(static_cast<int>(time)) + ",\"speed_kph\":100}", time});
+    }
+    assert(tnrp::detail::writeTnrdV5(hotIndexPath.string(), header, hotRows, &error));
+    tnrp::detail::TnrdV5Archive hotIndex;
+    assert(hotIndex.open(hotIndexPath.string(), archiveHeader, &error));
+    std::vector<tnrp::detail::V5TimedRow> hotWindow;
+    assert(hotIndex.rowsForRange(74.0f, 74.0f, tnrp::detail::v5TypeBit(1), hotWindow, &error));
+    assert(hotWindow.size() == 1 && hotWindow.front().sessionTime == 74.0f);
+    std::vector<tnrp::detail::V5TimedRow> hotLatest;
+    assert(hotIndex.latestRows(74.5f, {1}, hotLatest, &error));
+    assert(hotLatest.size() == 1 && hotLatest.front().sessionTime == 74.0f);
+    hotIndex.close();
 
     // Chunk payloads are loaded concurrently, while requests that converge
     // on one chunk share its single in-flight read/decompression. Use a payload
@@ -312,7 +338,7 @@ int main() {
     reusedRead.close();
 
     // A torn fixed-header commit is recovered by scanning backward for the
-    // latest valid 32-byte checkpoint footer.
+    // latest valid 40-byte checkpoint footer.
     const fs::path recoveryPath = longDir / "recover_from_torn_header.tnrd";
 #ifdef _WIN32
     fs::copy_file(incrementalFsPath,
@@ -324,7 +350,7 @@ int main() {
     fs::copy_file(incrementalFsPath,recoveryPath,fs::copy_options::overwrite_existing);
     std::fstream recovery(recoveryPath,std::ios::in | std::ios::out | std::ios::binary);
 #endif
-    recovery.seekp(88);char damagedCrc[4]{1,2,3,4};recovery.write(damagedCrc,4);recovery.close();
+    recovery.seekp(104);char damagedCrc[4]{1,2,3,4};recovery.write(damagedCrc,4);recovery.close();
     tnrp::detail::TnrdV5Archive recovered;
     assert(recovered.open(recoveryPath.string(),loadedHeader,&error));
     assert(recovered.decompressedChunkCount()==0);
@@ -367,13 +393,13 @@ int main() {
     }));
     assert(corrupted.decompressedChunkCount() == 1);
     corrupted.close();
-    // Electron's binary-playback load performs the complete warm pass while
-    // its loading overlay is visible, so latent payload corruption is rejected
-    // before the first seek instead of surfacing interactively.
+    // V5 loading is metadata-only. Payload corruption is still rejected when
+    // a query touches that chunk, without paying a whole-file warm pass.
     tnrp::TnrdReader warmValidated;
     warmValidated.setBinaryPlayback(true);
     tnrp::HeaderRow warmHeader;
-    assert(!warmValidated.load(path.string(), warmHeader));
+    assert(warmValidated.load(path.string(), warmHeader));
+    assert(warmValidated.readRange(0.0f, 2.0f).empty());
     assert(!warmValidated.lastError().empty());
     std::error_code ec;
 #ifdef _WIN32

@@ -423,12 +423,13 @@ theme/resize is exactly what the migration removed):
   the fork's aligned circular store: append genuinely-new samples into one
   shared X timeline plus typed Y channels, advance a logical head for front
   eviction, and rebuild on any non-contiguous window (seek/flush/restart).
-- **`axisPlugin.ts`** draws axes/grid into TimeChart's SVG overlay with pooled
-  nodes (attribute mutation, not DOM churn), reproducing the uPlot look: fixed
-  or derived tick values, m:ss x labels, faint grid, L-frame borders, 11px
-  Cascadia Code. **`referenceLines.ts`** (zero/threshold lines),
-  **`areaFill.ts`** (translucent fill to a baseline, step-aware),
-  **`ticks.ts`** (`niceTicks`) and a draw profiler complete the plugin set.
+- **`axisPlugin.ts`** draws axes/grid into two stable canvas layers (grid below
+  WebGL, labels/borders above it), reproducing the uPlot look without per-tick
+  DOM mutation: fixed or derived tick values, m:ss x labels, faint grid,
+  L-frame borders, 11px Cascadia Code. **`referenceLines.ts`** supplies zero/threshold lines and
+  **`ticks.ts`** supplies `niceTicks`. Step-aware translucent area fills are
+  generated directly by the paged WebGL renderer from the complete series;
+  they do not rebuild or pixel-bin a CPU canvas path.
   Plugin configs live in mutable refs so theme changes update colours in place
   and just redraw.
 - **y-ranges** (`YRangeSpec`): `fixed`; `expand` (bounds only push outward on
@@ -458,6 +459,12 @@ Chart leaves are thin `TimeChartView` consumers: GForceChart, RideHeightChart
 SpeedRpmChart (Overview — mode logic for Current/Previous/Fastest/Compare lap
 overlays with normalized series and muted reference traces). `GraphTable` is
 the shared chart-alternative raw-values table.
+All Laps charts and tables subscribe to source-family-specific imperative
+signals, so a Motion append cannot wake Telemetry, Status, Damage, or MotionEx
+consumers. Signals are coalesced per renderer task while every source row stays
+in the bounded full-session arrays. Ordinary All Laps line traces use native
+GPU line strips (one vertex per retained point); stepped traces retain their
+explicit generated step geometry.
 
 ### 3.6 UI composition
 

@@ -9,6 +9,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }
 
@@ -116,12 +117,13 @@ function PowerLineChartContent(props: PowerLineProps) {
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={visibleColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
+          <GraphTable columns={visibleColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.status} />
         ) : (
           <TimeChartView<StatusRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={data}
+            allLapsDataMask={HISTORY_ROW.status}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
             getX={d => d.session_time}
             series={themedSeries}

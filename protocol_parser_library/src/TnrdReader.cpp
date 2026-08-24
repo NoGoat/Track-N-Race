@@ -540,7 +540,11 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             auto it=lapBlocks_.find((int)s.lapNumber);if(it!=lapBlocks_.end())it->second.slimStatus.push_back({"status",s.sessionTime,s.ersPct,s.tyreCompound,s.visualCompound});
         }
         strategyProtocol_ = static_cast<uint16_t>(outHeader.protocol >= 2024 ? outHeader.protocol : 2025);
-        if (binaryPlayback_ && !buildIndexedSeekCache()) {
+        // V5 stores exact chunk time bounds and row offsets in its control
+        // tables, so opening it must not decompress the whole recording just
+        // to reconstruct a second in-memory seek index. V4 still needs the
+        // legacy warm pass because its directory lacks that metadata.
+        if (binaryPlayback_ && detected != TnrdFormat::ChunkedV5 && !buildIndexedSeekCache()) {
             std::fprintf(stderr, "[tnrd] load FAILED: indexed warm pass failed for '%s': %s\n",
                          path.c_str(), lastError_.c_str());
             close();

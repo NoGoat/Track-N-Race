@@ -34,6 +34,10 @@ export class NearestPointModel {
 
     adjustPoints() {
         if (this.lastPointerPos === null) {
+            // Model updates happen every display frame while a chart scrolls.
+            // With no active pointer there is no nearest-point work to publish;
+            // avoid waking the SVG markers and tooltip listeners every frame.
+            if (this.dataPoints.size === 0) return;
             this.dataPoints.clear();
         } else {
             const domain = this.model.xScale.invert(this.lastPointerPos.x);

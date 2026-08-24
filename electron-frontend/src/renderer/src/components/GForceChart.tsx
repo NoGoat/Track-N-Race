@@ -7,6 +7,7 @@ import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 interface Props {
   isDark: boolean
@@ -92,12 +93,13 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
         {data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
+          <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.motion} />
         ) : (
           <TimeChartView<MotionRow>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={data}
+            allLapsDataMask={HISTORY_ROW.motion}
             comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.motion : undefined}
             getX={d => d.session_time}
             series={chartSeries}

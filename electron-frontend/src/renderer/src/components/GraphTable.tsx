@@ -4,6 +4,7 @@ import type { AlignedTable } from '../types'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { subscribeAllLapsData } from '../stores/telemetryStore'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 // Raw-values table shown in place of a telemetry graph (the Chart→Table view mode
 // ported from qt_frontend's GraphTable). One leading time column + one column
@@ -41,7 +42,7 @@ function fmtTime(s: number): string {
   return `${m}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
 }
 
-export default function GraphTable<T extends { session_time: number }>({ columns, data, liveRows, getLiveValues, edgePadRem = 1, noBorderTop = false }: {
+export default function GraphTable<T extends { session_time: number }>({ columns, data, liveRows, getLiveValues, allLapsDataMask = HISTORY_ROW.telemetry, edgePadRem = 1, noBorderTop = false }: {
   columns: GraphTableColumn[]
   data: AlignedTable
   // Full-lap store arrays grow in place to avoid cloning an entire race on
@@ -49,6 +50,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   // bounded UI rate; finite/distance modes continue using `data` unchanged.
   liveRows?: readonly T[]
   getLiveValues?: (row: T) => readonly number[]
+  allLapsDataMask?: number
   // How far (in rem) the table should break out of its container's padding on the
   // left/right/bottom so it sits flush against the panel edge/border instead of
   // floating with a gap — matches the parent's own p-* padding (defaults to p-4's 1rem).
@@ -79,7 +81,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
   useEffect(() => {
     if (!coordinates.allLapsMode || !liveRows || !getLiveValues) return
     let timer: ReturnType<typeof setTimeout> | null = null
-    const unsubscribe = subscribeAllLapsData(() => {
+    const unsubscribe = subscribeAllLapsData(allLapsDataMask, () => {
       if (!pinnedRef.current || timer !== null) return
       timer = setTimeout(() => {
         timer = null
@@ -90,7 +92,7 @@ export default function GraphTable<T extends { session_time: number }>({ columns
       unsubscribe()
       if (timer !== null) clearTimeout(timer)
     }
-  }, [coordinates.allLapsMode, getLiveValues, liveRows])
+  }, [allLapsDataMask, coordinates.allLapsMode, getLiveValues, liveRows])
 
   const xs = (data[0] as Float64Array | undefined) ?? new Float64Array()
   const useLiveRows = coordinates.allLapsMode && liveRows !== undefined && getLiveValues !== undefined
