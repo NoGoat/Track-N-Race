@@ -10,6 +10,7 @@ struct SessionLayout {
     bool showProximity    = true;
     bool showEvents       = true;
     bool showWeather      = true;
+    int  sidebarPct       = 28;
 
     bool showHeader() const {
         return showGpName || showMarshalZones || showTimeLeft;

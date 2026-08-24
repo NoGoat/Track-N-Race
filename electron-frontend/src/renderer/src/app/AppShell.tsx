@@ -38,8 +38,8 @@ export default function AppShell() {
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
-    setSectorColors, setSessionLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
-    sessionLayout, theme, tyreView, tyreWearMode, tyresLayout,
+    setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -344,12 +344,14 @@ export default function AppShell() {
         miscLayout={miscLayout}
         powerLayout={powerLayout}
         sessionLayout={sessionLayout}
+        standingsLayout={standingsLayout}
         setCoreLayout={setCoreLayout}
         setEditOpen={setEditOpen}
         setInputLayout={setInputLayout}
         setMiscLayout={setMiscLayout}
         setPowerLayout={setPowerLayout}
         setSessionLayout={setSessionLayout}
+        setStandingsLayout={setStandingsLayout}
         setTyresLayout={setTyresLayout}
         tab={tab}
         tyreView={tyreView}
@@ -420,6 +422,7 @@ export default function AppShell() {
           coreLayout={coreLayout}
           powerLayout={powerLayout}
           sessionLayout={sessionLayout}
+          standingsLayout={standingsLayout}
           tyresLayout={tyresLayout}
           inputLayout={inputLayout}
           miscLayout={miscLayout}

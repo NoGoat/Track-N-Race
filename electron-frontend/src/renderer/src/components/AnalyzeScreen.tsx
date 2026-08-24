@@ -981,8 +981,8 @@ export default function AnalyzeScreen({
               <AlertTriangle size={15} className="text-amber-500" />
               <span>Circuit Mismatch</span>
             </div>
-            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
-              <X size={14} />
+            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
+              <X size={18} />
             </button>
           </div>
 

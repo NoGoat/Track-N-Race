@@ -67,6 +67,7 @@ export interface SessionLayout {
   showProximity: boolean
   showEvents: boolean
   showWeather: boolean
+  sidebarPct: number
   statsCards: {
     totalLaps: boolean
     lapsRemaining: boolean
@@ -89,6 +90,7 @@ export const DEFAULT_SESSION_LAYOUT: SessionLayout = {
   showProximity: true,
   showEvents: true,
   showWeather: true,
+  sidebarPct: 28,
   statsCards: {
     totalLaps: true,
     lapsRemaining: true,
@@ -100,6 +102,25 @@ export const DEFAULT_SESSION_LAYOUT: SessionLayout = {
     trackLength: true,
     timeOfDay: true,
   }
+}
+
+export interface StandingsLayout {
+  showTimingTower: boolean
+  sidebarPct: number
+  cards: {
+    timing: boolean
+    energyRecovery: boolean
+    strategy: boolean
+  }
+}
+export const DEFAULT_STANDINGS_LAYOUT: StandingsLayout = {
+  showTimingTower: true,
+  sidebarPct: 28,
+  cards: {
+    timing: true,
+    energyRecovery: true,
+    strategy: true,
+  },
 }
 
 export const TAB_LABELS: Record<Tab, string> = {

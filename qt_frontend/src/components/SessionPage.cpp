@@ -1276,6 +1276,7 @@ SessionLayout SessionPage::loadLayout() {
     L.showProximity    = settings_.value("showProximity", true).toBool();
     L.showEvents       = settings_.value("showEvents", true).toBool();
     L.showWeather      = settings_.value("showWeather", true).toBool();
+    L.sidebarPct       = qBound(15, settings_.value("sidebarPct", 28).toInt(), 60);
     for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
         L.cards[i] = settings_.value(SessionLayout::cardKey(i), true).toBool();
     }
@@ -1292,6 +1293,7 @@ void SessionPage::saveLayout(const SessionLayout& L) {
     settings_.setValue("showProximity", L.showProximity);
     settings_.setValue("showEvents", L.showEvents);
     settings_.setValue("showWeather", L.showWeather);
+    settings_.setValue("sidebarPct", L.sidebarPct);
     for (int i = 0; i < SessionLayout::StatCardCount; ++i) {
         settings_.setValue(SessionLayout::cardKey(i), L.cards[i]);
     }
@@ -1347,7 +1349,17 @@ void SessionPage::applyLayout(const SessionLayout& L) {
     if (sp_eventsHeader) sp_eventsHeader->setVisible(L.showEvents);
     if (sp_eventsList) sp_eventsList->setVisible(L.showEvents);
 
-    if (rightPanel_) rightPanel_->setVisible(L.showProximity || L.showEvents);
+    if (rightPanel_) {
+        rightPanel_->setVisible(L.showProximity || L.showEvents);
+        if (leftArea_ && (L.showMap || L.showWeather) && (L.showProximity || L.showEvents)) {
+            int totalW = width() > 0 ? width() : 1000;
+            int pw = qBound(180, totalW * L.sidebarPct / 100, 600);
+            rightPanel_->setFixedWidth(pw);
+        } else {
+            rightPanel_->setMinimumWidth(0);
+            rightPanel_->setMaximumWidth(QWIDGETSIZE_MAX);
+        }
+    }
     if (midVLine_) midVLine_->setVisible((L.showMap || L.showWeather) && (L.showProximity || L.showEvents));
 }
 

@@ -6,6 +6,8 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QPushButton>
+#include <QLabel>
+#include <QSlider>
 #include <QStyleOptionButton>
 
 namespace {
@@ -74,7 +76,8 @@ EditSessionLayoutDialog::EditSessionLayoutDialog(SessionPage* page, QWidget* par
 
     // ── Panels (Schematic: Map + Weather on left, Proximity + Events on right) ──
     QGroupBox* panelsBox = new QGroupBox("Panels");
-    QHBoxLayout* panelsLay = new QHBoxLayout(panelsBox);
+    QVBoxLayout* panelsMainLay = new QVBoxLayout(panelsBox);
+    QHBoxLayout* panelsLay = new QHBoxLayout;
 
     QVBoxLayout* leftCol = new QVBoxLayout;
     mapBtn_ = new ToggleButton("Track Map");
@@ -88,7 +91,7 @@ EditSessionLayoutDialog::EditSessionLayoutDialog(SessionPage* page, QWidget* par
     weatherBtn_->setChecked(layout_.showWeather);
     connect(weatherBtn_, &QPushButton::toggled, this, &EditSessionLayoutDialog::toggleWeather);
     leftCol->addWidget(weatherBtn_);
-    panelsLay->addLayout(leftCol, 1);
+    panelsLay->addLayout(leftCol, 100 - layout_.sidebarPct);
 
     QVBoxLayout* rightCol = new QVBoxLayout;
     proxBtn_ = new ToggleButton("Proximity");
@@ -102,7 +105,27 @@ EditSessionLayoutDialog::EditSessionLayoutDialog(SessionPage* page, QWidget* par
     eventsBtn_->setChecked(layout_.showEvents);
     connect(eventsBtn_, &QPushButton::toggled, this, &EditSessionLayoutDialog::toggleEvents);
     rightCol->addWidget(eventsBtn_);
-    panelsLay->addLayout(rightCol, 1);
+    panelsLay->addLayout(rightCol, layout_.sidebarPct);
+
+    panelsMainLay->addLayout(panelsLay);
+
+    // Width Slider
+    QHBoxLayout* sliderRow = new QHBoxLayout;
+    QLabel* widthLbl = new QLabel(QString("Right Panel Width: %1%").arg(layout_.sidebarPct));
+    widthLbl->setFixedWidth(160);
+    QSlider* widthSlider = new QSlider(Qt::Horizontal);
+    widthSlider->setRange(15, 60);
+    widthSlider->setValue(layout_.sidebarPct);
+    connect(widthSlider, &QSlider::valueChanged, this, [this, widthLbl, panelsLay, leftCol, rightCol](int val) {
+        widthLbl->setText(QString("Right Panel Width: %1%").arg(val));
+        layout_.sidebarPct = val;
+        panelsLay->setStretch(0, 100 - val);
+        panelsLay->setStretch(1, val);
+        page_->applyAndSaveLayout(layout_);
+    });
+    sliderRow->addWidget(widthLbl);
+    sliderRow->addWidget(widthSlider, 1);
+    panelsMainLay->addLayout(sliderRow);
 
     main->addWidget(panelsBox);
 

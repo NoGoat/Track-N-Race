@@ -1,5 +1,6 @@
+import { useRef } from 'react'
 import { X } from 'lucide-react'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useModalPresence } from '../../lib/useModalPresence'
 
 interface LayoutEditorProps {
@@ -9,12 +10,14 @@ interface LayoutEditorProps {
   miscLayout: MiscLayout
   powerLayout: PowerLayout
   sessionLayout: SessionLayout
+  standingsLayout: StandingsLayout
   setCoreLayout: (layout: CoreLayout) => void
   setEditOpen: (open: boolean) => void
   setInputLayout: (layout: InputLayout) => void
   setMiscLayout: (layout: MiscLayout) => void
   setPowerLayout: (layout: PowerLayout) => void
   setSessionLayout: (layout: SessionLayout) => void
+  setStandingsLayout: (layout: StandingsLayout) => void
   setTyresLayout: (layout: TyresLayout) => void
   tab: Tab
   tyreView: 'cards' | 'graphs'
@@ -23,11 +26,72 @@ interface LayoutEditorProps {
 }
 
 export default function LayoutEditor(props: LayoutEditorProps) {
-  const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, sessionLayout, setCoreLayout,
-    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setTyresLayout,
+  const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, sessionLayout, standingsLayout, setCoreLayout,
+    setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setStandingsLayout, setTyresLayout,
     tab, tyreView, tyreWearMode, tyresLayout } = props
-  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session'
+  const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
   const modalPresence = useModalPresence(editOpen && editableTab)
+
+  const sessionMainAreaRef = useRef<HTMLDivElement>(null)
+  const standingsMainAreaRef = useRef<HTMLDivElement>(null)
+
+  const handleSessionSplitDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const container = sessionMainAreaRef.current
+    if (!container) return
+    const startRect = container.getBoundingClientRect()
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const mouseX = moveEvent.clientX
+      const offset = mouseX - startRect.left
+      const totalWidth = startRect.width
+      if (totalWidth <= 0) return
+      const rightRatio = 1 - (offset / totalWidth)
+      const rightPct = Math.round(rightRatio * 100)
+      const clamped = Math.max(15, Math.min(60, rightPct))
+      setSessionLayout({
+        ...sessionLayout,
+        sidebarPct: clamped
+      })
+    }
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
+  const handleStandingsSplitDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const container = standingsMainAreaRef.current
+    if (!container) return
+    const startRect = container.getBoundingClientRect()
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const mouseX = moveEvent.clientX
+      const offset = mouseX - startRect.left
+      const totalWidth = startRect.width
+      if (totalWidth <= 0) return
+      const rightRatio = 1 - (offset / totalWidth)
+      const rightPct = Math.round(rightRatio * 100)
+      const clamped = Math.max(15, Math.min(60, rightPct))
+      setStandingsLayout({
+        ...standingsLayout,
+        sidebarPct: clamped
+      })
+    }
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
   return (
     <>
       {/* Edit modal — centered overlay */}
@@ -35,31 +99,114 @@ export default function LayoutEditor(props: LayoutEditorProps) {
         <div
           data-state={modalPresence.visible ? 'open' : 'closed'}
           className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
-          onClick={() => setEditOpen(false)}
         >
           <div
             className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[920px] max-h-[90vh] flex flex-col overflow-hidden"
-            onClick={e => e.stopPropagation()}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
               <div>
                 <div className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest">
-                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : tab === 'session' ? 'Edit Session Layout' : 'Edit Overview Layout'}
+                  {tab === 'input' ? 'Edit Input Layout' : tab === 'misc' ? 'Edit Misc Layout' : tab === 'power' ? 'Edit Power Layout' : tab === 'tyres' ? 'Edit Tyres Layout' : tab === 'session' ? 'Edit Session Layout' : tab === 'timing_tower' ? 'Edit Standings Layout' : 'Edit Overview Layout'}
                 </div>
                 <div className="text-[10px] font-mono text-[var(--text-secondary)] mt-1 uppercase tracking-wider">Toggle sections to show or hide</div>
               </div>
               <button
                 onClick={() => setEditOpen(false)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
               >
-                <X size={14} />
+                <X size={18} />
               </button>
             </div>
 
             {/* Body */}
             <div className="overflow-y-auto p-6 flex flex-col gap-6">
-              {tab === 'session' ? (<>
+              {tab === 'timing_tower' ? (<>
+                <div className="flex flex-col gap-6">
+                  {/* Screen Layout Schematic */}
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Screen Layout Schematic</div>
+                    <div ref={standingsMainAreaRef} className="w-full flex select-none relative rounded-none overflow-hidden border border-[var(--border)] bg-[var(--bg-input)]">
+                      {/* Left Column: Timing Tower */}
+                      <div
+                        style={{ width: `${100 - (standingsLayout.sidebarPct ?? 28)}%` }}
+                        className="flex flex-col min-w-0"
+                      >
+                        <button
+                          onClick={() => setStandingsLayout({ ...standingsLayout, showTimingTower: !standingsLayout.showTimingTower })}
+                          className={`h-64 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
+                            standingsLayout.showTimingTower
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-sm font-bold uppercase tracking-wider">Timing Tower</span>
+                          <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${standingsLayout.showTimingTower ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {standingsLayout.showTimingTower ? 'ACTIVE' : 'HIDDEN'}
+                          </span>
+                        </button>
+                      </div>
+
+                      {/* Draggable Splitter Handle */}
+                      <div
+                        onMouseDown={handleStandingsSplitDrag}
+                        className="w-3 -mx-1.5 relative z-20 shrink-0 cursor-col-resize flex items-center justify-center group select-none"
+                        title="Drag to resize panel width"
+                      >
+                        <div className="w-px h-full bg-[var(--border)] group-hover:bg-[#5794F2]/40 group-active:bg-[#5794F2] transition-colors" />
+                      </div>
+
+                      {/* Right Column: Card Sections */}
+                      <div
+                        style={{ width: `${standingsLayout.sidebarPct ?? 28}%` }}
+                        className="flex flex-col divide-y divide-[var(--border)] min-w-0"
+                      >
+                        <button
+                          onClick={() => setStandingsLayout({ ...standingsLayout, cards: { ...standingsLayout.cards, timing: !standingsLayout.cards.timing } })}
+                          className={`flex-1 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
+                            standingsLayout.cards.timing
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">Timing</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${standingsLayout.cards.timing ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {standingsLayout.cards.timing ? 'ACTIVE' : 'HIDDEN'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => setStandingsLayout({ ...standingsLayout, cards: { ...standingsLayout.cards, energyRecovery: !standingsLayout.cards.energyRecovery } })}
+                          className={`flex-1 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
+                            standingsLayout.cards.energyRecovery
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">Energy Recovery</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${standingsLayout.cards.energyRecovery ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {standingsLayout.cards.energyRecovery ? 'ACTIVE' : 'HIDDEN'}
+                          </span>
+                        </button>
+
+                        <button
+                          onClick={() => setStandingsLayout({ ...standingsLayout, cards: { ...standingsLayout.cards, strategy: !standingsLayout.cards.strategy } })}
+                          className={`flex-1 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
+                            standingsLayout.cards.strategy
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wider">Strategy</span>
+                          <span className={`text-[8px] mt-1 tracking-wider uppercase font-bold opacity-60 ${standingsLayout.cards.strategy ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {standingsLayout.cards.strategy ? 'ACTIVE' : 'HIDDEN'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>) : tab === 'session' ? (<>
 
                 <div className="flex flex-col gap-6">
                   {/* Screen Layout Schematic */}
@@ -145,13 +292,16 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                         })}
                       </div>
 
-                      {/* 3. Main Area (Left: Map & Weather; Right: Proximity & Events) */}
-                      <div className="w-full flex divide-x divide-[var(--border)]">
+                      {/* 3. Main Area (Left: Map & Weather; Draggable Splitter; Right: Proximity & Events) */}
+                      <div ref={sessionMainAreaRef} className="w-full flex select-none relative">
                         {/* Left Column: Track Map on top, Weather Strip on bottom */}
-                        <div className="flex-1 flex flex-col divide-y divide-[var(--border)]">
+                        <div
+                          style={{ width: `${100 - (sessionLayout.sidebarPct ?? 28)}%` }}
+                          className="flex flex-col divide-y divide-[var(--border)] min-w-0"
+                        >
                           <button
                             onClick={() => setSessionLayout({ ...sessionLayout, showMap: !sessionLayout.showMap })}
-                            className={`h-48 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            className={`h-48 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
                               sessionLayout.showMap
                                 ? 'bg-[#5794F2]/10 text-[#5794F2]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
@@ -165,7 +315,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
                           <button
                             onClick={() => setSessionLayout({ ...sessionLayout, showWeather: !sessionLayout.showWeather })}
-                            className={`h-20 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            className={`h-20 w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
                               sessionLayout.showWeather
                                 ? 'bg-[#5794F2]/10 text-[#5794F2]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
@@ -178,11 +328,23 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                           </button>
                         </div>
 
+                        {/* Draggable Splitter Handle */}
+                        <div
+                          onMouseDown={handleSessionSplitDrag}
+                          className="w-3 -mx-1.5 relative z-20 shrink-0 cursor-col-resize flex items-center justify-center group select-none"
+                          title="Drag to resize panel width"
+                        >
+                          <div className="w-px h-full bg-[var(--border)] group-hover:bg-[#5794F2]/40 group-active:bg-[#5794F2] transition-colors" />
+                        </div>
+
                         {/* Right Column: Proximity on top, Events on bottom */}
-                        <div className="w-64 flex flex-col divide-y divide-[var(--border)]">
+                        <div
+                          style={{ width: `${sessionLayout.sidebarPct ?? 28}%` }}
+                          className="flex flex-col divide-y divide-[var(--border)] min-w-0"
+                        >
                           <button
                             onClick={() => setSessionLayout({ ...sessionLayout, showProximity: !sessionLayout.showProximity })}
-                            className={`flex-1 min-h-[136px] flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            className={`flex-1 min-h-[136px] w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
                               sessionLayout.showProximity
                                 ? 'bg-[#5794F2]/10 text-[#5794F2]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
@@ -196,7 +358,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
                           <button
                             onClick={() => setSessionLayout({ ...sessionLayout, showEvents: !sessionLayout.showEvents })}
-                            className={`flex-1 min-h-[136px] flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            className={`flex-1 min-h-[136px] w-full flex flex-col items-center justify-center rounded-none font-mono transition-colors relative ${
                               sessionLayout.showEvents
                                 ? 'bg-[#5794F2]/10 text-[#5794F2]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'

@@ -30,9 +30,9 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               </div>
               <button
                 onClick={() => setConfirmOpenFilePath(null)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
               >
-                <X size={14} />
+                <X size={18} />
               </button>
             </div>
 
@@ -101,9 +101,9 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               <button
                 onClick={() => setPlaybackLoadError(null)}
                 aria-label="Close error"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
               >
-                <X size={14} />
+                <X size={18} />
               </button>
             </div>
 

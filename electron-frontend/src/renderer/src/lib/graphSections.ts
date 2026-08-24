@@ -118,31 +118,39 @@ export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
 // sessionHeader has three levels: 0 Normal, 1 Compact 1 (with Zones label),
 // 2 Compact 2 (removes Zones label, marshal strip stretches full width).
 export interface CompactState {
-  overviewStats:   boolean
-  overviewDamage:  boolean
-  overviewTyres:   number
-  sessionCards:    boolean
-  sessionProximity: boolean
-  sessionEvents:   boolean
-  sessionWeather:  number
-  sessionHeader:   number
-  powerCards:      boolean
-  strategySummary: boolean
-  playbackBar:     boolean
+  overviewStats:     boolean
+  overviewDamage:    boolean
+  overviewTyres:     number
+  standingsTable:    boolean
+  standingsTiming:   boolean
+  standingsErs:      boolean
+  standingsStrategy: boolean
+  sessionCards:      boolean
+  sessionProximity:  boolean
+  sessionEvents:     boolean
+  sessionWeather:    number
+  sessionHeader:     number
+  powerCards:        boolean
+  strategySummary:   boolean
+  playbackBar:       boolean
 }
 
 export const DEFAULT_COMPACT: CompactState = {
-  overviewStats:   false,
-  overviewDamage:  false,
-  overviewTyres:   0,
-  sessionCards:    false,
-  sessionProximity: false,
-  sessionEvents:   false,
-  sessionWeather:  0,
-  sessionHeader:   0,
-  powerCards:      false,
-  strategySummary: false,
-  playbackBar:     false,
+  overviewStats:     false,
+  overviewDamage:    false,
+  overviewTyres:     0,
+  standingsTable:    false,
+  standingsTiming:   false,
+  standingsErs:      false,
+  standingsStrategy: false,
+  sessionCards:      false,
+  sessionProximity:  false,
+  sessionEvents:     false,
+  sessionWeather:    0,
+  sessionHeader:     0,
+  powerCards:        false,
+  strategySummary:   false,
+  playbackBar:       false,
 }
 
 // Boolean (Normal/Compact) compact sections — the integer controls are handled
@@ -154,6 +162,12 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
     { key: 'overviewStats',  label: 'Stats Row' },
     { key: 'overviewDamage', label: 'Damage Cards' },
     // overviewTyres (Tyre Cards) rendered as the 6-level control in Settings.
+  ] },
+  { group: 'Standings', sections: [
+    { key: 'standingsTable',    label: 'Timing Tower' },
+    { key: 'standingsTiming',   label: 'Timing Card' },
+    { key: 'standingsErs',      label: 'Energy Recovery Card' },
+    { key: 'standingsStrategy', label: 'Strategy Card' },
   ] },
   { group: 'Session', sections: [
     { key: 'sessionCards',     label: 'Info Cards' },

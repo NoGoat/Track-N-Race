@@ -968,11 +968,9 @@ const Settings = memo(function Settings({
     <div
       data-state={modalPresence.visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
-      onClick={onClose}
     >
       <div
         className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
-        onClick={e => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
@@ -986,9 +984,9 @@ const Settings = memo(function Settings({
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+            className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
           >
-            <X size={14} />
+            <X size={18} />
           </button>
         </div>
 

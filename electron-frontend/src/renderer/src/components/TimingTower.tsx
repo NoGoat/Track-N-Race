@@ -11,6 +11,7 @@ interface Props {
   onSelectDriver: (idx: number) => void
   isDark: boolean
   animationsEnabled: boolean
+  compact?: boolean
 }
 
 
@@ -59,7 +60,7 @@ function fmtGap(gap_ms: number, position: number): string {
   return `+${m}:${s}`
 }
 
-const PosCell = memo(function PosCell({ pos, isDark }: { pos: number; isDark: boolean }) {
+const PosCell = memo(function PosCell({ pos, isDark, compact }: { pos: number; isDark: boolean; compact?: boolean }) {
   const color = isDark
     ? (pos === 1 ? '#FFD700' :
        pos === 2 ? '#C0C0C0' :
@@ -70,7 +71,7 @@ const PosCell = memo(function PosCell({ pos, isDark }: { pos: number; isDark: bo
        pos === 3 ? '#9C5B23' :
        '#565B70')
   return (
-    <td className="px-3 py-1 text-sm font-black tabular-nums w-10" style={{ color }}>
+    <td className={`${compact ? 'px-2 py-0.5 text-xs w-8' : 'px-3 py-1 text-sm w-10'} font-black tabular-nums`} style={{ color }}>
       P{pos}
     </td>
   )
@@ -100,6 +101,7 @@ interface RowProps {
   tyreLabel: string | null
   tyreColor: string
   isDark: boolean
+  compact?: boolean
 }
 
 const TowerRow = memo(function TowerRow({
@@ -124,7 +126,8 @@ const TowerRow = memo(function TowerRow({
   s3,
   tyreLabel,
   tyreColor,
-  isDark
+  isDark,
+  compact
 }: RowProps) {
   const teamColor = driver?.livery_color ?? '#8e8e8e'
   const driverCode = driver ? abbrev(driver.name) : `C${carIdx}`
@@ -150,39 +153,39 @@ const TowerRow = memo(function TowerRow({
           : 'hover:bg-[var(--bg-hover)]'
       }`}
     >
-      <PosCell pos={position} isDark={isDark} />
+      <PosCell pos={position} isDark={isDark} compact={compact} />
 
       {/* Driver */}
-      <td className="px-3 py-1">
-        <div className="flex items-center gap-2">
-          <div className="w-1 h-5 rounded-full shrink-0" style={{ background: teamColor }} />
-          <span className="text-[10px] text-[var(--text-secondary)] w-5 tabular-nums">{raceNum}</span>
-          <span className={`text-sm font-bold ${isPlayer ? 'text-[var(--text-primary)] font-extrabold' : 'text-[var(--text-primary)]'}`}>
+      <td className={compact ? 'px-2 py-0.5' : 'px-3 py-1'}>
+        <div className={`flex items-center ${compact ? 'gap-1.5' : 'gap-2'}`}>
+          <div className={`${compact ? 'w-1 h-3.5' : 'w-1 h-5'} rounded-full shrink-0`} style={{ background: teamColor }} />
+          <span className={`${compact ? 'text-[9px] w-4' : 'text-[10px] w-5'} text-[var(--text-secondary)] tabular-nums`}>{raceNum}</span>
+          <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold ${isPlayer ? 'text-[var(--text-primary)] font-extrabold' : 'text-[var(--text-primary)]'}`}>
             {driverCode}
           </span>
           {driver && (
-            <span className="text-[10px] text-[var(--text-secondary)] hidden lg:inline truncate max-w-[100px]">
+            <span className={`text-[10px] text-[var(--text-secondary)] ${compact ? 'hidden xl:inline max-w-[80px]' : 'hidden lg:inline max-w-[100px]'} truncate`}>
               {driver.name}
             </span>
           )}
           {isPlayer && (
-            <span className="text-[9px] bg-[var(--border-focus)] text-[#8e9ee8] px-1.5 py-0.5 rounded font-bold">YOU</span>
+            <span className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} bg-[var(--border-focus)] text-[#8e9ee8] rounded font-bold`}>YOU</span>
           )}
         </div>
       </td>
 
       {/* Lap */}
-      <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-secondary)] w-12">
+      <td className={`${compact ? 'px-2 py-0.5 text-xs w-10' : 'px-3 py-1 text-sm w-12'} tabular-nums text-[var(--text-secondary)]`}>
         {lapNum}
       </td>
 
       {/* Last lap */}
-      <td className="px-3 py-1 text-sm font-bold tabular-nums text-[var(--text-primary)] w-28">
+      <td className={`${compact ? 'px-2 py-0.5 text-xs w-24' : 'px-3 py-1 text-sm w-28'} font-bold tabular-nums text-[var(--text-primary)]`}>
         {fmtMs(lastLapMs)}
       </td>
 
       {/* Gap */}
-      <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-secondary)] w-24">
+      <td className={`${compact ? 'px-2 py-0.5 text-xs w-20' : 'px-3 py-1 text-sm w-24'} tabular-nums text-[var(--text-secondary)]`}>
         {retired
           ? <span className="text-[#C4162A] font-bold text-xs">{retired}</span>
           : fmtGap(gapMs, position)
@@ -190,26 +193,26 @@ const TowerRow = memo(function TowerRow({
       </td>
 
       {/* S1 */}
-      <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-secondary)] w-20">{fmtSector(s1)}</td>
+      <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-secondary)]`}>{fmtSector(s1)}</td>
       {/* S2 */}
-      <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-secondary)] w-20">{fmtSector(s2)}</td>
+      <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-secondary)]`}>{fmtSector(s2)}</td>
       {/* S3 */}
-      <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-secondary)] w-20">{fmtSector(s3)}</td>
+      <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-secondary)]`}>{fmtSector(s3)}</td>
 
       {/* Tyre */}
-      <td className="px-3 py-1 w-12">
+      <td className={`${compact ? 'px-2 py-0.5 w-10' : 'px-3 py-1 w-12'}`}>
         {tyreLabel
-          ? <span className="text-xs font-bold tabular-nums" style={{ color: tyreColor }}>{tyreLabel}</span>
-          : <span className="text-xs text-[var(--text-muted)]">—</span>
+          ? <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-bold tabular-nums`} style={{ color: tyreColor }}>{tyreLabel}</span>
+          : <span className={`${compact ? 'text-[11px]' : 'text-xs'} text-[var(--text-muted)]`}>—</span>
         }
       </td>
 
       {/* Badges */}
-      <td className="px-3 py-1">
-        <div className="flex gap-1 flex-wrap">
+      <td className={`${compact ? 'px-2 py-0.5 w-32' : 'px-3 py-1 w-36'}`}>
+        <div className={`flex gap-1 flex-nowrap items-center ${compact ? 'min-h-[18px]' : 'min-h-[22px]'}`}>
           {pitStatus > 0 && (
             <span
-              className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+              className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} font-bold rounded shrink-0 whitespace-nowrap`}
               style={{
                 color: isDark ? 'var(--compound-medium)' : '#765900',
                 backgroundColor: isDark ? 'rgba(255, 215, 0, 0.1)' : 'rgba(118, 89, 0, 0.1)',
@@ -220,13 +223,13 @@ const TowerRow = memo(function TowerRow({
             </span>
           )}
           {lapInvalid && (
-            <span className="text-[9px] font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-1.5 py-0.5 rounded">
+            <span className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} font-bold text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] rounded shrink-0 whitespace-nowrap`}>
               INV
             </span>
           )}
           {penaltiesS > 0 && (
             <span
-              className="text-[9px] font-bold px-1.5 py-0.5 rounded border"
+              className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} font-bold rounded border shrink-0 whitespace-nowrap`}
               style={{
                 color: isDark ? '#c47d0e' : '#8B5200',
                 borderColor: isDark ? '#c47d0e' : '#8B5200',
@@ -237,12 +240,12 @@ const TowerRow = memo(function TowerRow({
             </span>
           )}
           {numDtPens > 0 && (
-            <span className="text-[9px] font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] px-1.5 py-0.5 rounded">
+            <span className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] rounded shrink-0 whitespace-nowrap`}>
               {numDtPens > 1 ? `${numDtPens}× ` : ''}DT
             </span>
           )}
           {numSgPens > 0 && (
-            <span className="text-[9px] font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] px-1.5 py-0.5 rounded">
+            <span className={`${compact ? 'text-[8px] px-1 py-0' : 'text-[9px] px-1.5 py-0.5'} font-bold text-[#e10600] bg-[#e10600]/10 border border-[#e10600] rounded shrink-0 whitespace-nowrap`}>
               {numSgPens > 1 ? `${numSgPens}× ` : ''}SG
             </span>
           )}
@@ -253,7 +256,7 @@ const TowerRow = memo(function TowerRow({
 })
 TowerRow.displayName = 'TowerRow'
 
-const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled }: Props) {
+const TimingTower = memo(function TimingTower({ timing, participants, allStatus, fastestLapCarIdx, selectedIdx, onSelectDriver, isDark, animationsEnabled, compact }: Props) {
   const { tn } = useLabels()
   // Per-car tracking refs for freeze + S3 computation
   const prevCarsRef     = useRef<Map<number, TimingCar>>(new Map())
@@ -388,61 +391,69 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
     prevOrderRef.current = currentOrder
   }, [rows, animationsEnabled])
 
-  const HEADERS = ['Pos', 'Driver', 'Lap', 'Last Lap', 'Gap', 'S1', 'S2', 'S3', 'Tyre', '']
+  const HEADERS: { label: string; widthClass: string; compactWidthClass: string }[] = [
+    { label: 'Pos', widthClass: 'w-10', compactWidthClass: 'w-8' },
+    { label: 'Driver', widthClass: '', compactWidthClass: '' },
+    { label: 'Lap', widthClass: 'w-12', compactWidthClass: 'w-10' },
+    { label: 'Last Lap', widthClass: 'w-28', compactWidthClass: 'w-24' },
+    { label: 'Gap', widthClass: 'w-24', compactWidthClass: 'w-20' },
+    { label: 'S1', widthClass: 'w-20', compactWidthClass: 'w-16' },
+    { label: 'S2', widthClass: 'w-20', compactWidthClass: 'w-16' },
+    { label: 'S3', widthClass: 'w-20', compactWidthClass: 'w-16' },
+    { label: 'Tyre', widthClass: 'w-12', compactWidthClass: 'w-10' },
+    { label: '', widthClass: 'w-36', compactWidthClass: 'w-32' },
+  ]
 
   if (!timing) {
     return (
-      <div>
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b border-[var(--border)]">
-                {HEADERS.map(h => (
-                  <th key={h} className="px-3 py-1 text-left text-[9px] text-[var(--text-secondary)] uppercase tracking-widest font-normal">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: 20 }, (_, i) => (
-                <tr key={i} className="border-b border-[var(--border)]">
-                  <td className="px-3 py-1 text-sm font-black tabular-nums w-10 text-[var(--text-muted)]">P{i + 1}</td>
-                  <td className="px-3 py-1">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1 h-5 rounded-full shrink-0 bg-[var(--border)]" />
-                      <span className="text-[10px] text-[var(--text-muted)] w-5 tabular-nums">—</span>
-                      <span className="text-sm font-bold text-[var(--text-muted)]">—</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-muted)] w-12">—</td>
-                  <td className="px-3 py-1 text-sm font-bold tabular-nums text-[var(--text-muted)] w-28">--:--.---</td>
-                  <td className="px-3 py-1 text-sm tabular-nums text-[var(--text-muted)] w-24">—</td>
-                  <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-muted)] w-20">—</td>
-                  <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-muted)] w-20">—</td>
-                  <td className="px-3 py-1 text-xs tabular-nums text-[var(--text-muted)] w-20">—</td>
-                  <td className="px-3 py-1 w-12"><span className="text-xs text-[var(--text-muted)]">—</span></td>
-                  <td className="px-3 py-1" />
-                </tr>
+      <div className="w-full">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 z-20 bg-[var(--bg-panel)]">
+            <tr>
+              {HEADERS.map(({ label, widthClass, compactWidthClass }, idx) => (
+                <th key={idx} className={`sticky top-0 z-20 ${compact ? 'px-2 py-1 text-[10px]' : 'px-3 py-2.5 text-[11px]'} text-left font-bold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-panel)] border-b border-[var(--border)] select-none ${compact ? compactWidthClass : widthClass}`}>{label}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 20 }, (_, i) => (
+              <tr key={i} className="border-b border-[var(--border)]">
+                <td className={`${compact ? 'px-2 py-0.5 text-xs w-8' : 'px-3 py-1 text-sm w-10'} font-black tabular-nums text-[var(--text-muted)]`}>P{i + 1}</td>
+                <td className={compact ? 'px-2 py-0.5' : 'px-3 py-1'}>
+                  <div className={`flex items-center ${compact ? 'gap-1.5' : 'gap-2'}`}>
+                    <div className={`${compact ? 'w-1 h-3.5' : 'w-1 h-5'} rounded-full shrink-0 bg-[var(--border)]`} />
+                    <span className={`${compact ? 'text-[9px] w-4' : 'text-[10px] w-5'} text-[var(--text-muted)] tabular-nums`}>—</span>
+                    <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold text-[var(--text-muted)]`}>—</span>
+                  </div>
+                </td>
+                <td className={`${compact ? 'px-2 py-0.5 text-xs w-10' : 'px-3 py-1 text-sm w-12'} tabular-nums text-[var(--text-muted)]`}>—</td>
+                <td className={`${compact ? 'px-2 py-0.5 text-xs w-24' : 'px-3 py-1 text-sm w-28'} font-bold tabular-nums text-[var(--text-muted)]`}>--:--.---</td>
+                <td className={`${compact ? 'px-2 py-0.5 text-xs w-20' : 'px-3 py-1 text-sm w-24'} tabular-nums text-[var(--text-muted)]`}>—</td>
+                <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-muted)]`}>—</td>
+                <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-muted)]`}>—</td>
+                <td className={`${compact ? 'px-2 py-0.5 text-[11px] w-16' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-muted)]`}>—</td>
+                <td className={`${compact ? 'px-2 py-0.5 w-10' : 'px-3 py-1 w-12'}`}><span className={`${compact ? 'text-[11px]' : 'text-xs'} text-[var(--text-muted)]`}>—</span></td>
+                <td className={`${compact ? 'px-2 py-0.5 w-32' : 'px-3 py-1 w-36'}`} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     )
   }
 
   return (
-    <div>
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b border-[var(--border)]">
-              {HEADERS.map(h => (
-                <th key={h} className="px-3 py-1 text-left text-[9px] text-[var(--text-secondary)] uppercase tracking-widest font-normal">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
+    <div className="w-full">
+      <table className="w-full border-collapse">
+        <thead className="sticky top-0 z-20 bg-[var(--bg-panel)]">
+          <tr>
+            {HEADERS.map(({ label, widthClass, compactWidthClass }, idx) => (
+              <th key={idx} className={`sticky top-0 z-20 ${compact ? 'px-2 py-1 text-[10px]' : 'px-3 py-2.5 text-[11px]'} text-left font-bold text-[var(--text-secondary)] uppercase tracking-wider bg-[var(--bg-panel)] border-b border-[var(--border)] select-none ${compact ? compactWidthClass : widthClass}`}>
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
           <tbody ref={tbodyRef}>
             {rows.map(({ car, driver, isPlayer, isFastest, s1, s2, s3, tyreLabel, tyreColor }) => (
               <TowerRow
@@ -469,12 +480,12 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
                 tyreLabel={tyreLabel}
                 tyreColor={tyreColor}
                 isDark={isDark}
+                compact={compact}
               />
             ))}
           </tbody>
         </table>
       </div>
-    </div>
   )
 })
 

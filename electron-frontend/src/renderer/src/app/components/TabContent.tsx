@@ -18,7 +18,7 @@ import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
 import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 
 // The tab content is the only part of the UI that consumes the hot (per-frame)
@@ -35,6 +35,7 @@ interface TabContentProps {
   coreLayout: CoreLayout
   powerLayout: PowerLayout
   sessionLayout: SessionLayout
+  standingsLayout: StandingsLayout
   tyresLayout: TyresLayout
   inputLayout: InputLayout
   miscLayout: MiscLayout
@@ -60,7 +61,7 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, tyresLayout, inputLayout, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, miscLayout,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
@@ -143,35 +144,63 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
         </div>
         )
       })()}
-      {tab === 'timing_tower' && (
-        <div className="h-full flex flex-col overflow-hidden">
-          <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
-            <div className="flex-1 min-w-0 overflow-auto">
-              <TimingTower
-                timing={timing}
-                participants={participants}
-                allStatus={allStatus}
-                fastestLapCarIdx={fastestLapCarIdx}
-                selectedIdx={selectedIdx}
-                onSelectDriver={onSelectDriver}
-                isDark={isDark}
-                animationsEnabled={!reduceAnimations}
-              />
-            </div>
-            <div className="w-80 shrink-0 overflow-y-auto">
-              <RacePanel
-                lap={lap}
-                status={status}
-                selectedCar={selectedCar}
-                selectedDriver={selectedDriver}
-                selectedCarStatus={selectedCarStatus}
-                playerIdx={timing?.player_idx ?? null}
-                isDark={isDark}
-              />
+      {tab === 'timing_tower' && (() => {
+        const showTower = standingsLayout?.showTimingTower ?? true
+        const showTiming = standingsLayout?.cards?.timing ?? true
+        const showErs = standingsLayout?.cards?.energyRecovery ?? true
+        const showStrategy = standingsLayout?.cards?.strategy ?? true
+        const anySidebar = showTiming || showErs || showStrategy
+        const sidebarPct = standingsLayout?.sidebarPct ?? 28
+
+        if (!showTower && !anySidebar) {
+          return null
+        }
+
+        return (
+          <div className="h-full flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 flex bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-x divide-[var(--border)]">
+              {showTower && (
+                <div
+                  style={anySidebar ? { width: `${100 - sidebarPct}%` } : undefined}
+                  className={`${anySidebar ? 'shrink-0' : 'flex-1'} min-w-0 overflow-auto`}
+                >
+                  <TimingTower
+                    timing={timing}
+                    participants={participants}
+                    allStatus={allStatus}
+                    fastestLapCarIdx={fastestLapCarIdx}
+                    selectedIdx={selectedIdx}
+                    onSelectDriver={onSelectDriver}
+                    isDark={isDark}
+                    animationsEnabled={!reduceAnimations}
+                    compact={compact.standingsTable}
+                  />
+                </div>
+              )}
+              {anySidebar && (
+                <div
+                  style={showTower ? { width: `${sidebarPct}%` } : undefined}
+                  className={`${showTower ? 'shrink-0' : 'flex-1'} overflow-y-auto`}
+                >
+                  <RacePanel
+                    lap={lap}
+                    status={status}
+                    selectedCar={selectedCar}
+                    selectedDriver={selectedDriver}
+                    selectedCarStatus={selectedCarStatus}
+                    playerIdx={timing?.player_idx ?? null}
+                    isDark={isDark}
+                    cards={standingsLayout?.cards}
+                    compactTiming={compact.standingsTiming}
+                    compactErs={compact.standingsErs}
+                    compactStrategy={compact.standingsStrategy}
+                  />
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
       {tab === 'session' && (
         <div className="h-full overflow-hidden bg-[var(--bg-panel)] border-t border-[var(--border)]">
           <SessionPanel session={session} raceEvents={raceEvents} timing={timing} participants={participants} isDark={isDark} sectorColors={sectorColors} driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={protocolStatus?.aero_mode ?? 'drs'} compactHeader={compact.sessionHeader} compactCards={compact.sessionCards} compactWeather={compact.sessionWeather} compactEvents={compact.sessionEvents} compactProximity={compact.sessionProximity} layout={sessionLayout} />

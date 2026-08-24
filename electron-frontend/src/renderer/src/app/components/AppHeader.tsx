@@ -50,7 +50,7 @@ export default memo(function AppHeader({
   titlebarUpdateInterval,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
-  const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session'
+  const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
   const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
   const headerPadding = actualNativeTitlebar

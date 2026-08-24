@@ -450,7 +450,10 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
           {/* Col 1 — Weather: empty top (reserved), Now+forecast strip at bottom */}
           {(layout.showMap || layout.showWeather) && (
-            <div className="flex flex-col flex-1 min-w-0 divide-y divide-[var(--border)]">
+            <div
+              className={`flex flex-col ${layout.showProximity || layout.showEvents ? '' : 'flex-1'} min-w-0 divide-y divide-[var(--border)]`}
+              style={layout.showProximity || layout.showEvents ? { width: `${100 - (layout.sidebarPct ?? 28)}%` } : undefined}
+            >
 
               {/* Track map */}
               {layout.showMap && (
@@ -614,7 +617,10 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
       {/* Col 2 — Proximity (content-height) + Events (fills remainder) */}
       {(layout.showProximity || layout.showEvents) && (
-        <div className={`flex flex-col ${layout.showMap || layout.showWeather ? 'w-72 shrink-0' : 'flex-1 min-w-0'}`}>
+        <div
+          className={`flex flex-col ${layout.showMap || layout.showWeather ? 'shrink-0' : 'flex-1'} min-w-0`}
+          style={layout.showMap || layout.showWeather ? { width: `${layout.sidebarPct ?? 28}%` } : undefined}
+        >
 
           {layout.showProximity && (
             <div className="shrink-0 border-b border-[var(--border)]">
