@@ -8,13 +8,13 @@ import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedD
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { niceTicks } from '../../lib/timechart/ticks'
-import { createAreaFillPlugin } from '../../lib/timechart/areaFill'
 import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
+import { HISTORY_ROW } from '../../lib/historyDependencies'
 import { themeSeriesColor } from '../../lib/themeColors'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
@@ -147,6 +147,8 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   followSessionClock?: boolean
   /** Sparse-stream coast window before the scheduler parks this chart. */
   minScrollStallS?: number
+  /** History family that should wake this chart's imperative AL bridge. */
+  allLapsDataMask?: number
 }
 
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
@@ -154,7 +156,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     isDark, rows, comparisonRows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
-    followSessionClock, minScrollStallS,
+    followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry,
   } = props
 
   const look = axisLook ?? {}
@@ -172,7 +174,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     ? (min: number, max: number) => niceTicks(min, max, tickCount)
     : (yTickValues ?? ((min: number, max: number) => [min, max]))
 
-  const { ref: sizeRef, width, height } = useSize()
+  const { ref: sizeRef, width, height } = useSize(120)
   const { tooltipRef, show, hide } = useChartTooltip()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -242,7 +244,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const firstT = rows.length > historyStartIndex ? effectiveGetX(rows[historyStartIndex]) : null
   const { attach, detach, wake, acceptDataRange } = useTimeChartScroll(
     !coordinates.distanceMode, latestT, firstT, effectiveWindow, dataDirtyRef,
-    { fastFrames: fastScroll || coordinates.allLapsMode, fullFps: coordinates.allLapsMode ? 12 : 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
+    // All Laps deliberately runs the complete model/plugin pipeline on every
+    // display frame. Its growing range must not put axes or overlays on a
+    // separate, capped cadence from the WebGL traces.
+    { fastFrames: coordinates.allLapsMode ? false : fastScroll, fullFps: 60, followSessionClock, minStallS: minScrollStallS, accumulateFromStart: coordinates.allLapsMode },
   )
 
   // Static per-chart bits captured at mount (labels/colors/getY don't change).
@@ -265,6 +270,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     if (!el) return
 
     const defs = seriesDefs.current
+    const lineTypeFor = (s: SeriesDef<T>) => {
+      const requested = s.lineType ?? TimeChart.LineType.Line
+      return coordinates.allLapsMode && requested === TimeChart.LineType.Line
+        ? TimeChart.LineType.NativeLine
+        : requested
+    }
     const bridge = new TimeChartDataBridge<T>(row => getXRef.current(row), defs.map((s) => s.getY))
     const comparisonBridge = new TimeChartDataBridge<T>(row => coordinates.getComparisonX(row), defs.map((s) => s.getY))
     const plugins: Record<string, unknown> = {
@@ -276,14 +287,6 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     if (refLines && refLines.length > 0) {
       plugins.refLines = createReferenceLinesPlugin(refCfgRef)
     }
-    const fillDefs = defs.flatMap((s, i) => s.fill ? [{
-      seriesIndex: i + defs.length,
-      color: s.fill,
-      baseline: s.fillBaseline ?? 0,
-      stepped: s.lineType === 1,
-      stepLocation: s.stepLocation,
-    }] : [])
-    if (fillDefs.length > 0) plugins.areaFill = createAreaFillPlugin(fillDefs)
     const b = boundsRef.current
     const paddingTop = 4
     const paddingRight = look.paddingRight ?? 16
@@ -309,7 +312,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
           name: `comparison:${s.label}`,
           color: blendColor(themeSeriesColor(s.color, isDark)),
           lineWidth: Math.max(1, (s.lineWidth ?? 1.5) - 0.5),
-          lineType: s.lineType ?? TimeChart.LineType.Line,
+          lineType: lineTypeFor(s),
           stepLocation: s.stepLocation ?? 1,
           visible: comparisonRows != null && s.visible !== false,
           data: comparisonBridge.series[index],
@@ -318,10 +321,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         name: s.label,
         color: themeSeriesColor(s.color, isDark),
         lineWidth: s.lineWidth ?? 1.5,
-        lineType: s.lineType ?? TimeChart.LineType.Line,
+        lineType: lineTypeFor(s),
         stepLocation: s.stepLocation ?? 1,
         visible: s.visible !== false,
         data: bridge.series[index],
+        fill: s.fill,
+        fillBaseline: s.fillBaseline ?? 0,
         })),
       ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -631,8 +636,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   useEffect(() => {
     if (!coordinates.allLapsMode) return
-    return subscribeAllLapsData(scheduleRowsSync)
-  }, [coordinates.allLapsMode])
+    return subscribeAllLapsData(allLapsDataMask, scheduleRowsSync)
+  }, [allLapsDataMask, coordinates.allLapsMode])
 
   useEffect(() => {
     axisCfgRef.current = {

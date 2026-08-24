@@ -171,6 +171,59 @@ void main() {
     }
 }
 
+// Filled areas use the same resident paged textures as their line. Generating
+// baseline/sample vertex pairs in the shader avoids rebuilding a CPU canvas
+// path from the full All Laps history on every frame.
+class AreaProgram extends LinkedWebGLProgram {
+    static VS_SOURCE = `${VS_HEADER}
+uniform float uBaseline;
+uniform int uStepSegments;
+
+vec2 stepPoint(int virtualIndex) {
+    int interval = virtualIndex / uStepSegments;
+    int part = virtualIndex - interval * uStepSegments;
+    vec2 p0 = dataPoint(interval);
+    if (part == 0) return p0;
+    vec2 p1 = dataPoint(interval + 1);
+    float transitionX = mix(p0.x, p1.x, uStepLocation);
+    if (uStepSegments == 2) {
+        return uStepLocation <= .5 ? vec2(transitionX, p1.y) : vec2(transitionX, p0.y);
+    }
+    return part == 1 ? vec2(transitionX, p0.y) : vec2(transitionX, p1.y);
+}
+
+void main() {
+    int pathIndex = gl_VertexID >> 1;
+    vec2 top = uLineType == ${LineType.Step} ? stepPoint(pathIndex) : dataPoint(pathIndex);
+    vec2 point = (gl_VertexID & 1) == 0 ? vec2(top.x, uBaseline) : top;
+    vec2 cssPose = modelScale * (point + modelTranslate);
+    gl_Position = vec4(projectionScale * cssPose, 0, 1);
+}`;
+
+    locations;
+    constructor(gl: WebGL2RenderingContext, debug: boolean) {
+        super(gl, AreaProgram.VS_SOURCE, LINE_FS_SOURCE, debug);
+        this.link();
+        this.locations = {
+            uXPoints: this.getUniformLocation('uXPoints'),
+            uYPoints: this.getUniformLocation('uYPoints'),
+            uYChannel: this.getUniformLocation('uYChannel'),
+            uLineType: this.getUniformLocation('uLineType'),
+            uStepLocation: this.getUniformLocation('uStepLocation'),
+            uStepSegments: this.getUniformLocation('uStepSegments'),
+            uBaseline: this.getUniformLocation('uBaseline'),
+            uColor: this.getUniformLocation('uColor'),
+        };
+        this.use();
+        gl.uniform1i(this.locations.uXPoints, 0);
+        gl.uniform1i(this.locations.uYPoints, 1);
+        gl.uniform1f(this.locations.uStepLocation, 1);
+        gl.uniform1i(this.locations.uStepSegments, 2);
+        const projIdx = gl.getUniformBlockIndex(this.program, 'proj');
+        gl.uniformBlockBinding(this.program, projIdx, 0);
+    }
+}
+
 /** One lazily allocated physical ring page shared by every series channel. */
 class SharedGpuPage {
     readonly xTexture: WebGLTexture;
@@ -208,7 +261,7 @@ class SharedGpuPage {
 class SharedGpuBuffer {
     private readonly pages: Array<SharedGpuPage | undefined> = new Array(ALIGNED_PAGE_COUNT);
     private readonly xUpload = new Float32Array(TEXTURE_WIDTH);
-    private readonly yUpload = new Float32Array(TEXTURE_WIDTH);
+    private readonly pointUpload = new Float32Array(1);
 
     constructor(
         private gl: WebGL2RenderingContext,
@@ -245,10 +298,9 @@ class SharedGpuBuffer {
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, page.yTexture);
         for (let channel = 0; channel < this.data.channelCount; channel++) {
             const ySource = this.data.yPage(channel, pageIndex)!;
-            for (let i = 0; i < count; i++) this.yUpload[i] = ySource[pageOffset + i];
             gl.texSubImage3D(
                 gl.TEXTURE_2D_ARRAY, 0, x, y, channel, count, 1, 1,
-                gl.RED, gl.FLOAT, this.yUpload,
+                gl.RED, gl.FLOAT, ySource, pageOffset,
             );
         }
     }
@@ -279,10 +331,10 @@ class SharedGpuBuffer {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RED, gl.FLOAT, this.xUpload);
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, page.yTexture);
         for (let channel = 0; channel < this.data.channelCount; channel++) {
-            this.yUpload[0] = this.data.yAt(channel, logicalIndex);
+            this.pointUpload[0] = this.data.yAt(channel, logicalIndex);
             gl.texSubImage3D(
                 gl.TEXTURE_2D_ARRAY, 0, x, y, channel, 1, 1, 1,
-                gl.RED, gl.FLOAT, this.yUpload,
+                gl.RED, gl.FLOAT, this.pointUpload,
             );
         }
     }
@@ -300,19 +352,45 @@ class SharedGpuBuffer {
     }
 
     sync() {
-        const changed = this.data.resetPending || this.data.pushedBack !== 0 || this.data.poppedFront !== 0;
-        if (this.data.resetPending) {
+        const reset = this.data.resetPending;
+        const appended = this.data.pushedBack;
+        const evicted = this.data.poppedFront;
+        // Static All Laps frames still redraw at display rate, but their GPU
+        // pages are already resident. Avoid even walking the page directory
+        // unless the aligned ring reports an actual mutation.
+        if (!reset && appended === 0 && evicted === 0) return;
+        const dirtySpans = appended === 0 ? [] : this.data.dirtySpans();
+        if (reset) {
             for (let page = 0; page < ALIGNED_PAGE_COUNT; page++) this.deletePage(page);
-        } else {
+        } else if (evicted !== 0) {
             for (let page = 0; page < ALIGNED_PAGE_COUNT; page++) {
                 if (!this.data.hasPage(page)) this.deletePage(page);
             }
         }
 
-        for (const span of this.data.dirtySpans()) this.uploadSpan(span.start, span.count);
-        if (changed) {
+        for (const span of dirtySpans) this.uploadSpan(span.start, span.count);
+        if (reset) {
             for (let page = 0; page < ALIGNED_PAGE_COUNT; page++) {
                 if (this.data.hasPage(page)) this.refreshPadding(page);
+            }
+        } else {
+            // Only a write beginning at a physical page boundary changes the
+            // neighbour texel stored at the end of the preceding page. Normal
+            // appends within a page need no padding upload at all.
+            for (const span of dirtySpans) {
+                let physical = span.start;
+                let remaining = span.count;
+                while (remaining > 0) {
+                    const page = Math.floor(physical / ALIGNED_PAGE_SIZE);
+                    const offset = physical % ALIGNED_PAGE_SIZE;
+                    const chunk = Math.min(remaining, ALIGNED_PAGE_SIZE - offset);
+                    if (offset === 0) {
+                        const previous = (page + ALIGNED_PAGE_COUNT - 1) % ALIGNED_PAGE_COUNT;
+                        if (this.data.hasPage(previous)) this.refreshPadding(previous);
+                    }
+                    physical = (physical + chunk) % ALIGNED_PHYSICAL_CAPACITY;
+                    remaining -= chunk;
+                }
             }
         }
     }
@@ -342,6 +420,30 @@ class SharedGpuBuffer {
             this.gl.drawArrays(this.gl.LINE_STRIP, firstPoint, intervalCount + 1);
         } else {
             this.gl.drawArrays(this.gl.POINTS, firstPoint, intervalCount + 1);
+        }
+    }
+
+    drawAreaPage(
+        pageIndex: number,
+        channel: number,
+        firstPoint: number,
+        intervalCount: number,
+        type: LineType,
+        stepSegments: number,
+        program: AreaProgram,
+    ) {
+        const page = this.pages[pageIndex];
+        if (!page || intervalCount <= 0) return;
+        page.bind();
+        this.gl.uniform1i(program.locations.uYChannel, channel);
+        if (type === LineType.Step) {
+            this.gl.drawArrays(
+                this.gl.TRIANGLE_STRIP,
+                firstPoint * stepSegments * 2,
+                (intervalCount * stepSegments + 1) * 2,
+            );
+        } else {
+            this.gl.drawArrays(this.gl.TRIANGLE_STRIP, firstPoint * 2, (intervalCount + 1) * 2);
         }
     }
 
@@ -375,11 +477,32 @@ class SeriesGpuView {
             firstInterval += count;
         }
     }
+
+    drawArea(renderMin: number, renderMax: number, program: AreaProgram) {
+        const data = this.series.data;
+        if (data.length < 2 || data.xAt(0) > renderMax || data.xAt(data.length - 1) < renderMin) return;
+
+        let firstInterval = data.lowerBoundX(renderMin, 1, data.length) - 1;
+        const endInterval = data.lowerBoundX(renderMax, firstInterval, data.length - 1);
+        const stepSegments = this.series.stepLocation === 0 || this.series.stepLocation === 1 ? 2 : 3;
+        while (firstInterval < endInterval) {
+            const physical = data.buffer.physicalIndexAt(firstInterval);
+            const pageIndex = Math.floor(physical / ALIGNED_PAGE_SIZE);
+            const pageOffset = physical % ALIGNED_PAGE_SIZE;
+            const count = Math.min(endInterval - firstInterval, ALIGNED_PAGE_SIZE - pageOffset);
+            this.gpu.drawAreaPage(
+                pageIndex, data.channel, pageOffset + DATA_OFFSET, count,
+                this.series.lineType, stepSegments, program,
+            );
+            firstInterval += count;
+        }
+    }
 }
 
 export class LineChartRenderer {
     private lineProgram: LineProgram;
     private nativeLineProgram: NativeLineProgram;
+    private areaProgram: AreaProgram;
     private uniformBuffer: ShaderUniformData;
     private buffers = new Map<AlignedDataBuffer, SharedGpuBuffer>();
     private seriesViews = new Map<TimeChartSeriesOptions, SeriesGpuView>();
@@ -397,6 +520,10 @@ export class LineChartRenderer {
         source: ResolvedCoreOptions['color'] | TimeChartSeriesOptions['color'];
         rgba: ReturnType<typeof resolveColorRGBA>;
     }>();
+    private fillColorCache = new Map<TimeChartSeriesOptions, {
+        source: TimeChartSeriesOptions['fill'];
+        rgba: ReturnType<typeof resolveColorRGBA>;
+    }>();
 
     constructor(
         private model: RenderModel,
@@ -408,6 +535,7 @@ export class LineChartRenderer {
         // read this.options while it is still undefined.
         this.lineProgram = new LineProgram(gl, options.debugWebGL);
         this.nativeLineProgram = new NativeLineProgram(gl, options.debugWebGL);
+        this.areaProgram = new AreaProgram(gl, options.debugWebGL);
         const uboSize = gl.getActiveUniformBlockParameter(this.lineProgram.program, 0, gl.UNIFORM_BLOCK_DATA_SIZE);
         this.uniformBuffer = new ShaderUniformData(this.gl, uboSize);
         model.updated.on(() => this.drawFrame());
@@ -463,11 +591,39 @@ export class LineChartRenderer {
         return rgba;
     }
 
+    private fillColorFor(series: TimeChartSeriesOptions) {
+        const source = series.fill!;
+        const cached = this.fillColorCache.get(series);
+        if (cached?.source === source) return cached.rgba;
+        const rgba = resolveColorRGBA(source);
+        this.fillColorCache.set(series, { source, rgba });
+        return rgba;
+    }
+
     drawFrame() {
         this.syncBuffer();
         this.syncDomain();
         this.uniformBuffer.upload();
         const gl = this.gl;
+        const renderMin = this.xDomainMin +
+            (this.options.renderPaddingLeft - this.xRangeStart) * this.xUnitsPerPixel;
+        const renderMax = this.xDomainMin +
+            (this.width - this.options.renderPaddingRight - this.xRangeStart) * this.xUnitsPerPixel;
+
+        // Draw fills first so every line remains crisp above its translucent
+        // area. Both passes use the same resident paged textures.
+        this.areaProgram.use();
+        for (const series of this.options.series) {
+            if (!series.visible || series.fill == null) continue;
+            gl.uniform4fv(this.areaProgram.locations.uColor, this.fillColorFor(series));
+            gl.uniform1i(this.areaProgram.locations.uLineType, series.lineType);
+            gl.uniform1f(this.areaProgram.locations.uStepLocation, series.stepLocation);
+            gl.uniform1i(this.areaProgram.locations.uStepSegments,
+                series.stepLocation === 0 || series.stepLocation === 1 ? 2 : 3);
+            gl.uniform1f(this.areaProgram.locations.uBaseline, series.fillBaseline ?? 0);
+            this.viewFor(series).drawArea(renderMin, renderMax, this.areaProgram);
+        }
+
         let activeProgram: LineProgram | NativeLineProgram | null = null;
         for (const series of this.options.series) {
             if (!series.visible) continue;
@@ -493,11 +649,8 @@ export class LineChartRenderer {
                 gl.uniform1f(program.locations.uPointSize, lineWidth * this.options.pixelRatio);
             }
 
-            const renderMin = this.xDomainMin +
-                (this.options.renderPaddingLeft - lineWidth / 2 - this.xRangeStart) * this.xUnitsPerPixel;
-            const renderMax = this.xDomainMin +
-                (this.width - this.options.renderPaddingRight + lineWidth / 2 - this.xRangeStart) * this.xUnitsPerPixel;
-            this.viewFor(series).draw(renderMin, renderMax, program);
+            const linePad = lineWidth / 2 * this.xUnitsPerPixel;
+            this.viewFor(series).draw(renderMin - linePad, renderMax + linePad, program);
         }
         if (this.options.debugWebGL) {
             const err = gl.getError();
@@ -551,6 +704,7 @@ export class LineChartRenderer {
         this.uniformBuffer.delete();
         this.gl.deleteProgram(this.lineProgram.program);
         this.gl.deleteProgram(this.nativeLineProgram.program);
+        this.gl.deleteProgram(this.areaProgram.program);
     }
 }
 

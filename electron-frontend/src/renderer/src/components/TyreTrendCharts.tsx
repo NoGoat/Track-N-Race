@@ -9,6 +9,7 @@ import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
+import { HISTORY_ROW } from '../lib/historyDependencies'
 
 const FL = '#e10600'
 const FR = '#4488ff'
@@ -227,12 +228,13 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
         {!hasData ? (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         ) : view === 'table' ? (
-          <GraphTable columns={tableCols} data={tableData} liveRows={rows} getLiveValues={getTableValues} edgePadRem={0.75} />
+          <GraphTable columns={tableCols} data={tableData} liveRows={rows} getLiveValues={getTableValues} allLapsDataMask={source === 'damage' ? HISTORY_ROW.damage : HISTORY_ROW.telemetry} edgePadRem={0.75} />
         ) : (
           <TimeChartView<T>
             key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
             isDark={isDark}
             rows={rows}
+            allLapsDataMask={source === 'damage' ? HISTORY_ROW.damage : HISTORY_ROW.telemetry}
             comparisonRows={comparisonRows}
             getX={(d) => d.session_time}
             series={series}
