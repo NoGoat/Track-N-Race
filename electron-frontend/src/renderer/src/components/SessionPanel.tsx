@@ -75,14 +75,12 @@ function driverName(p: ParticipantsMsg | null, idx: number): string {
   return parts[parts.length - 1].toUpperCase()
 }
 
-const INFRINGEMENT_LABELS: Record<number, string> = {
-  0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start',
-  3: 'Severe collision', 4: 'Collision', 7: 'SC delta exceeded',
-  8: 'SC illegal overtake', 9: 'SC exceeding pace', 13: 'Pit lane too fast',
-  17: 'Pit lane speeding', 25: 'Corner cutting', 30: 'Lap invalidated',
-}
-
-function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolean): { label: string; color: string } | null {
+function formatEvent(
+  ev: RaceEventMsg,
+  p: ParticipantsMsg | null,
+  isDark: boolean,
+  labels: Readonly<Record<string, string>>,
+): { label: string; color: string } | null {
   const name = (idx?: number) => driverName(p, idx ?? 0)
   const fmtLap = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`
   switch (ev.code) {
@@ -105,14 +103,16 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
     }
     case 'PENA': {
       const pt = ev.penalty_type ?? 0
-      const L: Record<number, string> = { 0: 'Drive Through', 1: 'Stop-Go', 2: 'Grid Penalty', 4: 'Time Penalty', 5: 'Warning', 6: 'DSQ' }
-      const C: Record<number, string> = isDark
-        ? { 0: '#e10600', 1: '#e10600', 2: '#c47d0e', 4: '#c47d0e', 5: '#ffd700', 6: '#e10600' }
-        : { 0: '#C4162A', 1: '#C4162A', 2: '#A04300', 4: '#A04300', 5: '#765900', 6: '#C4162A' }
-      if (!(pt in L)) return null
+      const penaltyLabel = labels[`penalty.${pt}`]
+      if (!penaltyLabel) return null
+      const color = pt === 5
+        ? (isDark ? '#ffd700' : '#765900')
+        : pt === 2 || pt === 4
+          ? (isDark ? '#c47d0e' : '#A04300')
+          : (isDark ? '#e10600' : '#C4162A')
       const ts = (pt === 1 || pt === 4) && ev.penalty_time_s ? ` ${ev.penalty_time_s}s` : ''
-      const inf = ev.infringement_type != null ? INFRINGEMENT_LABELS[ev.infringement_type] : undefined
-      return { label: `${L[pt]}${ts} — ${name(ev.car_idx)}${inf ? ` — ${inf}` : ''}`, color: C[pt] }
+      const inf = ev.infringement_type != null ? labels[`infringe.${ev.infringement_type}`] : undefined
+      return { label: `${penaltyLabel}${ts} — ${name(ev.car_idx)}${inf ? ` — ${inf}` : ''}`, color }
     }
     case 'OVTK': return { label: `Overtake — ${name(ev.overtaking_car_idx)} passed ${name(ev.being_overtaken_car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SPTP': return null
@@ -340,7 +340,7 @@ interface Props {
 const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather, compactEvents, compactProximity, layout = DEFAULT_SESSION_LAYOUT }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
-  const { t } = useLabels()
+  const { t, raw: labels } = useLabels()
   const weatherLevel = Math.max(0, Math.min(4, compactWeather ?? 0))
   const headerLevel = typeof compactHeader === 'boolean' ? (compactHeader ? 1 : 0) : Math.max(0, Math.min(3, compactHeader ?? 0))
   const isCompactHeader = headerLevel === 1 || headerLevel === 2
@@ -402,7 +402,7 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     : []
 
   const visibleEvents = raceEvents
-    .map(e => ({ event: e, fmt: formatEvent(e, participants, isDark) }))
+    .map(e => ({ event: e, fmt: formatEvent(e, participants, isDark, labels) }))
     .filter(({ fmt }) => fmt !== null)
     .reverse() as { event: RaceEventMsg; fmt: { label: string; color: string } }[]
 

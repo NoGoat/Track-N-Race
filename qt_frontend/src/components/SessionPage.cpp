@@ -25,7 +25,6 @@
 #include <QVariant>
 
 #include <algorithm>
-#include <unordered_map>
 
 namespace {
 
@@ -160,51 +159,10 @@ QColor eventCodeColor(const std::string& code) {
     return QColor();
 }
 
-// Maps F1 penalty_type → display label. Returns nullptr for unknown types
-// (which are hidden, matching the Electron reference's null return).
-const char* penaltyTypeLabel(int pt) {
-    switch (pt) {
-        case 0: return "Drive Through";
-        case 1: return "Stop-Go";
-        case 2: return "Grid Penalty";
-        case 4: return "Time Penalty";
-        case 5: return "Warning";
-        case 6: return "DSQ";
-        default: return nullptr;
-    }
-}
-
-// F1 infringement_type → human-readable reason (ported from the Electron App.tsx table).
-QString infringementLabel(int id) {
-    static const std::unordered_map<int, const char*> labels = {
-        {0,  "Blocking by slowing"},        {1,  "Blocking wrong way"},
-        {2,  "Reversing off start line"},   {3,  "Severe collision"},
-        {4,  "Collision"},            {5,  "Collision — failed to hand back"},
-        {6,  "Collision — attack from rear"},
-        {7,  "SC delta exceeded"},          {8,  "SC illegal overtake"},
-        {9,  "SC exceeding allowed pace"},  {10, "Cornering under SC"},
-        {11, "SC must pit this lap"},       {12, "SC pit lane curfew"},
-        {13, "Pit lane too fast"},          {14, "Unsafe release"},
-        {15, "Pit re-entry too slow"},      {16, "In pit too fast"},
-        {17, "Unsafe release"},             {18, "Escape from pit"},
-        {19, "Ignoring blue flags"},        {20, "Ignoring yellow flags"},
-        {21, "Ignoring drive through"},     {22, "Too many drive throughs"},
-        {23, "DT — serve this lap"},        {24, "DT — serve next lap"},
-        {25, "Pit stop failed to serve"},   {26, "Hanging around"},
-        {27, "Hang around for SC"},         {28, "Return to pits"},
-        {29, "Tyre regulations"},           {30, "Lap invalidated"},
-        {31, "This + next lap invalid"},    {32, "Lap invalid (no reason)"},
-        {33, "This + next invalid (no reason)"}, {34, "This + prev lap invalid"},
-        {35, "This + prev invalid (no reason)"}, {36, "Retired"},
-        {37, "Black flag timer"},           {38, "Unserved stop-go"},
-        {39, "Unserved drive through"},     {40, "Engine change"},
-        {41, "Gearbox change"},             {42, "Parc fermé change"},
-        {43, "League grid penalty"},        {44, "Retry penalty"},
-        {45, "Illegal time gain"},          {46, "Mandatory pit stop"},
-        {47, "Attribute assigned"},         {48, "Corner cutting"},
-    };
-    auto it = labels.find(id);
-    return it != labels.end() ? QString::fromUtf8(it->second) : QString();
+QString enumLabel(const QString& group, int id) {
+    const QString key = group + QChar('.') + QString::number(id);
+    const QString label = tnr::L(key);
+    return label == key ? QString() : label;
 }
 
 } // namespace
@@ -999,15 +957,15 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
             colorOverride = QColor("#BF5FFF"); // Purple
         } else if (code == "PENA") {
             int pt = ev.penalty_type.value_or(-1);
-            const char* ptLabel = penaltyTypeLabel(pt);
-            if (!ptLabel) continue;
+            const QString ptLabel = enumLabel(QStringLiteral("penalty"), pt);
+            if (ptLabel.isEmpty()) continue;
 
             QString nameCode = get3LetterCode(ev.car_idx.value_or(-1));
-            QString inf = infringementLabel(ev.infringement_type.value_or(-1));
+            QString inf = enumLabel(QStringLiteral("infringe"), ev.infringement_type.value_or(-1));
 
             if (pt == 5) {
-                eventType = "Warning";
-                text = nameCode + " - " + (inf.isEmpty() ? "Warning" : inf);
+                eventType = ptLabel;
+                text = nameCode + " - " + (inf.isEmpty() ? ptLabel : inf);
                 colorOverride = QColor("#ffd700"); // Yellow
             } else {
                 eventType = "Penalty";

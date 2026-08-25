@@ -4,8 +4,6 @@
 #include <QRegularExpression>
 #include <QStringList>
 
-#include <array>
-
 namespace {
 
 // Last word of a participant's name, by car index — mirrors lastName() in App.tsx.
@@ -30,28 +28,10 @@ QString fmtLap(double s) {
     return QString("%1:%2").arg(m).arg(rem, 6, 'f', 3, QChar('0'));
 }
 
-// Infringement label by index — direct port of INFRINGEMENT_LABELS (App.tsx:133).
-const char* infringementLabel(int i) {
-    static const std::array<const char*, 49> L = {
-        "Blocking by slowing", "Blocking wrong way", "Reversing off start line",
-        "Severe collision", "Collision", "Collision — failed to hand back",
-        "Collision — attack from rear", "SC delta exceeded", "SC illegal overtake",
-        "SC exceeding allowed pace", "Cornering under SC", "SC must pit this lap",
-        "SC pit lane curfew", "Pit lane too fast", "Unsafe release",
-        "Pit re-entry too slow", "In pit too fast", "Unsafe release",
-        "Escape from pit", "Ignoring blue flags", "Ignoring yellow flags",
-        "Ignoring drive through", "Too many drive throughs", "DT — serve this lap",
-        "DT — serve next lap", "Pit stop failed to serve", "Hanging around",
-        "Hang around for SC", "Return to pits", "Tyre regulations",
-        "Lap invalidated", "This + next lap invalid", "Lap invalid (no reason)",
-        "This + next invalid (no reason)", "This + prev lap invalid",
-        "This + prev invalid (no reason)", "Retired", "Black flag timer",
-        "Unserved stop-go", "Unserved drive through", "Engine change",
-        "Gearbox change", "Parc fermé change", "League grid penalty",
-        "Retry penalty", "Illegal time gain", "Mandatory pit stop",
-        "Attribute assigned", "Corner cutting",
-    };
-    return (i >= 0 && i < (int)L.size()) ? L[i] : nullptr;
+QString enumLabel(const QString& group, int id) {
+    const QString key = group + QChar('.') + QString::number(id);
+    const QString label = tnr::L(key);
+    return label == key ? QString() : label;
 }
 
 } // namespace
@@ -71,23 +51,18 @@ std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
     if (code == "RDFL") return ToastSpec{ "Red Flag",     {}, QColor("#e10600") };
     if (code == "PENA") {
         const int pt = event.penalty_type.value_or(0);
-        struct P { const char* label; const char* color; };
-        // Index by penalty_type; type 3 has no mapping (skipped), matching Electron.
-        static const std::array<P, 7> M = {{
-            { "Drive Through", "#e10600" }, { "Stop Go",  "#e10600" },
-            { "Grid Penalty",  "#c47d0e" }, { nullptr,    nullptr   },
-            { "Time Penalty",  "#c47d0e" }, { "Warning",  "#ffd700" },
-            { "Disqualified",  "#e10600" },
-        }};
-        if (pt < 0 || pt >= (int)M.size() || !M[pt].label) return std::nullopt;
-        QString label = M[pt].label;
+        QString label = enumLabel(QStringLiteral("penalty"), pt);
+        if (label.isEmpty()) return std::nullopt;
+        const QColor color = pt == 5 ? QColor("#ffd700")
+                           : (pt == 2 || pt == 4) ? QColor("#c47d0e")
+                           : QColor("#e10600");
         if ((pt == 1 || pt == 4) && event.penalty_time_s && *event.penalty_time_s > 0)
             label += QString(" %1s").arg(*event.penalty_time_s);
         const QString driver = lastName(participants, carIdx);
-        const char* infr = event.infringement_type
-            ? infringementLabel(*event.infringement_type) : nullptr;
-        const QString sub = (pt == 5 && infr) ? QString("%1  ·  %2").arg(driver, infr) : driver;
-        return ToastSpec{ label, sub, QColor(M[pt].color) };
+        const QString infr = event.infringement_type
+            ? enumLabel(QStringLiteral("infringe"), *event.infringement_type) : QString();
+        const QString sub = (pt == 5 && !infr.isEmpty()) ? QString("%1  ·  %2").arg(driver, infr) : driver;
+        return ToastSpec{ label, sub, color };
     }
     if (code == "DTSV") return ToastSpec{ "DT Served",     lastName(participants, carIdx), QColor("#a0a8b8") };
     if (code == "SGSV") return ToastSpec{ "SG Served",     lastName(participants, carIdx), QColor("#a0a8b8") };

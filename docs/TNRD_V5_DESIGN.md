@@ -1,6 +1,6 @@
 # TNRD V5 — Read Metadata Design
 
-Status: proposed pre-release V5 change  
+Status: implemented
 Scope: metadata additions that make the existing V5 chunks faster to select and read  
 Compatibility: existing pre-release V5 files do not need to remain readable
 
@@ -45,9 +45,9 @@ This proposal does **not** introduce:
 
 The existing compressed JSONL chunks remain the source data.
 
-## 3. Current avoidable reader work
+## 3. Avoidable reader work addressed by this design
 
-The current V5 chunk directory stores:
+The earlier V5 chunk directory stored:
 
 ```text
 lap number
@@ -415,7 +415,7 @@ old V5 payload layout.
 
 ## 12. Expected improvement
 
-| Operation | Current V5 | Metadata-enhanced V5 |
+| Operation | Earlier V5 | Metadata-enhanced V5 |
 |---|---|---|
 | Open chunk directory | Bounds unknown | All bounds immediately available |
 | Reject disjoint chunks | May require first decompression | Directory-only |

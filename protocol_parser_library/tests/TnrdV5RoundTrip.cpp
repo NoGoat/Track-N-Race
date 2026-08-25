@@ -114,6 +114,71 @@ int main() {
     assert(hotLatest.size() == 1 && hotLatest.front().sessionTime == 74.0f);
     hotIndex.close();
 
+    // The recorder deliberately tolerates a small amount of packet reordering.
+    // Hot-block bounds must therefore be physical-block minima/maxima, and
+    // sparse exact indexes must remain searchable independently of payload order.
+    const fs::path reorderedPath = longDir / "reordered_hot_rows.tnrd";
+    const std::vector<V5SourceRow> reorderedRows = {
+        {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0})", 1.0f},
+        {R"({"type":"telemetry","session_time":10,"speed_kph":100})", 10.0f},
+        {R"({"type":"telemetry","session_time":9.95,"speed_kph":95})", 9.95f},
+        {R"({"type":"telemetry","session_time":10.05,"speed_kph":105})", 10.05f},
+        {R"({"type":"status","session_time":10,"fuel_kg":50})", 10.0f},
+        {R"({"type":"status","session_time":9.95,"fuel_kg":51})", 9.95f},
+        {R"({"type":"status","session_time":10.05,"fuel_kg":49})", 10.05f},
+    };
+    assert(tnrp::detail::writeTnrdV5(reorderedPath.string(), header, reorderedRows, &error));
+    tnrp::detail::TnrdV5Archive reordered;
+    assert(reordered.open(reorderedPath.string(), archiveHeader, &error));
+    std::vector<tnrp::detail::V5TimedRow> reorderedWindow;
+    assert(reordered.rowsForRange(9.94f, 10.01f, tnrp::detail::v5TypeBit(1), reorderedWindow, &error));
+    assert(reorderedWindow.size() == 2);
+    assert(reorderedWindow[0].sessionTime == 9.95f && reorderedWindow[1].sessionTime == 10.0f);
+    assert(reordered.latestRows(10.01f, {1}, hotLatest, &error));
+    assert(hotLatest.size() == 1 && hotLatest.front().sessionTime == 10.0f);
+    std::vector<tnrp::detail::V5TimedRow> sparseWindow;
+    assert(reordered.rowsForRange(9.94f, 10.01f, tnrp::detail::v5TypeBit(2), sparseWindow, &error));
+    assert(sparseWindow.size() == 2);
+    assert(sparseWindow[0].sessionTime == 9.95f && sparseWindow[1].sessionTime == 10.0f);
+    assert(reordered.latestRows(10.01f, {2}, hotLatest, &error));
+    assert(hotLatest.size() == 1 && hotLatest.front().sessionTime == 10.0f);
+    reordered.close();
+
+    // Overlapping checkpoint chunks can both contain the seek target. Metadata
+    // gives an upper bound, so latest-at-time must inspect every tied hot
+    // candidate and choose by the actual decoded row time.
+    const fs::path overlappingPath = longDir / "overlapping_hot_chunks.tnrd";
+    tnrp::detail::TnrdV5Writer overlappingWriter;
+    assert(overlappingWriter.open(overlappingPath.string(), header, &error));
+    assert(overlappingWriter.append({
+        {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0})", 1.0f},
+        {R"({"type":"telemetry","session_time":10,"speed_kph":100})", 10.0f},
+        {R"({"type":"telemetry","session_time":10.1,"speed_kph":101})", 10.1f},
+    }, &error));
+    assert(overlappingWriter.checkpoint(&error));
+    assert(overlappingWriter.append({
+        {R"({"type":"telemetry","session_time":9.95,"speed_kph":95})", 9.95f},
+        {R"({"type":"telemetry","session_time":10.2,"speed_kph":102})", 10.2f},
+    }, &error));
+    assert(overlappingWriter.finish(&error));
+    tnrp::detail::TnrdV5Archive overlapping;
+    assert(overlapping.open(overlappingPath.string(), archiveHeader, &error));
+    assert(overlapping.latestRows(10.05f, {1}, hotLatest, &error));
+    assert(hotLatest.size() == 1 && hotLatest.front().sessionTime == 10.0f);
+    assert(overlapping.decompressedChunkCount() == 2);
+    overlapping.close();
+
+    // Sequential playback after a seek uses the same indexed boundary path and
+    // must neither replay the chunk prefix nor lose the first future row.
+    tnrp::TnrdReader reorderedPlayback;
+    tnrp::HeaderRow reorderedHeader;
+    assert(reorderedPlayback.load(reorderedPath.string(), reorderedHeader));
+    reorderedPlayback.setPlaybackRowMask(tnrp::detail::v5TypeBit(1), 9.96f);
+    const auto afterSeek = reorderedPlayback.pullUntil(10.01f);
+    assert(afterSeek.size() == 1);
+    assert(afterSeek.front().find("\"session_time\":10") != std::string::npos);
+    reorderedPlayback.close();
+
     // Chunk payloads are loaded concurrently, while requests that converge
     // on one chunk share its single in-flight read/decompression. Use a payload
     // larger than the deliberately tiny cache so this exercises single-flight,

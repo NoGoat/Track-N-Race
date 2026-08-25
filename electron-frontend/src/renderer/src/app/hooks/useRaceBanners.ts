@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { subscribeRaceEvent, useTelemetryStore } from '../../stores/telemetryStore'
+import { useLabels } from '../../lib/labels'
 import { buildBanner, lastName, type BannerItem } from '../bannerHelpers'
 
 export function useRaceBanners(durationSeconds: number) {
+  const { raw: labels } = useLabels()
   const participants = useTelemetryStore(state => state.participants)
   const session = useTelemetryStore(state => state.session)
   const latestSafetyCarEvent = useTelemetryStore(state => {
@@ -18,8 +20,10 @@ export function useRaceBanners(durationSeconds: number) {
   const showingRef = useRef(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const participantsRef = useRef(participants)
+  const labelsRef = useRef(labels)
   const durationRef = useRef(durationSeconds)
   participantsRef.current = participants
+  labelsRef.current = labels
   durationRef.current = durationSeconds
 
   const dequeueRef = useRef<() => void>(() => {})
@@ -44,7 +48,7 @@ export function useRaceBanners(durationSeconds: number) {
   }, [enqueue])
 
   useEffect(() => subscribeRaceEvent(event => {
-    const item = buildBanner(event, participantsRef.current)
+    const item = buildBanner(event, participantsRef.current, labelsRef.current)
     if (item) enqueue(item)
   }), [enqueue])
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])

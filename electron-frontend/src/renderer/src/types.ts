@@ -258,7 +258,7 @@ export interface RaceEventMsg {
   safety_car_type?: number        // 1=Full 2=Virtual 3=Formation
   event_type?: number             // 0=Deployed 1=Returning 2=Returned 3=Resume
   penalty_type?: number           // 0=DT 1=SG 2=Grid 4=Time 5=Warning 6=DSQ
-  infringement_type?: number      // see INFRINGEMENT_LABELS
+  infringement_type?: number      // resolved through the shared `infringe.<id>` label catalog
   penalty_time_s?: number         // seconds (SG and time penalties)
   flashback_frame_identifier?: number
   flashback_session_time?: number

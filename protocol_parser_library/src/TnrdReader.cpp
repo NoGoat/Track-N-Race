@@ -1286,8 +1286,9 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
     std::sort(pending.begin(),pending.end(),[](const auto&a,const auto&b){return a.sequence<b.sequence;});
     std::vector<size_t> indices;indices.reserve(pending.size());for(const auto& item:pending)indices.push_back(item.index);
     std::vector<std::vector<detail::V4TimedRow>> decoded;std::string error;
-    if(!indexedArchive_->rowsForChunks(indices,decoded,&error)){lastError_=error;return false;}
-    for(const auto& item:pending)if(v4PlaybackLanes_[item.lane].nextPrefetched){indexedArchive_->cancelPrefetch();v4PlaybackPrefetchOutstanding_=false;break;}
+    if(auto* v5=dynamic_cast<detail::TnrdV5Archive*>(indexedArchive_.get())){
+        if(!v5->rowsForChunksRange(indices,v4PlaybackCursor_,std::numeric_limits<float>::infinity(),decoded,&error)){lastError_=error;return false;}
+    }else if(!indexedArchive_->rowsForChunks(indices,decoded,&error)){lastError_=error;return false;}
     // The app recorder accepts at most 200 ms of packet reordering before it
     // rewinds the indexed timeline. Hold that tail until the successor is known.
     const auto block=lapBlocks_.find(v4PlaybackLap_);const float inf=std::numeric_limits<float>::infinity();constexpr float REORDER_WINDOW_S=0.2f;
@@ -1306,15 +1307,15 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
         std::inplace_merge(lane.rows.begin(),lane.rows.begin()+(ptrdiff_t)retained,lane.rows.end(),before);
         ++lane.nextChunk;lane.safeThrough=lane.nextChunk==lane.chunks.size()?inf:lane.maxDecodedTime-REORDER_WINDOW_S;
     }
+    v4PlaybackPrefetchOutstanding_=std::any_of(v4PlaybackLanes_.begin(),v4PlaybackLanes_.end(),[](const auto& lane){return lane.nextPrefetched;});
     prefetchV4PlaybackChunk();
     return true;
 }
 
 void TnrdReader::prefetchV4PlaybackChunk() {
-    if(v4PlaybackPrefetchOutstanding_)return;
-    size_t best=v4PlaybackLanes_.size();const auto& chunks=indexedArchive_->chunks();
-    for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(lane.nextPrefetched||lane.nextChunk>=lane.chunks.size())continue;if(best==v4PlaybackLanes_.size()||lane.safeThrough<v4PlaybackLanes_[best].safeThrough||(lane.safeThrough==v4PlaybackLanes_[best].safeThrough&&chunks[lane.chunks[lane.nextChunk]].sequence<chunks[v4PlaybackLanes_[best].chunks[v4PlaybackLanes_[best].nextChunk]].sequence))best=i;}
-    if(best==v4PlaybackLanes_.size())return;auto& lane=v4PlaybackLanes_[best];lane.nextPrefetched=true;v4PlaybackPrefetchOutstanding_=true;indexedArchive_->prefetchChunk(lane.chunks[lane.nextChunk]);
+    if(!indexedArchive_)return;const auto& chunks=indexedArchive_->chunks();const size_t limit=dynamic_cast<detail::TnrdV5Archive*>(indexedArchive_.get())?4u:1u;size_t outstanding=0;for(const auto& lane:v4PlaybackLanes_)if(lane.nextPrefetched)++outstanding;if(outstanding>=limit){v4PlaybackPrefetchOutstanding_=true;return;}
+    std::vector<size_t> candidates;for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(!lane.nextPrefetched&&lane.nextChunk<lane.chunks.size())candidates.push_back(i);}std::stable_sort(candidates.begin(),candidates.end(),[&](size_t a,size_t b){const auto& left=v4PlaybackLanes_[a];const auto& right=v4PlaybackLanes_[b];if(left.safeThrough!=right.safeThrough)return left.safeThrough<right.safeThrough;return chunks[left.chunks[left.nextChunk]].sequence<chunks[right.chunks[right.nextChunk]].sequence;});
+    for(size_t laneIndex:candidates){if(outstanding>=limit)break;auto& lane=v4PlaybackLanes_[laneIndex];lane.nextPrefetched=true;++outstanding;indexedArchive_->prefetchChunk(lane.chunks[lane.nextChunk]);}v4PlaybackPrefetchOutstanding_=outstanding!=0;
 }
 
 bool TnrdReader::encodeV4HotRow(uint8_t type,std::string_view json,std::vector<uint8_t>& out){

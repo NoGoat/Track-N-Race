@@ -41,6 +41,14 @@ public:
     bool rowsForChunks(const std::vector<size_t>& chunkIndices,
                        std::vector<std::vector<V5TimedRow>>& out,
                        std::string* errorOut);
+    // Playback-frontier variant. The selected chunks are still decompressed as
+    // whole Zstandard frames, but their row indexes avoid materializing rows
+    // outside the requested time window.
+    bool rowsForChunksRange(const std::vector<size_t>& chunkIndices,
+                            float fromTime, float toTime,
+                            std::vector<std::vector<V5TimedRow>>& out,
+                            std::string* errorOut,
+                            const IndexedCancelCheck& cancelled = {});
     bool rowsForLap(uint32_t lap, V5RowTypeMask mask,
                     std::vector<V5TimedRow>& out, std::string* errorOut);
     bool rowsForLapRange(uint32_t lap, float fromTime, float toTime,
