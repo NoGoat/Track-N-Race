@@ -171,11 +171,15 @@ ipcMain.on('updates:skip-version', (_event, version: string) => {
 
 ipcMain.handle('updates:open-download-page', () => shell.openExternal(RELEASE_PAGE_URL))
 
-ipcMain.handle('dialog:showOpenDialog', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle('dialog:showOpenDialog', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     defaultPath: lastDialogDirectory(),
-    properties: ['openDirectory']
-  })
+    properties: ['openDirectory'] as ('openDirectory')[]
+  }
+  const { canceled, filePaths } = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
   if (canceled) {
     return null
   } else {
@@ -184,12 +188,16 @@ ipcMain.handle('dialog:showOpenDialog', async () => {
   }
 })
 
-ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle('dialog:showOpenDialogTNRD', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     defaultPath: lastDialogDirectory(),
     filters: [{ name: 'Track N Race Data', extensions: ['tnrd', 'trnd'] }],
-    properties: ['openFile']
-  })
+    properties: ['openFile'] as ('openFile')[]
+  }
+  const { canceled, filePaths } = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
   if (canceled) return null
   rememberDialogDirectory(filePaths[0])
   return filePaths[0]
@@ -228,11 +236,15 @@ ipcMain.handle('player:export-xlsx', async (event) => {
 
   const base = path.basename(srcPath).replace(/\.(tnrd|trnd)$/i, '')
   const exportDirectory = lastDialogDirectory() ?? path.dirname(srcPath)
-  const { canceled, filePath } = await dialog.showSaveDialog({
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     title: 'Export Session to Excel',
     defaultPath: path.join(exportDirectory, `${base}.xlsx`),
     filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
-  })
+  }
+  const { canceled, filePath } = win
+    ? await dialog.showSaveDialog(win, options)
+    : await dialog.showSaveDialog(options)
   if (canceled || !filePath) return { ok: false, error: 'cancelled' }
   rememberDialogDirectory(filePath)
 

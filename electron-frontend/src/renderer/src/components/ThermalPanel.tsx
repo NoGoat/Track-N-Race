@@ -189,10 +189,10 @@ export const WheelCard = memo(function WheelCard({
       <div className={`${isSpacious ? 'text-xs font-black' : 'text-[10px] font-bold'} text-[var(--text-secondary)] uppercase tracking-widest ${labelMb}`}>
         {pos}
       </div>
-      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} spacious={isSpacious} />
-      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} spacious={isSpacious} />
+      <TempRow label={isSpacious ? "Surface Temp" : "Surface"} value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} spacious={isSpacious} />
+      <TempRow label={isSpacious ? "Inner Temp" : "Inner"}   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} spacious={isSpacious} />
       {!isCompactCol && <div className={`${dividerMy} border-t border-[var(--border)]`} />}
-      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} spacious={isSpacious} />
+      <TempRow label={isSpacious ? "Brake Temp" : "Brake"}   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} spacious={isSpacious} />
       <div className={(isOverviewNormal || isSpacious) && !isCompactCol ? (isSpacious ? 'mt-3' : 'mt-2') : undefined}>
         <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} spacious={isSpacious} isDark={isDark} />
       </div>

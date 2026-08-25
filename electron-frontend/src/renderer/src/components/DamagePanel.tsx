@@ -39,6 +39,7 @@ const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compa
   }
 
   if (isSpacious) {
+    const statusText = !connected ? '—' : v === 0 ? 'Clean' : v > 20 ? 'Critical' : 'Minor'
     return (
       <div className="flex-1 min-w-0 px-4 py-3">
         <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1">{label}</div>
@@ -50,6 +51,9 @@ const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compa
             {!connected ? '—' : String(v)}
           </span>
           {connected && <span className="text-xs font-semibold text-[var(--text-secondary)] shrink-0">%</span>}
+        </div>
+        <div className="text-[10px] font-medium text-[var(--text-secondary)] mt-0.5 truncate" style={connected && v > 0 ? { color: textColor } : undefined}>
+          {statusText}
         </div>
       </div>
     )

@@ -34,7 +34,7 @@ QString fmtLap(double s) {
 const char* infringementLabel(int i) {
     static const std::array<const char*, 49> L = {
         "Blocking by slowing", "Blocking wrong way", "Reversing off start line",
-        "Big collision", "Small collision", "Collision — failed to hand back",
+        "Severe collision", "Collision", "Collision — failed to hand back",
         "Collision — attack from rear", "SC delta exceeded", "SC illegal overtake",
         "SC exceeding allowed pace", "Cornering under SC", "SC must pit this lap",
         "SC pit lane curfew", "Pit lane too fast", "Unsafe release",

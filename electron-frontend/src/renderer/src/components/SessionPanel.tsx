@@ -77,7 +77,7 @@ function driverName(p: ParticipantsMsg | null, idx: number): string {
 
 const INFRINGEMENT_LABELS: Record<number, string> = {
   0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start',
-  3: 'Big collision', 4: 'Small collision', 7: 'SC delta exceeded',
+  3: 'Severe collision', 4: 'Collision', 7: 'SC delta exceeded',
   8: 'SC illegal overtake', 9: 'SC exceeding pace', 13: 'Pit lane too fast',
   17: 'Pit lane speeding', 25: 'Corner cutting', 30: 'Lap invalidated',
 }
@@ -134,7 +134,7 @@ function weatherColor(id: number, isDark: boolean): string {
   return isDark ? e.dark : e.light
 }
 
-const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: DensityMode | boolean }) {
+const StatCard = memo(function StatCard({ label, value, unit, accent, sub, compact }: { label: string; value: string; unit?: string; accent?: string; sub?: string; compact?: DensityMode | boolean }) {
   const isCompact = compact === true || compact === 'compact'
   const isSpacious = compact === 'spacious'
 
@@ -153,13 +153,16 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
 
   if (isSpacious) {
     return (
-      <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-6 py-6 border-r border-[var(--border)] last:border-r-0">
+      <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-6 py-5 border-r border-[var(--border)] last:border-r-0">
         <span className="text-xs font-black tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
         <div>
-          <div className="text-4xl font-black tabular-nums leading-none mt-3 truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
-            {value}
+          <div className="flex items-baseline gap-1.5 overflow-hidden">
+            <span className="text-4xl font-black tabular-nums leading-none truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
+              {value}
+            </span>
+            {unit && <span className="text-sm font-semibold text-[var(--text-secondary)] shrink-0">{unit}</span>}
           </div>
-          {unit && <div className="text-sm font-semibold text-[var(--text-secondary)] mt-1.5">{unit}</div>}
+          {sub && <div className="text-[11px] font-medium text-[var(--text-secondary)] mt-1.5 truncate">{sub}</div>}
         </div>
       </div>
     )
@@ -242,19 +245,28 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants, co
   return (
     <div className="flex flex-col divide-y divide-[var(--border)]">
       {rows.map(({ car, isPlayer, deltaMs, sign }) => {
+        const d = participants?.drivers.find(drv => drv.idx === car.idx)
         return (
           <div
             key={car.idx}
-            className={isCompact ? "flex items-center gap-3 px-3 h-[32px]" : isSpacious ? "flex items-center gap-4 px-4 py-4" : "flex items-center gap-3 px-3 py-3"}
+            className={isCompact ? "flex items-center gap-3 px-3 h-[32px]" : isSpacious ? "flex items-center gap-3 px-4 py-3.5" : "flex items-center gap-3 px-3 py-3"}
           >
             <span className={`${isSpacious ? 'text-xs font-black w-8' : 'text-[10px] font-bold w-7'} tabular-nums text-center text-[var(--text-primary)] shrink-0`}>
               P{car.position}
             </span>
+            {d && isSpacious && (
+              <div className="w-1.5 h-4 rounded-full shrink-0" style={{ background: d.livery_color }} />
+            )}
             <span className={`${isCompact ? 'text-xs' : isSpacious ? 'text-base font-black' : 'text-sm font-bold'} flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
               {driverName(participants, car.idx)}
             </span>
+            {d?.race_number && isSpacious && (
+              <span className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums shrink-0">
+                #{d.race_number}
+              </span>
+            )}
             {deltaMs != null && deltaMs > 0 && (
-              <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-semibold'} tabular-nums`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
+              <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-semibold'} tabular-nums shrink-0`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
                 {fmtDelta(deltaMs, sign!)}
               </span>
             )}
@@ -467,18 +479,18 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
       {/* ── Stat cards ── */}
       {Object.values(layout.statsCards).some(Boolean) && (
         <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
-          {layout.statsCards.totalLaps && <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />}
+          {layout.statsCards.totalLaps && <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} sub="Total distance" compact={compactCards} />}
           {layout.statsCards.lapsRemaining && (remainingLaps !== null
-            ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />
-            : <StatCard label="Remaining" value="—" compact={compactCards} />
+            ? <StatCard label="Remaining" value={String(remainingLaps)} sub="Laps to flag" compact={compactCards} />
+            : <StatCard label="Remaining" value="—" sub="Laps to flag" compact={compactCards} />
           )}
-          {layout.statsCards.pitSpeedLimit && <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} compact={compactCards} />}
-          {layout.statsCards.pitWindow && <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} compact={compactCards} />}
-          {layout.statsCards.pitRejoin && <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} compact={compactCards} />}
-          {layout.statsCards.trackTemp && <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} compact={compactCards} />}
-          {layout.statsCards.airTemp && <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} compact={compactCards} />}
-          {layout.statsCards.trackLength && <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} compact={compactCards} />}
-          {layout.statsCards.timeOfDay && <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} compact={compactCards} />}
+          {layout.statsCards.pitSpeedLimit && <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} sub="Pitlane limit" compact={compactCards} />}
+          {layout.statsCards.pitWindow && <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} sub="Optimal window" compact={compactCards} />}
+          {layout.statsCards.pitRejoin && <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} sub="Projected pos" compact={compactCards} />}
+          {layout.statsCards.trackTemp && <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} sub="Tarmac surface" compact={compactCards} />}
+          {layout.statsCards.airTemp && <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} sub="Ambient air" compact={compactCards} />}
+          {layout.statsCards.trackLength && <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} sub="Lap distance" compact={compactCards} />}
+          {layout.statsCards.timeOfDay && <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} sub="Circuit local" compact={compactCards} />}
         </div>
       )}
 

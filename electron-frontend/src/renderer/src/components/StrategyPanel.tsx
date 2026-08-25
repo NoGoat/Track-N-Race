@@ -60,6 +60,11 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
         <span className="text-4xl font-black tabular-nums leading-none">{s?.lap_num || '—'}</span>
         <span className="text-lg font-semibold text-[var(--text-secondary)]">/ {s?.total_laps || '—'}</span>
       </div>
+      {s?.total_laps && s.total_laps > 0 && s.lap_num > 0 && (
+        <span className="text-[11px] font-medium text-[var(--text-secondary)] mt-1 tabular-nums">
+          {Math.round((s.lap_num / s.total_laps) * 100)}% distance
+        </span>
+      )}
     </div>
     <div className="flex-1 min-w-0 flex items-center gap-6 px-8 py-5">
       <span className="text-xs font-black px-3 py-1 rounded border shrink-0" style={{color:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',borderColor:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',backgroundColor:`color-mix(in srgb, ${COLORS[s?.current_visual_compound??0]??'var(--text-primary)'} 10%, transparent)`}}>
@@ -68,19 +73,29 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-4 mb-2">
           <span className="text-2xl font-black tabular-nums leading-none" style={{color:ready?wearBar:'var(--text-secondary)'}}>{ready?`${wear}%`:'—'}</span>
-          <span className="text-xs font-bold text-[var(--text-secondary)] tabular-nums shrink-0">{ready?`${s.current_tyre_age_laps}L · ${s.wear_per_lap.toFixed(1)}%/L`:'—'}</span>
+          <span className="text-xs font-bold text-[var(--text-secondary)] tabular-nums shrink-0">{ready?`${s.current_tyre_age_laps}L age · ${s.wear_per_lap.toFixed(1)}%/L`:'—'}</span>
         </div>
         <div className="h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-300" style={{width:`${ready?Math.min(100,wear):0}%`,backgroundColor:wearBar}}/>
         </div>
+        {ready && s.limiting_corner && (
+          <div className="text-[11px] font-medium text-[var(--text-secondary)] mt-1.5 truncate">
+            {s.limiting_corner} is limiting tyre
+          </div>
+        )}
       </div>
     </div>
     <div className="shrink-0 flex flex-col justify-center px-8 py-5">
       <span className="text-xs font-bold uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Tyre Cliff</span>
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-black tabular-nums leading-none" style={{color:cliffColor}}>{ready?`Lap ${s.cliff_lap}`:'—'}</span>
-        {ready&&<span className="text-xs font-bold text-[var(--text-secondary)]">+{s.laps_until_cliff}</span>}
+        {ready&&<span className="text-xs font-bold text-[var(--text-secondary)]">+{s.laps_until_cliff}L</span>}
       </div>
+      {ready && (
+        <span className="text-[11px] font-medium text-[var(--text-secondary)] mt-1 tabular-nums">
+          {s.laps_until_cliff} laps remaining
+        </span>
+      )}
     </div>
   </div>
 

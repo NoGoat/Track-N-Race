@@ -103,6 +103,7 @@ interface RowProps {
   s3: number
   tyreLabel: string | null
   tyreColor: string
+  tyreAge?: number | null
   isDark: boolean
   compact?: DensityMode | boolean
 }
@@ -129,6 +130,7 @@ const TowerRow = memo(function TowerRow({
   s3,
   tyreLabel,
   tyreColor,
+  tyreAge = null,
   isDark,
   compact
 }: RowProps) {
@@ -162,14 +164,14 @@ const TowerRow = memo(function TowerRow({
 
       {/* Driver */}
       <td className={isCompact ? 'px-2 py-0.5' : isSpacious ? 'px-4 py-2.5' : 'px-3 py-1'}>
-        <div className={`flex items-center ${isCompact ? 'gap-1.5' : isSpacious ? 'gap-3' : 'gap-2'}`}>
+        <div className={`flex items-center ${isCompact ? 'gap-1.5' : isSpacious ? 'gap-2.5' : 'gap-2'}`}>
           <div className={`${isCompact ? 'w-1 h-3.5' : isSpacious ? 'w-1.5 h-6' : 'w-1 h-5'} rounded-full shrink-0`} style={{ background: teamColor }} />
           <span className={`${isCompact ? 'text-[9px] w-4' : isSpacious ? 'text-xs w-6 font-semibold' : 'text-[10px] w-5'} text-[var(--text-secondary)] tabular-nums`}>{raceNum}</span>
           <span className={`${isCompact ? 'text-xs' : isSpacious ? 'text-base font-black' : 'text-sm font-bold'} ${isPlayer ? 'text-[var(--text-primary)] font-extrabold' : 'text-[var(--text-primary)]'}`}>
             {driverCode}
           </span>
           {driver && (
-            <span className={`${isSpacious ? 'text-xs font-medium' : 'text-[10px]'} text-[var(--text-secondary)] ${isCompact ? 'hidden xl:inline max-w-[80px]' : isSpacious ? 'hidden lg:inline max-w-[130px]' : 'hidden lg:inline max-w-[100px]'} truncate`}>
+            <span className={`${isSpacious ? 'text-xs font-medium max-w-[180px]' : 'text-[10px] hidden lg:inline max-w-[100px]'} text-[var(--text-secondary)] ${isCompact ? 'hidden xl:inline max-w-[80px]' : ''} truncate`}>
               {driver.name}
             </span>
           )}
@@ -205,9 +207,11 @@ const TowerRow = memo(function TowerRow({
       <td className={`${isCompact ? 'px-2 py-0.5 text-[11px] w-16' : isSpacious ? 'px-4 py-2.5 text-sm w-24 font-semibold' : 'px-3 py-1 text-xs w-20'} tabular-nums text-[var(--text-secondary)]`}>{fmtSector(s3)}</td>
 
       {/* Tyre */}
-      <td className={`${isCompact ? 'px-2 py-0.5 w-10' : isSpacious ? 'px-4 py-2.5 w-14' : 'px-3 py-1 w-12'}`}>
+      <td className={`${isCompact ? 'px-2 py-0.5 w-10' : isSpacious ? 'px-4 py-2.5 w-20' : 'px-3 py-1 w-12'}`}>
         {tyreLabel
-          ? <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-bold'} tabular-nums`} style={{ color: tyreColor }}>{tyreLabel}</span>
+          ? <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-bold'} tabular-nums`} style={{ color: tyreColor }}>
+              {tyreLabel}{isSpacious && tyreAge !== null ? ` (${tyreAge}L)` : ''}
+            </span>
           : <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm' : 'text-xs'} text-[var(--text-muted)]`}>—</span>
         }
       </td>
@@ -333,6 +337,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
           isFastest: car.idx === fastestLapCarIdx,
           tyreLabel: carStatus ? tn('tyre.actual', carStatus.tyre_compound) : null,
           tyreColor: carStatus ? (VISUAL_COLORS[carStatus.visual_compound] ?? '#ffffff') : '#ffffff',
+          tyreAge: carStatus?.tyre_age_laps ?? null,
         }
       })
   }, [timing, participants, fastestLapCarIdx, tn])
@@ -462,7 +467,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
           </tr>
         </thead>
           <tbody ref={tbodyRef}>
-            {rows.map(({ car, driver, isPlayer, isFastest, s1, s2, s3, tyreLabel, tyreColor }) => (
+            {rows.map(({ car, driver, isPlayer, isFastest, s1, s2, s3, tyreLabel, tyreColor, tyreAge }) => (
               <TowerRow
                 key={car.idx}
                 carIdx={car.idx}
@@ -486,6 +491,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
                 s3={s3}
                 tyreLabel={tyreLabel}
                 tyreColor={tyreColor}
+                tyreAge={tyreAge}
                 isDark={isDark}
                 compact={compact}
               />

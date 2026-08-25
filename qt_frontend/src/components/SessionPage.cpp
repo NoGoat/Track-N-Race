@@ -178,8 +178,8 @@ const char* penaltyTypeLabel(int pt) {
 QString infringementLabel(int id) {
     static const std::unordered_map<int, const char*> labels = {
         {0,  "Blocking by slowing"},        {1,  "Blocking wrong way"},
-        {2,  "Reversing off start line"},   {3,  "Big collision"},
-        {4,  "Small collision"},            {5,  "Collision — failed to hand back"},
+        {2,  "Reversing off start line"},   {3,  "Severe collision"},
+        {4,  "Collision"},            {5,  "Collision — failed to hand back"},
         {6,  "Collision — attack from rear"},
         {7,  "SC delta exceeded"},          {8,  "SC illegal overtake"},
         {9,  "SC exceeding allowed pace"},  {10, "Cornering under SC"},

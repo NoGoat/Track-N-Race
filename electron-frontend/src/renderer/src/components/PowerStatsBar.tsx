@@ -82,11 +82,23 @@ const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark
   ]
   const ctx: CardCtx = { latest: null, status, lap: null, damage: null, session: null, isDark, t, tn, color }
 
+  const isSpacious = compact === 'spacious'
+
   return (
     <div className="flex divide-x divide-[var(--border)]">
       {descs.filter(d => visibleCards[d.vis]).map(d => {
         const v = POWER_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
-        return <Card key={d.vis} label={d.label} value={v.value} unit={v.unit} color={v.color} sub={v.sub} compact={compact} />
+        let sub = v.sub
+        if (isSpacious && status) {
+          if (d.key === 'totalPower') sub = 'Combined ICE + MGU-K'
+          else if (d.key === 'ice') sub = 'Combustion Engine'
+          else if (d.key === 'mguk') sub = 'Kinetic Motor Generator'
+          else if (d.key === 'split') sub = 'ICE % : ERS % Ratio'
+          else if (d.key === 'ersStore') sub = `${status.ers_pct.toFixed(0)}% of 4.00 MJ`
+          else if (d.key === 'ersPct') sub = `${((status.ers_pct / 100) * 4).toFixed(2)} MJ Stored`
+          else if (d.key === 'fuel') sub = `${status.fuel_laps >= 0 ? '+' : ''}${status.fuel_laps.toFixed(1)} laps vs finish`
+        }
+        return <Card key={d.vis} label={d.label} value={v.value} unit={v.unit} color={v.color} sub={sub} compact={compact} />
       })}
     </div>
   )

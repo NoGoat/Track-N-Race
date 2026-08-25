@@ -124,8 +124,8 @@ static std::unordered_map<std::string, std::string> baseLayer() {
 
         // Infringement types (canonical wording; reconciles renderer/recorder)
         {"infringe.0", "Blocking by slow driving"}, {"infringe.1", "Blocking by wrong way driving"},
-        {"infringe.2", "Reversing off the start line"}, {"infringe.3", "Big collision"},
-        {"infringe.4", "Small collision"},
+        {"infringe.2", "Reversing off the start line"}, {"infringe.3", "Severe collision"},
+        {"infringe.4", "Collision"},
         {"infringe.5", "Collision failed to hand back position (single)"},
         {"infringe.6", "Collision failed to hand back position (multiple)"},
         {"infringe.7", "Corner cutting gained time"}, {"infringe.8", "Corner cutting overtake (single)"},

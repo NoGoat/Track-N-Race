@@ -16,8 +16,8 @@ export function fmtLap(seconds: number): string {
 }
 
 const INFRINGEMENT_LABELS: Record<number, string> = {
-  0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start line', 3: 'Big collision',
-  4: 'Small collision', 5: 'Collision — failed to hand back', 6: 'Collision — attack from rear',
+  0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start line', 3: 'Severe collision',
+  4: 'Collision', 5: 'Collision — failed to hand back', 6: 'Collision — attack from rear',
   7: 'SC delta exceeded', 8: 'SC illegal overtake', 9: 'SC exceeding allowed pace', 10: 'Cornering under SC',
   11: 'SC must pit this lap', 12: 'SC pit lane curfew', 13: 'Pit lane too fast', 14: 'Unsafe release',
   15: 'Pit re-entry too slow', 16: 'In pit too fast', 17: 'Unsafe release', 18: 'Escape from pit',

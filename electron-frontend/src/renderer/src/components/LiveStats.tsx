@@ -156,9 +156,24 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
       {shown.map(d => {
         const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
         let sub = v.sub
-        if (compact && sub) {
+        const isSpacious = compact === 'spacious'
+        const isCompact = compact === true || compact === 'compact'
+        if (isCompact && sub) {
           if (d.key === 'ers') sub = sub.replace('Overtake', 'OT')
           else if (d.key === 'fuel') sub = sub.replace(' vs fin', '')
+        } else if (isSpacious) {
+          if (d.key === 'ers' && status) {
+            sub = damage?.ers_fault === 1 ? 'FAULT' : `${tn('ers.mode', status.ers_mode)} · ${(status.ers_j / 1_000_000).toFixed(2)} MJ`
+          } else if (d.key === 'fuel' && status) {
+            sub = `${status.fuel_laps >= 0 ? '+' : ''}${status.fuel_laps.toFixed(1)} laps vs finish`
+          } else if (d.key === 'tyre' && status) {
+            const mix = ['Lean', 'Std', 'Rich', 'Max'][status.fuel_mix] ?? ''
+            sub = `${status.tyre_age_laps}L age${mix ? ` · ${mix} mix` : ''}`
+          } else if (d.key === 'pos' && lap) {
+            sub = `Lap ${lap.lap_num}`
+          } else if ((d.key === 'drs' || d.key === 'slm') && latest) {
+            sub = latest.drs ? 'Active (Open)' : (status?.drs_allowed ? 'Available' : 'Closed')
+          }
         }
         return (
           <Card key={d.vis} label={d.label} value={v.value} unit={v.unit}

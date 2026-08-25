@@ -737,6 +737,18 @@ const RacePanel = memo(function RacePanel({
                     {activeStatus.drs_allowed ? 'AVAILABLE' : 'LOCKED'}
                   </div>
                 </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(((activeStatus.ers_harvested_mguk_j ?? 0) + (activeStatus.ers_harvested_mguh_j ?? 0)) / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
+                  <div className="text-xl font-black text-[var(--text-secondary)]">
+                    {tn('ers.mode', activeStatus.ers_mode)}
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
@@ -756,6 +768,14 @@ const RacePanel = memo(function RacePanel({
                 </div>
                 <div>
                   <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Harvested</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">ERS Mode</div>
                   <div className="text-xl font-black text-[var(--text-muted)]">—</div>
                 </div>
               </div>
@@ -939,7 +959,7 @@ const RacePanel = memo(function RacePanel({
                     Age: {activeStatus.tyre_age_laps} laps
                   </div>
                 </div>
-                <div className="text-sm text-[var(--text-secondary)] mt-1">Brake bias: {activeStatus.front_brake_bias}% front</div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1">Brake bias: {activeStatus.front_brake_bias}% front · {(100 - activeStatus.front_brake_bias).toFixed(0)}% rear</div>
               </div>
             </div>
           ) : (
@@ -959,7 +979,7 @@ const RacePanel = memo(function RacePanel({
                   <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
                   <div className="text-base font-semibold text-[var(--text-muted)]">Age: — laps</div>
                 </div>
-                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front</div>
+                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front · —% rear</div>
               </div>
             </div>
           )

@@ -72,8 +72,15 @@ const ProgressTracker = memo(function ProgressTracker({ compact, currentTime, on
   }, [currentTime, onSeekProgress, startSessionTime, totalTime])
 
   return (
-    <div className={`flex-1 flex items-center ${isCompact ? 'gap-2' : isSpacious ? 'gap-5' : 'gap-4'}`}>
-      <span className={`${isSpacious ? 'text-sm font-bold' : 'text-xs'} font-mono text-[var(--text-secondary)] tabular-nums`}>{fmtLap(displayTime)}</span>
+    <div className={`flex-1 flex items-center ${isCompact ? 'gap-2' : isSpacious ? 'gap-4' : 'gap-4'}`}>
+      <span className={`${isSpacious ? 'text-sm font-bold text-[var(--text-primary)]' : 'text-xs text-[var(--text-secondary)]'} font-mono tabular-nums`}>
+        {fmtLap(displayTime)}
+      </span>
+      {isSpacious && totalTime > 0 && (
+        <span className="text-xs font-medium font-mono text-[var(--text-secondary)] tabular-nums shrink-0">
+          ({Math.round(displayPct * 100)}%)
+        </span>
+      )}
       <input ref={inputRef} type="range" min="0" max="1" step="0.001" defaultValue={progressPct} onMouseDown={() => { draggingRef.current = true }} onMouseUp={finishDrag} onTouchStart={() => { draggingRef.current = true }} onTouchEnd={finishDrag} onChange={handleChange} className={`flex-1 ${isSpacious ? 'h-2' : 'h-1.5'} bg-[var(--border)] rounded-full appearance-none outline-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--color-info)] [&::-webkit-slider-thumb]:cursor-pointer`} style={{ background: `linear-gradient(to right, var(--color-info) ${displayPct * 100}%, var(--border) ${displayPct * 100}%)` }} />
       <span className={`${isSpacious ? 'text-sm font-bold' : 'text-xs'} font-mono text-[var(--text-secondary)] tabular-nums`}>{fmtLap(totalTime)}</span>
     </div>
@@ -123,12 +130,12 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
   const playControlSize = isCompact ? 'w-6 h-6' : isSpacious ? 'w-9 h-9' : 'w-7 h-7'
   const playIconSize = isCompact ? 12 : isSpacious ? 20 : 16
   const chevronIconSize = isCompact ? 14 : isSpacious ? 22 : 18
-  const downloadIconSize = isCompact ? 14 : isSpacious ? 18 : 16
+  const downloadIconSize = isCompact ? 14 : isSpacious ? 16 : 16
 
   return (
-    <div className={`${isCompact ? 'h-10 gap-1' : isSpacious ? 'h-16 gap-3 pl-2 pr-3' : 'h-14 gap-2'} border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 z-40 select-none`}>
-      <div className={`flex items-center ${isCompact ? 'gap-1' : isSpacious ? 'gap-4' : 'gap-3'}`}>
-        <button onClick={onSeekBackward} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronLeft size={chevronIconSize} /></button>
+    <div className={`${isCompact ? 'h-10 gap-1' : isSpacious ? 'h-16 gap-3 pl-3 pr-4' : 'h-14 gap-2'} border-t border-[var(--border)] bg-[var(--bg-panel)] shrink-0 flex items-center pl-1 pr-2 z-40 select-none`}>
+      <div className={`flex items-center ${isCompact ? 'gap-1' : isSpacious ? 'gap-3' : 'gap-3'}`}>
+        <button onClick={onSeekBackward} title="Seek backward 5s (-5s)" className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronLeft size={chevronIconSize} /></button>
         <button
           type="button"
           onClick={onTogglePlay}
@@ -140,12 +147,34 @@ export default memo(function PlaybackBar({ compact, currentLapNum = null, export
             ? <Pause size={playIconSize} strokeWidth={2} fill="currentColor" className="block" />
             : <Play size={playIconSize} strokeWidth={2} fill="currentColor" className="block translate-x-[0.5px]" />}
         </button>
-        <button onClick={onSeekForward} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronRight size={chevronIconSize} /></button>
+        <button onClick={onSeekForward} title="Seek forward 5s (+5s)" className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}><ChevronRight size={chevronIconSize} /></button>
       </div>
       <ProgressTracker compact={compact} currentTime={state.currentTime} onSeekProgress={onSeekProgress} progressPct={state.progressPct} totalTime={state.totalTime} />
-      <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={speedValue} onChange={handleSpeed} options={PLAYBACK_SPEED_OPTIONS} styles={selectStyles} components={selectComponents} menuPlacement="top" isSearchable={false} /></div>
-      {showLapSelect && lapOptions.length > 0 && <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={lapValue} options={lapOptions} onChange={handleLap} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" /></div>}
-      {showExport && onExport && <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>}
+      <div className="flex items-center gap-1.5 shrink-0">
+        {isSpacious && <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Speed</span>}
+        <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={speedValue} onChange={handleSpeed} options={PLAYBACK_SPEED_OPTIONS} styles={selectStyles} components={selectComponents} menuPlacement="top" isSearchable={false} /></div>
+      </div>
+      {showLapSelect && lapOptions.length > 0 && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isSpacious && <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">Lap</span>}
+          <div className={`${isCompact ? 'w-[3.5rem]' : isSpacious ? 'w-[5.5rem]' : 'w-[4.5rem]'} shrink-0`}><Select value={lapValue} options={lapOptions} onChange={handleLap} isSearchable={false} maxMenuHeight={150} menuPlacement="top" styles={selectStyles} components={selectComponents} placeholder="—" /></div>
+        </div>
+      )}
+      {showExport && onExport && (
+        isSpacious ? (
+          <button
+            onClick={onExport}
+            disabled={exportState === 'busy'}
+            title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border border-[var(--border)] transition-colors disabled:opacity-50 shrink-0"
+          >
+            <Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} />
+            <span>Export (.xlsx)</span>
+          </button>
+        ) : (
+          <button onClick={onExport} disabled={exportState === 'busy'} title={exportState === 'error' ? exportError ?? 'Export failed' : 'Export session to Excel (.xlsx)'} className={`${controlSize} flex items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 shrink-0`}><Download size={downloadIconSize} className={exportState === 'busy' ? 'animate-pulse' : ''} /></button>
+        )
+      )}
     </div>
   )
 })
