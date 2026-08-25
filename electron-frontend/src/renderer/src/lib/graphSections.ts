@@ -107,61 +107,62 @@ export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
   power:    { ersHarvest: 'fixed' },
 }
 
-// ── Compact density ─────────────────────────────────────────────────────────
+// ── Compact / Spacious density ───────────────────────────────────────────────
 
-// 5 boolean sections + three integer density controls. overviewTyres has six levels:
-//   0 Normal, 1–4 native Compact 1–4, 5 = the app's existing height-derived
-//   compact tyre-card layout, kept as a selectable level.
-// sessionWeather has four levels: 0 Normal, 1 Compact 1 (icons),
-// 2 Compact 2 (the original icon-free single-line compact layout), and
-// 3 Compact 3 (the single-line compact layout: [Icon] Condition ... +Time Rain%).
-// sessionHeader has three levels: 0 Normal, 1 Compact 1 (with Zones label),
-// 2 Compact 2 (removes Zones label, marshal strip stretches full width).
+export type DensityMode = 'compact' | 'normal' | 'spacious'
+
+// Density controls across all sections. overviewTyres has 7 levels:
+//   6 Spacious, 0 Normal, 1–4 native Compact 1–4, 5 = compact tyre-card layout.
+// sessionWeather has 5 levels: 4 Spacious, 0 Normal, 1 Compact 1 (icons),
+//   2 Compact 2 (icon-free single-line), 3 Compact 3 (single-line with icon).
+// sessionHeader has 4 levels: 3 Spacious, 0 Normal, 1 Compact 1 (with Zones label),
+//   2 Compact 2 (removes Zones label, marshal strip stretches full width).
 export interface CompactState {
-  overviewStats:     boolean
-  overviewDamage:    boolean
+  overviewStats:     DensityMode
+  overviewDamage:    DensityMode
   overviewTyres:     number
-  standingsTable:    boolean
-  standingsTiming:   boolean
-  standingsErs:      boolean
-  standingsStrategy: boolean
-  sessionCards:      boolean
-  sessionProximity:  boolean
-  sessionEvents:     boolean
+  standingsTable:    DensityMode
+  standingsTiming:   DensityMode
+  standingsErs:      DensityMode
+  standingsStrategy: DensityMode
+  sessionCards:      DensityMode
+  sessionProximity:  DensityMode
+  sessionEvents:     DensityMode
   sessionWeather:    number
   sessionHeader:     number
-  powerCards:        boolean
-  strategySummary:   boolean
-  playbackBar:       boolean
+  powerCards:        DensityMode
+  strategySummary:   DensityMode
+  playbackBar:       DensityMode
 }
 
 export const DEFAULT_COMPACT: CompactState = {
-  overviewStats:     false,
-  overviewDamage:    false,
+  overviewStats:     'normal',
+  overviewDamage:    'normal',
   overviewTyres:     0,
-  standingsTable:    false,
-  standingsTiming:   false,
-  standingsErs:      false,
-  standingsStrategy: false,
-  sessionCards:      false,
-  sessionProximity:  false,
-  sessionEvents:     false,
+  standingsTable:    'normal',
+  standingsTiming:   'normal',
+  standingsErs:      'normal',
+  standingsStrategy: 'normal',
+  sessionCards:      'normal',
+  sessionProximity:  'normal',
+  sessionEvents:     'normal',
   sessionWeather:    0,
   sessionHeader:     0,
-  powerCards:        false,
-  strategySummary:   false,
-  playbackBar:       false,
+  powerCards:        'normal',
+  strategySummary:   'normal',
+  playbackBar:       'normal',
 }
 
-// Boolean (Normal/Compact) compact sections — the integer controls are handled
+// Density key sections — the integer controls are handled
 // separately because they expose more than two density levels.
-export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather' | 'sessionHeader'>
+export type CompactDensityKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather' | 'sessionHeader'>
+export type CompactBoolKey = CompactDensityKey
 
-export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; label: string }[] }[] = [
+export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey; label: string }[] }[] = [
   { group: 'Overview', sections: [
     { key: 'overviewStats',  label: 'Stats Row' },
     { key: 'overviewDamage', label: 'Damage Cards' },
-    // overviewTyres (Tyre Cards) rendered as the 6-level control in Settings.
+    // overviewTyres (Tyre Cards) rendered as the multi-level control in Settings.
   ] },
   { group: 'Standings', sections: [
     { key: 'standingsTable',    label: 'Timing Tower' },
@@ -186,10 +187,17 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
   ] },
 ]
 
-export const ALL_COMPACT_BOOL_KEYS: CompactBoolKey[] =
+export const ALL_COMPACT_BOOL_KEYS: CompactDensityKey[] =
   COMPACT_GROUPS.flatMap(g => g.sections.map(s => s.key))
 
+export const DENSITY_OPTIONS: { value: DensityMode; label: string }[] = [
+  { value: 'compact',  label: 'Compact' },
+  { value: 'normal',   label: 'Normal' },
+  { value: 'spacious', label: 'Spacious' },
+]
+
 export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 6, label: 'Spacious' },
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },
@@ -199,6 +207,7 @@ export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
 ]
 
 export const WEATHER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 4, label: 'Spacious' },
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },
@@ -206,6 +215,7 @@ export const WEATHER_LEVEL_OPTIONS: { value: number; label: string }[] = [
 ]
 
 export const HEADER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 3, label: 'Spacious' },
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },

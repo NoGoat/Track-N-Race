@@ -1,7 +1,8 @@
 import { memo } from 'react'
 import type { StrategyPlan, StrategySnapshotMsg, StrategyStint } from '../types'
+import type { DensityMode } from '../lib/graphSections'
 
-interface Props { strategy: StrategySnapshotMsg | null; isDark: boolean; compact?: boolean }
+interface Props { strategy: StrategySnapshotMsg | null; isDark: boolean; compact?: DensityMode | boolean }
 
 const COLORS: Record<number, string> = { 16:'var(--compound-soft)',17:'var(--compound-medium)',18:'var(--compound-hard)',7:'var(--compound-inter)',8:'var(--compound-wet)' }
 const wearColor=(v:number)=>v<20?'#73BF69':v<40?'#A8D436':v<60?'#FADE2A':v<80?'#FF9830':'#C4162A'
@@ -21,7 +22,7 @@ const Stint=memo(({stint,separator}:{stint:StrategyStint;separator:boolean})=><d
 
 const PlanColumn=memo(({plan,label,accent,monaco}:{plan:StrategyPlan;label:string;accent:string;monaco:boolean})=><div className="flex flex-col h-full min-h-0"><div className="shrink-0 px-4 py-2.5 border-b border-[var(--border)]"><div className="flex items-center"><span className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</span>{monaco&&<span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded border text-[#FADE2A] border-[#FADE2A]">Monaco 2-stop</span>}{!plan.legal&&<span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded border text-[#C4162A] border-[#C4162A]">No legal set path</span>}<span className="flex-1"/><b className="text-2xl" style={{color:accent}}>{plan.stops}</b><span className="ml-1 text-xs text-[var(--text-secondary)]">stop{plan.stops===1?'':'s'}</span></div><div className="mt-1 text-[10px] text-[var(--text-secondary)] truncate">{plan.target_idx>=0?`${plan.mode==='attacking'?'Chasing':'Covering'} ${plan.target_name}`:'Tyre-life baseline'} · {Math.round(plan.confidence*100)}% confidence{plan.requires_compound_change?' · compound change required':''}</div></div><div className="flex-1 overflow-y-auto">{plan.stints.map((s,i)=><Stint key={`${s.stint_number}-${s.start_lap}`} stint={s} separator={i>0}/>)}</div></div>)
 
-function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:boolean}) {
+function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boolean}) {
   const ready = s?.state === 'ready'
   const wear = ready ? Math.round(s.average_wear) : 0
   const wearBar = wearColor(wear)
@@ -29,7 +30,10 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:boolean}) {
     ? s.laps_until_cliff <= 5 ? '#C4162A' : s.laps_until_cliff <= 10 ? '#FADE2A' : 'var(--text-primary)'
     : 'var(--text-secondary)'
 
-  if (compact) return <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
+  if (isCompact) return <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
     <div className="shrink-0 flex items-baseline gap-1.5 px-6 py-1.5">
       <span className="text-lg font-black tabular-nums leading-none text-[var(--text-primary)]">{s?.lap_num || '—'}</span>
       <span className="text-xs font-medium text-[var(--text-secondary)]">/ {s?.total_laps || '—'}</span>
@@ -46,6 +50,37 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:boolean}) {
       <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Cliff</span>
       <span className="text-sm font-black tabular-nums leading-none" style={{color:cliffColor}}>{ready?`Lap ${s.cliff_lap}`:'—'}</span>
       {ready&&<span className="text-[10px] text-[var(--text-secondary)]">+{s.laps_until_cliff}</span>}
+    </div>
+  </div>
+
+  if (isSpacious) return <div className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]">
+    <div className="shrink-0 flex flex-col justify-center px-8 py-5">
+      <span className="text-xs font-bold uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Lap</span>
+      <div className="flex items-baseline gap-2">
+        <span className="text-4xl font-black tabular-nums leading-none">{s?.lap_num || '—'}</span>
+        <span className="text-lg font-semibold text-[var(--text-secondary)]">/ {s?.total_laps || '—'}</span>
+      </div>
+    </div>
+    <div className="flex-1 min-w-0 flex items-center gap-6 px-8 py-5">
+      <span className="text-xs font-black px-3 py-1 rounded border shrink-0" style={{color:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',borderColor:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',backgroundColor:`color-mix(in srgb, ${COLORS[s?.current_visual_compound??0]??'var(--text-primary)'} 10%, transparent)`}}>
+        {ready ? s.current_compound_name : '—'}
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline justify-between gap-4 mb-2">
+          <span className="text-2xl font-black tabular-nums leading-none" style={{color:ready?wearBar:'var(--text-secondary)'}}>{ready?`${wear}%`:'—'}</span>
+          <span className="text-xs font-bold text-[var(--text-secondary)] tabular-nums shrink-0">{ready?`${s.current_tyre_age_laps}L · ${s.wear_per_lap.toFixed(1)}%/L`:'—'}</span>
+        </div>
+        <div className="h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-300" style={{width:`${ready?Math.min(100,wear):0}%`,backgroundColor:wearBar}}/>
+        </div>
+      </div>
+    </div>
+    <div className="shrink-0 flex flex-col justify-center px-8 py-5">
+      <span className="text-xs font-bold uppercase tracking-widest text-[var(--text-secondary)] mb-1.5">Tyre Cliff</span>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-black tabular-nums leading-none" style={{color:cliffColor}}>{ready?`Lap ${s.cliff_lap}`:'—'}</span>
+        {ready&&<span className="text-xs font-bold text-[var(--text-secondary)]">+{s.laps_until_cliff}</span>}
+      </div>
     </div>
   </div>
 

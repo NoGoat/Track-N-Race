@@ -2,13 +2,17 @@ import { memo } from 'react'
 import type { StatusRow } from '../types'
 import { useLabels } from '../lib/labels'
 import { POWER_RESOLVERS, useColorFn, type CardCtx, type CardDesc } from '../lib/cards'
+import type { DensityMode } from '../lib/graphSections'
 
 const Card = memo(function Card({
   label, value, unit, color, sub, compact,
 }: {
-  label: string; value: string; unit?: string; color?: string; sub?: string; compact?: boolean
+  label: string; value: string; unit?: string; color?: string; sub?: string; compact?: DensityMode | boolean
 }) {
-  if (compact) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
+  if (isCompact) {
     // Single-line: label · value+unit · sub.
     return (
       <div className="flex-1 min-w-0 px-3 py-1.5 flex items-center justify-between gap-2">
@@ -21,8 +25,24 @@ const Card = memo(function Card({
       </div>
     )
   }
+
+  if (isSpacious) {
+    return (
+      <div className="flex-1 min-w-0 px-4 py-3 min-h-[96px]">
+        <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1">{label}</div>
+        <div className="flex items-baseline gap-1 overflow-hidden">
+          <span className="text-3xl font-black tabular-nums truncate" style={{ color: color ?? 'var(--text-primary)' }}>
+            {value}
+          </span>
+          {unit && <span className="text-xs font-semibold text-[var(--text-secondary)] shrink-0">{unit}</span>}
+        </div>
+        {sub && <div className="text-xs mt-1 truncate font-semibold text-[var(--text-secondary)]">{sub}</div>}
+      </div>
+    )
+  }
+
   return (
-    <div className="flex-1 min-w-0 px-3 py-2">
+    <div className="flex-1 min-w-0 px-3 py-2 min-h-[75px]">
       <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest mb-0.5">{label}</div>
       <div className="flex items-baseline gap-0.5 overflow-hidden">
         <span className="text-xl font-bold tabular-nums truncate" style={{ color: color ?? 'var(--text-primary)' }}>
@@ -44,7 +64,7 @@ interface Props {
   status: StatusRow | null
   visibleCards: VisibleCards
   isDark: boolean
-  compact?: boolean
+  compact?: DensityMode | boolean
 }
 
 const PowerStatsBar = memo(function PowerStatsBar({ status, visibleCards, isDark, compact }: Props) {

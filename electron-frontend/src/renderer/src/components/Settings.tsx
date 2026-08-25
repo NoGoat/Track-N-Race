@@ -3,9 +3,9 @@ import { flushSync } from 'react-dom'
 import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
-  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
+  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
-  type GraphViewState, type GraphView, type CompactState, type ChartYAxisState, type YAxisBehavior,
+  type GraphViewState, type GraphView, type CompactState, type DensityMode, type ChartYAxisState, type YAxisBehavior,
 } from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
@@ -454,17 +454,25 @@ const Settings = memo(function Settings({
   }
 
   const renderCompact = () => {
-    const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0 || compact.sessionWeather > 0 || compact.sessionHeader > 0
-    const setAll = (on: boolean) => {
-      const next = { ...compact, overviewTyres: on ? 1 : 0, sessionWeather: on ? 1 : 0, sessionHeader: on ? 1 : 0 }
-      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = on
+    const setAllDensity = (mode: DensityMode) => {
+      const next: CompactState = {
+        ...compact,
+        overviewTyres: mode === 'spacious' ? 6 : mode === 'compact' ? 1 : 0,
+        sessionWeather: mode === 'spacious' ? 4 : mode === 'compact' ? 1 : 0,
+        sessionHeader: mode === 'spacious' ? 3 : mode === 'compact' ? 1 : 0,
+      }
+      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = mode
       onCompactChange(next)
     }
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Collapse a section's cards to a denser single-line layout.</p>
-          <BulkButton label={anyCompact ? 'Set All Normal' : 'Set All Compact'} onClick={() => setAll(!anyCompact)} />
+        <div className="flex items-center justify-between px-4 py-3 flex-wrap gap-2">
+          <p className="text-xs text-[var(--text-muted)]">Configure density across components: Compact, Normal, or Spacious.</p>
+          <div className="flex gap-2">
+            <BulkButton label="Set All Compact" onClick={() => setAllDensity('compact')} />
+            <BulkButton label="Set All Normal" onClick={() => setAllDensity('normal')} />
+            <BulkButton label="Set All Spacious" onClick={() => setAllDensity('spacious')} />
+          </div>
         </div>
         {COMPACT_GROUPS.map(group => (
           <div key={group.group}>
@@ -473,7 +481,7 @@ const Settings = memo(function Settings({
               <Fragment key={s.key}>
                 <Row label={s.label} description="">
                   <SegmentedControl
-                    options={[{ value: false, label: 'Normal' }, { value: true, label: 'Compact' }]}
+                    options={DENSITY_OPTIONS}
                     value={compact[s.key]}
                     onChange={(v) => onCompactChange({ ...compact, [s.key]: v })}
                   />

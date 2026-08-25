@@ -1,6 +1,7 @@
 import { useRef, memo } from 'react'
 import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
 import { useLabels } from '../lib/labels'
+import type { DensityMode } from '../lib/graphSections'
 
 interface Props {
   lap: LapRow | null
@@ -15,9 +16,9 @@ interface Props {
     energyRecovery?: boolean
     strategy?: boolean
   }
-  compactTiming?: boolean
-  compactErs?: boolean
-  compactStrategy?: boolean
+  compactTiming?: DensityMode | boolean
+  compactErs?: DensityMode | boolean
+  compactStrategy?: DensityMode | boolean
 }
 
 function fmtMs(ms: number): string {
@@ -75,6 +76,15 @@ const RacePanel = memo(function RacePanel({
   compactErs = false,
   compactStrategy = false
 }: Props) {
+  const isCompactTiming = compactTiming === true || compactTiming === 'compact'
+  const isSpaciousTiming = compactTiming === 'spacious'
+
+  const isCompactErs = compactErs === true || compactErs === 'compact'
+  const isSpaciousErs = compactErs === 'spacious'
+
+  const isCompactStrategy = compactStrategy === true || compactStrategy === 'compact'
+  const isSpaciousStrategy = compactStrategy === 'spacious'
+
   // Hooks must come before any early return
   const { t, tn } = useLabels()
   const prevLapTsRef    = useRef<string | null>(null)
@@ -146,18 +156,18 @@ const RacePanel = memo(function RacePanel({
 
       {/* ── Lap timing ── */}
       {showTiming && (
-        <Panel className={compactTiming ? 'p-3' : 'p-4'}>
+        <Panel className={isCompactTiming ? 'p-3' : isSpaciousTiming ? 'p-6' : 'p-4'}>
         <div className="flex items-center justify-between mb-2">
           <SectionLabel>Timing</SectionLabel>
           {selectedDriver && (
-            <div className="flex items-center gap-1.5 mb-2">
-              <div className="w-1.5 h-4 rounded-full shrink-0" style={{ background: teamColor }} />
-              <span className="text-xs font-bold text-[var(--text-primary)] truncate max-w-[120px]">{selectedDriver.name}</span>
+            <div className={`flex items-center ${isSpaciousTiming ? 'gap-2 mb-3' : 'gap-1.5 mb-2'}`}>
+              <div className={`${isSpaciousTiming ? 'w-2 h-5' : 'w-1.5 h-4'} rounded-full shrink-0`} style={{ background: teamColor }} />
+              <span className={`${isSpaciousTiming ? 'text-sm font-black max-w-[160px]' : 'text-xs font-bold max-w-[120px]'} text-[var(--text-primary)] truncate`}>{selectedDriver.name}</span>
             </div>
           )}
         </div>
 
-        {compactTiming ? (
+        {isCompactTiming ? (
           /* Compact Timing Layout */
           viewingOther && selectedCar ? (
             <>
@@ -298,6 +308,154 @@ const RacePanel = memo(function RacePanel({
                   <div key={s}>
                     <div className="text-[8px] text-[var(--text-secondary)]">{s}</div>
                     <div className="text-[11px] font-bold text-[var(--text-muted)] tabular-nums">—</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )
+        ) : isSpaciousTiming ? (
+          /* Spacious Timing Layout */
+          viewingOther && selectedCar ? (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)]">Lap {selectedCar.lap_num}</div>
+                  <div className="text-4xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{selectedCar.position}
+                  </div>
+                </div>
+                <div className="flex gap-1.5 flex-wrap justify-end items-center min-h-[32px]">
+                  {selectedCar.pit_status > 0 && (
+                    <div className="text-xs font-black text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2.5 py-1 rounded whitespace-nowrap">
+                      {PIT_STATUS[selectedCar.pit_status]}
+                    </div>
+                  )}
+                  {selectedCar.lap_invalid && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {selectedCar.penalties_s > 0 && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      +{selectedCar.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(selectedCar.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(selectedCar.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {[
+                  { label: 'S1', ms: selectedCar.s1_ms, done: selectedCar.sector >= 1 && selectedCar.s1_ms > 0 },
+                  { label: 'S2', ms: selectedCar.s2_ms, done: selectedCar.sector >= 2 && selectedCar.s2_ms > 0 },
+                  { label: 'S3', ms: 0, done: false },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-sm font-black tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : lap ? (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)]">Lap {lap.lap_num}</div>
+                  <div className="text-4xl font-black text-[var(--text-primary)] tabular-nums">
+                    P{lap.position}
+                  </div>
+                </div>
+                <div className="flex gap-1.5 flex-wrap justify-end items-center min-h-[32px]">
+                  {lap.pit_status > 0 && (
+                    <div className="text-xs font-black text-[var(--compound-medium)] bg-[var(--compound-medium)]/10 border border-[var(--compound-medium)] px-2.5 py-1 rounded whitespace-nowrap">
+                      {PIT_STATUS[lap.pit_status]}
+                    </div>
+                  )}
+                  {lap.lap_invalid && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      INVALID
+                    </div>
+                  )}
+                  {lap.penalties_s > 0 && (
+                    <div className="text-xs font-black text-[#C4162A] bg-[#C4162A]/10 border border-[#C4162A] px-2.5 py-1 rounded whitespace-nowrap">
+                      +{lap.penalties_s}s
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black text-[var(--text-primary)] tabular-nums">
+                    {fmtMs(lap.current_lap_ms)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold text-[var(--text-secondary)] tabular-nums">
+                    {fmtMs(lap.last_lap_ms)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sectors */}
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {[
+                  { label: 'S1', ms: displayS1, done: s1Done },
+                  { label: 'S2', ms: displayS2, done: s2Done },
+                  { label: 'S3', ms: displayS3, done: s3Done },
+                ].map(s => (
+                  <div key={s.label}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s.label}</div>
+                    <div className={`text-sm font-black tabular-nums ${s.done && s.ms > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                      {s.done && s.ms > 0 ? fmtMs(s.ms) : '–:––.–––'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-4 min-h-[44px]">
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-muted)]">Lap —</div>
+                  <div className="text-4xl font-black tabular-nums text-[var(--text-muted)]">P—</div>
+                </div>
+                <div className="min-h-[32px]" />
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Current</div>
+                  <div className="text-3xl font-black tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Last lap</div>
+                  <div className="text-2xl font-bold tabular-nums text-[var(--text-muted)]">--:--.---</div>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 -mx-6 px-6 border-t border-[var(--border)] grid grid-cols-3 gap-3">
+                {['S1', 'S2', 'S3'].map(s => (
+                  <div key={s}>
+                    <div className="text-[11px] font-bold text-[var(--text-secondary)]">{s}</div>
+                    <div className="text-sm font-black tabular-nums text-[var(--text-muted)]">–:––.–––</div>
                   </div>
                 ))}
               </div>
@@ -457,10 +615,10 @@ const RacePanel = memo(function RacePanel({
 
       {/* ── ERS ── */}
       {showErs && (
-      <Panel className={compactErs ? 'p-3' : 'p-4'}>
+      <Panel className={isCompactErs ? 'p-3' : isSpaciousErs ? 'p-6' : 'p-4'}>
         <SectionLabel>Energy Recovery</SectionLabel>
 
-        {compactErs ? (
+        {isCompactErs ? (
           /* Compact ERS Layout */
           activeStatus ? (
             <div className="space-y-2">
@@ -528,6 +686,77 @@ const RacePanel = memo(function RacePanel({
                 <div>
                   <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
                   <div className="text-[11px] font-bold text-[var(--text-muted)]">—</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousErs ? (
+          /* Spacious ERS Layout */
+          activeStatus ? (
+            <div className="space-y-6">
+              {/* Energy bar */}
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums"
+                        style={{ color: ersBarColor }}>
+                    {ersPct.toFixed(1)}%
+                  </span>
+                  <span
+                    className="text-base font-black"
+                    style={{
+                      color: activeStatus.ers_mode === 0 ? 'var(--text-secondary)' :
+                             activeStatus.ers_mode === 1 ? (isDark ? '#5794F2' : '#0B57D0') :
+                             activeStatus.ers_mode === 2 ? (isDark ? 'var(--compound-medium)' : '#765900') :
+                             '#C4162A'
+                    }}
+                  >
+                    {tn('ers.mode', activeStatus.ers_mode)}
+                  </span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${ersBarWidth}%`, background: ersBarColor }}
+                  />
+                </div>
+                <div className="text-xs font-semibold text-[var(--text-secondary)] mt-1.5">
+                  {(activeStatus.ers_j / 1_000_000).toFixed(2)} MJ / 4.00 MJ
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-primary)]">
+                    {(activeStatus.ers_deployed_j / 1_000_000).toFixed(2)} MJ
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className={`text-xl font-black ${activeStatus.drs_allowed ? 'text-[#37872D]' : 'text-[var(--text-secondary)]'}`}>
+                    {activeStatus.drs_allowed ? 'AVAILABLE' : 'LOCKED'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—%</span>
+                  <span className="text-base font-black text-[var(--text-muted)]">—</span>
+                </div>
+                <div className="w-full h-4 bg-[var(--border)] rounded-full overflow-hidden" />
+                <div className="text-xs font-semibold text-[var(--text-muted)] mt-1.5">— MJ / 4.00 MJ</div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-base">
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">Deployed</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">— MJ</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">{t('drs.label')}</div>
+                  <div className="text-xl font-black text-[var(--text-muted)]">—</div>
                 </div>
               </div>
             </div>
@@ -609,10 +838,10 @@ const RacePanel = memo(function RacePanel({
 
       {/* ── Fuel & Tyre ── */}
       {showStrategy && (
-      <Panel className={compactStrategy ? 'p-3' : 'p-4'}>
+      <Panel className={isCompactStrategy ? 'p-3' : isSpaciousStrategy ? 'p-6' : 'p-4'}>
         <SectionLabel>Strategy</SectionLabel>
 
-        {compactStrategy ? (
+        {isCompactStrategy ? (
           /* Compact Strategy Layout */
           activeStatus ? (
             <div className="grid grid-cols-2 gap-3">
@@ -668,6 +897,69 @@ const RacePanel = memo(function RacePanel({
                 <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
                 <div className="text-xl font-black text-[var(--text-muted)]">—</div>
                 <div className="text-[10px] text-[var(--text-muted)]">BB: —%</div>
+              </div>
+            </div>
+          )
+        ) : isSpaciousStrategy ? (
+          /* Spacious Strategy Layout */
+          activeStatus ? (
+            <div className="space-y-6">
+              {/* Fuel */}
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className="text-4xl font-black tabular-nums"
+                    style={{
+                      color: activeStatus.fuel_laps > 1 ? (isDark ? '#37872D' : '#137333') :
+                             activeStatus.fuel_laps >= 0 ? (isDark ? '#d4ad04' : '#8B5200') :
+                             '#C4162A'
+                    }}
+                  >
+                    {activeStatus.fuel_kg.toFixed(1)}
+                  </span>
+                  <span className="text-[var(--text-secondary)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-secondary)] mt-1">
+                  {activeStatus.fuel_laps >= 0 ? '+' : ''}{activeStatus.fuel_laps.toFixed(1)} laps vs finish
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1.5">Mix: {FUEL_MIX[activeStatus.fuel_mix] ?? ''}</div>
+              </div>
+
+              {/* Tyre */}
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  {tyreName && (
+                    <span className="text-3xl font-black" style={{ color: tyreColor }}>
+                      {tyreName}
+                    </span>
+                  )}
+                  <div className="text-base font-semibold text-[var(--text-secondary)]">
+                    Age: {activeStatus.tyre_age_laps} laps
+                  </div>
+                </div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1">Brake bias: {activeStatus.front_brake_bias}% front</div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Fuel</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-black tabular-nums text-[var(--text-muted)]">—</span>
+                  <span className="text-[var(--text-muted)] text-base font-semibold">kg</span>
+                </div>
+                <div className="text-base font-semibold text-[var(--text-muted)] mt-1">— laps vs finish</div>
+                <div className="text-sm text-[var(--text-muted)] mt-1.5">Mix: —</div>
+              </div>
+              <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
+                  <div className="text-base font-semibold text-[var(--text-muted)]">Age: — laps</div>
+                </div>
+                <div className="text-sm text-[var(--text-muted)] mt-1">Brake bias: —% front</div>
               </div>
             </div>
           )

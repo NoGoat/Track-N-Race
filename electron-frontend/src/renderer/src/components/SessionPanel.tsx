@@ -7,6 +7,7 @@ import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
 import { TRACK_MAPS } from '../lib/trackMaps'
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
+import type { DensityMode } from '../lib/graphSections'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
 
@@ -133,8 +134,11 @@ function weatherColor(id: number, isDark: boolean): string {
   return isDark ? e.dark : e.light
 }
 
-const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: boolean }) {
-  if (compact) {
+const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: DensityMode | boolean }) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
+  if (isCompact) {
     // Single-line: label · value+unit — the row collapses to one line.
     return (
       <div className="flex-1 min-w-0 overflow-hidden flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
@@ -146,6 +150,21 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
       </div>
     )
   }
+
+  if (isSpacious) {
+    return (
+      <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-6 py-6 border-r border-[var(--border)] last:border-r-0">
+        <span className="text-xs font-black tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
+        <div>
+          <div className="text-4xl font-black tabular-nums leading-none mt-3 truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
+            {value}
+          </div>
+          {unit && <div className="text-sm font-semibold text-[var(--text-secondary)] mt-1.5">{unit}</div>}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
       <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
@@ -181,8 +200,11 @@ function areProximityPropsEqual(prev: any, next: any) {
 }
 
 const ProximityWidget = memo(function ProximityWidget({ timing, participants, compact }: {
-  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: boolean
+  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: DensityMode | boolean
 }) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
   const active = timing.cars
     .filter(c => c.result_status === 2 && c.position > 0)
     .sort((a, b) => a.position - b.position)
@@ -223,16 +245,16 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants, co
         return (
           <div
             key={car.idx}
-            className={compact ? "flex items-center gap-3 px-3 h-[32px]" : "flex items-center gap-3 px-3 py-3"}
+            className={isCompact ? "flex items-center gap-3 px-3 h-[32px]" : isSpacious ? "flex items-center gap-4 px-4 py-4" : "flex items-center gap-3 px-3 py-3"}
           >
-            <span className="text-[10px] font-bold tabular-nums w-7 text-center text-[var(--text-primary)] shrink-0">
+            <span className={`${isSpacious ? 'text-xs font-black w-8' : 'text-[10px] font-bold w-7'} tabular-nums text-center text-[var(--text-primary)] shrink-0`}>
               P{car.position}
             </span>
-            <span className={`${compact ? 'text-xs' : 'text-sm'} font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+            <span className={`${isCompact ? 'text-xs' : isSpacious ? 'text-base font-black' : 'text-sm font-bold'} flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
               {driverName(participants, car.idx)}
             </span>
             {deltaMs != null && deltaMs > 0 && (
-              <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-semibold tabular-nums`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
+              <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-semibold'} tabular-nums`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
                 {fmtDelta(deltaMs, sign!)}
               </span>
             )}
@@ -296,10 +318,10 @@ interface Props {
   mapDimmed?: boolean
   aeroMode: 'drs' | 'slm'
   compactHeader?: boolean | number
-  compactCards?: boolean
+  compactCards?: DensityMode | boolean
   compactWeather?: number
-  compactEvents?: boolean
-  compactProximity?: boolean
+  compactEvents?: DensityMode | boolean
+  compactProximity?: DensityMode | boolean
   layout?: SessionLayout
 }
 
@@ -307,9 +329,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
   const { t } = useLabels()
-  const weatherLevel = Math.max(0, Math.min(3, compactWeather ?? 0))
-  const headerLevel = typeof compactHeader === 'boolean' ? (compactHeader ? 1 : 0) : Math.max(0, Math.min(2, compactHeader ?? 0))
-  const isCompactHeader = headerLevel > 0
+  const weatherLevel = Math.max(0, Math.min(4, compactWeather ?? 0))
+  const headerLevel = typeof compactHeader === 'boolean' ? (compactHeader ? 1 : 0) : Math.max(0, Math.min(3, compactHeader ?? 0))
+  const isCompactHeader = headerLevel === 1 || headerLevel === 2
+  const isSpaciousHeader = headerLevel === 3
+
+  const isCompactEvents = compactEvents === true || compactEvents === 'compact'
+  const isSpaciousEvents = compactEvents === 'spacious'
+
+  const isCompactProximity = compactProximity === true || compactProximity === 'compact'
+  const isSpaciousProximity = compactProximity === 'spacious'
 
   const setMapFullscreenAnimated = (fullscreen: boolean) => {
     const transitionDocument = document as Document & {
@@ -376,20 +405,29 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
         >
           {/* GP name */}
           {layout.header.gpName && (
-            <div className={`flex flex-col justify-center ${!layout.header.marshalZones && !layout.header.timeLeft ? 'flex-1' : 'shrink-0'} px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
+            <div className={`flex flex-col justify-center ${!layout.header.marshalZones && !layout.header.timeLeft ? 'flex-1' : 'shrink-0'} ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
               <div className={`flex items-center gap-3 ${isCompactHeader ? '' : 'mb-0.5'}`}>
-                <h1 className={`${isCompactHeader ? 'text-base' : 'text-xl'} font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                <h1 className={`${isSpaciousHeader ? 'text-2xl font-black' : isCompactHeader ? 'text-base font-black' : 'text-xl font-black'} tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
                   {gpName}
                 </h1>
               </div>
-              {circuit && !isCompactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
+              {circuit && !isCompactHeader && <p className={`${isSpaciousHeader ? 'text-sm font-semibold' : 'text-xs'} text-[var(--text-secondary)] mt-0.5`}>{circuit}</p>}
             </div>
           )}
 
           {/* Zones strip */}
           {layout.header.marshalZones && (
-            <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
-              {headerLevel === 2 ? (
+            <div className={`flex flex-col justify-center flex-1 min-w-0 ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
+              {headerLevel === 3 ? (
+                <div className="flex flex-col justify-center gap-2 w-full">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black uppercase tracking-widest text-[var(--text-secondary)]">Marshal Zones</span>
+                  </div>
+                  <div className="w-full">
+                    <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                  </div>
+                </div>
+              ) : headerLevel === 2 ? (
                 <div className="w-full">
                   <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
                 </div>
@@ -411,12 +449,12 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
           {/* Time left */}
           {layout.header.timeLeft && (
-            <div className={`flex flex-col justify-center items-end ${!layout.header.gpName && !layout.header.marshalZones ? 'flex-1' : 'shrink-0'} ${!layout.header.marshalZones && layout.header.gpName ? 'ml-auto' : ''} px-6 ${isCompactHeader ? 'py-2' : 'py-4'}`}>
+            <div className={`flex flex-col justify-center items-end ${!layout.header.gpName && !layout.header.marshalZones ? 'flex-1' : 'shrink-0'} ${!layout.header.marshalZones && layout.header.gpName ? 'ml-auto' : ''} ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
               {!isCompactHeader && (
-                <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
+                <div className={`${isSpaciousHeader ? 'text-xs font-bold' : 'text-[10px] font-medium'} uppercase tracking-widest text-[var(--text-secondary)]`}>Time Left</div>
               )}
               <div
-                className={`${isCompactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
+                className={`${isSpaciousHeader ? 'text-4xl' : isCompactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
                 style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
               >
                 {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
@@ -465,12 +503,28 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
               {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
                   in the horizontal row; Compact 2 is the original icon-free strip;
-                  Compact 3 is the single-line layout: [Icon] Condition ... +Time Rain%. */}
+                  Compact 3 is the single-line layout: [Icon] Condition ... +Time Rain%;
+                  Spacious is level 4 with extra large icons and metrics. */}
               {layout.showWeather && (
-                <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 3 ? 34 : weatherLevel === 1 ? 58 : 90 }}>
+                <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 3 ? 34 : weatherLevel === 1 ? 58 : weatherLevel === 4 ? 110 : 90 }}>
 
                   {/* Now card — same width as the forecast cards */}
-                  {weatherLevel === 2 ? (
+                  {weatherLevel === 4 ? (
+                    <div className="flex-1 flex items-center justify-center gap-4 px-6 min-w-0">
+                      <div className="shrink-0" style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
+                        <WeatherIcon id={session?.weather ?? 2} size={40} isDark={isDark} />
+                      </div>
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
+                        <span className={`text-base font-black truncate ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                          {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                        </span>
+                        <span className="text-[11px] font-semibold text-[var(--text-secondary)]">
+                          {session ? (session.forecast_accuracy === 0 ? 'Exact' : 'Approx') : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  ) : weatherLevel === 2 ? (
                     <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
                 <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
                 <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: session ? weatherColor(session.weather, isDark) : 'var(--text-secondary)' }}>
@@ -520,7 +574,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
             {/* Forecast cards — skeleton when no data */}
             {noData
-              ? [1, 2, 3, 4, 5].map(i => weatherLevel === 2 ? (
+              ? [1, 2, 3, 4, 5].map(i => weatherLevel === 4 ? (
+                <div key={i} className="flex-1 flex items-center justify-center gap-4 px-4 py-3 min-w-0">
+                  <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={2} size={40} isDark={isDark} /></div>
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">—</span>
+                    <span className="text-xs font-bold text-[var(--text-secondary)] truncate">—</span>
+                    <span className="text-sm font-black tabular-nums text-[var(--text-secondary)]">—</span>
+                  </div>
+                </div>
+              ) : weatherLevel === 2 ? (
                 <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
                   <span className="flex-1 text-center text-xs text-[var(--text-secondary)]">—</span>
@@ -561,7 +624,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               : forecast.map((s, i) => {
                 const rainColor = s.rain_percentage > 50 ? '#5794F2'
                   : s.rain_percentage > 20 ? '#73BF69' : 'var(--text-secondary)'
-                return weatherLevel === 2 ? (
+                return weatherLevel === 4 ? (
+                  <div key={i} className="flex-1 flex items-center justify-center gap-4 px-4 py-3 min-w-0">
+                    <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={s.weather} size={40} isDark={isDark} /></div>
+                    <div className="flex flex-col gap-1 min-w-0">
+                      <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
+                      <span className="text-xs font-bold text-[var(--text-secondary)] truncate">{WEATHER_LABELS[s.weather] ?? '—'}</span>
+                      <span className="text-sm font-black tabular-nums" style={{ color: rainColor }}>{s.rain_percentage}%</span>
+                    </div>
+                  </div>
+                ) : weatherLevel === 2 ? (
                   <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
                     <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: weatherColor(s.weather, isDark) }}>
@@ -624,12 +696,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
           {layout.showProximity && (
             <div className="shrink-0 border-b border-[var(--border)]">
-              <div className={compactProximity
+              <div className={isCompactProximity
                 ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : isSpaciousProximity
+                ? "px-4 py-3 border-b border-[var(--border)] flex items-center"
                 : "px-4 py-2 border-b border-[var(--border)]"
               }>
-                <span className={compactProximity
+                <span className={isCompactProximity
                   ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : isSpaciousProximity
+                  ? "text-xs font-black uppercase tracking-wider text-[var(--text-secondary)]"
                   : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
                 }>
                   Proximity
@@ -644,12 +720,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
           {layout.showEvents && (
             <div className="flex flex-col flex-1 min-h-0">
-              <div className={compactEvents
+              <div className={isCompactEvents
                 ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : isSpaciousEvents
+                ? "px-4 py-3 border-b border-[var(--border)] flex items-center"
                 : "px-4 py-2 border-b border-[var(--border)]"
               }>
-                <span className={compactEvents
+                <span className={isCompactEvents
                   ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : isSpaciousEvents
+                  ? "text-xs font-black uppercase tracking-wider text-[var(--text-secondary)]"
                   : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
                 }>
                   Events
@@ -665,12 +745,14 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                     {visibleEvents.map(({ event, fmt }, i) => (
                       <div
                         key={i}
-                        className={compactEvents
+                        className={isCompactEvents
                           ? "flex items-center justify-between gap-2 px-3 h-[32px] border-b border-[var(--border)] min-w-0"
+                          : isSpaciousEvents
+                          ? "flex flex-col gap-1 px-4 py-3 border-b border-[var(--border)]"
                           : "flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
                         }
                       >
-                        {compactEvents ? (
+                        {isCompactEvents ? (
                           <>
                             <span
                               className="text-[11px] font-bold leading-tight truncate min-w-0 flex-1"
@@ -683,6 +765,21 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                               style={{ color: `${fmt.color}aa` }}
                             >
                               {fmtSessionTime(event.session_time)}
+                            </span>
+                          </>
+                        ) : isSpaciousEvents ? (
+                          <>
+                            <span
+                              className="text-xs tabular-nums font-mono font-bold"
+                              style={{ color: `${fmt.color}cc` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                            <span
+                              className="text-sm font-black leading-snug"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
                             </span>
                           </>
                         ) : (

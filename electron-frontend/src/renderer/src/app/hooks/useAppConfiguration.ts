@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAppConfig } from '../../hooks/useAppConfig'
 import { configureChartFrameRates, type ChartFrameRate } from '../../lib/timechart/frameRate'
-import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
+import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type DensityMode, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
+
+function normalizeDensity(val: unknown): DensityMode {
+  if (val === true || val === 'compact') return 'compact'
+  if (val === 'spacious') return 'spacious'
+  return 'normal'
+}
 import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type SessionLayout, type StandingsLayout, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
@@ -75,12 +81,29 @@ export function useAppConfiguration() {
   }), [rawStandingsLayout])
   const graphView = useMemo<GraphViewState>(() => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
   const compact = useMemo<CompactState>(() => {
-    const merged = { ...DEFAULT_COMPACT, ...(rawCompact ?? {}) }
-    const legacyWeather = (rawCompact as unknown as { sessionWeather?: unknown } | null)?.sessionWeather
-    merged.sessionWeather = typeof legacyWeather === 'boolean' ? (legacyWeather ? 2 : 0) : Math.max(0, Math.min(3, Number(merged.sessionWeather) || 0))
-    const legacyHeader = (rawCompact as unknown as { sessionHeader?: unknown } | null)?.sessionHeader
-    merged.sessionHeader = typeof legacyHeader === 'boolean' ? (legacyHeader ? 1 : 0) : Math.max(0, Math.min(2, Number(merged.sessionHeader) || 0))
-    return merged
+    const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>
+    const legacyWeather = raw.sessionWeather
+    const sessionWeather = typeof legacyWeather === 'boolean' ? (legacyWeather ? 2 : 0) : Math.max(0, Math.min(4, Number(legacyWeather) || 0))
+    const legacyHeader = raw.sessionHeader
+    const sessionHeader = typeof legacyHeader === 'boolean' ? (legacyHeader ? 1 : 0) : Math.max(0, Math.min(3, Number(legacyHeader) || 0))
+    const overviewTyres = Math.max(0, Math.min(6, Number(raw.overviewTyres) || 0))
+    return {
+      overviewStats:     normalizeDensity(raw.overviewStats),
+      overviewDamage:    normalizeDensity(raw.overviewDamage),
+      overviewTyres,
+      standingsTable:    normalizeDensity(raw.standingsTable),
+      standingsTiming:   normalizeDensity(raw.standingsTiming),
+      standingsErs:      normalizeDensity(raw.standingsErs),
+      standingsStrategy: normalizeDensity(raw.standingsStrategy),
+      sessionCards:      normalizeDensity(raw.sessionCards),
+      sessionProximity:  normalizeDensity(raw.sessionProximity),
+      sessionEvents:     normalizeDensity(raw.sessionEvents),
+      sessionWeather,
+      sessionHeader,
+      powerCards:        normalizeDensity(raw.powerCards),
+      strategySummary:   normalizeDensity(raw.strategySummary),
+      playbackBar:       normalizeDensity(raw.playbackBar),
+    }
   }, [rawCompact])
   const chartYAxis = useMemo<ChartYAxisState>(() => {
     const legacyRaw = (rawChartYAxis ?? {}) as unknown as Partial<TyreYAxisGroupState>

@@ -43,35 +43,35 @@ interface Props {
 // / wear) via the card colour evaluator, so they stay in lockstep with the native
 // recorder and the stat cards.
 
-export const TempRow = memo(function TempRow({ label, value, color, noData, compact }: {
-  label: string; value: number; color: string; noData?: boolean; compact?: boolean
+export const TempRow = memo(function TempRow({ label, value, color, noData, compact, spacious }: {
+  label: string; value: number; color: string; noData?: boolean; compact?: boolean; spacious?: boolean
 }) {
   return (
-    <div className={`flex justify-between items-center ${compact ? 'py-px' : 'py-0.5'}`}>
-      <span className={`text-[var(--text-secondary)] ${compact ? 'text-xs' : 'text-sm'}`}>{label}</span>
-      <span className={`font-bold tabular-nums ${compact ? 'text-xs' : 'text-sm'}`} style={{ color: noData ? '#4a4a4a' : color }}>
+    <div className={`flex justify-between items-center ${compact ? 'py-px' : spacious ? 'py-1' : 'py-0.5'}`}>
+      <span className={`text-[var(--text-secondary)] ${compact ? 'text-xs' : spacious ? 'text-base font-medium' : 'text-sm'}`}>{label}</span>
+      <span className={`font-bold tabular-nums ${compact ? 'text-xs' : spacious ? 'text-base font-black' : 'text-sm'}`} style={{ color: noData ? '#4a4a4a' : color }}>
         {noData ? '—' : `${value}°C`}
       </span>
     </div>
   )
 })
 
-export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, isDark = true }: {
-  pct: number | null; blisters: number | null; noData?: boolean; compact?: boolean; isDark?: boolean
+export const WearBar = memo(function WearBar({ pct, blisters, noData, compact, spacious, isDark = true }: {
+  pct: number | null; blisters: number | null; noData?: boolean; compact?: boolean; spacious?: boolean; isDark?: boolean
 }) {
   const ramp = useColorFn(null, null, isDark)
   const color = pct !== null ? (ramp('wear', pct) ?? '#888') : '#4a4a4a'
   return (
-    <div className={compact ? '' : 'pt-2 border-t border-[var(--border)]'}>
+    <div className={compact ? '' : `${spacious ? 'pt-3' : 'pt-2'} border-t border-[var(--border)]`}>
       {!compact && (
-        <div className="flex justify-between text-[9px] text-[var(--text-secondary)] mb-1">
+        <div className={`flex justify-between ${spacious ? 'text-xs font-semibold' : 'text-[9px]'} text-[var(--text-secondary)] mb-1.5`}>
           <span>Wear</span>
           <span style={{ color: noData ? '#4a4a4a' : color }}>
             {noData || pct === null ? '—' : `${pct.toFixed(1)}%${blisters ? ` · ${blisters}% blisters` : ''}`}
           </span>
         </div>
       )}
-      <div className={`w-full bg-[var(--border)] rounded-full overflow-hidden ${compact ? 'h-1.5' : 'h-2'}`}>
+      <div className={`w-full bg-[var(--border)] rounded-full overflow-hidden ${compact ? 'h-1.5' : spacious ? 'h-3' : 'h-2'}`}>
         {!noData && pct !== null && (
           <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
         )}
@@ -116,11 +116,12 @@ export const WheelCard = memo(function WheelCard({
     )
   }
   // `level` (Overview) takes precedence; `compact` (Tyres page) maps to level 5 / 0.
-  const lvl = Math.max(0, Math.min(5, level ?? (compact ? 5 : 0)))
+  const lvl = Math.max(0, Math.min(6, level ?? (compact ? 5 : 0)))
   // Only the Overview page passes `level` explicitly — the Tyres page's own WheelCard
   // usage (via `compact`) keeps the original stretched/justify-between layout, since
   // it stacks 4 cards in a fixed-height flex column that relies on that fill behaviour.
   const isOverviewNormal = level !== undefined && lvl === 0
+  const isSpacious = lvl === 6
   const abbrev = pos.split(/\s+/).map(w => w[0]).join('').toUpperCase()
 
   // The four metrics, in native's Surface/Inner/Brake/Wear order, each with its
@@ -178,22 +179,22 @@ export const WheelCard = memo(function WheelCard({
     )
   }
 
-  // ── Level 0 (Normal) & 5 (the app's earlier compact column card) ──
+  // ── Level 0 (Normal), Level 6 (Spacious), & Level 5 (earlier compact column card) ──
   const isCompactCol = lvl === 5
-  const padding = isCompactCol ? 'p-2' : (isOverviewNormal ? 'p-3' : 'p-4')
-  const labelMb = isCompactCol ? 'mb-1' : (isOverviewNormal ? 'mb-2' : 'mb-3')
-  const dividerMy = isOverviewNormal ? 'my-1' : 'my-1.5'
+  const padding = isCompactCol ? 'p-2' : isSpacious ? 'p-5' : (isOverviewNormal ? 'p-3' : 'p-4')
+  const labelMb = isCompactCol ? 'mb-1' : isSpacious ? 'mb-3' : (isOverviewNormal ? 'mb-2' : 'mb-3')
+  const dividerMy = isSpacious ? 'my-2' : (isOverviewNormal ? 'my-1' : 'my-1.5')
   return (
-    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col ${isOverviewNormal ? '' : 'justify-between'} ${padding}`}>
-      <div className={`text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-widest ${labelMb}`}>
+    <div className={`flex-1 min-w-0 overflow-hidden flex flex-col ${isOverviewNormal && !isSpacious ? '' : 'justify-between'} ${padding}`}>
+      <div className={`${isSpacious ? 'text-xs font-black' : 'text-[10px] font-bold'} text-[var(--text-secondary)] uppercase tracking-widest ${labelMb}`}>
         {pos}
       </div>
-      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} />
-      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} />
+      <TempRow label="Surface" value={surface} color={ramp('temp.tyre', surface) ?? '#888'} noData={noData} compact={isCompactCol} spacious={isSpacious} />
+      <TempRow label="Inner"   value={inner}   color={ramp('temp.tyre', inner) ?? '#888'}   noData={noData} compact={isCompactCol} spacious={isSpacious} />
       {!isCompactCol && <div className={`${dividerMy} border-t border-[var(--border)]`} />}
-      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} />
-      <div className={isOverviewNormal && !isCompactCol ? 'mt-2' : undefined}>
-        <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} isDark={isDark} />
+      <TempRow label="Brake"   value={brake}   color={ramp('temp.brake', brake) ?? '#888'}  noData={noData} compact={isCompactCol} spacious={isSpacious} />
+      <div className={(isOverviewNormal || isSpacious) && !isCompactCol ? (isSpacious ? 'mt-3' : 'mt-2') : undefined}>
+        <WearBar pct={wear} blisters={blisters} noData={noData} compact={isCompactCol} spacious={isSpacious} isDark={isDark} />
       </div>
     </div>
   )
