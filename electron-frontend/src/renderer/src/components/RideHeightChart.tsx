@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -58,8 +58,16 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorFront = themeSeriesColor(COLOR_FRONT, isDark)
   const colorRear = themeSeriesColor(COLOR_REAR, isDark)
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
-  const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
+  const chartSeries = useMemo(() => SERIES.map((series, index) => ({
+    ...series,
+    color: index === 0 ? colorFront : colorRear,
+    visible: !hiddenSeries[series.label],
+  })), [colorFront, colorRear, hiddenSeries])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
   const getTableValues = useCallback((row: MotionExRow) => [row.front_aero_height_mm, row.rear_aero_height_mm], [])
 
@@ -78,16 +86,18 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => [
-      `<div><span style="color:${colorFront}">Front</span>: ${values[0].toFixed(1)} mm</div>`,
-      `<div><span style="color:${colorRear}">Rear</span>:  ${values[1].toFixed(1)} mm</div>`,
-    ].join('')
+    const formatValues = (values: number[]) => {
+      const parts: string[] = []
+      if (!hiddenSeries['Front']) parts.push(`<div><span style="color:${colorFront}">Front</span>: ${values[0].toFixed(1)} mm</div>`)
+      if (!hiddenSeries['Rear']) parts.push(`<div><span style="color:${colorRear}">Rear</span>:  ${values[1].toFixed(1)} mm</div>`)
+      return parts.join('')
+    }
     return [
       `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [colorFront, colorRear, coordinates, tooltipTimeColor])
+  }, [colorFront, colorRear, coordinates, hiddenSeries, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
@@ -97,8 +107,20 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-            <span style={{ color: colorFront }}>— Front</span>
-            <span style={{ color: colorRear }}>— Rear</span>
+            <span
+              onClick={() => toggleSeries('Front')}
+              className="cursor-pointer select-none"
+              style={{ color: colorFront, filter: hiddenSeries['Front'] ? 'grayscale(100%)' : undefined }}
+            >
+              — Front
+            </span>
+            <span
+              onClick={() => toggleSeries('Rear')}
+              className="cursor-pointer select-none"
+              style={{ color: colorRear, filter: hiddenSeries['Rear'] ? 'grayscale(100%)' : undefined }}
+            >
+              — Rear
+            </span>
             <span className="text-[var(--text-secondary)]">plank edge above road</span>
         </div>}
       </div>

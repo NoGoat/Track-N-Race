@@ -23,6 +23,7 @@ interface Props {
   windowSeconds: number
   xTickFormat: (x: number) => string
   tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
+  visibleSeries?: { speed?: boolean; rpm?: boolean; ers?: boolean }
 }
 
 const SPEED = '#37872D'
@@ -129,7 +130,7 @@ function syncTelemetry(
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
 
-export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, windowSeconds, xTickFormat, tooltipFormat }: Props) {
+export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, windowSeconds, xTickFormat, tooltipFormat, visibleSeries }: Props) {
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize(120)
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -207,12 +208,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
-        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null, data: comparisonBuffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Speed', color: speed, lineWidth: 1.5, data: buffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'RPM', color: rpm, lineWidth: 1.5, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'ERS', color: ers, lineWidth: 1.5, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.speed !== false, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.rpm !== false, data: comparisonBuffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.ers !== false, data: comparisonBuffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Speed', color: speed, lineWidth: 1.5, visible: visibleSeries?.speed !== false, data: buffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'RPM', color: rpm, lineWidth: 1.5, visible: visibleSeries?.rpm !== false, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'ERS', color: ers, lineWidth: 1.5, visible: visibleSeries?.ers !== false, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
       ],
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
@@ -255,6 +256,33 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     // Theme changes remount this component; live values flow through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    const speedVisible = visibleSeries?.speed !== false
+    const rpmVisible = visibleSeries?.rpm !== false
+    const ersVisible = visibleSeries?.ers !== false
+
+    let changed = false
+    const setVis = (index: number, vis: boolean) => {
+      if (chart.options.series[index].visible !== vis) {
+        chart.options.series[index].visible = vis
+        changed = true
+      }
+    }
+    setVis(0, comparisonTelemetry != null && speedVisible)
+    setVis(1, comparisonTelemetry != null && rpmVisible)
+    setVis(2, comparisonTelemetry != null && ersVisible)
+    setVis(3, speedVisible)
+    setVis(4, rpmVisible)
+    setVis(5, ersVisible)
+
+    if (changed) {
+      dirtyRef.current = true
+      chart.model.requestRedraw()
+    }
+  }, [comparisonTelemetry, visibleSeries])
 
   useEffect(() => {
     const cfg = axisCfgRef.current

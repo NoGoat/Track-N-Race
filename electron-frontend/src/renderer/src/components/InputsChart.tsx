@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { AlignedTable, TelemetryRow } from '../types'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
@@ -27,7 +27,15 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorThrottle = themeSeriesColor(COLOR_THROTTLE, isDark)
   const colorBrake = themeSeriesColor(COLOR_BRAKE, isDark)
-  const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
+  const chartSeries = useMemo(() => SERIES.map((series, index) => ({
+    ...series,
+    color: index === 0 ? colorThrottle : colorBrake,
+    visible: !hiddenSeries[series.label],
+  })), [colorBrake, colorThrottle, hiddenSeries])
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorThrottle : colorBrake })), [colorBrake, colorThrottle])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapTelemetry : s.telemetry)
   const getTableValues = useCallback((row: TelemetryRow) => [row.throttle, -row.brake], [])
@@ -39,16 +47,18 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
   }, [coordinates.allLapsMode, data, view])
   const axisColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => [
-      `<div><span style="color:${colorThrottle}">Throttle</span>: ${Math.round(values[0] * 100)}%</div>`,
-      `<div><span style="color:${colorBrake}">Brake</span>: ${Math.round(Math.abs(values[1]) * 100)}%</div>`,
-    ].join('')
+    const formatValues = (values: number[]) => {
+      const parts: string[] = []
+      if (!hiddenSeries['Throttle']) parts.push(`<div><span style="color:${colorThrottle}">Throttle</span>: ${Math.round(values[0] * 100)}%</div>`)
+      if (!hiddenSeries['Brake']) parts.push(`<div><span style="color:${colorBrake}">Brake</span>: ${Math.round(Math.abs(values[1]) * 100)}%</div>`)
+      return parts.join('')
+    }
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [axisColor, colorBrake, colorThrottle, coordinates])
+  }, [axisColor, colorBrake, colorThrottle, coordinates, hiddenSeries])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
@@ -56,7 +66,22 @@ function InputsChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
         <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Throttle</h2>
         <ChartWindowOverrideSelect />
       </div>
-      {view !== 'table' && <div className="flex items-center gap-4 text-xs"><span style={{ color: colorThrottle }}>▲ Throttle</span><span style={{ color: colorBrake }}>▼ Brake</span></div>}
+      {view !== 'table' && <div className="flex items-center gap-4 text-xs">
+        <span
+          onClick={() => toggleSeries('Throttle')}
+          className="cursor-pointer select-none"
+          style={{ color: colorThrottle, filter: hiddenSeries['Throttle'] ? 'grayscale(100%)' : undefined }}
+        >
+          ▲ Throttle
+        </span>
+        <span
+          onClick={() => toggleSeries('Brake')}
+          className="cursor-pointer select-none"
+          style={{ color: colorBrake, filter: hiddenSeries['Brake'] ? 'grayscale(100%)' : undefined }}
+        >
+          ▼ Brake
+        </span>
+      </div>}
     </div>
     <div className="flex-1 min-h-0 relative">
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>

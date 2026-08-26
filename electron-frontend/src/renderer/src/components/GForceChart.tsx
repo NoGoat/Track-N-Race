@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef } from './charts/TimeChartView'
@@ -43,8 +43,16 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorLat = themeSeriesColor(COLOR_LAT, isDark)
   const colorLong = themeSeriesColor(COLOR_LONG, isDark)
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
   const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorLat : colorLong })), [colorLat, colorLong])
-  const chartSeries = useMemo(() => SERIES.map((series, index) => ({ ...series, color: index === 0 ? colorLat : colorLong })), [colorLat, colorLong])
+  const chartSeries = useMemo(() => SERIES.map((series, index) => ({
+    ...series,
+    color: index === 0 ? colorLat : colorLong,
+    visible: !hiddenSeries[series.label],
+  })), [colorLat, colorLong, hiddenSeries])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotion : s.motion)
   const getTableValues = useCallback((row: MotionRow) => [row.g_lat, row.g_long], [])
 
@@ -65,16 +73,18 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => [
-      `<div><span style="color:${colorLat}">Lateral</span>: ${values[0].toFixed(2)} g</div>`,
-      `<div><span style="color:${colorLong}">Longitudinal</span>: ${values[1].toFixed(2)} g</div>`,
-    ].join('')
+    const formatValues = (values: number[]) => {
+      const parts: string[] = []
+      if (!hiddenSeries['Lateral']) parts.push(`<div><span style="color:${colorLat}">Lateral</span>: ${values[0].toFixed(2)} g</div>`)
+      if (!hiddenSeries['Longitudinal']) parts.push(`<div><span style="color:${colorLong}">Longitudinal</span>: ${values[1].toFixed(2)} g</div>`)
+      return parts.join('')
+    }
     return [
       `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [colorLat, colorLong, coordinates, tooltipTimeColor])
+  }, [colorLat, colorLong, coordinates, hiddenSeries, tooltipTimeColor])
 
   return (
     <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
@@ -84,8 +94,20 @@ function GForceChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Prop
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-            <span style={{ color: colorLat }}>— Lateral</span>
-            <span style={{ color: colorLong }}>— Longitudinal</span>
+            <span
+              onClick={() => toggleSeries('Lateral')}
+              className="cursor-pointer select-none"
+              style={{ color: colorLat, filter: hiddenSeries['Lateral'] ? 'grayscale(100%)' : undefined }}
+            >
+              — Lateral
+            </span>
+            <span
+              onClick={() => toggleSeries('Longitudinal')}
+              className="cursor-pointer select-none"
+              style={{ color: colorLong, filter: hiddenSeries['Longitudinal'] ? 'grayscale(100%)' : undefined }}
+            >
+              — Longitudinal
+            </span>
             <span className="text-[var(--text-secondary)]">+ve = right / accel</span>
         </div>}
       </div>

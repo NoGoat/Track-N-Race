@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { AlignedTable, StatusRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import TimeChartView, { type SeriesDef, type YRangeSpec } from './charts/TimeChartView'
@@ -64,7 +64,15 @@ function PowerLineChartContent(props: PowerLineProps) {
   } = props
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
-  const themedSeries = useMemo(() => series.map(item => ({ ...item, color: themeSeriesColor(item.color, isDark) })), [isDark, series])
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
+  const themedSeries = useMemo(() => series.map(item => ({
+    ...item,
+    color: themeSeriesColor(item.color, isDark),
+    visible: item.visible !== false && !hiddenSeries[item.label],
+  })), [hiddenSeries, isDark, series])
   const themedColumns = useMemo(() => columns.map(item => item.color
     ? { ...item, color: themeSeriesColor(item.color, isDark) }
     : item), [columns, isDark])
@@ -109,7 +117,19 @@ function PowerLineChartContent(props: PowerLineProps) {
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-            {visibleEntries.map(({ series: s }) => <span key={s.label} style={{ color: s.color }}>— {s.label}</span>)}
+            {series.filter(s => s.visible !== false).map((s) => (
+              <span
+                key={s.label}
+                onClick={() => toggleSeries(s.label)}
+                className="cursor-pointer select-none"
+                style={{
+                  color: themeSeriesColor(s.color, isDark),
+                  filter: hiddenSeries[s.label] ? 'grayscale(100%)' : undefined,
+                }}
+              >
+                — {s.label}
+              </span>
+            ))}
             {note && <span className="text-[var(--text-secondary)]">{note}</span>}
         </div>}
       </div>

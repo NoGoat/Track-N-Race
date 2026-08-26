@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import type { AlignedTable, StatusRow, TelemetryRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
 import SpeedRpmTimeChart from './charts/SpeedRpmTimeChart'
@@ -36,6 +36,15 @@ function SpeedRpmChartContent(props: Props) {
   const colorSpeed = themeSeriesColor(COLOR_SPEED, isDark)
   const colorRpm = themeSeriesColor(COLOR_RPM, isDark)
   const colorErs = isDark ? COLOR_ERS_DARK : COLOR_ERS_LIGHT
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
+  const visibleSeries = useMemo(() => ({
+    speed: !hiddenSeries['Speed'],
+    rpm: !hiddenSeries['RPM'],
+    ers: !hiddenSeries['ERS'],
+  }), [hiddenSeries])
   const tableColumns = useMemo<GraphTableColumn[]>(() => [
     { header: 'Speed', color: colorSpeed, format: v => `${Math.round(v)}` },
     { header: 'RPM', color: colorRpm, format: v => Math.round(v).toLocaleString() },
@@ -55,18 +64,18 @@ function SpeedRpmChartContent(props: Props) {
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
       const values = [raw(source[0], 380), raw(source[1], 16000), raw(source[2], 100)]
-      return [
-        `<div><span style="color:${colorSpeed}">Speed</span>: ${values[0]} kph</div>`,
-        `<div><span style="color:${colorRpm}">RPM</span>: ${values[1].toLocaleString()}</div>`,
-        `<div><span style="color:${colorErs}">ERS</span>: ${values[2]}%</div>`,
-      ].join('')
+      const parts: string[] = []
+      if (!hiddenSeries['Speed']) parts.push(`<div><span style="color:${colorSpeed}">Speed</span>: ${values[0]} kph</div>`)
+      if (!hiddenSeries['RPM']) parts.push(`<div><span style="color:${colorRpm}">RPM</span>: ${values[1].toLocaleString()}</div>`)
+      if (!hiddenSeries['ERS']) parts.push(`<div><span style="color:${colorErs}">ERS</span>: ${values[2]}%</div>`)
+      return parts.join('')
     }
     return [
       `<div style="color:var(--text-secondary);margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(current),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [colorErs, colorRpm, colorSpeed, coordinates])
+  }, [colorErs, colorRpm, colorSpeed, coordinates, hiddenSeries])
 
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || data.length === 0 || coordinates.allLapsMode) return EMPTY_TABLE
@@ -92,9 +101,27 @@ function SpeedRpmChartContent(props: Props) {
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-          <span style={{ color: colorSpeed }}>— Speed (kph)</span>
-          <span style={{ color: colorRpm }}>— RPM</span>
-          <span style={{ color: colorErs }}>— ERS (%)</span>
+          <span
+            onClick={() => toggleSeries('Speed')}
+            className="cursor-pointer select-none"
+            style={{ color: colorSpeed, filter: hiddenSeries['Speed'] ? 'grayscale(100%)' : undefined }}
+          >
+            — Speed (kph)
+          </span>
+          <span
+            onClick={() => toggleSeries('RPM')}
+            className="cursor-pointer select-none"
+            style={{ color: colorRpm, filter: hiddenSeries['RPM'] ? 'grayscale(100%)' : undefined }}
+          >
+            — RPM
+          </span>
+          <span
+            onClick={() => toggleSeries('ERS')}
+            className="cursor-pointer select-none"
+            style={{ color: colorErs, filter: hiddenSeries['ERS'] ? 'grayscale(100%)' : undefined }}
+          >
+            — ERS (%)
+          </span>
       </div>}
     </div>
     <div className="flex-1 min-h-0 relative">
@@ -105,6 +132,7 @@ function SpeedRpmChartContent(props: Props) {
           : <SpeedRpmTimeChart key={`${isDark ? 'dark' : 'light'}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
+              visibleSeries={visibleSeries}
               windowSeconds={scopedWindowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
     </div>
   </div>

@@ -1,4 +1,4 @@
-import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { AlignedTable, TelemetryRow, DamageRow } from '../types'
 import type { GraphSection, TyreYAxisGroupState } from '../lib/graphSections'
@@ -166,6 +166,15 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
     : undefined
   const axisColor = isDark ? '#7c8098' : '#596168'
   const { controlsRef, titleRef } = useTyreTitleWidth()
+  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((label: string) => {
+    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  }, [])
+
+  const chartSeries = useMemo(() => series.map(s => ({
+    ...s,
+    visible: !hiddenSeries[s.label],
+  })), [series, hiddenSeries])
 
   // A single sample can't draw a line. Comparison modes can still render a
   // complete selected/previous/fastest trace before the sparse current damage
@@ -196,6 +205,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
     const formatValues = (source: number[]) => {
       let html = ''
       for (let i = 0; i < series.length; i++) {
+        if (hiddenSeries[series[i].label]) continue
         html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${source[i].toFixed(1)}${unit}</div>`
       }
       return html
@@ -204,7 +214,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
     html += formatValues(values)
     html += formatChartComparisonTooltip(comparison, coordinates.mode, formatValues)
     return html
-  }, [series, unit, axisColor, coordinates])
+  }, [series, hiddenSeries, unit, axisColor, coordinates])
 
   return (
     <div className="tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] px-4 pb-4 pt-3 flex flex-col">
@@ -214,14 +224,22 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="tyre-chart-legend flex shrink-0 items-center gap-3">
-            {series.map((s) => (
-              <div key={s.label} className="flex items-center gap-1">
-                <svg width="16" height="4">
-                  <line x1="0" y1="2" x2="16" y2="2" stroke={s.color} strokeWidth="2" />
-                </svg>
-                <span className="text-[9px] leading-none text-[var(--text-secondary)]">{s.label}</span>
-              </div>
-            ))}
+            {series.map((s) => {
+              const isHidden = !!hiddenSeries[s.label]
+              return (
+                <div
+                  key={s.label}
+                  onClick={() => toggleSeries(s.label)}
+                  className="flex items-center gap-1 cursor-pointer select-none"
+                  style={{ filter: isHidden ? 'grayscale(100%)' : undefined }}
+                >
+                  <svg width="16" height="4">
+                    <line x1="0" y1="2" x2="16" y2="2" stroke={s.color} strokeWidth="2" />
+                  </svg>
+                  <span className="text-[9px] leading-none text-[var(--text-secondary)]">{s.label}</span>
+                </div>
+              )
+            })}
         </div>}
       </div>
       <div className="flex-1 min-h-0 relative">
@@ -237,7 +255,7 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
             allLapsDataMask={source === 'damage' ? HISTORY_ROW.damage : HISTORY_ROW.telemetry}
             comparisonRows={comparisonRows}
             getX={(d) => d.session_time}
-            series={series}
+            series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
             yAxisSize={42}
