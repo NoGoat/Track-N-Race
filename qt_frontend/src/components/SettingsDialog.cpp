@@ -710,7 +710,7 @@ QWidget* SettingsDialog::buildGraphsPage() {
         { tnr::GraphSection::InputGear,          "Input",    "Gear" },
         { tnr::GraphSection::InputThrottleBrake, "Input",    "Throttle / brake" },
         { tnr::GraphSection::InputSteering,      "Input",    "Steering" },
-        { tnr::GraphSection::PowerSplit,         "Power",    "Power split" },
+        { tnr::GraphSection::PowerSplit,         "Power",    "Power" },
         { tnr::GraphSection::PowerHarvest,       "Power",    "ERS harvest" },
         { tnr::GraphSection::PowerStore,         "Power",    "ERS store" },
         { tnr::GraphSection::PowerFuel,          "Power",    "Fuel" },

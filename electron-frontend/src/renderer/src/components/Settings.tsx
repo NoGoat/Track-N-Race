@@ -12,7 +12,7 @@ import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
-import type { TitlebarUpdateInterval } from '../app/appConfig'
+import type { Theme, TitlebarUpdateInterval } from '../app/appConfig'
 import { useModalPresence } from '../lib/useModalPresence'
 
 interface Props {
@@ -24,8 +24,8 @@ interface Props {
   onTyreWearModeChange: (v: 'wear' | 'life') => void
   bannerDuration: number
   onBannerDurationChange: (v: number) => void
-  theme: 'dark' | 'light'
-  onThemeChange: (v: 'dark' | 'light') => void
+  theme: Theme
+  onThemeChange: (v: Theme) => void
   sectorColors: boolean
   onSectorColorsChange: (v: boolean) => void
   driversMode: 'dots' | 'both' | 'labels'
@@ -376,9 +376,13 @@ const Settings = memo(function Settings({
 
   const renderAppearance = () => (
     <div className="flex flex-col gap-1">
-      <Row label="Theme" description="Switch between dark and light interface">
-        <SegmentedControl
-          options={[{ value: 'dark' as const, label: 'Dark' }, { value: 'light' as const, label: 'Light' }]}
+      <Row label="Theme" description="Switch between dark, midnight, and light interface">
+        <SegmentedControl<Theme>
+          options={[
+            { value: 'dark', label: 'Dark' },
+            { value: 'midnight', label: 'Midnight' },
+            { value: 'light', label: 'Light' },
+          ]}
           value={theme} onChange={onThemeChange}
         />
       </Row>
@@ -864,7 +868,7 @@ const Settings = memo(function Settings({
     <div className="flex flex-col items-center justify-center text-center py-12 w-full max-w-[640px] select-none mx-auto my-auto">
       {/* Logo */}
       <img
-        src={theme === 'dark' ? iconTransparent : iconTransparentLight}
+        src={theme === 'light' ? iconTransparentLight : iconTransparent}
         alt="Track N Race Logo"
         className="h-24 w-auto mb-6 select-none pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
         draggable="false"

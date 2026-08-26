@@ -154,8 +154,8 @@ function PowerLineChart(props: PowerLineProps) {
 function PowerSplitChart(props: CP) {
   const details = useCallback((v: number[], ac: string) =>
     `<div style="color:${ac}">Total: ${(v[0] + v[1]).toFixed(1)} kW</div>`, [])
-  return <PowerLineChart {...props} section="powerSplit" title="Power Split" series={SERIES_SPLIT} columns={COLS_SPLIT}
-    yRange={{ kind: 'fixed', min: 0, max: 1000 }} yFormat={v => `${v}kW`}
+  return <PowerLineChart {...props} section="powerSplit" title="Power" series={SERIES_SPLIT} columns={COLS_SPLIT}
+    yRange={{ kind: 'expand', initialLower: 0, initialUpper: 500, lowerPad: 0, upperPad: 0, expandLower: false }} yFormat={v => `${Math.round(v)}kW`}
     tooltipDetails={details} />
 }
 

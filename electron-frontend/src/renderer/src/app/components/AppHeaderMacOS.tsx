@@ -7,7 +7,7 @@ import { selectComponents } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
 import iconTransparent from '../../assets/icon_transparent.png'
 import iconTransparentLight from '../../assets/icon_transparent_light.png'
-import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
+import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type Theme, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 import AnimatedAutoWidth from './AnimatedAutoWidth'
@@ -39,7 +39,7 @@ interface AppHeaderProps {
   setTab: (tab: Tab) => void
   settingsOpen: boolean
   tab: Tab
-  theme: 'dark' | 'light'
+  theme: Theme
   titlebarUpdateInterval: TitlebarUpdateInterval
 }
 
@@ -51,7 +51,7 @@ export default memo(function AppHeader({
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
-  const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
+  const accent = sessionType !== undefined ? sessionAccent(sessionType, theme !== 'light') : null
   const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
   const windowOptions = windowOptionGroups.flatMap(group => group.options)
   const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && chartWindow !== 'SL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow

@@ -156,7 +156,7 @@ const TowerRow = memo(function TowerRow({
         isSelected
           ? 'bg-[var(--bg-selected)]'
           : isFastest
-          ? 'bg-[#BF5FFF]/10 hover:bg-[#BF5FFF]/15'
+          ? 'bg-[var(--color-fastest)]/10 hover:bg-[var(--color-fastest)]/15'
           : 'hover:bg-[var(--bg-hover)]'
       }`}
     >

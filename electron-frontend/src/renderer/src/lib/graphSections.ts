@@ -53,7 +53,7 @@ export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label
     { key: 'inputSteering',      label: 'Steering' },
   ] },
   { group: 'Power', sections: [
-    { key: 'powerSplit',   label: 'Power Split' },
+    { key: 'powerSplit',   label: 'Power' },
     { key: 'powerHarvest', label: 'ERS Harvest' },
     { key: 'powerStore',   label: 'ERS Store' },
     { key: 'powerFuel',    label: 'Fuel History' },

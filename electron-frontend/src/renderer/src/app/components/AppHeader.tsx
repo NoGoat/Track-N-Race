@@ -7,7 +7,7 @@ import { selectComponents } from '../../lib/selectComponents'
 import { SESSION_TYPES, sessionAccent } from '../../components/SessionPanel'
 import iconTransparent from '../../assets/icon_transparent.png'
 import iconTransparentLight from '../../assets/icon_transparent_light.png'
-import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type TitlebarUpdateInterval } from '../appConfig'
+import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab, type Theme, type TitlebarUpdateInterval } from '../appConfig'
 import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 import AnimatedAutoWidth from './AnimatedAutoWidth'
@@ -21,7 +21,7 @@ interface AppHeaderProps {
   actualNativeTitlebar: boolean
   activeBanner: BannerItem | null
   editOpen: boolean
-  filename?: string
+  filename: string | null | undefined
   headerVisible: boolean
   isFullscreen: boolean
   isMaximized: boolean
@@ -39,7 +39,7 @@ interface AppHeaderProps {
   setTab: (tab: Tab) => void
   settingsOpen: boolean
   tab: Tab
-  theme: 'dark' | 'light'
+  theme: Theme
   titlebarUpdateInterval: TitlebarUpdateInterval
 }
 
@@ -51,7 +51,7 @@ export default memo(function AppHeader({
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
-  const accent = sessionType !== undefined ? sessionAccent(sessionType, theme === 'dark') : null
+  const accent = sessionType !== undefined ? sessionAccent(sessionType, theme !== 'light') : null
   const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
   const headerPadding = actualNativeTitlebar
     ? 'pl-2 pr-4'
@@ -89,7 +89,7 @@ export default memo(function AppHeader({
       >
         {!actualNativeTitlebar && (
           <div className="flex items-center gap-2 shrink-0">
-            <img src={theme === 'dark' ? iconTransparent : iconTransparentLight} alt="F1 Logo" className="h-5 w-auto select-none pointer-events-none" draggable="false" />
+            <img src={theme === 'light' ? iconTransparentLight : iconTransparent} alt="F1 Logo" className="h-5 w-auto select-none pointer-events-none" draggable="false" />
             <span className="font-semibold text-sm max-[1400px]:hidden">Track N Race</span>
           </div>
         )}

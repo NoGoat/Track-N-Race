@@ -9,11 +9,11 @@ function normalizeDensity(val: unknown): DensityMode {
   if (val === 'spacious') return 'spacious'
   return 'normal'
 }
-import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type SessionLayout, type StandingsLayout, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
+import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
-  const [theme, rawSetTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
+  const [theme, rawSetTheme] = useAppConfig<Theme>('theme', 'dark')
   const [chartWindow, setChartWindow] = useAppConfig<ChartWindow>('chartWindow', (() => {
     const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
     if (legacyMode === 'CL') return 'CL'
@@ -48,7 +48,7 @@ export function useAppConfiguration() {
     return 'both'
   })())
 
-  const setTheme = useCallback((nextTheme: 'dark' | 'light') => {
+  const setTheme = useCallback((nextTheme: Theme) => {
     if (nextTheme === theme) return
     const transitionDocument = document as Document & {
       startViewTransition?: (update: () => void) => { finished: Promise<unknown> }

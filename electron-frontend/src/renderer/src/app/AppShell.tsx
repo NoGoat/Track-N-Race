@@ -417,7 +417,7 @@ export default function AppShell() {
         <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask}>
         <TabContent
           tab={tab}
-          isDark={theme === 'dark'}
+          isDark={theme !== 'light'}
           seconds={seconds}
           coreLayout={coreLayout}
           powerLayout={powerLayout}

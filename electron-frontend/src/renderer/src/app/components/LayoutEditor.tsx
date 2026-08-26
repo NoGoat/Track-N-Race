@@ -450,7 +450,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                     <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts</div>
                     <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] divide-x divide-[var(--border)] bg-[var(--bg-input)]">
                       {([
-                        { key: 'powerSplit',  label: 'Power Split'  },
+                        { key: 'powerSplit',  label: 'Power'        },
                         { key: 'ersHarvest',  label: 'ERS Harvest'  },
                         { key: 'ersStore',    label: 'ERS Store'    },
                         { key: 'fuelHistory', label: 'Fuel History' },
