@@ -1,7 +1,11 @@
 import { memo, useCallback, useMemo, useState } from 'react'
-import type { AlignedTable, StatusRow, TelemetryRow } from '../types'
+import type { AlignedTable, TelemetryRow } from '../types'
 import GraphTable, { type GraphTableColumn } from './GraphTable'
-import SpeedRpmTimeChart from './charts/SpeedRpmTimeChart'
+import SpeedRpmTimeChart, {
+  type SpeedRpmSeriesColors,
+  type SpeedRpmSeriesId,
+  type SpeedRpmSeriesVisibility,
+} from './charts/SpeedRpmTimeChart'
 import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -9,9 +13,9 @@ import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } fr
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 
+// Dashboard shell: selects store data and owns the panel, table, legend, and
+// tooltip presentation. WebGL lifecycle and data projection stay in the leaf.
 interface Props {
-  data: TelemetryRow[]
-  statusHistory: StatusRow[]
   isDark: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
@@ -22,12 +26,13 @@ const COLOR_RPM = '#C4162A'
 const COLOR_ERS_DARK = '#FADE2A'
 const COLOR_ERS_LIGHT = '#765900'
 const EMPTY_TABLE: AlignedTable = [new Float64Array(0)]
+const LEGEND_ITEMS: ReadonlyArray<{ id: SpeedRpmSeriesId; label: string }> = [
+  { id: 'speed', label: 'Speed (kph)' },
+  { id: 'rpm', label: 'RPM' },
+  { id: 'ers', label: 'ERS (%)' },
+]
 
 function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` }
-
-function raw(value: number, max: number): number {
-  return Number.isNaN(value) ? NaN : Math.round(value * max)
-}
 
 function SpeedRpmChartContent(props: Props) {
   const { isDark, view = 'chart', windowSeconds = 30 } = props
@@ -36,15 +41,19 @@ function SpeedRpmChartContent(props: Props) {
   const colorSpeed = themeSeriesColor(COLOR_SPEED, isDark)
   const colorRpm = themeSeriesColor(COLOR_RPM, isDark)
   const colorErs = isDark ? COLOR_ERS_DARK : COLOR_ERS_LIGHT
-  const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
-  const toggleSeries = useCallback((label: string) => {
-    setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
+  const colors = useMemo<SpeedRpmSeriesColors>(() => ({
+    speed: colorSpeed,
+    rpm: colorRpm,
+    ers: colorErs,
+  }), [colorErs, colorRpm, colorSpeed])
+  const [visibleSeries, setVisibleSeries] = useState<SpeedRpmSeriesVisibility>({
+    speed: true,
+    rpm: true,
+    ers: true,
+  })
+  const toggleSeries = useCallback((id: SpeedRpmSeriesId) => {
+    setVisibleSeries(prev => ({ ...prev, [id]: !prev[id] }))
   }, [])
-  const visibleSeries = useMemo(() => ({
-    speed: !hiddenSeries['Speed'],
-    rpm: !hiddenSeries['RPM'],
-    ers: !hiddenSeries['ERS'],
-  }), [hiddenSeries])
   const tableColumns = useMemo<GraphTableColumn[]>(() => [
     { header: 'Speed', color: colorSpeed, format: v => `${Math.round(v)}` },
     { header: 'RPM', color: colorRpm, format: v => Math.round(v).toLocaleString() },
@@ -63,11 +72,10 @@ function SpeedRpmChartContent(props: Props) {
   }, [statusHistory])
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
-      const values = [raw(source[0], 380), raw(source[1], 16000), raw(source[2], 100)]
       const parts: string[] = []
-      if (!hiddenSeries['Speed']) parts.push(`<div><span style="color:${colorSpeed}">Speed</span>: ${values[0]} kph</div>`)
-      if (!hiddenSeries['RPM']) parts.push(`<div><span style="color:${colorRpm}">RPM</span>: ${values[1].toLocaleString()}</div>`)
-      if (!hiddenSeries['ERS']) parts.push(`<div><span style="color:${colorErs}">ERS</span>: ${values[2]}%</div>`)
+      if (visibleSeries.speed) parts.push(`<div><span style="color:${colorSpeed}">Speed</span>: ${Math.round(source[0])} kph</div>`)
+      if (visibleSeries.rpm) parts.push(`<div><span style="color:${colorRpm}">RPM</span>: ${Math.round(source[1]).toLocaleString()}</div>`)
+      if (visibleSeries.ers) parts.push(`<div><span style="color:${colorErs}">ERS</span>: ${Math.round(source[2])}%</div>`)
       return parts.join('')
     }
     return [
@@ -75,7 +83,7 @@ function SpeedRpmChartContent(props: Props) {
       formatValues(current),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [colorErs, colorRpm, colorSpeed, coordinates, hiddenSeries])
+  }, [colorErs, colorRpm, colorSpeed, coordinates, visibleSeries])
 
   const tableData = useMemo((): AlignedTable => {
     if (view !== 'table' || data.length === 0 || coordinates.allLapsMode) return EMPTY_TABLE
@@ -101,27 +109,16 @@ function SpeedRpmChartContent(props: Props) {
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-          <span
-            onClick={() => toggleSeries('Speed')}
+          {LEGEND_ITEMS.map(item => <button
+            key={item.id}
+            type="button"
+            onClick={() => toggleSeries(item.id)}
+            aria-pressed={visibleSeries[item.id]}
             className="cursor-pointer select-none"
-            style={{ color: colorSpeed, filter: hiddenSeries['Speed'] ? 'grayscale(100%)' : undefined }}
+            style={{ color: colors[item.id], filter: visibleSeries[item.id] ? undefined : 'grayscale(100%)' }}
           >
-            — Speed (kph)
-          </span>
-          <span
-            onClick={() => toggleSeries('RPM')}
-            className="cursor-pointer select-none"
-            style={{ color: colorRpm, filter: hiddenSeries['RPM'] ? 'grayscale(100%)' : undefined }}
-          >
-            — RPM
-          </span>
-          <span
-            onClick={() => toggleSeries('ERS')}
-            className="cursor-pointer select-none"
-            style={{ color: colorErs, filter: hiddenSeries['ERS'] ? 'grayscale(100%)' : undefined }}
-          >
-            — ERS (%)
-          </span>
+            — {item.label}
+          </button>)}
       </div>}
     </div>
     <div className="flex-1 min-h-0 relative">
@@ -129,9 +126,10 @@ function SpeedRpmChartContent(props: Props) {
         ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data — start driving to see telemetry</div>
         : view === 'table'
           ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.telemetry | HISTORY_ROW.status} />
-          : <SpeedRpmTimeChart key={`${isDark ? 'dark' : 'light'}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} telemetry={data} statuses={statusHistory}
+          : <SpeedRpmTimeChart isDark={isDark} telemetry={data} statuses={statusHistory}
               comparisonTelemetry={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined}
               comparisonStatuses={coordinates.comparisonMode ? coordinates.lapData?.statusHistory : undefined}
+              colors={colors}
               visibleSeries={visibleSeries}
               windowSeconds={scopedWindowSeconds} xTickFormat={fmtTime} tooltipFormat={tooltipFormat} />}
     </div>

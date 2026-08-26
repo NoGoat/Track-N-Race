@@ -12,7 +12,13 @@ import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { HISTORY_ROW } from '../../lib/historyDependencies'
-import { themeSeriesColor } from '../../lib/themeColors'
+
+// Specialized WebGL leaf: incrementally joins dense telemetry with sparse ERS
+// status rows and owns buffers, axes, scrolling, comparison data, and drawing.
+// Its parent supplies presentation state; this component never renders panel UI.
+export type SpeedRpmSeriesId = 'speed' | 'rpm' | 'ers'
+export type SpeedRpmSeriesColors = Record<SpeedRpmSeriesId, string>
+export type SpeedRpmSeriesVisibility = Record<SpeedRpmSeriesId, boolean>
 
 interface Props {
   isDark: boolean
@@ -20,17 +26,33 @@ interface Props {
   statuses: readonly StatusRow[]
   comparisonTelemetry?: readonly TelemetryRow[]
   comparisonStatuses?: readonly StatusRow[]
+  colors: SpeedRpmSeriesColors
+  visibleSeries: SpeedRpmSeriesVisibility
   windowSeconds: number
   xTickFormat: (x: number) => string
   tooltipFormat: (x: number, values: number[], comparisonValues?: number[]) => string
-  visibleSeries?: { speed?: boolean; rpm?: boolean; ers?: boolean }
 }
 
-const SPEED = '#37872D'
-const RPM = '#C4162A'
-const ERS_DARK = '#FADE2A'
-const ERS_LIGHT = '#765900'
+const SPEED_MAX = 380
+const RPM_MAX = 16000
+const ERS_MAX = 100
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
+
+function blendComparisonColor(hex: string, isDark: boolean): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!match) return hex
+  const value = Number.parseInt(match[1], 16)
+  const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
+  const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+  return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
+}
+
+function denormalize(source: number[], target: number[]): number[] {
+  target[0] = source[0] * SPEED_MAX
+  target[1] = source[1] * RPM_MAX
+  target[2] = source[2] * ERS_MAX
+  return target
+}
 
 function nearestIndex(data: SeriesData, x: number): number {
   if (data.length === 0) return -1
@@ -115,9 +137,9 @@ function syncTelemetry(
   for (let i = appendStart; i < telemetry.length; i++) {
     const row = telemetry[i]
     while (statusIndex + 1 < statuses.length && statuses[statusIndex + 1].session_time <= row.session_time) statusIndex++
-    values[0] = row.speed_kph / 380
-    values[1] = row.rpm / 16000
-    values[2] = (statuses[statusIndex]?.ers_pct ?? 0) / 100
+    values[0] = row.speed_kph / SPEED_MAX
+    values[1] = row.rpm / RPM_MAX
+    values[2] = (statuses[statusIndex]?.ers_pct ?? 0) / ERS_MAX
     const x = getX(row)
     if (!Number.isFinite(x)) break
     if (buffer.length && x === buffer.lastX) buffer.replaceLast(values)
@@ -130,7 +152,7 @@ function syncTelemetry(
   return rebuild || needsRebuild || appendStart < telemetry.length || trim > 0
 }
 
-export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, windowSeconds, xTickFormat, tooltipFormat, visibleSeries }: Props) {
+export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, colors, visibleSeries, windowSeconds, xTickFormat, tooltipFormat }: Props) {
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize(120)
   const { tooltipRef, show, hide } = useChartTooltip()
@@ -158,6 +180,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   tooltipFormatRef.current = tooltipFormat
   const xFormatRef = useRef(xTickFormat)
   xFormatRef.current = xTickFormat
+  const getDeltaAtDistanceRef = useRef(coordinates.getDeltaAtDistance)
+  getDeltaAtDistanceRef.current = coordinates.getDeltaAtDistance
 
   const historyStartIndex = coordinates.stintLapsMode
     ? lowerBoundTimeInclusive(telemetry, coordinates.historyStartTime)
@@ -170,22 +194,13 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     const host = hostRef.current
     if (!host) return
     const axis = isDark ? '#7c8098' : '#596168'
-    const speed = themeSeriesColor(SPEED, isDark)
-    const rpm = themeSeriesColor(RPM, isDark)
-    const ers = isDark ? ERS_DARK : ERS_LIGHT
     const buffer = new AlignedDataBuffer(3)
     const comparisonBuffer = new AlignedDataBuffer(3)
     bufferRef.current = buffer
     comparisonBufferRef.current = comparisonBuffer
-    const blend = (hex: string) => {
-      const value = Number.parseInt(hex.slice(1), 16)
-      const bg = isDark ? [0x12, 0x14, 0x1f] : [0xeb, 0xea, 0xe6]
-      const rgb = [(value >> 16) & 255, (value >> 8) & 255, value & 255]
-      return `#${rgb.map((channel, i) => Math.round(channel * 0.35 + bg[i] * 0.65).toString(16).padStart(2, '0')).join('')}`
-    }
     const axisCfg: { current: AxisConfig } = { current: {
       axisColor: axis,
-      yAxisColor: speed,
+      yAxisColor: colors.speed,
       gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
       borderColor: isDark ? '#1e2136' : '#afb1ae',
       font: '11px "Cascadia Code", ui-monospace, monospace',
@@ -195,11 +210,11 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
       xLabelOffset: coordinates.allLapsMode ? 4 : 0,
       yTickValues: () => Y_TICKS,
-      yTickFormat: v => String(Math.round(v * 380)),
+      yTickFormat: v => String(Math.round(v * SPEED_MAX)),
       xGap: 2, yGap: 4, showYGrid: true,
       extraYAxes: [
-        { side: 'right', offset: 4, color: rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * 16)}k` },
-        { side: 'right', offset: 54, color: ers, values: Y_TICKS, format: v => `${Math.round(v * 100)}%` },
+        { side: 'right', offset: 4, color: colors.rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * RPM_MAX / 1000)}k` },
+        { side: 'right', offset: 54, color: colors.ers, values: Y_TICKS, format: v => `${Math.round(v * ERS_MAX)}%` },
       ],
     } }
     axisCfgRef.current = axisCfg
@@ -208,12 +223,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
-        { name: 'Previous Speed', color: blend(speed), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.speed !== false, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Previous RPM', color: blend(rpm), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.rpm !== false, data: comparisonBuffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Previous ERS', color: blend(ers), lineWidth: 1, visible: comparisonTelemetry != null && visibleSeries?.ers !== false, data: comparisonBuffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'Speed', color: speed, lineWidth: 1.5, visible: visibleSeries?.speed !== false, data: buffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'RPM', color: rpm, lineWidth: 1.5, visible: visibleSeries?.rpm !== false, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
-        { name: 'ERS', color: ers, lineWidth: 1.5, visible: visibleSeries?.ers !== false, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous Speed', color: blendComparisonColor(colors.speed, isDark), lineWidth: 1, visible: false, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous RPM', color: blendComparisonColor(colors.rpm, isDark), lineWidth: 1, visible: false, data: comparisonBuffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Previous ERS', color: blendComparisonColor(colors.ers, isDark), lineWidth: 1, visible: false, data: comparisonBuffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'Speed', color: colors.speed, lineWidth: 1.5, visible: visibleSeries.speed, data: buffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'RPM', color: colors.rpm, lineWidth: 1.5, visible: visibleSeries.rpm, data: buffer.series[1], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
+        { name: 'ERS', color: colors.ers, lineWidth: 1.5, visible: visibleSeries.ers, data: buffer.series[2], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },
       ],
       plugins: { lineChart: corePlugins.lineChart, crosshair: corePlugins.crosshair, nearestPoint: corePlugins.nearestPoint, axis: createAxisPlugin(axisCfg) } as any,
     } as any)
@@ -223,6 +238,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
 
     const tooltipValues = [NaN, NaN, NaN]
     const comparisonTooltipValues = [NaN, NaN, NaN]
+    const displayTooltipValues = [NaN, NaN, NaN]
+    const displayComparisonTooltipValues = [NaN, NaN, NaN]
     const stopTooltipSync = chart.nearestPoint.updated.on(() => {
       const pointer = chart.nearestPoint.lastPointerPos
       if (!pointer) { hide(); return }
@@ -240,7 +257,11 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       if (comparisonValues) {
         for (let i = 0; i < 3; i++) comparisonValues[i] = chart.options.series[i].data.yAt(comparisonIndex)
       }
-      const html = tooltipFormatRef.current(pointX, tooltipValues, comparisonValues) + formatChartDeltaTooltip(coordinates.getDeltaAtDistance(pointX))
+      const html = tooltipFormatRef.current(
+        pointX,
+        denormalize(tooltipValues, displayTooltipValues),
+        comparisonValues ? denormalize(comparisonValues, displayComparisonTooltipValues) : undefined,
+      ) + formatChartDeltaTooltip(getDeltaAtDistanceRef.current(pointX))
       show(html, px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
     })
     attach(chart)
@@ -253,36 +274,49 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       comparisonBufferRef.current = null
       axisCfgRef.current = null
     }
-    // Theme changes remount this component; live values flow through refs.
+    // Chart lifetime is stable; presentation and live values flow through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const hasComparison = coordinates.comparisonMode && comparisonTelemetry != null
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart) return
-    const speedVisible = visibleSeries?.speed !== false
-    const rpmVisible = visibleSeries?.rpm !== false
-    const ersVisible = visibleSeries?.ers !== false
+    const cfg = axisCfgRef.current
+    const host = hostRef.current
+    if (!chart || !cfg || !host) return
 
-    let changed = false
-    const setVis = (index: number, vis: boolean) => {
-      if (chart.options.series[index].visible !== vis) {
-        chart.options.series[index].visible = vis
-        changed = true
-      }
+    const axis = isDark ? '#7c8098' : '#596168'
+    cfg.current = {
+      ...cfg.current,
+      axisColor: axis,
+      yAxisColor: colors.speed,
+      gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
+      borderColor: isDark ? '#1e2136' : '#afb1ae',
+      extraYAxes: [
+        { side: 'right', offset: 4, color: colors.rpm, values: Y_TICKS, format: v => v === 0 ? '0' : `${Math.round(v * RPM_MAX / 1000)}k` },
+        { side: 'right', offset: 54, color: colors.ers, values: Y_TICKS, format: v => `${Math.round(v * ERS_MAX)}%` },
+      ],
     }
-    setVis(0, comparisonTelemetry != null && speedVisible)
-    setVis(1, comparisonTelemetry != null && rpmVisible)
-    setVis(2, comparisonTelemetry != null && ersVisible)
-    setVis(3, speedVisible)
-    setVis(4, rpmVisible)
-    setVis(5, ersVisible)
+    host.style.color = axis
+    host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
 
-    if (changed) {
-      dirtyRef.current = true
-      chart.model.requestRedraw()
+    const visibility = [visibleSeries.speed, visibleSeries.rpm, visibleSeries.ers]
+    const currentColors = [colors.speed, colors.rpm, colors.ers]
+    const lineType = coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line
+    for (let i = 0; i < 3; i++) {
+      const comparison = chart.options.series[i]
+      comparison.visible = hasComparison && visibility[i]
+      comparison.color = blendComparisonColor(currentColors[i], isDark)
+      comparison.lineType = lineType
+
+      const current = chart.options.series[i + 3]
+      current.visible = visibility[i]
+      current.color = currentColors[i]
+      current.lineType = lineType
     }
-  }, [comparisonTelemetry, visibleSeries])
+    dirtyRef.current = true
+    chart.model.requestRedraw()
+  }, [colors, coordinates.allLapsMode, hasComparison, isDark, visibleSeries])
 
   useEffect(() => {
     const cfg = axisCfgRef.current
@@ -301,15 +335,14 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     const buffer = comparisonBufferRef.current
     const chart = chartRef.current
     if (!buffer || !chart) return
-    const visible = coordinates.comparisonMode && comparisonTelemetry != null
-    for (let i = 0; i < 3; i++) chart.options.series[i].visible = visible
-    if (!visible) {
-      if (buffer.length) buffer.clear()
+    if (!hasComparison) {
+      const changed = buffer.length > 0
+      if (changed) buffer.clear()
       comparisonLapRef.current = null
       comparisonSyncRef.current.lastSessionTime = -Infinity
       comparisonSyncRef.current.statusFirstSessionTime = Infinity
       comparisonSyncRef.current.statusLength = 0
-      chart.model.requestRedraw()
+      if (changed) chart.model.requestRedraw()
       return
     }
     const comparisonLap = coordinates.lapData?.lapNum ?? null
@@ -324,12 +357,12 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       })
     }
     comparisonLapRef.current = comparisonLap
-    syncTelemetry(
+    const changed = syncTelemetry(
       buffer, comparisonTelemetry, comparisonStatuses ?? [], scratchRef.current,
       coordinates.getComparisonX, comparisonSyncRef.current, rebuild,
     )
-    chart.model.requestRedraw()
-  }, [comparisonStatuses, comparisonTelemetry, coordinates])
+    if (changed) chart.model.requestRedraw()
+  }, [comparisonStatuses, comparisonTelemetry, coordinates.getComparisonX, coordinates.lapData?.lapNum, hasComparison])
 
   const syncRowsRef = useRef<() => void>(() => {})
   const syncTaskPendingRef = useRef(false)

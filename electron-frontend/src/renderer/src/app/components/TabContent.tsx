@@ -167,7 +167,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             )}
             {showSpeedChartPanel && (
               <div className={`${speedChartFlex} min-h-0`}>
-                <SpeedRpmChart data={telemetry} statusHistory={statusHistory} isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} />
+                <SpeedRpmChart isDark={isDark} view={graphView.overviewTelemetry} windowSeconds={seconds} />
               </div>
             )}
             {showThermalPanel && (
