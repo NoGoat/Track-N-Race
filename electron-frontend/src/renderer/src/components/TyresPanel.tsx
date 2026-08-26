@@ -277,7 +277,6 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
       startViewTransition?: (update: () => void) => TyresViewTransition
     }
     const motionReduced = document.documentElement.dataset.reduceAnimations === 'true'
-      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const root = document.documentElement
 
     if (motionReduced || !transitionDocument.startViewTransition) {

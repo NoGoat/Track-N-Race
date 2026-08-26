@@ -4,7 +4,6 @@ export const MODAL_EXIT_MS = 180
 
 function animationsAreReduced(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
-    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 export function useModalPresence(open: boolean) {

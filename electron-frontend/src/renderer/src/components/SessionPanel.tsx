@@ -358,7 +358,6 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     }
     const motionReduced = reduceAnimations
       || document.documentElement.dataset.reduceAnimations === 'true'
-      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
     if (motionReduced || !transitionDocument.startViewTransition) {
       setMapFullscreen(fullscreen)

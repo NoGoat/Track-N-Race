@@ -651,7 +651,7 @@ export default function AnalyzeScreen({
     previousCollapsedRef.current = config.collapsed
 
     const startWidth = sidebar.getBoundingClientRect().width
-    if (reduceAnimations || window.matchMedia('(prefers-reduced-motion: reduce)').matches || startWidth === targetWidth) {
+    if (reduceAnimations || startWidth === targetWidth) {
       sidebar.style.width = `${targetWidth}px`
       return
     }

@@ -65,7 +65,7 @@ export default memo(function AppHeader({
         className={`relative flex items-center gap-3 ${actualNativeTitlebar ? 'pl-2 pr-4' : isFullscreen ? 'px-4' : 'pl-20 pr-4'} h-10 select-none ${
           isFullscreen
             ? 'opacity-100 translate-y-0'
-            : 'sticky top-0 z-10 transition-colors duration-500'
+            : 'sticky top-0 z-10'
         }`}
         style={activeBanner
           ? { background: `${activeBanner.color}18`, borderColor: `${activeBanner.color}50`, WebkitAppRegion: actualNativeTitlebar ? 'no-drag' : 'drag' }

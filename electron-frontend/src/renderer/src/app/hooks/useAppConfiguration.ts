@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useAppConfig } from '../../hooks/useAppConfig'
 import { configureChartFrameRates, type ChartFrameRate } from '../../lib/timechart/frameRate'
 import { DEFAULT_CHART_Y_AXIS, DEFAULT_COMPACT, DEFAULT_GRAPH_VIEW, type ChartYAxisState, type CompactState, type DensityMode, type GraphViewState, type TyreYAxisGroupState } from '../../lib/graphSections'
@@ -12,7 +13,7 @@ import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
-  const [theme, setTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
+  const [theme, rawSetTheme] = useAppConfig<'dark' | 'light'>('theme', 'dark')
   const [chartWindow, setChartWindow] = useAppConfig<ChartWindow>('chartWindow', (() => {
     const legacyMode = window.electronStore.get('chartWindowMode', 'time') as 'time' | 'CL'
     if (legacyMode === 'CL') return 'CL'
@@ -46,6 +47,40 @@ export function useAppConfiguration() {
     if (legacy === false) return 'dots'
     return 'both'
   })())
+
+  const setTheme = useCallback((nextTheme: 'dark' | 'light') => {
+    if (nextTheme === theme) return
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => { finished: Promise<unknown> }
+    }
+    const motionReduced = reduceAnimations
+      || document.documentElement.dataset.reduceAnimations === 'true'
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      document.documentElement.setAttribute('data-theme', nextTheme)
+      rawSetTheme(nextTheme)
+      return
+    }
+
+    try {
+      const root = document.documentElement
+      root.dataset.themeTransition = 'true'
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => {
+          root.setAttribute('data-theme', nextTheme)
+          rawSetTheme(nextTheme)
+        })
+      })
+      const clearThemeTransition = () => {
+        delete root.dataset.themeTransition
+      }
+      void transition.finished.then(clearThemeTransition, clearThemeTransition)
+    } catch {
+      delete document.documentElement.dataset.themeTransition
+      document.documentElement.setAttribute('data-theme', nextTheme)
+      rawSetTheme(nextTheme)
+    }
+  }, [reduceAnimations, theme, rawSetTheme])
 
   useEffect(() => { document.documentElement.setAttribute('data-theme', theme) }, [theme])
   useEffect(() => { configureChartFrameRates(fpsInFocus, fpsOutOfFocus) }, [fpsInFocus, fpsOutOfFocus])

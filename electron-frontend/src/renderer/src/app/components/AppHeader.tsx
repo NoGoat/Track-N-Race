@@ -78,7 +78,7 @@ export default memo(function AppHeader({
         className={`relative flex items-center gap-3 ${headerPadding} h-10 select-none ${
           isFullscreen
             ? `transition-all duration-150 ${headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full'}`
-            : 'sticky top-0 z-10 transition-colors duration-500'
+            : 'sticky top-0 z-10'
         }`}
         style={{
           background: headerBackground,

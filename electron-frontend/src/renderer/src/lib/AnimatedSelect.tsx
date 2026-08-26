@@ -6,7 +6,6 @@ type MenuPhase = 'closed' | 'open' | 'closing'
 
 function shouldReduceAnimations(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
-    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 /** Keeps react-select's menu mounted just long enough to play its exit animation. */

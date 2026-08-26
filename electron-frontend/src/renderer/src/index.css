@@ -113,6 +113,7 @@ body {
   margin: 0;
   font-family: 'Cascadia Code', ui-monospace, 'Fira Code', Consolas, monospace;
   background-color: var(--bg-base);
+  color: var(--text-primary);
 }
 
 @keyframes posGainFlash {
@@ -395,20 +396,6 @@ body {
     opacity 160ms ease-out;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .titlebar-auto-width,
-  .titlebar-filename,
-  .titlebar-delta-slot,
-  .titlebar-lap-slot,
-  .chart-lap-slot {
-    transition: none;
-  }
-
-  [class*='-menu'] {
-    animation: none !important;
-  }
-}
-
 html[data-reduce-animations='true'] *,
 html[data-reduce-animations='true'] *::before,
 html[data-reduce-animations='true'] *::after {
@@ -513,20 +500,42 @@ html[data-tyres-view-transition-phase='preparing']::view-transition-old(tyres-vi
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-::view-transition-old(session-map),
-::view-transition-new(session-map) {
-  animation-duration: 360ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+html[data-theme-transition='true'] .session-map-transition,
+html[data-theme-transition='true'] .app-page-transition,
+html[data-theme-transition='true'] .tyres-view-transition {
+  view-transition-name: none !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  ::view-transition-old(app-page),
-  ::view-transition-new(app-page),
-  ::view-transition-old(tyres-view),
-  ::view-transition-new(tyres-view),
-  ::view-transition-group(session-map),
-  ::view-transition-old(session-map),
-  ::view-transition-new(session-map) {
-    animation-duration: 0s;
-  }
+html[data-theme-transition='true']::view-transition {
+  pointer-events: none;
+}
+
+html[data-theme-transition='true']::view-transition-old(root) {
+  animation: themeFadeOut 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+html[data-theme-transition='true']::view-transition-new(root) {
+  animation: themeFadeIn 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes themeFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes themeFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-reduce-animations='true']::view-transition-old(root),
+html[data-reduce-animations='true']::view-transition-new(root),
+html[data-reduce-animations='true']::view-transition-old(app-page),
+html[data-reduce-animations='true']::view-transition-new(app-page),
+html[data-reduce-animations='true']::view-transition-old(tyres-view),
+html[data-reduce-animations='true']::view-transition-new(tyres-view),
+html[data-reduce-animations='true']::view-transition-group(session-map),
+html[data-reduce-animations='true']::view-transition-old(session-map),
+html[data-reduce-animations='true']::view-transition-new(session-map) {
+  animation-duration: 0s !important;
 }

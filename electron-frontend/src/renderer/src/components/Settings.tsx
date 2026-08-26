@@ -64,21 +64,61 @@ const SegmentedControl = memo(function SegmentedControl<T extends string | numbe
   value: T
   onChange: (v: T) => void
 }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef(new globalThis.Map<string, HTMLButtonElement>())
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null)
+
+  useLayoutEffect(() => {
+    const el = itemRefs.current.get(String(value))
+    if (!el) return
+
+    const updateIndicator = () => {
+      setIndicator(current => {
+        const next = { left: el.offsetLeft, width: el.offsetWidth }
+        return current !== null && current.left === next.left && current.width === next.width ? current : next
+      })
+    }
+
+    updateIndicator()
+    const container = containerRef.current
+    const resizeObserver = new ResizeObserver(updateIndicator)
+    if (container) resizeObserver.observe(container)
+    resizeObserver.observe(el)
+    return () => resizeObserver.disconnect()
+  }, [value, options])
+
   return (
-    <div className="flex gap-1">
-      {options.map((opt) => (
-        <button
-          key={String(opt.value)}
-          onClick={() => onChange(opt.value)}
-          className={`px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors border-b-2 ${
-            opt.value === value
-              ? 'border-[var(--border-focus)] text-[var(--text-primary)]'
-              : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
+    <div ref={containerRef} className="relative flex gap-1 isolate">
+      {indicator && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 left-0 h-[2px] rounded-full bg-[var(--border-focus)] transition-[transform,width] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+          style={{
+            width: indicator.width,
+            transform: `translateX(${indicator.left}px)`,
+          }}
+        />
+      )}
+      {options.map((opt) => {
+        const active = opt.value === value
+        return (
+          <button
+            key={String(opt.value)}
+            ref={(node) => {
+              if (node) itemRefs.current.set(String(opt.value), node)
+              else itemRefs.current.delete(String(opt.value))
+            }}
+            onClick={() => onChange(opt.value)}
+            className={`relative z-10 px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors border-b-2 border-transparent ${
+              active
+                ? 'text-[var(--text-primary)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
     </div>
   )
 }) as <T extends string | number | boolean>(props: { options: Option<T>[]; value: T; onChange: (v: T) => void }) => React.ReactElement
@@ -431,8 +471,7 @@ const Settings = memo(function Settings({
       onGraphViewChange(Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, v])) as GraphViewState)
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Show each telemetry graph as its line chart or a raw-values table.</p>
+        <div className="flex items-center justify-end px-4 py-3">
           <BulkButton label={anyChart ? 'Set All Table' : 'Set All Chart'} onClick={() => setAll(anyChart ? 'table' : 'chart')} />
         </div>
         {GRAPH_GROUPS.map(group => (
@@ -466,13 +505,10 @@ const Settings = memo(function Settings({
     }
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between px-4 py-3 flex-wrap gap-2">
-          <p className="text-xs text-[var(--text-muted)]">Configure density across components: Compact, Normal, or Spacious.</p>
-          <div className="flex gap-2">
-            <BulkButton label="Set All Compact" onClick={() => setAllDensity('compact')} />
-            <BulkButton label="Set All Normal" onClick={() => setAllDensity('normal')} />
-            <BulkButton label="Set All Spacious" onClick={() => setAllDensity('spacious')} />
-          </div>
+        <div className="flex items-center justify-end px-4 py-3 gap-2">
+          <BulkButton label="Set All Compact" onClick={() => setAllDensity('compact')} />
+          <BulkButton label="Set All Normal" onClick={() => setAllDensity('normal')} />
+          <BulkButton label="Set All Spacious" onClick={() => setAllDensity('spacious')} />
         </div>
         {COMPACT_GROUPS.map(group => (
           <div key={group.group}>
@@ -536,8 +572,7 @@ const Settings = memo(function Settings({
     }
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each graph to its visible data.</p>
+        <div className="flex items-center justify-end px-4 py-3">
           <BulkButton
             label={anyDynamic ? 'Set All Fixed' : 'Set All Dynamic'}
             onClick={() => setAll(anyDynamic ? 'fixed' : 'dynamic')}
@@ -1005,7 +1040,7 @@ const Settings = memo(function Settings({
             {sidebarIndicator && (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute left-4 top-0 z-10 w-0.5 rounded-r-full bg-[var(--border-focus)] transition-[transform,height] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                className="pointer-events-none absolute left-4 top-0 z-10 w-0.5 rounded-r-full bg-[var(--border-focus)] transition-[transform,height] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
                 style={{ height: sidebarIndicator.height, transform: `translateY(${sidebarIndicator.top}px)` }}
               />
             )}
