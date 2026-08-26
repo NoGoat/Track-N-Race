@@ -39,6 +39,17 @@ export interface AxisConfig {
     format: (v: number) => string
   }>
   yAxisColor?: string
+  /** Independent vertical panels rendered by series sharing one WebGL canvas. */
+  panels?: Array<{
+    top: number
+    bottom: number
+    showYAxis: boolean
+    yAxisColor: string
+    yTickValues: number[]
+    yTickFormat: (v: number) => string
+    yTickColor?: (v: number) => string
+    gapAfter?: number
+  }>
 }
 
 function styleLayer(canvas: HTMLCanvasElement): void {
@@ -121,6 +132,61 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         const xTicks = c.xTickValues ? c.xTickValues(xMin, xMax) : xScale.ticks(tickCapacity)
         const labelEvery = c.xTickValues ? Math.max(1, Math.ceil(xTicks.length / tickCapacity)) : 1
         const yTicks = c.yTickValues(yMin, yMax)
+
+        if (c.panels) {
+          strokePath(grid, c.gridColor, c.gridDash, () => {
+            for (const panel of c.panels!) {
+              const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+              const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+              for (const tick of xTicks) {
+                const x = xScale(tick)
+                grid.moveTo(x, panelTop)
+                grid.lineTo(x, panelBottom)
+              }
+              for (const tick of panel.yTickValues) {
+                const y = panelBottom - tick * (panelBottom - panelTop)
+                grid.moveTo(plotLeft, y)
+                grid.lineTo(plotRight, y)
+              }
+            }
+          })
+
+          labels.font = c.font
+          labels.textBaseline = 'top'
+          labels.fillStyle = c.axisColor
+          labels.textAlign = c.xTickAnchor === 'middle' || c.xTickAnchor == null ? 'center' : c.xTickAnchor
+          const tickSize = c.xTickMark?.size ?? 0
+          const xLabelY = plotBottom + c.xGap + tickSize
+          for (let index = 0; index < xTicks.length; index++) {
+            if (index !== 0 && index !== xTicks.length - 1 && index % labelEvery !== 0) continue
+            const tick = xTicks[index]
+            labels.fillText(c.xTickFormat(tick), xScale(tick) + (c.xLabelOffset ?? 0), xLabelY)
+          }
+
+          labels.textBaseline = 'middle'
+          labels.textAlign = 'right'
+          for (const panel of c.panels) {
+            if (!panel.showYAxis) continue
+            const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+            const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+            for (const tick of panel.yTickValues) {
+              labels.fillStyle = panel.yTickColor?.(tick) ?? panel.yAxisColor
+              labels.fillText(panel.yTickFormat(tick), plotLeft - c.yGap, panelBottom - tick * (panelBottom - panelTop))
+            }
+          }
+
+          strokePath(labels, c.borderColor, undefined, () => {
+            for (const panel of c.panels!) {
+              const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+              const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+              labels.moveTo(plotLeft, panelTop)
+              labels.lineTo(plotLeft, panelBottom)
+              labels.moveTo(plotLeft, panelBottom)
+              labels.lineTo(plotRight, panelBottom)
+            }
+          })
+          return
+        }
 
         strokePath(grid, c.gridColor, c.gridDash, () => {
           for (const tick of xTicks) {

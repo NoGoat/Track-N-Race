@@ -188,7 +188,7 @@ export function visibleChartSectionsForUi(
 }
 
 export function dataMaskForAnalyze(
-  view: 'graph' | 'map',
+  view: 'graph' | 'charts' | 'map',
   series: readonly AnalyzeSeriesConfig[],
 ): number {
   if (view === 'map') return DATA_CONSUMERS.analyzeMap.history

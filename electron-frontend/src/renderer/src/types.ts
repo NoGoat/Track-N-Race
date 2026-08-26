@@ -61,6 +61,9 @@ export interface LapProgressPoint {
   session_time: number
   current_lap_ms: number
   lap_distance_m: number
+  sector?: number
+  s1_ms?: number
+  s2_ms?: number
 }
 
 export interface StatusRow {

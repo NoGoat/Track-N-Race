@@ -4,6 +4,28 @@ import { CanvasLayer } from './canvasLayer';
 import { ContentBoxDetector } from "./contentBoxDetector";
 import { DataPoint, RenderModel } from './renderModel';
 
+/** Convert a series point using its optional shared-canvas panel viewport. */
+export function seriesPointToPixels(
+    model: RenderModel,
+    series: TimeChartSeriesOptions,
+    x: number,
+    y: number,
+) {
+    const pxX = model.xScale(x)!;
+    const viewport = series.viewport;
+    if (!viewport) return { x: pxX, y: model.yScale(y)! };
+
+    const [plotBottom, plotTop] = model.yScale.range().map(Number);
+    const [yMin, yMax] = model.yScale.domain().map(Number);
+    const panelTop = plotTop + viewport.top * (plotBottom - plotTop);
+    const panelBottom = plotTop + viewport.bottom * (plotBottom - plotTop) - (viewport.gapAfter ?? 0);
+    const normalized = (y - yMin) / (yMax - yMin);
+    return {
+        x: pxX,
+        y: panelBottom - normalized * (panelBottom - panelTop),
+    };
+}
+
 export class NearestPointModel {
     dataPoints = new Map<TimeChartSeriesOptions, DataPoint>();
     private pointCache = new Map<TimeChartSeriesOptions, DataPoint>();
@@ -59,8 +81,9 @@ export class NearestPointModel {
                 }
                 const x = s.data.xAt(nearestIndex);
                 const y = s.data.yAt(nearestIndex);
-                const pxX = this.model.xScale(x)!;
-                const pxY = this.model.yScale(y)!;
+                const pixel = seriesPointToPixels(this.model, s, x, y);
+                const pxX = pixel.x;
+                const pxY = pixel.y;
 
                 if (pxX <= width && pxX >= 0 && pxY <= height && pxY >= 0) {
                     let nearest = this.pointCache.get(s);

@@ -6,6 +6,13 @@ export interface LapProgressMap {
   maxDistance: number
 }
 
+export interface SectorSplit {
+  /** Completed sector number; the next sector starts at this position. */
+  afterSector: 1 | 2
+  distance: number
+  elapsedSeconds: number
+}
+
 export function buildLapProgressMapFromPoints(
   lapProgress: readonly LapProgressPoint[],
   startSessionTime: number,
@@ -31,6 +38,7 @@ export function buildLapProgressMapFromPoints(
     session_time: startSessionTime,
     current_lap_ms: 0,
     lap_distance_m: originDistance,
+    sector: 0,
   }]
   let lastTime = startSessionTime
   let lastDistance = originDistance
@@ -81,4 +89,53 @@ export function interpolateLapElapsed(progress: LapProgressMap, distance: number
   const span = after.lap_distance_m - before.lap_distance_m
   const ratio = span > 0 ? (distance - before.lap_distance_m) / span : 1
   return (before.current_lap_ms + (after.current_lap_ms - before.current_lap_ms) * ratio) / 1000
+}
+
+function interpolateLapDistanceAtElapsed(progress: LapProgressMap, elapsedMs: number): number {
+  const points = progress.points
+  if (elapsedMs < points[0].current_lap_ms || elapsedMs > points[points.length - 1].current_lap_ms) return NaN
+  let lo = 1, hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (points[mid].current_lap_ms < elapsedMs) lo = mid + 1
+    else hi = mid
+  }
+  if (lo >= points.length) return points[points.length - 1].lap_distance_m
+  const before = points[lo - 1], after = points[lo]
+  const span = after.current_lap_ms - before.current_lap_ms
+  const ratio = span > 0 ? (elapsedMs - before.current_lap_ms) / span : 1
+  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
+}
+
+export function findSectorSplits(lap: AnalyzeLapData | null): SectorSplit[] {
+  const progress = buildLapProgressMap(lap)
+  if (!lap || !progress) return []
+  const splits: SectorSplit[] = []
+  let enteredFirstSector = false
+  for (const point of lap.lapProgress) {
+    const sector = point.sector
+    if (!Number.isFinite(sector)) continue
+    // Race Lap 1 starts behind the timing line. Until the player crosses it,
+    // the game reports the grid samples as sector 2 with a negative distance.
+    // Do not mistake that preceding-lap state for this lap's S1/S2 boundaries.
+    if (!enteredFirstSector) {
+      if (sector === 0 && point.lap_distance_m >= 0) enteredFirstSector = true
+      continue
+    }
+    const afterSector = splits.length === 0 && sector! >= 1 ? 1
+      : splits.length === 1 && sector! >= 2 ? 2
+      : null
+    if (afterSector === null) continue
+    const exactMs = afterSector === 1
+      ? point.s1_ms
+      : Number.isFinite(point.s1_ms) && Number.isFinite(point.s2_ms) && point.s1_ms! > 0 && point.s2_ms! > 0
+        ? point.s1_ms! + point.s2_ms!
+        : undefined
+    const elapsedMs = Number.isFinite(exactMs) && exactMs! > 0 ? exactMs! : point.current_lap_ms
+    const distance = interpolateLapDistanceAtElapsed(progress, elapsedMs)
+    if (!Number.isFinite(distance)) continue
+    splits.push({ afterSector, distance, elapsedSeconds: elapsedMs / 1000 })
+    if (splits.length === 2) break
+  }
+  return splits
 }

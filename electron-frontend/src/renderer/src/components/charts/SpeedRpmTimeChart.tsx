@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useSize } from '../../hooks/useSize'
-import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
+import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
@@ -155,8 +155,8 @@ function syncTelemetry(
 export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, comparisonTelemetry, comparisonStatuses, colors, visibleSeries, windowSeconds, xTickFormat, tooltipFormat }: Props) {
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize(120)
-  const { tooltipRef, show, hide } = useChartTooltip()
   const hostRef = useRef<HTMLDivElement>(null)
+  const { tooltipRef, show, hide } = useChartTooltip(hostRef)
   const chartRef = useRef<TChart | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
@@ -262,7 +262,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         denormalize(tooltipValues, displayTooltipValues),
         comparisonValues ? denormalize(comparisonValues, displayComparisonTooltipValues) : undefined,
       ) + formatChartDeltaTooltip(getDeltaAtDistanceRef.current(pointX))
-      show(html, px, pointer.y - chart.options.paddingTop + 4, chart.clientWidth, chart.clientHeight)
+      show(html, px, pointer.y + 4)
     })
     attach(chart)
     return () => {
@@ -435,5 +435,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     if (chartRef.current && width > 0 && height > 0) chartRef.current.onResize()
   }, [width, height])
 
-  return <div className="absolute inset-0" ref={sizeRef}><div ref={hostRef} className="absolute inset-0" /><div ref={tooltipRef} style={TOOLTIP_STYLE} /></div>
+  return <>
+    <div className="absolute inset-0" ref={sizeRef}><div ref={hostRef} className="absolute inset-0" /></div>
+    <ChartTooltipPortal tooltipRef={tooltipRef} />
+  </>
 }

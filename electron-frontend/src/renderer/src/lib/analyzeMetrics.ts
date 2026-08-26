@@ -28,9 +28,13 @@ export interface AnalyzeSeriesConfig {
 }
 
 export interface AnalyzeConfig {
-  version: 3
+  version: 7
   collapsed: boolean
   view: 'graph' | 'map'
+  individualGraphs: boolean
+  syncedTooltip: boolean
+  sectorBoundaries: boolean
+  sectorDelta: boolean
   mapCurrentColor: string
   mapComparisonColor: string
   series: AnalyzeSeriesConfig[]
@@ -85,9 +89,13 @@ export const ANALYZE_METRICS = [...base, ...tyreMetrics]
 export const ANALYZE_METRIC_BY_ID = new Map(ANALYZE_METRICS.map(def => [def.id, def]))
 
 export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
-  version: 3,
+  version: 7,
   collapsed: false,
   view: 'graph',
+  individualGraphs: false,
+  syncedTooltip: false,
+  sectorBoundaries: false,
+  sectorDelta: false,
   mapCurrentColor: DEFAULT_MAP_CURRENT_COLOR,
   mapComparisonColor: DEFAULT_MAP_COMPARISON_COLOR,
   series: [
@@ -101,7 +109,12 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
   ],
 }
 
-export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | undefined): AnalyzeConfig {
+type StoredAnalyzeConfig = Partial<Omit<AnalyzeConfig, 'version' | 'view'>> & {
+  version?: number
+  view?: 'graph' | 'charts' | 'map'
+}
+
+export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefined): AnalyzeConfig {
   const seen = new Set<string>()
   const defaultShowYAxis = (value as (Partial<AnalyzeConfig> & { showYAxis?: boolean }) | null | undefined)?.showYAxis !== false
   const inputSeries = Array.isArray(value?.series) ? value.series : null
@@ -127,10 +140,17 @@ export function sanitizeAnalyzeConfig(value: Partial<AnalyzeConfig> | null | und
     metricId: 'delta', color: DEFAULT_DELTA_POSITIVE_COLOR,
     negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR, visible: true, showYAxis: true,
   })
+  const sectorBoundaries = value?.sectorBoundaries === true
   return {
-    version: 3,
+    version: 7,
     collapsed: value?.collapsed === true,
     view: value?.view === 'map' ? 'map' : 'graph',
+    individualGraphs: typeof value?.individualGraphs === 'boolean'
+      ? value.individualGraphs
+      : value?.view === 'charts',
+    syncedTooltip: value?.syncedTooltip === true,
+    sectorBoundaries,
+    sectorDelta: sectorBoundaries && value?.sectorDelta === true,
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),

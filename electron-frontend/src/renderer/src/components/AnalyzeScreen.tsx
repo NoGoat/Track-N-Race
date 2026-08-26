@@ -20,6 +20,7 @@ import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
+import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
 
 interface Props {
@@ -49,6 +50,10 @@ interface LapBlock {
   statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
 }
 interface SelectOption { value: string; label: string }
+const ANALYSIS_VIEW_OPTIONS: SelectOption[] = [
+  { value: 'graph', label: 'Graphs' },
+  { value: 'map', label: 'Map' },
+]
 interface LapOption {
   value: number
   label: string
@@ -163,37 +168,6 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
     playerPositions: payload.playerPositions ?? [],
     rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
   }
-}
-
-function AnalysisViewSelector({
-  value, mapDisabled, onChange,
-}: {
-  value: 'graph' | 'map'
-  mapDisabled: boolean
-  onChange: (value: 'graph' | 'map') => void
-}) {
-  return <div
-    className="h-6 inline-flex overflow-hidden rounded-[4px] border border-[var(--border)] divide-x divide-[var(--border)]"
-    role="group"
-    aria-label="Analysis view"
-  >
-    {(['graph', 'map'] as const).map(option => {
-      const selected = value === option
-      const disabled = option === 'map' && mapDisabled
-      return <button
-        key={option}
-        type="button"
-        aria-pressed={selected}
-        disabled={disabled}
-        onClick={() => onChange(option)}
-        className={`w-11 h-full text-[8px] font-semibold uppercase tracking-[0.1em] transition-colors ${
-          selected
-            ? 'bg-[var(--border-focus)]/15 text-[var(--text-primary)]'
-            : 'bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
-        } disabled:opacity-30 disabled:pointer-events-none`}
-      >{option}</button>
-    })}
-  </div>
 }
 
 function AnalyzeColorPicker({
@@ -331,8 +305,9 @@ function DeltaColorPicker({
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
-  currentLapNum, comparison, fixedMode, primaryOverride, distanceMode, controlsRef,
-  onInspectMap,
+  currentLapNum, comparison, fixedMode, primaryOverride, distanceMode,
+  analysisView, chartsMounted, syncedTooltip, sectorBoundaries, sectorDelta,
+  graphControlsRef, stackedControlsRef, onInspectMap,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -343,7 +318,13 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   fixedMode: boolean
   primaryOverride: AnalyzeLapData | null
   distanceMode: boolean
-  controlsRef: MutableRefObject<AnalyzeChartControls | null>
+  analysisView: 'graph' | 'charts' | 'map'
+  chartsMounted: boolean
+  syncedTooltip: boolean
+  sectorBoundaries: boolean
+  sectorDelta: boolean
+  graphControlsRef: MutableRefObject<AnalyzeChartControls | null>
+  stackedControlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
 }) {
   const playbackCurrentLap = useTelemetryStore(s =>
@@ -404,18 +385,24 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
       ? `cached:${playbackCurrentLap.startSessionTime}:${playbackCurrentLap.rowTypeMask ?? 0}`
       : 'stream'}`
 
+  const chartProps = {
+    isDark, current, currentRevision, comparison, selected,
+    primaryLabel: fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined,
+    comparisonLabel: fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined,
+    distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
+    zoomEnabled: fixedMode && primaryOverride !== null,
+    realtimeCurrent: playbackCurrentLap !== null,
+    syncedTooltip, sectorBoundaries, sectorDelta,
+    onInspectMap,
+  }
+
   return <div className="absolute inset-0">
-    <AnalyzeTimeChart
-      isDark={isDark} current={current} currentRevision={currentRevision} comparison={comparison}
-      selected={selected}
-      primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
-      comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
-      distanceMode={distanceMode} trackLengthM={trackLengthM}
-      deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
-      zoomEnabled={fixedMode && primaryOverride !== null} realtimeCurrent={playbackCurrentLap !== null}
-      controlsRef={controlsRef}
-      onInspectMap={onInspectMap}
-    />
+    <div className={`absolute inset-0 ${analysisView === 'graph' ? '' : 'hidden'}`}>
+      <AnalyzeTimeChart {...chartProps} controlsRef={graphControlsRef} tooltipEnabled={analysisView === 'graph'} />
+    </div>
+    {chartsMounted && <div className={`absolute inset-0 ${analysisView === 'charts' ? '' : 'hidden'}`}>
+      <AnalyzeStackedTimeCharts {...chartProps} controlsRef={stackedControlsRef} tooltipEnabled={analysisView === 'charts'} />
+    </div>}
   </div>
 })
 
@@ -434,7 +421,8 @@ export default function AnalyzeScreen({
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
-  const analysisView = playbackFilename ? config.view : 'graph'
+  const primaryView = !playbackFilename && config.view === 'map' ? 'graph' : config.view
+  const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
   const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
   useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
@@ -463,7 +451,9 @@ export default function AnalyzeScreen({
   const mapFocusIdRef = useRef(0)
   const requestedRef = useRef(new Map<number, number>())
   const secondaryRequestedRef = useRef(new Map<number, number>())
-  const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const graphControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const stackedControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const [chartsMounted, setChartsMounted] = useState(analysisView === 'charts')
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
   const selectStyles = useMemo(() => buildSelectStyles(isDark, {
@@ -479,6 +469,10 @@ export default function AnalyzeScreen({
     setMapFocus({ id: ++mapFocusIdRef.current, elapsedSeconds })
     save({ ...config, view: 'map' })
   }, [config, playbackFilename, save])
+
+  useEffect(() => {
+    if (analysisView === 'charts') setChartsMounted(true)
+  }, [analysisView])
 
   const selectedIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
   const metricOptions = useMemo(() => ['Driving', 'Motion', 'Power', 'Tyres'].map(group => ({
@@ -738,6 +732,8 @@ export default function AnalyzeScreen({
     setDraggedMetric(null)
   }, [config.series, draggedMetric, updateSeries])
 
+  const activeChartControlsRef = analysisView === 'charts' ? stackedControlsRef : graphControlsRef
+
   return (
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
       <aside
@@ -747,16 +743,6 @@ export default function AnalyzeScreen({
           <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
               <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
-              <div className="ml-auto">
-                <AnalysisViewSelector
-                  value={analysisView}
-                  mapDisabled={!playbackFilename}
-                  onChange={view => {
-                    setMapFocus(null)
-                    save({ ...config, view })
-                  }}
-                />
-              </div>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -769,6 +755,71 @@ export default function AnalyzeScreen({
                   />
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="analyze-view" className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">View</label>
+                <div className="flex-1 min-w-0">
+                  <Select<SelectOption, false>
+                    inputId="analyze-view"
+                    value={ANALYSIS_VIEW_OPTIONS.find(option => option.value === primaryView) ?? ANALYSIS_VIEW_OPTIONS[0]}
+                    options={ANALYSIS_VIEW_OPTIONS}
+                    onChange={option => {
+                      if (!option || (option.value !== 'graph' && option.value !== 'map')) return
+                      setMapFocus(null)
+                      save({ ...config, view: option.value })
+                    }}
+                    isOptionDisabled={option => option.value === 'map' && !playbackFilename}
+                    styles={selectStyles}
+                    components={selectComponents}
+                    isSearchable={false}
+                    menuPortalTarget={document.body}
+                  />
+                </div>
+              </div>
+              <button
+                role="switch"
+                aria-checked={config.individualGraphs}
+                onClick={() => save({ ...config, individualGraphs: !config.individualGraphs })}
+                className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)]"
+              >
+                <span>Enable Individual Graphs</span>
+                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${config.individualGraphs ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${config.individualGraphs ? 'translate-x-4' : ''}`} /></span>
+              </button>
+              <button
+                role="switch"
+                aria-checked={config.syncedTooltip}
+                disabled={!config.individualGraphs}
+                onClick={() => save({ ...config, syncedTooltip: !config.syncedTooltip })}
+                className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)] disabled:opacity-35 disabled:pointer-events-none"
+              >
+                <span>Synced Tooltip</span>
+                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${config.syncedTooltip ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${config.syncedTooltip ? 'translate-x-4' : ''}`} /></span>
+              </button>
+              <button
+                role="switch"
+                aria-checked={config.sectorBoundaries}
+                onClick={() => {
+                  const sectorBoundaries = !config.sectorBoundaries
+                  save({
+                    ...config,
+                    sectorBoundaries,
+                    sectorDelta: sectorBoundaries && config.sectorDelta,
+                  })
+                }}
+                className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)]"
+              >
+                <span>Sector Boundaries</span>
+                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${config.sectorBoundaries ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${config.sectorBoundaries ? 'translate-x-4' : ''}`} /></span>
+              </button>
+              <button
+                role="switch"
+                aria-checked={config.sectorDelta}
+                disabled={!config.sectorBoundaries}
+                onClick={() => save({ ...config, sectorDelta: !config.sectorDelta })}
+                className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)] disabled:opacity-35 disabled:pointer-events-none"
+              >
+                <span>Sector Delta</span>
+                <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${config.sectorDelta ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${config.sectorDelta ? 'translate-x-4' : ''}`} /></span>
+              </button>
               {playbackFilename && blocks && <div>
                 <button
                   role="switch" aria-checked={fixedLapMode.enabled}
@@ -954,22 +1005,22 @@ export default function AnalyzeScreen({
           >
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
-          {analysisView === 'graph' ? <>
+          {analysisView !== 'map' ? <>
             <span className="h-5 w-px mx-1 bg-[var(--border)]" />
             <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
-            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => chartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
-            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => chartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => activeChartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => activeChartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
             <span className="h-5 w-px mx-1 bg-[var(--border)]" />
             <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
-            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => chartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
-            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
-            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
-            {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => activeChartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => activeChartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => activeChartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
+            {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · {analysisView === 'charts' ? 'Shift+wheel' : 'drag'} to pan · double-click to reset</span>}
             {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
           </> : <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Elapsed time comparison</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
-          <div className={`absolute inset-0 ${analysisView === 'graph' ? '' : 'hidden'}`}>
+          <div className={`absolute inset-0 ${analysisView === 'map' ? 'hidden' : ''}`}>
             <AnalyzeChartSubscriber
               isDark={isDark} selected={config.series}
               deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
@@ -977,7 +1028,13 @@ export default function AnalyzeScreen({
               currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
               comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
               distanceMode={selectedDistanceMode}
-              controlsRef={chartControlsRef}
+              analysisView={analysisView}
+              chartsMounted={chartsMounted}
+              syncedTooltip={config.syncedTooltip}
+              sectorBoundaries={config.sectorBoundaries}
+              sectorDelta={config.sectorDelta}
+              graphControlsRef={graphControlsRef}
+              stackedControlsRef={stackedControlsRef}
               onInspectMap={playbackFilename ? inspectMapAt : undefined}
             />
           </div>

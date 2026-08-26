@@ -152,6 +152,16 @@ body {
   color: var(--text-primary);
 }
 
+/* Chart tooltips render outside chart overflow/stacking contexts. Normal app
+   overlays top out at z-40; modal backdrops begin at z-50. */
+#chart-tooltip-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 @keyframes posGainFlash {
   0%   { background-color: rgba(34, 197, 94, 0.22); }
   100% { background-color: transparent; }

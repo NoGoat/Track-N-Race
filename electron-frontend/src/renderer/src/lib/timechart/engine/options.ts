@@ -108,6 +108,12 @@ export interface TimeChartSeriesOptions {
     visible: boolean;
     lineType: LineType;
     stepLocation: number;
+    /**
+     * Optional normalized vertical slice of the chart's render area. Series
+     * with the same slice share a panel while still using this chart's single
+     * canvas and WebGL context.
+     */
+    viewport?: { top: number; bottom: number; gapAfter?: number };
 }
 
 export function resolveColorRGBA(color: ColorSpecifier): [number, number, number, number] {

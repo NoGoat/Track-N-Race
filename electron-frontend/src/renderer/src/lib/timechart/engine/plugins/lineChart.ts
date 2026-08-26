@@ -515,6 +515,9 @@ export class LineChartRenderer {
     private yRangeStart = 0;
     private yRangeEnd = 0;
     private xDomainMin = 0;
+    private xDomainMax = 1;
+    private yDomainMin = 0;
+    private yDomainMax = 1;
     private xUnitsPerPixel = 1;
     private colorCache = new Map<TimeChartSeriesOptions, {
         source: ResolvedCoreOptions['color'] | TimeChartSeriesOptions['color'];
@@ -603,7 +606,8 @@ export class LineChartRenderer {
     drawFrame() {
         this.syncBuffer();
         this.syncDomain();
-        this.uniformBuffer.upload();
+        const hasSeriesViewports = this.options.series.some(series => series.visible && series.viewport);
+        if (!hasSeriesViewports) this.uniformBuffer.upload();
         const gl = this.gl;
         const renderMin = this.xDomainMin +
             (this.options.renderPaddingLeft - this.xRangeStart) * this.xUnitsPerPixel;
@@ -615,6 +619,7 @@ export class LineChartRenderer {
         this.areaProgram.use();
         for (const series of this.options.series) {
             if (!series.visible || series.fill == null) continue;
+            if (hasSeriesViewports) this.applySeriesViewport(series);
             gl.uniform4fv(this.areaProgram.locations.uColor, this.fillColorFor(series));
             gl.uniform1i(this.areaProgram.locations.uLineType, series.lineType);
             gl.uniform1f(this.areaProgram.locations.uStepLocation, series.stepLocation);
@@ -627,6 +632,7 @@ export class LineChartRenderer {
         let activeProgram: LineProgram | NativeLineProgram | null = null;
         for (const series of this.options.series) {
             if (!series.visible) continue;
+            if (hasSeriesViewports) this.applySeriesViewport(series);
             const program = series.lineType === LineType.NativeLine || series.lineType === LineType.NativePoint
                 ? this.nativeLineProgram : this.lineProgram;
             if (program !== activeProgram) {
@@ -694,7 +700,50 @@ export class LineChartRenderer {
         uniforms.modelTranslate[1] =
             -(this.yRangeStart - this.renderHeight / 2 - this.options.renderPaddingTop) / sy - yMin;
         this.xDomainMin = xMin;
+        this.xDomainMax = xMax;
+        this.yDomainMin = yMin;
+        this.yDomainMax = yMax;
         this.xUnitsPerPixel = 1 / sx;
+    }
+
+    private applySeriesViewport(series: TimeChartSeriesOptions) {
+        const viewport = series.viewport;
+        if (!viewport) {
+            const ratio = this.options.pixelRatio;
+            this.gl.viewport(
+                this.options.renderPaddingLeft * ratio,
+                this.options.renderPaddingBottom * ratio,
+                this.renderWidth * ratio,
+                this.renderHeight * ratio,
+            );
+            this.syncDomain();
+            this.uniformBuffer.upload();
+            return;
+        }
+
+        const plotLeft = this.options.renderPaddingLeft;
+        const plotTop = this.options.renderPaddingTop;
+        const panelTop = plotTop + viewport.top * this.renderHeight;
+        const panelBottom = plotTop + viewport.bottom * this.renderHeight - (viewport.gapAfter ?? 0);
+        const panelHeight = panelBottom - panelTop;
+        const ratio = this.options.pixelRatio;
+        this.gl.viewport(
+            plotLeft * ratio,
+            (this.height - panelBottom) * ratio,
+            this.renderWidth * ratio,
+            panelHeight * ratio,
+        );
+
+        const xScale = this.renderWidth / (this.xDomainMax - this.xDomainMin);
+        const yScale = panelHeight / (this.yDomainMax - this.yDomainMin);
+        const uniforms = this.uniformBuffer;
+        uniforms.projectionScale[0] = 2 / this.renderWidth;
+        uniforms.projectionScale[1] = 2 / panelHeight;
+        uniforms.modelScale[0] = xScale;
+        uniforms.modelScale[1] = yScale;
+        uniforms.modelTranslate[0] = -this.renderWidth / (2 * xScale) - this.xDomainMin;
+        uniforms.modelTranslate[1] = -panelHeight / (2 * yScale) - this.yDomainMin;
+        uniforms.upload();
     }
 
     private dispose() {

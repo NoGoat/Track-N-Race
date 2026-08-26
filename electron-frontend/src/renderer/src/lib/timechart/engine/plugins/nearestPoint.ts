@@ -1,4 +1,4 @@
-import { NearestPointModel } from "../core/nearestPoint";
+import { NearestPointModel, seriesPointToPixels } from "../core/nearestPoint";
 import { SVGLayer } from "../core/svgLayer";
 import { ResolvedCoreOptions, TimeChartSeriesOptions } from "../options";
 import { TimeChartPlugin } from ".";
@@ -62,9 +62,10 @@ export class NearestPoint {
                 intersect.style.visibility = 'hidden';
             } else {
                 intersect.style.visibility = 'visible';
+                const pixel = seriesPointToPixels(this.model, s, point.x, point.y);
                 intersect.transform.baseVal.getItem(0).setTranslate(
-                    this.model.xScale(point.x)!,
-                    this.model.yScale(point.y)!,
+                    pixel.x,
+                    pixel.y,
                 );
             }
         }

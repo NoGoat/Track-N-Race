@@ -293,6 +293,9 @@ struct LapProgressPoint {
     float session_time{};
     int   current_lap_ms{};
     float lap_distance_m{};
+    int   sector{};
+    int   s1_ms{};
+    int   s2_ms{};
 };
 
 // Compact player-only world position used by Analyze's lap map. The source

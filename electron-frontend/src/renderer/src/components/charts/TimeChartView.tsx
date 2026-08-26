@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useSize } from '../../hooks/useSize'
-import { useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
+import { ChartTooltipPortal, useChartTooltip, TOOLTIP_STYLE } from '../../hooks/useChartTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
@@ -175,9 +175,8 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     : (yTickValues ?? ((min: number, max: number) => [min, max]))
 
   const { ref: sizeRef, width, height } = useSize(120)
-  const { tooltipRef, show, hide } = useChartTooltip()
-
   const containerRef = useRef<HTMLDivElement>(null)
+  const { tooltipRef, show, hide } = useChartTooltip(containerRef)
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
@@ -384,7 +383,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         lastFormatter = formatter
         lastDeltaRevision = deltaRevision
       }
-      show(lastHtml, px, contentY + paddingTop, chart.clientWidth, chart.clientHeight)
+      show(lastHtml, px, contentY + paddingTop)
     }
     const stopTooltipSync = chart.nearestPoint.updated.on(() => {
       const pointer = chart.nearestPoint.lastPointerPos
@@ -755,10 +754,10 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDark, seriesColorKey])
 
-  return (
+  return <>
     <div className="absolute inset-0" ref={sizeRef}>
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
-      <div ref={tooltipRef} style={tooltipStyle} />
     </div>
-  )
+    <ChartTooltipPortal tooltipRef={tooltipRef} style={tooltipStyle} />
+  </>
 }

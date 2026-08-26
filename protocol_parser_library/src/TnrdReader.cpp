@@ -37,6 +37,9 @@ struct LapScanFields {
     int current_lap_ms{};
     int last_lap_ms{};
     float lap_distance_m{};
+    int sector{};
+    int s1_ms{};
+    int s2_ms{};
 };
 // Partial read of a "status" row for Electron-only load-time chart metadata.
 struct StatusScanFields {
@@ -314,7 +317,7 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
                         (it->second.lapProgress.empty() ||
                          it->second.lapProgress.back().lap_distance_m < trackLengthM_)) {
                         it->second.lapProgress.push_back(
-                            { t, lf.last_lap_ms, (float)trackLengthM_ });
+                            { t, lf.last_lap_ms, (float)trackLengthM_, 2, 0, 0 });
                     }
                 }
                 int lapTimeMs = lf.last_lap_ms;
@@ -353,7 +356,7 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
                      lf.lap_num == curLapNum && std::isfinite(lf.lap_distance_m) &&
                      lf.lap_distance_m >= 0.0f) {
                 it->second.lapProgress.push_back(
-                    { t, lf.current_lap_ms, lf.lap_distance_m });
+                    { t, lf.current_lap_ms, lf.lap_distance_m, lf.sector, lf.s1_ms, lf.s2_ms });
             }
 
             if (binaryPlayback_ && tid == 1)
@@ -1234,7 +1237,7 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
             else if(r.rowType==2)msg.statusHistory.push_back(glz::raw_json{r.json});
             else if(r.rowType==11)msg.motionHistory.push_back(glz::raw_json{r.json});
             else if(r.rowType==12)msg.motionExHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,r.json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m});}
+            else if(r.rowType==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,r.json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m,lap.sector,lap.s1_ms,lap.s2_ms});}
             else if(r.rowType==13){PositionsRow pos{};(void)glz::read<kPartialRead>(pos,r.json);if(pos.player_idx>=0&&(size_t)pos.player_idx<pos.cars.size())msg.playerPositions.push_back({r.sessionTime,pos.cars[(size_t)pos.player_idx].x,pos.cars[(size_t)pos.player_idx].z});}
         }
         if(mask&detail::v4TypeBit(3))for(auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
