@@ -48,7 +48,11 @@ export class NearestPointModel {
         });
         detector.left.on(() => {
             this.lastPointerPos = null;
-            this.adjustPoints();
+            this.dataPoints.clear();
+            // Leaving the plot is a hover-state change even when no nearest
+            // point is currently available. Custom tooltips listen to this
+            // event to hide themselves, so always publish the transition.
+            this.updated.dispatch();
         });
 
         model.updated.on(() => this.adjustPoints());

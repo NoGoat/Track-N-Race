@@ -246,11 +246,11 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       const px = pointer.x - chart.options.paddingLeft + 44
       const x = (chart.model.xScale as any).invert(px) as number
       const index = nearestIndex(chart.options.series[3].data, x)
-      if (index < 0) { hide(); return }
-      for (let i = 0; i < 3; i++) tooltipValues[i] = chart.options.series[i + 3].data.yAt(index)
+      for (let i = 0; i < 3; i++) tooltipValues[i] = index >= 0 ? chart.options.series[i + 3].data.yAt(index) : NaN
       const comparisonData = chart.options.series[0].data
       const comparisonIndex = nearestIndex(comparisonData, x)
-      const pointX = comparisonIndex >= 0 ? comparisonData.xAt(comparisonIndex) : chart.options.series[3].data.xAt(index)
+      const pointX = comparisonIndex >= 0 ? comparisonData.xAt(comparisonIndex)
+        : index >= 0 ? chart.options.series[3].data.xAt(index) : x
       const comparisonValues = comparisonIndex >= 0
         ? comparisonTooltipValues
         : undefined
@@ -261,7 +261,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         pointX,
         denormalize(tooltipValues, displayTooltipValues),
         comparisonValues ? denormalize(comparisonValues, displayComparisonTooltipValues) : undefined,
-      ) + formatChartDeltaTooltip(getDeltaAtDistanceRef.current(pointX))
+      ).replace(/\bNaN(?:% [LR])?/g, '—') + formatChartDeltaTooltip(getDeltaAtDistanceRef.current(pointX))
       show(html, px, pointer.y + 4)
     })
     attach(chart)

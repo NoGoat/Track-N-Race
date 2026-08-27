@@ -732,7 +732,11 @@ private:
     }
 
     Napi::Value PlayerClose(const Napi::CallbackInfo& info) {
+        std::fprintf(stderr, "[close-trace] addon PlayerClose entry\n");
+        std::fflush(stderr);
         if (engine) engine->playerClose();
+        std::fprintf(stderr, "[close-trace] addon PlayerClose returned\n");
+        std::fflush(stderr);
         return info.Env().Undefined();
     }
 

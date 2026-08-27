@@ -225,7 +225,11 @@ ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetA
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
 ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number) =>
   playerSetDataRequirements(streamMask, historyMask, windowSeconds))
-ipcMain.on('player:close', () => playerClose())
+ipcMain.on('player:close', () => {
+  console.log(`[close-trace] ${new Date().toISOString()} main received player:close`)
+  playerClose()
+  console.log(`[close-trace] ${new Date().toISOString()} main playerClose returned`)
+})
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
 ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number, rowTypeMask?: number) => analysisGetLapData(lapNum, rowTypeMask))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
@@ -582,8 +586,14 @@ app.whenReady().then(() => {
 
   app.on('will-quit', () => {
     console.log('[main] will-quit')
-    stopBridge()   // closes the player too (temp file cleanup happens in-engine)
     clearInterval(pollInterval)
+    const recordingEnabled = store.get('logging.enabled', false) as boolean
+    // Without an active recording, bypass native teardown: reader workers may
+    // hold the engine mutex or keep libuv alive, and none of their results can
+    // be consumed during shutdown. Preserve the existing orderly flush/finalize
+    // path whenever recording is enabled.
+    stopBridge(!recordingEnabled)
+    process.exit(0)
   })
 
 

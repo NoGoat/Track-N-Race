@@ -423,13 +423,18 @@ export function startBridge(): string | null {
   }
 }
 
-export function stopBridge(): void {
+export function stopBridge(forceProcessExit = false): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
   clearResumeCache()
   resetSeekForwarding()
   activeFilePath = null
   if (engine) {
+    // With recording disabled, do not enter the native engine at all during
+    // process shutdown. Any active playback/load/history read may own the
+    // engine mutex, so even flushRecording() (a no-op at the writer level)
+    // could wait behind that read indefinitely.
+    if (forceProcessExit) return
     // Synchronous native barrier: preserve queued rows and the rolling buffer
     // before teardown, even though Engine destruction also finalizes the stream.
     engine.flushRecording()
@@ -528,9 +533,12 @@ export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask =
     Math.max(-1, windowSeconds), requestId)
 }
 export function playerClose(): void {
+  console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)
   latestSeekRequestId = ++nextPlaybackRequestId
   resetSeekForwarding()
+  console.log(`[close-trace] ${new Date().toISOString()} bridge calling native playerClose`)
   engine?.playerClose()
+  console.log(`[close-trace] ${new Date().toISOString()} bridge native playerClose returned`)
 }
 
 export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {

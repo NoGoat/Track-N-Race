@@ -761,11 +761,19 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
 }
 
 void Engine::playerClose() {
+    std::fprintf(stderr, "[close-trace] Engine::playerClose entry; stopping playback thread\n");
+    std::fflush(stderr);
     stopPlaybackThread();
+    std::fprintf(stderr, "[close-trace] playback thread stopped; waiting for engine mutex\n");
+    std::fflush(stderr);
     std::string liveStatus;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        std::fprintf(stderr, "[close-trace] engine mutex acquired; closing reader\n");
+        std::fflush(stderr);
         reader_.close();
+        std::fprintf(stderr, "[close-trace] reader close returned\n");
+        std::fflush(stderr);
         inPlayback_.store(false);
         playing_ = false;
         appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
@@ -782,11 +790,19 @@ void Engine::playerClose() {
     }
     emitRow(writeJson(TypeOnlyRow{"playback_close"}));
     if (!liveStatus.empty()) emitRow(liveStatus);
+    std::fprintf(stderr, "[close-trace] Engine::playerClose complete\n");
+    std::fflush(stderr);
 }
 
 void Engine::stopPlaybackThread() {
     playRun_.store(false);
-    if (playThread_.joinable()) playThread_.join();
+    if (playThread_.joinable()) {
+        std::fprintf(stderr, "[close-trace] joining playback thread\n");
+        std::fflush(stderr);
+        playThread_.join();
+        std::fprintf(stderr, "[close-trace] playback thread joined\n");
+        std::fflush(stderr);
+    }
 }
 
 void Engine::emitPlaybackState() {

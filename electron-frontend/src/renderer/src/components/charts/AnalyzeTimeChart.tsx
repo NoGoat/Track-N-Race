@@ -15,6 +15,7 @@ export interface AnalyzeTimeChartProps {
   current: AnalyzeLapData
   currentRevision: string | number
   comparison: AnalyzeLapData | null
+  comparisonSelected: boolean
   selected: AnalyzeSeriesConfig[]
   primaryLabel?: string
   comparisonLabel?: string
@@ -67,7 +68,6 @@ const STACKED_TOP_PADDING = 6
 const STACKED_PANEL_GAP = 10
 const MIN_ZOOM_SECONDS = 0.5
 const MIN_ZOOM_METRES = 25
-const DELTA_GRID_METRES = 5
 
 function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
   if (source === 'status') return lap.statusHistory
@@ -283,15 +283,17 @@ function syncDelta(
   }
   const maxDistance = Math.min(current.maxDistance, comparison.maxDistance, currentMaxDistance)
   if (maxDistance <= 0) return { range: state.renderedRange || 0.5, changed: false }
-  let lastSampleDistance = -DELTA_GRID_METRES
+  let lastSampleDistance = -Infinity
   for (let index = state.samples.length - 1; index >= 0; index--) {
     if (!Number.isFinite(state.samples[index][1])) continue
     lastSampleDistance = state.samples[index][0]
     break
   }
   let lastStoredX = state.samples.length ? state.samples[state.samples.length - 1][0] : -Infinity
-  const startDistance = lastSampleDistance + DELTA_GRID_METRES
-  for (let distance = startDistance; distance <= maxDistance; distance += DELTA_GRID_METRES) {
+  for (const point of current.points) {
+    const distance = point.lap_distance_m
+    if (distance <= lastSampleDistance) continue
+    if (distance > maxDistance) break
     const currentElapsed = interpolateLapElapsed(current, distance)
     const comparisonElapsed = interpolateLapElapsed(comparison, distance)
     let currentBase = 0
@@ -416,7 +418,7 @@ function resolvedSectorSplits(primary: AnalyzeLapData, comparison: AnalyzeLapDat
 }
 
 export default function AnalyzeTimeChart({
-  isDark, current, currentRevision, comparison, selected, primaryLabel, comparisonLabel,
+  isDark, current, currentRevision, comparison, comparisonSelected, selected, primaryLabel, comparisonLabel,
   distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
   zoomEnabled, realtimeCurrent, controlsRef, onInspectMap,
   metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
@@ -442,6 +444,9 @@ export default function AnalyzeTimeChart({
   const seriesRef = useRef<SeriesRecord | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
+  const stackedViewportAnimationRef = useRef(0)
+  const stackedLayoutReadyRef = useRef(false)
+  const stackedLayoutSignatureRef = useRef('')
   const deltaRangeRef = useRef(0.5)
   const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0 })
   const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
@@ -449,6 +454,7 @@ export default function AnalyzeTimeChart({
   const isDarkRef = useRef(isDark)
   const currentRef = useRef(current)
   const comparisonRef = useRef(comparison)
+  const comparisonSelectedRef = useRef(comparisonSelected)
   const primaryLabelRef = useRef(primaryLabel)
   const comparisonLabelRef = useRef(comparisonLabel)
   const zoomEnabledRef = useRef(zoomEnabled)
@@ -468,6 +474,7 @@ export default function AnalyzeTimeChart({
   isDarkRef.current = isDark
   currentRef.current = current
   comparisonRef.current = comparison
+  comparisonSelectedRef.current = comparisonSelected
   primaryLabelRef.current = primaryLabel
   comparisonLabelRef.current = comparisonLabel
   zoomEnabledRef.current = zoomEnabled
@@ -672,7 +679,7 @@ export default function AnalyzeTimeChart({
       let hoveredMetricId: string | null = null
       if (stackedMode) {
         const panels = selectedRef.current.filter(item =>
-          item.visible && (item.metricId !== 'delta' || (distanceModeRef.current && comparisonRef.current !== null)),
+          item.visible && (item.metricId !== 'delta' || (distanceModeRef.current && comparisonSelectedRef.current)),
         )
         const contentHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
         const panelIndex = Math.floor(contentY / contentHeight * panels.length)
@@ -681,7 +688,6 @@ export default function AnalyzeTimeChart({
       const appendRole = (role: Role, lap: AnalyzeLapData | null, heading: string) => {
         if (!lap) return
         const roleRows: string[] = []
-        let roleHasValue = false
         for (const item of selectedRef.current) {
           if (!item.visible) continue
           if (hoveredMetricId && !syncedTooltipRef.current && item.metricId !== hoveredMetricId) continue
@@ -691,12 +697,11 @@ export default function AnalyzeTimeChart({
           const index = nearestIndex(option.data, x)
           const normalized = index >= 0 ? option.data.yAt(index) : NaN
           const value = def.min + normalized * (def.max - def.min)
-          if (Number.isFinite(value)) roleHasValue = true
           const display = Number.isFinite(value) ? def.format(value) : '—'
           const color = role === 'comparison' ? blendColor(item.color, isDarkRef.current) : item.color
           roleRows.push(`<div><span style="color:${color}">${def.label}</span>: ${display}</div>`)
         }
-        if (roleHasValue) {
+        if (roleRows.length > 0) {
           rows.push(`<div style="color:var(--text-secondary);font-size:10px;margin:${rows.length > 1 ? '5px' : '0'} 0 2px">${heading}</div>`, ...roleRows)
           hasValue = true
         }
@@ -734,6 +739,7 @@ export default function AnalyzeTimeChart({
       interactionNode.removeEventListener('dblclick', onDoubleClick)
       if (controlsRef.current === controls) controlsRef.current = null
       stopTooltipSync(); chart.dispose()
+      if (stackedViewportAnimationRef.current) cancelAnimationFrame(stackedViewportAnimationRef.current)
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
       deltaSeriesRef.current = null
     }
@@ -764,7 +770,7 @@ export default function AnalyzeTimeChart({
     // WebGL paints later series over earlier ones, so reverse the sidebar order:
     // the first row in the sidebar is drawn last and remains visually on top.
     const deltaItem = selected.find(item => item.metricId === 'delta')
-    const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && !!comparison
+    const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
     const deltaSeries = deltaSeriesRef.current
     if (deltaSeries) {
       deltaSeries.positive.visible = showDelta
@@ -804,25 +810,54 @@ export default function AnalyzeTimeChart({
             return sectorIndex >= 0 ? `S${sectorIndex + 1}` : ''
           }
         : distanceMode ? fmtDistance : fmtLapTime
-    for (const option of chart.options.series) option.viewport = undefined
+    if (!stackedMode) {
+      for (const option of chart.options.series) option.viewport = undefined
+      stackedLayoutReadyRef.current = false
+      stackedLayoutSignatureRef.current = ''
+    }
+    const viewportAnimation = new Map<any, {
+      from: { top: number; bottom: number; gapAfter: number }
+      to: { top: number; bottom: number; gapAfter: number }
+    }>()
+    let animateStackedLayout = false
+    let stackedLayoutSignature = ''
     if (stackedMode) {
+      stackedLayoutSignature = panelItems.map(item => item.metricId).join('|')
+      const layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature
+      if (layoutChanged && stackedViewportAnimationRef.current) {
+        cancelAnimationFrame(stackedViewportAnimationRef.current)
+        stackedViewportAnimationRef.current = 0
+      }
+      animateStackedLayout = layoutChanged && stackedLayoutReadyRef.current &&
+        document.documentElement.dataset.reduceAnimations !== 'true'
       panelItems.forEach((item, index) => {
         const viewport = {
           top: index / panelItems.length,
           bottom: (index + 1) / panelItems.length,
           gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
         }
+        const applyViewport = (option: any) => {
+          if (!option) return
+          const midpoint = (viewport.top + viewport.bottom) / 2
+          const prior = option.viewport
+          const from = prior
+            ? { top: prior.top, bottom: prior.bottom, gapAfter: prior.gapAfter ?? 0 }
+            : { top: midpoint, bottom: midpoint, gapAfter: 0 }
+          const to = { ...viewport }
+          viewportAnimation.set(option, { from, to })
+          if (layoutChanged) option.viewport = animateStackedLayout ? { ...from } : { ...to }
+        }
         if (item.metricId === 'delta') {
           if (deltaSeries) {
-            deltaSeries.positive.viewport = viewport
-            deltaSeries.negative.viewport = viewport
+            applyViewport(deltaSeries.positive)
+            applyViewport(deltaSeries.negative)
           }
           return
         }
         const currentOption = records.current.get(item.metricId)
         const comparisonOption = records.comparison.get(item.metricId)
-        if (currentOption) currentOption.viewport = viewport
-        if (comparisonOption) comparisonOption.viewport = viewport
+        applyViewport(currentOption)
+        applyViewport(comparisonOption)
       })
     }
     const drawOrder = [...selected].reverse().flatMap(item => {
@@ -885,6 +920,27 @@ export default function AnalyzeTimeChart({
       if (hostRef.current) hostRef.current.style.color = axis
       chart.update()
       chart.model.resize(chart.clientWidth, chart.clientHeight)
+      stackedLayoutReadyRef.current = true
+      stackedLayoutSignatureRef.current = stackedLayoutSignature
+      if (animateStackedLayout && viewportAnimation.size > 0) {
+        const startedAt = performance.now()
+        const duration = 240
+        const animate = (now: number) => {
+          const progress = Math.min(1, (now - startedAt) / duration)
+          const eased = 1 - Math.pow(1 - progress, 3)
+          for (const [option, { from, to }] of viewportAnimation) {
+            option.viewport = {
+              top: from.top + (to.top - from.top) * eased,
+              bottom: from.bottom + (to.bottom - from.bottom) * eased,
+              gapAfter: from.gapAfter + (to.gapAfter - from.gapAfter) * eased,
+            }
+          }
+          chart.update()
+          if (progress < 1) stackedViewportAnimationRef.current = requestAnimationFrame(animate)
+          else stackedViewportAnimationRef.current = 0
+        }
+        stackedViewportAnimationRef.current = requestAnimationFrame(animate)
+      }
       return
     }
 
@@ -954,7 +1010,7 @@ export default function AnalyzeTimeChart({
     if (hostRef.current) hostRef.current.style.color = axis
     chart.update()
     chart.model.resize(chart.clientWidth, chart.clientHeight)
-  }, [comparison, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, themedDeltaNegative, themedDeltaPositive])
+  }, [comparison, comparisonSelected, current, distanceMode, isDark, sectorBoundaries, selected, showXAxis, themedDeltaNegative, themedDeltaPositive])
 
   useEffect(() => {
     let animationFrame = 0

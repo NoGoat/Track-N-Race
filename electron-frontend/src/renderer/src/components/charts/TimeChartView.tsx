@@ -96,6 +96,10 @@ function lowerBoundSessionTime(rows: readonly { session_time: number }[], value:
   return lo
 }
 
+function replaceMissingTooltipValues(html: string): string {
+  return html.replace(/\bNaN(?:% [LR])?/g, '—')
+}
+
 export interface SeriesDef<T> {
   label: string
   color: string
@@ -355,14 +359,13 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       const bridge = bridgeRef.current
       const chart = chartRef.current
       if (!bridge || !chart) return
-      if (bridge.length === 0) { hide(); return }
       const comparisonBridge = comparisonBridgeRef.current
       const px = contentX + paddingLeft
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dataX = (chart.model.xScale as any).invert(px) as number
       const idx = nearestIndex(bridge, dataX)
       const comparisonIdx = nearestIndex(comparisonBridge, dataX)
-      const currentX = bridge.xAt(idx)
+      const currentX = idx >= 0 ? bridge.xAt(idx) : dataX
       const comparisonX = comparisonIdx >= 0 ? comparisonBridge!.xAt(comparisonIdx) : NaN
       const x = comparisonIdx >= 0 ? comparisonX : currentX
       const formatter = tooltipFormatRef.current
@@ -372,12 +375,14 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       // actually changes; positioning remains smooth every frame.
       if (currentX !== lastCurrentX || comparisonX !== lastComparisonX || formatter !== lastFormatter || deltaRevision !== lastDeltaRevision) {
         const bufs = seriesBuffersRef.current
-        const values = bufs.map((buf) => idx < buf.length ? buf.yAt(idx) : NaN)
+        const values = bufs.map((buf) => idx >= 0 && idx < buf.length ? buf.yAt(idx) : NaN)
         let comparisonValues: number[] | undefined
         if (comparisonBridge && comparisonIdx >= 0) {
           comparisonValues = comparisonBridge.series.map((buf) => comparisonIdx < buf.length ? buf.yAt(comparisonIdx) : NaN)
         }
-        lastHtml = formatter(x, values, comparisonValues) + formatChartDeltaTooltip(coordinates.getDeltaAtDistance(x))
+        lastHtml = replaceMissingTooltipValues(
+          formatter(x, values, comparisonValues) + formatChartDeltaTooltip(coordinates.getDeltaAtDistance(x)),
+        )
         lastCurrentX = currentX
         lastComparisonX = comparisonX
         lastFormatter = formatter

@@ -153,7 +153,12 @@ export function usePlayback(onClose: () => void) {
       setTimeout(() => setExportState('idle'), 4000)
     }
   }, [exportState])
-  const close = useCallback(() => { onClose(); window.playerBridge.close() }, [onClose])
+  const close = useCallback(() => {
+    console.log(`[close-trace] ${new Date().toISOString()} renderer close clicked`)
+    onClose()
+    console.log(`[close-trace] ${new Date().toISOString()} renderer state cleared; sending player:close`)
+    window.playerBridge.close()
+  }, [onClose])
   const selectFile = useCallback(async () => {
     const file = await window.fsBridge.selectTNRDFile()
     if (file) {

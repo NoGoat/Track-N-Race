@@ -11,6 +11,7 @@
 #include <iterator>
 #include <queue>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 
 #ifndef _WIN32
@@ -640,21 +641,69 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
 }
 
 void TnrdReader::close() {
+    std::fprintf(stderr, "[close-trace] TnrdReader::close entry format=%s index=%zu laps=%zu hotBytes=%zu seekCacheBytes=%zu temp=%s\n",
+                 toString(loadedFormat_), index_.size(), lapBlocks_.size(),
+                 hotBin_ ? hotBin_->size() : 0, packedSeekCacheBytes_,
+                 tempPath_.empty() ? "none" : tempPath_.c_str());
+    std::fflush(stderr);
     if (tempFile_) { std::fclose(tempFile_); tempFile_ = nullptr; }
+    std::fprintf(stderr, "[close-trace] temp FILE handle closed\n");
+    std::fflush(stderr);
     if (!tempPath_.empty()) {
         std::error_code ec;
         std::filesystem::remove(tempPath_, ec);
+        std::fprintf(stderr, "[close-trace] temp path remove returned error=%s\n",
+                     ec ? ec.message().c_str() : "none");
+        std::fflush(stderr);
         tempPath_.clear();
     }
     loadedFormat_ = TnrdFormat::Unknown;
+    std::fprintf(stderr, "[close-trace] resetting indexed archive\n");
+    std::fflush(stderr);
     indexedArchive_.reset();
-    for (auto& lane : indexedPackedHistory_) lane = {};
-    for (auto& rows : indexedSparseRows_) rows.clear();
+    size_t indexedPackedBytes = 0;
+    size_t indexedPackedRows = 0;
+    size_t indexedSparseRows = 0;
+    for (const auto& lane : indexedPackedHistory_) {
+        indexedPackedBytes += lane.bytes.size();
+        indexedPackedRows += lane.times.size();
+    }
+    for (const auto& rows : indexedSparseRows_) indexedSparseRows += rows.size();
+    std::fprintf(stderr,
+                 "[close-trace] indexed archive reset; retiring indexed histories packedBytes=%zu packedRows=%zu sparseRows=%zu\n",
+                 indexedPackedBytes, indexedPackedRows, indexedSparseRows);
+    std::fflush(stderr);
+
+    // A long V4 warm pass can retain millions of packed offsets/timestamps and
+    // sparse JSON strings. Destroying those allocations here stalls Electron's
+    // main thread even though the reader is already logically closed. Move the
+    // ownership out in constant time and let a dedicated thread return the
+    // memory to the allocator. This intentionally does not use libuv's worker
+    // pool, which may itself be occupied by playback reads.
+    auto retiredPackedHistory = std::move(indexedPackedHistory_);
+    auto retiredSparseRows = std::move(indexedSparseRows_);
+    auto retiredSeekCache = std::move(packedSeekCache_);
+    auto retiredSeekLru = std::move(packedSeekLru_);
+    auto retiredPlaybackLanes = std::move(v4PlaybackLanes_);
+    std::thread([
+        packedHistory = std::move(retiredPackedHistory),
+        sparseRows = std::move(retiredSparseRows),
+        seekCache = std::move(retiredSeekCache),
+        seekLru = std::move(retiredSeekLru),
+        playbackLanes = std::move(retiredPlaybackLanes)
+    ]() mutable {
+        std::fprintf(stderr, "[close-trace] background indexed-cache release started\n");
+        std::fflush(stderr);
+        packedHistory = {};
+        sparseRows = {};
+        seekCache.clear();
+        seekLru.clear();
+        playbackLanes = {};
+        std::fprintf(stderr, "[close-trace] background indexed-cache release complete\n");
+        std::fflush(stderr);
+    }).detach();
     indexedSeekCacheReady_ = false;
-    packedSeekCache_.clear();
-    packedSeekLru_.clear();
     packedSeekCacheBytes_ = 0;
-    v4PlaybackLanes_ = {};
     v4PlaybackLap_ = 0;
     v4PlaybackCursor_ = 0.0f;
     v4PlaybackPrepared_ = false;
@@ -662,6 +711,8 @@ void TnrdReader::close() {
     v4PlaybackDamageState_ = {};
     v4PlaybackDamageStateReady_ = false;
     index_.clear();
+    std::fprintf(stderr, "[close-trace] indexed histories/caches cleared; clearing lap and strategy state\n");
+    std::fflush(stderr);
     lapBlocks_.clear();
     scannedLaps_.clear();
     scannedEvents_.clear();
@@ -670,6 +721,8 @@ void TnrdReader::close() {
     // Outstanding zero-copy seek buffers retain the old immutable store until
     // Electron has serialized them; the reader immediately releases its copy.
     hotBin_ = std::make_shared<std::vector<uint8_t>>();
+    std::fprintf(stderr, "[close-trace] hot binary store released; clearing cold/legacy stores\n");
+    std::fflush(stderr);
     hotTimes_.clear();
     hotStart_.clear();
     hotCum_.clear();
@@ -678,6 +731,8 @@ void TnrdReader::close() {
     coldLap_.clear();
     legacyStrategyRows_.clear();
     scratch_.clear();
+    std::fprintf(stderr, "[close-trace] stores cleared; shrinking scratch capacity=%zu\n", scratch_.capacity());
+    std::fflush(stderr);
     scratch_.shrink_to_fit();
     fastestLapNum_ = 0;
     fastestLapMs_  = 0;
@@ -687,6 +742,8 @@ void TnrdReader::close() {
     tempFileSize_ = 0;
     playPos_ = 0;
     damageCadenceCursor_ = 0.0f;
+    std::fprintf(stderr, "[close-trace] TnrdReader::close complete\n");
+    std::fflush(stderr);
 }
 
 size_t TnrdReader::upperBoundTime(float t) const {
