@@ -17,7 +17,7 @@ export type GraphSection =
   | 'overviewTyreCardFL' | 'overviewTyreCardFR' | 'overviewTyreCardRL' | 'overviewTyreCardRR'
   | 'tyreSurface' | 'tyreInner' | 'tyreBrake' | 'tyreWear'
   | 'tyreCardFL' | 'tyreCardFR' | 'tyreCardRL' | 'tyreCardRR'
-  | 'inputGear' | 'inputThrottleBrake' | 'inputSteering'
+  | 'inputGear' | 'inputThrottleBrake' | 'inputThrottleBrakeOverlay' | 'inputAccelerator' | 'inputBrake' | 'inputSteering'
   | 'powerSplit' | 'powerHarvest' | 'powerStore' | 'powerFuel'
   | 'miscGForce' | 'miscRideHeight'
 
@@ -49,7 +49,10 @@ export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label
   ] },
   { group: 'Input', sections: [
     { key: 'inputGear',          label: 'Gear' },
-    { key: 'inputThrottleBrake', label: 'Throttle / Brake' },
+    { key: 'inputThrottleBrake', label: 'Accelerator / Brake' },
+    { key: 'inputThrottleBrakeOverlay', label: 'Accelerator / Brake (Combined 2)' },
+    { key: 'inputAccelerator',   label: 'Accelerator (Split)' },
+    { key: 'inputBrake',         label: 'Brake (Split)' },
     { key: 'inputSteering',      label: 'Steering' },
   ] },
   { group: 'Power', sections: [

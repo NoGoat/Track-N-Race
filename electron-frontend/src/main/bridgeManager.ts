@@ -229,6 +229,34 @@ function broadcast(row: Record<string, unknown>): void {
   }
 }
 
+// Per-lap comparison payloads are immutable indexed reads, not rows from the
+// playback cursor. A request can race an in-progress seek; ordinary JSON is
+// deliberately discarded while that seek waits for its authoritative flush,
+// but discarding playback_lap_data leaves the renderer with no dependency
+// change that would necessarily request it again. Forward only these safe rows
+// in an isolated batch and keep the old-cursor rows behind the barrier.
+function forwardIndexedLapDataDuringSeek(batch: string): void {
+  if (!batch.includes('"type":"playback_lap_data"')) return
+  let indexedRows = ''
+  let start = 0
+  while (start < batch.length) {
+    let end = batch.indexOf('\n', start)
+    if (end === -1) end = batch.length
+    if (end > start) {
+      const rowStr = batch.slice(start, end)
+      if (rowStr.includes('"type":"playback_lap_data"')) {
+        indexedRows += rowStr
+        indexedRows += '\n'
+      }
+    }
+    start = end + 1
+  }
+  if (!indexedRows) return
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('telemetry-batch', indexedRows)
+  }
+}
+
 function handleRow(row: Record<string, unknown>): void {
   const type = row.type as string
 
@@ -337,6 +365,9 @@ export function startBridge(): string | null {
         batch.includes('"type":"playback_lap_blocks"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
+      if (seekForwardPhase === 'waiting-flush') {
+        forwardIndexedLapDataDuringSeek(batch)
+      }
       if (seekForwardPhase === 'waiting-renderer' && !forwardWhileHidden) {
         bufferSeekJson(batch)
       } else if (seekForwardPhase !== 'waiting-flush' && (rendererVisible || forwardWhileHidden)) {

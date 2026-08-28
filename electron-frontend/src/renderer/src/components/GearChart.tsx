@@ -56,6 +56,13 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
   }, [axisColor, colorGear, coordinates, hiddenSeries])
+  const cursorSync = useMemo(() => ({
+    id: 'inputGear',
+    order: 10,
+    formatRow: (row: TelemetryRow) => hiddenSeries.Gear
+      ? ''
+      : `<div><span style="color:${colorGear}">Gear</span>: ${Math.round(row.gear)}</div>`,
+  }), [colorGear, hiddenSeries.Gear])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
@@ -77,9 +84,9 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
-              windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={28}
+              windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={52}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
-              refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} />}
+              refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}
     </div>
   </div>
 }

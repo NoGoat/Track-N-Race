@@ -470,7 +470,7 @@ const Settings = memo(function Settings({
       <GroupLabel>Inputs</GroupLabel>
       <Row
         label="Chart Layout"
-        description="Arrange the Gear, Throttle/Brake, and Steering charts on the Input page. Vertical gives each chart its own selectable horizontal axis."
+        description="Arrange the Input page as a grid or a vertical stack. Every chart keeps its own selectable horizontal axis."
       >
         <SegmentedControl
           options={[
@@ -479,6 +479,20 @@ const Settings = memo(function Settings({
           ]}
           value={pageLayouts.input}
           onChange={(input) => onPageLayoutsChange({ ...pageLayouts, input })}
+        />
+      </Row>
+      <Row
+        label="Pedal Charts"
+        description="Combined uses a signed centre line; Combined 2 overlays both inputs from 0–100%; Split uses two independent charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'combined2' as const, label: 'Combined 2' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.inputPedals}
+          onChange={(inputPedals) => onPageLayoutsChange({ ...pageLayouts, inputPedals })}
         />
       </Row>
     </div>

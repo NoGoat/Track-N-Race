@@ -40,12 +40,23 @@ export const DEFAULT_CORE_LAYOUT: CoreLayout = {
   damageItems: { wingFl: true, wingFr: true, wingRear: true, floor: true, diffuser: true, sidepod: false, gearbox: true, engine: true, tyreDmgFl: false, tyreDmgFr: false, tyreDmgRl: false, tyreDmgRr: false, brakeDmgFl: false, brakeDmgFr: false, brakeDmgRl: false, brakeDmgRr: false },
 }
 
-export interface InputLayout { showGear: boolean; showInputs: boolean; showSteering: boolean }
-export const DEFAULT_INPUT_LAYOUT: InputLayout = { showGear: true, showInputs: true, showSteering: true }
+export interface InputLayout {
+  showGear: boolean
+  showAccelerator: boolean
+  showBrake: boolean
+  showSteering: boolean
+}
+export const DEFAULT_INPUT_LAYOUT: InputLayout = {
+  showGear: true,
+  showAccelerator: true,
+  showBrake: true,
+  showSteering: true,
+}
 
 export type InputPageLayout = 'grid' | 'vertical'
-export interface PageLayouts { input: InputPageLayout }
-export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid' }
+export type InputPedalLayout = 'combined' | 'combined2' | 'split'
+export interface PageLayouts { input: InputPageLayout; inputPedals: InputPedalLayout }
+export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid', inputPedals: 'combined' }
 
 export interface MiscLayout { showGForce: boolean; showRideHeight: boolean }
 export const DEFAULT_MISC_LAYOUT: MiscLayout = { showGForce: true, showRideHeight: true }

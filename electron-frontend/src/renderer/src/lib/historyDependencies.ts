@@ -1,4 +1,4 @@
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, Tab, TyresLayout } from '../app/appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, Tab, TyresLayout } from '../app/appConfig'
 import { ANALYZE_METRIC_BY_ID, type AnalyzeSeriesConfig } from './analyzeMetrics'
 import type { GraphSection } from './graphSections'
 
@@ -108,7 +108,7 @@ export function dataRequirementsForUi(
   } else if (tab === 'session') {
     add(result, DATA_CONSUMERS.sessionPage)
   } else if (tab === 'input') {
-    if (input.showGear || input.showInputs || input.showSteering) add(result, DATA_CONSUMERS.inputHistory)
+    if (input.showGear || input.showAccelerator || input.showBrake || input.showSteering) add(result, DATA_CONSUMERS.inputHistory)
   } else if (tab === 'power') {
     if (any(power.statsCards)) add(result, DATA_CONSUMERS.powerCards)
     if (any(power.charts)) add(result, DATA_CONSUMERS.powerHistory)
@@ -139,6 +139,7 @@ export function visibleChartSectionsForUi(
   tab: Tab,
   core: CoreLayout,
   input: InputLayout,
+  pageLayouts: PageLayouts,
   misc: MiscLayout,
   power: PowerLayout,
   tyres: TyresLayout,
@@ -156,9 +157,17 @@ export function visibleChartSectionsForUi(
     return sections
   }
   if (tab === 'input') {
+    const pedalSections: GraphSection[] = pageLayouts.inputPedals === 'split'
+      ? [
+          ...(input.showAccelerator ? ['inputAccelerator' as const] : []),
+          ...(input.showBrake ? ['inputBrake' as const] : []),
+        ]
+      : input.showAccelerator || input.showBrake
+        ? [pageLayouts.inputPedals === 'combined2' ? 'inputThrottleBrakeOverlay' : 'inputThrottleBrake']
+        : []
     return [
       ...(input.showGear ? ['inputGear' as const] : []),
-      ...(input.showInputs ? ['inputThrottleBrake' as const] : []),
+      ...pedalSections,
       ...(input.showSteering ? ['inputSteering' as const] : []),
     ]
   }

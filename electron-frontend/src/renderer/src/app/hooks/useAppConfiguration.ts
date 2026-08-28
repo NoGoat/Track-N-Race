@@ -24,7 +24,7 @@ export function useAppConfiguration() {
   const [tyreView, setTyreView] = useAppConfig<'cards' | 'graphs'>('tyreView', 'cards')
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
   const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
-  const [inputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
+  const [rawInputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
   const [rawPageLayouts, setPageLayouts] = useAppConfig<PageLayouts>('pageLayouts', DEFAULT_PAGE_LAYOUTS)
   const [miscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
@@ -37,6 +37,7 @@ export function useAppConfiguration() {
   const [bannerDuration, setBannerDuration] = useAppConfig<number>('bannerDuration', 3)
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
+  const [inputCursorSyncEnabled, setInputCursorSyncEnabled] = useAppConfig<boolean>('inputCursorSyncEnabled', false)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
   const [titlebarUpdateInterval, setTitlebarUpdateInterval] = useAppConfig<TitlebarUpdateInterval>('titlebarUpdateInterval', 0)
   const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
@@ -93,6 +94,16 @@ export function useAppConfiguration() {
     thermalCards: { ...DEFAULT_CORE_LAYOUT.thermalCards, ...(rawCoreLayout?.thermalCards ?? {}) },
     damageItems: { ...DEFAULT_CORE_LAYOUT.damageItems, ...(rawCoreLayout?.damageItems ?? {}) },
   }), [rawCoreLayout])
+  const inputLayout = useMemo<InputLayout>(() => {
+    const raw = (rawInputLayout ?? {}) as unknown as Partial<InputLayout> & { showInputs?: boolean }
+    const legacyPedals = typeof raw.showInputs === 'boolean' ? raw.showInputs : true
+    return {
+      showGear: raw.showGear ?? DEFAULT_INPUT_LAYOUT.showGear,
+      showAccelerator: raw.showAccelerator ?? legacyPedals,
+      showBrake: raw.showBrake ?? legacyPedals,
+      showSteering: raw.showSteering ?? DEFAULT_INPUT_LAYOUT.showSteering,
+    }
+  }, [rawInputLayout])
   const powerLayout = useMemo<PowerLayout>(() => ({
     statsCards: { ...DEFAULT_POWER_LAYOUT.statsCards, ...(rawPowerLayout?.statsCards ?? {}) },
     charts: { ...DEFAULT_POWER_LAYOUT.charts, ...(rawPowerLayout?.charts ?? {}) },
@@ -118,6 +129,9 @@ export function useAppConfiguration() {
   const graphView = useMemo<GraphViewState>(() => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
   const pageLayouts = useMemo<PageLayouts>(() => ({
     input: rawPageLayouts?.input === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.input,
+    inputPedals: rawPageLayouts?.inputPedals === 'split' || rawPageLayouts?.inputPedals === 'combined2'
+      ? rawPageLayouts.inputPedals
+      : DEFAULT_PAGE_LAYOUTS.inputPedals,
   }), [rawPageLayouts])
   const compact = useMemo<CompactState>(() => {
     const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>
@@ -160,10 +174,10 @@ export function useAppConfiguration() {
 
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
-    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
+    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
     setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,

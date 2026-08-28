@@ -1235,7 +1235,10 @@ export function startTelemetryBridge(): void {
   window.telemetryBridge.onBatch((batchStr: string) => {
     if (seekRendererPending &&
         !batchStr.includes('"type":"playback_close"') &&
-        !batchStr.includes('"type":"playback_loaded"')) return
+        !batchStr.includes('"type":"playback_loaded"') &&
+        // Indexed completed-lap payloads are independent of the playhead and
+        // are explicitly separated from old-cursor rows by the main process.
+        !batchStr.includes('"type":"playback_lap_data"')) return
     let dirty = DirtySlice.None
     let start = 0
     while (start < batchStr.length) {

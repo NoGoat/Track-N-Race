@@ -1,12 +1,13 @@
 import { useRef } from 'react'
 import { X } from 'lucide-react'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useModalPresence } from '../../lib/useModalPresence'
 
 interface LayoutEditorProps {
   coreLayout: CoreLayout
   editOpen: boolean
   inputLayout: InputLayout
+  pageLayouts: PageLayouts
   miscLayout: MiscLayout
   powerLayout: PowerLayout
   sessionLayout: SessionLayout
@@ -26,7 +27,7 @@ interface LayoutEditorProps {
 }
 
 export default function LayoutEditor(props: LayoutEditorProps) {
-  const { coreLayout, editOpen, inputLayout, miscLayout, powerLayout, sessionLayout, standingsLayout, setCoreLayout,
+  const { coreLayout, editOpen, inputLayout, pageLayouts, miscLayout, powerLayout, sessionLayout, standingsLayout, setCoreLayout,
     setEditOpen, setInputLayout, setMiscLayout, setPowerLayout, setSessionLayout, setStandingsLayout, setTyresLayout,
     tab, tyreView, tyreWearMode, tyresLayout } = props
   const editableTab = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
@@ -515,51 +516,66 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
                 <div className="flex flex-col gap-2">
                   <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Panels</div>
-                  <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]">
-                    {/* Top Row: Gear and Throttle/Brake Chart */}
-                    <div className="w-full flex divide-x divide-[var(--border)]">
+                  {(() => {
+                    type PreviewPanel = { key: string; label: string; on: boolean; toggle: () => void }
+                    const combinedOn = inputLayout.showAccelerator || inputLayout.showBrake
+                    const gear: PreviewPanel = {
+                      key: 'gear', label: 'Gear', on: inputLayout.showGear,
+                      toggle: () => setInputLayout({ ...inputLayout, showGear: !inputLayout.showGear }),
+                    }
+                    const accelerator: PreviewPanel = {
+                      key: 'accelerator', label: 'Accelerator', on: inputLayout.showAccelerator,
+                      toggle: () => setInputLayout({ ...inputLayout, showAccelerator: !inputLayout.showAccelerator }),
+                    }
+                    const brake: PreviewPanel = {
+                      key: 'brake', label: 'Brake', on: inputLayout.showBrake,
+                      toggle: () => setInputLayout({ ...inputLayout, showBrake: !inputLayout.showBrake }),
+                    }
+                    const combined: PreviewPanel = {
+                      key: 'combined',
+                      label: pageLayouts.inputPedals === 'combined2' ? 'Accelerator / Brake (Combined 2)' : 'Accelerator / Brake',
+                      on: combinedOn,
+                      toggle: () => setInputLayout({ ...inputLayout, showAccelerator: !combinedOn, showBrake: !combinedOn }),
+                    }
+                    const steering: PreviewPanel = {
+                      key: 'steering', label: 'Steering', on: inputLayout.showSteering,
+                      toggle: () => setInputLayout({ ...inputLayout, showSteering: !inputLayout.showSteering }),
+                    }
+                    const renderPanel = (panel: PreviewPanel, sizing: string) => (
                       <button
-                        onClick={() => setInputLayout({ ...inputLayout, showGear: !inputLayout.showGear })}
-                        className={`flex-1 h-48 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
-                          inputLayout.showGear
+                        key={panel.key}
+                        onClick={panel.toggle}
+                        className={`${sizing} flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                          panel.on
                             ? 'bg-[#5794F2]/10 text-[#5794F2]'
                             : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
                         }`}
                       >
-                        <span className="text-sm font-bold">Gear Indicator</span>
-                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showGear ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
-                          {inputLayout.showGear ? 'ACTIVE' : 'HIDDEN'}
+                        <span className="text-sm font-bold">{panel.label}</span>
+                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${panel.on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                          {panel.on ? 'ACTIVE' : 'HIDDEN'}
                         </span>
                       </button>
-                      <button
-                        onClick={() => setInputLayout({ ...inputLayout, showInputs: !inputLayout.showInputs })}
-                        className={`flex-1 h-48 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
-                          inputLayout.showInputs
-                            ? 'bg-[#5794F2]/10 text-[#5794F2]'
-                            : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
-                        }`}
-                      >
-                        <span className="text-sm font-bold">Throttle / Brake Chart</span>
-                        <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showInputs ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
-                          {inputLayout.showInputs ? 'ACTIVE' : 'HIDDEN'}
-                        </span>
-                      </button>
+                    )
+
+                    if (pageLayouts.input === 'vertical') {
+                      const panels = pageLayouts.inputPedals === 'split'
+                        ? [gear, accelerator, brake, steering]
+                        : [gear, combined, steering]
+                      return <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]">
+                        {panels.map(panel => renderPanel(panel, 'w-full flex-none min-h-[72px] px-4 py-3'))}
+                      </div>
+                    }
+
+                    const rows = pageLayouts.inputPedals === 'split'
+                      ? [[accelerator, brake], [gear, steering]]
+                      : [[gear, combined], [steering]]
+                    return <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]">
+                      {rows.map((row, index) => <div key={index} className="w-full flex divide-x divide-[var(--border)]">
+                        {row.map(panel => renderPanel(panel, `flex-1 ${pageLayouts.inputPedals === 'split' ? 'h-40' : index === 0 ? 'h-48' : 'h-28'}`))}
+                      </div>)}
                     </div>
-                    {/* Bottom Row: Steering full width */}
-                    <button
-                      onClick={() => setInputLayout({ ...inputLayout, showSteering: !inputLayout.showSteering })}
-                      className={`h-28 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
-                        inputLayout.showSteering
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
-                          : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="text-sm font-bold">Steering Telemetry</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${inputLayout.showSteering ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
-                        {inputLayout.showSteering ? 'ACTIVE' : 'HIDDEN'}
-                      </span>
-                    </button>
-                  </div>
+                  })()}
                 </div>
 
               </>) : (<>

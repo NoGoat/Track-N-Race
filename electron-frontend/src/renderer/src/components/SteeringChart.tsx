@@ -52,6 +52,13 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
   }, [axisColor, colorSteer, coordinates, hiddenSeries])
+  const cursorSync = useMemo(() => ({
+    id: 'inputSteering',
+    order: 40,
+    formatRow: (row: TelemetryRow) => hiddenSeries.Steering
+      ? ''
+      : `<div><span style="color:${colorSteer}">Steering</span>: ${fmtSteer(row.steering)}</div>`,
+  }), [colorSteer, hiddenSeries.Steering])
 
   return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
@@ -76,7 +83,7 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
           : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
             windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
             yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
-            tooltipFormat={tooltipFormat} />}
+            tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}
     </div>
   </div>
 }

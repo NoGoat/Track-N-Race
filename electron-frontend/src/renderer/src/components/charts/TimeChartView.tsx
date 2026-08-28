@@ -5,17 +5,20 @@ import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
 import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedData'
+import { seriesPointToPixels } from '../../lib/timechart/engine/core/nearestPoint'
 import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { niceTicks } from '../../lib/timechart/ticks'
 import type { CSSProperties } from 'react'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { getChartComparisonLabel } from '../../lib/chartComparisonTooltip'
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
 import { HISTORY_ROW } from '../../lib/historyDependencies'
 import { themeSeriesColor } from '../../lib/themeColors'
+import { useChartCursorSync } from '../../lib/chartCursorSync'
 
 // Reusable WebGL chart. This is the migration target that replaces per-chart
 // <UPlotReact> usage: it owns TimeChart creation/disposal, the incremental data
@@ -96,6 +99,43 @@ function lowerBoundSessionTime(rows: readonly { session_time: number }[], value:
   return lo
 }
 
+function nearestRowIndexBySessionTime(rows: readonly { session_time: number }[], value: number): number {
+  if (rows.length === 0) return -1
+  let index = lowerBoundSessionTime(rows, value)
+  if (index === rows.length) index--
+  else if (index > 0 && Math.abs(rows[index - 1].session_time - value) <= Math.abs(rows[index].session_time - value)) index--
+  return index
+}
+
+function nearestRowIndexByX<T>(rows: readonly T[], getX: (row: T) => number, value: number): number {
+  if (rows.length === 0) return -1
+  // Distance projection can temporarily leave a non-finite tail while lap
+  // progress catches up with newly received telemetry. Match the data bridge's
+  // finite-prefix policy so cursor sampling never alternates between a valid
+  // endpoint and an unmapped row.
+  let finiteEnd = rows.length
+  if (!Number.isFinite(getX(rows[finiteEnd - 1]))) {
+    let lo = 0, hi = finiteEnd
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (Number.isFinite(getX(rows[mid]))) lo = mid + 1
+      else hi = mid
+    }
+    finiteEnd = lo
+  }
+  if (finiteEnd === 0) return -1
+  let lo = 0, hi = finiteEnd
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (getX(rows[mid]) < value) lo = mid + 1
+    else hi = mid
+  }
+  let index = lo
+  if (index === finiteEnd) index--
+  else if (index > 0 && Math.abs(getX(rows[index - 1]) - value) <= Math.abs(getX(rows[index]) - value)) index--
+  return index
+}
+
 function replaceMissingTooltipValues(html: string): string {
   return html.replace(/\bNaN(?:% [LR])?/g, '—')
 }
@@ -153,6 +193,12 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   minScrollStallS?: number
   /** History family that should wake this chart's imperative AL bridge. */
   allLapsDataMask?: number
+  /** Optional imperative cursor-sync participant. Used by the Input page. */
+  cursorSync?: {
+    id: string
+    order: number
+    formatRow: (row: T) => string
+  }
 }
 
 export default function TimeChartView<T extends { session_time: number }>(props: TimeChartViewProps<T>) {
@@ -160,7 +206,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     isDark, rows, comparisonRows, getX, series, windowSeconds, yRange, yAxisSize,
     yTickValues, yTickFormat, xTickFormat, refLines, tooltipFormat,
     colorsFor = defaultColors, axisLook, tooltipStyle = TOOLTIP_STYLE, fastScroll,
-    followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry,
+    followSessionClock, minScrollStallS, allLapsDataMask = HISTORY_ROW.telemetry, cursorSync,
   } = props
 
   const look = axisLook ?? {}
@@ -180,7 +226,28 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
   const { ref: sizeRef, width, height } = useSize(120)
   const containerRef = useRef<HTMLDivElement>(null)
+  const syncCrosshairRef = useRef<SVGLineElement>(null)
+  const syncPointRefs = useRef<(SVGCircleElement | null)[]>([])
   const { tooltipRef, show, hide } = useChartTooltip(containerRef)
+  const cursorSyncContext = useChartCursorSync()
+  const cursorSyncContextRef = useRef(cursorSyncContext)
+  const cursorSyncConfigRef = useRef(cursorSync)
+  const rowsRef = useRef(rows)
+  const comparisonRowsRef = useRef(comparisonRows)
+  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
+  const comparisonKeyRef = useRef('')
+  cursorSyncContextRef.current = cursorSyncContext
+  cursorSyncConfigRef.current = cursorSync
+  rowsRef.current = rows
+  comparisonRowsRef.current = comparisonRows
+  const comparisonLapNum = coordinates.lapData?.lapNum
+  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
+  comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
+    ? `${baseComparisonLabel} ${comparisonLapNum}`
+    : baseComparisonLabel
+  comparisonKeyRef.current = coordinates.mode === 'RL'
+    ? `RL:${comparisonLapNum ?? ''}`
+    : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
   const bridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
   const comparisonBridgeRef = useRef<TimeChartDataBridge<T> | null>(null)
@@ -342,6 +409,118 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     bridgeRef.current = bridge
     comparisonBridgeRef.current = comparisonBridge
 
+    const hideSyncPoints = () => {
+      for (const point of syncPointRefs.current) {
+        if (point) point.style.visibility = 'hidden'
+      }
+    }
+    const syncManager = cursorSyncContextRef.current
+    const syncConfig = cursorSyncConfigRef.current
+    const syncAxisKind = coordinates.distanceMode ? 'distance' : 'time'
+    const unregisterSync = syncManager && syncConfig
+      ? syncManager.register({
+          id: syncConfig.id,
+          order: syncConfig.order,
+          axisKind: syncAxisKind,
+          resolveAxisX: axisX => {
+            const currentRows = rowsRef.current
+            const index = nearestRowIndexByX(currentRows, row => getXRef.current(row), axisX)
+            if (index < 0) return null
+            const row = currentRows[index]
+            const sampledAxisX = getXRef.current(row)
+            if (!Number.isFinite(sampledAxisX)) return null
+            return {
+              sessionTime: row.session_time,
+              sampledAxisX,
+            }
+          },
+          formatAxisX: axisX => axisCfgRef.current.xTickFormat(axisX),
+          syncToSessionTime: (sessionTime, sourceAxisX, sourceAxisKind, source) => {
+            const line = syncCrosshairRef.current
+            const currentRows = rowsRef.current
+            const index = nearestRowIndexBySessionTime(currentRows, sessionTime)
+            if (index < 0) {
+              if (line) line.style.visibility = 'hidden'
+              hideSyncPoints()
+              return { current: '' }
+            }
+            const cursorAxisX = sourceAxisKind === syncAxisKind
+              ? sourceAxisX
+              : getXRef.current(currentRows[index])
+            if (line) {
+              if (source) {
+                line.style.visibility = 'hidden'
+              } else {
+                // Keep every vertical cursor at the actual hovered X. The
+                // nearest telemetry row can be behind the pointer when the
+                // user inspects an unrecorded part of the lap; it is still
+                // useful for values, but must not pull peer crosshairs back to
+                // that row's position.
+                const px = chart.model.xScale(cursorAxisX)
+                const left = chart.options.paddingLeft
+                const right = chart.clientWidth - chart.options.paddingRight
+                if (Number.isFinite(px) && px >= left && px <= right) {
+                  line.style.visibility = 'visible'
+                  line.setAttribute('transform', `translate(${px} 0)`)
+                } else {
+                  line.style.visibility = 'hidden'
+                }
+              }
+            }
+            if (source) {
+              hideSyncPoints()
+            } else {
+              const cursorPx = chart.model.xScale(cursorAxisX)
+              const left = chart.options.paddingLeft
+              const right = chart.clientWidth - chart.options.paddingRight
+              const top = chart.options.paddingTop
+              const bottom = chart.clientHeight - chart.options.paddingBottom
+              const cursorVisible = Number.isFinite(cursorPx) && cursorPx >= left && cursorPx <= right
+              chart.options.series.forEach((chartSeries, seriesIndex) => {
+                const point = syncPointRefs.current[seriesIndex]
+                const pointIndex = nearestIndex(chartSeries.data, cursorAxisX)
+                if (!point || !cursorVisible || !chartSeries.visible || pointIndex < 0) {
+                  if (point) point.style.visibility = 'hidden'
+                  return
+                }
+                const pixel = seriesPointToPixels(
+                  chart.model,
+                  chartSeries,
+                  chartSeries.data.xAt(pointIndex),
+                  chartSeries.data.yAt(pointIndex),
+                )
+                if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)
+                  || pixel.x < left || pixel.x > right || pixel.y < top || pixel.y > bottom) {
+                  point.style.visibility = 'hidden'
+                  return
+                }
+                point.style.visibility = 'visible'
+                point.style.stroke = String(chartSeries.color ?? chart.options.color)
+                point.style.strokeWidth = `${chartSeries.lineWidth ?? chart.options.lineWidth}px`
+                point.setAttribute('transform', `translate(${pixel.x} ${pixel.y - top})`)
+              })
+            }
+            const comparisonBridge = comparisonBridgeRef.current
+            const comparisonIndex = nearestIndex(comparisonBridge, cursorAxisX)
+            const comparisonRow = comparisonIndex >= 0
+              ? comparisonRowsRef.current?.[comparisonIndex]
+              : undefined
+            return {
+              current: cursorSyncConfigRef.current?.formatRow(currentRows[index]) ?? '',
+              comparison: comparisonRow
+                ? cursorSyncConfigRef.current?.formatRow(comparisonRow) ?? ''
+                : undefined,
+              comparisonLabel: comparisonRow ? comparisonLabelRef.current ?? undefined : undefined,
+              comparisonKey: comparisonRow ? comparisonKeyRef.current || undefined : undefined,
+            }
+          },
+          clear: () => {
+            if (syncCrosshairRef.current) syncCrosshairRef.current.style.visibility = 'hidden'
+            hideSyncPoints()
+          },
+        })
+      : undefined
+
     // Crosshair uses currentColor; the nearest-point dot centre uses
     // --background-overlay. Keep both subtle and theme-aware.
     el.style.color = axisCfgRef.current.axisColor
@@ -392,7 +571,22 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     }
     const stopTooltipSync = chart.nearestPoint.updated.on(() => {
       const pointer = chart.nearestPoint.lastPointerPos
-      if (!pointer) { hide(); return }
+      const manager = cursorSyncContextRef.current
+      const config = cursorSyncConfigRef.current
+      if (!pointer) {
+        hide()
+        if (manager && config) manager.clear(config.id)
+        return
+      }
+      if (manager?.isEnabled() && config) {
+        hide()
+        const rect = containerRef.current?.getBoundingClientRect()
+        if (!rect) return
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const axisX = (chart.model.xScale as any).invert(pointer.x) as number
+        manager.publish(config.id, axisX, rect.left + pointer.x, rect.top + pointer.y)
+        return
+      }
       onMove(pointer.x - paddingLeft, pointer.y - paddingTop)
     })
 
@@ -400,6 +594,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
 
     return () => {
       stopTooltipSync()
+      unregisterSync?.()
       detach()
       chart.dispose()
       chartRef.current = null
@@ -762,6 +957,34 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   return <>
     <div className="absolute inset-0" ref={sizeRef}>
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 overflow-visible"
+        style={{ top: 4, bottom: look.xAxisSize ?? 22 }}
+      >
+        <svg className="block h-full w-full overflow-visible">
+          <line
+            ref={syncCrosshairRef}
+            x1="0"
+            x2="0"
+            y1="0"
+            y2="100%"
+            stroke={initColors.axis}
+            strokeWidth="1"
+            strokeDasharray="2 1"
+            style={{ visibility: 'hidden' }}
+          />
+          {Array.from({ length: series.length * 2 }, (_, index) => <circle
+            key={index}
+            ref={(point) => { syncPointRefs.current[index] = point }}
+            cx="0"
+            cy="0"
+            r="3"
+            fill={overlayBgFor(isDark)}
+            style={{ visibility: 'hidden' }}
+          />)}
+        </svg>
+      </div>
     </div>
     <ChartTooltipPortal tooltipRef={tooltipRef} style={tooltipStyle} />
   </>

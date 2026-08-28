@@ -94,13 +94,17 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
       ? comparisonLapNum !== null ? playbackCache[comparisonLapNum] ?? null : null
       : mode === 'PL' ? livePreviousLap : mode === 'FL' ? liveFastestLap : null
     : null
+  // A request made while the seek barrier is being established may complete
+  // against the old delivery generation. Recheck after every authoritative
+  // lap revision so a same-lap seek cannot leave a missing comparison cached
+  // as an apparently stable state.
   useEffect(() => {
     if (!isPlayback || (mode !== 'PL' && mode !== 'FL' && mode !== 'RL') || comparisonLapNum === null) return
     const requiredMask = (rowTypeMask | DATA_ROW.lap) >>> 0
     if (((playbackCache[comparisonLapNum]?.rowTypeMask ?? 0) & requiredMask) !== requiredMask) {
       window.playerBridge.getLapData(comparisonLapNum, requiredMask)
     }
-  }, [comparisonLapNum, isPlayback, mode, playbackCache, rowTypeMask])
+  }, [comparisonLapNum, currentLapRevision, isPlayback, mode, playbackCache, rowTypeMask])
 
   const enabled = mode !== null && mode !== 'AL' && mode !== 'SL'
   const allLapsMode = mode === 'AL' || mode === 'SL'

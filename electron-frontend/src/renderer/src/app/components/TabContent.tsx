@@ -20,6 +20,7 @@ import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/Analyz
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { ChartCursorSyncProvider } from '../../lib/chartCursorSync'
 
 const EMPTY_ROWS: never[] = []
 
@@ -40,6 +41,7 @@ interface TabContentProps {
   standingsLayout: StandingsLayout
   tyresLayout: TyresLayout
   inputLayout: InputLayout
+  inputCursorSyncEnabled: boolean
   pageLayouts: PageLayouts
   miscLayout: MiscLayout
   graphView: GraphViewState
@@ -64,12 +66,18 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, pageLayouts, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, pageLayouts, miscLayout,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
 }: TabContentProps) {
   const coordinates = useChartCoordinates()
+  const splitPedals = pageLayouts.inputPedals === 'split'
+  const combinedPedalMode = pageLayouts.inputPedals === 'combined2' ? 'combined2' : 'combined'
+  const combinedPedalView = combinedPedalMode === 'combined2'
+    ? graphView.inputThrottleBrakeOverlay
+    : graphView.inputThrottleBrake
+  const showCombinedPedals = inputLayout.showAccelerator || inputLayout.showBrake
   // Subscribe only to slices the active tab renders. Previously every normal
   // tab subscribed to `latest`, so playback forced the entire tab subtree
   // through React for every telemetry batch even on chart-only pages. AL chart
@@ -248,6 +256,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
         </div>
       )}
       {tab === 'input' && (
+        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled}>
         <div className="h-full flex flex-col overflow-hidden">
           {pageLayouts.input === 'vertical' ? (
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
@@ -256,9 +265,20 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                   <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
                 </div>
               )}
-              {inputLayout.showInputs && (
+              {splitPedals ? <>
+                {inputLayout.showAccelerator && (
+                  <div className="flex-1 min-h-0">
+                    <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                  </div>
+                )}
+                {inputLayout.showBrake && (
+                  <div className="flex-1 min-h-0">
+                    <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                  </div>
+                )}
+              </> : showCombinedPedals && (
                 <div className="flex-1 min-h-0">
-                  <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
+                  <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
                 </div>
               )}
               {inputLayout.showSteering && (
@@ -269,16 +289,46 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             </div>
           ) : (
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-              {(inputLayout.showGear || inputLayout.showInputs) && (
+              {splitPedals ? <>
+                {(inputLayout.showAccelerator || inputLayout.showBrake) && (
+                  <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                    {inputLayout.showAccelerator && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <InputsChart key="accelerator" mode="accelerator" isDark={isDark} view={graphView.inputAccelerator} windowSeconds={seconds} />
+                      </div>
+                    )}
+                    {inputLayout.showBrake && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <InputsChart key="brake" mode="brake" isDark={isDark} view={graphView.inputBrake} windowSeconds={seconds} />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(inputLayout.showGear || inputLayout.showSteering) && (
+                  <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                    {inputLayout.showGear && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                      </div>
+                    )}
+                    {inputLayout.showSteering && (
+                      <div className="flex-1 min-w-0 min-h-0">
+                        <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </> : <>
+              {(inputLayout.showGear || showCombinedPedals) && (
                 <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
                   {inputLayout.showGear && (
                     <div className="flex-1 min-w-0 min-h-0">
                       <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
                     </div>
                   )}
-                  {inputLayout.showInputs && (
+                  {showCombinedPedals && (
                     <div className="flex-1 min-w-0 min-h-0">
-                      <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
+                      <InputsChart key={combinedPedalMode} mode={combinedPedalMode} showAccelerator={inputLayout.showAccelerator} showBrake={inputLayout.showBrake} isDark={isDark} view={combinedPedalView} windowSeconds={seconds} />
                     </div>
                   )}
                 </div>
@@ -288,9 +338,11 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                   <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
                 </div>
               )}
+              </>}
             </div>
           )}
         </div>
+        </ChartCursorSyncProvider>
       )}
 
       {tab === 'power' && (

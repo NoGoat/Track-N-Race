@@ -1,6 +1,6 @@
 import { memo, type Dispatch, type SetStateAction } from 'react'
 import Select from '../../lib/AnimatedSelect'
-import { Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
+import { ChevronsLeftRightEllipsis, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
@@ -25,6 +25,7 @@ interface AppHeaderProps {
   headerVisible: boolean
   isFullscreen: boolean
   isMaximized: boolean
+  inputCursorSyncEnabled: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
   chartWindow: ChartWindow
@@ -33,6 +34,7 @@ interface AppHeaderProps {
   referenceLapOptions: Array<{ value: number; label: string }>
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
+  setInputCursorSyncEnabled: (enabled: boolean) => void
   setChartWindow: (window: ChartWindow) => void
   setReferenceLapNum: (lapNum: number | null) => void
   setSettingsOpen: (open: boolean) => void
@@ -44,9 +46,9 @@ interface AppHeaderProps {
 }
 
 export default memo(function AppHeader({
-  actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
+  actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
-  referenceLapNum, referenceLapOptions, setHeaderVisible, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
@@ -138,6 +140,14 @@ export default memo(function AppHeader({
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>
+        <button
+          onClick={() => tab === 'input' && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}
+          disabled={tab !== 'input'}
+          aria-pressed={tab === 'input' && inputCursorSyncEnabled}
+          title={tab === 'input' ? 'Synchronize Input chart crosshairs and tooltip' : 'Synchronized chart tooltip is currently available on the Input page'}
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className={`p-1.5 rounded transition-colors ${tab !== 'input' ? 'text-[var(--text-inactive)] cursor-not-allowed' : inputCursorSyncEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
+        ><ChevronsLeftRightEllipsis size={13} /></button>
         <button onClick={() => editable && setEditOpen(value => !value)} title="Edit layout" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${!editable ? 'text-[var(--text-inactive)] cursor-not-allowed' : editOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Pencil size={13} /></button>
         <button onClick={() => window.windowControls.minimizeToTray()} title="Background Mode" style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"><PictureInPicture2 size={13} /></button>
         <button onClick={() => window.windowControls.fullscreen()} title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0">{isFullscreen ? <Shrink size={13} /> : <Maximize size={13} />}</button>

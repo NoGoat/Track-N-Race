@@ -33,10 +33,10 @@ export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
-    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
+    setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
     setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
@@ -221,8 +221,8 @@ export default function AppShell() {
     [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask],
   )
   const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
-    tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView,
-  ), [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView])
+    tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
+  ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
   const visibleChartWindows = useMemo(() => visibleChartSections.length > 0
     ? visibleChartSections.map(section => chartWindowOverrides[section] ?? chartWindow)
     : [chartWindow],
@@ -312,6 +312,7 @@ export default function AppShell() {
         headerVisible={headerVisible}
         isFullscreen={isFullscreen}
         isMaximized={isMaximized}
+        inputCursorSyncEnabled={inputCursorSyncEnabled}
         onClosePlayback={playback.close}
         onSelectPlaybackFile={playback.selectFile}
         chartWindow={chartWindow}
@@ -320,6 +321,7 @@ export default function AppShell() {
         referenceLapOptions={referenceLapOptions}
         setEditOpen={setEditOpen}
         setHeaderVisible={setHeaderVisible}
+        setInputCursorSyncEnabled={setInputCursorSyncEnabled}
         setChartWindow={handleGlobalChartWindowChange}
         setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
@@ -341,6 +343,7 @@ export default function AppShell() {
         coreLayout={coreLayout}
         editOpen={editOpen}
         inputLayout={inputLayout}
+        pageLayouts={pageLayouts}
         miscLayout={miscLayout}
         powerLayout={powerLayout}
         sessionLayout={sessionLayout}
@@ -427,6 +430,7 @@ export default function AppShell() {
           standingsLayout={standingsLayout}
           tyresLayout={tyresLayout}
           inputLayout={inputLayout}
+          inputCursorSyncEnabled={inputCursorSyncEnabled}
           pageLayouts={pageLayouts}
           miscLayout={miscLayout}
           graphView={graphView}
