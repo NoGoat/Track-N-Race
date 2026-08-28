@@ -18,7 +18,7 @@ import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
 import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
-import type { CoreLayout, InputLayout, MiscLayout, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
+import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
 
 const EMPTY_ROWS: never[] = []
@@ -40,6 +40,7 @@ interface TabContentProps {
   standingsLayout: StandingsLayout
   tyresLayout: TyresLayout
   inputLayout: InputLayout
+  pageLayouts: PageLayouts
   miscLayout: MiscLayout
   graphView: GraphViewState
   compact: CompactState
@@ -63,7 +64,7 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, pageLayouts, miscLayout,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
@@ -248,27 +249,47 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       )}
       {tab === 'input' && (
         <div className="h-full flex flex-col overflow-hidden">
-          <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-            {(inputLayout.showGear || inputLayout.showInputs) && (
-              <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
-                {inputLayout.showGear && (
-                  <div className="flex-1 min-w-0 min-h-0">
-                    <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
-                  </div>
-                )}
-                {inputLayout.showInputs && (
-                  <div className="flex-1 min-w-0 min-h-0">
-                    <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
-                  </div>
-                )}
-              </div>
-            )}
-            {inputLayout.showSteering && (
-              <div className="flex-1 min-h-0">
-                <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
-              </div>
-            )}
-          </div>
+          {pageLayouts.input === 'vertical' ? (
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+              {inputLayout.showGear && (
+                <div className="flex-1 min-h-0">
+                  <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                </div>
+              )}
+              {inputLayout.showInputs && (
+                <div className="flex-1 min-h-0">
+                  <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
+                </div>
+              )}
+              {inputLayout.showSteering && (
+                <div className="flex-1 min-h-0">
+                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+              {(inputLayout.showGear || inputLayout.showInputs) && (
+                <div className="flex-1 min-h-0 flex divide-x divide-[var(--border)]">
+                  {inputLayout.showGear && (
+                    <div className="flex-1 min-w-0 min-h-0">
+                      <GearChart isDark={isDark} view={graphView.inputGear} windowSeconds={seconds} />
+                    </div>
+                  )}
+                  {inputLayout.showInputs && (
+                    <div className="flex-1 min-w-0 min-h-0">
+                      <InputsChart isDark={isDark} view={graphView.inputThrottleBrake} windowSeconds={seconds} />
+                    </div>
+                  )}
+                </div>
+              )}
+              {inputLayout.showSteering && (
+                <div className="flex-1 min-h-0">
+                  <SteeringChart isDark={isDark} view={graphView.inputSteering} windowSeconds={seconds} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

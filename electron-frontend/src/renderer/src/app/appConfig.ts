@@ -43,6 +43,10 @@ export const DEFAULT_CORE_LAYOUT: CoreLayout = {
 export interface InputLayout { showGear: boolean; showInputs: boolean; showSteering: boolean }
 export const DEFAULT_INPUT_LAYOUT: InputLayout = { showGear: true, showInputs: true, showSteering: true }
 
+export type InputPageLayout = 'grid' | 'vertical'
+export interface PageLayouts { input: InputPageLayout }
+export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid' }
+
 export interface MiscLayout { showGForce: boolean; showRideHeight: boolean }
 export const DEFAULT_MISC_LAYOUT: MiscLayout = { showGForce: true, showRideHeight: true }
 

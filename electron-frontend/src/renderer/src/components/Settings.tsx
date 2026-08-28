@@ -1,6 +1,6 @@
 import { Fragment, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
@@ -12,7 +12,7 @@ import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
-import type { Theme, TitlebarUpdateInterval } from '../app/appConfig'
+import type { PageLayouts, Theme, TitlebarUpdateInterval } from '../app/appConfig'
 import { useModalPresence } from '../lib/useModalPresence'
 
 interface Props {
@@ -47,6 +47,8 @@ interface Props {
   onFpsOutOfFocusChange: (v: ChartFrameRate) => void
   mapDimmed: boolean
   onMapDimmedChange: (v: boolean) => void
+  pageLayouts: PageLayouts
+  onPageLayoutsChange: (v: PageLayouts) => void
   graphView: GraphViewState
   onGraphViewChange: (v: GraphViewState) => void
   compact: CompactState
@@ -207,6 +209,8 @@ const Settings = memo(function Settings({
   onFpsOutOfFocusChange,
   mapDimmed,
   onMapDimmedChange,
+  pageLayouts,
+  onPageLayoutsChange,
   graphView,
   onGraphViewChange,
   compact,
@@ -215,7 +219,7 @@ const Settings = memo(function Settings({
   onChartYAxisChange,
 }: Props) {
   const modalPresence = useModalPresence(isOpen)
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
@@ -364,6 +368,7 @@ const Settings = memo(function Settings({
 
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
+    { id: 'layout' as const, label: 'Layout', icon: <LayoutGrid size={14} />, color: '#f97316' },
     { id: 'graphs' as const, label: 'Graphs', icon: <LineChart size={14} />, color: '#0ea5e9' },
     { id: 'yAxis' as const, label: 'Y Axis Behavior', icon: <MoveVertical size={14} />, color: '#6366f1' },
     { id: 'compact' as const, label: 'Compact', icon: <Shrink size={14} />, color: '#14b8a6' },
@@ -458,6 +463,25 @@ const Settings = memo(function Settings({
 
   const GroupLabel = ({ children }: { children: React.ReactNode }) => (
     <div className="px-4 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{children}</div>
+  )
+
+  const renderLayout = () => (
+    <div className="flex flex-col gap-1">
+      <GroupLabel>Inputs</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Gear, Throttle/Brake, and Steering charts on the Input page. Vertical gives each chart its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.input}
+          onChange={(input) => onPageLayoutsChange({ ...pageLayouts, input })}
+        />
+      </Row>
+    </div>
   )
 
   const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
@@ -992,6 +1016,8 @@ const Settings = memo(function Settings({
     switch (activeCategory) {
       case 'appearance':
         return renderAppearance()
+      case 'layout':
+        return renderLayout()
       case 'graphs':
         return renderGraphs()
       case 'yAxis':

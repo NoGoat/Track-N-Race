@@ -9,7 +9,7 @@ function normalizeDensity(val: unknown): DensityMode {
   if (val === 'spacious') return 'spacious'
   return 'normal'
 }
-import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
+import { DEFAULT_CORE_LAYOUT, DEFAULT_INPUT_LAYOUT, DEFAULT_MISC_LAYOUT, DEFAULT_PAGE_LAYOUTS, DEFAULT_POWER_LAYOUT, DEFAULT_SESSION_LAYOUT, DEFAULT_STANDINGS_LAYOUT, DEFAULT_TYRES_LAYOUT, type ChartWindow, type CoreLayout, type InputLayout, type MiscLayout, type PageLayouts, type PowerLayout, type SessionLayout, type StandingsLayout, type Theme, type TitlebarUpdateInterval, type TyresLayout } from '../appConfig'
 
 export function useAppConfiguration() {
   const [actualNativeTitlebar] = useState(() => window.electronStore.get('nativeTitlebar', false) as boolean)
@@ -25,6 +25,7 @@ export function useAppConfiguration() {
   const [tyreWearMode, setTyreWearMode] = useAppConfig<'wear' | 'life'>('tyreWearMode', 'life')
   const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
   const [inputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
+  const [rawPageLayouts, setPageLayouts] = useAppConfig<PageLayouts>('pageLayouts', DEFAULT_PAGE_LAYOUTS)
   const [miscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
   const [rawSessionLayout, setSessionLayout] = useAppConfig<SessionLayout>('sessionLayout', DEFAULT_SESSION_LAYOUT)
@@ -115,6 +116,9 @@ export function useAppConfiguration() {
     cards: { ...DEFAULT_STANDINGS_LAYOUT.cards, ...(rawStandingsLayout?.cards ?? {}) },
   }), [rawStandingsLayout])
   const graphView = useMemo<GraphViewState>(() => ({ ...DEFAULT_GRAPH_VIEW, ...(rawGraphView ?? {}) }), [rawGraphView])
+  const pageLayouts = useMemo<PageLayouts>(() => ({
+    input: rawPageLayouts?.input === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.input,
+  }), [rawPageLayouts])
   const compact = useMemo<CompactState>(() => {
     const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>
     const legacyWeather = raw.sessionWeather
@@ -156,11 +160,11 @@ export function useAppConfiguration() {
 
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
+    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
-    setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
+    setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
     setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }

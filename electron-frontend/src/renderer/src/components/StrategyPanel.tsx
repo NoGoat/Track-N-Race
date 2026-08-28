@@ -46,7 +46,7 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
       </div>
       <span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">{ready?`${s.current_tyre_age_laps}L · ${s.wear_per_lap.toFixed(1)}%/L`:'—'}</span>
     </div>
-    <div className="shrink-0 flex items-baseline gap-2 px-6 py-1.5">
+    <div className="shrink-0 flex items-center gap-2 px-6 py-1.5">
       <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Tyre Cliff</span>
       <span className="text-sm font-black tabular-nums leading-none" style={{color:cliffColor}}>{ready?`Lap ${s.cliff_lap}`:'—'}</span>
       {ready&&<span className="text-[10px] text-[var(--text-secondary)]">+{s.laps_until_cliff}</span>}

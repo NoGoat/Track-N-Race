@@ -33,11 +33,11 @@ export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout,
+    fpsInFocus, fpsOutOfFocus, graphView, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputLayout, setMapDimmed,
-    setMapTimeout, setMiscLayout, setNativeTitlebar, setPowerLayout, setReduceAnimations,
+    setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
     setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
@@ -392,6 +392,8 @@ export default function AppShell() {
         onFpsOutOfFocusChange={setFpsOutOfFocus}
         mapDimmed={mapDimmed}
         onMapDimmedChange={setMapDimmed}
+        pageLayouts={pageLayouts}
+        onPageLayoutsChange={setPageLayouts}
         graphView={graphView}
         onGraphViewChange={setGraphView}
         compact={compact}
@@ -425,6 +427,7 @@ export default function AppShell() {
           standingsLayout={standingsLayout}
           tyresLayout={tyresLayout}
           inputLayout={inputLayout}
+          pageLayouts={pageLayouts}
           miscLayout={miscLayout}
           graphView={graphView}
           compact={compact}
