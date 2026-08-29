@@ -217,10 +217,10 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   }, [series, hiddenSeries, unit, axisColor, coordinates])
 
   return (
-    <div className="tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] px-4 pb-4 pt-3 flex flex-col">
+    <div className="chart-panel tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] flex flex-col">
       <div className="tyre-chart-header flex h-[22px] items-center justify-between mb-2 shrink-0">
         <div ref={controlsRef} className="tyre-chart-controls flex min-w-0 flex-1 items-center gap-0">
-          <span ref={titleRef} className="tyre-chart-title min-w-min shrink-0 whitespace-normal pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
+          <span ref={titleRef} className="chart-panel-title tyre-chart-title min-w-min shrink-0 whitespace-normal text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</span>
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="tyre-chart-legend flex shrink-0 items-center gap-3">

@@ -7,6 +7,7 @@ import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
+import { INPUT_CHART_Y_AXIS_SIZE } from '../lib/inputChartLayout'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_STEER = '#BF5FFF'
@@ -19,6 +20,10 @@ function fmtTime(s: number) { return `${Math.floor(s / 60)}:${String(Math.floor(
 function fmtSteer(v: number) {
   if (Math.abs(v) < 0.005) return '0%'
   return `${Math.abs(v * 100).toFixed(0)}% ${v < 0 ? 'L' : 'R'}`
+}
+function fmtSteerAxis(v: number) {
+  if (Math.abs(v) < 0.005) return '0'
+  return `${v < 0 ? 'L' : 'R'}${Math.round(Math.abs(v) * 100)}`
 }
 
 function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
@@ -60,10 +65,10 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
       : `<div><span style="color:${colorSteer}">Steering</span>: ${fmtSteer(row.steering)}</div>`,
   }), [colorSteer, hiddenSeries.Steering])
 
-  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+  return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
-        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
+        <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Steering</h2>
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">
@@ -81,8 +86,8 @@ function SteeringChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Pr
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
-            windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={52}
-            yTickValues={() => Y_TICKS} yTickFormat={fmtSteer} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
+            windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: -1, max: 1 }} yAxisSize={INPUT_CHART_Y_AXIS_SIZE}
+            yTickValues={() => Y_TICKS} yTickFormat={fmtSteerAxis} xTickFormat={fmtTime} refLines={[{ y: 0, dashed: false }]}
             tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}
     </div>
   </div>

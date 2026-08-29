@@ -55,8 +55,9 @@ export const DEFAULT_INPUT_LAYOUT: InputLayout = {
 
 export type InputPageLayout = 'grid' | 'vertical'
 export type InputPedalLayout = 'combined' | 'combined2' | 'split'
-export interface PageLayouts { input: InputPageLayout; inputPedals: InputPedalLayout }
-export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid', inputPedals: 'combined' }
+export type PowerPageLayout = 'grid' | 'vertical'
+export interface PageLayouts { input: InputPageLayout; inputPedals: InputPedalLayout; power: PowerPageLayout }
+export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid', inputPedals: 'combined', power: 'grid' }
 
 export interface MiscLayout { showGForce: boolean; showRideHeight: boolean }
 export const DEFAULT_MISC_LAYOUT: MiscLayout = { showGForce: true, showRideHeight: true }

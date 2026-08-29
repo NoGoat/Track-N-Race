@@ -100,10 +100,10 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
   }, [colorFront, colorRear, coordinates, hiddenSeries, tooltipTimeColor])
 
   return (
-    <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+    <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
       <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-0">
-          <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
+          <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">

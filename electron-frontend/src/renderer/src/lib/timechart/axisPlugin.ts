@@ -1,5 +1,10 @@
 import type { TimeChartPlugin } from './tc'
 
+// Y-axis labels use a centered text baseline. Keep the plot boundary at least
+// half of the default 11 px axis font below the canvas edge so the top label's
+// glyphs are not clipped.
+export const AXIS_LABEL_TOP_PADDING = 6
+
 // Axes and grids are redrawn every display frame while a chart scrolls. Using
 // two stable canvas layers keeps that work out of the DOM: All Laps can have
 // dozens of lap-boundary ticks per chart, which previously meant hundreds of

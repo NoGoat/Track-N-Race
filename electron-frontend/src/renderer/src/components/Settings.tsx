@@ -495,6 +495,20 @@ const Settings = memo(function Settings({
           onChange={(inputPedals) => onPageLayoutsChange({ ...pageLayouts, inputPedals })}
         />
       </Row>
+      <GroupLabel>Power</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Power charts as a 2×2 grid or an aligned vertical stack. Every chart keeps its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.power}
+          onChange={(power) => onPageLayoutsChange({ ...pageLayouts, power })}
+        />
+      </Row>
     </div>
   )
 

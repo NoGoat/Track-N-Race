@@ -102,10 +102,10 @@ function SpeedRpmChartContent(props: Props) {
     return [ts, speed, rpm, ers]
   }, [coordinates, data, statusHistory, view])
 
-  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 flex flex-col h-full">
+  return <div className="chart-panel bg-[var(--bg-panel)] flex flex-col h-full">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
-        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
+        <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Speed + RPM + ERS</h2>
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">

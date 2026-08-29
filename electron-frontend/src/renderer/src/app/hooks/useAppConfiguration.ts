@@ -132,6 +132,7 @@ export function useAppConfiguration() {
     inputPedals: rawPageLayouts?.inputPedals === 'split' || rawPageLayouts?.inputPedals === 'combined2'
       ? rawPageLayouts.inputPedals
       : DEFAULT_PAGE_LAYOUTS.inputPedals,
+    power: rawPageLayouts?.power === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.power,
   }), [rawPageLayouts])
   const compact = useMemo<CompactState>(() => {
     const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>

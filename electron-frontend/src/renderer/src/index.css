@@ -315,6 +315,16 @@ body {
   }
 }
 
+/* Chart axes reserve their own label gutter. Keep the shared panel shell flush
+   on the left so that gutter is not duplicated by outer container padding. */
+.chart-panel {
+  padding: 0.75rem 1rem 1rem 0;
+}
+
+.chart-panel-title {
+  margin-left: 16px;
+}
+
 /* Each tyre graph responds to its own tile width, not the application width.
    At compact widths the four-corner legend folds into a stable 2x2 grid. */
 .tyre-chart-container {

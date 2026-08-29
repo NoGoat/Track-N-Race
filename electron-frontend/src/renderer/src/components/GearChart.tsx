@@ -7,6 +7,7 @@ import { useChartCoordinates } from '../lib/chartCoordinates'
 import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
+import { INPUT_CHART_Y_AXIS_SIZE } from '../lib/inputChartLayout'
 
 interface Props { isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number }
 const COLOR_GEAR = '#5794F2'
@@ -64,10 +65,10 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
       : `<div><span style="color:${colorGear}">Gear</span>: ${Math.round(row.gear)}</div>`,
   }), [colorGear, hiddenSeries.Gear])
 
-  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+  return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
-        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Gear</h2>
+        <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Gear</h2>
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">
@@ -84,7 +85,7 @@ function GearChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props)
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <TimeChartView<TelemetryRow> key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
-              windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={52}
+              windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: 0.5, max: 8.5 }} yAxisSize={INPUT_CHART_Y_AXIS_SIZE}
               yTickValues={() => GEAR_TICKS} yTickFormat={v => String(v)} xTickFormat={fmtTime}
               refLines={[2, 4, 6].map(y => ({ y, dashed: true }))} tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}
     </div>

@@ -10,6 +10,8 @@ import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } fr
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import { POWER_CHART_Y_AXIS_SIZE } from '../lib/powerChartLayout'
+import type { PowerPageLayout } from '../app/appConfig'
 
 interface CP { data: StatusRow[]; isDark: boolean; view?: 'chart' | 'table'; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }
 
@@ -18,6 +20,13 @@ const C_MGUK   = '#FADE2A'
 const C_HARV_K = '#37872D'
 const C_HARV_H = '#C4162A'
 const C_FUEL   = '#F0A500'
+
+const POWER_CURSOR_ORDER: Partial<Record<GraphSection, number>> = {
+  powerSplit: 10,
+  powerHarvest: 20,
+  powerStore: 30,
+  powerFuel: 40,
+}
 
 const COLS_SPLIT: GraphTableColumn[] = [
   { header: 'ICE', color: C_ICE, format: v => `${v.toFixed(1)}kW` },
@@ -59,7 +68,7 @@ interface PowerLineProps extends CP {
 
 function PowerLineChartContent(props: PowerLineProps) {
   const {
-    title, isDark, view = 'chart', windowSeconds = 30, series, columns,
+    section, title, isDark, view = 'chart', windowSeconds = 30, series, columns,
     yRange, yFormat, note, tooltipDetails,
   } = props
   const coordinates = useChartCoordinates()
@@ -95,25 +104,33 @@ function PowerLineChartContent(props: PowerLineProps) {
   }, [coordinates.allLapsMode, data, view, visibleEntries])
 
   const axisColor = isDark ? '#7c8098' : '#596168'
-  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
-    const formatValues = (source: number[]) => [
+  const formatValues = useCallback((source: number[]) => [
       ...visibleEntries.map(e =>
         `<div><span style="color:${e.series.color}">${e.series.label}</span>: ${e.column.format(source[e.sourceIndex])}</div>`,
       ),
       tooltipDetails?.(source, axisColor) ?? '',
-    ].join('')
+    ].join(''), [axisColor, tooltipDetails, visibleEntries])
+  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
     return [
       `<div style="color:${axisColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(values),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [axisColor, coordinates, tooltipDetails, visibleEntries])
+  }, [axisColor, coordinates, formatValues])
+  const cursorSync = useMemo(() => ({
+    id: section,
+    order: POWER_CURSOR_ORDER[section] ?? 100,
+    formatRow: (row: StatusRow) => [
+      `<div style="color:${axisColor};margin-top:3px">${title}</div>`,
+      formatValues(themedSeries.map(item => item.getY(row))),
+    ].join(''),
+  }), [axisColor, formatValues, section, themedSeries, title])
 
   return (
-    <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+    <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
       <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-0">
-          <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
+          <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
@@ -149,7 +166,7 @@ function PowerLineChartContent(props: PowerLineProps) {
             series={themedSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
-            yAxisSize={52}
+            yAxisSize={POWER_CHART_Y_AXIS_SIZE}
             yTickValues={yRange.kind !== 'auto' ? (min, max) => {
               const step = (max - min) / 4
               return Array.from({ length: 5 }, (_, i) => min + step * i)
@@ -157,6 +174,7 @@ function PowerLineChartContent(props: PowerLineProps) {
             yTickFormat={yFormat}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
+            cursorSync={cursorSync}
             fastScroll
             followSessionClock
             minScrollStallS={1}
@@ -213,7 +231,7 @@ export interface PowerViews {
   ersStore?: 'chart' | 'table'; fuelHistory?: 'chart' | 'table'
 }
 
-export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, harvestUpperLimit = 8000, ersHarvestYAxis = 'fixed' }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior }) {
+export default function PowerBreakdownChart({ data, isDark, visibleCharts, views, windowSeconds = 30, fuelUpperLimit, hasMguh = false, harvestUpperLimit = 8000, ersHarvestYAxis = 'fixed', layout = 'grid' }: { data: StatusRow[]; isDark: boolean; visibleCharts: VisibleCharts; views?: PowerViews; windowSeconds?: number; fuelUpperLimit?: number | null; hasMguh?: boolean; harvestUpperLimit?: number; ersHarvestYAxis?: YAxisBehavior; layout?: PowerPageLayout }) {
   const items = [
     { key: 'powerSplit', el: <PowerSplitChart data={data} isDark={isDark} view={views?.powerSplit} windowSeconds={windowSeconds} /> },
     { key: 'ersHarvest', el: <ERSHarvestChart data={data} isDark={isDark} view={views?.ersHarvest} windowSeconds={windowSeconds} hasMguh={hasMguh} harvestUpperLimit={harvestUpperLimit} ersHarvestYAxis={ersHarvestYAxis} /> },
@@ -221,11 +239,17 @@ export default function PowerBreakdownChart({ data, isDark, visibleCharts, views
     { key: 'fuelHistory', el: <FuelHistoryChart data={data} isDark={isDark} view={views?.fuelHistory} windowSeconds={windowSeconds} fuelUpperLimit={fuelUpperLimit} /> },
   ].filter(({ key }) => visibleCharts[key as keyof VisibleCharts])
   const odd = items.length % 2 !== 0
+  const vertical = layout === 'vertical'
 
   return (
-    <div className="h-full grid grid-cols-2 gap-[1px] bg-[var(--border)] overflow-hidden" style={{ gridAutoRows: '1fr' }}>
+    <div
+      className={vertical
+        ? 'h-full flex flex-col divide-y divide-[var(--border)] bg-[var(--border)] overflow-hidden'
+        : 'h-full grid grid-cols-2 gap-[1px] bg-[var(--border)] overflow-hidden'}
+      style={vertical ? undefined : { gridAutoRows: '1fr' }}
+    >
       {items.map(({ key, el }, i) => (
-        <div key={key} className={`h-full flex flex-col overflow-hidden${odd && i === items.length - 1 ? ' col-span-2' : ''}`}>
+        <div key={key} className={`${vertical ? 'flex-1 min-h-0' : 'h-full'} flex flex-col overflow-hidden${!vertical && odd && i === items.length - 1 ? ' col-span-2' : ''}`}>
           {el}
         </div>
       ))}

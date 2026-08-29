@@ -449,7 +449,9 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                   {/* Charts Breakdown Preview */}
                   <div className="flex flex-col gap-2">
                     <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts</div>
-                    <div className="w-full flex rounded-none overflow-hidden border border-[var(--border)] divide-x divide-[var(--border)] bg-[var(--bg-input)]">
+                    <div className={pageLayouts.power === 'vertical'
+                      ? 'w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]'
+                      : 'w-full grid grid-cols-2 gap-px rounded-none overflow-hidden border border-[var(--border)] bg-[var(--border)]'}>
                       {([
                         { key: 'powerSplit',  label: 'Power'        },
                         { key: 'ersHarvest',  label: 'ERS Harvest'  },
@@ -461,7 +463,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                           <button
                             key={key}
                             onClick={() => setPowerLayout({ ...powerLayout, charts: { ...powerLayout.charts, [key]: !on } })}
-                            className={`flex-1 h-44 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
+                            className={`${pageLayouts.power === 'vertical' ? 'w-full min-h-[72px] py-3' : 'h-32'} flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                               on
                                 ? 'bg-[#5794F2]/10 text-[#5794F2]'
                                 : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'

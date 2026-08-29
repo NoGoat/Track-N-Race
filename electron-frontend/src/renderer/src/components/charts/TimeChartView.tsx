@@ -6,7 +6,7 @@ import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { TimeChartDataBridge } from '../../lib/timechart/dataBridge'
 import type { AlignedSeriesData } from '../../lib/timechart/engine/core/alignedData'
 import { seriesPointToPixels } from '../../lib/timechart/engine/core/nearestPoint'
-import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
+import { AXIS_LABEL_TOP_PADDING, createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { createReferenceLinesPlugin, type RefLine, type RefLinesConfig } from '../../lib/timechart/referenceLines'
 import { niceTicks } from '../../lib/timechart/ticks'
 import type { CSSProperties } from 'react'
@@ -193,7 +193,7 @@ export interface TimeChartViewProps<T extends { session_time: number }> {
   minScrollStallS?: number
   /** History family that should wake this chart's imperative AL bridge. */
   allLapsDataMask?: number
-  /** Optional imperative cursor-sync participant. Used by the Input page. */
+  /** Optional imperative cursor-sync participant. Used by multi-chart pages. */
   cursorSync?: {
     id: string
     order: number
@@ -358,7 +358,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       plugins.refLines = createReferenceLinesPlugin(refCfgRef)
     }
     const b = boundsRef.current
-    const paddingTop = 4
+    const paddingTop = AXIS_LABEL_TOP_PADDING
     const paddingRight = look.paddingRight ?? 16
     const paddingBottom = look.xAxisSize ?? 22
     const paddingLeft = yAxisSize + (look.paddingLeftExtra ?? 4)

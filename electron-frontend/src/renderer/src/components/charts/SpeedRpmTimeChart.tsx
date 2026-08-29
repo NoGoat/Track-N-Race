@@ -4,7 +4,7 @@ import { ChartTooltipPortal, useChartTooltip } from '../../hooks/useChartTooltip
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
-import { createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
+import { AXIS_LABEL_TOP_PADDING, createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
@@ -219,8 +219,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     } }
     axisCfgRef.current = axisCfg
     const chart = new TimeChart.core(host, {
-      paddingTop: 4, paddingRight: 100, paddingBottom: 22, paddingLeft: 44,
-      renderPaddingTop: 4, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
+      paddingTop: AXIS_LABEL_TOP_PADDING, paddingRight: 100, paddingBottom: 22, paddingLeft: 44,
+      renderPaddingTop: AXIS_LABEL_TOP_PADDING, renderPaddingRight: 100, renderPaddingBottom: 22, renderPaddingLeft: 44,
       yRange: { min: 0, max: 1 }, lineWidth: 1.5,
       series: [
         { name: 'Previous Speed', color: blendComparisonColor(colors.speed, isDark), lineWidth: 1, visible: false, data: comparisonBuffer.series[0], lineType: coordinates.allLapsMode ? TimeChart.LineType.NativeLine : TimeChart.LineType.Line },

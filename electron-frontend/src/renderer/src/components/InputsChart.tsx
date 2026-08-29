@@ -8,6 +8,7 @@ import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import type { GraphSection } from '../lib/graphSections'
 import { themeSeriesColor } from '../lib/themeColors'
+import { INPUT_CHART_Y_AXIS_SIZE } from '../lib/inputChartLayout'
 
 export type PedalChartMode = 'combined' | 'combined2' | 'accelerator' | 'brake'
 
@@ -151,10 +152,10 @@ function InputsChartContent({
       return [`<div><span style="color:${color}">${series.label}</span>: ${fmtPercent(series.getY(row))}</div>`]
     }).join(''),
   }), [baseSeries, colorAccelerator, colorBrake, hiddenSeries, mode, showAccelerator, showBrake])
-  return <div className="bg-[var(--bg-panel)] px-4 pb-4 pt-3 h-full flex flex-col">
+  return <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
     <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
       <div className="flex items-center gap-0">
-        <h2 className="pr-[4px] text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
+        <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{title}</h2>
         <ChartWindowOverrideSelect />
       </div>
       {view !== 'table' && <div className="flex items-center gap-4 text-xs">
@@ -178,7 +179,7 @@ function InputsChartContent({
       {data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-[var(--text-secondary)] text-sm">No data</div>
         : view === 'table' ? <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} />
           : <TimeChartView<TelemetryRow> key={`${mode}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`} isDark={isDark} rows={data} comparisonRows={coordinates.comparisonMode ? coordinates.lapData?.telemetry : undefined} getX={d => d.session_time} series={chartSeries}
-            windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: combined ? -1 : 0, max: 1 }} yAxisSize={52}
+            windowSeconds={scopedWindowSeconds} yRange={{ kind: 'fixed', min: combined ? -1 : 0, max: 1 }} yAxisSize={INPUT_CHART_Y_AXIS_SIZE}
             yTickValues={() => combined ? COMBINED_Y_TICKS : SINGLE_Y_TICKS} yTickFormat={fmtPercent} xTickFormat={fmtTime}
             refLines={[{ y: 0, dashed: false }]} tooltipFormat={tooltipFormat} cursorSync={cursorSync} />}
     </div>
