@@ -1,6 +1,6 @@
 import { memo, type Dispatch, type SetStateAction } from 'react'
 import Select from '../../lib/AnimatedSelect'
-import { ChevronsLeftRightEllipsis, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
+import { ChartLine, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
@@ -53,8 +53,7 @@ export default memo(function AppHeader({
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres' || tab === 'session' || tab === 'timing_tower'
-  const cursorSyncAvailable = tab === 'input' || tab === 'power'
-  const cursorSyncPageLabel = tab === 'power' ? 'Power' : 'Input'
+  const cursorSyncAvailable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
   const accent = sessionType !== undefined ? sessionAccent(sessionType, theme !== 'light') : null
   const usesTitleBarOverlay = (window.platform === 'win32' || window.platform === 'linux') && !actualNativeTitlebar
   const headerPadding = actualNativeTitlebar
@@ -146,10 +145,10 @@ export default memo(function AppHeader({
           onClick={() => cursorSyncAvailable && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}
           disabled={!cursorSyncAvailable}
           aria-pressed={cursorSyncAvailable && inputCursorSyncEnabled}
-          title={cursorSyncAvailable ? `Synchronize ${cursorSyncPageLabel} chart crosshairs and tooltip` : 'Synchronized chart tooltip is available on the Input and Power pages'}
+          title={cursorSyncAvailable ? 'Synchronize Tooltip' : 'Synchronized chart tooltip is available on the Overview, Input, Misc, Power, and Tyres pages'}
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : inputCursorSyncEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
-        ><ChevronsLeftRightEllipsis size={13} /></button>
+        ><ChartLine size={13} /></button>
         <button onClick={() => editable && setEditOpen(value => !value)} title="Edit layout" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${!editable ? 'text-[var(--text-inactive)] cursor-not-allowed' : editOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Pencil size={13} /></button>
         <button onClick={() => window.windowControls.minimizeToTray()} title="Background Mode" style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"><PictureInPicture2 size={13} /></button>
         <button onClick={() => window.windowControls.fullscreen()} title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'} style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0">{isFullscreen ? <Shrink size={13} /> : <Maximize size={13} />}</button>

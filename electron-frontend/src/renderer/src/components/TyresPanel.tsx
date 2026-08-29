@@ -9,6 +9,7 @@ import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
 import { useChartCoordinates } from '../lib/chartCoordinates'
+import type { TyresPageLayout } from '../app/appConfig'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -24,6 +25,7 @@ interface Props {
   sessionType:   number | null
   windowSeconds?: number
   yAxis:          TyreYAxisGroupState
+  chartLayout?:   TyresPageLayout
 }
 
 const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
@@ -245,7 +247,7 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis, chartLayout = 'grid' }: Props) {
   const fullLapMode = useChartCoordinates().allLapsMode
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
@@ -358,7 +360,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             visibleGraphs={visibleGraphs}
             graphViews={graphViews}
             isDark={isDark}
-            layout="grid"
+            layout={chartLayout}
             windowSeconds={windowSeconds}
             yAxis={yAxis}
             sectionGroup="tyres"

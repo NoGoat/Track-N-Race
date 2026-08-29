@@ -49,6 +49,10 @@ interface Props {
   onMapDimmedChange: (v: boolean) => void
   pageLayouts: PageLayouts
   onPageLayoutsChange: (v: PageLayouts) => void
+  secondaryHorizontalCrosshairEnabled: boolean
+  onSecondaryHorizontalCrosshairEnabledChange: (v: boolean) => void
+  secondaryVerticalCrosshairEnabled: boolean
+  onSecondaryVerticalCrosshairEnabledChange: (v: boolean) => void
   graphView: GraphViewState
   onGraphViewChange: (v: GraphViewState) => void
   compact: CompactState
@@ -211,6 +215,10 @@ const Settings = memo(function Settings({
   onMapDimmedChange,
   pageLayouts,
   onPageLayoutsChange,
+  secondaryHorizontalCrosshairEnabled,
+  onSecondaryHorizontalCrosshairEnabledChange,
+  secondaryVerticalCrosshairEnabled,
+  onSecondaryVerticalCrosshairEnabledChange,
   graphView,
   onGraphViewChange,
   compact,
@@ -495,6 +503,33 @@ const Settings = memo(function Settings({
           onChange={(inputPedals) => onPageLayoutsChange({ ...pageLayouts, inputPedals })}
         />
       </Row>
+      <GroupLabel>Misc</GroupLabel>
+      <Row
+        label="G-Force Charts"
+        description="Show lateral and longitudinal G-force together or as two aligned charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.miscGForce}
+          onChange={(miscGForce) => onPageLayoutsChange({ ...pageLayouts, miscGForce })}
+        />
+      </Row>
+      <Row
+        label="Ride Height Charts"
+        description="Show front and rear ride height together or as two aligned charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.miscRideHeight}
+          onChange={(miscRideHeight) => onPageLayoutsChange({ ...pageLayouts, miscRideHeight })}
+        />
+      </Row>
       <GroupLabel>Power</GroupLabel>
       <Row
         label="Chart Layout"
@@ -508,6 +543,33 @@ const Settings = memo(function Settings({
           value={pageLayouts.power}
           onChange={(power) => onPageLayoutsChange({ ...pageLayouts, power })}
         />
+      </Row>
+      <GroupLabel>Tyres</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Tyres charts as a 2×2 grid or an aligned vertical stack. Every chart keeps its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.tyres}
+          onChange={(tyres) => onPageLayoutsChange({ ...pageLayouts, tyres })}
+        />
+      </Row>
+      <GroupLabel>Shared Tooltip</GroupLabel>
+      <Row
+        label="Secondary Vertical Crosshair"
+        description="Draw the vertical cursor line on synchronized secondary charts. The hovered chart always keeps its normal crosshair."
+      >
+        <Toggle value={secondaryVerticalCrosshairEnabled} onChange={onSecondaryVerticalCrosshairEnabledChange} />
+      </Row>
+      <Row
+        label="Secondary Horizontal Crosshair"
+        description="Draw the horizontal cursor line on synchronized secondary charts. The hovered chart always keeps its normal crosshair."
+      >
+        <Toggle value={secondaryHorizontalCrosshairEnabled} onChange={onSecondaryHorizontalCrosshairEnabledChange} />
       </Row>
     </div>
   )

@@ -7,7 +7,7 @@ export interface ChartCursorSyncParticipant {
   axisKind: 'time' | 'distance'
   resolveAxisX: (axisX: number) => { sessionTime: number; sampledAxisX: number } | null
   formatAxisX: (axisX: number) => string
-  syncToSessionTime: (sessionTime: number, axisX: number, sourceAxisKind: 'time' | 'distance', source: boolean) => {
+  syncToSessionTime: (sessionTime: number, axisX: number, plotYRatio: number | null, sourceAxisKind: 'time' | 'distance', source: boolean, secondaryVerticalCrosshair: boolean) => {
     current: string
     comparison?: string
     comparisonLabel?: string
@@ -19,7 +19,7 @@ export interface ChartCursorSyncParticipant {
 interface ChartCursorSyncContextValue {
   isEnabled: () => boolean
   register: (participant: ChartCursorSyncParticipant) => () => void
-  publish: (sourceId: string, axisX: number, clientX: number, clientY: number) => void
+  publish: (sourceId: string, axisX: number, plotYRatio: number, clientX: number, clientY: number) => void
   clear: (sourceId: string) => void
 }
 
@@ -29,13 +29,17 @@ export function useChartCursorSync() {
   return useContext(ChartCursorSyncContext)
 }
 
-export function ChartCursorSyncProvider({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
+export function ChartCursorSyncProvider({ enabled, secondaryHorizontalCrosshair = false, secondaryVerticalCrosshair = true, children }: { enabled: boolean; secondaryHorizontalCrosshair?: boolean; secondaryVerticalCrosshair?: boolean; children: React.ReactNode }) {
   const boundaryRef = useRef<HTMLDivElement>(null)
   const enabledRef = useRef(enabled)
+  const secondaryHorizontalCrosshairRef = useRef(secondaryHorizontalCrosshair)
+  const secondaryVerticalCrosshairRef = useRef(secondaryVerticalCrosshair)
   const participantsRef = useRef(new Map<string, ChartCursorSyncParticipant>())
   const activeSourceRef = useRef<string | null>(null)
   const { tooltipRef, show, hide } = useChartTooltip(boundaryRef)
   enabledRef.current = enabled
+  secondaryHorizontalCrosshairRef.current = secondaryHorizontalCrosshair
+  secondaryVerticalCrosshairRef.current = secondaryVerticalCrosshair
 
   const value = useMemo<ChartCursorSyncContextValue>(() => {
     const clearAll = () => {
@@ -53,7 +57,7 @@ export function ChartCursorSyncProvider({ enabled, children }: { enabled: boolea
           if (activeSourceRef.current === participant.id) clearAll()
         }
       },
-      publish: (sourceId, axisX, clientX, clientY) => {
+      publish: (sourceId, axisX, plotYRatio, clientX, clientY) => {
         if (!enabledRef.current) return
         const source = participantsRef.current.get(sourceId)
         const resolved = source?.resolveAxisX(axisX)
@@ -62,7 +66,14 @@ export function ChartCursorSyncProvider({ enabled, children }: { enabled: boolea
         activeSourceRef.current = sourceId
         const samples = [...participantsRef.current.values()]
           .sort((a, b) => a.order - b.order)
-          .map(participant => participant.syncToSessionTime(sessionTime, axisX, source.axisKind, participant.id === sourceId))
+          .map(participant => participant.syncToSessionTime(
+            sessionTime,
+            axisX,
+            secondaryHorizontalCrosshairRef.current ? plotYRatio : null,
+            source.axisKind,
+            participant.id === sourceId,
+            secondaryVerticalCrosshairRef.current,
+          ))
         const fragments = samples.map(sample => sample.current).filter(Boolean)
         const comparisonGroups = new Map<string, { label: string; fragments: string[] }>()
         for (const sample of samples) {
@@ -92,6 +103,20 @@ export function ChartCursorSyncProvider({ enabled, children }: { enabled: boolea
     for (const participant of participantsRef.current.values()) participant.clear()
     hide()
   }, [enabled, hide])
+
+  useEffect(() => {
+    if (secondaryHorizontalCrosshair) return
+    activeSourceRef.current = null
+    for (const participant of participantsRef.current.values()) participant.clear()
+    hide()
+  }, [hide, secondaryHorizontalCrosshair])
+
+  useEffect(() => {
+    if (secondaryVerticalCrosshair) return
+    activeSourceRef.current = null
+    for (const participant of participantsRef.current.values()) participant.clear()
+    hide()
+  }, [hide, secondaryVerticalCrosshair])
 
   return <ChartCursorSyncContext.Provider value={value}>
     <div ref={boundaryRef} className="relative h-full min-h-0">

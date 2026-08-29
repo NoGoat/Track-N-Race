@@ -381,7 +381,9 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
                 <div className="flex flex-col gap-2">
                   <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Charts (Graph View)</div>
-                  <div className="w-full grid grid-cols-2 rounded-none overflow-hidden border border-[var(--border)] bg-[var(--border)] gap-[1px]">
+                  <div className={pageLayouts.tyres === 'vertical'
+                    ? 'w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]'
+                    : 'w-full grid grid-cols-2 rounded-none overflow-hidden border border-[var(--border)] bg-[var(--border)] gap-[1px]'}>
                     {([
                       { key: 'surfaceTemp', label: 'Surface Temp' },
                       { key: 'innerTemp',   label: 'Inner Temp'   },
@@ -393,7 +395,7 @@ export default function LayoutEditor(props: LayoutEditorProps) {
                         <button
                           key={key}
                           onClick={() => setTyresLayout({ ...tyresLayout, charts: { ...tyresLayout.charts, [key]: !on } })}
-                          className={`h-32 flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
+                          className={`${pageLayouts.tyres === 'vertical' ? 'w-full min-h-[72px] py-3' : 'h-32'} flex flex-col items-center justify-center rounded-none font-mono text-xs font-semibold transition-all relative ${
                             on
                               ? 'bg-[#5794F2]/10 text-[#5794F2]'
                               : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
@@ -484,34 +486,39 @@ export default function LayoutEditor(props: LayoutEditorProps) {
 
                 <div className="flex flex-col gap-2">
                   <div className="text-[10px] font-mono text-[var(--text-secondary)] uppercase tracking-wider">Panels</div>
-                  <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]">
-                    <button
-                      onClick={() => setMiscLayout({ ...miscLayout, showGForce: !miscLayout.showGForce })}
-                      className={`h-44 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
-                        miscLayout.showGForce
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
-                          : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="text-sm font-bold">G-Force Chart</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showGForce ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
-                        {miscLayout.showGForce ? 'ACTIVE' : 'HIDDEN'}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => setMiscLayout({ ...miscLayout, showRideHeight: !miscLayout.showRideHeight })}
-                      className={`h-44 w-full flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
-                        miscLayout.showRideHeight
-                          ? 'bg-[#5794F2]/10 text-[#5794F2]'
-                          : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="text-sm font-bold">Ride Height Chart</span>
-                      <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${miscLayout.showRideHeight ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
-                        {miscLayout.showRideHeight ? 'ACTIVE' : 'HIDDEN'}
-                      </span>
-                    </button>
-                  </div>
+                  {(() => {
+                    type MiscPreviewPanel = { key: string; label: string; on: boolean; toggle: () => void }
+                    const gForcePanels: MiscPreviewPanel[] = pageLayouts.miscGForce === 'split'
+                      ? [
+                          { key: 'g-lateral', label: 'Lateral G-Force', on: miscLayout.showGLateral, toggle: () => setMiscLayout({ ...miscLayout, showGLateral: !miscLayout.showGLateral }) },
+                          { key: 'g-longitudinal', label: 'Longitudinal G-Force', on: miscLayout.showGLongitudinal, toggle: () => setMiscLayout({ ...miscLayout, showGLongitudinal: !miscLayout.showGLongitudinal }) },
+                        ]
+                      : [{ key: 'g-combined', label: 'G-Force', on: miscLayout.showGForce, toggle: () => setMiscLayout({ ...miscLayout, showGForce: !miscLayout.showGForce }) }]
+                    const rideHeightPanels: MiscPreviewPanel[] = pageLayouts.miscRideHeight === 'split'
+                      ? [
+                          { key: 'ride-front', label: 'Front Ride Height', on: miscLayout.showRideFront, toggle: () => setMiscLayout({ ...miscLayout, showRideFront: !miscLayout.showRideFront }) },
+                          { key: 'ride-rear', label: 'Rear Ride Height', on: miscLayout.showRideRear, toggle: () => setMiscLayout({ ...miscLayout, showRideRear: !miscLayout.showRideRear }) },
+                        ]
+                      : [{ key: 'ride-combined', label: 'Ride Height', on: miscLayout.showRideHeight, toggle: () => setMiscLayout({ ...miscLayout, showRideHeight: !miscLayout.showRideHeight }) }]
+                    return <div className="w-full flex flex-col rounded-none overflow-hidden border border-[var(--border)] divide-y divide-[var(--border)] bg-[var(--bg-input)]">
+                      {[...gForcePanels, ...rideHeightPanels].map(panel => (
+                        <button
+                          key={panel.key}
+                          onClick={panel.toggle}
+                          className={`w-full min-h-[78px] px-4 py-3 flex flex-col items-center justify-center rounded-none font-mono transition-all relative ${
+                            panel.on
+                              ? 'bg-[#5794F2]/10 text-[#5794F2]'
+                              : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]'
+                          }`}
+                        >
+                          <span className="text-sm font-bold">{panel.label}</span>
+                          <span className={`text-[9px] mt-1.5 tracking-widest uppercase font-bold opacity-60 ${panel.on ? 'text-[#5794F2]' : 'text-[var(--text-muted)]'}`}>
+                            {panel.on ? 'ACTIVE' : 'HIDDEN'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  })()}
                 </div>
 
               </>) : tab === 'input' ? (<>

@@ -107,6 +107,25 @@ function nearestRowIndexBySessionTime(rows: readonly { session_time: number }[],
   return index
 }
 
+const AXIS_COVERAGE_EPSILON = 1e-6
+
+function axisXIsCovered(source: XIndexedData | null, targetX: number): boolean {
+  if (!source || source.length === 0 || !Number.isFinite(targetX)) return false
+  const firstX = source.xAt(0)
+  const lastX = source.xAt(source.length - 1)
+  if (!Number.isFinite(firstX) || !Number.isFinite(lastX)) return false
+  const min = Math.min(firstX, lastX) - AXIS_COVERAGE_EPSILON
+  const max = Math.max(firstX, lastX) + AXIS_COVERAGE_EPSILON
+  return targetX >= min && targetX <= max
+}
+
+function valueIsCovered(value: number, first: number, last: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(first) || !Number.isFinite(last)) return false
+  const min = Math.min(first, last) - AXIS_COVERAGE_EPSILON
+  const max = Math.max(first, last) + AXIS_COVERAGE_EPSILON
+  return value >= min && value <= max
+}
+
 function nearestRowIndexByX<T>(rows: readonly T[], getX: (row: T) => number, value: number): number {
   if (rows.length === 0) return -1
   // Distance projection can temporarily leave a non-finite tail while lap
@@ -227,6 +246,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const { ref: sizeRef, width, height } = useSize(120)
   const containerRef = useRef<HTMLDivElement>(null)
   const syncCrosshairRef = useRef<SVGLineElement>(null)
+  const syncHorizontalCrosshairRef = useRef<SVGLineElement>(null)
   const syncPointRefs = useRef<(SVGCircleElement | null)[]>([])
   const { tooltipRef, show, hide } = useChartTooltip(containerRef)
   const cursorSyncContext = useChartCursorSync()
@@ -414,6 +434,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         if (point) point.style.visibility = 'hidden'
       }
     }
+    const clearSyncedCursor = () => {
+      if (syncCrosshairRef.current) syncCrosshairRef.current.style.visibility = 'hidden'
+      if (syncHorizontalCrosshairRef.current) syncHorizontalCrosshairRef.current.style.visibility = 'hidden'
+      hideSyncPoints()
+    }
     const syncManager = cursorSyncContextRef.current
     const syncConfig = cursorSyncConfigRef.current
     const syncAxisKind = coordinates.distanceMode ? 'distance' : 'time'
@@ -435,20 +460,43 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             }
           },
           formatAxisX: axisX => axisCfgRef.current.xTickFormat(axisX),
-          syncToSessionTime: (sessionTime, sourceAxisX, sourceAxisKind, source) => {
+          syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
             const line = syncCrosshairRef.current
+            const horizontalLine = syncHorizontalCrosshairRef.current
             const currentRows = rowsRef.current
             const index = nearestRowIndexBySessionTime(currentRows, sessionTime)
             if (index < 0) {
-              if (line) line.style.visibility = 'hidden'
-              hideSyncPoints()
+              clearSyncedCursor()
               return { current: '' }
             }
             const cursorAxisX = sourceAxisKind === syncAxisKind
               ? sourceAxisX
-              : getXRef.current(currentRows[index])
+              : syncAxisKind === 'time'
+                ? sessionTime
+                : getXRef.current(currentRows[index])
+            const xRange = chart.options.xRange
+            const visibleRangeCovered = !xRange || xRange === 'auto'
+              || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
+            const axisDataCovered = axisXIsCovered(bridgeRef.current, cursorAxisX)
+            const sessionDataCovered = sourceAxisKind === syncAxisKind || syncAxisKind === 'time'
+              || valueIsCovered(sessionTime, currentRows[0].session_time, currentRows[currentRows.length - 1].session_time)
+            // A shared distance/time axis can extend beyond the newest live
+            // sample. Keep the cursor at the hovered X and use the source's
+            // resolved endpoint session time for values. Mixed-axis charts
+            // still require real data coverage, which preserves the rule that
+            // a short rolling window must not expose its earliest endpoint for
+            // an older lap position it cannot actually represent.
+            const forwardEndpointFallback = sourceAxisKind === syncAxisKind
+              && visibleRangeCovered
+              && bridge.length > 0
+              && cursorAxisX > bridge.xAt(bridge.length - 1) + AXIS_COVERAGE_EPSILON
+            if (!source && (!visibleRangeCovered || (!axisDataCovered && !forwardEndpointFallback) || !sessionDataCovered)) {
+              clearSyncedCursor()
+              return { current: '' }
+            }
             if (line) {
-              if (source) {
+              const sourceNeedsFallbackCrosshair = source && forwardEndpointFallback
+              if ((source && !sourceNeedsFallbackCrosshair) || (!source && !secondaryVerticalCrosshair)) {
                 line.style.visibility = 'hidden'
               } else {
                 // Keep every vertical cursor at the actual hovered X. The
@@ -467,6 +515,28 @@ export default function TimeChartView<T extends { session_time: number }>(props:
                 }
               }
             }
+            if (horizontalLine) {
+              if (source) {
+                // The native crosshair plugin already renders both axes on
+                // the chart under the pointer; avoid drawing over it.
+                horizontalLine.style.visibility = 'hidden'
+              } else if (plotYRatio != null) {
+                const left = chart.options.paddingLeft
+                const right = chart.clientWidth - chart.options.paddingRight
+                const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
+                const py = Math.max(0, Math.min(1, plotYRatio)) * plotHeight
+                if (Number.isFinite(py) && plotHeight > 0 && right > left) {
+                  horizontalLine.style.visibility = 'visible'
+                  horizontalLine.setAttribute('x1', String(left))
+                  horizontalLine.setAttribute('x2', String(right))
+                  horizontalLine.setAttribute('transform', `translate(0 ${py})`)
+                } else {
+                  horizontalLine.style.visibility = 'hidden'
+                }
+              } else {
+                horizontalLine.style.visibility = 'hidden'
+              }
+            }
             if (source) {
               hideSyncPoints()
             } else {
@@ -478,7 +548,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               const cursorVisible = Number.isFinite(cursorPx) && cursorPx >= left && cursorPx <= right
               chart.options.series.forEach((chartSeries, seriesIndex) => {
                 const point = syncPointRefs.current[seriesIndex]
-                const pointIndex = nearestIndex(chartSeries.data, cursorAxisX)
+                const pointIndex = axisXIsCovered(chartSeries.data, cursorAxisX)
+                  ? nearestIndex(chartSeries.data, cursorAxisX)
+                  : forwardEndpointFallback && chartSeries.data.length > 0
+                    ? chartSeries.data.length - 1
+                    : -1
                 if (!point || !cursorVisible || !chartSeries.visible || pointIndex < 0) {
                   if (point) point.style.visibility = 'hidden'
                   return
@@ -501,7 +575,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               })
             }
             const comparisonBridge = comparisonBridgeRef.current
-            const comparisonIndex = nearestIndex(comparisonBridge, cursorAxisX)
+            const comparisonIndex = axisXIsCovered(comparisonBridge, cursorAxisX)
+              ? nearestIndex(comparisonBridge, cursorAxisX)
+              : -1
             const comparisonRow = comparisonIndex >= 0
               ? comparisonRowsRef.current?.[comparisonIndex]
               : undefined
@@ -515,8 +591,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             }
           },
           clear: () => {
-            if (syncCrosshairRef.current) syncCrosshairRef.current.style.visibility = 'hidden'
-            hideSyncPoints()
+            clearSyncedCursor()
           },
         })
       : undefined
@@ -584,7 +659,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
         if (!rect) return
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const axisX = (chart.model.xScale as any).invert(pointer.x) as number
-        manager.publish(config.id, axisX, rect.left + pointer.x, rect.top + pointer.y)
+        const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
+        const plotYRatio = plotHeight > 0
+          ? Math.max(0, Math.min(1, (pointer.y - chart.options.paddingTop) / plotHeight))
+          : 0
+        manager.publish(config.id, axisX, plotYRatio, rect.left + pointer.x, rect.top + pointer.y)
         return
       }
       onMove(pointer.x - paddingLeft, pointer.y - paddingTop)
@@ -960,9 +1039,20 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 overflow-visible"
-        style={{ top: 4, bottom: look.xAxisSize ?? 22 }}
+        style={{ top: AXIS_LABEL_TOP_PADDING, bottom: look.xAxisSize ?? 22 }}
       >
         <svg className="block h-full w-full overflow-visible">
+          <line
+            ref={syncHorizontalCrosshairRef}
+            x1="0"
+            x2="100%"
+            y1="0"
+            y2="0"
+            stroke={initColors.axis}
+            strokeWidth="1"
+            strokeDasharray="2 1"
+            style={{ visibility: 'hidden' }}
+          />
           <line
             ref={syncCrosshairRef}
             x1="0"

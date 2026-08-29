@@ -10,11 +10,24 @@ import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import { TYRE_CHART_Y_AXIS_SIZE } from '../lib/tyreChartLayout'
+import type { TyresPageLayout } from '../app/appConfig'
 
 const FL = '#e10600'
 const FR = '#4488ff'
 const RL = '#37872D'
 const RR = '#ffd700'
+
+const TYRE_CURSOR_ORDER: Partial<Record<GraphSection, number>> = {
+  tyreSurface: 10,
+  tyreInner: 20,
+  tyreBrake: 30,
+  tyreWear: 40,
+  overviewTyreSurface: 20,
+  overviewTyreInner: 30,
+  overviewTyreBrake: 40,
+  overviewTyreWear: 50,
+}
 
 // Corner colours differ slightly in light mode for contrast. FL is shared.
 function cornerColors(isDark: boolean) {
@@ -153,7 +166,7 @@ interface ChartProps<T extends { session_time: number }> {
 
 function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps<T>) {
   const {
-    title, unit, series, isDark, view = 'chart', windowSeconds = 30, source,
+    section, title, unit, series, isDark, view = 'chart', windowSeconds = 30, source,
     fastScroll, followSessionClock, minScrollStallS, yRange, yTickValues = tyreYTicks,
   } = props
   const coordinates = useChartCoordinates()
@@ -201,20 +214,28 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
   )
   const getTableValues = useCallback((row: T) => series.map(item => item.getY(row)), [series])
 
-  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
-    const formatValues = (source: number[]) => {
-      let html = ''
-      for (let i = 0; i < series.length; i++) {
-        if (hiddenSeries[series[i].label]) continue
-        html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${source[i].toFixed(1)}${unit}</div>`
-      }
-      return html
+  const formatValues = useCallback((values: number[]) => {
+    let html = ''
+    for (let i = 0; i < series.length; i++) {
+      if (hiddenSeries[series[i].label]) continue
+      html += `<div><span style="color:${series[i].color}">${series[i].label}</span>: ${values[i].toFixed(1)}${unit}</div>`
     }
+    return html
+  }, [hiddenSeries, series, unit])
+  const tooltipFormat = useCallback((x: number, values: number[], comparison?: number[]) => {
     let html = `<div style="color:${axisColor};margin-bottom:3px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`
     html += formatValues(values)
     html += formatChartComparisonTooltip(comparison, coordinates.mode, formatValues)
     return html
-  }, [series, hiddenSeries, unit, axisColor, coordinates])
+  }, [axisColor, coordinates, formatValues])
+  const cursorSync = useMemo(() => ({
+    id: section,
+    order: TYRE_CURSOR_ORDER[section] ?? 100,
+    formatRow: (row: T) => [
+      `<div style="color:${axisColor};margin-top:3px">${title}</div>`,
+      formatValues(series.map(item => item.getY(row))),
+    ].join(''),
+  }), [axisColor, formatValues, section, series, title])
 
   return (
     <div className="chart-panel tyre-chart-container flex-1 min-w-0 bg-[var(--bg-panel)] flex flex-col">
@@ -258,11 +279,12 @@ function TyreLineChartImpl<T extends { session_time: number }>(props: ChartProps
             series={chartSeries}
             windowSeconds={scopedWindowSeconds}
             yRange={yRange}
-            yAxisSize={42}
+            yAxisSize={TYRE_CHART_Y_AXIS_SIZE}
             yTickValues={yTickValues}
             yTickFormat={(v) => `${v}${unit}`}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
+            cursorSync={cursorSync}
             colorsFor={tyreColorsFor}
             axisLook={TYRE_AXIS_LOOK}
             tooltipStyle={TYRE_TOOLTIP_STYLE}
@@ -292,7 +314,7 @@ interface Props {
   tyreWearMode: 'wear' | 'life'
   visibleGraphs: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean }
   isDark: boolean
-  layout?: 'row' | 'grid'
+  layout?: 'row' | TyresPageLayout
   // Per-metric Chart/Table view mode. The same component serves the Overview strip
   // and the Tyres page, which persist independent keys — the caller supplies the map.
   graphViews?: TyreGraphViews
@@ -337,7 +359,7 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
   const brakeEl   = <ScopedTyreLineChart<TelemetryRow> section={sections.brake} source="telemetry" title="Brake Temp" unit="°C" rows={telemetry} series={brakeSeries} isDark={isDark} view={graphViews?.brakeTemp} windowSeconds={windowSeconds} fastScroll={fastScroll} yRange={yAxis.brakeTemp === 'fixed' ? BRAKE_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} yTickValues={temperatureYTicks} />
   const wearEl    = <ScopedTyreLineChart<DamageRow> key={tyreWearMode} section={sections.wear} source="damage" title={wearTitle} unit="%" rows={damageHistory} series={wearSeries} isDark={isDark} view={graphViews?.tyreLife} windowSeconds={windowSeconds} fastScroll followSessionClock minScrollStallS={1} yRange={yAxis.tyreLife === 'fixed' ? WEAR_FIXED_Y_RANGE : DYNAMIC_Y_RANGE} />
 
-  if (layout === 'grid') {
+  if (layout !== 'row') {
     const items = [
       { key: 'surfaceTemp', el: surfaceEl },
       { key: 'innerTemp',   el: innerEl },
@@ -346,14 +368,17 @@ export default function TyreTrendCharts({ telemetry, damageHistory, tyreWearMode
     ].filter(({ key }) => visibleGraphs[key as keyof typeof visibleGraphs])
 
     const odd = items.length % 2 !== 0
+    const vertical = layout === 'vertical'
 
     return (
       <div
-        className="grid grid-cols-2 h-full gap-[1px] bg-[var(--border)] overflow-hidden"
-        style={{ gridAutoRows: '1fr' }}
+        className={vertical
+          ? 'h-full flex flex-col divide-y divide-[var(--border)] bg-[var(--border)] overflow-hidden'
+          : 'grid grid-cols-2 h-full gap-[1px] bg-[var(--border)] overflow-hidden'}
+        style={vertical ? undefined : { gridAutoRows: '1fr' }}
       >
         {items.map(({ key, el }, i) => (
-          <div key={key} className={`h-full flex flex-col overflow-hidden${odd && i === items.length - 1 ? ' col-span-2' : ''}`}>
+          <div key={key} className={`${vertical ? 'flex-1 min-h-0' : 'h-full'} flex flex-col overflow-hidden${!vertical && odd && i === items.length - 1 ? ' col-span-2' : ''}`}>
             {el}
           </div>
         ))}

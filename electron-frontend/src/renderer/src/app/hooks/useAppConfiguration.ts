@@ -26,7 +26,7 @@ export function useAppConfiguration() {
   const [rawCoreLayout, setCoreLayout] = useAppConfig<CoreLayout>('coreLayout', DEFAULT_CORE_LAYOUT)
   const [rawInputLayout, setInputLayout] = useAppConfig<InputLayout>('inputLayout', DEFAULT_INPUT_LAYOUT)
   const [rawPageLayouts, setPageLayouts] = useAppConfig<PageLayouts>('pageLayouts', DEFAULT_PAGE_LAYOUTS)
-  const [miscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
+  const [rawMiscLayout, setMiscLayout] = useAppConfig<MiscLayout>('miscLayout', DEFAULT_MISC_LAYOUT)
   const [rawPowerLayout, setPowerLayout] = useAppConfig<PowerLayout>('powerLayout', DEFAULT_POWER_LAYOUT)
   const [rawSessionLayout, setSessionLayout] = useAppConfig<SessionLayout>('sessionLayout', DEFAULT_SESSION_LAYOUT)
   const [rawStandingsLayout, setStandingsLayout] = useAppConfig<StandingsLayout>('standingsLayout', DEFAULT_STANDINGS_LAYOUT)
@@ -38,6 +38,8 @@ export function useAppConfiguration() {
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [inputCursorSyncEnabled, setInputCursorSyncEnabled] = useAppConfig<boolean>('inputCursorSyncEnabled', false)
+  const [secondaryHorizontalCrosshairEnabled, setSecondaryHorizontalCrosshairEnabled] = useAppConfig<boolean>('secondaryHorizontalCrosshairEnabled', false)
+  const [secondaryVerticalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled] = useAppConfig<boolean>('secondaryVerticalCrosshairEnabled', true)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
   const [titlebarUpdateInterval, setTitlebarUpdateInterval] = useAppConfig<TitlebarUpdateInterval>('titlebarUpdateInterval', 0)
   const [reduceAnimations, setReduceAnimations] = useAppConfig<boolean>('reduceAnimations', false)
@@ -132,8 +134,23 @@ export function useAppConfiguration() {
     inputPedals: rawPageLayouts?.inputPedals === 'split' || rawPageLayouts?.inputPedals === 'combined2'
       ? rawPageLayouts.inputPedals
       : DEFAULT_PAGE_LAYOUTS.inputPedals,
+    miscGForce: rawPageLayouts?.miscGForce === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscGForce,
+    miscRideHeight: rawPageLayouts?.miscRideHeight === 'split' ? 'split' : DEFAULT_PAGE_LAYOUTS.miscRideHeight,
     power: rawPageLayouts?.power === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.power,
+    tyres: rawPageLayouts?.tyres === 'vertical' ? 'vertical' : DEFAULT_PAGE_LAYOUTS.tyres,
   }), [rawPageLayouts])
+  const miscLayout = useMemo<MiscLayout>(() => {
+    const legacyGForce = typeof rawMiscLayout?.showGForce === 'boolean' ? rawMiscLayout.showGForce : DEFAULT_MISC_LAYOUT.showGForce
+    const legacyRideHeight = typeof rawMiscLayout?.showRideHeight === 'boolean' ? rawMiscLayout.showRideHeight : DEFAULT_MISC_LAYOUT.showRideHeight
+    return {
+      showGForce: legacyGForce,
+      showGLateral: typeof rawMiscLayout?.showGLateral === 'boolean' ? rawMiscLayout.showGLateral : legacyGForce,
+      showGLongitudinal: typeof rawMiscLayout?.showGLongitudinal === 'boolean' ? rawMiscLayout.showGLongitudinal : legacyGForce,
+      showRideHeight: legacyRideHeight,
+      showRideFront: typeof rawMiscLayout?.showRideFront === 'boolean' ? rawMiscLayout.showRideFront : legacyRideHeight,
+      showRideRear: typeof rawMiscLayout?.showRideRear === 'boolean' ? rawMiscLayout.showRideRear : legacyRideHeight,
+    }
+  }, [rawMiscLayout])
   const compact = useMemo<CompactState>(() => {
     const raw = (rawCompact ?? {}) as unknown as Record<string, unknown>
     const legacyWeather = raw.sessionWeather
@@ -175,12 +192,12 @@ export function useAppConfiguration() {
 
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }
 }

@@ -34,11 +34,11 @@ export default function AppShell() {
   const {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
-    nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, titlebarUpdateInterval,
+    nativeTitlebar, powerLayout, reduceAnimations, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, seconds, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
@@ -217,8 +217,9 @@ export default function AppShell() {
       tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView,
       Boolean(playback.state?.filename),
       analyzeDataMask,
+      pageLayouts,
     ),
-    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask],
+    [tab, coreLayout, inputLayout, miscLayout, powerLayout, tyresLayout, tyreView, playback.state?.filename, analyzeDataMask, pageLayouts],
   )
   const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
     tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
@@ -397,6 +398,10 @@ export default function AppShell() {
         onMapDimmedChange={setMapDimmed}
         pageLayouts={pageLayouts}
         onPageLayoutsChange={setPageLayouts}
+        secondaryHorizontalCrosshairEnabled={secondaryHorizontalCrosshairEnabled}
+        onSecondaryHorizontalCrosshairEnabledChange={setSecondaryHorizontalCrosshairEnabled}
+        secondaryVerticalCrosshairEnabled={secondaryVerticalCrosshairEnabled}
+        onSecondaryVerticalCrosshairEnabledChange={setSecondaryVerticalCrosshairEnabled}
         graphView={graphView}
         onGraphViewChange={setGraphView}
         compact={compact}
@@ -431,6 +436,8 @@ export default function AppShell() {
           tyresLayout={tyresLayout}
           inputLayout={inputLayout}
           inputCursorSyncEnabled={inputCursorSyncEnabled}
+          secondaryHorizontalCrosshairEnabled={secondaryHorizontalCrosshairEnabled}
+          secondaryVerticalCrosshairEnabled={secondaryVerticalCrosshairEnabled}
           pageLayouts={pageLayouts}
           miscLayout={miscLayout}
           graphView={graphView}

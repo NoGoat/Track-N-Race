@@ -42,6 +42,8 @@ interface TabContentProps {
   tyresLayout: TyresLayout
   inputLayout: InputLayout
   inputCursorSyncEnabled: boolean
+  secondaryHorizontalCrosshairEnabled: boolean
+  secondaryVerticalCrosshairEnabled: boolean
   pageLayouts: PageLayouts
   miscLayout: MiscLayout
   graphView: GraphViewState
@@ -66,7 +68,7 @@ interface TabContentProps {
 }
 
 const SubscribedTabContent = memo(function SubscribedTabContent({
-  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, pageLayouts, miscLayout,
+  tab, isDark, seconds, coreLayout, powerLayout, sessionLayout, standingsLayout, tyresLayout, inputLayout, inputCursorSyncEnabled, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, pageLayouts, miscLayout,
   graphView, compact, chartYAxis, tyreView, tyreWearMode,
   selectedIdx, onSelectDriver, reduceAnimations, sectorColors, driversMode, mapTimeout,
   mapDimmed, currentPlaybackLapNum,
@@ -167,8 +169,9 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
         const thermalCompactCards = tyreView === 'cards'
 
         return (
-        <div className="h-full flex flex-col overflow-hidden">
-          <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+          <div className="h-full flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
             {showStatsPanel && (
               <div className="shrink-0">
                 <LiveStats latest={latest} status={status} lap={lap} damage={damage} isConnected={isConnected} visibleCards={coreLayout.statsCards} isDark={isDark} compact={compact.overviewStats} />
@@ -189,8 +192,9 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
                 <DamagePanel connected={!!latest} damage={damage} visibleItems={coreLayout.damageItems} twoRow={damageTwoRow} isDark={isDark} compact={compact.overviewDamage} />
               </div>
             )}
+            </div>
           </div>
-        </div>
+        </ChartCursorSyncProvider>
         )
       })()}
       {tab === 'timing_tower' && (() => {
@@ -256,7 +260,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
         </div>
       )}
       {tab === 'input' && (
-        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled}>
+        <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
         <div className="h-full flex flex-col overflow-hidden">
           {pageLayouts.input === 'vertical' ? (
             <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
@@ -351,7 +355,7 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
             <PowerStatsBar status={status} visibleCards={powerLayout.statsCards} isDark={isDark} compact={compact.powerCards} />
           </div>
           <div className="flex-1 min-h-0">
-            <ChartCursorSyncProvider enabled={inputCursorSyncEnabled}>
+            <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
               <PowerBreakdownChart data={statusHistory} isDark={isDark} visibleCharts={powerLayout.charts} views={{ powerSplit: graphView.powerSplit, ersHarvest: graphView.powerHarvest, ersStore: graphView.powerStore, fuelHistory: graphView.powerFuel }} windowSeconds={seconds} fuelUpperLimit={fuelUpperLimit} hasMguh={protocolStatus?.capabilities.hasMguh ?? false} harvestUpperLimit={(protocolStatus?.presentation_format ?? protocolStatus?.active_format) === 2026 ? 8000 : 4000} ersHarvestYAxis={chartYAxis.power.ersHarvest} layout={pageLayouts.power} />
             </ChartCursorSyncProvider>
           </div>
@@ -359,21 +363,24 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
       )}
       {tab === 'tyres' && (
         <div className="h-full overflow-hidden border-t border-[var(--border)]">
-          <TyresPanel
-            tyreSets={tyreSets}
-            latest={latest}
-            damage={damage}
-            damageHistory={damageHistory}
-            telemetry={telemetry}
-            tyreWearMode={tyreWearMode}
-            isDark={isDark}
-            visibleGraphs={tyresLayout.charts}
-            graphViews={tyreGraphViews}
-            cardViews={tyreCardViews}
-            sessionType={session?.session_type ?? null}
-            windowSeconds={seconds}
-            yAxis={chartYAxis.tyres}
-          />
+          <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+            <TyresPanel
+              tyreSets={tyreSets}
+              latest={latest}
+              damage={damage}
+              damageHistory={damageHistory}
+              telemetry={telemetry}
+              tyreWearMode={tyreWearMode}
+              isDark={isDark}
+              visibleGraphs={tyresLayout.charts}
+              graphViews={tyreGraphViews}
+              cardViews={tyreCardViews}
+              sessionType={session?.session_type ?? null}
+              windowSeconds={seconds}
+              yAxis={chartYAxis.tyres}
+              chartLayout={pageLayouts.tyres}
+            />
+          </ChartCursorSyncProvider>
         </div>
       )}
       {tab === 'strategy' && (
@@ -393,23 +400,40 @@ const SubscribedTabContent = memo(function SubscribedTabContent({
 // directly to motion and motionEx, so unrelated store publications cannot
 // re-render this tab container.
 const MiscTabContent = memo(function MiscTabContent({
-  isDark, seconds, miscLayout, graphView,
-}: Pick<TabContentProps, 'isDark' | 'seconds' | 'miscLayout' | 'graphView'>) {
+  isDark, seconds, miscLayout, graphView, pageLayouts, inputCursorSyncEnabled,
+  secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled,
+}: Pick<TabContentProps, 'isDark' | 'seconds' | 'miscLayout' | 'graphView' | 'pageLayouts' | 'inputCursorSyncEnabled' | 'secondaryHorizontalCrosshairEnabled' | 'secondaryVerticalCrosshairEnabled'>) {
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
-        {miscLayout.showGForce && (
-          <div className="flex-1 min-h-0">
-            <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
-          </div>
-        )}
-        {miscLayout.showRideHeight && (
-          <div className="flex-1 min-h-0">
-            <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
-          </div>
-        )}
+    <ChartCursorSyncProvider enabled={inputCursorSyncEnabled} secondaryHorizontalCrosshair={secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshair={secondaryVerticalCrosshairEnabled}>
+      <div className="h-full flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-panel)] border-t border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
+          {pageLayouts.miscGForce === 'split' ? <>
+            {miscLayout.showGLateral && <div className="flex-1 min-h-0">
+              <GForceChart mode="lateral" isDark={isDark} view={graphView.miscGLateral} windowSeconds={seconds} />
+            </div>}
+            {miscLayout.showGLongitudinal && <div className="flex-1 min-h-0">
+              <GForceChart mode="longitudinal" isDark={isDark} view={graphView.miscGLongitudinal} windowSeconds={seconds} />
+            </div>}
+          </> : miscLayout.showGForce && (
+            <div className="flex-1 min-h-0">
+              <GForceChart isDark={isDark} view={graphView.miscGForce} windowSeconds={seconds} />
+            </div>
+          )}
+          {pageLayouts.miscRideHeight === 'split' ? <>
+            {miscLayout.showRideFront && <div className="flex-1 min-h-0">
+              <RideHeightChart mode="front" isDark={isDark} view={graphView.miscRideFront} windowSeconds={seconds} />
+            </div>}
+            {miscLayout.showRideRear && <div className="flex-1 min-h-0">
+              <RideHeightChart mode="rear" isDark={isDark} view={graphView.miscRideRear} windowSeconds={seconds} />
+            </div>}
+          </> : miscLayout.showRideHeight && (
+            <div className="flex-1 min-h-0">
+              <RideHeightChart isDark={isDark} view={graphView.miscRideHeight} windowSeconds={seconds} />
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </ChartCursorSyncProvider>
   )
 })
 
@@ -430,7 +454,7 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
     />
   }
   if (props.tab === 'misc') {
-    return <MiscTabContent isDark={props.isDark} seconds={props.seconds} miscLayout={props.miscLayout} graphView={props.graphView} />
+    return <MiscTabContent isDark={props.isDark} seconds={props.seconds} miscLayout={props.miscLayout} graphView={props.graphView} pageLayouts={props.pageLayouts} inputCursorSyncEnabled={props.inputCursorSyncEnabled} secondaryHorizontalCrosshairEnabled={props.secondaryHorizontalCrosshairEnabled} secondaryVerticalCrosshairEnabled={props.secondaryVerticalCrosshairEnabled} />
   }
   return <SubscribedTabContent {...props} />
 })

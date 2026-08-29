@@ -19,7 +19,8 @@ export type GraphSection =
   | 'tyreCardFL' | 'tyreCardFR' | 'tyreCardRL' | 'tyreCardRR'
   | 'inputGear' | 'inputThrottleBrake' | 'inputThrottleBrakeOverlay' | 'inputAccelerator' | 'inputBrake' | 'inputSteering'
   | 'powerSplit' | 'powerHarvest' | 'powerStore' | 'powerFuel'
-  | 'miscGForce' | 'miscRideHeight'
+  | 'miscGForce' | 'miscGLateral' | 'miscGLongitudinal'
+  | 'miscRideHeight' | 'miscRideFront' | 'miscRideRear'
 
 export type GraphViewState = Record<GraphSection, GraphView>
 
@@ -63,7 +64,11 @@ export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label
   ] },
   { group: 'Misc', sections: [
     { key: 'miscGForce',     label: 'G-Force' },
+    { key: 'miscGLateral',   label: 'G-Force — Lateral (Split)' },
+    { key: 'miscGLongitudinal', label: 'G-Force — Longitudinal (Split)' },
     { key: 'miscRideHeight', label: 'Ride Height' },
+    { key: 'miscRideFront',  label: 'Ride Height — Front (Split)' },
+    { key: 'miscRideRear',   label: 'Ride Height — Rear (Split)' },
   ] },
 ]
 

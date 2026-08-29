@@ -8,11 +8,15 @@ import { formatChartComparisonTooltip } from '../lib/chartComparisonTooltip'
 import { ChartWindowOverrideSelect, ChartWindowScope, useChartWindowSeconds } from '../lib/chartWindowOverrides'
 import { themeSeriesColor } from '../lib/themeColors'
 import { HISTORY_ROW } from '../lib/historyDependencies'
+import { MISC_CHART_Y_AXIS_SIZE } from '../lib/miscChartLayout'
+import type { GraphSection } from '../lib/graphSections'
 
+export type RideHeightChartMode = 'combined' | 'front' | 'rear'
 interface Props {
   isDark: boolean
   view?: 'chart' | 'table'
   windowSeconds?: number
+  mode?: RideHeightChartMode
 }
 
 const COLOR_FRONT = '#73BF69'
@@ -27,17 +31,16 @@ const UPPER_PADDING_MM = 5
 const INITIAL_LOWER_MM = 0
 const LOWER_PADDING_MM = 2
 
-const TABLE_COLS: GraphTableColumn[] = [
-  { header: 'Front', color: COLOR_FRONT, format: v => `${v.toFixed(1)}mm` },
-  { header: 'Rear',  color: COLOR_REAR,  format: v => `${v.toFixed(1)}mm` },
-]
-
 const SERIES: SeriesDef<MotionExRow>[] = [
   { label: 'Front', color: COLOR_FRONT, getY: d => d.front_aero_height_mm },
   { label: 'Rear',  color: COLOR_REAR,  getY: d => d.rear_aero_height_mm },
 ]
 
-const EMPTY_ALIGNED: AlignedTable = [new Float64Array(0), new Float64Array(0), new Float64Array(0)]
+const MODE_CONFIG: Record<RideHeightChartMode, { title: string; section: GraphSection; order: number }> = {
+  combined: { title: 'Ride Height', section: 'miscRideHeight', order: 30 },
+  front: { title: 'Front Ride Height', section: 'miscRideFront', order: 30 },
+  rear: { title: 'Rear Ride Height', section: 'miscRideRear', order: 40 },
+}
 
 function fmtTime(s: number) {
   const m = Math.floor(s / 60)
@@ -53,74 +56,89 @@ function computeYSplits(lower: number, upper: number): number[] {
   return splits
 }
 
-function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: Props) {
+function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30, mode = 'combined' }: Props) {
   const coordinates = useChartCoordinates()
   const scopedWindowSeconds = useChartWindowSeconds(windowSeconds)
   const colorFront = themeSeriesColor(COLOR_FRONT, isDark)
   const colorRear = themeSeriesColor(COLOR_REAR, isDark)
+  const modeConfig = MODE_CONFIG[mode]
+  const selectedSeries = useMemo(() => mode === 'combined'
+    ? SERIES
+    : SERIES.filter(series => series.label === (mode === 'front' ? 'Front' : 'Rear')),
+  [mode])
+  const themedSeries = useMemo(() => selectedSeries.map(series => ({
+    ...series,
+    color: series.label === 'Front' ? colorFront : colorRear,
+  })), [colorFront, colorRear, selectedSeries])
   const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({})
   const toggleSeries = useCallback((label: string) => {
     setHiddenSeries(prev => ({ ...prev, [label]: !prev[label] }))
   }, [])
-  const tableColumns = useMemo(() => TABLE_COLS.map((column, index) => ({ ...column, color: index === 0 ? colorFront : colorRear })), [colorFront, colorRear])
-  const chartSeries = useMemo(() => SERIES.map((series, index) => ({
+  const tableColumns = useMemo<GraphTableColumn[]>(() => themedSeries.map(series => ({
+    header: series.label,
+    color: series.color,
+    format: value => `${value.toFixed(1)}mm`,
+  })), [themedSeries])
+  const chartSeries = useMemo(() => themedSeries.map(series => ({
     ...series,
-    color: index === 0 ? colorFront : colorRear,
     visible: !hiddenSeries[series.label],
-  })), [colorFront, colorRear, hiddenSeries])
+  })), [hiddenSeries, themedSeries])
   const data = useTelemetryStore(s => coordinates.distanceMode ? s.analyzeLapMotionEx : s.motionEx)
-  const getTableValues = useCallback((row: MotionExRow) => [row.front_aero_height_mm, row.rear_aero_height_mm], [])
+  const getTableValues = useCallback((row: MotionExRow) => selectedSeries.map(series => series.getY(row)), [selectedSeries])
+  const emptyTableData = useMemo((): AlignedTable => [
+    new Float64Array(0),
+    ...selectedSeries.map(() => new Float64Array(0)),
+  ], [selectedSeries])
 
   const tableData = useMemo((): AlignedTable => {
-    if (view !== 'table' || coordinates.allLapsMode) return EMPTY_ALIGNED
-    const ts    = new Float64Array(data.length)
-    const front = new Float64Array(data.length)
-    const rear  = new Float64Array(data.length)
+    if (view !== 'table' || coordinates.allLapsMode) return emptyTableData
+    const ts = new Float64Array(data.length)
+    const values = selectedSeries.map(() => new Float64Array(data.length))
     data.forEach((d, i) => {
-      ts[i]    = d.session_time
-      front[i] = d.front_aero_height_mm
-      rear[i]  = d.rear_aero_height_mm
+      ts[i] = d.session_time
+      selectedSeries.forEach((series, seriesIndex) => { values[seriesIndex][i] = series.getY(d) })
     })
-    return [ts, front, rear]
-  }, [coordinates.allLapsMode, data, view])
+    return [ts, ...values]
+  }, [coordinates.allLapsMode, data, emptyTableData, selectedSeries, view])
 
   const tooltipTimeColor = isDark ? '#7c8098' : '#596168'
+  const formatValues = useCallback((values: number[]) => {
+    return themedSeries.flatMap((series, index) => hiddenSeries[series.label]
+      ? []
+      : [`<div><span style="color:${series.color}">${series.label}</span>: ${values[index].toFixed(1)} mm</div>`]).join('')
+  }, [hiddenSeries, themedSeries])
   const tooltipFormat = useCallback((x: number, v: number[], comparison?: number[]) => {
-    const formatValues = (values: number[]) => {
-      const parts: string[] = []
-      if (!hiddenSeries['Front']) parts.push(`<div><span style="color:${colorFront}">Front</span>: ${values[0].toFixed(1)} mm</div>`)
-      if (!hiddenSeries['Rear']) parts.push(`<div><span style="color:${colorRear}">Rear</span>:  ${values[1].toFixed(1)} mm</div>`)
-      return parts.join('')
-    }
     return [
       `<div style="color:${tooltipTimeColor};margin-bottom:4px">${coordinates.distanceMode ? coordinates.formatX(x) : fmtTime(x)}</div>`,
       formatValues(v),
       formatChartComparisonTooltip(comparison, coordinates.mode, formatValues),
     ].join('')
-  }, [colorFront, colorRear, coordinates, hiddenSeries, tooltipTimeColor])
+  }, [coordinates, formatValues, tooltipTimeColor])
+  const cursorSync = useMemo(() => ({
+    id: modeConfig.section,
+    order: modeConfig.order,
+    formatRow: (row: MotionExRow) => [
+      `<div style="color:${tooltipTimeColor};margin-top:3px">${modeConfig.title}</div>`,
+      formatValues(selectedSeries.map(series => series.getY(row))),
+    ].join(''),
+  }), [formatValues, modeConfig, selectedSeries, tooltipTimeColor])
 
   return (
     <div className="chart-panel bg-[var(--bg-panel)] h-full flex flex-col">
       <div className="flex h-[22px] items-center justify-between mb-3 shrink-0">
         <div className="flex items-center gap-0">
-          <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">Ride Height</h2>
+          <h2 className="chart-panel-title text-[10px] leading-none text-[var(--text-secondary)] uppercase tracking-widest">{modeConfig.title}</h2>
           <ChartWindowOverrideSelect />
         </div>
         {view !== 'table' && <div className="flex items-center gap-4 text-xs">
-            <span
-              onClick={() => toggleSeries('Front')}
+            {themedSeries.map(series => <span
+              key={series.label}
+              onClick={() => toggleSeries(series.label)}
               className="cursor-pointer select-none"
-              style={{ color: colorFront, filter: hiddenSeries['Front'] ? 'grayscale(100%)' : undefined }}
+              style={{ color: series.color, filter: hiddenSeries[series.label] ? 'grayscale(100%)' : undefined }}
             >
-              — Front
-            </span>
-            <span
-              onClick={() => toggleSeries('Rear')}
-              className="cursor-pointer select-none"
-              style={{ color: colorRear, filter: hiddenSeries['Rear'] ? 'grayscale(100%)' : undefined }}
-            >
-              — Rear
-            </span>
+              — {series.label}
+            </span>)}
             <span className="text-[var(--text-secondary)]">plank edge above road</span>
         </div>}
       </div>
@@ -131,7 +149,7 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
           <GraphTable columns={tableColumns} data={tableData} liveRows={data} getLiveValues={getTableValues} allLapsDataMask={HISTORY_ROW.motionEx} />
         ) : (
           <TimeChartView<MotionExRow>
-            key={coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}
+            key={`${mode}:${coordinates.mode ?? (coordinates.allLapsMode ? 'AL' : 'time')}`}
             isDark={isDark}
             rows={data}
             allLapsDataMask={HISTORY_ROW.motionEx}
@@ -146,11 +164,12 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
               lowerPad: LOWER_PADDING_MM,
               upperPad: UPPER_PADDING_MM,
             }}
-            yAxisSize={40}
+            yAxisSize={MISC_CHART_Y_AXIS_SIZE}
             yTickValues={computeYSplits}
             yTickFormat={v => `${v}mm`}
             xTickFormat={fmtTime}
             tooltipFormat={tooltipFormat}
+            cursorSync={cursorSync}
           />
         )}
       </div>
@@ -159,5 +178,6 @@ function RideHeightChartContent({ isDark, view = 'chart', windowSeconds = 30 }: 
 }
 
 export default function RideHeightChart(props: Props) {
-  return <ChartWindowScope section="miscRideHeight"><RideHeightChartContent {...props} /></ChartWindowScope>
+  const section = MODE_CONFIG[props.mode ?? 'combined'].section
+  return <ChartWindowScope section={section}><RideHeightChartContent {...props} /></ChartWindowScope>
 }

@@ -82,6 +82,7 @@ export function dataRequirementsForUi(
   tyreView: 'cards' | 'graphs',
   isPlayback: boolean,
   analyzeMask = 0,
+  pageLayouts?: PageLayouts,
 ): DataRequirements {
   const result: DataRequirements = { streamMask: 0, historyMask: 0 }
   add(result, DATA_CONSUMERS.globalClock)
@@ -121,8 +122,14 @@ export function dataRequirementsForUi(
   } else if (tab === 'strategy') {
     add(result, DATA_CONSUMERS.strategyPage)
   } else if (tab === 'misc') {
-    if (misc.showGForce) add(result, DATA_CONSUMERS.gForceHistory)
-    if (misc.showRideHeight) add(result, DATA_CONSUMERS.rideHeightHistory)
+    const showGForce = pageLayouts?.miscGForce === 'split'
+      ? misc.showGLateral || misc.showGLongitudinal
+      : misc.showGForce
+    const showRideHeight = pageLayouts?.miscRideHeight === 'split'
+      ? misc.showRideFront || misc.showRideRear
+      : misc.showRideHeight
+    if (showGForce) add(result, DATA_CONSUMERS.gForceHistory)
+    if (showRideHeight) add(result, DATA_CONSUMERS.rideHeightHistory)
   } else if (tab === 'analyze') {
     result.streamMask |= analyzeMask
     result.historyMask |= analyzeMask
@@ -188,9 +195,21 @@ export function visibleChartSectionsForUi(
     ]
   }
   if (tab === 'misc') {
+    const gForceSections: GraphSection[] = pageLayouts.miscGForce === 'split'
+      ? [
+          ...(misc.showGLateral ? ['miscGLateral' as const] : []),
+          ...(misc.showGLongitudinal ? ['miscGLongitudinal' as const] : []),
+        ]
+      : misc.showGForce ? ['miscGForce'] : []
+    const rideHeightSections: GraphSection[] = pageLayouts.miscRideHeight === 'split'
+      ? [
+          ...(misc.showRideFront ? ['miscRideFront' as const] : []),
+          ...(misc.showRideRear ? ['miscRideRear' as const] : []),
+        ]
+      : misc.showRideHeight ? ['miscRideHeight'] : []
     return [
-      ...(misc.showGForce ? ['miscGForce' as const] : []),
-      ...(misc.showRideHeight ? ['miscRideHeight' as const] : []),
+      ...gForceSections,
+      ...rideHeightSections,
     ]
   }
   return []
@@ -220,6 +239,7 @@ export function historyMaskForLayouts(
   power: PowerLayout,
   tyres: TyresLayout,
   tyreView: 'cards' | 'graphs',
+  pageLayouts?: PageLayouts,
 ): number {
-  return dataRequirementsForUi(tab, core, input, misc, power, tyres, tyreView, false).historyMask
+  return dataRequirementsForUi(tab, core, input, misc, power, tyres, tyreView, false, 0, pageLayouts).historyMask
 }

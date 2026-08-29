@@ -69,7 +69,11 @@ const SECTION_ROW_MASK: Record<GraphSection, number> = {
   powerStore: DATA_ROW.status,
   powerFuel: DATA_ROW.status,
   miscGForce: DATA_ROW.motion,
+  miscGLateral: DATA_ROW.motion,
+  miscGLongitudinal: DATA_ROW.motion,
   miscRideHeight: DATA_ROW.motionEx,
+  miscRideFront: DATA_ROW.motionEx,
+  miscRideRear: DATA_ROW.motionEx,
 }
 
 const selectStyles = buildSelectStyles(true, {

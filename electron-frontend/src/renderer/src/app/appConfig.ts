@@ -56,11 +56,41 @@ export const DEFAULT_INPUT_LAYOUT: InputLayout = {
 export type InputPageLayout = 'grid' | 'vertical'
 export type InputPedalLayout = 'combined' | 'combined2' | 'split'
 export type PowerPageLayout = 'grid' | 'vertical'
-export interface PageLayouts { input: InputPageLayout; inputPedals: InputPedalLayout; power: PowerPageLayout }
-export const DEFAULT_PAGE_LAYOUTS: PageLayouts = { input: 'grid', inputPedals: 'combined', power: 'grid' }
+export type TyresPageLayout = 'grid' | 'vertical'
+export type MiscSeriesLayout = 'combined' | 'split'
+export interface PageLayouts {
+  input: InputPageLayout
+  inputPedals: InputPedalLayout
+  miscGForce: MiscSeriesLayout
+  miscRideHeight: MiscSeriesLayout
+  power: PowerPageLayout
+  tyres: TyresPageLayout
+}
+export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
+  input: 'grid',
+  inputPedals: 'combined',
+  miscGForce: 'combined',
+  miscRideHeight: 'combined',
+  power: 'grid',
+  tyres: 'grid',
+}
 
-export interface MiscLayout { showGForce: boolean; showRideHeight: boolean }
-export const DEFAULT_MISC_LAYOUT: MiscLayout = { showGForce: true, showRideHeight: true }
+export interface MiscLayout {
+  showGForce: boolean
+  showGLateral: boolean
+  showGLongitudinal: boolean
+  showRideHeight: boolean
+  showRideFront: boolean
+  showRideRear: boolean
+}
+export const DEFAULT_MISC_LAYOUT: MiscLayout = {
+  showGForce: true,
+  showGLateral: true,
+  showGLongitudinal: true,
+  showRideHeight: true,
+  showRideFront: true,
+  showRideRear: true,
+}
 
 export interface PowerLayout {
   statsCards: { totalPower: boolean; ice: boolean; mguk: boolean; split: boolean; ersStore: boolean; ersPct: boolean; fuel: boolean }

@@ -6,8 +6,11 @@ import { useTimeChartScroll } from '../../hooks/useTimeChartScroll'
 import { TimeChart, corePlugins, type TChart } from '../../lib/timechart/tc'
 import { AXIS_LABEL_TOP_PADDING, createAxisPlugin, type AxisConfig } from '../../lib/timechart/axisPlugin'
 import { AlignedDataBuffer, type SeriesData } from '../../lib/timechart/engine/core/alignedData'
+import { seriesPointToPixels } from '../../lib/timechart/engine/core/nearestPoint'
 import type { StatusRow, TelemetryRow } from '../../types'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
+import { getChartComparisonLabel } from '../../lib/chartComparisonTooltip'
+import { useChartCursorSync } from '../../lib/chartCursorSync'
 import { playbackDebug } from '../../lib/playbackDebug'
 import { scheduleCooperativeTask } from '../../lib/cooperativeTask'
 import { subscribeAllLapsData } from '../../stores/telemetryStore'
@@ -60,6 +63,64 @@ function nearestIndex(data: SeriesData, x: number): number {
   if (after === 0) return 0
   if (after === data.length) return data.length - 1
   return x - data.xAt(after - 1) <= data.xAt(after) - x ? after - 1 : after
+}
+
+const AXIS_COVERAGE_EPSILON = 1e-6
+
+function axisXIsCovered(data: SeriesData | null, x: number): boolean {
+  if (!data || data.length === 0 || !Number.isFinite(x)) return false
+  const first = data.xAt(0)
+  const last = data.xAt(data.length - 1)
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return false
+  return x >= Math.min(first, last) - AXIS_COVERAGE_EPSILON
+    && x <= Math.max(first, last) + AXIS_COVERAGE_EPSILON
+}
+
+function valueIsCovered(value: number, first: number, last: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(first) || !Number.isFinite(last)) return false
+  return value >= Math.min(first, last) - AXIS_COVERAGE_EPSILON
+    && value <= Math.max(first, last) + AXIS_COVERAGE_EPSILON
+}
+
+function nearestTelemetryIndexByX(
+  rows: readonly TelemetryRow[],
+  getX: (row: TelemetryRow) => number,
+  value: number,
+): number {
+  if (rows.length === 0) return -1
+  let finiteEnd = rows.length
+  if (!Number.isFinite(getX(rows[finiteEnd - 1]))) {
+    let lo = 0, hi = finiteEnd
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (Number.isFinite(getX(rows[mid]))) lo = mid + 1
+      else hi = mid
+    }
+    finiteEnd = lo
+  }
+  if (finiteEnd === 0) return -1
+  let lo = 0, hi = finiteEnd
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (getX(rows[mid]) < value) lo = mid + 1
+    else hi = mid
+  }
+  let index = lo
+  if (index === finiteEnd) index--
+  else if (index > 0 && Math.abs(getX(rows[index - 1]) - value) <= Math.abs(getX(rows[index]) - value)) index--
+  return index
+}
+
+function nearestTelemetryIndexBySessionTime(rows: readonly TelemetryRow[], value: number): number {
+  if (rows.length === 0) return -1
+  let index = lowerBoundTimeInclusive(rows, value)
+  if (index === rows.length) index--
+  else if (index > 0 && Math.abs(rows[index - 1].session_time - value) <= Math.abs(rows[index].session_time - value)) index--
+  return index
+}
+
+function statusAtTime(rows: readonly StatusRow[], sessionTime: number): StatusRow | undefined {
+  return rows[Math.max(0, lowerBoundTime(rows, sessionTime) - 1)]
 }
 
 function lowerBoundTime(rows: readonly { session_time: number }[], value: number): number {
@@ -156,7 +217,39 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const coordinates = useChartCoordinates()
   const { ref: sizeRef, width, height } = useSize(120)
   const hostRef = useRef<HTMLDivElement>(null)
+  const syncCrosshairRef = useRef<SVGLineElement>(null)
+  const syncHorizontalCrosshairRef = useRef<SVGLineElement>(null)
+  const syncPointRefs = useRef<(SVGCircleElement | null)[]>([])
   const { tooltipRef, show, hide } = useChartTooltip(hostRef)
+  const cursorSyncContext = useChartCursorSync()
+  const cursorSyncContextRef = useRef(cursorSyncContext)
+  const telemetryRef = useRef(telemetry)
+  const statusesRef = useRef(statuses)
+  const comparisonTelemetryRef = useRef(comparisonTelemetry)
+  const comparisonStatusesRef = useRef(comparisonStatuses)
+  const colorsRef = useRef(colors)
+  const visibleSeriesRef = useRef(visibleSeries)
+  const getXRef = useRef(coordinates.getX)
+  const getComparisonXRef = useRef(coordinates.getComparisonX)
+  const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
+  const comparisonKeyRef = useRef('')
+  cursorSyncContextRef.current = cursorSyncContext
+  telemetryRef.current = telemetry
+  statusesRef.current = statuses
+  comparisonTelemetryRef.current = comparisonTelemetry
+  comparisonStatusesRef.current = comparisonStatuses
+  colorsRef.current = colors
+  visibleSeriesRef.current = visibleSeries
+  getXRef.current = coordinates.getX
+  getComparisonXRef.current = coordinates.getComparisonX
+  const comparisonLapNum = coordinates.lapData?.lapNum
+  const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
+  comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
+    ? `${baseComparisonLabel} ${comparisonLapNum}`
+    : baseComparisonLabel
+  comparisonKeyRef.current = coordinates.mode === 'RL'
+    ? `RL:${comparisonLapNum ?? ''}`
+    : coordinates.mode ?? ''
   const chartRef = useRef<TChart | null>(null)
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const bufferRef = useRef<AlignedDataBuffer | null>(null)
@@ -236,13 +329,185 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     host.style.color = axis
     host.style.setProperty('--background-overlay', isDark ? '#12141f' : '#f1f0ec')
 
+    const hideSyncPoints = () => {
+      for (const point of syncPointRefs.current) {
+        if (point) point.style.visibility = 'hidden'
+      }
+    }
+    const clearSyncedCursor = () => {
+      if (syncCrosshairRef.current) syncCrosshairRef.current.style.visibility = 'hidden'
+      if (syncHorizontalCrosshairRef.current) syncHorizontalCrosshairRef.current.style.visibility = 'hidden'
+      hideSyncPoints()
+    }
+    const formatCursorRow = (row: TelemetryRow, rowStatus: StatusRow | undefined) => {
+      const currentColors = colorsRef.current
+      const visibility = visibleSeriesRef.current
+      const parts = ['<div style="color:var(--text-secondary);margin-top:3px">Speed + RPM + ERS</div>']
+      if (visibility.speed) parts.push(`<div><span style="color:${currentColors.speed}">Speed</span>: ${Math.round(row.speed_kph)} kph</div>`)
+      if (visibility.rpm) parts.push(`<div><span style="color:${currentColors.rpm}">RPM</span>: ${Math.round(row.rpm).toLocaleString()}</div>`)
+      if (visibility.ers) parts.push(`<div><span style="color:${currentColors.ers}">ERS</span>: ${Math.round(rowStatus?.ers_pct ?? 0)}%</div>`)
+      return parts.join('')
+    }
+    const syncManager = cursorSyncContextRef.current
+    const syncAxisKind = coordinates.distanceMode ? 'distance' : 'time'
+    const unregisterSync = syncManager?.register({
+      id: 'overviewTelemetry',
+      order: 10,
+      axisKind: syncAxisKind,
+      resolveAxisX: axisX => {
+        const rows = telemetryRef.current
+        const index = nearestTelemetryIndexByX(rows, getXRef.current, axisX)
+        if (index < 0) return null
+        const row = rows[index]
+        const sampledAxisX = getXRef.current(row)
+        if (!Number.isFinite(sampledAxisX)) return null
+        return { sessionTime: row.session_time, sampledAxisX }
+      },
+      formatAxisX: axisX => axisCfgRef.current?.current.xTickFormat(axisX) ?? String(axisX),
+      syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
+        const rows = telemetryRef.current
+        const index = nearestTelemetryIndexBySessionTime(rows, sessionTime)
+        if (index < 0) {
+          clearSyncedCursor()
+          return { current: '' }
+        }
+        const row = rows[index]
+        const cursorAxisX = sourceAxisKind === syncAxisKind
+          ? sourceAxisX
+          : syncAxisKind === 'time'
+            ? sessionTime
+            : getXRef.current(row)
+        const xRange = chart.options.xRange
+        const visibleRangeCovered = !xRange || xRange === 'auto'
+          || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
+        const axisDataCovered = axisXIsCovered(buffer.series[0], cursorAxisX)
+        const sessionDataCovered = sourceAxisKind === syncAxisKind || syncAxisKind === 'time'
+          || valueIsCovered(sessionTime, rows[0].session_time, rows[rows.length - 1].session_time)
+        const forwardEndpointFallback = sourceAxisKind === syncAxisKind
+          && visibleRangeCovered
+          && buffer.length > 0
+          && cursorAxisX > buffer.lastX + AXIS_COVERAGE_EPSILON
+        if (!source && (!visibleRangeCovered || (!axisDataCovered && !forwardEndpointFallback) || !sessionDataCovered)) {
+          clearSyncedCursor()
+          return { current: '' }
+        }
+
+        const verticalLine = syncCrosshairRef.current
+        if (verticalLine) {
+          const sourceNeedsFallbackCrosshair = source && forwardEndpointFallback
+          if ((source && !sourceNeedsFallbackCrosshair) || (!source && !secondaryVerticalCrosshair)) {
+            verticalLine.style.visibility = 'hidden'
+          } else {
+            const px = chart.model.xScale(cursorAxisX)
+            const left = chart.options.paddingLeft
+            const right = chart.clientWidth - chart.options.paddingRight
+            if (Number.isFinite(px) && px >= left && px <= right) {
+              verticalLine.style.visibility = 'visible'
+              verticalLine.setAttribute('transform', `translate(${px} 0)`)
+            } else verticalLine.style.visibility = 'hidden'
+          }
+        }
+
+        const horizontalLine = syncHorizontalCrosshairRef.current
+        if (horizontalLine) {
+          if (source) {
+            horizontalLine.style.visibility = 'hidden'
+          } else if (plotYRatio != null) {
+            const left = chart.options.paddingLeft
+            const right = chart.clientWidth - chart.options.paddingRight
+            const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
+            const py = Math.max(0, Math.min(1, plotYRatio)) * plotHeight
+            if (Number.isFinite(py) && plotHeight > 0 && right > left) {
+              horizontalLine.style.visibility = 'visible'
+              horizontalLine.setAttribute('x1', String(left))
+              horizontalLine.setAttribute('x2', String(right))
+              horizontalLine.setAttribute('transform', `translate(0 ${py})`)
+            } else horizontalLine.style.visibility = 'hidden'
+          } else horizontalLine.style.visibility = 'hidden'
+        }
+
+        if (source) {
+          hideSyncPoints()
+        } else {
+          const cursorPx = chart.model.xScale(cursorAxisX)
+          const left = chart.options.paddingLeft
+          const right = chart.clientWidth - chart.options.paddingRight
+          const top = chart.options.paddingTop
+          const bottom = chart.clientHeight - chart.options.paddingBottom
+          const cursorVisible = Number.isFinite(cursorPx) && cursorPx >= left && cursorPx <= right
+          chart.options.series.forEach((series, seriesIndex) => {
+            const point = syncPointRefs.current[seriesIndex]
+            const pointIndex = axisXIsCovered(series.data, cursorAxisX)
+              ? nearestIndex(series.data, cursorAxisX)
+              : forwardEndpointFallback && series.data.length > 0
+                ? series.data.length - 1
+                : -1
+            if (!point || !cursorVisible || !series.visible || pointIndex < 0) {
+              if (point) point.style.visibility = 'hidden'
+              return
+            }
+            const pixel = seriesPointToPixels(
+              chart.model,
+              series,
+              series.data.xAt(pointIndex),
+              series.data.yAt(pointIndex),
+            )
+            if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)
+              || pixel.x < left || pixel.x > right || pixel.y < top || pixel.y > bottom) {
+              point.style.visibility = 'hidden'
+              return
+            }
+            point.style.visibility = 'visible'
+            point.style.stroke = String(series.color ?? chart.options.color)
+            point.style.strokeWidth = `${series.lineWidth ?? chart.options.lineWidth}px`
+            point.setAttribute('transform', `translate(${pixel.x} ${pixel.y - top})`)
+          })
+        }
+
+        const comparisonRows = comparisonTelemetryRef.current
+        const comparisonData = comparisonBufferRef.current?.series[0] ?? null
+        const comparisonIndex = comparisonRows && axisXIsCovered(comparisonData, cursorAxisX)
+          ? nearestTelemetryIndexByX(comparisonRows, getComparisonXRef.current, cursorAxisX)
+          : -1
+        const comparisonRow = comparisonRows && comparisonIndex >= 0
+          ? comparisonRows[comparisonIndex]
+          : undefined
+        return {
+          current: formatCursorRow(row, statusAtTime(statusesRef.current, row.session_time)),
+          comparison: comparisonRow
+            ? formatCursorRow(comparisonRow, statusAtTime(comparisonStatusesRef.current ?? [], comparisonRow.session_time))
+            : undefined,
+          comparisonLabel: comparisonRow ? comparisonLabelRef.current ?? undefined : undefined,
+          comparisonKey: comparisonRow ? comparisonKeyRef.current || undefined : undefined,
+        }
+      },
+      clear: clearSyncedCursor,
+    })
+
     const tooltipValues = [NaN, NaN, NaN]
     const comparisonTooltipValues = [NaN, NaN, NaN]
     const displayTooltipValues = [NaN, NaN, NaN]
     const displayComparisonTooltipValues = [NaN, NaN, NaN]
     const stopTooltipSync = chart.nearestPoint.updated.on(() => {
       const pointer = chart.nearestPoint.lastPointerPos
-      if (!pointer) { hide(); return }
+      const manager = cursorSyncContextRef.current
+      if (!pointer) {
+        hide()
+        manager?.clear('overviewTelemetry')
+        return
+      }
+      if (manager?.isEnabled()) {
+        hide()
+        const rect = hostRef.current?.getBoundingClientRect()
+        if (!rect) return
+        const axisX = (chart.model.xScale as any).invert(pointer.x) as number
+        const plotHeight = chart.clientHeight - chart.options.paddingTop - chart.options.paddingBottom
+        const plotYRatio = plotHeight > 0
+          ? Math.max(0, Math.min(1, (pointer.y - chart.options.paddingTop) / plotHeight))
+          : 0
+        manager.publish('overviewTelemetry', axisX, plotYRatio, rect.left + pointer.x, rect.top + pointer.y)
+        return
+      }
       const px = pointer.x - chart.options.paddingLeft + 44
       const x = (chart.model.xScale as any).invert(px) as number
       const index = nearestIndex(chart.options.series[3].data, x)
@@ -267,6 +532,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
     attach(chart)
     return () => {
       stopTooltipSync()
+      unregisterSync?.()
       detach()
       chart.dispose()
       chartRef.current = null
@@ -436,7 +702,48 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   }, [width, height])
 
   return <>
-    <div className="absolute inset-0" ref={sizeRef}><div ref={hostRef} className="absolute inset-0" /></div>
+    <div className="absolute inset-0" ref={sizeRef}>
+      <div ref={hostRef} className="absolute inset-0" />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 overflow-visible"
+        style={{ top: AXIS_LABEL_TOP_PADDING, bottom: 22 }}
+      >
+        <svg className="block h-full w-full overflow-visible">
+          <line
+            ref={syncHorizontalCrosshairRef}
+            x1="0"
+            x2="100%"
+            y1="0"
+            y2="0"
+            stroke={isDark ? '#7c8098' : '#596168'}
+            strokeWidth="1"
+            strokeDasharray="2 1"
+            style={{ visibility: 'hidden' }}
+          />
+          <line
+            ref={syncCrosshairRef}
+            x1="0"
+            x2="0"
+            y1="0"
+            y2="100%"
+            stroke={isDark ? '#7c8098' : '#596168'}
+            strokeWidth="1"
+            strokeDasharray="2 1"
+            style={{ visibility: 'hidden' }}
+          />
+          {Array.from({ length: 6 }, (_, index) => <circle
+            key={index}
+            ref={(point) => { syncPointRefs.current[index] = point }}
+            cx="0"
+            cy="0"
+            r="3"
+            fill={isDark ? '#12141f' : '#f1f0ec'}
+            style={{ visibility: 'hidden' }}
+          />)}
+        </svg>
+      </div>
+    </div>
     <ChartTooltipPortal tooltipRef={tooltipRef} />
   </>
 }
