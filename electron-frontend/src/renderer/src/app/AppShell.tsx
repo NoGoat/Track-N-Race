@@ -34,11 +34,11 @@ export default function AppShell() {
   const {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
     fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts,
-    nativeTitlebar, powerLayout, reduceAnimations, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, seconds, sectorColors, titlebarUpdateInterval,
+    nativeTitlebar, powerLayout, reduceAnimations, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, seconds, sectorBoundariesEnabled, sectorColors, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     sessionLayout, standingsLayout, theme, tyreView, tyreWearMode, tyresLayout,
   } = useAppConfiguration()
   const [tab, setTab] = useState<Tab>('core')
@@ -314,6 +314,7 @@ export default function AppShell() {
         isFullscreen={isFullscreen}
         isMaximized={isMaximized}
         inputCursorSyncEnabled={inputCursorSyncEnabled}
+        sectorBoundariesEnabled={sectorBoundariesEnabled}
         onClosePlayback={playback.close}
         onSelectPlaybackFile={playback.selectFile}
         chartWindow={chartWindow}
@@ -323,6 +324,7 @@ export default function AppShell() {
         setEditOpen={setEditOpen}
         setHeaderVisible={setHeaderVisible}
         setInputCursorSyncEnabled={setInputCursorSyncEnabled}
+        setSectorBoundariesEnabled={setSectorBoundariesEnabled}
         setChartWindow={handleGlobalChartWindowChange}
         setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
@@ -423,8 +425,9 @@ export default function AppShell() {
           referenceLapOptions={referenceLapOptions}
           referenceLapOverrides={chartReferenceLapOverrides}
           setReferenceLapOverride={setChartReferenceLapOverride}
+          sectorBoundariesEnabled={sectorBoundariesEnabled}
         >
-        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask}>
+        <ChartCoordinatesProvider mode={chartCoordinateMode} referenceLapNum={referenceLapNum} rowTypeMask={dataRequirements.historyMask} sectorBoundaries={sectorBoundariesEnabled}>
         <TabContent
           tab={tab}
           isDark={theme !== 'light'}

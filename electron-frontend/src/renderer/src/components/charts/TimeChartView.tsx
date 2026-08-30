@@ -303,6 +303,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     xTickSpacePx: look.xTickSpacePx ?? 80,
     xTickFormat: effectiveXTickFormat,
     xTickValues: coordinates.xTickValues,
+    cullXTickLabels: coordinates.cullXTickLabels,
     xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
     xLabelOffset: coordinates.allLapsMode ? 4 : 0,
     yTickValues: effYTickValues,
@@ -922,11 +923,12 @@ export default function TimeChartView<T extends { session_time: number }>(props:
       ...axisCfgRef.current,
       xTickFormat: effectiveXTickFormat,
       xTickValues: coordinates.xTickValues,
+      cullXTickLabels: coordinates.cullXTickLabels,
       xTickAnchor: coordinates.allLapsMode ? 'start' : 'middle',
       xLabelOffset: coordinates.allLapsMode ? 4 : 0,
     }
     chartRef.current?.model.requestRedraw()
-  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.xTickValues, effectiveXTickFormat])
+  }, [coordinates.allLapsMode, coordinates.axisRevision, coordinates.cullXTickLabels, coordinates.xTickValues, effectiveXTickFormat])
 
   // Apply Y-axis policy changes in place so a Settings toggle never recreates
   // the WebGL chart. Fixed bounds may also be data-derived (for example Fuel).

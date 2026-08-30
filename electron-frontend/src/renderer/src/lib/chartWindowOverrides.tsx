@@ -27,6 +27,7 @@ interface OverrideContextValue {
   referenceLapOptions: LapOption[]
   referenceLapOverrides: ChartReferenceLapOverrides
   setReferenceLapOverride: (section: GraphSection, lapNum: number | null) => void
+  sectorBoundariesEnabled: boolean
 }
 
 const OverrideContext = createContext<OverrideContextValue | null>(null)
@@ -89,13 +90,13 @@ const lapSelectStyles = buildSelectStyles(true, {
 
 export function ChartWindowOverridesProvider({
   globalWindow, overrides, setOverride, clAvailable, recordingOpen, referenceLapNum,
-  referenceLapOptions, referenceLapOverrides, setReferenceLapOverride, children,
+  referenceLapOptions, referenceLapOverrides, setReferenceLapOverride, sectorBoundariesEnabled, children,
 }: OverrideContextValue & { children: React.ReactNode }) {
   const value = useMemo(() => ({
     globalWindow, overrides, setOverride, clAvailable, recordingOpen, referenceLapNum,
-    referenceLapOptions, referenceLapOverrides, setReferenceLapOverride,
+    referenceLapOptions, referenceLapOverrides, setReferenceLapOverride, sectorBoundariesEnabled,
   }), [clAvailable, globalWindow, overrides, recordingOpen, referenceLapNum, referenceLapOptions,
-    referenceLapOverrides, setOverride, setReferenceLapOverride])
+    referenceLapOverrides, sectorBoundariesEnabled, setOverride, setReferenceLapOverride])
   return <OverrideContext.Provider value={value}>{children}</OverrideContext.Provider>
 }
 
@@ -120,6 +121,7 @@ export function ChartWindowScope({ section, children }: { section: GraphSection;
         mode={mode}
         referenceLapNum={referenceLapNum}
         rowTypeMask={SECTION_ROW_MASK[section]}
+        sectorBoundaries={context.sectorBoundariesEnabled}
       >
         {children}
       </ChartCoordinatesProvider>

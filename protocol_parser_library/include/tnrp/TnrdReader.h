@@ -188,6 +188,8 @@ private:
         // Slim chart points for lapBlocksMessage().
         std::vector<SlimTelemetryPoint> slimTelemetry;
         std::vector<SlimStatusPoint>    slimStatus;
+        float sector1EndDistanceM{};
+        float sector2EndDistanceM{};
     };
     struct ScanLap { int lapNum; float startSessionTime; float endSessionTime; int lapTimeMs; };
 
@@ -261,6 +263,7 @@ private:
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
     bool buildIndexedSeekCache();
+    bool buildSectorDistanceMetadata();
     bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
     std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
 

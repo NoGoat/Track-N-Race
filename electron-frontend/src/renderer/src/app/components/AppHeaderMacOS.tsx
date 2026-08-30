@@ -26,6 +26,7 @@ interface AppHeaderProps {
   isFullscreen: boolean
   isMaximized: boolean
   inputCursorSyncEnabled: boolean
+  sectorBoundariesEnabled: boolean
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
   chartWindow: ChartWindow
@@ -35,6 +36,7 @@ interface AppHeaderProps {
   setEditOpen: Dispatch<SetStateAction<boolean>>
   setHeaderVisible: (visible: boolean) => void
   setInputCursorSyncEnabled: (enabled: boolean) => void
+  setSectorBoundariesEnabled: (enabled: boolean) => void
   setChartWindow: (window: ChartWindow) => void
   setReferenceLapNum: (lapNum: number | null) => void
   setSettingsOpen: (open: boolean) => void
@@ -46,9 +48,9 @@ interface AppHeaderProps {
 }
 
 export default memo(function AppHeader({
-  actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled,
+  actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
-  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
@@ -118,6 +120,15 @@ export default memo(function AppHeader({
         </div>
 
         <button onClick={() => setSettingsOpen(true)} title="Settings" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${settingsOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Settings2 size={13} /></button>
+        <button
+          onClick={() => cursorSyncAvailable && setSectorBoundariesEnabled(!sectorBoundariesEnabled)}
+          disabled={!cursorSyncAvailable}
+          aria-label="Sector Boundaries"
+          aria-pressed={cursorSyncAvailable && sectorBoundariesEnabled}
+          title={cursorSyncAvailable ? 'Sector Boundaries' : 'Sector boundaries are available on the Overview, Input, Misc, Power, and Tyres pages'}
+          style={{ WebkitAppRegion: 'no-drag' }}
+          className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : sectorBoundariesEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
+        ><span className="block text-[9px] font-bold leading-[13px]">S1</span></button>
         <button
           onClick={() => cursorSyncAvailable && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}
           disabled={!cursorSyncAvailable}

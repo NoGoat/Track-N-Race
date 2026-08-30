@@ -357,6 +357,16 @@ export interface PlaybackLapDataMsg {
   rowTypeMask?: number
 }
 
+export interface PlaybackLapBlock {
+  lapNum: number
+  startSessionTime: number
+  endSessionTime: number
+  telemetry: Array<{ type: 'telemetry'; session_time: number; speed_kph: number; rpm: number }>
+  statusHistory: Array<{ type: 'status'; session_time: number; ers_pct: number; tyre_compound: number; visual_compound: number }>
+  sector1EndDistanceM?: number
+  sector2EndDistanceM?: number
+}
+
 export interface PlaybackFastestLapMsg {
   type: 'playback_fastest_lap'
   data: LapData

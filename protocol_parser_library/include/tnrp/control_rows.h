@@ -284,6 +284,10 @@ struct LapBlockMeta {
     float endSessionTime{};
     std::vector<SlimTelemetryPoint> telemetry;
     std::vector<SlimStatusPoint>    statusHistory;
+    // Constructed from the complete lap-data stream during the initial file
+    // scan. Zero means the recording did not contain enough distance data.
+    float sector1EndDistanceM{};
+    float sector2EndDistanceM{};
 };
 
 // V3-only player progress samples. current_lap_ms and lap_distance_m originate

@@ -178,7 +178,9 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
   10 Hz cadence for streaming playback, seeks and per-lap Analyze payloads;
 - fills slim per-lap chart points (`speed_kph`/`rpm` + `ers_pct`) into
   `lapBlocksMessage()` so the load payload is small; for V3 it also indexes
-  lap-distance/timing points used by Electron Analyze.
+  lap-distance/timing points used by Electron Analyze. The initial load scan
+  also interpolates each lap's S1/S2 end distances from those timing points;
+  V5 reads only its sparse Lap Data chunks for this metadata.
 
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:

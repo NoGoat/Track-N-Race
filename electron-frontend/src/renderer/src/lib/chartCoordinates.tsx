@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef } from 'react'
 import { useTelemetryStore } from '../stores/telemetryStore'
-import type { AnalyzeLapData, LapProgressPoint } from '../types'
-import { buildLapProgressMap, buildLapProgressMapFromPoints, interpolateLapElapsed, type LapProgressMap } from './lapDelta'
+import type { AnalyzeLapData, LapProgressPoint, PlaybackLapBlock } from '../types'
+import { buildLapProgressMap, buildLapProgressMapFromPoints, findSectorSplitsFromProgress, interpolateLapElapsed, type LapProgressMap, type SectorSplit } from './lapDelta'
 import type { ChartMode, DistanceChartMode } from '../app/appConfig'
 import { playbackDebug } from './playbackDebug'
 import { DATA_ROW } from './historyDependencies'
@@ -23,6 +23,7 @@ interface ChartCoordinates {
   getDeltaAtDistance: (distance: number) => number
   formatX: (x: number) => string
   xTickValues?: (min: number, max: number) => number[]
+  cullXTickLabels: boolean
   axisRevision: string
 }
 
@@ -42,6 +43,7 @@ const DEFAULT: ChartCoordinates = {
   getComparisonX: row => row.session_time,
   getDeltaAtDistance: () => NaN,
   formatX: x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`,
+  cullXTickLabels: true,
   axisRevision: '',
 }
 
@@ -70,7 +72,7 @@ export function formatChartDistance(metres: number): string {
   return `${Math.round(metres)} m`
 }
 
-export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, children }: { mode: ChartMode | null; referenceLapNum: number | null; rowTypeMask: number; children: React.ReactNode }) {
+export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, sectorBoundaries, children }: { mode: ChartMode | null; referenceLapNum: number | null; rowTypeMask: number; sectorBoundaries: boolean; children: React.ReactNode }) {
   const currentProgress = useTelemetryStore(state => state.analyzeLapProgress)
   const currentLapStartTime = useTelemetryStore(state => state.analyzeLapStartTime)
   const trackLengthM = useTelemetryStore(state => state.analyzeTrackLengthM)
@@ -83,7 +85,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
   const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
   const currentStintStartTime = useTelemetryStore(state => state.currentStintStartTime)
-  const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as Array<{ lapNum: number; startSessionTime: number; endSessionTime: number }> | null
+  const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as PlaybackLapBlock[] | null
   const playbackCurrentLap = isPlayback && currentLapNum !== null
     ? playbackCache[currentLapNum] ?? null
     : null
@@ -163,6 +165,64 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
   const getAllLapTicks = useCallback((min: number, max: number) => boundaryValuesRef.current
     .filter(time => time >= min && time <= max), [])
   const formatAllLapX = useCallback((x: number) => boundaryLabelsRef.current.get(x) ?? '', [])
+  const sectorBoundaryMode = enabled && sectorBoundaries
+  const sectorSplitsByNumber = new Map<number, SectorSplit>()
+  if (sectorBoundaryMode && isPlayback) {
+    const preferredLapNumbers = [currentLapNum, comparisonLapNum, fastestLapNum]
+      .filter((lapNum): lapNum is number => lapNum !== null)
+    const metadataBlock = preferredLapNumbers
+      .map(lapNum => lapBlocks?.find(block => block.lapNum === lapNum))
+      .find((block): block is PlaybackLapBlock => block !== undefined &&
+        Number(block.sector1EndDistanceM) > 0 && Number(block.sector2EndDistanceM) > 0)
+      ?? lapBlocks?.find(block =>
+        Number(block.sector1EndDistanceM) > 0 && Number(block.sector2EndDistanceM) > 0)
+    if (metadataBlock) {
+      sectorSplitsByNumber.set(1, {
+        afterSector: 1,
+        distance: Number(metadataBlock.sector1EndDistanceM),
+        elapsedSeconds: 0,
+      })
+      sectorSplitsByNumber.set(2, {
+        afterSector: 2,
+        distance: Number(metadataBlock.sector2EndDistanceM),
+        elapsedSeconds: 0,
+      })
+    }
+  }
+  if (sectorBoundaryMode && comparisonMode) {
+    for (const split of findSectorSplitsFromProgress(
+      comparisonLapData?.lapProgress ?? [],
+      comparisonProgressMapRef.current,
+    )) sectorSplitsByNumber.set(split.afterSector, split)
+  }
+  if (sectorBoundaryMode) {
+    for (const split of findSectorSplitsFromProgress(rawProgress, currentProgressMapRef.current)) {
+      sectorSplitsByNumber.set(split.afterSector, split)
+    }
+  }
+  const sectorSplits = ([1, 2] as const).flatMap(sector => {
+    const split = sectorSplitsByNumber.get(sector)
+    return split ? [split] : []
+  })
+  const sectorSplitsRef = useRef<SectorSplit[]>([])
+  const sectorTickLabelsRef = useRef(new Map<number, string>())
+  sectorSplitsRef.current = sectorSplits
+  const getSectorTicks = useCallback((min: number, max: number) => {
+    const labels = new Map<number, string>()
+    const values = [min]
+    for (const split of sectorSplitsRef.current) {
+      if (split.distance <= min || split.distance >= max) continue
+      values.push(split.distance)
+      labels.set(split.distance, `S${split.afterSector}`)
+    }
+    if (max > min) {
+      values.push(max)
+      labels.set(max, 'S3')
+    }
+    sectorTickLabelsRef.current = labels
+    return values.filter((value, index) => index === 0 || Math.abs(value - values[index - 1]) > 1e-6)
+  }, [])
+  const formatSectorX = useCallback((x: number) => sectorTickLabelsRef.current.get(x) ?? '', [])
   const lastProgress = rawProgress[rawProgress.length - 1]
   const progressRevision = `${lapRevision}:${rawProgress.length}:${lastProgress?.session_time ?? ''}:${lastProgress?.lap_distance_m ?? ''}`
   useEffect(() => {
@@ -203,11 +263,14 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, c
     getX: enabled ? getX : DEFAULT.getX,
     getComparisonX: comparisonMode ? getComparisonX : DEFAULT.getComparisonX,
     getDeltaAtDistance: comparisonMode ? getDeltaAtDistance : DEFAULT.getDeltaAtDistance,
-    formatX: enabled ? formatChartDistance : allLapsMode ? formatAllLapX : DEFAULT.formatX,
-    xTickValues: allLapsMode ? getAllLapTicks : undefined,
+    formatX: sectorBoundaryMode ? formatSectorX : enabled ? formatChartDistance : allLapsMode ? formatAllLapX : DEFAULT.formatX,
+    xTickValues: sectorBoundaryMode ? getSectorTicks : allLapsMode ? getAllLapTicks : undefined,
+    cullXTickLabels: !sectorBoundaryMode,
     axisRevision: allLapsMode
       ? `${mode}:${stintStartTime}:` + lapBoundaries.map(boundary => `${boundary.lapNum}:${boundary.sessionTime}`).join('|')
-      : progressRevision,
+      : sectorBoundaryMode
+        ? `sectors:${progressRevision}:${sectorSplits.map(split => `${split.afterSector}:${split.distance}`).join('|')}`
+        : `distance:${progressRevision}`,
   }}>{children}</Context.Provider>
 }
 

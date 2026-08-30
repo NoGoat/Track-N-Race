@@ -107,12 +107,14 @@ function interpolateLapDistanceAtElapsed(progress: LapProgressMap, elapsedMs: nu
   return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
 }
 
-export function findSectorSplits(lap: AnalyzeLapData | null): SectorSplit[] {
-  const progress = buildLapProgressMap(lap)
-  if (!lap || !progress) return []
+export function findSectorSplitsFromProgress(
+  lapProgress: readonly LapProgressPoint[],
+  progress: LapProgressMap | null,
+): SectorSplit[] {
+  if (!progress) return []
   const splits: SectorSplit[] = []
   let enteredFirstSector = false
-  for (const point of lap.lapProgress) {
+  for (const point of lapProgress) {
     const sector = point.sector
     if (!Number.isFinite(sector)) continue
     // Race Lap 1 starts behind the timing line. Until the player crosses it,
@@ -138,4 +140,8 @@ export function findSectorSplits(lap: AnalyzeLapData | null): SectorSplit[] {
     if (splits.length === 2) break
   }
   return splits
+}
+
+export function findSectorSplits(lap: AnalyzeLapData | null): SectorSplit[] {
+  return lap ? findSectorSplitsFromProgress(lap.lapProgress, buildLapProgressMap(lap)) : []
 }

@@ -9,6 +9,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -69,6 +70,11 @@ int main() {
         {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0,"lap_distance_m":0})", 1.0f},
         {R"({"type":"session","session_time":1.1,"track_id":7,"session_type":10})", 1.1f},
         {R"({"type":"telemetry","session_time":1.2,"speed_kph":100})", 1.2f},
+        {R"({"type":"lap","session_time":31,"lap_num":1,"current_lap_ms":30000,"last_lap_ms":0,"lap_distance_m":1600,"sector":0})", 31.0f},
+        {R"({"type":"lap","session_time":32,"lap_num":1,"current_lap_ms":31000,"last_lap_ms":0,"lap_distance_m":1760,"sector":1,"s1_ms":30000})", 32.0f},
+        {R"({"type":"lap","session_time":61,"lap_num":1,"current_lap_ms":60000,"last_lap_ms":0,"lap_distance_m":3300,"sector":1,"s1_ms":30000})", 61.0f},
+        {R"({"type":"lap","session_time":62,"lap_num":1,"current_lap_ms":61000,"last_lap_ms":0,"lap_distance_m":3460,"sector":2,"s1_ms":30000,"s2_ms":30000})", 62.0f},
+        {R"({"type":"lap","session_time":91,"lap_num":2,"current_lap_ms":0,"last_lap_ms":90000,"lap_distance_m":0,"sector":0})", 91.0f},
     };
 
     const std::array formats{
@@ -101,7 +107,17 @@ int main() {
         assert(reader.loadedFormat() == format);
         assert(loadedHeader.magic == magicFor(format));
         assert(loadedHeader.formula == header.formula);
-        assert(reader.readRange(0.0f, 2.0f).size() == rows.size());
+        assert(reader.readRange(0.0f, 100.0f).size() == rows.size());
+        tnrp::PlaybackLapBlocksRow lapBlocks;
+        assert(!glz::read_json(lapBlocks, reader.lapBlocksMessage()));
+        assert(!lapBlocks.blocks.empty());
+        if (format == tnrp::TnrdFormat::ZstdV3 || tnrp::isChunkedTnrd(format)) {
+            assert(std::abs(lapBlocks.blocks.front().sector1EndDistanceM - 1600.0f) < 0.01f);
+            assert(std::abs(lapBlocks.blocks.front().sector2EndDistanceM - 3300.0f) < 0.01f);
+        } else {
+            assert(lapBlocks.blocks.front().sector1EndDistanceM == 0.0f);
+            assert(lapBlocks.blocks.front().sector2EndDistanceM == 0.0f);
+        }
         reader.close();
     }
 

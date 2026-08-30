@@ -20,6 +20,8 @@ export interface AxisConfig {
   xTickFormat: (seconds: number) => string
   /** Optional exact x ticks (used by AL for lap-boundary splits). */
   xTickValues?: (min: number, max: number) => number[]
+  /** Allow dense exact ticks to skip labels. Disable for the three sector labels. */
+  cullXTickLabels?: boolean
   xTickAnchor?: 'start' | 'middle' | 'end'
   xLabelOffset?: number
   /** derive y tick values from the current y domain. */
@@ -135,7 +137,9 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         const usable = plotRight - plotLeft
         const tickCapacity = Math.max(2, Math.floor(usable / c.xTickSpacePx))
         const xTicks = c.xTickValues ? c.xTickValues(xMin, xMax) : xScale.ticks(tickCapacity)
-        const labelEvery = c.xTickValues ? Math.max(1, Math.ceil(xTicks.length / tickCapacity)) : 1
+        const labelEvery = c.xTickValues && c.cullXTickLabels !== false
+          ? Math.max(1, Math.ceil(xTicks.length / tickCapacity))
+          : 1
         const yTicks = c.yTickValues(yMin, yMax)
 
         if (c.panels) {

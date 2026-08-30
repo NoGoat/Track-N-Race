@@ -50,6 +50,10 @@ int main() {
         {R"({"type":"positions","ts":"2026-08-11T00:00:01.150Z","player_idx":0,"cars":[{"idx":0,"x":10,"z":20}]})", 1.15f},
         {R"({"type":"status","session_time":1.2,"fuel_kg":50,"ers_pct":80,"tyre_compound":16,"visual_compound":16})", 1.2f},
         {R"({"type":"race_event","session_time":2,"code":"SCAR","event_type":3})" "\n", 2.0f},
+        {R"({"type":"lap","session_time":31,"lap_num":1,"current_lap_ms":30000,"last_lap_ms":0,"lap_distance_m":1600,"sector":0})", 31.0f},
+        {R"({"type":"lap","session_time":32,"lap_num":1,"current_lap_ms":31000,"last_lap_ms":0,"lap_distance_m":1760,"sector":1,"s1_ms":30000})", 32.0f},
+        {R"({"type":"lap","session_time":61,"lap_num":1,"current_lap_ms":60000,"last_lap_ms":0,"lap_distance_m":3300,"sector":1,"s1_ms":30000})", 61.0f},
+        {R"({"type":"lap","session_time":62,"lap_num":1,"current_lap_ms":61000,"last_lap_ms":0,"lap_distance_m":3460,"sector":2,"s1_ms":30000,"s2_ms":30000})", 62.0f},
         // Lap packets are menu-rate snapshots, so the first row of a new lap
         // commonly arrives one frame after the true boundary.
         {R"({"type":"lap","session_time":91.016,"lap_num":2,"current_lap_ms":16,"last_lap_ms":90000,"lap_distance_m":0})", 91.016f},
@@ -269,6 +273,11 @@ int main() {
     assert(reader.lapBlocksMessage().find('\n') == std::string::npos);
     glz::generic lapBlocksJson;
     assert(!glz::read_json(lapBlocksJson, reader.lapBlocksMessage()));
+    tnrp::PlaybackLapBlocksRow lapBlocks;
+    assert(!glz::read_json(lapBlocks, reader.lapBlocksMessage()));
+    assert(!lapBlocks.blocks.empty());
+    assert(std::abs(lapBlocks.blocks.front().sector1EndDistanceM - 1600.0f) < 0.01f);
+    assert(std::abs(lapBlocks.blocks.front().sector2EndDistanceM - 3300.0f) < 0.01f);
     assert(reader.readRange(0, 200).size() == rows.size());
     const auto derivedStrategy = reader.strategySnapshotAt(91.15f);
     assert(derivedStrategy.type == "strategy");

@@ -76,6 +76,77 @@ bool seekFile(std::FILE* file, std::int64_t offset, int origin) {
     return ::fseeko(file, static_cast<off_t>(offset), origin) == 0;
 #endif
 }
+
+std::pair<float, float> sectorEndDistances(std::vector<LapProgressPoint> points) {
+    std::stable_sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
+        return a.session_time < b.session_time;
+    });
+
+    // Distance at the exact sector time is interpolated from the same Lap Data
+    // samples that supplied current_lap_ms. This mirrors the Analysis charts
+    // and avoids placing a boundary one menu-rate packet late.
+    std::vector<LapProgressPoint> monotonic;
+    monotonic.reserve(points.size());
+    for (const auto& point : points) {
+        if (!std::isfinite(point.session_time) || !std::isfinite(point.lap_distance_m) ||
+            point.current_lap_ms < 0 || point.lap_distance_m < 0.0f) continue;
+        if (!monotonic.empty()) {
+            const auto& previous = monotonic.back();
+            if (point.current_lap_ms < previous.current_lap_ms ||
+                point.lap_distance_m < previous.lap_distance_m) continue;
+            if (point.session_time == previous.session_time) {
+                monotonic.back() = point;
+                continue;
+            }
+            if (point.lap_distance_m == previous.lap_distance_m) continue;
+        }
+        monotonic.push_back(point);
+    }
+    const auto interpolateDistance = [&](int elapsedMs) {
+        if (monotonic.size() < 2 || elapsedMs < monotonic.front().current_lap_ms ||
+            elapsedMs > monotonic.back().current_lap_ms) {
+            return std::numeric_limits<float>::quiet_NaN();
+        }
+        const auto after = std::lower_bound(monotonic.begin(), monotonic.end(), elapsedMs,
+            [](const LapProgressPoint& point, int value) {
+                return point.current_lap_ms < value;
+            });
+        if (after == monotonic.begin()) return after->lap_distance_m;
+        if (after == monotonic.end()) return monotonic.back().lap_distance_m;
+        const auto& before = *std::prev(after);
+        const int span = after->current_lap_ms - before.current_lap_ms;
+        const float ratio = span > 0
+            ? static_cast<float>(elapsedMs - before.current_lap_ms) / static_cast<float>(span)
+            : 1.0f;
+        return before.lap_distance_m + (after->lap_distance_m - before.lap_distance_m) * ratio;
+    };
+
+    float sector1 = 0.0f;
+    float sector2 = 0.0f;
+    bool enteredFirstSector = false;
+    for (const auto& point : points) {
+        if (!std::isfinite(point.lap_distance_m)) continue;
+        // Race Lap 1 begins behind the timing line and can initially report
+        // Sector 3 from the preceding lap. Wait for a real Sector 1 sample.
+        if (!enteredFirstSector) {
+            if (point.sector == 0 && point.lap_distance_m >= 0.0f)
+                enteredFirstSector = true;
+            continue;
+        }
+        if (sector1 == 0.0f && point.sector >= 1) {
+            if (point.s1_ms <= 0) continue;
+            const float distance = interpolateDistance(point.s1_ms);
+            if (std::isfinite(distance) && distance > 0.0f) sector1 = distance;
+        }
+        if (sector1 > 0.0f && sector2 == 0.0f && point.sector >= 2) {
+            if (point.s1_ms <= 0 || point.s2_ms <= 0) continue;
+            const float distance = interpolateDistance(point.s1_ms + point.s2_ms);
+            if (std::isfinite(distance) && distance > sector1) sector2 = distance;
+        }
+        if (sector1 > 0.0f && sector2 > sector1) break;
+    }
+    return {sector1, sector2};
+}
 }
 
 // State types reconstructed on seek (panel-state setters, emitted individually):
@@ -554,6 +625,12 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             close();
             return false;
         }
+        if (!buildSectorDistanceMetadata()) {
+            std::fprintf(stderr, "[tnrd] load FAILED: sector metadata scan failed for '%s': %s\n",
+                         path.c_str(), lastError_.c_str());
+            close();
+            return false;
+        }
         if (indexedSeekCacheReady_) {
             // Pay the complete strategy replay cost under the existing
             // asynchronous loading overlay. Later random seeks restore the
@@ -616,6 +693,12 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
     if (index_.empty()) {
         lastError_ = "The recording contains no readable telemetry rows.";
         std::fprintf(stderr, "[tnrd] load FAILED: index empty (no indexable rows) for '%s'\n", path.c_str());
+        close();
+        return false;
+    }
+    if (!buildSectorDistanceMetadata()) {
+        std::fprintf(stderr, "[tnrd] load FAILED: sector metadata scan failed for '%s': %s\n",
+                     path.c_str(), lastError_.c_str());
         close();
         return false;
     }
@@ -984,6 +1067,83 @@ bool TnrdReader::buildIndexedSeekCache() {
     return true;
 }
 
+bool TnrdReader::buildSectorDistanceMetadata() {
+    for (auto& [_, block] : lapBlocks_) {
+        block.sector1EndDistanceM = 0.0f;
+        block.sector2EndDistanceM = 0.0f;
+    }
+    if (loadedFormat_ != TnrdFormat::ZstdV3 && !isChunkedTnrd(loadedFormat_)) return true;
+
+    if (!isChunkedTnrd(loadedFormat_)) {
+        for (auto& [_, block] : lapBlocks_) {
+            const auto [sector1, sector2] = sectorEndDistances(block.lapProgress);
+            block.sector1EndDistanceM = sector1;
+            block.sector2EndDistanceM = sector2;
+        }
+        return true;
+    }
+
+    std::map<int, std::vector<LapProgressPoint>> progressByLap;
+    {
+        const auto appendLapRow = [&](float time, std::string_view json) {
+            LapScanFields lap{};
+            (void)glz::read<kPartialRead>(lap, json);
+            if (!std::isfinite(time) || !std::isfinite(lap.lap_distance_m) ||
+                lap.lap_distance_m < 0.0f) return;
+            auto block = lapBlocks_.find(lap.lap_num);
+            if (block == lapBlocks_.end() || time < block->second.startSessionTime ||
+                time > block->second.endSessionTime) return;
+            progressByLap[lap.lap_num].push_back({
+                time, lap.current_lap_ms, lap.lap_distance_m,
+                lap.sector, lap.s1_ms, lap.s2_ms
+            });
+        };
+
+        if (indexedSeekCacheReady_) {
+            for (const auto& row : coldLap_) appendLapRow(row.t, row.json);
+        } else {
+            std::string callbackError;
+            std::string archiveError;
+            const bool walked = indexedArchive_ && indexedArchive_->forEachChunk(
+                detail::v4TypeBit(4),
+                [&](const detail::V4ChunkInfo&, std::string_view plain) {
+                    size_t pos = 0;
+                    while (pos < plain.size()) {
+                        size_t nl = plain.find('\n', pos);
+                        if (nl == std::string_view::npos) nl = plain.size();
+                        if (nl > pos) {
+                            const std::string_view line = plain.substr(pos, nl - pos);
+                            const float time = scanSessionTime(line.data(), static_cast<int>(line.size()));
+                            if (!std::isfinite(time) || time < 0.0f) {
+                                callbackError = "sector metadata contains a lap row without a valid session_time";
+                                return false;
+                            }
+                            appendLapRow(time, line);
+                        }
+                        if (nl == plain.size()) break;
+                        pos = nl + 1;
+                    }
+                    return true;
+                }, &archiveError);
+            if (!walked) {
+                lastError_ = callbackError.empty()
+                    ? (archiveError.empty() ? "The recording's lap rows could not be scanned." : archiveError)
+                    : callbackError;
+                return false;
+            }
+        }
+    }
+
+    for (auto& [lapNum, progress] : progressByLap) {
+        const auto block = lapBlocks_.find(lapNum);
+        if (block == lapBlocks_.end()) continue;
+        const auto [sector1, sector2] = sectorEndDistances(std::move(progress));
+        block->second.sector1EndDistanceM = sector1;
+        block->second.sector2EndDistanceM = sector2;
+    }
+    return true;
+}
+
 void TnrdReader::primeCursor() {
     if (!isChunkedTnrd(loadedFormat_) || !indexedArchive_) return;
     // Seek/history extraction has normally populated time bounds and the
@@ -1254,7 +1414,8 @@ std::string TnrdReader::lapBlocksMessage() const {
         // Slim vectors are empty unless binary playback built them; the copy is
         // what lets this method stay const and the message one-shot at load.
         msg.blocks.push_back({ b.lapNum, b.startSessionTime, b.endSessionTime,
-                               b.slimTelemetry, b.slimStatus });
+                               b.slimTelemetry, b.slimStatus,
+                               b.sector1EndDistanceM, b.sector2EndDistanceM });
     }
     msg.fastestLapNum = fastestLapNum_;
     msg.initialFuelKg = initialFuelKg_;

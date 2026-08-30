@@ -38,6 +38,7 @@ export function useAppConfiguration() {
   const [sectorColors, setSectorColors] = useAppConfig<boolean>('sectorColors', false)
   const [mapDimmed, setMapDimmed] = useAppConfig<boolean>('mapDimmed', false)
   const [inputCursorSyncEnabled, setInputCursorSyncEnabled] = useAppConfig<boolean>('inputCursorSyncEnabled', false)
+  const [sectorBoundariesEnabled, setSectorBoundariesEnabled] = useAppConfig<boolean>('sectorBoundariesEnabled', false)
   const [secondaryHorizontalCrosshairEnabled, setSecondaryHorizontalCrosshairEnabled] = useAppConfig<boolean>('secondaryHorizontalCrosshairEnabled', false)
   const [secondaryVerticalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled] = useAppConfig<boolean>('secondaryVerticalCrosshairEnabled', true)
   const [nativeTitlebar, setNativeTitlebar] = useAppConfig<boolean>('nativeTitlebar', false)
@@ -192,12 +193,12 @@ export function useAppConfiguration() {
 
   return {
     actualNativeTitlebar, bannerDuration, chartWindow, chartYAxis, compact, coreLayout, driversMode,
-    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled,
+    fpsInFocus, fpsOutOfFocus, graphView, inputCursorSyncEnabled, inputLayout, mapDimmed, mapTimeout, miscLayout, pageLayouts, secondaryHorizontalCrosshairEnabled, secondaryVerticalCrosshairEnabled, sectorBoundariesEnabled,
     nativeTitlebar, powerLayout, reduceAnimations, seconds, sectorColors, sessionLayout, standingsLayout, titlebarUpdateInterval,
     setBannerDuration, setChartWindow, setChartYAxis, setCompact, setCoreLayout, setDriversMode,
     setFpsInFocus, setFpsOutOfFocus, setGraphView, setInputCursorSyncEnabled, setInputLayout, setMapDimmed,
     setMapTimeout, setMiscLayout, setNativeTitlebar, setPageLayouts, setPowerLayout, setReduceAnimations,
-    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
+    setSecondaryHorizontalCrosshairEnabled, setSecondaryVerticalCrosshairEnabled, setSectorBoundariesEnabled, setSectorColors, setSessionLayout, setStandingsLayout, setTheme, setTitlebarUpdateInterval, setTyreView, setTyreWearMode, setTyresLayout,
     theme, tyreView, tyreWearMode, tyresLayout,
   }
 }
