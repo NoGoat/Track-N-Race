@@ -67,7 +67,11 @@ export default memo(function AppHeader({
         paddingRight: 'calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + 1rem)',
       }
     : undefined
-  const headerBackground = activeBanner ? `${activeBanner.color}18` : 'var(--bg-panel)'
+  const headerBackground = activeBanner
+    ? isFullscreen
+      ? `color-mix(in srgb, ${activeBanner.color} 9%, var(--bg-panel))`
+      : `${activeBanner.color}18`
+    : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
   const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
   const windowOptions = windowOptionGroups.flatMap(group => group.options)
@@ -148,7 +152,7 @@ export default memo(function AppHeader({
           disabled={!cursorSyncAvailable}
           aria-label="Sector Boundaries"
           aria-pressed={cursorSyncAvailable && sectorBoundariesEnabled}
-          title={cursorSyncAvailable ? 'Sector Boundaries' : 'Sector boundaries are available on the Overview, Input, Misc, Power, and Tyres pages'}
+          title={cursorSyncAvailable ? 'Sector Boundaries' : undefined}
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : sectorBoundariesEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
         ><span className="block text-[9px] font-bold leading-[13px]">S1</span></button>
@@ -156,7 +160,7 @@ export default memo(function AppHeader({
           onClick={() => cursorSyncAvailable && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}
           disabled={!cursorSyncAvailable}
           aria-pressed={cursorSyncAvailable && inputCursorSyncEnabled}
-          title={cursorSyncAvailable ? 'Synchronize Tooltip' : 'Synchronized chart tooltip is available on the Overview, Input, Misc, Power, and Tyres pages'}
+          title={cursorSyncAvailable ? 'Synchronize Tooltip' : undefined}
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : inputCursorSyncEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
         ><ChartLine size={13} /></button>

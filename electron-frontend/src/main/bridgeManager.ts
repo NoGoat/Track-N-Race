@@ -352,6 +352,7 @@ export function startBridge(): string | null {
       port: store.get('udp.port', 20777),
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
       forwardTargets: storedForwardTargets(),
+      strategyMinimumStops: 1,
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true
@@ -624,6 +625,11 @@ export function exportSessionXlsx(
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
+}
+
+export function setStrategyMinimumStops(value: number): void {
+  const stops = Math.min(8, Math.max(0, Math.trunc(Number(value) || 0)))
+  if (engine) engine.setStrategyMinimumStops(stops)
 }
 
 // Renderer-initiated pull: re-broadcast the last known full protocol_status so a

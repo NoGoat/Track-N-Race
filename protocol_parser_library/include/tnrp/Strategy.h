@@ -217,6 +217,7 @@ class StrategyProcessor {
 public:
     explicit StrategyProcessor(uint16_t format = 2025);
     void setFormat(uint16_t format);
+    void setMinimumStops(int stops);
     void reset();
     void ingest(const LapRow& row);
     void ingest(const SessionRow& row);
@@ -274,6 +275,7 @@ private:
     double rivalThreatScore(int idx, bool ahead) const;
 
     uint16_t format_{2025};
+    int minimumStops_{};
     std::optional<LapRow> lap_;
     std::optional<SessionRow> session_;
     std::optional<StatusRow> status_;

@@ -8,6 +8,7 @@ import { setFatalFlushHandler } from './diagnostics'
 import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
+  setStrategyMinimumStops,
   restartUdp,
   startBridge,
   stopBridge,
@@ -277,6 +278,10 @@ ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
 
 ipcMain.on('protocol-request-status', () => {
   requestStatus()
+})
+
+ipcMain.on('strategy-set-minimum-stops', (_event, value: number) => {
+  setStrategyMinimumStops(value)
 })
 
 

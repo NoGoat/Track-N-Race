@@ -118,6 +118,8 @@ Engine::Engine(const Config& config, Sink* sink)
     // mount. Start that host closed so no telemetry can slip through before
     // the first aggregate subscription; JSON-only/Qt hosts keep legacy-all.
     if (config_.binaryPlayback) consumerRowMask_ = 0;
+    strategy_.setMinimumStops(config_.strategyMinimumStops);
+    reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
     emitRow(parser_.statusRow());
@@ -343,6 +345,24 @@ void Engine::setOverride(Override ovr) {
         status = parser_.statusRow();
     }
     emitRow(status);
+}
+
+void Engine::setStrategyMinimumStops(int stops) {
+    std::string snapshot;
+    bool shouldEmit = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        config_.strategyMinimumStops = std::clamp(stops, 0, 8);
+        strategy_.setMinimumStops(config_.strategyMinimumStops);
+        reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
+        if (!liveLatestRows_[kStrategyRowType].empty()) {
+            snapshot = strategy_.snapshotJson();
+            liveLatestRows_[kStrategyRowType] = snapshot;
+            lastStrategyJson_ = snapshot;
+            shouldEmit = (consumerRowMask_ & kStrategyRowBit) != 0;
+        }
+    }
+    if (shouldEmit) emitRow(snapshot);
 }
 
 void Engine::setLogging(bool enabled, const std::string& outputDir) {

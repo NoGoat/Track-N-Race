@@ -1261,17 +1261,26 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
     return out;
 }
 
+void TnrdReader::setStrategyMinimumStops(int stops) {
+    const int clamped=std::clamp(stops,0,8);
+    if(strategyMinimumStops_==clamped)return;
+    strategyMinimumStops_=clamped;
+    strategyCheckpoints_.clear();
+}
+
 StrategySnapshotRow TnrdReader::strategySnapshotAt(float t, StrategyProcessor* restoredProcessor,
-                                                    const std::function<bool()>& cancelled) {
-    if(cancelled&&cancelled())return StrategyProcessor(strategyProtocol_).snapshot();
-    t = std::clamp(t, startTime_, totalTime_);
+                                                     const std::function<bool()>& cancelled) {
     StrategyProcessor processor(strategyProtocol_);
+    processor.setMinimumStops(strategyMinimumStops_);
+    if(cancelled&&cancelled())return processor.snapshot();
+    t = std::clamp(t, startTime_, totalTime_);
     float cursor = startTime_;
     bool restored = false;
     for (const auto& checkpoint : strategyCheckpoints_) {
         if (checkpoint.first > t) break;
         cursor = checkpoint.first;
         processor = checkpoint.second;
+        processor.setMinimumStops(strategyMinimumStops_);
         restored = true;
     }
 

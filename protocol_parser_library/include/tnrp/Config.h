@@ -35,14 +35,15 @@ struct UdpForwardTarget {
 inline constexpr size_t kMaxUdpForwardTargets = 15;
 
 // Runtime configuration for the engine. Supplied at construction (the bridge
-// fills it from CLI args) and mutated live via Engine::setOverride / setLogging
-// / restartUdp (driven by stdin commands from Electron).
+// fills it from CLI args) and mutated live via Engine::setOverride / setLogging /
+// setStrategyMinimumStops / restartUdp.
 struct Config {
     uint16_t    port           = 20777;
     std::string bindAddress    = "0.0.0.0";
     Override    protocol       = Override::Auto;
     bool        loggingEnabled = false;
     std::string outputDirectory;        // where .tnrd files are written
+    int         strategyMinimumStops = 1;
 
     // Raw datagrams are copied to these IPv4 destinations before parsing. The
     // listener caps this list at 15 even if a host supplies more.

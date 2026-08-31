@@ -45,6 +45,7 @@ public:
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
+    void setStrategyMinimumStops(int stops);
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]

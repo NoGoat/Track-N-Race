@@ -507,6 +507,9 @@ declare global {
       setOverride: (value: 'auto' | 'f1_24' | 'f1_25' | 'f1_26') => void
       requestStatus: () => void
     }
+    strategyBridge: {
+      setMinimumStops: (value: number) => void
+    }
     fsBridge: {
       selectDirectory: () => Promise<string | null>
       selectTNRDFile: () => Promise<string | null>

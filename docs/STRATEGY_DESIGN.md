@@ -162,7 +162,8 @@ The current system already provides valuable foundations:
 - track-specific base pit losses;
 - physical tyre-set use and basic life limits;
 - dry-compound legality checks;
-- Monaco-specific extra-stop handling;
+- a runtime-only required race stop-count floor, where zero also disables the
+  compound-change requirement;
 - conservative and aggressive plan variants;
 - robust recent-lap pace filtering;
 - tyre-cliff projection from recent completed-lap wear deltas;
@@ -1718,4 +1719,3 @@ The strategy redesign is complete when all of the following are true:
 - behaviour changes can be evaluated on a reproducible recorded-race corpus;
 - the system can explain every recommendation in structured facts without
   falling back to vague model prose.
-

@@ -231,6 +231,7 @@ public:
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
+            InstanceMethod("setStrategyMinimumStops", &TNRPAddon::SetStrategyMinimumStops),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
             InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
@@ -307,6 +308,9 @@ public:
         }
         if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
             config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
+        }
+        if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
+            config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
         }
         TRACE("TNRPAddon ctor: config parsed");
 
@@ -527,6 +531,12 @@ private:
             else if (ovr == "f1_25") engine->setOverride(tnrp::Override::F1_25);
             else if (ovr == "f1_26") engine->setOverride(tnrp::Override::F1_26);
         }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value SetStrategyMinimumStops(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 1 && info[0].IsNumber())
+            engine->setStrategyMinimumStops(info[0].As<Napi::Number>().Int32Value());
         return info.Env().Undefined();
     }
 

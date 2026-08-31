@@ -102,9 +102,10 @@ RawPlan buildPlan(uint16_t format, int lap, int total, int firstPit,
 }
 
 RawPlan forceExtra(uint16_t format, RawPlan in, const std::vector<TyreSet>& pool,
-                   std::optional<int> requiredDifferentVisual = std::nullopt) {
+                   std::optional<int> requiredDifferentVisual = std::nullopt,
+                   bool includeCurrentStint = false) {
     if (in.stints.empty()) return in;
-    size_t longest = in.stints.size() > 1 ? 1 : 0;
+    size_t longest = includeCurrentStint ? 0 : (in.stints.size() > 1 ? 1 : 0);
     for (size_t i=longest+1;i<in.stints.size();++i) if (in.stints[i].lapCount>in.stints[longest].lapCount) longest=i;
     RawStint target=in.stints[longest]; if(target.lapCount<4||pool.empty()) return in;
     const int end=target.last?target.startLap+target.lapCount:
@@ -149,6 +150,15 @@ void enforceDryCompoundRule(uint16_t format, RawPlan& plan,
     if (visuals.size() < 2) {
         plan.legal = false;
         plan.legalityReason = "no_second_dry_compound";
+    }
+}
+
+void enforceMinimumStops(uint16_t format, RawPlan& plan,
+                         const std::vector<TyreSet>& pool, int minimumStops) {
+    while (plan.stops < minimumStops) {
+        const int previousStops = plan.stops;
+        plan = forceExtra(format, std::move(plan), pool, std::nullopt, true);
+        if (plan.stops == previousStops) break;
     }
 }
 
@@ -199,6 +209,7 @@ double robustWeightedPace(std::vector<std::pair<int,int>> laps, int currentLap) 
 
 StrategyProcessor::StrategyProcessor(uint16_t format):format_(format){}
 void StrategyProcessor::setFormat(uint16_t f){ if(f>=2024) format_=f; }
+void StrategyProcessor::setMinimumStops(int stops){minimumStops_=std::clamp(stops,0,8);}
 void StrategyProcessor::reset(){
     lap_.reset();session_.reset();status_.reset();damage_.reset();timing_.reset();participants_.reset();tyreSets_.reset();allStatus_.reset();
     lapTimes_.clear();currentStintStart_=0;rivalAhead_=rivalBehind_=-1;
@@ -667,8 +678,9 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
     if(rivalStartedUnmatchedStop(rivalBehind_))
         first=out.lap_num+1;
     if(out.neutralisation&&out.neutralisation->recommendation=="box")first=out.lap_num+1;
+    const int completedStops=player?std::max(0,player->num_pit_stops):0;
     RawPlan cp=buildPlan(format_,out.lap_num,out.total_laps,first,status_->tyre_compound,status_->visual_compound,cons);
-    if(out.is_monaco&&cp.stops<2)cp=forceExtra(format_,cp,futureCons);
+    enforceMinimumStops(format_,cp,futureCons,std::max(0,minimumStops_-completedStops));
     const int aggLeft=std::max(0,(int)std::floor((cliff-out.limiting_wear)/(out.limiting_wear_per_lap*1.2)));
     const int aggCliff=out.lap_num+aggLeft;
     const int econ=!agg.empty()?std::max(out.lap_num+1,out.total_laps-tyreLife(agg.front())):aggCliff;
@@ -678,8 +690,8 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
     if(out.neutralisation&&out.neutralisation->recommendation=="box")aggressiveFirst=out.lap_num+1;
     RawPlan ap=buildPlan(format_,out.lap_num,out.total_laps,aggressiveFirst,status_->tyre_compound,status_->visual_compound,agg);
     if(ap.stops<=cp.stops)ap=forceExtra(format_,ap,futureAgg);
-    if(out.is_monaco&&ap.stops<2)ap=forceExtra(format_,ap,futureAgg);
-    if(!wet){enforceDryCompoundRule(format_,cp,futureCons,usedDryVisualCompounds_);enforceDryCompoundRule(format_,ap,futureAgg,usedDryVisualCompounds_);}
+    if(minimumStops_>0)enforceMinimumStops(format_,ap,futureAgg,std::max(0,minimumStops_+1-completedStops));
+    if(!wet&&minimumStops_>0){enforceDryCompoundRule(format_,cp,futureCons,usedDryVisualCompounds_);enforceDryCompoundRule(format_,ap,futureAgg,usedDryVisualCompounds_);}
 
     auto display=[&](const RawPlan& raw,bool aggressive,std::vector<PastStintState>& past,
                      std::map<int,double>& requiredByLap){

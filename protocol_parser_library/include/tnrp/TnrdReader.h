@@ -113,7 +113,8 @@ public:
     // chronological order, materializing reusable checkpoints at completed lap
     // boundaries. Checkpoints are never written to the recording.
     StrategySnapshotRow strategySnapshotAt(float t, StrategyProcessor* restoredProcessor = nullptr,
-                                            const std::function<bool()>& cancelled = {});
+                                             const std::function<bool()>& cancelled = {});
+    void setStrategyMinimumStops(int stops);
     // Reconstruct deduplicated Car Damage state at the UDP specification's
     // fixed 10 Hz cadence. Each returned row has session_time rewritten to its
     // sample tick and carries the latest recorded state at/before that tick.
@@ -253,6 +254,7 @@ private:
     std::vector<std::string> scannedEvents_;   // raw race_event JSONL lines
     std::vector<std::pair<float, StrategyProcessor>> strategyCheckpoints_;
     uint16_t                 strategyProtocol_ = 2025;
+    int                      strategyMinimumStops_ = 0;
     int                      fastestLapNum_ = 0;
     int                      fastestLapMs_  = 0;
     double                   initialFuelKg_ = -1.0;

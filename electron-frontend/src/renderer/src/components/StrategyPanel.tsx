@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import type { StrategyPlan, StrategySnapshotMsg, StrategyStint } from '../types'
 import type { DensityMode } from '../lib/graphSections'
 
@@ -20,7 +20,7 @@ const Stint=memo(({stint,separator}:{stint:StrategyStint;separator:boolean})=><d
   </tr>)}</tbody></table>}
 </div>)
 
-const PlanColumn=memo(({plan,label,accent,monaco}:{plan:StrategyPlan;label:string;accent:string;monaco:boolean})=><div className="flex flex-col h-full min-h-0"><div className="shrink-0 px-4 py-2.5 border-b border-[var(--border)]"><div className="flex items-center"><span className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</span>{monaco&&<span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded border text-[#FADE2A] border-[#FADE2A]">Monaco 2-stop</span>}{!plan.legal&&<span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded border text-[#C4162A] border-[#C4162A]">No legal set path</span>}<span className="flex-1"/><b className="text-2xl" style={{color:accent}}>{plan.stops}</b><span className="ml-1 text-xs text-[var(--text-secondary)]">stop{plan.stops===1?'':'s'}</span></div><div className="mt-1 text-[10px] text-[var(--text-secondary)] truncate">{plan.target_idx>=0?`${plan.mode==='attacking'?'Chasing':'Covering'} ${plan.target_name}`:'Tyre-life baseline'} · {Math.round(plan.confidence*100)}% confidence{plan.requires_compound_change?' · compound change required':''}</div></div><div className="flex-1 overflow-y-auto">{plan.stints.map((s,i)=><Stint key={`${s.stint_number}-${s.start_lap}`} stint={s} separator={i>0}/>)}</div></div>)
+const PlanColumn=memo(({plan,label,accent}:{plan:StrategyPlan;label:string;accent:string})=><div className="flex flex-col h-full min-h-0"><div className="shrink-0 px-4 py-2.5 border-b border-[var(--border)]"><div className="flex items-center"><span className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</span>{!plan.legal&&<span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded border text-[#C4162A] border-[#C4162A]">No legal set path</span>}<span className="flex-1"/><b className="text-2xl" style={{color:accent}}>{plan.stops}</b><span className="ml-1 text-xs text-[var(--text-secondary)]">stop{plan.stops===1?'':'s'}</span></div><div className="mt-1 text-[10px] text-[var(--text-secondary)] truncate">{plan.target_idx>=0?`${plan.mode==='attacking'?'Chasing':'Covering'} ${plan.target_name}`:'Tyre-life baseline'} · {Math.round(plan.confidence*100)}% confidence{plan.requires_compound_change?' · compound change required':''}</div></div><div className="flex-1 overflow-y-auto">{plan.stints.map((s,i)=><Stint key={`${s.stint_number}-${s.start_lap}`} stint={s} separator={i>0}/>)}</div></div>)
 
 function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boolean}) {
   const ready = s?.state === 'ready'
@@ -166,11 +166,55 @@ function WearWarnings({warnings}:{warnings:StrategySnapshotMsg['wear_warnings']}
   </section>
 }
 
-function Sidebar({s,blue,amber}:{s:StrategySnapshotMsg;blue:string;amber:string}) {
+interface MinimumStopsControlProps { value:number; onChange:(value:number)=>void }
+
+const clampMinimumStops=(value:unknown)=>Math.min(8,Math.max(0,Math.trunc(Number(value)||0)))
+
+function MinimumStopsControl({value,onChange}:MinimumStopsControlProps) {
+  return <div className="shrink-0 border-t border-[var(--border)] px-5 py-2.5">
+    <div className="flex items-center gap-3">
+      <label htmlFor="strategy-minimum-stops" className="min-w-0 flex-1 text-[9px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">Required pit stops</label>
+      <div className="flex h-7 w-16 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-input)]">
+        <input id="strategy-minimum-stops" type="number" min={0} max={8} step={1} value={value} onChange={event=>onChange(clampMinimumStops(event.target.value))} onWheel={event=>event.currentTarget.blur()} className="no-number-spinner min-w-0 flex-1 bg-transparent px-0 text-center text-xs font-normal tabular-nums text-[var(--text-primary)] outline-none" aria-label="Required pit stops"/>
+        <div className="flex w-3.5 shrink-0 flex-col border-l border-[var(--border)]">
+          <button type="button" onClick={()=>onChange(Math.min(8,value+1))} disabled={value>=8} className="grid flex-1 place-items-center text-[6px] leading-none text-[var(--text-secondary)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-25" aria-label="Increase required pit stops">▲</button>
+          <button type="button" onClick={()=>onChange(Math.max(0,value-1))} disabled={value<=0} className="grid flex-1 place-items-center border-t border-[var(--border)] text-[6px] leading-none text-[var(--text-secondary)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-25" aria-label="Decrease required pit stops">▼</button>
+        </div>
+      </div>
+    </div>
+  </div>
+}
+
+function WaitingSidebar({blue,amber,minimumStops,onMinimumStopsChange}:{blue:string;amber:string;minimumStops:number;onMinimumStopsChange:(value:number)=>void}) {
+  return <div className="w-80 shrink-0 min-h-0 flex flex-col">
+    <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[var(--border)]">
+    <section>
+      <div className="px-4 pt-3 pb-2 text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">Next pit window</div>
+      {([{label:'Defend',color:blue},{label:'Attack',color:amber}] as const).map(option=><div key={option.label} className="flex items-center gap-2 border-t border-[var(--border)] px-4 py-2.5">
+        <div className="min-w-0 flex-1"><b className="block text-[9px] uppercase tracking-widest" style={{color:option.color}}>{option.label}</b><span className="mt-0.5 block truncate text-[10px] text-[var(--text-secondary)]">-</span></div>
+        <b className="shrink-0 text-lg font-black tabular-nums text-[var(--text-secondary)]">-</b>
+      </div>)}
+    </section>
+    <section className="p-4">
+      <div className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)] mb-2">Weather window</div>
+      <div className="flex items-baseline gap-2"><b className="text-sm text-[var(--text-secondary)]">-</b><b className="ml-auto text-xs text-[var(--text-secondary)]">-</b></div>
+      <p className="text-[10px] text-[var(--text-secondary)] mt-1">-</p>
+    </section>
+    <section>
+      <div className="px-4 pt-3 pb-1 flex items-baseline"><h3 className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">Tyre condition</h3><span className="ml-auto text-[10px] text-[var(--text-secondary)]">-</span></div>
+      <div className="grid grid-cols-2">{(['FL','FR','RL','RR'] as const).map(n=><div key={n} className="px-4 py-2"><div className="flex"><span className="text-[10px] text-[var(--text-secondary)]">{n}</span><b className="ml-auto text-[var(--text-secondary)]">-</b></div><div className="h-1 mt-1 rounded bg-[var(--border)]"/></div>)}</div>
+    </section>
+    </div>
+    <MinimumStopsControl value={minimumStops} onChange={onMinimumStopsChange}/>
+  </div>
+}
+
+function Sidebar({s,blue,amber,minimumStops,onMinimumStopsChange}:{s:StrategySnapshotMsg;blue:string;amber:string;minimumStops:number;onMinimumStopsChange:(value:number)=>void}) {
   const defensiveStop=nextStopLap(s.conservative,s.lap_num)
   const attackingStop=nextStopLap(s.aggressive,s.lap_num)
   const weather=s.weather_strategy&&s.weather_strategy.crossover_lap>0?s.weather_strategy:null
-  return <div className="w-80 shrink-0 overflow-y-auto divide-y divide-[var(--border)]">
+  return <div className="w-80 shrink-0 min-h-0 flex flex-col">
+    <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[var(--border)]">
     {s.neutralisation&&<section className="p-4" style={{background:s.neutralisation.recommendation==='box'?'color-mix(in srgb, #73BF69 12%, transparent)':'color-mix(in srgb, #FADE2A 10%, transparent)'}}>
       <div className="text-[10px] uppercase tracking-widest text-[var(--text-secondary)]">{s.neutralisation.kind==='safety_car'?'Safety Car decision':'VSC decision'}</div>
       <div className="mt-2 flex items-end gap-2"><b className="text-xl">{s.neutralisation.recommendation==='box'?'BOX NOW':'STAY OUT'}</b><span className="ml-auto text-xs">P{s.neutralisation.current_position} → P{s.neutralisation.recommendation==='box'?s.neutralisation.projected_box_position:s.neutralisation.projected_stay_position}</span></div>
@@ -214,8 +258,28 @@ function Sidebar({s,blue,amber}:{s:StrategySnapshotMsg;blue:string;amber:string}
       <div className="grid grid-cols-2">{([['FL',s.wear_fl],['FR',s.wear_fr],['RL',s.wear_rl],['RR',s.wear_rr]] as const).map(([n,v])=><div key={n} className="px-4 py-2"><div className="flex"><span className="text-[10px] text-[var(--text-secondary)]">{n}</span><b className="ml-auto" style={{color:wearColor(v)}}>{Math.round(v)}%</b></div><div className="h-1 mt-1 rounded bg-[var(--border)]"><div className="h-full rounded" style={{width:`${Math.min(100,v)}%`,background:wearColor(v)}}/></div></div>)}</div>
     </section>
     <WearWarnings warnings={s.wear_warnings}/>
+    </div>
+    <MinimumStopsControl value={minimumStops} onChange={onMinimumStopsChange}/>
   </div>
 }
 
-const StrategyPanel=memo(function StrategyPanel({strategy,isDark,compact}:Props){const blue=isDark?'#5794F2':'#0B57D0',amber=isDark?'#FADE2A':'#8B5200';return <div className="flex flex-col h-full overflow-hidden"><Header s={strategy} compact={compact}/>{strategy?.state==='non_race'?<div className="flex-1 flex flex-col items-center justify-center"><b>Race sessions only</b><span className="text-xs text-[var(--text-secondary)] mt-2">Strategy suggestions are available during Race, Race 2, and Race 3 sessions.</span></div>:strategy?.state!=='ready'?<div className="flex-1 flex items-center justify-center text-[var(--text-secondary)]">Waiting for tyre data…</div>:<div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><div className="flex-1 min-w-0"><PlanColumn plan={strategy.conservative} label="Defensive" accent={blue} monaco={strategy.is_monaco}/></div><div className="flex-1 min-w-0"><PlanColumn plan={strategy.aggressive} label="Attacking" accent={amber} monaco={strategy.is_monaco}/></div><Sidebar s={strategy} blue={blue} amber={amber}/></div>}</div>})
+const StrategyPanel=memo(function StrategyPanel({strategy,isDark,compact}:Props){
+  const blue=isDark?'#5794F2':'#0B57D0'
+  const amber=isDark?'#FADE2A':'#8B5200'
+  const [minimumStops,setMinimumStops]=useState(1)
+  const changeMinimumStops=(value:number)=>{
+    const stops=clampMinimumStops(value)
+    setMinimumStops(stops)
+    window.strategyBridge.setMinimumStops(stops)
+  }
+
+  return <div className="flex flex-col h-full overflow-hidden">
+    <Header s={strategy} compact={compact}/>
+    {strategy?.state==='non_race'
+      ? <div className="flex-1 flex flex-col items-center justify-center"><b>Race sessions only</b><span className="text-xs text-[var(--text-secondary)] mt-2">Strategy suggestions are available during Race, Race 2, and Race 3 sessions.</span></div>
+      : strategy?.state!=='ready'
+        ? <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><div className="flex-1 flex items-center justify-center text-[var(--text-secondary)]">Waiting for tyre data…</div><WaitingSidebar blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>
+        : <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]"><div className="flex-1 min-w-0"><PlanColumn plan={strategy.conservative} label="Defensive" accent={blue}/></div><div className="flex-1 min-w-0"><PlanColumn plan={strategy.aggressive} label="Attacking" accent={amber}/></div><Sidebar s={strategy} blue={blue} amber={amber} minimumStops={minimumStops} onMinimumStopsChange={changeMinimumStops}/></div>}
+  </div>
+})
 export default StrategyPanel

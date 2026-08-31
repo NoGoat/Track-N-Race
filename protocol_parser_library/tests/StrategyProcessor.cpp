@@ -38,6 +38,29 @@ int main() {
     assert(!unsettled.conservative.stints.empty() && unsettled.conservative.stints.front().start_lap==1);
     assert(pitLossForTrack(0).total_ms==21500); assert(pitLossForTrack(-1).total_ms==25000);
 
+    StrategyProcessor configured(2025);
+    DamageRow lowWear=damage;
+    lowWear.tyre_wear_fl=lowWear.tyre_wear_fr=lowWear.tyre_wear_rl=lowWear.tyre_wear_rr=1;
+    TyreSetsRow extraSets=sets;
+    extraSets.sets.push_back({2,19,17,0,true,0,20,18,-600,false});
+    extraSets.sets.push_back({3,20,18,0,true,0,20,18,-500,false});
+    extraSets.sets.push_back({4,18,16,0,true,0,20,18,-400,false});
+    configured.setMinimumStops(2);
+    configured.ingest(session); configured.ingest(lap); configured.ingest(status);
+    configured.ingest(lowWear); configured.ingest(extraSets); configured.ingest(timing);
+    const auto configuredPlan=configured.snapshot();
+    // The player has already completed one stop, so only the balance remains.
+    assert(configuredPlan.conservative.stops==1);
+    assert(configuredPlan.aggressive.stops==2);
+
+    StrategyProcessor unrestricted(2025);
+    unrestricted.setMinimumStops(0);
+    unrestricted.ingest(session); unrestricted.ingest(lap); unrestricted.ingest(status);
+    unrestricted.ingest(lowWear); unrestricted.ingest(extraSets); unrestricted.ingest(timing);
+    const auto unrestrictedPlan=unrestricted.snapshot();
+    assert(unrestrictedPlan.conservative.legal);
+    assert(!unrestrictedPlan.conservative.requires_compound_change);
+
     StrategyProcessor incomplete(2025); incomplete.ingest(session);
     assert(incomplete.snapshot().state=="waiting");
 
@@ -53,7 +76,7 @@ int main() {
     monaco.ingest(uneven); monaco.ingest(wetSets); monaco.ingest(timing);
     auto m=monaco.snapshot();
     assert(m.state=="ready" && m.is_monaco);
-    assert(m.conservative.stops>=2);
+    assert(m.conservative.stops==1); // Monaco does not impose an extra stop.
     for(size_t i=1;i<m.conservative.stints.size();++i)
         assert(m.conservative.stints[i].actual_compound==7 || m.conservative.stints[i].actual_compound==8);
     assert(!m.wear_warnings.empty() && m.wear_warnings.front().priority==0);

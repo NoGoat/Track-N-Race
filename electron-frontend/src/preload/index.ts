@@ -65,6 +65,11 @@ const protocolBridge = {
     ipcRenderer.send('protocol-request-status'),
 }
 
+const strategyBridge = {
+  setMinimumStops: (value: number): void =>
+    ipcRenderer.send('strategy-set-minimum-stops', value),
+}
+
 const fsBridge = {
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke('dialog:showOpenDialog'),
@@ -157,6 +162,7 @@ contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
+contextBridge.exposeInMainWorld('strategyBridge', strategyBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
 contextBridge.exposeInMainWorld('updateBridge', updateBridge)
