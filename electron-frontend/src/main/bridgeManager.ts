@@ -1,10 +1,25 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
-import { HotRowSmoother } from './binaryForwardFill'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
+interface UdpForwardTarget { address: string; port: number }
+
+function storedForwardTargets(): UdpForwardTarget[] {
+  if (!(store.get('udp.forwardingEnabled', false) as boolean)) return []
+  const value = store.get('udp.forwardTargets', [])
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 15).flatMap((item): UdpForwardTarget[] => {
+    if (!item || typeof item !== 'object') return []
+    const candidate = item as Record<string, unknown>
+    const address = typeof candidate.address === 'string' ? candidate.address.trim() : ''
+    const port = Number(candidate.port)
+    return address && Number.isInteger(port) && port >= 1 && port <= 65535
+      ? [{ address, port }]
+      : []
+  })
+}
 
 let lastStatus: { override: ProtocolOverride; detected: number | null; active: number | null } = {
   override: (store.get('udp.protocol', 'auto') as ProtocolOverride),
@@ -86,6 +101,7 @@ function sendResumeCache(): void {
 }
 
 let engine: any = null
+let nextDataRequirementsRequestId = 0
 let unsubLogging: Array<() => void> = []
 
 // ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
@@ -105,6 +121,69 @@ export interface PlaybackState {
 
 let activeFilePath: string | null = null
 let onPlaybackState: ((state: PlaybackState) => void) | null = null
+let nextPlaybackRequestId = 0
+let latestSeekRequestId = 0
+type SeekForwardPhase = 'idle' | 'waiting-flush' | 'waiting-renderer'
+let seekForwardPhase: SeekForwardPhase = 'idle'
+let seekForwardRequestId = 0
+let seekBufferedBinary: Buffer[] = []
+let seekBufferedJson: string[] = []
+let seekBufferedBytes = 0
+const MAX_SEEK_FORWARD_BYTES = 64 * 1024 * 1024
+
+function resetSeekForwarding(): void {
+  seekForwardPhase = 'idle'
+  seekForwardRequestId = 0
+  seekBufferedBinary = []
+  seekBufferedJson = []
+  seekBufferedBytes = 0
+}
+
+function trimSeekForwardBuffer(): void {
+  while (seekBufferedBytes > MAX_SEEK_FORWARD_BYTES && seekBufferedBinary.length > 0) {
+    seekBufferedBytes -= seekBufferedBinary[0].byteLength
+    seekBufferedBinary.shift()
+  }
+  while (seekBufferedBytes > MAX_SEEK_FORWARD_BYTES && seekBufferedJson.length > 0) {
+    seekBufferedBytes -= Buffer.byteLength(seekBufferedJson[0])
+    seekBufferedJson.shift()
+  }
+}
+
+function bufferSeekJson(batch: string): void {
+  seekBufferedJson.push(batch)
+  seekBufferedBytes += Buffer.byteLength(batch)
+  trimSeekForwardBuffer()
+}
+
+function bufferSeekBinary(batch: Uint8Array): void {
+  const retained = Buffer.from(batch)
+  seekBufferedBinary.push(retained)
+  seekBufferedBytes += retained.byteLength
+  trimSeekForwardBuffer()
+}
+
+function releaseSeekForwarding(requestId: number): void {
+  if (seekForwardPhase !== 'waiting-renderer' || requestId !== seekForwardRequestId) return
+  const binary = seekBufferedBinary.length > 0 ? Buffer.concat(seekBufferedBinary) : null
+  const json = seekBufferedJson.join('')
+  resetSeekForwarding()
+  if (!rendererVisible) {
+    const now = performance.now()
+    if (binary?.length) {
+      const history = chartHistoryRecords(binary)
+      if (history.length > 0) hiddenBinary.push({ at: now, data: history })
+    }
+    if (json) cacheResumeJson(json, now)
+    trimResumeCache(now)
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (binary?.length) win.webContents.send('telemetry-binary', binary)
+    if (json) win.webContents.send('telemetry-batch', json)
+  }
+}
 
 function activeFilename(): string | null {
   return activeFilePath ? path.basename(activeFilePath) : null
@@ -124,47 +203,57 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
   })
 }
 
-// The game streams 3 hot packet types per frame (motion, car_tel, motion_ex), so
-// the addon can hand us ~3x the frame rate in binary batches/sec. Forwarding each as
-// its own IPC message makes the renderer fall behind (bursty "every few seconds"
-// updates). Coalesce + forward-fill via the smoother, flushing once per measured
-// frame. The flush re-reads the smoother's detected period each tick so the cadence
-// tracks the actual send rate (20/40/60 Hz, or an fps-capped value).
-const BOOTSTRAP_TICK_MS = 16
-let binPending: Uint8Array[] = []
-let binFlushTimer: NodeJS.Timeout | null = null
-let binNextDueMs = 0
-const smoother = new HotRowSmoother()
-
-function flushBinary(): void {
-  // Always drain the smoother (so binPending can't grow unbounded while hidden),
-  // but only forward to a visible renderer.
-  const batch = smoother.tick(binPending)
-  binPending = []
-  if (batch && rendererVisible) {
+// The addon already coalesces hot rows with at most one native-to-JS flush in
+// flight. Forward each real batch unchanged so display data keeps the engine's
+// session_time values and no synthetic samples can cross lap boundaries.
+function forwardBinary(batch: Uint8Array): void {
+  if (seekForwardPhase === 'waiting-flush') return
+  if (seekForwardPhase === 'waiting-renderer') {
+    bufferSeekBinary(batch)
+    return
+  }
+  if (rendererVisible) {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
     }
-  } else if (batch) {
-    const history = chartHistoryRecords(batch)
+  } else {
+    const history = chartHistoryRecords(Buffer.from(batch))
     if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
     trimResumeCache(performance.now())
   }
-  // Re-schedule against an absolute deadline rather than the rounded period:
-  // setTimeout delay is integer-ms, so scheduling "period from now" makes a
-  // 16.67 ms stream alternate 16/17 ms and drift. Advancing a running deadline
-  // feeds each tick's rounding error back into the next delay, keeping the
-  // long-run cadence locked to the measured frame period.
-  const now = performance.now()
-  if (binNextDueMs === 0) binNextDueMs = now
-  binNextDueMs += smoother.getPeriodMs()
-  if (binNextDueMs < now + 1) binNextDueMs = now + 1 // fell behind: skip forward, don't burst
-  binFlushTimer = setTimeout(flushBinary, binNextDueMs - now)
 }
 
 function broadcast(row: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('telemetry', row)
+  }
+}
+
+// Per-lap comparison payloads are immutable indexed reads, not rows from the
+// playback cursor. A request can race an in-progress seek; ordinary JSON is
+// deliberately discarded while that seek waits for its authoritative flush,
+// but discarding playback_lap_data leaves the renderer with no dependency
+// change that would necessarily request it again. Forward only these safe rows
+// in an isolated batch and keep the old-cursor rows behind the barrier.
+function forwardIndexedLapDataDuringSeek(batch: string): void {
+  if (!batch.includes('"type":"playback_lap_data"')) return
+  let indexedRows = ''
+  let start = 0
+  while (start < batch.length) {
+    let end = batch.indexOf('\n', start)
+    if (end === -1) end = batch.length
+    if (end > start) {
+      const rowStr = batch.slice(start, end)
+      if (rowStr.includes('"type":"playback_lap_data"')) {
+        indexedRows += rowStr
+        indexedRows += '\n'
+      }
+    }
+    start = end + 1
+  }
+  if (!indexedRows) return
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('telemetry-batch', indexedRows)
   }
 }
 
@@ -205,8 +294,6 @@ function handlePlaybackRow(row: Record<string, unknown>): void {
     })
   } else if (type === 'playback_close') {
     activeFilePath = null
-    smoother.reset()
-    binPending = []
     clearResumeCache()
     emitPlaybackState({})   // paused, no file
   }
@@ -264,8 +351,10 @@ export function startBridge(): string | null {
       format: store.get('udp.protocol', 'auto'),
       port: store.get('udp.port', 20777),
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
+      forwardTargets: storedForwardTargets(),
+      strategyMinimumStops: 1,
       // Playback fast path: hot playback rows arrive on the binary channel
-      // (smoother-paced like live), seeks via the dedicated flush callback.
+      // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true
     }
 
@@ -277,7 +366,12 @@ export function startBridge(): string | null {
         batch.includes('"type":"playback_lap_blocks"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
-      if (rendererVisible || forwardWhileHidden) {
+      if (seekForwardPhase === 'waiting-flush') {
+        forwardIndexedLapDataDuringSeek(batch)
+      }
+      if (seekForwardPhase === 'waiting-renderer' && !forwardWhileHidden) {
+        bufferSeekJson(batch)
+      } else if (seekForwardPhase !== 'waiting-flush' && (rendererVisible || forwardWhileHidden)) {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
         }
@@ -313,21 +407,37 @@ export function startBridge(): string | null {
         }
       }
     }, (binBatch: Uint8Array) => {
-      // Hot rows: accumulate and flush once per frame (see flushBinary).
-      binPending.push(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number) => {
-      // Playback seek flush: reset the smoother first so a held hot row can't
-      // forward-fill a stale session_time across the jump, then hand the
-      // renderer the backfill in the shape the TS engine used.
-      smoother.reset()
-      binPending = []
-      clearResumeCache()
-      broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum })
+      forwardBinary(binBatch)
+    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number) => {
+      // Superseded scrubs are discarded before the large payload crosses IPC
+      // or is decoded into renderer objects.
+      // Authoritative scrubs supersede one another. History-family requests are
+      // additive and may complete out of order; accept all of them unless a
+      // newer authoritative seek/load invalidated their timeline.
+      if (authoritativeSeek) {
+        if (requestId !== 0 && requestId !== latestSeekRequestId) return
+        if (requestId !== 0 && requestId === seekForwardRequestId)
+          seekForwardPhase = 'waiting-renderer'
+      } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
+      try {
+        clearResumeCache()
+        broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart })
+      } catch (error) {
+        console.error('[bridge] Failed to forward playback seek history:', error)
+        // Never leave the renderer's AL publication gate closed if IPC rejects
+        // a payload. It can resume from the post-seek stream and retry later.
+        broadcast({ type: 'playback_seek_flush_failed', requestId })
+        if (requestId === seekForwardRequestId) resetSeekForwarding()
+      }
     })
 
-    engine.startUdp()
+    if (!engine.startUdp()) {
+      const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
+      engine.destroy()
+      engine = null
+      return error
+    }
     pushLogging()
-    if (!binFlushTimer) binFlushTimer = setTimeout(flushBinary, BOOTSTRAP_TICK_MS)
     
     // Listen for logging changes
     unsubLogging = [
@@ -345,15 +455,18 @@ export function startBridge(): string | null {
   }
 }
 
-export function stopBridge(): void {
+export function stopBridge(forceProcessExit = false): void {
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
-  if (binFlushTimer) { clearTimeout(binFlushTimer); binFlushTimer = null }
-  binPending = []
-  smoother.reset()
   clearResumeCache()
+  resetSeekForwarding()
   activeFilePath = null
   if (engine) {
+    // With recording disabled, do not enter the native engine at all during
+    // process shutdown. Any active playback/load/history read may own the
+    // engine mutex, so even flushRecording() (a no-op at the writer level)
+    // could wait behind that read indefinitely.
+    if (forceProcessExit) return
     // Synchronous native barrier: preserve queued rows and the rolling buffer
     // before teardown, even though Engine destruction also finalizes the stream.
     engine.flushRecording()
@@ -384,13 +497,14 @@ export function setOnPlaybackState(cb: (state: PlaybackState) => void): void {
 export interface PlayerLoadResult { ok: boolean; error?: string }
 
 export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
+  // Invalidate workers belonging to the previously loaded timeline.
+  latestSeekRequestId = ++nextPlaybackRequestId
+  resetSeekForwarding()
   if (!engine) return { ok: false, error: 'The playback engine is not available.' }
   // Loading over an already-open clip: close it first so the renderer clears
   // its playback buffers (playback_close) before the new clip's rows arrive.
   if (activeFilePath) engine.playerClose()
   activeFilePath = filePath
-  smoother.reset()
-  binPending = []
   emitPlaybackState({ isScanning: true })
   let result: PlayerLoadResult = { ok: false, error: 'The recording could not be opened.' }
   try {
@@ -412,10 +526,52 @@ export async function playerLoad(filePath: string): Promise<PlayerLoadResult> {
 
 export function playerPlay(): void { engine?.playerPlay() }
 export function playerPause(): void { engine?.playerPause() }
-export function playerSeek(pct: number): void { engine?.playerSeek(pct) }
+export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0): void {
+  const requestId = ++nextPlaybackRequestId
+  latestSeekRequestId = requestId
+  if (!engine) {
+    resetSeekForwarding()
+    return
+  }
+  seekForwardPhase = 'waiting-flush'
+  seekForwardRequestId = requestId
+  seekBufferedBinary = []
+  seekBufferedJson = []
+  seekBufferedBytes = 0
+  if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
+    console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
+  }
+  engine.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
+}
+export function playerSeekInstalled(requestId: number): void {
+  releaseSeekForwarding(requestId)
+}
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
-export function playerGetLapData(lapNum: number): void { engine?.playerGetLapData(lapNum) }
-export function playerClose(): void { engine?.playerClose() }
+export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
+  engine?.playerGetLapData(lapNum, rowTypeMask >>> 0)
+}
+export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
+  const requestId = ++nextPlaybackRequestId
+  engine?.playerGetAllLapsData(requestId, rowTypeMask >>> 0)
+}
+export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFFFFF): void {
+  const requestId = ++nextPlaybackRequestId
+  engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
+}
+export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
+                                          windowSeconds = 0): void {
+  const requestId = ++nextDataRequirementsRequestId
+  engine?.setDataRequirements(streamMask >>> 0, historyMask >>> 0,
+    Math.max(-1, windowSeconds), requestId)
+}
+export function playerClose(): void {
+  console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)
+  latestSeekRequestId = ++nextPlaybackRequestId
+  resetSeekForwarding()
+  console.log(`[close-trace] ${new Date().toISOString()} bridge calling native playerClose`)
+  engine?.playerClose()
+  console.log(`[close-trace] ${new Date().toISOString()} bridge native playerClose returned`)
+}
 
 export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> {
   if (!engine) return { ok: false, error: 'The telemetry engine is not available.' }
@@ -428,9 +584,9 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
   }
 }
 
-export function analysisGetLapData(lapNum: number): unknown | null {
+export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): unknown | null {
   if (!engine) return null
-  const json = engine.analysisGetLapData(lapNum)
+  const json = engine.analysisGetLapData(lapNum, rowTypeMask >>> 0)
   if (!json) return null
   try {
     return JSON.parse(json)
@@ -469,6 +625,11 @@ export function exportSessionXlsx(
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
+}
+
+export function setStrategyMinimumStops(value: number): void {
+  const stops = Math.min(8, Math.max(0, Math.trunc(Number(value) || 0)))
+  if (engine) engine.setStrategyMinimumStops(stops)
 }
 
 // Renderer-initiated pull: re-broadcast the last known full protocol_status so a
@@ -512,8 +673,8 @@ export function getProtocolConfig(): {
   }
 }
 
-export function restartUdp(): void {
+export function restartUdp(): string | null {
   // To restart UDP on port changes, we stop and recreate the engine
   stopBridge()
-  startBridge()
+  return startBridge()
 }

@@ -5,6 +5,9 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include "tnrp/Config.h"
 
 namespace tnrp {
 
@@ -24,7 +27,8 @@ public:
 
     // Bind `port` on `bindAddress` and begin receiving. Returns false on bind
     // failure (see lastError()). Calling start() again restarts on the new port.
-    bool start(uint16_t port, const std::string& bindAddress, Handler handler);
+    bool start(uint16_t port, const std::string& bindAddress, Handler handler,
+               const std::vector<UdpForwardTarget>& forwardTargets = {});
     void stop();
 
     bool isRunning() const { return running_.load(); }
@@ -36,7 +40,8 @@ private:
     std::string       lastError_;
     int               rawSock_{-1};
 
-    void runLoop(uint16_t port, std::string bindAddress, Handler handler);
+    void runLoop(uint16_t port, std::string bindAddress, Handler handler,
+                 std::vector<UdpForwardTarget> forwardTargets);
 };
 
 } // namespace tnrp

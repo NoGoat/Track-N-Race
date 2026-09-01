@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+
+#include <cmath>
 #include "AppToolbar.h"
 #include "PlaybackController.h"
 #include "SessionModel.h"
@@ -8,6 +10,7 @@
 #include "components/EditInputLayoutDialog.h"
 #include "components/EditPowerLayoutDialog.h"
 #include "components/EditMiscLayoutDialog.h"
+#include "components/EditSessionLayoutDialog.h"
 #include "components/OverviewPage.h"
 #include "components/AnalyzePage.h"
 #include "components/StandingsPage.h"
@@ -169,6 +172,10 @@ MainWindow::MainWindow(QWidget* parent)
             EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(miscPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == Session) {
+            EditSessionLayoutDialog* dlg = new EditSessionLayoutDialog(sessionPage_, this);
+            connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+            dlg->show();
         }
     });
     connect(toolbar_, &AppToolbar::settingsRequested, this, [this] {
@@ -284,7 +291,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
-                                       currentPage_ == Power || currentPage_ == Misc);
+                                       currentPage_ == Power || currentPage_ == Misc ||
+                                       currentPage_ == Session);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
         flushUiRefresh();
     });
@@ -332,10 +340,11 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const tnrp::HeaderRow& hdr, float currentTime) {
         loadingOverlay_->hide();
         inPlayback_ = true;
-        // Resolve labels against the recorded clip's format (DRS vs Straight Line
-        // Mode, etc.) for the duration of playback.
+        // Resolve labels against the recorded clip's Formula-gated presentation
+        // format (DRS vs Straight Line Mode, etc.) for playback.
         if (hdr.protocol > 0) {
-            const uint16_t fmt = (uint16_t)hdr.protocol;
+            const uint16_t fmt = tnrp::presentationFormat(
+                (uint16_t)hdr.protocol, hdr.formula);
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
@@ -748,13 +757,33 @@ int MainWindow::weatherCompactLevel() const {
 #endif
     // The former boolean Compact layout is now named Compact 2.
     if (legacyBool) return value.toBool() ? 2 : 0;
-    return qBound(0, value.toInt(), 2);
+    return qBound(0, value.toInt(), 3);
 }
 
 void MainWindow::setWeatherCompactLevel(int level) {
-    level = qBound(0, level, 2);
+    level = qBound(0, level, 3);
     settings.setValue(tnr::compactKey(tnr::CompactSection::SessionWeather), level);
     if (sessionPage_) sessionPage_->setWeatherCompactLevel(level);
+    dirtySession_ = true;
+    scheduleUiRefresh();
+}
+
+int MainWindow::headerCompactLevel() const {
+    const QVariant value = settings.value(
+        tnr::compactKey(tnr::CompactSection::SessionHeader), 0);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const bool legacyBool = value.metaType().id() == QMetaType::Bool;
+#else
+    const bool legacyBool = value.type() == QVariant::Bool;
+#endif
+    if (legacyBool) return value.toBool() ? 1 : 0;
+    return qBound(0, value.toInt(), 2);
+}
+
+void MainWindow::setHeaderCompactLevel(int level) {
+    level = qBound(0, level, 2);
+    settings.setValue(tnr::compactKey(tnr::CompactSection::SessionHeader), level);
+    if (sessionPage_) sessionPage_->setHeaderCompactLevel(level);
     dirtySession_ = true;
     scheduleUiRefresh();
 }
@@ -762,6 +791,10 @@ void MainWindow::setWeatherCompactLevel(int level) {
 void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
     if (s == tnr::CompactSection::SessionWeather) {
         setWeatherCompactLevel(on ? 1 : 0);
+        return;
+    }
+    if (s == tnr::CompactSection::SessionHeader) {
+        setHeaderCompactLevel(on ? 1 : 0);
         return;
     }
     settings.setValue(tnr::compactKey(s), on);
@@ -775,8 +808,10 @@ void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
         case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageCompact(on); break;
         case CS::OverviewTyres:   setTyresCompactLevel(on ? 1 : 0); return;   // tyres use the int-level path
         case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsCompact(on);   dirtySession_  = true; break;
+        case CS::SessionProximity: if (sessionPage_) sessionPage_->setProximityCompact(on); dirtySession_ = true; break;
+        case CS::SessionEvents:   if (sessionPage_)  sessionPage_->setEventsCompact(on);  dirtyEvents_   = true; break;
         case CS::SessionWeather:  break; // handled by the integer-level path above
-        case CS::SessionHeader:   if (sessionPage_)  sessionPage_->setHeaderCompact(on);  dirtySession_  = true; break;
+        case CS::SessionHeader:   break; // handled by the integer-level path above
         case CS::PowerCards:      if (powerPage_)    powerPage_->setCompactMode(on);      dirtyPower_    = true; break;
         case CS::StrategySummary: if (strategyPage_) strategyPage_->setCompactMode(on);   dirtyStrategy_ = true; break;
         default: break;
@@ -909,7 +944,8 @@ void MainWindow::onEngineRow(const QByteArray& json) {
     if (const auto* ps = std::get_if<tnrp::ProtocolStatusRow>(&*parsed)) {
         if (ps->detected_format) lastDetectedProtocolFormat_ = *ps->detected_format;
         if (ps->active_format) {
-            const uint16_t fmt = (uint16_t)*ps->active_format;
+            const uint16_t fmt = (uint16_t)ps->presentation_format.value_or(
+                *ps->active_format);
             tnr::Labels::instance().setFormat(fmt);
             if (overviewPage_) overviewPage_->refreshTitles();   // re-label all stat cards (wing flips DRS↔SLM)
             if (sessionPage_) sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));
@@ -1035,6 +1071,9 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
     } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
         lastAllStatusData = *as;
         dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+    } else if (const auto* strategy = std::get_if<tnrp::StrategySnapshotRow>(&row)) {
+        lastStrategyData = *strategy;
+        dirtyStrategy_ = true; scheduleUiRefresh();
     } else if (const auto* fl = std::get_if<tnrp::FastestLapRow>(&row)) {
         if (standingsPage_) standingsPage_->noteFastestLap(fl->car_idx);
         dirtyTiming_ = true; scheduleUiRefresh();
@@ -1053,17 +1092,7 @@ QWidget* MainWindow::buildStrategyPage() {
 
 void MainWindow::updateStrategyPage() {
     if (!strategyPage_) return;
-    // Actual lap times for the per-stint target tables, sourced from the
-    // authoritative SessionModel laps (live ingest or the playback pre-scan), so
-    // the table stays correct under playback seeking — not just sequential replay.
-    std::map<int, int> lapTimesByNum;
-    if (model_)
-        for (const LapBlock& lb : model_->data().laps)
-            if (lb.lapTimeMs > 0) lapTimesByNum[lb.lapNum] = lb.lapTimeMs;
-    strategyPage_->update(optPtr(lastPlayerLapData), optPtr(lastSessionData),
-                          optPtr(lastPlayerStatusData), optPtr(lastPlayerDamageData),
-                          optPtr(lastTimingData), optPtr(lastParticipantsData),
-                          optPtr(lastTyreSetsData), optPtr(lastAllStatusData), lapTimesByNum);
+    strategyPage_->update(optPtr(lastStrategyData));
 }
 
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed
@@ -1120,7 +1149,12 @@ void MainWindow::flushUiRefresh() {
 // owns chart state; the chart re-queries the model on its change signals.
 void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
     if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
-    if (const auto* t = std::get_if<TelemetryRow>(&row)) {
+    if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
+        if (ev->code == "FLBK" && ev->flashback_session_time &&
+            std::isfinite(*ev->flashback_session_time) && *ev->flashback_session_time >= 0.0f)
+            model_->truncateAfter(*ev->flashback_session_time);
+    }
+    else if (const auto* t = std::get_if<TelemetryRow>(&row)) {
         // A backward jump in session time is an in-game flashback/rewind: drop only the
         // samples newer than the rewind point and keep the rest (NOT a full reset — that
         // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
@@ -1154,8 +1188,11 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         model_->onDamage(d->session_time,
                          (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
                          (float)d->tyre_wear_rl, (float)d->tyre_wear_rr);
-    else if (const auto* l = std::get_if<LapRow>(&row))
-        model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+    else if (const auto* l = std::get_if<LapRow>(&row)) {
+        const int sessionType = lastSessionData ? lastSessionData->session_type : 0;
+        model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
+                      l->driver_status, sessionType >= 1 && sessionType <= 14);
+    }
     else if (const auto* m = std::get_if<MotionRow>(&row))
         model_->onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
     else if (const auto* me = std::get_if<MotionExRow>(&row))

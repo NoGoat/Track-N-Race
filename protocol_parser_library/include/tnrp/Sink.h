@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace tnrp {
 
@@ -27,11 +29,19 @@ public:
     // Seek flush under Config::binaryPlayback: the hot rows of the window
     // leading up to the seek target as one packed binary slice, plus the sparse
     // cold rows (status/damage/lap) of the same window as newline-joined JSON.
+    // allHistory marks an additive historical payload (an AL prefix or finite
+    // window backfill) rather than an authoritative seek replacement.
     // JSON-only consumers never receive this (legacy mode emits a
     // playback_seek_flush row via onRow instead).
-    virtual void onSeekFlush(const uint8_t* /*bin*/, size_t /*len*/,
-                             const std::string& /*coldJson*/,
-                             float /*currentLapStart*/, int /*lapNum*/) {}
+    virtual void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> /*binStore*/,
+                             size_t /*binBegin*/, size_t /*binEnd*/,
+                             std::string&& /*coldJson*/,
+                             float /*currentLapStart*/, int /*lapNum*/,
+                             bool /*allHistory*/ = false,
+                             uint64_t /*requestId*/ = 0,
+                             bool /*authoritativeSeek*/ = true,
+                             uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu,
+                             float /*historyStart*/ = 0.0f) {}
 };
 
 } // namespace tnrp

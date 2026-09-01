@@ -1,0 +1,82 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "31 2 * * 4"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: none
+            os: ubuntu-latest
+
+          - language: javascript-typescript
+            build-mode: none
+            os: ubuntu-latest
+
+          - language: swift
+            build-mode: manual
+            os: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build Swift frontend
+        if: matrix.language == 'swift'
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          build_dir="minimal_frontend/build-codeql"
+
+          cmake \
+            -S minimal_frontend \
+            -B "$build_dir" \
+            -G Xcode \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="$arch" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DTNR_CODEQL_SWIFT=ON
+
+          xcodebuild \
+            -project "$build_dir/TrackNRaceMinimalRecorder.xcodeproj" \
+            -target minimal_swift_codeql \
+            -configuration Release \
+            -arch "$arch" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      - name: Upload Swift CodeQL diagnostics
+        if: failure() && matrix.language == 'swift'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-swift-diagnostics
+          path: ${{ env.CODEQL_EXTRACTOR_SWIFT_LOG_DIR }}

@@ -3,17 +3,26 @@
 #include "tnrp/TnrdReader.h"
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
+#include "TnrdCodec.h"
+#include "tnrd/TNRD_V4.h"
 
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#ifdef _WIN32
+#  include <windows.h>
+#endif
 
 // Raw-data XLSX export: walks a loaded TnrdReader's whole row index in file
 // order and writes one worksheet per row type encountered (first-seen
@@ -28,6 +37,11 @@ namespace {
 // Local copy of TnrdReader.cpp's partial-read options (that one lives in an
 // anonymous namespace there, so it isn't visible here).
 constexpr glz::opts kPartialRead{ .null_terminated = false, .error_on_unknown_keys = false };
+
+float rowSessionTime(std::string_view line) {
+    constexpr std::string_view key="\"session_time\":";
+    const size_t pos=line.find(key);return pos==std::string_view::npos?-1.0f:std::strtof(line.data()+pos+key.size(),nullptr);
+}
 
 const char* sheetNameForType(uint8_t type) {
     switch (type) {
@@ -77,11 +91,11 @@ const std::vector<const char*>& columnsForType(uint8_t type) {
     };
     static const std::vector<const char*> lap = {
         "row_index", "session_time", "ts", "last_lap_ms", "current_lap_ms", "s1_ms", "s2_ms",
-        "position", "lap_num", "pit_status", "num_pit_stops", "sector", "lap_invalid", "penalties_s"
+        "position", "lap_num", "pit_status", "num_pit_stops", "sector", "lap_invalid", "penalties_s", "driver_status"
     };
     static const std::vector<const char*> session = {
         "row_index", "session_time", "ts", "weather", "track_temp", "air_temp", "track_length_m",
-        "track_id", "session_type", "total_laps", "session_time_left", "session_duration",
+        "track_id", "formula", "session_type", "total_laps", "session_time_left", "session_duration",
         "pit_speed_limit", "pit_stop_window_ideal_lap", "pit_stop_window_latest_lap",
         "pit_stop_rejoin_position", "num_marshal_zones", "marshal_zones_json",
         "weather_forecast_samples_json", "safety_car_status", "forecast_accuracy", "ai_difficulty",
@@ -90,7 +104,8 @@ const std::vector<const char*>& columnsForType(uint8_t type) {
     };
     static const std::vector<const char*> raceEvent = {
         "row_index", "session_time", "ts", "code", "car_idx", "lap_time_s", "safety_car_type",
-        "event_type", "penalty_type", "infringement_type", "penalty_time_s"
+        "event_type", "penalty_type", "infringement_type", "penalty_time_s",
+        "flashback_frame_identifier", "flashback_session_time"
     };
     static const std::vector<const char*> timing = {
         "row_index", "session_time", "ts", "player_idx", "car_idx", "position", "lap_num",
@@ -259,6 +274,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         worksheet_write_number(ws, row, c++, r.sector, nullptr);
         worksheet_write_boolean(ws, row, c++, r.lap_invalid ? 1 : 0, nullptr);
         worksheet_write_number(ws, row, c++, r.penalties_s, nullptr);
+        worksheet_write_number(ws, row, c++, r.driver_status, nullptr);
         ++row;
         break;
     }
@@ -273,6 +289,7 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         worksheet_write_number(ws, row, c++, r.air_temp, nullptr);
         worksheet_write_number(ws, row, c++, r.track_length_m, nullptr);
         worksheet_write_number(ws, row, c++, r.track_id, nullptr);
+        if (r.formula) worksheet_write_number(ws, row, c++, *r.formula, nullptr); else ++c;
         worksheet_write_number(ws, row, c++, r.session_type, nullptr);
         worksheet_write_number(ws, row, c++, r.total_laps, nullptr);
         worksheet_write_number(ws, row, c++, r.session_time_left, nullptr);
@@ -309,6 +326,8 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         if (r.penalty_type)      worksheet_write_number(ws, row, c, *r.penalty_type, nullptr);      ++c;
         if (r.infringement_type) worksheet_write_number(ws, row, c, *r.infringement_type, nullptr); ++c;
         if (r.penalty_time_s)    worksheet_write_number(ws, row, c, *r.penalty_time_s, nullptr);    ++c;
+        if (r.flashback_frame_identifier) worksheet_write_number(ws, row, c, *r.flashback_frame_identifier, nullptr); ++c;
+        if (r.flashback_session_time) worksheet_write_number(ws, row, c, *r.flashback_session_time, nullptr); ++c;
         ++row;
         break;
     }
@@ -454,12 +473,17 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
 
 bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath, std::string* errorOut,
                             const std::function<void(size_t, size_t, const std::string&)>& onProgress) {
-    if (!tempFile_) {
+    if (!isLoaded()) {
         if (errorOut) *errorOut = "no .tnrd loaded";
         return false;
     }
 
-    lxw_workbook* wb = workbook_new(outPath.c_str());
+    namespace fs = std::filesystem;
+    const fs::path stagingPath = fs::temp_directory_path() /
+        ("tracknrace_export_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".xlsx");
+    const std::string staging = stagingPath.string();
+    lxw_workbook* wb = workbook_new(staging.c_str());
     if (!wb) {
         if (errorOut) *errorOut = "could not create workbook (invalid destination path?)";
         return false;
@@ -470,7 +494,12 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
 
     (void)header;  // no longer written to an Info sheet; kept for API stability
 
-    const size_t total = index_.size();
+    size_t total = index_.size();
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        total = 0;
+        for (const auto& chunk : indexedArchive_->chunks())
+            if (sheetNameForType((uint8_t)chunk.rowType)) total += chunk.rowCount;
+    }
     // Throttle progress callbacks to ~500 calls over the whole export rather
     // than once per row (row counts can run into the hundreds of thousands).
     const size_t reportEvery = total > 0 ? std::max<size_t>(1, total / 500) : 1;
@@ -503,7 +532,12 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     // before the next lets us report an honest per-sheet stage message.
     std::vector<uint8_t> typeOrder;                       // first-seen order
     std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
-    for (const IndexEntry& e : index_) {
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        for (const auto& chunk : indexedArchive_->chunks())
+            if (sheetNameForType((uint8_t)chunk.rowType) &&
+                std::find(typeOrder.begin(),typeOrder.end(),(uint8_t)chunk.rowType)==typeOrder.end())
+                typeOrder.push_back((uint8_t)chunk.rowType);
+    } else for (const IndexEntry& e : index_) {
         if (!sheetNameForType(e.type)) continue;          // skip unknown/untabled types
         auto it = byType.find(e.type);
         if (it == byType.end()) {
@@ -534,7 +568,13 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         const bool firstOnly = (type == 8);
 
         bool wrote = false;
-        for (const IndexEntry* e : entries) {
+        if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+            std::string chunkError;
+            const bool ok=indexedArchive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
+                size_t pos=0;while(pos<plain.size()){size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();if(nl>pos){std::string line(plain.substr(pos,nl-pos));if(!firstOnly||!wrote){const float t=rowSessionTime(line);writeDataRow(ws,nextRow,t,type,line);wrote=true;}++done;if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);}if(nl==plain.size())break;pos=nl+1;}return true;
+            },&chunkError);
+            if(!ok){workbook_close(wb);std::error_code cleanupError;fs::remove(stagingPath,cleanupError);if(errorOut)*errorOut=chunkError.empty()?"could not read indexed export chunk":chunkError;return false;}
+        } else for (const IndexEntry* e : entries) {
             if (!firstOnly || !wrote) {
                 std::string line = readLine(e->offset);
                 if (!line.empty()) {
@@ -553,7 +593,40 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     report(kRowBandTop, "Writing file to disk");
     lxw_error err = workbook_close(wb);
     if (err != LXW_NO_ERROR) {
+        std::error_code cleanupError;
+        fs::remove(stagingPath, cleanupError);
         if (errorOut) *errorOut = lxw_strerror(err);
+        return false;
+    }
+
+    bool installed = false;
+#ifdef _WIN32
+    const std::wstring src = detail::windowsExtendedPath(staging);
+    const std::wstring dst = detail::windowsExtendedPath(outPath);
+    installed = !src.empty() && !dst.empty() &&
+        MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING |
+                    MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) != 0;
+    const DWORD installError = installed ? ERROR_SUCCESS : GetLastError();
+#else
+    std::error_code moveError;
+    fs::rename(stagingPath, fs::u8path(outPath), moveError);
+    installed = !moveError;
+    if (!installed && moveError == std::errc::cross_device_link) {
+        moveError.clear();
+        fs::copy_file(stagingPath, fs::u8path(outPath), fs::copy_options::overwrite_existing, moveError);
+        installed = !moveError;
+        if (installed) fs::remove(stagingPath, moveError);
+    }
+#endif
+    if (!installed) {
+        std::error_code cleanupError;
+        fs::remove(stagingPath, cleanupError);
+#ifdef _WIN32
+        if (errorOut) *errorOut = "could not move the completed workbook to its destination (Windows error " +
+            std::to_string((unsigned long)installError) + ")";
+#else
+        if (errorOut) *errorOut = "could not move the completed workbook to its destination";
+#endif
         return false;
     }
 

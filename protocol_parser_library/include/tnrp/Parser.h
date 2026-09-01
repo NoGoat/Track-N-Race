@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,8 @@ public:
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
         float                    sessionTime = -1.0f;
+        std::optional<float>     rewindSessionTime;
+        std::optional<uint32_t>  rewindFrameIdentifier;
         std::vector<std::string> rows;                // cold rows: serialised JSON (record + live)
         std::vector<std::string> control;             // serialised protocol_status / protocol_warning
         std::vector<std::string> hotJson;             // hot rows as JSON (only when wantHotJson)
@@ -45,7 +48,7 @@ public:
     // always produced for the live channel. Packet cadence is controlled by the
     // game's UDP send-rate setting; the parser does not wall-clock throttle it.
     Result feed(const uint8_t* data, int length, const std::string& ts,
-                bool wantHotJson);
+                bool wantHotJson, uint32_t outputRowMask = 0xFFFFFFFFu);
 
     // The current protocol_status control row as a serialised JSON string.
     // The engine emits this on construction and after setOverride.
@@ -54,7 +57,8 @@ public:
     // protocol_status row for a fixed packet format, independent of any live
     // parser state. Playback uses this to label a recorded clip with its own
     // format's i18n catalog / capabilities / aero mode.
-    static std::string statusRowForFormat(uint16_t format);
+    static std::string statusRowForFormat(uint16_t format,
+                                          std::optional<int> formula = std::nullopt);
 
     // Reset duplicate-frame / debounce state (e.g. on UDP restart).
     void reset();
@@ -63,6 +67,7 @@ private:
     Override  override_v_        = Override::Auto;
     uint16_t  detectedFormat_    = 0;
     uint16_t  activeFormat_      = 0;
+    std::optional<int> formula_;
     uint16_t  debounceCandidate_ = 0;
     int       debounceCount_     = 0;
 

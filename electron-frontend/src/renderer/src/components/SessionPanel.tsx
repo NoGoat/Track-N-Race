@@ -1,10 +1,13 @@
 import { useRef, useState, memo } from 'react'
+import { flushSync } from 'react-dom'
 import { Sun, CloudSun, Cloud, CloudDrizzle, CloudRain, CloudLightning, type LucideIcon } from 'lucide-react'
 import type { SessionMsg, RaceEventMsg, TimingMsg, ParticipantsMsg, TimingCar } from '../types'
 import TrackMap from './TrackMap'
 import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
 import { TRACK_MAPS } from '../lib/trackMaps'
+import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
+import type { DensityMode } from '../lib/graphSections'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
 
@@ -34,8 +37,8 @@ const FLAG_BG: Record<number, string> = {
 }
 
 export function sessionAccent(t: number, isDark: boolean): string {
-  if (t >= 1  && t <= 4)  return isDark ? '#FB923C' : '#C2660A'
-  if (t >= 5  && t <= 14) return isDark ? '#ffd700' : '#B7950B'
+  if (t >= 1  && t <= 4)  return isDark ? '#FB923C' : '#A04300'
+  if (t >= 5  && t <= 14) return isDark ? '#ffd700' : '#765900'
   if (t >= 15 && t <= 17) return isDark ? '#5794F2' : '#0B57D0'
   return isDark ? '#a0a8b8' : '#565B70'
 }
@@ -72,18 +75,16 @@ function driverName(p: ParticipantsMsg | null, idx: number): string {
   return parts[parts.length - 1].toUpperCase()
 }
 
-const INFRINGEMENT_LABELS: Record<number, string> = {
-  0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start',
-  3: 'Big collision', 4: 'Small collision', 7: 'SC delta exceeded',
-  8: 'SC illegal overtake', 9: 'SC exceeding pace', 13: 'Pit lane too fast',
-  17: 'Pit lane speeding', 25: 'Corner cutting', 30: 'Lap invalidated',
-}
-
-function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolean): { label: string; color: string } | null {
+function formatEvent(
+  ev: RaceEventMsg,
+  p: ParticipantsMsg | null,
+  isDark: boolean,
+  labels: Readonly<Record<string, string>>,
+): { label: string; color: string } | null {
   const name = (idx?: number) => driverName(p, idx ?? 0)
   const fmtLap = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`
   switch (ev.code) {
-    case 'FTLP': return { label: `Fastest Lap — ${name(ev.car_idx)}  ${fmtLap(ev.lap_time_s ?? 0)}`, color: isDark ? '#BF5FFF' : '#9B5DE5' }
+    case 'FTLP': return { label: `Fastest Lap — ${name(ev.car_idx)}  ${fmtLap(ev.lap_time_s ?? 0)}`, color: isDark ? '#BF5FFF' : '#7C3BA6' }
     case 'DRSE': return { label: 'DRS Enabled', color: isDark ? '#37872D' : '#137333' }
     case 'DRSD': return { label: 'DRS Disabled', color: isDark ? '#6e7177' : '#565B70' }
     case 'RDFL': return { label: 'Red Flag', color: '#e10600' }
@@ -92,24 +93,26 @@ function formatEvent(ev: RaceEventMsg, p: ParticipantsMsg | null, isDark: boolea
     case 'SSTA': return { label: 'Session Start', color: isDark ? '#5794F2' : '#0B57D0' }
     case 'SEND': return { label: 'Session End', color: isDark ? '#5794F2' : '#0B57D0' }
     case 'RTMT': return { label: `Retired — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
-    case 'RCWN': return { label: `Race Winner — ${name(ev.car_idx)}`, color: isDark ? '#FFD700' : '#B7950B' }
+    case 'RCWN': return { label: `Race Winner — ${name(ev.car_idx)}`, color: isDark ? '#FFD700' : '#765900' }
     case 'DTSV': return { label: `DT Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SGSV': return { label: `SG Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SCAR': {
       const T: Record<number, string> = { 1: 'Safety Car', 2: 'Virtual SC', 3: 'Formation Lap' }
       const A: Record<number, string> = { 0: 'Deployed', 1: 'Returning', 2: 'Returned', 3: 'Resume Race' }
-      return { label: `${T[ev.safety_car_type ?? 0] ?? 'SC'} — ${A[ev.event_type ?? 0] ?? ''}`, color: isDark ? '#ffd700' : '#B7950B' }
+      return { label: `${T[ev.safety_car_type ?? 0] ?? 'SC'} — ${A[ev.event_type ?? 0] ?? ''}`, color: isDark ? '#ffd700' : '#765900' }
     }
     case 'PENA': {
       const pt = ev.penalty_type ?? 0
-      const L: Record<number, string> = { 0: 'Drive Through', 1: 'Stop-Go', 2: 'Grid Penalty', 4: 'Time Penalty', 5: 'Warning', 6: 'DSQ' }
-      const C: Record<number, string> = isDark
-        ? { 0: '#e10600', 1: '#e10600', 2: '#c47d0e', 4: '#c47d0e', 5: '#ffd700', 6: '#e10600' }
-        : { 0: '#C4162A', 1: '#C4162A', 2: '#C26400', 4: '#C26400', 5: '#B7950B', 6: '#C4162A' }
-      if (!(pt in L)) return null
+      const penaltyLabel = labels[`penalty.${pt}`]
+      if (!penaltyLabel) return null
+      const color = pt === 5
+        ? (isDark ? '#ffd700' : '#765900')
+        : pt === 2 || pt === 4
+          ? (isDark ? '#c47d0e' : '#A04300')
+          : (isDark ? '#e10600' : '#C4162A')
       const ts = (pt === 1 || pt === 4) && ev.penalty_time_s ? ` ${ev.penalty_time_s}s` : ''
-      const inf = ev.infringement_type != null ? INFRINGEMENT_LABELS[ev.infringement_type] : undefined
-      return { label: `${L[pt]}${ts} — ${name(ev.car_idx)}${inf ? ` — ${inf}` : ''}`, color: C[pt] }
+      const inf = ev.infringement_type != null ? labels[`infringe.${ev.infringement_type}`] : undefined
+      return { label: `${penaltyLabel}${ts} — ${name(ev.car_idx)}${inf ? ` — ${inf}` : ''}`, color }
     }
     case 'OVTK': return { label: `Overtake — ${name(ev.overtaking_car_idx)} passed ${name(ev.being_overtaken_car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SPTP': return null
@@ -131,12 +134,15 @@ function weatherColor(id: number, isDark: boolean): string {
   return isDark ? e.dark : e.light
 }
 
-const StatCard = memo(function StatCard({ label, value, unit, accent, compact }: { label: string; value: string; unit?: string; accent?: string; compact?: boolean }) {
-  if (compact) {
+const StatCard = memo(function StatCard({ label, value, unit, accent, sub, compact }: { label: string; value: string; unit?: string; accent?: string; sub?: string; compact?: DensityMode | boolean }) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
+  if (isCompact) {
     // Single-line: label · value+unit — the row collapses to one line.
     return (
-      <div className="flex-1 flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
-        <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
+      <div className="flex-1 min-w-0 overflow-hidden flex items-center justify-between gap-2 px-4 py-2 border-r border-[var(--border)] last:border-r-0">
+        <span className="min-w-0 text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
         <span className="flex items-baseline gap-1 shrink-0">
           <span className="text-lg font-black tabular-nums leading-none" style={{ color: accent ?? 'var(--text-primary)' }}>{value}</span>
           {unit && <span className="text-[10px] text-[var(--text-secondary)]">{unit}</span>}
@@ -144,11 +150,29 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
       </div>
     )
   }
+
+  if (isSpacious) {
+    return (
+      <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-6 py-5 border-r border-[var(--border)] last:border-r-0">
+        <span className="text-xs font-black tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
+        <div>
+          <div className="flex items-baseline gap-1.5 overflow-hidden">
+            <span className="text-4xl font-black tabular-nums leading-none truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
+              {value}
+            </span>
+            {unit && <span className="text-sm font-semibold text-[var(--text-secondary)] shrink-0">{unit}</span>}
+          </div>
+          {sub && <div className="text-[11px] font-medium text-[var(--text-secondary)] mt-1.5 truncate">{sub}</div>}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex-1 flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
-      <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)]">{label}</span>
+    <div className="flex-1 min-w-0 overflow-hidden flex flex-col justify-between px-5 py-4 border-r border-[var(--border)] last:border-r-0">
+      <span className="text-[10px] font-medium tracking-widest uppercase text-[var(--text-secondary)] truncate">{label}</span>
       <div>
-        <div className="text-3xl font-black tabular-nums leading-none mt-2" style={{ color: accent ?? 'var(--text-primary)' }}>
+        <div className="text-3xl font-black tabular-nums leading-none mt-2 truncate" style={{ color: accent ?? 'var(--text-primary)' }}>
           {value}
         </div>
         {unit && <div className="text-xs text-[var(--text-secondary)] mt-1">{unit}</div>}
@@ -158,6 +182,7 @@ const StatCard = memo(function StatCard({ label, value, unit, accent, compact }:
 })
 
 function areProximityPropsEqual(prev: any, next: any) {
+  if (prev.compact !== next.compact) return false
   if (prev.participants !== next.participants) return false
   if (!prev.timing || !next.timing) return prev.timing === next.timing
   if (prev.timing.player_idx !== next.timing.player_idx) return false
@@ -177,15 +202,18 @@ function areProximityPropsEqual(prev: any, next: any) {
   return true
 }
 
-const ProximityWidget = memo(function ProximityWidget({ timing, participants }: {
-  timing: TimingMsg; participants: ParticipantsMsg | null
+const ProximityWidget = memo(function ProximityWidget({ timing, participants, compact }: {
+  timing: TimingMsg; participants: ParticipantsMsg | null; compact?: DensityMode | boolean
 }) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
   const active = timing.cars
     .filter(c => c.result_status === 2 && c.position > 0)
     .sort((a, b) => a.position - b.position)
 
   const player = active.find(c => c.idx === timing.player_idx)
-  if (!player) return <p className="text-xs text-[var(--text-secondary)] py-2">No position data</p>
+  if (!player) return <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No position data</p>
 
   const pos = player.position
   const isFirst = pos === 1
@@ -217,23 +245,28 @@ const ProximityWidget = memo(function ProximityWidget({ timing, participants }: 
   return (
     <div className="flex flex-col divide-y divide-[var(--border)]">
       {rows.map(({ car, isPlayer, deltaMs, sign }) => {
-        const livery = participants?.drivers.find(d => d.idx === car.idx)?.livery_color ?? '#8e8e8e'
+        const d = participants?.drivers.find(drv => drv.idx === car.idx)
         return (
           <div
             key={car.idx}
-            className="flex items-center gap-3 px-3 py-3"
+            className={isCompact ? "flex items-center gap-3 px-3 h-[32px]" : isSpacious ? "flex items-center gap-3 px-4 py-3.5" : "flex items-center gap-3 px-3 py-3"}
           >
-            <span
-              className="text-[10px] font-bold tabular-nums w-7 text-center py-0.5 rounded shrink-0"
-              style={{ backgroundColor: livery + '28', color: livery }}
-            >
+            <span className={`${isSpacious ? 'text-xs font-black w-8' : 'text-[10px] font-bold w-7'} tabular-nums text-center text-[var(--text-primary)] shrink-0`}>
               P{car.position}
             </span>
-            <span className={`text-sm font-bold flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+            {d && isSpacious && (
+              <div className="w-1.5 h-4 rounded-full shrink-0" style={{ background: d.livery_color }} />
+            )}
+            <span className={`${isCompact ? 'text-xs' : isSpacious ? 'text-base font-black' : 'text-sm font-bold'} flex-1 truncate ${isPlayer ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
               {driverName(participants, car.idx)}
             </span>
+            {d?.race_number && isSpacious && (
+              <span className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums shrink-0">
+                #{d.race_number}
+              </span>
+            )}
             {deltaMs != null && deltaMs > 0 && (
-              <span className="text-xs font-semibold tabular-nums" style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
+              <span className={`${isCompact ? 'text-[11px]' : isSpacious ? 'text-sm font-black' : 'text-xs font-semibold'} tabular-nums shrink-0`} style={{ color: sign === 'ahead' ? '#73BF69' : '#6e7177' }}>
                 {fmtDelta(deltaMs, sign!)}
               </span>
             )}
@@ -296,16 +329,49 @@ interface Props {
   reduceAnimations: boolean
   mapDimmed?: boolean
   aeroMode: 'drs' | 'slm'
-  compactHeader?: boolean
-  compactCards?: boolean
+  compactHeader?: boolean | number
+  compactCards?: DensityMode | boolean
   compactWeather?: number
+  compactEvents?: DensityMode | boolean
+  compactProximity?: DensityMode | boolean
+  layout?: SessionLayout
 }
 
-const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather }: Props) {
+const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, participants, isDark, sectorColors, driversMode, mapTimeout, reduceAnimations, mapDimmed = false, aeroMode, compactHeader, compactCards, compactWeather, compactEvents, compactProximity, layout = DEFAULT_SESSION_LAYOUT }: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const [mapFullscreen, setMapFullscreen] = useState(false)
-  const { t } = useLabels()
-  const weatherLevel = Math.max(0, Math.min(2, compactWeather ?? 0))
+  const { t, raw: labels } = useLabels()
+  const weatherLevel = Math.max(0, Math.min(4, compactWeather ?? 0))
+  const headerLevel = typeof compactHeader === 'boolean' ? (compactHeader ? 1 : 0) : Math.max(0, Math.min(3, compactHeader ?? 0))
+  const isCompactHeader = headerLevel === 1 || headerLevel === 2
+  const isSpaciousHeader = headerLevel === 3
+
+  const isCompactEvents = compactEvents === true || compactEvents === 'compact'
+  const isSpaciousEvents = compactEvents === 'spacious'
+
+  const isCompactProximity = compactProximity === true || compactProximity === 'compact'
+  const isSpaciousProximity = compactProximity === 'spacious'
+
+  const setMapFullscreenAnimated = (fullscreen: boolean) => {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => unknown
+    }
+    const motionReduced = reduceAnimations
+      || document.documentElement.dataset.reduceAnimations === 'true'
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      setMapFullscreen(fullscreen)
+      return
+    }
+
+    try {
+      transitionDocument.startViewTransition(() => {
+        flushSync(() => setMapFullscreen(fullscreen))
+      })
+    } catch {
+      setMapFullscreen(fullscreen)
+    }
+  }
 
   const noData  = !session
   const colorFn = useColorFn(null, null, isDark)
@@ -335,140 +401,159 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
     : []
 
   const visibleEvents = raceEvents
-    .map(e => ({ event: e, fmt: formatEvent(e, participants, isDark) }))
+    .map(e => ({ event: e, fmt: formatEvent(e, participants, isDark, labels) }))
     .filter(({ fmt }) => fmt !== null)
     .reverse() as { event: RaceEventMsg; fmt: { label: string; color: string } }[]
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="relative flex flex-col h-full overflow-hidden">
 
-      {/* ── Map fullscreen ── */}
-      {mapFullscreen && (
-        <div className="flex-1 min-h-0">
-          <TrackMap
-            trackId={session?.track_id ?? null}
-            participants={participants}
-            isDark={isDark}
-            sectorColors={sectorColors}
-            driversMode={driversMode}
-            mapTimeout={mapTimeout}
-            reduceAnimations={reduceAnimations}
-            mapDimmed={mapDimmed}
-            aeroMode={aeroMode}
-            slmTrackStatus={session?.active_aero_track_status ?? -1}
-            isFullscreen
-            onToggleFullscreen={() => setMapFullscreen(false)}
-          />
+      {/* ── Normal layout ── */}
+      {/* ── Header ── */}
+      {(layout.header.gpName || layout.header.marshalZones || layout.header.timeLeft) && (
+        <div
+          className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
+        >
+          {/* GP name */}
+          {layout.header.gpName && (
+            <div className={`flex flex-col justify-center ${!layout.header.marshalZones && !layout.header.timeLeft ? 'flex-1' : 'shrink-0'} ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
+              <div className={`flex items-center gap-3 ${isCompactHeader ? '' : 'mb-0.5'}`}>
+                <h1 className={`${isSpaciousHeader ? 'text-2xl font-black' : isCompactHeader ? 'text-base font-black' : 'text-xl font-black'} tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                  {gpName}
+                </h1>
+              </div>
+              {circuit && !isCompactHeader && <p className={`${isSpaciousHeader ? 'text-sm font-semibold' : 'text-xs'} text-[var(--text-secondary)] mt-0.5`}>{circuit}</p>}
+            </div>
+          )}
+
+          {/* Zones strip */}
+          {layout.header.marshalZones && (
+            <div className={`flex flex-col justify-center flex-1 min-w-0 ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
+              {headerLevel === 3 ? (
+                <div className="flex flex-col justify-center gap-2 w-full">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black uppercase tracking-widest text-[var(--text-secondary)]">Marshal Zones</span>
+                  </div>
+                  <div className="w-full">
+                    <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                  </div>
+                </div>
+              ) : headerLevel === 2 ? (
+                <div className="w-full">
+                  <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                </div>
+              ) : headerLevel === 1 ? (
+                <div className="flex items-center gap-3 w-full">
+                  <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
+                  <div className="flex-1 min-w-0"><MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} /></div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center mb-2">
+                    <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
+                  </div>
+                  <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Time left */}
+          {layout.header.timeLeft && (
+            <div className={`flex flex-col justify-center items-end ${!layout.header.gpName && !layout.header.marshalZones ? 'flex-1' : 'shrink-0'} ${!layout.header.marshalZones && layout.header.gpName ? 'ml-auto' : ''} ${isSpaciousHeader ? 'px-8 py-5' : 'px-6'} ${isCompactHeader ? 'py-2' : isSpaciousHeader ? 'py-5' : 'py-4'}`}>
+              {!isCompactHeader && (
+                <div className={`${isSpaciousHeader ? 'text-xs font-bold' : 'text-[10px] font-medium'} uppercase tracking-widest text-[var(--text-secondary)]`}>Time Left</div>
+              )}
+              <div
+                className={`${isSpaciousHeader ? 'text-4xl' : isCompactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
+                style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
+              >
+                {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* ── Normal layout ── */}
-      {!mapFullscreen && <>
-
-      {/* ── Header ── */}
-      <div
-        className="shrink-0 flex divide-x divide-[var(--border)] border-b border-[var(--border)]"
-      >
-        {/* GP name */}
-        <div className={`flex flex-col justify-center shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          <div className={`flex items-center gap-3 ${compactHeader ? '' : 'mb-0.5'}`}>
-            <h1 className={`${compactHeader ? 'text-base' : 'text-xl'} font-black tracking-tight ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
-              {gpName}
-            </h1>
-          </div>
-          {circuit && !compactHeader && <p className="text-xs text-[var(--text-secondary)]">{circuit}</p>}
-        </div>
-
-        {/* Zones strip. Compact: ZONES · marshal strip · legend all on one row. */}
-        <div className={`flex flex-col justify-center flex-1 min-w-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          {(() => {
-            const legend = (
-              <div className="flex items-center gap-4 shrink-0">
-                {[{ c: '#fdd835', l: 'Yellow' }, { c: '#00c853', l: 'Green' }, { c: '#2196f3', l: 'Blue' }, { c: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)', l: 'Clear' }].map(({ c, l }) => (
-                  <div key={l} className="flex items-center gap-1.5">
-                    <div
-                      className="w-3 h-3 rounded-sm"
-                      style={{
-                        backgroundColor: c,
-                        border: `1px solid ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.15)'}`
-                      }}
-                    />
-                    <span className="text-[10px] text-[var(--text-secondary)]">{l}</span>
-                  </div>
-                ))}
-              </div>
-            )
-            const zonesLbl = <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Zones</span>
-            return compactHeader ? (
-              <div className="flex items-center gap-3">
-                {zonesLbl}
-                <div className="flex-1 min-w-0"><MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} /></div>
-                {legend}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between mb-2">
-                  {zonesLbl}
-                  {legend}
-                </div>
-                <MarshalStrip zones={session?.marshal_zones ?? []} isDark={isDark} />
-              </>
-            )
-          })()}
-        </div>
-
-        {/* Time left */}
-        <div className={`flex flex-col justify-center items-end shrink-0 px-6 ${compactHeader ? 'py-2' : 'py-4'}`}>
-          {!compactHeader && (
-            <div className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">Time Left</div>
-          )}
-          <div
-            className={`${compactHeader ? 'text-xl' : 'text-3xl'} font-black tabular-nums leading-tight`}
-            style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}
-          >
-            {session ? fmtTimeLeft(session.session_time_left) : '--:--'}
-          </div>
-        </div>
-      </div>
-
       {/* ── Stat cards ── */}
-      <div className="shrink-0 flex border-b border-[var(--border)]">
-        <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} compact={compactCards} />
-        {remainingLaps !== null
-          ? <StatCard label="Remaining" value={String(remainingLaps)} compact={compactCards} />
-          : <StatCard label="Remaining" value="—" compact={compactCards} />
-        }
-        <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} compact={compactCards} />
-        <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} compact={compactCards} />
-        <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} compact={compactCards} />
-        <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} compact={compactCards} />
-        <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} compact={compactCards} />
-        <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} compact={compactCards} />
-        <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} compact={compactCards} />
-      </div>
+      {Object.values(layout.statsCards).some(Boolean) && (
+        <div className="shrink-0 flex min-w-0 overflow-hidden border-b border-[var(--border)]">
+          {layout.statsCards.totalLaps && <StatCard label="Total Laps" value={session && session.total_laps > 0 ? String(session.total_laps) : '—'} sub="Total distance" compact={compactCards} />}
+          {layout.statsCards.lapsRemaining && (remainingLaps !== null
+            ? <StatCard label="Remaining" value={String(remainingLaps)} sub="Laps to flag" compact={compactCards} />
+            : <StatCard label="Remaining" value="—" sub="Laps to flag" compact={compactCards} />
+          )}
+          {layout.statsCards.pitSpeedLimit && <StatCard label="Pit Speed"  value={session ? String(session.pit_speed_limit) : '—'} unit={session ? 'km/h' : undefined} accent={noData ? undefined : colorFn('session.pitSpeed')} sub="Pitlane limit" compact={compactCards} />}
+          {layout.statsCards.pitWindow && <StatCard label="Pit Window" value={pitWindow} accent={noData ? undefined : colorFn('session.pitWindow')} sub="Optimal window" compact={compactCards} />}
+          {layout.statsCards.pitRejoin && <StatCard label="Rejoin"     value={rejoinPos} accent={noData ? undefined : colorFn('session.rejoin')} sub="Projected pos" compact={compactCards} />}
+          {layout.statsCards.trackTemp && <StatCard label="Track Temp"   value={session ? `${session.track_temp}°C` : '—'} accent={session ? colorFn('session.trackTemp', session.track_temp) : undefined} sub="Tarmac surface" compact={compactCards} />}
+          {layout.statsCards.airTemp && <StatCard label="Air Temp"     value={session ? `${session.air_temp}°C` : '—'} accent={session ? colorFn('session.airTemp', session.air_temp) : undefined} sub="Ambient air" compact={compactCards} />}
+          {layout.statsCards.trackLength && <StatCard label="Track Length" value={session ? `${(session.track_length_m / 1000).toFixed(3)} km` : '—'} sub="Lap distance" compact={compactCards} />}
+          {layout.statsCards.timeOfDay && <StatCard label="Time of Day"  value={session ? fmtTimeOfDay(session.time_of_day) : '—'} sub="Circuit local" compact={compactCards} />}
+        </div>
+      )}
 
       {/* ── Main body — two columns that both fill the available height ── */}
-      <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
+      {(layout.showMap || layout.showWeather || layout.showProximity || layout.showEvents) && (
+        <div className="flex flex-1 min-h-0 divide-x divide-[var(--border)]">
 
-        {/* Col 1 — Weather: empty top (reserved), Now+forecast strip at bottom */}
-        <div className="flex flex-col flex-1 min-w-0 divide-y divide-[var(--border)]">
+          {/* Col 1 — Weather: empty top (reserved), Now+forecast strip at bottom */}
+          {(layout.showMap || layout.showWeather) && (
+            <div
+              className={`flex flex-col ${layout.showProximity || layout.showEvents ? '' : 'flex-1'} min-w-0 divide-y divide-[var(--border)]`}
+              style={layout.showProximity || layout.showEvents ? { width: `${100 - (layout.sidebarPct ?? 28)}%` } : undefined}
+            >
 
-          {/* Track map */}
-          <div className="flex-1 min-h-0">
-            <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
-            driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={false} onToggleFullscreen={() => setMapFullscreen(true)} />
-          </div>
+              {/* Track map */}
+              {layout.showMap && (
+                <div className={`session-map-transition ${mapFullscreen ? 'absolute inset-0 z-40 bg-[var(--bg-base)]' : 'flex-1 min-h-0'}`}>
+                  <TrackMap trackId={session?.track_id ?? null} participants={participants} isDark={isDark} sectorColors={sectorColors}
+                  driversMode={driversMode} mapTimeout={mapTimeout} reduceAnimations={reduceAnimations} mapDimmed={mapDimmed} aeroMode={aeroMode} slmTrackStatus={session?.active_aero_track_status ?? -1} isFullscreen={mapFullscreen} onToggleFullscreen={() => setMapFullscreenAnimated(!mapFullscreen)} />
+                </div>
+              )}
 
-          {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
-              in the horizontal row; Compact 2 is the original icon-free strip. */}
-          <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 1 ? 58 : 90 }}>
+              {/* Now + forecast strip — pinned to bottom. Compact 1 keeps a smaller icon
+                  in the horizontal row; Compact 2 is the original icon-free strip;
+                  Compact 3 is the single-line layout: [Icon] Condition ... +Time Rain%;
+                  Spacious is level 4 with extra large icons and metrics. */}
+              {layout.showWeather && (
+                <div className="flex shrink-0 divide-x divide-[var(--border)]" style={{ height: weatherLevel === 2 ? 32 : weatherLevel === 3 ? 34 : weatherLevel === 1 ? 58 : weatherLevel === 4 ? 110 : 90 }}>
 
-            {/* Now card — same width as the forecast cards either way */}
-            {weatherLevel === 2 ? (
-              <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
+                  {/* Now card — same width as the forecast cards */}
+                  {weatherLevel === 4 ? (
+                    <div className="flex-1 flex items-center justify-center gap-4 px-6 min-w-0">
+                      <div className="shrink-0" style={{ color: noData ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
+                        <WeatherIcon id={session?.weather ?? 2} size={40} isDark={isDark} />
+                      </div>
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">Now</span>
+                        <span className={`text-base font-black truncate ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                          {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                        </span>
+                        <span className="text-[11px] font-semibold text-[var(--text-secondary)]">
+                          {session ? (session.forecast_accuracy === 0 ? 'Exact' : 'Approx') : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  ) : weatherLevel === 2 ? (
+                    <div className="flex-1 flex items-center px-4 gap-2 min-w-0">
                 <span className="text-[9px] font-medium uppercase tracking-widest text-[var(--text-secondary)] shrink-0">Now</span>
                 <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: session ? weatherColor(session.weather, isDark) : 'var(--text-secondary)' }}>
                   {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                </span>
+              </div>
+            ) : weatherLevel === 3 ? (
+              <div className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="shrink-0 flex items-center justify-center">
+                    <WeatherIcon id={session?.weather ?? 2} size={18} isDark={isDark} />
+                  </span>
+                  <span className={`text-xs font-semibold truncate ${noData ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
+                    {session ? WEATHER_LABELS[session.weather] ?? '—' : '—'}
+                  </span>
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] shrink-0">
+                  NOW
                 </span>
               </div>
             ) : weatherLevel === 1 ? (
@@ -500,11 +585,33 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
 
             {/* Forecast cards — skeleton when no data */}
             {noData
-              ? [1, 2, 3, 4, 5].map(i => weatherLevel === 2 ? (
+              ? [1, 2, 3, 4, 5].map(i => weatherLevel === 4 ? (
+                <div key={i} className="flex-1 flex items-center justify-center gap-4 px-4 py-3 min-w-0">
+                  <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={2} size={40} isDark={isDark} /></div>
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">—</span>
+                    <span className="text-xs font-bold text-[var(--text-secondary)] truncate">—</span>
+                    <span className="text-sm font-black tabular-nums text-[var(--text-secondary)]">—</span>
+                  </div>
+                </div>
+              ) : weatherLevel === 2 ? (
                 <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                   <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
                   <span className="flex-1 text-center text-xs text-[var(--text-secondary)]">—</span>
                   <span className="text-[10px] font-bold tabular-nums text-[var(--text-secondary)] shrink-0">—</span>
+                </div>
+              ) : weatherLevel === 3 ? (
+                <div key={i} className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="shrink-0 flex items-center justify-center text-[var(--text-secondary)]">
+                      <WeatherIcon id={2} size={18} isDark={isDark} />
+                    </span>
+                    <span className="text-xs text-[var(--text-secondary)] truncate">—</span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5 shrink-0">
+                    <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">—</span>
+                    <span className="text-xs font-bold tabular-nums text-[var(--text-secondary)]">—</span>
+                  </div>
                 </div>
               ) : weatherLevel === 1 ? (
                 <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
@@ -528,7 +635,16 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
               : forecast.map((s, i) => {
                 const rainColor = s.rain_percentage > 50 ? '#5794F2'
                   : s.rain_percentage > 20 ? '#73BF69' : 'var(--text-secondary)'
-                return weatherLevel === 2 ? (
+                return weatherLevel === 4 ? (
+                  <div key={i} className="flex-1 flex items-center justify-center gap-4 px-4 py-3 min-w-0">
+                    <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={s.weather} size={40} isDark={isDark} /></div>
+                    <div className="flex flex-col gap-1 min-w-0">
+                      <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
+                      <span className="text-xs font-bold text-[var(--text-secondary)] truncate">{WEATHER_LABELS[s.weather] ?? '—'}</span>
+                      <span className="text-sm font-black tabular-nums" style={{ color: rainColor }}>{s.rain_percentage}%</span>
+                    </div>
+                  </div>
+                ) : weatherLevel === 2 ? (
                   <div key={i} className="flex-1 flex items-center px-2 gap-2 min-w-0">
                     <span className="text-[9px] tabular-nums text-[var(--text-secondary)] shrink-0">+{s.time_offset}m</span>
                     <span className="flex-1 text-center text-xs font-semibold truncate" style={{ color: weatherColor(s.weather, isDark) }}>
@@ -537,6 +653,23 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                     <span className="text-[10px] font-bold tabular-nums shrink-0" style={{ color: rainColor }}>
                       {s.rain_percentage}%
                     </span>
+                  </div>
+                ) : weatherLevel === 3 ? (
+                  <div key={i} className="flex-1 flex items-center justify-between px-3 gap-2 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="shrink-0 flex items-center justify-center">
+                        <WeatherIcon id={s.weather} size={18} isDark={isDark} />
+                      </span>
+                      <span className="text-xs font-semibold truncate text-[var(--text-primary)]">
+                        {WEATHER_LABELS[s.weather] ?? '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline gap-1.5 shrink-0">
+                      <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
+                      <span className="text-xs font-bold tabular-nums" style={{ color: rainColor }}>
+                        {s.rain_percentage}%
+                      </span>
+                    </div>
                   </div>
                 ) : weatherLevel === 1 ? (
                   <div key={i} className="flex-1 flex items-center px-2 gap-1.5 min-w-0">
@@ -551,80 +684,146 @@ const SessionPanel = memo(function SessionPanel({ session, raceEvents, timing, p
                   </div>
                 ) : (
                   <div key={i} className="flex-1 flex items-center justify-center gap-3 px-2 py-2 min-w-0">
-                    <div className="shrink-0 text-[var(--text-primary)]"><WeatherIcon id={s.weather} size={32} isDark={isDark} /></div>
+                    <div className="shrink-0 text-[var(--text-secondary)]"><WeatherIcon id={s.weather} size={32} isDark={isDark} /></div>
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <span className="text-[9px] tabular-nums text-[var(--text-secondary)]">+{s.time_offset}m</span>
-                      <span className="text-[10px] text-[var(--text-primary)] truncate">
-                        {WEATHER_LABELS[s.weather] ?? '—'}
-                      </span>
-                      <span className="text-[11px] font-bold tabular-nums" style={{ color: rainColor }}>
-                        {s.rain_percentage}%
-                      </span>
+                      <span className="text-[10px] text-[var(--text-secondary)] truncate">{WEATHER_LABELS[s.weather] ?? '—'}</span>
+                      <span className="text-[11px] font-bold tabular-nums text-[var(--text-secondary)]">{s.rain_percentage}%</span>
                     </div>
                   </div>
                 )
-              })
-            }
-          </div>
+              })}
+            </div>
+          )}
         </div>
+      )}
 
-        {/* Col 2 — Proximity (content-height) + Events (fills remainder) */}
-        <div className="flex flex-col w-72 shrink-0">
+      {/* Col 2 — Proximity (content-height) + Events (fills remainder) */}
+      {(layout.showProximity || layout.showEvents) && (
+        <div
+          className={`flex flex-col ${layout.showMap || layout.showWeather ? 'shrink-0' : 'flex-1'} min-w-0`}
+          style={layout.showMap || layout.showWeather ? { width: `${layout.sidebarPct ?? 28}%` } : undefined}
+        >
 
-          <div className="shrink-0 border-b border-[var(--border)]">
-            <div className="px-4 py-2 border-b border-[var(--border)]">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">
-                Proximity
-              </span>
+          {layout.showProximity && (
+            <div className="shrink-0 border-b border-[var(--border)]">
+              <div className={isCompactProximity
+                ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : isSpaciousProximity
+                ? "px-4 py-3 border-b border-[var(--border)] flex items-center"
+                : "px-4 py-2 border-b border-[var(--border)]"
+              }>
+                <span className={isCompactProximity
+                  ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : isSpaciousProximity
+                  ? "text-xs font-black uppercase tracking-wider text-[var(--text-secondary)]"
+                  : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
+                }>
+                  Proximity
+                </span>
+              </div>
+              {timing
+                ? <ProximityWidget timing={timing} participants={participants} compact={compactProximity} />
+                : <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No timing data</p>
+              }
             </div>
-            {timing
-              ? <ProximityWidget timing={timing} participants={participants} />
-              : <p className="text-xs text-[var(--text-secondary)] px-4 py-3">No timing data</p>
-            }
-          </div>
+          )}
 
-          <div className="flex flex-col flex-1 min-h-0">
-            <div className="shrink-0 px-4 py-2 border-b border-[var(--border)]">
-              <span className="text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]">
-                Events
-              </span>
-            </div>
-            <div ref={logRef} className="flex-1 overflow-y-auto">
-              {visibleEvents.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-[10px] text-[var(--text-secondary)]">
-                  No events yet
-                </div>
-              ) : (
-                <div className="flex flex-col">
-                  {visibleEvents.map(({ event, fmt }, i) => (
-                    <div
-                      key={i}
-                      className="flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
-                    >
-                      <span
-                        className="text-[9px] tabular-nums font-mono font-semibold"
-                        style={{ color: `${fmt.color}aa` }}
+          {layout.showEvents && (
+            <div className="flex flex-col flex-1 min-h-0">
+              <div className={isCompactEvents
+                ? "shrink-0 flex items-center border-b border-[var(--border)] h-[32px] px-3"
+                : isSpaciousEvents
+                ? "px-4 py-3 border-b border-[var(--border)] flex items-center"
+                : "px-4 py-2 border-b border-[var(--border)]"
+              }>
+                <span className={isCompactEvents
+                  ? "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] leading-none"
+                  : isSpaciousEvents
+                  ? "text-xs font-black uppercase tracking-wider text-[var(--text-secondary)]"
+                  : "text-[10px] font-medium uppercase tracking-widest text-[var(--text-secondary)]"
+                }>
+                  Events
+                </span>
+              </div>
+              <div ref={logRef} className="flex-1 overflow-y-auto">
+                {visibleEvents.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-[10px] text-[var(--text-secondary)]">
+                    No events yet
+                  </div>
+                ) : (
+                  <div className="flex flex-col">
+                    {visibleEvents.map(({ event, fmt }, i) => (
+                      <div
+                        key={i}
+                        className={isCompactEvents
+                          ? "flex items-center justify-between gap-2 px-3 h-[32px] border-b border-[var(--border)] min-w-0"
+                          : isSpaciousEvents
+                          ? "flex flex-col gap-1 px-4 py-3 border-b border-[var(--border)]"
+                          : "flex flex-col gap-0.5 px-3 py-1.5 border-b border-[var(--border)]"
+                        }
                       >
-                        {fmtSessionTime(event.session_time)}
-                      </span>
-                      <span
-                        className="text-[11px] font-bold leading-snug"
-                        style={{ color: fmt.color }}
-                      >
-                        {fmt.label}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                        {isCompactEvents ? (
+                          <>
+                            <span
+                              className="text-[11px] font-bold leading-tight truncate min-w-0 flex-1"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
+                            </span>
+                            <span
+                              className="text-[9px] tabular-nums font-mono font-semibold shrink-0"
+                              style={{ color: `${fmt.color}aa` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                          </>
+                        ) : isSpaciousEvents ? (
+                          <>
+                            <span
+                              className="text-xs tabular-nums font-mono font-bold"
+                              style={{ color: `${fmt.color}cc` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                            <span
+                              className="text-sm font-black leading-snug"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className="text-[9px] tabular-nums font-mono font-semibold"
+                              style={{ color: `${fmt.color}aa` }}
+                            >
+                              {fmtSessionTime(event.session_time)}
+                            </span>
+                            <span
+                              className="text-[11px] font-bold leading-snug"
+                              style={{ color: fmt.color }}
+                            >
+                              {fmt.label}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
         </div>
-      </div>
+      )}
 
-      </>}
     </div>
+  )}
+
+</div>
   )
 })
 export default SessionPanel

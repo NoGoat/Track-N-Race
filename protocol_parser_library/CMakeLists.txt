@@ -7,11 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Dual-mode UDP backend. OFF (default) => raw winsock2/POSIX sockets, for the
 # headless bridge. ON => QUdpSocket, for linking into the native Qt recorder.
 option(TNRP_USE_QT "Use QUdpSocket instead of raw sockets for UDP" OFF)
+option(TNRP_BUILD_TESTS "Build libtnrp native regression tests" OFF)
 
 include(FetchContent)
 
 # All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
-# gzip compatibility; Zstandard is the default TNRD V3 codec.
+# gzip compatibility; chunked Zstandard is the default TNRD V5 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -92,9 +93,15 @@ add_library(tnrp STATIC
     src/DisplayNames.cpp
     src/Labels.cpp
     src/CardColors.cpp
+    src/Strategy.cpp
     src/Parser.cpp
     src/AnyRow.cpp
     src/TnrdCodec.cpp
+    src/tnrd/TNRD_V1.cpp
+    src/tnrd/TNRD_V2.cpp
+    src/tnrd/TNRD_V3.cpp
+    src/tnrd/TNRD_V4.cpp
+    src/tnrd/TNRD_V5.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
@@ -139,4 +146,30 @@ if(NOT MSVC)
 else()
     target_compile_options(tnrp PRIVATE $<$<NOT:$<CONFIG:Debug>>:/O2>)
     target_compile_definitions(tnrp PRIVATE NOMINMAX)
+endif()
+
+if(TNRP_BUILD_TESTS)
+    enable_testing()
+    add_executable(tnrd_v4_roundtrip tests/TnrdV4RoundTrip.cpp)
+    target_include_directories(tnrd_v4_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_v4_roundtrip PRIVATE tnrp)
+    add_test(NAME tnrd_v4_roundtrip COMMAND tnrd_v4_roundtrip)
+    add_executable(tnrd_v5_roundtrip tests/TnrdV5RoundTrip.cpp)
+    target_include_directories(tnrd_v5_roundtrip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_v5_roundtrip PRIVATE tnrp)
+    add_test(NAME tnrd_v5_roundtrip COMMAND tnrd_v5_roundtrip)
+    add_executable(tnrd_reader_versions tests/TnrdReaderVersions.cpp)
+    target_include_directories(tnrd_reader_versions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tnrd_reader_versions PRIVATE tnrp)
+    add_test(NAME tnrd_reader_versions COMMAND tnrd_reader_versions)
+    add_executable(parser_rewind tests/ParserRewind.cpp)
+    target_link_libraries(parser_rewind PRIVATE tnrp)
+    add_test(NAME parser_rewind COMMAND parser_rewind)
+    add_executable(v4_lap_boundary tests/V4LapBoundary.cpp)
+    target_include_directories(v4_lap_boundary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(v4_lap_boundary PRIVATE tnrp)
+    add_test(NAME v4_lap_boundary COMMAND v4_lap_boundary)
+    add_executable(strategy_processor tests/StrategyProcessor.cpp)
+    target_link_libraries(strategy_processor PRIVATE tnrp)
+    add_test(NAME strategy_processor COMMAND strategy_processor)
 endif()

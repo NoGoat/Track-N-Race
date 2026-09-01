@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <type_traits>
 #include <vector>
@@ -30,6 +31,52 @@ enum Tag : uint8_t {
     kPositions = 3,
     kMotionEx  = 4,
 };
+
+inline uint8_t rowTypeForTag(uint8_t tag) {
+    switch (tag) {
+        case kTelemetry: return 1;
+        case kMotion: return 11;
+        case kMotionEx: return 12;
+        case kPositions: return 13;
+        default: return 0;
+    }
+}
+
+// Copies only selected complete records without decoding their fields. This is
+// used by live and legacy playback subscriptions so hidden hot families never
+// cross N-API/IPC or reach the renderer.
+template <class F>
+inline bool forEachPackedRecord(const uint8_t* data, size_t len, F&& callback) {
+    size_t offset = 0;
+    while (offset < len) {
+        const uint8_t tag = data[offset];
+        size_t recordLen = 0;
+        switch (tag) {
+            case kTelemetry: recordLen = 46; break;
+            case kMotion: recordLen = 29; break;
+            case kMotionEx: recordLen = 21; break;
+            case kPositions:
+                if (len - offset < 3) return false;
+                recordLen = 3 + static_cast<size_t>(data[offset + 2]) * 16;
+                break;
+            default: return false;
+        }
+        if (recordLen > len - offset) return false;
+        const uint8_t rowType = rowTypeForTag(tag);
+        callback(rowType, data + offset, recordLen);
+        offset += recordLen;
+    }
+    return true;
+}
+
+inline bool appendFilteredBatch(std::vector<uint8_t>& out, const uint8_t* data,
+                                size_t len, uint32_t rowTypeMask) {
+    return forEachPackedRecord(data, len,
+        [&](uint8_t rowType, const uint8_t* record, size_t recordLen) {
+            if (rowTypeMask & (1u << rowType))
+                out.insert(out.end(), record, record + recordLen);
+        });
+}
 
 template <class T>
 inline void put(std::vector<uint8_t>& b, T v) {

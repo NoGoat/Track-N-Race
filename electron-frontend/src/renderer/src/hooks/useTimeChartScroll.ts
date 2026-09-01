@@ -15,6 +15,8 @@ export interface ScrollScaleOpts {
   followSessionClock?: boolean
   /** Minimum time to coast between sparse samples before declaring a stall. */
   minStallS?: number
+  /** Grow the range from the first sample to the live playhead. */
+  accumulateFromStart?: boolean
 }
 
 // Playback pause must stop every scrolling chart on the same shared frame.
@@ -78,6 +80,7 @@ interface ScrollClock {
   firstT: number
   periodS: number
   lastMin: number
+  lastMax: number
   gaps: number[]
   gapIdx: number
 }
@@ -90,18 +93,18 @@ export function useTimeChartScroll(
   dataDirtyRef: MutableRefObject<boolean>,
   {
     snapS = 0.5, fastFrames = false, fullFps = 60,
-    followSessionClock = false, minStallS = MIN_STALL_S,
+    followSessionClock = false, minStallS = MIN_STALL_S, accumulateFromStart = false,
   }: ScrollScaleOpts = {},
 ) {
   const chartRef = useRef<TChart | null>(null)
   const registrationRef = useRef<FrameScheduleHandle | null>(null)
   const enabledRef = useRef(enabled)
   enabledRef.current = enabled
-  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS })
-  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS }
+  const configRef = useRef({ windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart })
+  configRef.current = { windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart }
   const clockRef = useRef<ScrollClock>({
     lastT: NaN, wallAtT: 0, est: NaN, firstT: NaN,
-    periodS: NaN, lastMin: NaN, gaps: [], gapIdx: 0,
+    periodS: NaN, lastMin: NaN, lastMax: NaN, gaps: [], gapIdx: 0,
   })
   const lastFullAtRef = useRef(0)
   const frameCallbackRef = useRef<(frameTime: number) => boolean>(() => false)
@@ -122,35 +125,41 @@ export function useTimeChartScroll(
       if (target > c.est || !(c.est - target < config.snapS)) c.est = target
     }
 
-    let min = c.est - config.windowSeconds
+    let min = config.accumulateFromStart && !Number.isNaN(c.firstT)
+      ? c.firstT
+      : c.est - config.windowSeconds
     if (!Number.isNaN(c.firstT) && min < c.firstT) min = c.firstT
+    const max = config.accumulateFromStart ? Math.max(c.est, min + 0.001) : min + config.windowSeconds
 
     const applyDraw = (): void => chart.model.update()
 
     const applyFastDraw = (): void => {
-      const plugins = chart.plugins as unknown as { lineChart?: { drawFrame: () => void } }
+      const plugins = chart.plugins as unknown as {
+        lineChart?: { drawFrame: () => void }
+      }
       if (!plugins.lineChart) { applyDraw(); return }
       chart.canvasLayer.clear()
       plugins.lineChart.drawFrame()
       for (const series of chart.options.series) series.data.markSynced()
     }
 
-    if (min !== c.lastMin) {
+    if (min !== c.lastMin || max !== c.lastMax) {
       c.lastMin = min
-      chart.options.xRange = { min, max: min + config.windowSeconds }
-      const needsFull = !config.fastFrames || dataDirtyRef.current || lastFullAtRef.current === 0 ||
+      c.lastMax = max
+      chart.options.xRange = { min, max }
+      const needsFull = !config.fastFrames || lastFullAtRef.current === 0 ||
         frameTime - lastFullAtRef.current >= 1000 / config.fullFps
       dataDirtyRef.current = false
       if (needsFull) {
         lastFullAtRef.current = frameTime
         applyDraw()
       } else {
-        chart.model.xScale.domain([min, min + config.windowSeconds])
+        chart.model.xScale.domain([min, max])
         applyFastDraw()
       }
     } else if (dataDirtyRef.current) {
       dataDirtyRef.current = false
-      chart.options.xRange = { min, max: min + config.windowSeconds }
+      chart.options.xRange = { min, max }
       lastFullAtRef.current = frameTime
       applyDraw()
     }
@@ -176,6 +185,7 @@ export function useTimeChartScroll(
       c.gaps.length = 0
       c.gapIdx = 0
       c.lastMin = NaN
+      c.lastMax = NaN
     }
     if (value === c.lastT) return
     if (!Number.isNaN(c.lastT) && value > c.lastT) {
@@ -189,6 +199,11 @@ export function useTimeChartScroll(
     c.wallAtT = now
     registrationRef.current?.wake()
   }, [])
+
+  const acceptDataRange = useCallback((latest: number, first: number) => {
+    clockRef.current.firstT = Number.isFinite(first) ? first : NaN
+    if (Number.isFinite(latest)) acceptLatest(latest, performance.now())
+  }, [acceptLatest])
 
   useEffect(() => {
     if (latestT == null) return
@@ -215,9 +230,10 @@ export function useTimeChartScroll(
 
   useEffect(() => {
     clockRef.current.lastMin = NaN
+    clockRef.current.lastMax = NaN
     lastFullAtRef.current = 0
     registrationRef.current?.wake()
-  }, [windowSeconds, snapS, fastFrames, fullFps, minStallS])
+  }, [windowSeconds, snapS, fastFrames, fullFps, minStallS, accumulateFromStart])
 
   useEffect(() => {
     const wake = () => registrationRef.current?.wake()
@@ -232,6 +248,7 @@ export function useTimeChartScroll(
   const attach = useCallback((chart: TChart) => {
     chartRef.current = chart
     clockRef.current.lastMin = NaN
+    clockRef.current.lastMax = NaN
     lastFullAtRef.current = 0
     registerIfReady()
   }, [registerIfReady])
@@ -244,5 +261,5 @@ export function useTimeChartScroll(
 
   const wake = useCallback(() => registrationRef.current?.wake(), [])
 
-  return { chartRef, attach, detach, wake }
+  return { chartRef, attach, detach, wake, acceptDataRange }
 }

@@ -86,6 +86,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             sr.track_length_m             = ReadUInt16(data, 33);
             sr.session_type               = data[35];
             sr.track_id                   = ReadInt8(data, 36);
+            sr.formula                    = data[37];
             sr.session_time_left          = ReadUInt16(data, 38);
             sr.session_duration           = ReadUInt16(data, 40);
             sr.pit_speed_limit            = data[42];
@@ -139,7 +140,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                 buf.clear(); (void)glz::write_json(mr, buf); hot.hotJson.push_back(std::move(buf));
             }
 
-            if (length >= HEADER_SIZE + 22 * motionSize) {
+            if (hot.wants(13) && length >= HEADER_SIZE + 22 * motionSize) {
                 PositionsRow pr;
                 pr.ts         = timestamp;
                 pr.player_idx = hdr.playerCarIndex;
@@ -181,6 +182,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             uint8_t sector     = data[o++];
             bool    invalid    = data[o++] != 0;
             uint8_t penaltiesS = data[o];
+            uint8_t driverStatus = data[o + 6];
 
             LapRow lr;
             lr.ts             = timestamp;
@@ -197,12 +199,13 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             lr.sector         = sector;
             lr.lap_invalid    = invalid;
             lr.penalties_s    = penaltiesS;
+            lr.driver_status  = driverStatus;
 
             buf.clear();
             (void)glz::write_json(lr, buf);
             rows.push_back(std::move(buf));
 
-            if (length >= HEADER_SIZE + 22 * lapSize) {
+            if (hot.wants(7) && length >= HEADER_SIZE + 22 * lapSize) {
                 TimingRow tr;
                 tr.ts           = timestamp;
                 tr.session_time = hdr.sessionTime;
@@ -331,7 +334,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             (void)glz::write_json(sr, buf);
             rows.push_back(std::move(buf));
 
-            if (length >= HEADER_SIZE + 22 * statusSize) {
+            if (hot.wants(9) && length >= HEADER_SIZE + 22 * statusSize) {
                 AllStatusRow ar;
                 ar.ts           = timestamp;
                 ar.session_time = hdr.sessionTime;

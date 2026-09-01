@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react'
-import Select, { type SingleValue } from 'react-select'
+import { type SingleValue } from 'react-select'
+import Select from '../lib/AnimatedSelect'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { Maximize2, Minimize2 } from 'lucide-react'
@@ -14,6 +15,13 @@ type ZoomOption = { value: number; label: string }
 type MapOption = { value: number; label: string }
 type AeroOverlay = 'drs' | 'slm-dry' | 'slm-wet'
 type AeroOption = { value: AeroOverlay; label: string }
+
+export interface TrackMapMarker {
+  x: number
+  z: number
+  label: string
+  color: string
+}
 
 const ZOOM_OPTIONS: ZoomOption[] = [
   { value: 2, label: '2x' },
@@ -39,7 +47,7 @@ function aeroOverlayFromTelemetry(aeroMode: 'drs' | 'slm', slmTrackStatus: numbe
 
 
 const SECTOR_COLORS_DARK  = ['#E8002D', '#0090D0', '#FFD700']
-const SECTOR_COLORS_LIGHT = ['#D32F2F', '#0D47A1', '#B7950B']
+const SECTOR_COLORS_LIGHT = ['#B3132B', '#0D47A1', '#765900']
 const SECTOR_COLORS       = SECTOR_COLORS_DARK
 const DRS_COLOR_DARK      = '#39B54A'
 const DRS_COLOR_LIGHT     = '#237A32'
@@ -553,7 +561,7 @@ function drawLabel(
     spriteCtx.shadowOffsetY = 2
     spriteCtx.beginPath()
     spriteCtx.roundRect(x, y, LABEL_W, LABEL_H, LABEL_R)
-    spriteCtx.fillStyle = isDark ? 'rgba(10,15,30,0.92)' : 'rgba(255,255,255,0.96)'
+    spriteCtx.fillStyle = isDark ? 'rgba(10,15,30,0.92)' : 'rgba(241,240,236,0.97)'
     spriteCtx.fill()
     if (!isDark) {
       spriteCtx.strokeStyle = 'rgba(0,0,0,0.15)'
@@ -736,6 +744,36 @@ function renderForegroundFrame(
   drawCarDots(ctx, cars, participants, map, prep, scale, ox, oy, driversMode, isDark)
 }
 
+function renderControlledMarkers(
+  ctx: CanvasRenderingContext2D,
+  cw: number, ch: number,
+  prep: PreparedMap,
+  map: TrackMapData,
+  markers: readonly TrackMapMarker[],
+  isDark: boolean,
+  layout: { scale: number; ox: number; oy: number },
+): void {
+  ctx.clearRect(0, 0, cw, ch)
+  const { scale, ox, oy } = layout
+  for (const marker of markers) {
+    if (!Number.isFinite(marker.x) || !Number.isFinite(marker.z)) continue
+    const [vx, vy] = rawToViewBox(marker.x, marker.z, map.transform)
+    const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
+    const [x, y] = toCanvas([rx, ry], scale, ox, oy)
+    ctx.beginPath()
+    ctx.arc(x, y, DOT_R, 0, Math.PI * 2)
+    ctx.fillStyle = marker.color
+    ctx.fill()
+  }
+  for (const marker of markers) {
+    if (!Number.isFinite(marker.x) || !Number.isFinite(marker.z)) continue
+    const [vx, vy] = rawToViewBox(marker.x, marker.z, map.transform)
+    const [rx, ry] = rotatePoint(vx, vy, prep.rotCos, prep.rotSin, prep.rotCx, prep.rotCy)
+    const [x, y] = toCanvas([rx, ry], scale, ox, oy)
+    drawLabel(ctx, x, y, marker.label, marker.color, false, isDark)
+  }
+}
+
 // ── Module-level position cache (survives component remounts) ─────────────────
 
 let _cachedCars:      CarPosition[] | null = null
@@ -854,9 +892,12 @@ interface Props {
   mapDimmed?:          boolean
   aeroMode?:           'drs' | 'slm'
   slmTrackStatus?:     number   // 2026 SLM track status: 0 = Full, 1 = Partial
+  /** Supplying a marker source puts the map in controlled mode and disables
+   *  its live telemetry subscription. The source is read inside the map rAF. */
+  markerSource?:       () => readonly TrackMapMarker[]
 }
 
-export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1 }: Props) {
+export default function TrackMap({ trackId, participants, isDark, sectorColors = false, driversMode = 'both', mapTimeout = 10, isFullscreen = false, onToggleFullscreen, reduceAnimations = false, mapDimmed = false, aeroMode = 'drs', slmTrackStatus = -1, markerSource }: Props) {
   const { ref: wrapRef, width, height } = useSize()
   const { raw: labels } = useLabels()
   const backgroundCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -874,6 +915,9 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
   const mapDimmedRef      = useRef<boolean>(mapDimmed)
   const aeroModeRef       = useRef<'drs' | 'slm'>(aeroMode)
   const slmTrackStatusRef = useRef<number>(slmTrackStatus)
+  const markerSourceRef = useRef(markerSource)
+  markerSourceRef.current = markerSource
+  const controlledMarkers = markerSource !== undefined
 
   const [selectedDriverIdx, setSelectedDriverIdx] = useState<number | null>(null)
   const selectedDriverIdxRef = useRef<number | null>(null)
@@ -916,6 +960,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
 
   // Subscribe to position updates directly — bypasses React state to avoid 60 Hz re-renders
   useEffect(() => {
+    if (controlledMarkers) return
     const handleMsg = (msg: any) => {
       if (msg.type === 'positions' && msg.cars) {
         const now = Date.now()
@@ -992,7 +1037,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       unsubOn()
       unsubBinary()
     }
-  }, [])
+  }, [controlledMarkers])
 
   isDarkRef.current            = isDark
   sectorColorsRef.current      = sectorColors
@@ -1114,7 +1159,12 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
             backgroundLayoutRef.current = { ...layout }
             backgroundDirtyRef.current = false
           }
-          renderForegroundFrame(foregroundCtx, width, height, prep, map, cars, participantsRef.current, isDarkRef.current, driversModeRef.current, layout)
+          const source = markerSourceRef.current
+          if (source) {
+            renderControlledMarkers(foregroundCtx, width, height, prep, map, source(), isDarkRef.current, layout)
+          } else {
+            renderForegroundFrame(foregroundCtx, width, height, prep, map, cars, participantsRef.current, isDarkRef.current, driversModeRef.current, layout)
+          }
         }
       }
       rafRef.current = requestAnimationFrame(loop)

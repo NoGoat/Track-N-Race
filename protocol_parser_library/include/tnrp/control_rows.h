@@ -67,6 +67,7 @@ struct SessionRow {
     int air_temp{};
     int track_length_m{};
     int track_id{};
+    std::optional<int> formula; // F1 formula/game mode; absent in older recordings
     int session_type{};
     int total_laps{};
     int session_time_left{};
@@ -161,6 +162,8 @@ struct RaceEventRow {
     std::optional<int>   penalty_type;
     std::optional<int>   infringement_type;
     std::optional<int>   penalty_time_s;
+    std::optional<uint32_t> flashback_frame_identifier;
+    std::optional<float> flashback_session_time;
 };
 
 // ── protocol_status / protocol_warning (control) — emit explicit null ───────
@@ -177,6 +180,9 @@ struct ProtocolStatusRow {
     std::string        type{"protocol_status"};
     std::optional<int> detected_format;
     std::optional<int> active_format;
+    // UI/catalog format after applying the 2026 Formula gate. The parser still
+    // routes packets using active_format.
+    std::optional<int> presentation_format;
     std::string        override_;   // mapped to "override" below
     Capabilities       capabilities;
     // Library-owned i18n label catalog for the active format (see tnrp/Labels.h).
@@ -212,11 +218,12 @@ struct RecordingErrorRow {
 
 struct HeaderRow {
     std::string magic;
-    std::optional<std::string> compression;  // V2/V3: "zstd"; omitted by V1
+    std::optional<std::string> compression;  // V2–V5: "zstd"; omitted by V1
     int         protocol{};
     int         track_id{};
     std::string track_name;
     std::optional<int> track_length_m;         // V3; omitted by V1/V2
+    std::optional<int> formula;                // V5; omitted by V1–V4
     int         session_type{};
     std::string session_name;
     int64_t     start_time{};
@@ -277,6 +284,10 @@ struct LapBlockMeta {
     float endSessionTime{};
     std::vector<SlimTelemetryPoint> telemetry;
     std::vector<SlimStatusPoint>    statusHistory;
+    // Constructed from the complete lap-data stream during the initial file
+    // scan. Zero means the recording did not contain enough distance data.
+    float sector1EndDistanceM{};
+    float sector2EndDistanceM{};
 };
 
 // V3-only player progress samples. current_lap_ms and lap_distance_m originate
@@ -286,6 +297,18 @@ struct LapProgressPoint {
     float session_time{};
     int   current_lap_ms{};
     float lap_distance_m{};
+    int   sector{};
+    int   s1_ms{};
+    int   s2_ms{};
+};
+
+// Compact player-only world position used by Analyze's lap map. The source
+// positions row contains every car; keeping only player_idx avoids multiplying
+// the already sizeable per-lap payload by the full grid.
+struct PlayerPositionPoint {
+    float  session_time{};
+    double x{};
+    double z{};
 };
 
 struct LapMeta {
@@ -302,6 +325,7 @@ struct PlaybackLapBlocksRow {
     std::vector<LapMeta>       laps;
     std::string                tnrdVersion;
     bool                       deltaAvailable{};
+    bool                       lapDistanceAvailable{};
     int                        trackLengthM{};
 };
 
@@ -316,6 +340,8 @@ struct PlaybackLapDataRow {
     std::vector<glz::raw_json> motionExHistory;
     std::vector<glz::raw_json> damageHistory;
     std::vector<LapProgressPoint> lapProgress;
+    std::vector<PlayerPositionPoint> playerPositions;
+    uint32_t                   rowTypeMask{};
 };
 
 } // namespace tnrp
@@ -329,6 +355,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "type",            &T::type,
         "detected_format", &T::detected_format,
         "active_format",   &T::active_format,
+        "presentation_format", &T::presentation_format,
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
         "labels",          &T::labels,

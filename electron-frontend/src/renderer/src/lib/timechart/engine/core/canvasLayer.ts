@@ -26,6 +26,10 @@ export class CanvasLayer {
 
         const bgColor = resolveColorRGBA(options.backgroundColor);
         this.gl.clearColor(...bgColor);
+        // Area fills and antialiased traces share this canvas. Blend them in
+        // one GPU pass instead of compositing a second CPU-rendered canvas.
+        this.gl.enable(this.gl.BLEND);
+        this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
         this.canvas = canvas;
 

@@ -2,10 +2,15 @@ import { create } from 'zustand'
 import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
-  LapData, LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
+  LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
   AnalyzeLapData, PlaybackLapDataMsg,
+  StrategySnapshotMsg,
 } from '../types'
-import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
+import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
+import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTask'
+import { playbackDebug } from '../lib/playbackDebug'
+import { HISTORY_ROW } from '../lib/historyDependencies'
+import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -22,11 +27,11 @@ import { decodeBinaryBatch } from '../lib/decodeBinaryBatch'
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_ROWS = 750000
-const RETENTION_S = 600 // 10 minutes
+const RETENTION_S = 600 // reconciliation window used only after a clock reversal
 const MAX_RACE_EVENTS = 1000
 const MAX_ANALYZE_LAP_CACHE = 6
-// Rows older than the retention window are only dropped once this many have
-// accumulated, so trimming is one slice every ~30s instead of work on every row.
+// Keep a little slack above the hard cap so trimming is chunked instead of
+// copying a large source array on every appended row.
 const TRIM_CHUNK = 4096
 
 // Buffers are sorted by session_time (appendRow enforces ordering), so the
@@ -42,23 +47,32 @@ function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inc
   return l
 }
 
-// Append a row to a buffer in place — O(1) amortized. The buffer may briefly hold
-// up to TRIM_CHUNK rows older than the retention window; consumers slice by time
-// so the excess is invisible. A session_time reversal rebuilds the buffer.
+// Append a row to a buffer in place — O(1) amortized. Source buffers retain the
+// complete session (up to MAX_ROWS) so AL can be selected at any point without
+// having already discarded earlier laps. Ordinary consumers still receive only
+// their selected time-window suffix. A session_time reversal rebuilds the buffer.
 function appendRow<T extends { session_time: number }>(ref: { current: T[] }, msg: T, maxRows: number): void {
   const buf = ref.current
   const last = buf[buf.length - 1]
-  const cutoff = msg.session_time - RETENTION_S
   if (last && msg.session_time < last.session_time) {
+    if (allLapsMode) {
+      // A rapid seek can leave a few superseded future rows in flight. AL owns
+      // the full prefix, so reconcile by truncating only that future tail;
+      // applying the ordinary 600-second recovery window here destroys laps.
+      const rebuilt = buf.slice(0, lowerBound(buf, msg.session_time, true))
+      rebuilt.push(msg)
+      ref.current = rebuilt
+      return
+    }
+    const cutoff = msg.session_time - RETENTION_S
     const rebuilt = buf.filter(d => d.session_time < msg.session_time && d.session_time >= cutoff)
     rebuilt.push(msg)
     ref.current = rebuilt
     return
   }
   buf.push(msg)
-  const firstValid = lowerBound(buf, cutoff, true)
-  if (firstValid >= TRIM_CHUNK || buf.length > maxRows) {
-    ref.current = buf.slice(Math.max(firstValid, buf.length - maxRows))
+  if (buf.length > maxRows + TRIM_CHUNK) {
+    ref.current = buf.slice(buf.length - maxRows)
   }
 }
 
@@ -105,11 +119,9 @@ export interface TelemetryStoreState {
   raceEvents: RaceEventMsg[]
   session: SessionMsg | null
   tyreSets: TyreSetsMsg | null
+  strategy: StrategySnapshotMsg | null
   latest: TelemetryRow | null
-  lapHistory: LapData[]
-  fastestLap: LapData | null
-  lapTelemetry: TelemetryRow[]
-  lapStatusHistory: StatusRow[]
+  fastestLapNum: number | null
   analyzeLapTelemetry: TelemetryRow[]
   analyzeLapMotion: MotionRow[]
   analyzeLapMotionEx: MotionExRow[]
@@ -124,6 +136,8 @@ export interface TelemetryStoreState {
   playbackTrackId: number | null
   playbackTrackName: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
+  livePreviousLapData: AnalyzeLapData | null
+  liveFastestLapData: AnalyzeLapData | null
   lapTimesByNum: Record<number, number>
   speedRpmBlocks: any[] | null
   isConnected: boolean
@@ -132,22 +146,28 @@ export interface TelemetryStoreState {
   protocolWarning: ProtocolWarningMsg | null
   fuelUpperLimit: number | null
   seconds: number
+  lapBoundaries: Array<{ lapNum: number; sessionTime: number }>
+  currentStintStartTime: number
 }
 
 export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   telemetry: [], motion: [], motionEx: [],
   status: null, statusHistory: [], damage: null, damageHistory: [],
-  lap: null, timing: null, participants: null, allStatus: null,
+  lap: null, timing: null, participants: null, allStatus: null, strategy: null,
   fastestLapCarIdx: null, raceEvents: [], session: null, tyreSets: null,
-  latest: null, lapHistory: [], fastestLap: null, lapTelemetry: [], lapStatusHistory: [],
+  latest: null, fastestLapNum: null,
   analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
   analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
   playbackTrackId: null, playbackTrackName: null,
   playbackLapDataCache: {},
+  livePreviousLapData: null,
+  liveFastestLapData: null,
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
+  lapBoundaries: [],
+  currentStintStartTime: -Infinity,
 }))
 
 const set = useTelemetryStore.setState
@@ -166,8 +186,6 @@ const pools = {
   motEx:  makeWindowPool<MotionExRow>(),
   sts:    makeWindowPool<StatusRow>(),
   dmg:    makeWindowPool<DamageRow>(),
-  lapTel: makeWindowPool<TelemetryRow>(),
-  lapSts: makeWindowPool<StatusRow>(),
   analyzeTel:   makeWindowPool<TelemetryRow>(),
   analyzeMot:   makeWindowPool<MotionRow>(),
   analyzeMotEx: makeWindowPool<MotionExRow>(),
@@ -177,30 +195,94 @@ const pools = {
 }
 
 const raceEventListeners = new Set<(e: RaceEventMsg) => void>()
+const allLapsDataListeners = new Map<() => void, number>()
+let allLapsNotificationRunning = false
+let allLapsNotificationPendingMask = 0
+
+function scheduleAllLapsDataNotification(mask: number): void {
+  allLapsNotificationPendingMask |= mask
+  if (allLapsNotificationRunning) return
+  allLapsNotificationRunning = true
+  const flush = (): void => {
+    const pendingMask = allLapsNotificationPendingMask
+    allLapsNotificationPendingMask = 0
+    for (const [listener, sourceMask] of allLapsDataListeners) {
+      if (sourceMask & pendingMask) listener()
+    }
+    if (allLapsNotificationPendingMask !== 0) {
+      scheduleCooperativeTask(flush)
+    } else {
+      allLapsNotificationRunning = false
+    }
+  }
+  scheduleCooperativeTask(flush)
+}
 
 let lapState: LapRow | null = null
 let lapNum: number | null = null
 let lapStartTime = 0
+let lapTrackingActive = false
 let fastestLapTime = Infinity
 let fastestLapSet = false
 const sessionHistoryBest = new Map<number, number>()
 let isPlaybackFlag = false
 let fuelMaxReceived = -Infinity
 
-let lapHistoryBuf: LapData[] = []
-let fastestLapVal: LapData | null = null
 let raceEventsArr: RaceEventMsg[] = []
 let speedRpmBlocksVal: any[] | null = null
-let fastestLapNum = 0
+let playbackFastestLapNum = 0
 let playbackEvents: RaceEventMsg[] = []
 let playbackLapTimes: Record<number, number> = {}
 let liveLapTimes: Record<number, number> = {}
 let playbackLapCacheOrder: number[] = []
 let analyzeLapRevisionVal = 0
+let pendingAnalyzeLapReset = false
+let liveLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
+let currentStintStartTime = -Infinity
 
 let secondsVal = 30
+let allLapsMode = false
+let analyzeLapEnabled = true
+let finiteWindowBackfillEnabled = true
+let waitingForAllLapsHistory = false
+let historyRowMask = 0xFFFFFFFF
+let requestedHistoryRowMask = 0
+let seekTimelineGeneration = 0
+let seekRendererPending = false
+const historyCoverageStart = new Map<number, number>()
+const HISTORY_ROW_BITS = [
+  HISTORY_ROW.telemetry,
+  HISTORY_ROW.status,
+  HISTORY_ROW.damage,
+  HISTORY_ROW.lap,
+  HISTORY_ROW.motion,
+  HISTORY_ROW.motionEx,
+]
+
+function markHistoryCoverage(maskValue: unknown, startValue: unknown): void {
+  const mask = Number(maskValue) >>> 0
+  const start = Number(startValue)
+  if (!Number.isFinite(start)) return
+  for (const bit of HISTORY_ROW_BITS) {
+    if (mask & bit) historyCoverageStart.set(bit, Math.min(historyCoverageStart.get(bit) ?? Infinity, start))
+  }
+}
+
+function historyCovers(bit: number, requiredStart: number): boolean {
+  return (historyCoverageStart.get(bit) ?? Infinity) <= requiredStart + 1
+}
+
+function invalidateHistoryCoverage(mask: number): void {
+  for (const bit of HISTORY_ROW_BITS) {
+    if (mask & bit) historyCoverageStart.delete(bit)
+  }
+}
 
 function resetSession(): void {
+  // Invalidate a seek payload that is still being cooperatively decoded.
+  seekTimelineGeneration++
+  historyCoverageStart.clear()
+  seekRendererPending = false
   analyzeLapRevisionVal++
   telBufRef.current = []
   motBufRef.current = []
@@ -208,24 +290,146 @@ function resetSession(): void {
   stsBufRef.current = []
   dmgBufRef.current = []
   lapProgressBufRef.current = []
-  lapState = null; lapNum = null; lapStartTime = 0
+  lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
   sessionHistoryBest.clear()
-  lapHistoryBuf = []; fastestLapVal = null; raceEventsArr = []
-  speedRpmBlocksVal = null; fastestLapNum = 0
+  raceEventsArr = []
+  speedRpmBlocksVal = null; playbackFastestLapNum = 0
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
   playbackLapCacheOrder = []
+  liveLapBoundaries = []
+  currentStintStartTime = -Infinity
+  pendingAnalyzeLapReset = false
+  waitingForAllLapsHistory = false
+  requestedHistoryRowMask = 0
   fuelMaxReceived = -Infinity
   set({
     status: null, damage: null, lap: null, timing: null, allStatus: null,
-    participants: null, session: null, fastestLapCarIdx: null, tyreSets: null,
-    lapHistory: [], fastestLap: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
+    participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
+    fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
     analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
     analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
     analyzeLapRevision: analyzeLapRevisionVal,
     analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
     playbackTrackId: null, playbackTrackName: null,
     playbackLapDataCache: {},
+    livePreviousLapData: null,
+    liveFastestLapData: null,
+    lapBoundaries: [],
+    currentStintStartTime: -Infinity,
+  })
+}
+
+function isNewTyreStint(previous: StatusRow, current: StatusRow): boolean {
+  const validCompounds = previous.tyre_compound > 0 && current.tyre_compound > 0
+  const compoundChanged = validCompounds && (
+    current.tyre_compound !== previous.tyre_compound ||
+    current.visual_compound !== previous.visual_compound
+  )
+  const ageDelta = current.tyre_age_laps - previous.tyre_age_laps
+  // A larger age can mean a used set was fitted. Only treat a short-interval
+  // jump as a stop; a long gap can legitimately span several completed laps
+  // after the renderer was hidden or status streaming was interrupted.
+  const usedSetFitted = ageDelta > 1 && current.session_time - previous.session_time < 30
+  return compoundChanged || ageDelta < 0 || usedSetFitted
+}
+
+function findCurrentStintStart(rows: readonly StatusRow[]): number {
+  if (rows.length === 0) return -Infinity
+  let start = rows[0].session_time
+  for (let i = 1; i < rows.length; i++) {
+    if (isNewTyreStint(rows[i - 1], rows[i])) start = rows[i].session_time
+  }
+  return start
+}
+
+function truncateAt<T extends { session_time: number }>(ref: { current: T[] }, target: number): void {
+  ref.current = ref.current.slice(0, lowerBound(ref.current, target, false))
+}
+
+function liveLapData(
+  boundary: { lapNum: number; sessionTime: number } | undefined,
+  endSessionTime: number,
+): AnalyzeLapData | null {
+  if (!boundary || endSessionTime < boundary.sessionTime) return null
+  const range = <T extends { session_time: number }>(rows: T[]): T[] => rows.slice(
+    lowerBound(rows, boundary.sessionTime, true),
+    lowerBound(rows, endSessionTime, false),
+  )
+  return {
+    lapNum: boundary.lapNum,
+    startSessionTime: boundary.sessionTime,
+    endSessionTime,
+    telemetry: range(telBufRef.current),
+    motion: range(motBufRef.current),
+    motionEx: range(motExBufRef.current),
+    statusHistory: range(stsBufRef.current),
+    damageHistory: range(dmgBufRef.current),
+    lapProgress: range(lapProgressBufRef.current),
+    playerPositions: [],
+  }
+}
+
+function applyLiveRewind(target: number): void {
+  if (isPlaybackFlag || !Number.isFinite(target) || target < 0) return
+
+  truncateAt(telBufRef, target)
+  truncateAt(motBufRef, target)
+  truncateAt(motExBufRef, target)
+  truncateAt(stsBufRef, target)
+  truncateAt(dmgBufRef, target)
+  truncateAt(lapProgressBufRef, target)
+  raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= target)
+  liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.sessionTime <= target)
+
+  const currentIndex = liveLapBoundaries.length - 1
+  const currentBoundary = liveLapBoundaries[currentIndex]
+  const previousBoundary = liveLapBoundaries[currentIndex - 1]
+  lapNum = currentBoundary?.lapNum ?? null
+  lapStartTime = currentBoundary?.sessionTime ?? target
+  const lastLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  lapState = lastLap ?? null
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const garageAware = sessionType != null && sessionType >= 1 && sessionType <= 14 &&
+    lastLap?.driver_status != null && lastLap.driver_status >= 0
+  lapTrackingActive = !garageAware || lastLap?.driver_status === 1
+  if (!lapTrackingActive) lapNum = null
+
+  const survivingTimes: Record<number, number> = {}
+  for (let i = 0; i + 1 < liveLapBoundaries.length; i++) {
+    const n = liveLapBoundaries[i].lapNum
+    if (liveLapTimes[n] != null) survivingTimes[n] = liveLapTimes[n]
+  }
+  liveLapTimes = survivingTimes
+  let fastestNum: number | null = null
+  fastestLapTime = Infinity
+  for (const [n, ms] of Object.entries(liveLapTimes)) {
+    if (ms > 0 && ms < fastestLapTime) { fastestLapTime = ms; fastestNum = Number(n) }
+  }
+
+  const previousData = liveLapData(previousBoundary, currentBoundary?.sessionTime ?? target)
+  const fastestIndex = fastestNum == null
+    ? -1 : liveLapBoundaries.findIndex(boundary => boundary.lapNum === fastestNum)
+  const fastestBoundary = fastestIndex >= 0 ? liveLapBoundaries[fastestIndex] : undefined
+  const fastestEnd = fastestIndex >= 0 && fastestIndex + 1 < liveLapBoundaries.length
+    ? liveLapBoundaries[fastestIndex + 1].sessionTime : target
+  const fastestData = fastestNum == null ? null : liveLapData(fastestBoundary, fastestEnd)
+  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  analyzeLapRevisionVal++
+  pendingAnalyzeLapReset = false
+
+  set({
+    lap: lapState,
+    status: stsBufRef.current[stsBufRef.current.length - 1] ?? null,
+    damage: dmgBufRef.current[dmgBufRef.current.length - 1] ?? null,
+    lapBoundaries: liveLapBoundaries,
+    livePreviousLapData: previousData,
+    liveFastestLapData: fastestData,
+    fastestLapNum: fastestNum,
+    lapTimesByNum: liveLapTimes,
+    raceEvents: raceEventsArr,
+    currentStintStartTime,
+    analyzeLapRevision: analyzeLapRevisionVal,
   })
 }
 
@@ -235,13 +439,64 @@ function onLap(lap: LapRow): void {
   if (Number.isFinite(lap.lap_distance_m)) appendRow(lapProgressBufRef, lap, MAX_ROWS)
   lapState = lap
   set({ lap })
+  const packetLapStart = lap.session_time - Math.max(0, lap.current_lap_ms) / 1000
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const timedSession = sessionType != null && sessionType >= 1 && sessionType <= 14
+  const hasDriverStatus = lap.driver_status != null && lap.driver_status >= 0
+  const garageAware = timedSession && hasDriverStatus
+
+  if (garageAware && lap.driver_status !== 1) {
+    if (lapTrackingActive) {
+      liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.lapNum !== lapNum)
+      lapNum = null
+      lapStartTime = lap.session_time
+      lapTrackingActive = false
+      pendingAnalyzeLapReset = false
+      analyzeLapRevisionVal++
+      set({
+        lapBoundaries: liveLapBoundaries,
+        analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+        analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+        analyzeLapStartTime: lapStartTime,
+        analyzeLapRevision: analyzeLapRevisionVal,
+      })
+    }
+    return
+  }
+
+  if (garageAware && !lapTrackingActive) {
+    lapNum = lap.lap_num
+    lapStartTime = packetLapStart
+    lapTrackingActive = true
+    liveLapBoundaries = [
+      ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
+      { lapNum: lap.lap_num, sessionTime: packetLapStart },
+    ].sort((a, b) => a.sessionTime - b.sessionTime)
+    analyzeLapRevisionVal++
+    pendingAnalyzeLapReset = true
+    set({
+      lapBoundaries: liveLapBoundaries,
+      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+      analyzeLapStartTime: lapStartTime,
+      analyzeLapRevision: analyzeLapRevisionVal,
+    })
+    return
+  }
+
   const prevLapNum = lapNum
+  // A replay opened without FLBK can emit one stale lap snapshot after the
+  // timeline has already advanced. Explicit rewind handling lowers lapNum
+  // before packets resume; an otherwise decreasing number is just stale and
+  // must not create a backwards chart boundary.
+  if (prevLapNum !== null && lap.lap_num < prevLapNum) return
   lapNum = lap.lap_num
+  lapTrackingActive = true
 
   if (prevLapNum === null) {
-    const buf = telBufRef.current
-    const latestST = buf[buf.length - 1]?.session_time ?? 0
-    lapStartTime = lap.current_lap_ms > 0 ? latestST - lap.current_lap_ms / 1000 : latestST
+    lapStartTime = packetLapStart
+    liveLapBoundaries = [{ lapNum: lap.lap_num, sessionTime: packetLapStart }]
+    set({ lapBoundaries: liveLapBoundaries })
     // Initial lap metadata (including metadata re-emitted after a playback
     // backfill) establishes the lap origin; it is not a chart reset boundary.
     // Recording load/seek/session reset already publish an explicit revision.
@@ -249,30 +504,46 @@ function onLap(lap: LapRow): void {
   }
   if (lap.lap_num === prevLapNum) return
 
+  liveLapBoundaries = [
+    ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
+    { lapNum: lap.lap_num, sessionTime: packetLapStart },
+  ].sort((a, b) => a.sessionTime - b.sessionTime)
+  set({ lapBoundaries: liveLapBoundaries })
+
+  let completedLapData: AnalyzeLapData | null = null
+  if (!isPlaybackFlag) {
+    const completed = useTelemetryStore.getState()
+    completedLapData = {
+      lapNum: prevLapNum,
+      startSessionTime: lapStartTime,
+      endSessionTime: packetLapStart,
+      telemetry: [...completed.analyzeLapTelemetry],
+      motion: [...completed.analyzeLapMotion],
+      motionEx: [...completed.analyzeLapMotionEx],
+      statusHistory: [...completed.analyzeLapStatusHistory],
+      damageHistory: [...completed.analyzeLapDamageHistory],
+      lapProgress: [...completed.analyzeLapProgress],
+      playerPositions: [],
+    }
+    set({ livePreviousLapData: completedLapData })
+  }
+
   analyzeLapRevisionVal++
+  pendingAnalyzeLapReset = true
 
-  const prevLapStart = lapStartTime
-  const buf = telBufRef.current
-  const endTime = buf[buf.length - 1]?.session_time ?? 0
-  const newLapData: LapData = {
-    lapNum:           prevLapNum,
-    startSessionTime: prevLapStart,
-    endSessionTime:   endTime,
-    telemetry:        telBufRef.current.filter(d => d.session_time >= prevLapStart),
-    motion:           motBufRef.current.filter(d => d.session_time >= prevLapStart),
-    statusHistory:    stsBufRef.current.filter(d => d.session_time >= prevLapStart),
+  // Playback has an authoritative session-wide fastest lap from its index.
+  // Never let whichever lap happens to cross a boundary after a seek replace it.
+  if (!isPlaybackFlag && completedLapData) {
+    const lapTimeMs = lap.last_lap_ms
+    if (lapTimeMs > 0 && lapTimeMs < 300_000) {
+      if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
+    }
+    if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime) {
+      fastestLapTime = lapTimeMs
+      set({ fastestLapNum: prevLapNum, liveFastestLapData: completedLapData })
+    }
   }
-
-  lapHistoryBuf = [...lapHistoryBuf, newLapData].slice(-3)
-  const lapTimeMs = lap.last_lap_ms
-  if (lapTimeMs > 0 && lapTimeMs < 300_000) {
-    if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
-  }
-  if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime) {
-    fastestLapTime = lapTimeMs
-    fastestLapVal = newLapData
-  }
-  lapStartTime = endTime
+  lapStartTime = packetLapStart
 }
 
 function handleMsg(msg: GatewayMsg): void {
@@ -297,16 +568,10 @@ function handleMsg(msg: GatewayMsg): void {
         // boundary. appendRow reconciles the renderer history below, but this
         // must not clear the Analyze GPU buffers. Explicit seek flushes carry
         // the revision that identifies a real timeline reset.
-        lapHistoryBuf = lapHistoryBuf.filter(l => l.startSessionTime < msg.session_time)
-        if (!(fastestLapVal && fastestLapVal.startSessionTime < msg.session_time)) {
-          fastestLapTime = Infinity
-          fastestLapVal = null
-        }
-        raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= msg.session_time)
-        lapStartTime = msg.session_time
-        lapNum = null
+        applyLiveRewind(msg.session_time)
       }
-      appendRow(telBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.telemetry) appendRow(telBufRef, msg, MAX_ROWS)
+      else telBufRef.current = [msg]
       break
     }
     case 'motion':
@@ -317,6 +582,14 @@ function handleMsg(msg: GatewayMsg): void {
       break
     case 'status': {
       const next: Partial<TelemetryStoreState> = { status: msg }
+      const previous = stsBufRef.current[stsBufRef.current.length - 1]
+      const previousStintStartTime = currentStintStartTime
+      if (!previous || msg.session_time < previous.session_time) {
+        currentStintStartTime = msg.session_time
+      } else if (isNewTyreStint(previous, msg)) {
+        currentStintStartTime = msg.session_time
+      }
+      if (previousStintStartTime !== currentStintStartTime) next.currentStintStartTime = currentStintStartTime
       if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
         fuelMaxReceived = msg.fuel_kg
         // Keep exactly one kilogram of breathing room above the highest value
@@ -324,12 +597,14 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      appendRow(stsBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.status) appendRow(stsBufRef, msg, MAX_ROWS)
+      else stsBufRef.current = [msg]
       break
     }
     case 'damage':
       set({ damage: msg })
-      appendRow(dmgBufRef, msg, MAX_ROWS)
+      if (historyRowMask & HISTORY_ROW.damage) appendRow(dmgBufRef, msg, MAX_ROWS)
+      else dmgBufRef.current = [msg]
       break
     case 'lap':
       onLap(msg as unknown as LapRow)
@@ -354,7 +629,12 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'tyre_sets':    set({ tyreSets: msg }); break
+    case 'strategy':     set({ strategy: msg as StrategySnapshotMsg }); break
     case 'race_event':
+      if ((msg as RaceEventMsg).code === 'FLBK') {
+        const target = Number((msg as RaceEventMsg).flashback_session_time)
+        if (Number.isFinite(target) && target >= 0) applyLiveRewind(target)
+      }
       for (const cb of raceEventListeners) cb(msg as RaceEventMsg)
       raceEventsArr = [...raceEventsArr, msg as RaceEventMsg]
       if (raceEventsArr.length > MAX_RACE_EVENTS) raceEventsArr = raceEventsArr.slice(-MAX_RACE_EVENTS)
@@ -362,7 +642,14 @@ function handleMsg(msg: GatewayMsg): void {
         resetSession()
       }
       break
-    case 'session': set({ session: msg }); break
+    case 'session':
+      set({
+        session: msg,
+        ...(!isPlaybackFlag && Number.isFinite(msg.track_length_m) && msg.track_length_m > 0
+          ? { analyzeTrackLengthM: msg.track_length_m }
+          : {}),
+      })
+      break
     case 'protocol_status': set({ protocolStatus: msg }); break
     case 'protocol_warning': {
       const pw = msg as ProtocolWarningMsg
@@ -381,10 +668,16 @@ function handleMsg(msg: GatewayMsg): void {
         statusHistory: payload.statusHistory ?? [],
         damageHistory: payload.damageHistory ?? [],
         lapProgress: payload.lapProgress ?? [],
+        playerPositions: payload.playerPositions ?? [],
+        rowTypeMask: payload.rowTypeMask ?? 0xFFFFFFFF,
       }
       playbackLapCacheOrder = [...playbackLapCacheOrder.filter(lapNum => lapNum !== lapData.lapNum), lapData.lapNum]
       set(state => {
-        const cache = { ...state.playbackLapDataCache, [lapData.lapNum]: lapData }
+        const prior = state.playbackLapDataCache[lapData.lapNum]
+        const cache = {
+          ...state.playbackLapDataCache,
+          [lapData.lapNum]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData,
+        }
         while (playbackLapCacheOrder.length > MAX_ANALYZE_LAP_CACHE) {
           const evicted = playbackLapCacheOrder.shift()
           if (evicted !== undefined) delete cache[evicted]
@@ -393,78 +686,23 @@ function handleMsg(msg: GatewayMsg): void {
       })
       break
     }
-    case 'playback_fastest_lap_raw':
-    case 'playback_previous_lap_raw': {
-      const payload = msg as any
-      const batchStr = payload.data as string
-      const lapInfo = payload.lapInfo
-      let start = 0
-      const tel: any[] = [], mot: any[] = [], sts: any[] = []
-      while (start < batchStr.length) {
-        let end = batchStr.indexOf('\n', start)
-        if (end === -1) end = batchStr.length
-        if (end > start) {
-          try {
-            const row = JSON.parse(batchStr.slice(start, end))
-            if (row.type === 'telemetry') tel.push(row)
-            else if (row.type === 'motion') mot.push(row)
-            else if (row.type === 'status') sts.push(row)
-          } catch (e) {}
-        }
-        start = end + 1
-      }
-      const lapData: any = {
-        lapNum: lapInfo.lapNum, startSessionTime: lapInfo.startSessionTime,
-        endSessionTime: lapInfo.endSessionTime, telemetry: tel, motion: mot, statusHistory: sts,
-      }
-      if ((msg as any).type === 'playback_fastest_lap_raw') {
-        fastestLapVal = lapData
-        fastestLapTime = lapData.lapNum > 0 ? (lapData.endSessionTime - lapData.startSessionTime) * 1000 : Infinity
-      } else {
-        lapHistoryBuf = [...lapHistoryBuf.filter(l => l.lapNum !== lapData.lapNum), lapData]
-          .sort((a, b) => a.lapNum - b.lapNum).slice(-3)
-      }
-      break
-    }
     case 'playback_seek_flush_bin': {
-      const payload = msg as any
-      analyzeLapRevisionVal++
-      lapStartTime = payload.currentLapStart
-      lapNum = payload.lapNum
-      const tel: any[] = [], mot: any[] = [], motEx: any[] = []
-      for (const row of decodeBinaryBatch(payload.binary)) {
-        if (row.type === 'telemetry') tel.push(row)
-        else if (row.type === 'motion') mot.push(row)
-        else if (row.type === 'motion_ex') motEx.push(row)
-      }
-      const sts: any[] = [], dmg: any[] = [], lapProgress: LapProgressPoint[] = []
-      let lastLap: any = null
-      const coldJson = (payload.coldJson as string) || ''
-      let start = 0
-      while (start < coldJson.length) {
-        let end = coldJson.indexOf('\n', start)
-        if (end === -1) end = coldJson.length
-        if (end > start) {
-          try {
-            const row = JSON.parse(coldJson.slice(start, end))
-            if (row.type === 'status') sts.push(row)
-            else if (row.type === 'damage') dmg.push(row)
-            else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
-          } catch (e) {}
-        }
-        start = end + 1
-      }
-      telBufRef.current = tel
-      motBufRef.current = mot
-      motExBufRef.current = motEx
-      stsBufRef.current = sts
-      dmgBufRef.current = dmg
-      lapProgressBufRef.current = lapProgress
-      if (sts.length) set({ status: sts[sts.length - 1] })
-      if (dmg.length) set({ damage: dmg[dmg.length - 1] })
-      if (lastLap) { lapState = lastLap; set({ lap: lastLap }) }
+      void processPlaybackSeekFlush(msg as any).catch(error => {
+        console.error('Failed to decode playback seek flush:', error)
+        waitingForAllLapsHistory = false
+        if ((msg as any).authoritativeSeek !== false) seekRendererPending = false
+        recompute(DirtySlice.All)
+        const requestId = Number((msg as any).requestId)
+        if (Number.isFinite(requestId) && requestId > 0)
+          window.playerBridge.seekInstalled(requestId)
+      })
       break
     }
+    case 'playback_seek_flush_failed':
+      waitingForAllLapsHistory = false
+      seekRendererPending = false
+      requestedHistoryRowMask = 0
+      break
     case 'playback_lap_blocks': {
       isPlaybackFlag = true
       analyzeLapRevisionVal++
@@ -472,7 +710,7 @@ function handleMsg(msg: GatewayMsg): void {
       fuelMaxReceived = -Infinity
       playbackLapCacheOrder = []
       speedRpmBlocksVal = data.blocks
-      fastestLapNum = data.fastestLapNum
+      playbackFastestLapNum = data.fastestLapNum
       playbackEvents = data.events ?? []
       const map: Record<number, number> = {}
       for (const l of (data.laps ?? []) as { lapNum: number; lapTimeMs: number }[]) {
@@ -483,14 +721,22 @@ function handleMsg(msg: GatewayMsg): void {
       const trackLengthM = Number(data.trackLengthM)
       set({
         speedRpmBlocks: speedRpmBlocksVal,
+        fastestLapNum: playbackFastestLapNum || null,
         playbackLapDataCache: {},
+        liveFastestLapData: null,
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1
           : null,
-        analyzeDeltaAvailable: data.deltaAvailable === true && data.tnrdVersion === 'TNRD_V3',
+        analyzeDeltaAvailable: data.lapDistanceAvailable === true || data.deltaAvailable === true,
         analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
         playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
       })
+      const missingHistory = historyRowMask & ~requestedHistoryRowMask
+      if (allLapsMode && missingHistory !== 0) {
+        waitingForAllLapsHistory = true
+        requestedHistoryRowMask |= missingHistory
+        window.playerBridge.getAllLapsData(missingHistory)
+      }
       break
     }
   }
@@ -517,11 +763,11 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
     case 'damage': return DirtySlice.Damage
     case 'lap': return DirtySlice.Lap | DirtySlice.Derived
     case 'race_event':
-    case 'playback_fastest_lap_raw':
-    case 'playback_previous_lap_raw':
+      return (msg as RaceEventMsg).code === 'FLBK' ? DirtySlice.All : DirtySlice.Derived
     case 'playback_lap_blocks': return DirtySlice.Derived
     case 'playback_close':
-    case 'playback_seek_flush_bin': return DirtySlice.All
+    case 'playback_seek_flush_failed': return DirtySlice.All
+    case 'playback_seek_flush_bin': return DirtySlice.None
     default: return DirtySlice.None
   }
 }
@@ -530,78 +776,419 @@ function dirtySliceFor(msg: { type: string }): DirtySlice {
 // groups retain their array identity, so their Zustand subscribers stay cold.
 function recompute(dirty: DirtySlice): void {
   if (dirty === DirtySlice.None) return
-  const telBuf = telBufRef.current
-  const latestSessionTime = telBuf[telBuf.length - 1]?.session_time ?? 0
-  const cutoff = latestSessionTime - secondsVal
-  const lapStartSessionTime = lapState && lapState.current_lap_ms > 0 ? lapStartTime : 0
+  // A normal seek flush only contains the current lap. In AL keep the last
+  // complete chart publication visible until the single prefix flush arrives,
+  // otherwise the graph briefly collapses to one lap and then expands again.
+  if (waitingForAllLapsHistory) return
+  const currentTelBuf = telBufRef.current
+  const latestSessionTime = currentTelBuf[currentTelBuf.length - 1]?.session_time ?? 0
+  const telBuf = currentTelBuf
+  const motBuf = motBufRef.current
+  const motExBuf = motExBufRef.current
+  const stsBuf = stsBufRef.current
+  const dmgBuf = dmgBufRef.current
+  const cutoff = allLapsMode ? -Infinity : latestSessionTime - secondsVal
+  // `current_lap_ms` is legitimately zero at rollover. Falling back to session
+  // origin in that state prepends the previous lap to every Analyze/CL slice,
+  // so distance mapping stops at the stale prefix and charts retain one point.
+  const lapStartSessionTime = lapTrackingActive ? lapStartTime : latestSessionTime
   const isPlayback = speedRpmBlocksVal !== null
-  const activeLapNum = lapState ? lapState.lap_num : 1
-  const curBlock  = isPlayback ? speedRpmBlocksVal!.find(b => b.lapNum === activeLapNum) : null
-  const prevBlock = isPlayback ? speedRpmBlocksVal!.find(b => b.lapNum === activeLapNum - 1) : null
-  const fastBlock = isPlayback ? speedRpmBlocksVal!.find(b => b.lapNum === fastestLapNum) : null
   const lapTimesByNum = isPlayback ? playbackLapTimes : liveLapTimes
+
+  // Live sessions always retain these slices because the completed current lap
+  // becomes the in-memory previous/fastest-lap cache at rollover. Playback has
+  // an indexed lap cache, so it can skip the copies when no distance view uses
+  // them without losing data needed by a later view switch.
+  const needsAnalyzeSlices = analyzeLapEnabled || !isPlayback
+  let publishAnalyze = needsAnalyzeSlices && lapTrackingActive && !pendingAnalyzeLapReset
+  if (needsAnalyzeSlices && pendingAnalyzeLapReset) {
+    const countSince = <T extends { session_time: number }>(rows: T[]) => rows.length - lowerBound(rows, lapStartSessionTime, true)
+    const ready = (bit: number, count: number, minimum: number) =>
+      !(historyRowMask & bit) || count >= minimum
+    publishAnalyze = ready(HISTORY_ROW.telemetry, countSince(telBuf), 2) &&
+      ready(HISTORY_ROW.motion, countSince(motBufRef.current), 1) &&
+      ready(HISTORY_ROW.motionEx, countSince(motExBufRef.current), 1) &&
+      ready(HISTORY_ROW.status, countSince(stsBufRef.current), 1) &&
+      ready(HISTORY_ROW.damage, countSince(dmgBufRef.current), 1) &&
+      ready(HISTORY_ROW.lap, countSince(lapProgressBufRef.current), 2)
+    if (publishAnalyze) {
+      pendingAnalyzeLapReset = false
+      dirty |= DirtySlice.All
+    }
+  }
 
   const next: Partial<TelemetryStoreState> = {}
   if (dirty & DirtySlice.Telemetry) {
-    next.telemetry = fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
-    next.latest = telBuf.length > 0 ? telBuf[telBuf.length - 1] : null
-    next.analyzeLapTelemetry = fillRange(pools.analyzeTel, telBuf, lowerBound(telBuf, lapStartSessionTime, true), telBuf.length)
+    next.latest = currentTelBuf.length > 0 ? currentTelBuf[currentTelBuf.length - 1] : null
+    if (historyRowMask & HISTORY_ROW.telemetry) {
+      next.telemetry = allLapsMode ? telBuf : fillRange(pools.tel, telBuf, lowerBound(telBuf, cutoff, false), telBuf.length)
+      if (publishAnalyze) next.analyzeLapTelemetry = fillRange(pools.analyzeTel, currentTelBuf, lowerBound(currentTelBuf, lapStartSessionTime, true), currentTelBuf.length)
+    }
   }
   if (dirty & DirtySlice.Motion) {
-    const buf = motBufRef.current
-    next.motion = fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
-    next.analyzeLapMotion = fillRange(pools.analyzeMot, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+    const buf = motBuf
+    next.motion = allLapsMode ? buf : fillRange(pools.mot, buf, lowerBound(buf, cutoff, false), buf.length)
+    const current = motBufRef.current
+    if (publishAnalyze) next.analyzeLapMotion = fillRange(pools.analyzeMot, current, lowerBound(current, lapStartSessionTime, true), current.length)
   }
   if (dirty & DirtySlice.MotionEx) {
-    const buf = motExBufRef.current
-    next.motionEx = fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
-    next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+    const buf = motExBuf
+    next.motionEx = allLapsMode ? buf : fillRange(pools.motEx, buf, lowerBound(buf, cutoff, false), buf.length)
+    const current = motExBufRef.current
+    if (publishAnalyze) next.analyzeLapMotionEx = fillRange(pools.analyzeMotEx, current, lowerBound(current, lapStartSessionTime, true), current.length)
   }
   if (dirty & DirtySlice.Status) {
-    const buf = stsBufRef.current
-    next.statusHistory = fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
-    next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+    if (historyRowMask & HISTORY_ROW.status) {
+      const buf = stsBuf
+      next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
+      const current = stsBufRef.current
+      if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    }
   }
   if (dirty & DirtySlice.Damage) {
-    const buf = dmgBufRef.current
-    next.damageHistory = fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
-    next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
+    if (historyRowMask & HISTORY_ROW.damage) {
+      const buf = dmgBuf
+      next.damageHistory = allLapsMode ? buf : fillRange(pools.dmg, buf, lowerBound(buf, cutoff, false), buf.length)
+      const current = dmgBufRef.current
+      if (publishAnalyze) next.analyzeLapDamageHistory = fillRange(pools.analyzeDmg, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
+    }
   }
   if (dirty & DirtySlice.Lap) {
     const buf = lapProgressBufRef.current
-    next.analyzeLapProgress = fillRange(
+    if (publishAnalyze) next.analyzeLapProgress = fillRange(
       pools.analyzeLapProgress, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Derived) {
-    next.lapHistory = isPlayback && prevBlock ? [prevBlock] : lapHistoryBuf
-    next.fastestLap = isPlayback && fastBlock ? fastBlock : fastestLapVal
-    if (isPlayback && curBlock) {
-      const srcT = curBlock.telemetry as TelemetryRow[]
-      next.lapTelemetry = fillRange(pools.lapTel, srcT, 0, lowerBound(srcT, latestSessionTime, false))
-      const srcS = curBlock.statusHistory as StatusRow[]
-      next.lapStatusHistory = fillRange(pools.lapSts, srcS, 0, lowerBound(srcS, latestSessionTime, false))
-    } else {
-      next.lapTelemetry = fillRange(pools.lapTel, telBuf, lowerBound(telBuf, lapStartSessionTime, true), telBuf.length)
-      next.lapStatusHistory = fillRange(pools.lapSts, stsBufRef.current, lowerBound(stsBufRef.current, lapStartSessionTime, true), stsBufRef.current.length)
-    }
     next.lapTimesByNum = lapTimesByNum
-    next.raceEvents = isPlayback
-      ? playbackEvents.filter(e => (e.session_time ?? 0) <= latestSessionTime)
-      : raceEventsArr
-    next.analyzeLapStartTime = lapStartSessionTime
-    next.analyzeLapRevision = analyzeLapRevisionVal
+    if (isPlayback) {
+      // Playback events are sorted once at load. Resolve the visible prefix by
+      // binary search and only publish a new array when an event boundary is
+      // actually crossed; telemetry frames between events stay allocation-free.
+      let lo = 0, hi = playbackEvents.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if ((playbackEvents[mid].session_time ?? 0) <= latestSessionTime) lo = mid + 1
+        else hi = mid
+      }
+      if (useTelemetryStore.getState().raceEvents.length !== lo) {
+        next.raceEvents = playbackEvents.slice(0, lo)
+      }
+    } else if (useTelemetryStore.getState().raceEvents !== raceEventsArr) {
+      next.raceEvents = raceEventsArr
+    }
+    if (publishAnalyze) {
+      next.analyzeLapStartTime = lapStartSessionTime
+      next.analyzeLapRevision = analyzeLapRevisionVal
+    }
   }
   set(next)
+  if (allLapsMode && (dirty & (DirtySlice.Telemetry | DirtySlice.Motion | DirtySlice.MotionEx | DirtySlice.Status | DirtySlice.Damage))) {
+    let changedHistoryMask = 0
+    if (dirty & DirtySlice.Telemetry) changedHistoryMask |= HISTORY_ROW.telemetry
+    if (dirty & DirtySlice.Motion) changedHistoryMask |= HISTORY_ROW.motion
+    if (dirty & DirtySlice.MotionEx) changedHistoryMask |= HISTORY_ROW.motionEx
+    if (dirty & DirtySlice.Status) changedHistoryMask |= HISTORY_ROW.status
+    if (dirty & DirtySlice.Damage) changedHistoryMask |= HISTORY_ROW.damage
+    scheduleAllLapsDataNotification(changedHistoryMask)
+  }
+}
+
+function dirtySliceForHistoryMask(value: unknown): DirtySlice {
+  const mask = Number(value)
+  if (!Number.isFinite(mask)) return DirtySlice.All
+  let dirty = DirtySlice.Derived
+  if (mask & HISTORY_ROW.telemetry) dirty |= DirtySlice.Telemetry
+  if (mask & HISTORY_ROW.motion) dirty |= DirtySlice.Motion
+  if (mask & HISTORY_ROW.motionEx) dirty |= DirtySlice.MotionEx
+  if (mask & HISTORY_ROW.status) dirty |= DirtySlice.Status
+  if (mask & HISTORY_ROW.damage) dirty |= DirtySlice.Damage
+  if (mask & HISTORY_ROW.lap) dirty |= DirtySlice.Lap
+  return dirty
+}
+
+async function processPlaybackSeekFlush(payload: any): Promise<void> {
+  const allHistory = payload.allHistory === true
+  const authoritative = payload.authoritativeSeek !== false
+  const generation = authoritative ? ++seekTimelineGeneration : seekTimelineGeneration
+  const cancelled = () => generation !== seekTimelineGeneration
+
+  playbackDebug('seek-flush-received', {
+    lapNum: payload.lapNum,
+    currentLapStart: payload.currentLapStart,
+    binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
+    coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : null,
+    fastestLapNum: playbackFastestLapNum || null,
+  })
+
+  if (authoritative) {
+    historyCoverageStart.clear()
+    // AL cleared these at seek-start. Other modes retain the last publication
+    // for display, but their working buffers must start collecting only rows
+    // from the newly committed timeline while the backfill decodes.
+    if (!allHistory) {
+      telBufRef.current = []
+      motBufRef.current = []
+      motExBufRef.current = []
+      stsBufRef.current = []
+      dmgBufRef.current = []
+      lapProgressBufRef.current = []
+    }
+    analyzeLapRevisionVal++
+    pendingAnalyzeLapReset = false
+    lapStartTime = payload.currentLapStart
+    lapNum = payload.lapNum
+    lapTrackingActive = true
+    set({ fastestLapNum: playbackFastestLapNum || null })
+  }
+
+  // Let Chromium service the input/paint that delivered this IPC message
+  // before allocating and decoding the history payload.
+  await yieldToMainThread()
+  if (cancelled()) return
+
+  const tel: TelemetryRow[] = []
+  const mot: MotionRow[] = []
+  const motEx: MotionExRow[] = []
+  const binary = payload.binary as Uint8Array | ArrayBuffer
+  const binaryLength = binary instanceof Uint8Array ? binary.byteLength : binary?.byteLength ?? 0
+  let binaryOffset = 0
+  while (binaryOffset < binaryLength) {
+    binaryOffset = decodeBinaryBatchRange(binary, row => {
+      if (row.type === 'telemetry') tel.push(row)
+      else if (row.type === 'motion') mot.push(row)
+      else if (row.type === 'motion_ex') motEx.push(row)
+    }, binaryOffset, 4096)
+    if (binaryOffset < binaryLength) {
+      await yieldToMainThread()
+      if (cancelled()) return
+    }
+  }
+
+  const sts: StatusRow[] = []
+  const dmg: DamageRow[] = []
+  const lapProgress: LapProgressPoint[] = []
+  let lastLap: LapRow | null = null
+  const coldJson = (payload.coldJson as string) || ''
+  let start = 0
+  let rowsSinceYield = 0
+  while (start < coldJson.length) {
+    let end = coldJson.indexOf('\n', start)
+    if (end === -1) end = coldJson.length
+    if (end > start) {
+      try {
+        const row = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow | LapRow
+        if (row.type === 'status') sts.push(row)
+        else if (row.type === 'damage') dmg.push(row)
+        else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
+      } catch (e) {}
+    }
+    start = end + 1
+    if (++rowsSinceYield >= 512 && start < coldJson.length) {
+      rowsSinceYield = 0
+      await yieldToMainThread()
+      if (cancelled()) return
+    }
+  }
+  if (cancelled()) return
+
+  // Rows streamed after the native seek committed accumulated while decoding.
+  // Append only that newer tail to the authoritative or additive backfill.
+  const appendNewer = <T extends { session_time: number }>(base: T[], trailing: T[]): T[] => {
+    const lastTime = base[base.length - 1]?.session_time ?? -Infinity
+    for (const row of trailing) if (row.session_time > lastTime) base.push(row)
+    return base.length > MAX_ROWS ? base.slice(-MAX_ROWS) : base
+  }
+  telBufRef.current = appendNewer(tel, telBufRef.current)
+  motBufRef.current = appendNewer(mot, motBufRef.current)
+  motExBufRef.current = appendNewer(motEx, motExBufRef.current)
+  stsBufRef.current = appendNewer(sts, stsBufRef.current)
+  dmgBufRef.current = appendNewer(dmg, dmgBufRef.current)
+  lapProgressBufRef.current = appendNewer(lapProgress, lapProgressBufRef.current)
+  currentStintStartTime = findCurrentStintStart(stsBufRef.current)
+  if (allHistory) waitingForAllLapsHistory = false
+  markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
+
+  playbackDebug('seek-flush-decoded', {
+    lapNum,
+    lapStartTime,
+    revision: analyzeLapRevisionVal,
+    telemetryRows: tel.length,
+    telemetryFirstTime: tel[0]?.session_time ?? null,
+    telemetryLastTime: tel[tel.length - 1]?.session_time ?? null,
+    motionRows: mot.length,
+    motionExRows: motEx.length,
+    statusRows: sts.length,
+    damageRows: dmg.length,
+    lapProgressRows: lapProgress.length,
+    lastLapNumber: lastLap?.lap_num ?? null,
+    lastLapTimeMs: lastLap?.current_lap_ms ?? null,
+  })
+  set({
+    ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
+    ...(dmgBufRef.current.length ? { damage: dmgBufRef.current[dmgBufRef.current.length - 1] } : {}),
+    currentStintStartTime,
+  })
+  const latestLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
+  if (latestLap) { lapState = latestLap; set({ lap: latestLap }) }
+  recompute(dirtySliceForHistoryMask(payload.rowTypeMask))
+  requestVisibleWindowHistory()
+  if (authoritative) seekRendererPending = false
+  if (authoritative && Number.isFinite(Number(payload.requestId)) && Number(payload.requestId) > 0)
+    window.playerBridge.seekInstalled(Number(payload.requestId))
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// Set the visible time window (seconds). Recomputes the windowed slices at once.
-export function setTelemetrySeconds(s: number): void {
-  if (s === secondsVal) return
+// Set the visible time window (seconds). Infinity selects the full-session
+// publication used by All Laps and Stint Laps. Recomputes slices at once.
+function requestVisibleWindowHistory(): void {
+  if (allLapsMode || speedRpmBlocksVal === null) return
+  if (finiteWindowBackfillEnabled && (!Number.isFinite(secondsVal) || secondsVal <= 0)) return
+  const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
+  const currentTime = Math.max(
+    telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0,
+    motBufRef.current[motBufRef.current.length - 1]?.session_time ?? 0,
+    motExBufRef.current[motExBufRef.current.length - 1]?.session_time ?? 0,
+    stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? 0,
+    dmgBufRef.current[dmgBufRef.current.length - 1]?.session_time ?? 0,
+    lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? 0,
+  )
+  if (!Number.isFinite(fileStart) || currentTime <= fileStart) return
+  const requiredStart = finiteWindowBackfillEnabled
+    ? Math.max(fileStart, currentTime - secondsVal)
+    : Math.max(fileStart, lapStartTime)
+  let missingMask = 0
+  const missing = (bit: number, firstTime: number | undefined): void => {
+    if ((historyRowMask & bit) && !historyCovers(bit, requiredStart) &&
+        (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
+  }
+  missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
+  missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
+  if (missingMask !== 0) window.playerBridge.getWindowData(
+    finiteWindowBackfillEnabled ? secondsVal : 0, missingMask)
+}
+
+export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): void {
+  const nextAllLapsMode = !Number.isFinite(s)
+  const sameConfiguration = s === secondsVal && nextAllLapsMode === allLapsMode &&
+    finiteWindowBackfillEnabled === backfillFiniteWindow
+  finiteWindowBackfillEnabled = backfillFiniteWindow
+  if (sameConfiguration) {
+    requestVisibleWindowHistory()
+    return
+  }
+  const wasAllLapsMode = allLapsMode
   secondsVal = s
+  allLapsMode = nextAllLapsMode
+  if (!allLapsMode) {
+    waitingForAllLapsHistory = false
+    // Normal playback can evict the old prefix from bounded renderer buffers.
+    // A later AL entry must therefore be allowed to request it again.
+    requestedHistoryRowMask = 0
+  }
   set({ seconds: s })
+  let requestHistory = false
+  let entryMissingMask = 0
+  if (allLapsMode && !wasAllLapsMode && speedRpmBlocksVal !== null) {
+    const firstBlockStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
+    if (Number.isFinite(firstBlockStart)) {
+      const missing = (bit: number, firstTime: number | undefined): void => {
+        if ((historyRowMask & bit) && !historyCovers(bit, firstBlockStart) &&
+            (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
+      }
+      missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
+      missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
+    }
+    requestedHistoryRowMask |= historyRowMask & ~entryMissingMask
+    if (entryMissingMask !== 0) {
+      waitingForAllLapsHistory = true
+      requestHistory = true
+    }
+  }
   recompute(DirtySlice.All)
+  if (requestHistory) {
+    requestedHistoryRowMask |= entryMissingMask
+    window.playerBridge.getAllLapsData(entryMissingMask)
+  }
+  requestVisibleWindowHistory()
+}
+
+// Current-lap distance slices are intentionally separate from the append-only
+// All Laps sources. Building them copies every row accumulated in the current
+// lap, so doing that on every playback batch is quadratic when the visible page
+// contains only time-axis charts. AppShell enables this only when at least one
+// lap-distance view actually consumes the slices.
+export function setAnalyzeLapEnabled(enabled: boolean): void {
+  if (enabled === analyzeLapEnabled) return
+  analyzeLapEnabled = enabled
+  if (enabled) {
+    recompute(DirtySlice.All)
+    return
+  }
+  if (speedRpmBlocksVal !== null) {
+    set({
+      analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
+      analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
+    })
+  }
+}
+
+// Sets the single coordinated minimum history requirement. While AL is active,
+// newly-visible row families are requested additively; already-loaded families
+// are not decompressed or delivered again.
+export function setHistoryRowMask(mask: number): void {
+  const normalized = mask >>> 0
+  const disabled = historyRowMask & ~normalized
+  historyRowMask = normalized
+  requestedHistoryRowMask &= normalized
+  // Dropping a hidden tab's source buffer also drops the history represented
+  // by that buffer. Keeping its old coverage marker made a later tab activation
+  // believe the missing prefix was still installed, so only rows streamed after
+  // the switch appeared. Invalidate exactly the disabled families: the normal
+  // finite/current-lap or AL request below can then issue one selective native
+  // indexed backfill, without replaying unrelated row types through the DOM.
+  invalidateHistoryCoverage(disabled)
+  const cleared: Partial<TelemetryStoreState> = {}
+  if (disabled & HISTORY_ROW.telemetry) {
+    telBufRef.current = telBufRef.current.length ? [telBufRef.current[telBufRef.current.length - 1]] : []
+    cleared.telemetry = []
+    cleared.analyzeLapTelemetry = []
+  }
+  if (disabled & HISTORY_ROW.status) {
+    stsBufRef.current = stsBufRef.current.length ? [stsBufRef.current[stsBufRef.current.length - 1]] : []
+    cleared.statusHistory = []
+    cleared.analyzeLapStatusHistory = []
+  }
+  if (disabled & HISTORY_ROW.damage) {
+    dmgBufRef.current = dmgBufRef.current.length ? [dmgBufRef.current[dmgBufRef.current.length - 1]] : []
+    cleared.damageHistory = []
+    cleared.analyzeLapDamageHistory = []
+  }
+  if (disabled & HISTORY_ROW.motion) {
+    motBufRef.current = []
+    cleared.motion = []
+    cleared.analyzeLapMotion = []
+  }
+  if (disabled & HISTORY_ROW.motionEx) {
+    motExBufRef.current = []
+    cleared.motionEx = []
+    cleared.analyzeLapMotionEx = []
+  }
+  if (Object.keys(cleared).length) set(cleared)
+  if (!allLapsMode || speedRpmBlocksVal === null) return
+  const missing = normalized & ~requestedHistoryRowMask
+  if (missing === 0) return
+  waitingForAllLapsHistory = true
+  requestedHistoryRowMask = (requestedHistoryRowMask | missing) >>> 0
+  window.playerBridge.getAllLapsData(missing)
 }
 
 // Subscribe to live race events (transient banners). Delivered synchronously as
@@ -609,6 +1196,14 @@ export function setTelemetrySeconds(s: number): void {
 export function subscribeRaceEvent(cb: (e: RaceEventMsg) => void): () => void {
   raceEventListeners.add(cb)
   return () => { raceEventListeners.delete(cb) }
+}
+
+// Full-lap charts consume the in-place full-session arrays directly. This
+// imperative signal lets their WebGL bridges append new rows without cloning
+// the growing arrays through Zustand/React on every telemetry batch.
+export function subscribeAllLapsData(sourceMask: number, cb: () => void): () => void {
+  allLapsDataListeners.set(cb, sourceMask >>> 0)
+  return () => { allLapsDataListeners.delete(cb) }
 }
 
 // Start the IPC subscription exactly once, at module load. The preload bridge is
@@ -619,7 +1214,31 @@ export function startTelemetryBridge(): void {
   if (started) return
   started = true
 
+  window.playerBridge.onSeekStart((allHistory) => {
+    // Freeze the published timeline immediately, before the seek IPC can race
+    // with already-queued playback batches. Electron main holds all rows from
+    // the new cursor until processPlaybackSeekFlush acknowledges installation.
+    seekRendererPending = true
+    if (!allHistory) return
+    // Keep the currently published arrays intact while the worker extracts the
+    // new prefix. Fresh post-seek rows accumulate separately and are merged by
+    // the authoritative response.
+    waitingForAllLapsHistory = true
+    telBufRef.current = []
+    motBufRef.current = []
+    motExBufRef.current = []
+    stsBufRef.current = []
+    dmgBufRef.current = []
+    lapProgressBufRef.current = []
+  })
+
   window.telemetryBridge.onBatch((batchStr: string) => {
+    if (seekRendererPending &&
+        !batchStr.includes('"type":"playback_close"') &&
+        !batchStr.includes('"type":"playback_loaded"') &&
+        // Indexed completed-lap payloads are independent of the playhead and
+        // are explicitly separated from old-cursor rows by the main process.
+        !batchStr.includes('"type":"playback_lap_data"')) return
     let dirty = DirtySlice.None
     let start = 0
     while (start < batchStr.length) {
@@ -645,25 +1264,27 @@ export function startTelemetryBridge(): void {
   })
 
   window.telemetryBridge.onBinary((batch) => {
+    if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
-      for (const row of decodeBinaryBatch(batch)) {
+      forEachDecodedBinaryRow(batch, row => {
         const msg = row as GatewayMsg
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
-      }
+      })
     } catch (e) { console.error('Failed to decode binary batch:', e) }
     recompute(dirty)
   })
 
   window.telemetryBridge.onResume(({ binary, coldJson }) => {
+    if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
-      for (const row of decodeBinaryBatch(binary)) {
+      forEachDecodedBinaryRow(binary, row => {
         const msg = row as GatewayMsg
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
-      }
+      })
     } catch (e) { console.error('Failed to decode resume binary batch:', e) }
 
     let latestStatus: StatusRow | null = null

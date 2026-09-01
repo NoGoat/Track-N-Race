@@ -7,6 +7,7 @@
 
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
+#include "tnrp/Strategy.h"
 
 // Typed decode seam for in-process consumers (the Qt recorder): one call turns a
 // raw JSONL row into the matching typed struct from rows.h / control_rows.h, so
@@ -24,7 +25,7 @@ using AnyRow = std::variant<
     LapRow, TimingRow, StatusRow, AllStatusRow, DamageRow,
     SessionRow, ParticipantsRow, TyreSetsRow, RaceEventRow,
     FastestLapRow, SessionHistoryFastestRow,
-    ProtocolStatusRow, ProtocolWarningRow>;
+    ProtocolStatusRow, ProtocolWarningRow, StrategySnapshotRow>;
 
 // One JSONL row (no trailing newline required) → typed row, or nullopt for
 // types the variant doesn't carry / malformed JSON.

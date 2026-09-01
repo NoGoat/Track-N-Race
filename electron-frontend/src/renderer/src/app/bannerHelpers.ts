@@ -15,23 +15,11 @@ export function fmtLap(seconds: number): string {
   return `${minutes}:${remainder.toFixed(3).padStart(6, '0')}`
 }
 
-const INFRINGEMENT_LABELS: Record<number, string> = {
-  0: 'Blocking by slowing', 1: 'Blocking wrong way', 2: 'Reversing off start line', 3: 'Big collision',
-  4: 'Small collision', 5: 'Collision — failed to hand back', 6: 'Collision — attack from rear',
-  7: 'SC delta exceeded', 8: 'SC illegal overtake', 9: 'SC exceeding allowed pace', 10: 'Cornering under SC',
-  11: 'SC must pit this lap', 12: 'SC pit lane curfew', 13: 'Pit lane too fast', 14: 'Unsafe release',
-  15: 'Pit re-entry too slow', 16: 'In pit too fast', 17: 'Unsafe release', 18: 'Escape from pit',
-  19: 'Ignoring blue flags', 20: 'Ignoring yellow flags', 21: 'Ignoring drive through', 22: 'Too many drive throughs',
-  23: 'DT — serve this lap', 24: 'DT — serve next lap', 25: 'Pit stop failed to serve', 26: 'Hanging around',
-  27: 'Hang around for SC', 28: 'Return to pits', 29: 'Tyre regulations', 30: 'Lap invalidated',
-  31: 'This + next lap invalid', 32: 'Lap invalid (no reason)', 33: 'This + next invalid (no reason)',
-  34: 'This + prev lap invalid', 35: 'This + prev invalid (no reason)', 36: 'Retired', 37: 'Black flag timer',
-  38: 'Unserved stop-go', 39: 'Unserved drive through', 40: 'Engine change', 41: 'Gearbox change',
-  42: 'Parc fermé change', 43: 'League grid penalty', 44: 'Retry penalty', 45: 'Illegal time gain',
-  46: 'Mandatory pit stop', 47: 'Attribute assigned', 48: 'Corner cutting',
-}
-
-export function buildBanner(event: RaceEventMsg, participants: ParticipantsMsg | null): BannerItem | null {
+export function buildBanner(
+  event: RaceEventMsg,
+  participants: ParticipantsMsg | null,
+  labels: Readonly<Record<string, string>>,
+): BannerItem | null {
   switch (event.code) {
     case 'SCAR': return null
     case 'FTLP': return { label: 'Fastest Lap', sub: `${lastName(participants, event.car_idx ?? 0)}  ·  ${fmtLap(event.lap_time_s ?? 0)}`, color: '#BF5FFF' }
@@ -40,13 +28,15 @@ export function buildBanner(event: RaceEventMsg, participants: ParticipantsMsg |
     case 'RDFL': return { label: 'Red Flag', color: '#e10600' }
     case 'PENA': {
       const penaltyType = event.penalty_type ?? 0
-      const labels: Record<number, string> = { 0: 'Drive Through', 1: 'Stop Go', 2: 'Grid Penalty', 4: 'Time Penalty', 5: 'Warning', 6: 'Disqualified' }
-      const colors: Record<number, string> = { 0: '#e10600', 1: '#e10600', 2: '#c47d0e', 4: '#c47d0e', 5: '#ffd700', 6: '#e10600' }
-      if (!(penaltyType in labels)) return null
+      const penaltyLabel = labels[`penalty.${penaltyType}`]
+      if (!penaltyLabel) return null
+      const color = penaltyType === 5 ? '#ffd700'
+        : penaltyType === 2 || penaltyType === 4 ? '#c47d0e'
+        : '#e10600'
       const time = (penaltyType === 1 || penaltyType === 4) && event.penalty_time_s ? ` ${event.penalty_time_s}s` : ''
       const driver = lastName(participants, event.car_idx ?? 0)
-      const infringement = event.infringement_type != null ? INFRINGEMENT_LABELS[event.infringement_type] : undefined
-      return { label: labels[penaltyType] + time, sub: penaltyType === 5 && infringement ? `${driver}  ·  ${infringement}` : driver, color: colors[penaltyType] }
+      const infringement = event.infringement_type != null ? labels[`infringe.${event.infringement_type}`] : undefined
+      return { label: penaltyLabel + time, sub: penaltyType === 5 && infringement ? `${driver}  ·  ${infringement}` : driver, color }
     }
     case 'DTSV': return { label: 'DT Served', sub: lastName(participants, event.car_idx ?? 0), color: '#a0a8b8' }
     case 'SGSV': return { label: 'SG Served', sub: lastName(participants, event.car_idx ?? 0), color: '#a0a8b8' }

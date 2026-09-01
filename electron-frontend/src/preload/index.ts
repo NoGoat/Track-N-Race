@@ -65,6 +65,11 @@ const protocolBridge = {
     ipcRenderer.send('protocol-request-status'),
 }
 
+const strategyBridge = {
+  setMinimumStops: (value: number): void =>
+    ipcRenderer.send('strategy-set-minimum-stops', value),
+}
+
 const fsBridge = {
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke('dialog:showOpenDialog'),
@@ -80,15 +85,45 @@ const recordingBridge = {
   },
 }
 
+const updateBridge = {
+  checkOnStartup: (): Promise<unknown> => ipcRenderer.invoke('updates:check-on-startup'),
+  skipVersion: (version: string): void => ipcRenderer.send('updates:skip-version', version),
+  openDownloadPage: (): Promise<void> => ipcRenderer.invoke('updates:open-download-page'),
+}
 
+
+let playerAllLapsMode = false
+let playerAllLapsRowMask = 0xFFFFFFFF
+let playerWindowSeconds = 0
+const seekStartListeners = new Set<(allHistory: boolean) => void>()
 const playerBridge = {
   setPageVisible: (visible: boolean): void => ipcRenderer.send('page-visibility', visible),
   load: (filePath: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:load', filePath),
   play: () => ipcRenderer.send('player:play'),
   pause: () => ipcRenderer.send('player:pause'),
-  seek: (pct: number) => ipcRenderer.send('player:seek', pct),
+  seek: (pct: number) => {
+    for (const listener of seekStartListeners) listener(playerAllLapsMode)
+    ipcRenderer.send('player:seek', pct, playerAllLapsMode, playerAllLapsRowMask, playerWindowSeconds)
+  },
+  setAllLapsMode: (enabled: boolean, rowTypeMask = 0xFFFFFFFF, windowSeconds = 0) => {
+    playerAllLapsMode = enabled
+    playerAllLapsRowMask = rowTypeMask >>> 0
+    playerWindowSeconds = Number.isFinite(windowSeconds) ? Math.max(0, windowSeconds) : 0
+  },
+  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => {
+    ipcRenderer.send('player:setDataRequirements', streamMask >>> 0, historyMask >>> 0,
+      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0)
+  },
+  onSeekStart: (callback: (allHistory: boolean) => void) => {
+    seekStartListeners.add(callback)
+    return () => { seekStartListeners.delete(callback) }
+  },
+  seekInstalled: (requestId: number) => ipcRenderer.send('player:seek-installed', requestId),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
-  getLapData: (lapNum: number) => ipcRenderer.send('player:getLapData', lapNum),
+  getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
+    ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),
+  getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),
+  getWindowData: (windowSeconds: number, rowTypeMask?: number) => ipcRenderer.send('player:getWindowData', windowSeconds, rowTypeMask),
   close: () => ipcRenderer.send('player:close'),
   exportXlsx: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('player:export-xlsx'),
   onExportProgress: (cb: (pct: number, stage: string) => void) => {
@@ -116,8 +151,8 @@ const playerBridge = {
 const analysisBridge = {
   loadFile: (filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> =>
     ipcRenderer.invoke('analysis:load-file', filePath),
-  getLapData: (lapNum: number): Promise<unknown | null> =>
-    ipcRenderer.invoke('analysis:get-lap-data', lapNum),
+  getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF): Promise<unknown | null> =>
+    ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
 }
 
@@ -127,7 +162,9 @@ contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
+contextBridge.exposeInMainWorld('strategyBridge', strategyBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
+contextBridge.exposeInMainWorld('updateBridge', updateBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
 contextBridge.exposeInMainWorld('analysisBridge', analysisBridge)

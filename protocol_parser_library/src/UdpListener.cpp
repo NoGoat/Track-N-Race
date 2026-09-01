@@ -1,6 +1,8 @@
 #include "tnrp/UdpListener.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
@@ -14,7 +16,8 @@ namespace tnrp {
 
 UdpListener::~UdpListener() { stop(); }
 
-bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler) {
+bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler,
+                        const std::vector<UdpForwardTarget>& forwardTargets) {
     stop();
     lastError_.clear();
     running_.store(true);
@@ -27,12 +30,31 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
             running_.store(false);
             return false;
         }
+        const size_t count = std::min(forwardTargets.size(), kMaxUdpForwardTargets);
+        for (size_t i = 0; i < count; ++i) {
+            const auto& target = forwardTargets[i];
+            QHostAddress address;
+            if (target.port == 0 ||
+                (target.port == port && (target.address.rfind("127.", 0) == 0 ||
+                                         target.address == bindAddress)) ||
+                !address.setAddress(QString::fromStdString(target.address)) ||
+                address.protocol() != QAbstractSocket::IPv4Protocol) {
+                lastError_ = "Invalid UDP forwarding destination: " + target.address +
+                    ":" + std::to_string(target.port);
+                running_.store(false);
+                return false;
+            }
+        }
     }
-    thread_ = std::thread(&UdpListener::runLoop, this, port, bindAddress, std::move(handler));
+    const size_t count = std::min(forwardTargets.size(), kMaxUdpForwardTargets);
+    thread_ = std::thread(&UdpListener::runLoop, this, port, bindAddress, std::move(handler),
+                          std::vector<UdpForwardTarget>(forwardTargets.begin(),
+                                                       forwardTargets.begin() + count));
     return true;
 }
 
-void UdpListener::runLoop(uint16_t port, std::string bindAddress, Handler handler) {
+void UdpListener::runLoop(uint16_t port, std::string bindAddress, Handler handler,
+                          std::vector<UdpForwardTarget> forwardTargets) {
     // The socket is created and used entirely on this worker thread.
     QUdpSocket sock;
     if (!sock.bind(QHostAddress(QString::fromStdString(bindAddress)), port,
@@ -41,6 +63,10 @@ void UdpListener::runLoop(uint16_t port, std::string bindAddress, Handler handle
         return;
     }
     std::vector<char> buf;
+    std::vector<std::pair<QHostAddress, quint16>> destinations;
+    destinations.reserve(forwardTargets.size());
+    for (const auto& target : forwardTargets)
+        destinations.emplace_back(QHostAddress(QString::fromStdString(target.address)), target.port);
     while (running_.load()) {
         if (!sock.waitForReadyRead(200)) continue;   // timeout: re-check running_
         while (sock.hasPendingDatagrams()) {
@@ -48,7 +74,12 @@ void UdpListener::runLoop(uint16_t port, std::string bindAddress, Handler handle
             if (sz <= 0) { sock.readDatagram(nullptr, 0); continue; }
             buf.resize((size_t)sz);
             qint64 n = sock.readDatagram(buf.data(), sz);
-            if (n > 0 && handler) handler(reinterpret_cast<const uint8_t*>(buf.data()), (int)n);
+            if (!running_.load()) break;
+            if (n > 0) {
+                for (const auto& [address, targetPort] : destinations)
+                    sock.writeDatagram(buf.data(), n, address, targetPort);
+                if (handler) handler(reinterpret_cast<const uint8_t*>(buf.data()), (int)n);
+            }
         }
     }
 }
@@ -88,7 +119,8 @@ static void closeSock(int s) { ::close(s); }
 
 UdpListener::~UdpListener() { stop(); }
 
-bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler) {
+bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler handler,
+                        const std::vector<UdpForwardTarget>& forwardTargets) {
     TRACE("UdpListener::start: entry");
     stop();
     lastError_.clear();
@@ -101,6 +133,27 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
     }
     TRACE("UdpListener::start: WSAStartup done");
 #endif
+    const size_t forwardCount = std::min(forwardTargets.size(), kMaxUdpForwardTargets);
+    std::vector<sockaddr_in> destinations;
+    destinations.reserve(forwardCount);
+    for (size_t i = 0; i < forwardCount; ++i) {
+        const auto& target = forwardTargets[i];
+        sockaddr_in dest{};
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(target.port);
+        if (target.port == 0 ||
+            (target.port == port && (target.address.rfind("127.", 0) == 0 ||
+                                     target.address == bindAddress)) ||
+            ::inet_pton(AF_INET, target.address.c_str(), &dest.sin_addr) != 1) {
+            lastError_ = "Invalid UDP forwarding destination: " + target.address +
+                ":" + std::to_string(target.port);
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            return false;
+        }
+        destinations.push_back(dest);
+    }
     SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) {
         lastError_ = "socket() failed";
@@ -113,6 +166,8 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
 
     int reuse = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+    int broadcast = 1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcast, sizeof(broadcast));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -152,13 +207,19 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
     TRACE("UdpListener::start: spawning receive thread");
     // Pass the bound socket to the loop via a tiny heap handoff (int fits in the
     // bindAddress slot we already have — reuse runLoop signature for clarity).
-    thread_ = std::thread([this, s, handler]() {
-        uint8_t buf[2048];
+    thread_ = std::thread([this, s, handler, destinations = std::move(destinations)]() {
+        uint8_t buf[65536];
         while (running_.load()) {
             sockaddr_in from{};
             socklen_t fromLen = sizeof(from);
             int n = (int)::recvfrom(s, (char*)buf, sizeof(buf), 0, (sockaddr*)&from, &fromLen);
-            if (n > 0 && handler) handler(buf, n);
+            if (!running_.load()) break;
+            if (n > 0) {
+                for (const auto& dest : destinations)
+                    ::sendto(s, reinterpret_cast<const char*>(buf), n, 0,
+                             reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+                if (handler) handler(buf, n);
+            }
             // n <= 0 is a timeout or transient error; loop and re-check running_.
         }
     });
@@ -166,7 +227,8 @@ bool UdpListener::start(uint16_t port, const std::string& bindAddress, Handler h
     return true;
 }
 
-void UdpListener::runLoop(uint16_t, std::string, Handler) {
+void UdpListener::runLoop(uint16_t, std::string, Handler,
+                          std::vector<UdpForwardTarget>) {
     // Unused in the raw path; the receive loop is inlined in start() so it can
     // own the bound socket descriptor. Kept to satisfy the shared header.
 }

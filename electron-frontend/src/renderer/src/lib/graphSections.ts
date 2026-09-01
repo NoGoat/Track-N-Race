@@ -17,9 +17,10 @@ export type GraphSection =
   | 'overviewTyreCardFL' | 'overviewTyreCardFR' | 'overviewTyreCardRL' | 'overviewTyreCardRR'
   | 'tyreSurface' | 'tyreInner' | 'tyreBrake' | 'tyreWear'
   | 'tyreCardFL' | 'tyreCardFR' | 'tyreCardRL' | 'tyreCardRR'
-  | 'inputGear' | 'inputThrottleBrake' | 'inputSteering'
+  | 'inputGear' | 'inputThrottleBrake' | 'inputThrottleBrakeOverlay' | 'inputAccelerator' | 'inputBrake' | 'inputSteering'
   | 'powerSplit' | 'powerHarvest' | 'powerStore' | 'powerFuel'
-  | 'miscGForce' | 'miscRideHeight'
+  | 'miscGForce' | 'miscGLateral' | 'miscGLongitudinal'
+  | 'miscRideHeight' | 'miscRideFront' | 'miscRideRear'
 
 export type GraphViewState = Record<GraphSection, GraphView>
 
@@ -49,18 +50,25 @@ export const GRAPH_GROUPS: { group: string; sections: { key: GraphSection; label
   ] },
   { group: 'Input', sections: [
     { key: 'inputGear',          label: 'Gear' },
-    { key: 'inputThrottleBrake', label: 'Throttle / Brake' },
+    { key: 'inputThrottleBrake', label: 'Accelerator / Brake' },
+    { key: 'inputThrottleBrakeOverlay', label: 'Accelerator / Brake (Combined 2)' },
+    { key: 'inputAccelerator',   label: 'Accelerator (Split)' },
+    { key: 'inputBrake',         label: 'Brake (Split)' },
     { key: 'inputSteering',      label: 'Steering' },
   ] },
   { group: 'Power', sections: [
-    { key: 'powerSplit',   label: 'Power Split' },
+    { key: 'powerSplit',   label: 'Power' },
     { key: 'powerHarvest', label: 'ERS Harvest' },
     { key: 'powerStore',   label: 'ERS Store' },
     { key: 'powerFuel',    label: 'Fuel History' },
   ] },
   { group: 'Misc', sections: [
     { key: 'miscGForce',     label: 'G-Force' },
+    { key: 'miscGLateral',   label: 'G-Force — Lateral (Split)' },
+    { key: 'miscGLongitudinal', label: 'G-Force — Longitudinal (Split)' },
     { key: 'miscRideHeight', label: 'Ride Height' },
+    { key: 'miscRideFront',  label: 'Ride Height — Front (Split)' },
+    { key: 'miscRideRear',   label: 'Ride Height — Rear (Split)' },
   ] },
 ]
 
@@ -91,7 +99,7 @@ export const TYRE_Y_AXIS_SECTIONS: { key: TyreYAxisKey; label: string; fixedRang
 ]
 
 export const POWER_Y_AXIS_SECTIONS: { key: PowerYAxisKey; label: string; fixedRange: string }[] = [
-  { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–8000 kJ; expands above 8000 kJ when needed' },
+  { key: 'ersHarvest', label: 'ERS Harvest', fixedRange: '0–4000/8000 kJ by Formula; expands above when needed' },
 ]
 
 const DEFAULT_TYRE_Y_AXIS_GROUP: TyreYAxisGroupState = {
@@ -107,50 +115,74 @@ export const DEFAULT_CHART_Y_AXIS: ChartYAxisState = {
   power:    { ersHarvest: 'fixed' },
 }
 
-// ── Compact density ─────────────────────────────────────────────────────────
+// ── Compact / Spacious density ───────────────────────────────────────────────
 
-// 6 boolean sections + two integer density controls. overviewTyres has six levels:
-//   0 Normal, 1–4 native Compact 1–4, 5 = the app's existing height-derived
-//   compact tyre-card layout, kept as a selectable level.
-// sessionWeather has three levels: 0 Normal, 1 Compact 1 (icons), and
-// 2 Compact 2 (the original icon-free single-line compact layout).
+export type DensityMode = 'compact' | 'normal' | 'spacious'
+
+// Density controls across all sections. overviewTyres has 7 levels:
+//   6 Spacious, 0 Normal, 1–4 native Compact 1–4, 5 = compact tyre-card layout.
+// sessionWeather has 5 levels: 4 Spacious, 0 Normal, 1 Compact 1 (icons),
+//   2 Compact 2 (icon-free single-line), 3 Compact 3 (single-line with icon).
+// sessionHeader has 4 levels: 3 Spacious, 0 Normal, 1 Compact 1 (with Zones label),
+//   2 Compact 2 (removes Zones label, marshal strip stretches full width).
 export interface CompactState {
-  overviewStats:   boolean
-  overviewDamage:  boolean
-  overviewTyres:   number
-  sessionCards:    boolean
-  sessionWeather:  number
-  sessionHeader:   boolean
-  powerCards:      boolean
-  strategySummary: boolean
-  playbackBar:     boolean
+  overviewStats:     DensityMode
+  overviewDamage:    DensityMode
+  overviewTyres:     number
+  standingsTable:    DensityMode
+  standingsTiming:   DensityMode
+  standingsErs:      DensityMode
+  standingsStrategy: DensityMode
+  sessionCards:      DensityMode
+  sessionProximity:  DensityMode
+  sessionEvents:     DensityMode
+  sessionWeather:    number
+  sessionHeader:     number
+  powerCards:        DensityMode
+  strategySummary:   DensityMode
+  playbackBar:       DensityMode
 }
 
 export const DEFAULT_COMPACT: CompactState = {
-  overviewStats:   false,
-  overviewDamage:  false,
-  overviewTyres:   0,
-  sessionCards:    false,
-  sessionWeather:  0,
-  sessionHeader:   false,
-  powerCards:      false,
-  strategySummary: false,
-  playbackBar:     false,
+  overviewStats:     'normal',
+  overviewDamage:    'normal',
+  overviewTyres:     0,
+  standingsTable:    'normal',
+  standingsTiming:   'normal',
+  standingsErs:      'normal',
+  standingsStrategy: 'normal',
+  sessionCards:      'normal',
+  sessionProximity:  'normal',
+  sessionEvents:     'normal',
+  sessionWeather:    0,
+  sessionHeader:     0,
+  powerCards:        'normal',
+  strategySummary:   'normal',
+  playbackBar:       'normal',
 }
 
-// Boolean (Normal/Compact) compact sections — the integer controls are handled
+// Density key sections — the integer controls are handled
 // separately because they expose more than two density levels.
-export type CompactBoolKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather'>
+export type CompactDensityKey = Exclude<keyof CompactState, 'overviewTyres' | 'sessionWeather' | 'sessionHeader'>
+export type CompactBoolKey = CompactDensityKey
 
-export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; label: string }[] }[] = [
+export const COMPACT_GROUPS: { group: string; sections: { key: CompactDensityKey; label: string }[] }[] = [
   { group: 'Overview', sections: [
     { key: 'overviewStats',  label: 'Stats Row' },
     { key: 'overviewDamage', label: 'Damage Cards' },
-    // overviewTyres (Tyre Cards) rendered as the 6-level control in Settings.
+    // overviewTyres (Tyre Cards) rendered as the multi-level control in Settings.
+  ] },
+  { group: 'Standings', sections: [
+    { key: 'standingsTable',    label: 'Timing Tower' },
+    { key: 'standingsTiming',   label: 'Timing Card' },
+    { key: 'standingsErs',      label: 'Energy Recovery Card' },
+    { key: 'standingsStrategy', label: 'Strategy Card' },
   ] },
   { group: 'Session', sections: [
-    { key: 'sessionCards',   label: 'Info Cards' },
-    { key: 'sessionHeader',  label: 'Header' },
+    { key: 'sessionCards',     label: 'Info Cards' },
+    { key: 'sessionProximity', label: 'Proximity' },
+    { key: 'sessionEvents',    label: 'Events' },
+    // sessionHeader and sessionWeather rendered as integer-level controls in Settings.
   ] },
   { group: 'Power', sections: [
     { key: 'powerCards', label: 'Power Cards' },
@@ -163,10 +195,17 @@ export const COMPACT_GROUPS: { group: string; sections: { key: CompactBoolKey; l
   ] },
 ]
 
-export const ALL_COMPACT_BOOL_KEYS: CompactBoolKey[] =
+export const ALL_COMPACT_BOOL_KEYS: CompactDensityKey[] =
   COMPACT_GROUPS.flatMap(g => g.sections.map(s => s.key))
 
+export const DENSITY_OPTIONS: { value: DensityMode; label: string }[] = [
+  { value: 'compact',  label: 'Compact' },
+  { value: 'normal',   label: 'Normal' },
+  { value: 'spacious', label: 'Spacious' },
+]
+
 export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 6, label: 'Spacious' },
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },
@@ -176,6 +215,15 @@ export const TYRE_LEVEL_OPTIONS: { value: number; label: string }[] = [
 ]
 
 export const WEATHER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 4, label: 'Spacious' },
+  { value: 0, label: 'Normal' },
+  { value: 1, label: 'Compact 1' },
+  { value: 2, label: 'Compact 2' },
+  { value: 3, label: 'Compact 3' },
+]
+
+export const HEADER_LEVEL_OPTIONS: { value: number; label: string }[] = [
+  { value: 3, label: 'Spacious' },
   { value: 0, label: 'Normal' },
   { value: 1, label: 'Compact 1' },
   { value: 2, label: 'Compact 2' },

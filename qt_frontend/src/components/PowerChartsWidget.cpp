@@ -36,10 +36,10 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
         chart_->setAxisTimeTicker(xId_[sec], "%m:%s");
     };
 
-    // ── POWER SPLIT (panel 0) ────────────────────────────────────────────────
+    // ── POWER (panel 0) ──────────────────────────────────────────────────────
     timeAxis(SPLIT);
-    const int axSplit = chart_->addAxis({ ChartView::Side::Left, 0.0, 1000.0, QColor(), true, 'f', 0 }, SPLIT);
-    chart_->setPanelTitle(SPLIT, "POWER SPLIT");
+    const int axSplit = chart_->addAxis({ ChartView::Side::Left, 0.0, 500.0, QColor(), true, 'f', 0 }, SPLIT);
+    chart_->setPanelTitle(SPLIT, "POWER");
     chart_->setPanelLegendVisible(SPLIT, false);
     splitIceId_  = chart_->addSeries({ "ICE",   C_ICE,  1.5, xId_[SPLIT], axSplit, "", 2, false, true });
     splitMgukId_ = chart_->addSeries({ "MGU-K", C_MGUK, 1.5, xId_[SPLIT], axSplit, "", 2, false, true });

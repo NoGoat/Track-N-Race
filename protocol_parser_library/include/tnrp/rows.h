@@ -173,6 +173,7 @@ struct LapRow {
     int         sector{};
     bool        lap_invalid{};
     int         penalties_s{};
+    int         driver_status{-1};
 };
 
 template <>
@@ -193,7 +194,8 @@ struct glz::meta<LapRow> {
         "num_pit_stops",  &T::num_pit_stops,
         "sector",         &T::sector,
         "lap_invalid",    &T::lap_invalid,
-        "penalties_s",    &T::penalties_s
+        "penalties_s",    &T::penalties_s,
+        "driver_status",  &T::driver_status
     );
 };
 

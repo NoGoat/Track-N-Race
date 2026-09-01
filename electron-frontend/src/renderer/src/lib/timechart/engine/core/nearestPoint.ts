@@ -4,6 +4,28 @@ import { CanvasLayer } from './canvasLayer';
 import { ContentBoxDetector } from "./contentBoxDetector";
 import { DataPoint, RenderModel } from './renderModel';
 
+/** Convert a series point using its optional shared-canvas panel viewport. */
+export function seriesPointToPixels(
+    model: RenderModel,
+    series: TimeChartSeriesOptions,
+    x: number,
+    y: number,
+) {
+    const pxX = model.xScale(x)!;
+    const viewport = series.viewport;
+    if (!viewport) return { x: pxX, y: model.yScale(y)! };
+
+    const [plotBottom, plotTop] = model.yScale.range().map(Number);
+    const [yMin, yMax] = model.yScale.domain().map(Number);
+    const panelTop = plotTop + viewport.top * (plotBottom - plotTop);
+    const panelBottom = plotTop + viewport.bottom * (plotBottom - plotTop) - (viewport.gapAfter ?? 0);
+    const normalized = (y - yMin) / (yMax - yMin);
+    return {
+        x: pxX,
+        y: panelBottom - normalized * (panelBottom - panelTop),
+    };
+}
+
 export class NearestPointModel {
     dataPoints = new Map<TimeChartSeriesOptions, DataPoint>();
     private pointCache = new Map<TimeChartSeriesOptions, DataPoint>();
@@ -26,7 +48,11 @@ export class NearestPointModel {
         });
         detector.left.on(() => {
             this.lastPointerPos = null;
-            this.adjustPoints();
+            this.dataPoints.clear();
+            // Leaving the plot is a hover-state change even when no nearest
+            // point is currently available. Custom tooltips listen to this
+            // event to hide themselves, so always publish the transition.
+            this.updated.dispatch();
         });
 
         model.updated.on(() => this.adjustPoints());
@@ -34,6 +60,10 @@ export class NearestPointModel {
 
     adjustPoints() {
         if (this.lastPointerPos === null) {
+            // Model updates happen every display frame while a chart scrolls.
+            // With no active pointer there is no nearest-point work to publish;
+            // avoid waking the SVG markers and tooltip listeners every frame.
+            if (this.dataPoints.size === 0) return;
             this.dataPoints.clear();
         } else {
             const domain = this.model.xScale.invert(this.lastPointerPos.x);
@@ -55,8 +85,9 @@ export class NearestPointModel {
                 }
                 const x = s.data.xAt(nearestIndex);
                 const y = s.data.yAt(nearestIndex);
-                const pxX = this.model.xScale(x)!;
-                const pxY = this.model.yScale(y)!;
+                const pixel = seriesPointToPixels(this.model, s, x, y);
+                const pxX = pixel.x;
+                const pxY = pixel.y;
 
                 if (pxX <= width && pxX >= 0 && pxY <= height && pxY >= 0) {
                     let nearest = this.pointCache.get(s);

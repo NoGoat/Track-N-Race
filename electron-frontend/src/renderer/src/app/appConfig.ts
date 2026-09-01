@@ -8,6 +8,11 @@ export const WINDOWS: { label: string; value: number }[] = [
 ]
 
 export type Tab = 'core' | 'analyze' | 'timing_tower' | 'input' | 'misc' | 'power' | 'tyres' | 'session' | 'strategy'
+export type Theme = 'dark' | 'midnight' | 'light'
+export type TitlebarUpdateInterval = 0 | 250 | 500 | 1000
+export type DistanceChartMode = 'CL' | 'PL' | 'FL' | 'RL'
+export type ChartMode = DistanceChartMode | 'AL' | 'SL'
+export type ChartWindow = number | ChartMode
 
 export interface CoreLayout {
   showStats: boolean
@@ -35,11 +40,57 @@ export const DEFAULT_CORE_LAYOUT: CoreLayout = {
   damageItems: { wingFl: true, wingFr: true, wingRear: true, floor: true, diffuser: true, sidepod: false, gearbox: true, engine: true, tyreDmgFl: false, tyreDmgFr: false, tyreDmgRl: false, tyreDmgRr: false, brakeDmgFl: false, brakeDmgFr: false, brakeDmgRl: false, brakeDmgRr: false },
 }
 
-export interface InputLayout { showGear: boolean; showInputs: boolean; showSteering: boolean }
-export const DEFAULT_INPUT_LAYOUT: InputLayout = { showGear: true, showInputs: true, showSteering: true }
+export interface InputLayout {
+  showGear: boolean
+  showAccelerator: boolean
+  showBrake: boolean
+  showSteering: boolean
+}
+export const DEFAULT_INPUT_LAYOUT: InputLayout = {
+  showGear: true,
+  showAccelerator: true,
+  showBrake: true,
+  showSteering: true,
+}
 
-export interface MiscLayout { showGForce: boolean; showRideHeight: boolean }
-export const DEFAULT_MISC_LAYOUT: MiscLayout = { showGForce: true, showRideHeight: true }
+export type InputPageLayout = 'grid' | 'vertical'
+export type InputPedalLayout = 'combined' | 'combined2' | 'split'
+export type PowerPageLayout = 'grid' | 'vertical'
+export type TyresPageLayout = 'grid' | 'vertical'
+export type MiscSeriesLayout = 'combined' | 'split'
+export interface PageLayouts {
+  input: InputPageLayout
+  inputPedals: InputPedalLayout
+  miscGForce: MiscSeriesLayout
+  miscRideHeight: MiscSeriesLayout
+  power: PowerPageLayout
+  tyres: TyresPageLayout
+}
+export const DEFAULT_PAGE_LAYOUTS: PageLayouts = {
+  input: 'grid',
+  inputPedals: 'combined',
+  miscGForce: 'combined',
+  miscRideHeight: 'combined',
+  power: 'grid',
+  tyres: 'grid',
+}
+
+export interface MiscLayout {
+  showGForce: boolean
+  showGLateral: boolean
+  showGLongitudinal: boolean
+  showRideHeight: boolean
+  showRideFront: boolean
+  showRideRear: boolean
+}
+export const DEFAULT_MISC_LAYOUT: MiscLayout = {
+  showGForce: true,
+  showGLateral: true,
+  showGLongitudinal: true,
+  showRideHeight: true,
+  showRideFront: true,
+  showRideRear: true,
+}
 
 export interface PowerLayout {
   statsCards: { totalPower: boolean; ice: boolean; mguk: boolean; split: boolean; ersStore: boolean; ersPct: boolean; fuel: boolean }
@@ -53,13 +104,97 @@ export const DEFAULT_POWER_LAYOUT: PowerLayout = {
 export interface TyresLayout { charts: { surfaceTemp: boolean; innerTemp: boolean; brakeTemp: boolean; tyreLife: boolean } }
 export const DEFAULT_TYRES_LAYOUT: TyresLayout = { charts: { surfaceTemp: true, innerTemp: true, brakeTemp: true, tyreLife: true } }
 
+export interface SessionLayout {
+  header: {
+    gpName: boolean
+    marshalZones: boolean
+    timeLeft: boolean
+  }
+  showMap: boolean
+  showProximity: boolean
+  showEvents: boolean
+  showWeather: boolean
+  sidebarPct: number
+  statsCards: {
+    totalLaps: boolean
+    lapsRemaining: boolean
+    pitSpeedLimit: boolean
+    pitWindow: boolean
+    pitRejoin: boolean
+    trackTemp: boolean
+    airTemp: boolean
+    trackLength: boolean
+    timeOfDay: boolean
+  }
+}
+export const DEFAULT_SESSION_LAYOUT: SessionLayout = {
+  header: {
+    gpName: true,
+    marshalZones: true,
+    timeLeft: true,
+  },
+  showMap: true,
+  showProximity: true,
+  showEvents: true,
+  showWeather: true,
+  sidebarPct: 28,
+  statsCards: {
+    totalLaps: true,
+    lapsRemaining: true,
+    pitSpeedLimit: true,
+    pitWindow: true,
+    pitRejoin: true,
+    trackTemp: true,
+    airTemp: true,
+    trackLength: true,
+    timeOfDay: true,
+  }
+}
+
+export interface StandingsLayout {
+  showTimingTower: boolean
+  sidebarPct: number
+  cards: {
+    timing: boolean
+    energyRecovery: boolean
+    strategy: boolean
+  }
+}
+export const DEFAULT_STANDINGS_LAYOUT: StandingsLayout = {
+  showTimingTower: true,
+  sidebarPct: 28,
+  cards: {
+    timing: true,
+    energyRecovery: true,
+    strategy: true,
+  },
+}
+
 export const TAB_LABELS: Record<Tab, string> = {
   core: 'Overview', analyze: 'Analysis', timing_tower: 'Standings', input: 'Input', power: 'Power', tyres: 'Tyres', session: 'Session', misc: 'Misc', strategy: 'Strategy'
 }
 
 export const TAB_OPTIONS = (['core', 'analyze', 'session', 'strategy', 'timing_tower', 'input', 'power', 'tyres', 'misc'] as Tab[])
   .map(value => ({ value, label: TAB_LABELS[value] }))
-export const WINDOW_OPTIONS = WINDOWS.map(({ value, label }) => ({ value, label }))
+export interface ChartWindowOption { value: ChartWindow; label: string }
+export interface ChartWindowOptionGroup { label: string; options: ChartWindowOption[] }
+
+export const WINDOW_OPTIONS: ChartWindowOption[] = WINDOWS.map(({ value, label }) => ({ value, label }))
+
+export function getChartWindowOptionGroups(clAvailable: boolean, recordingOpen: boolean): ChartWindowOptionGroup[] {
+  const lapOptions: ChartWindowOption[] = clAvailable
+    ? [
+        { value: 'CL', label: 'Current' },
+        { value: 'PL', label: 'Previous' },
+        { value: 'FL', label: 'Fastest' },
+        ...(recordingOpen ? [{ value: 'RL' as const, label: 'Selected' }] : []),
+      ]
+    : []
+  return [
+    { label: 'Laps', options: [...lapOptions, { value: 'SL', label: 'Stint Laps' }, { value: 'AL', label: 'All Laps' }] },
+    { label: 'Time', options: WINDOW_OPTIONS },
+  ]
+}
 export const PLAYBACK_SPEED_OPTIONS = [
   { value: 0.25, label: '0.25x' },
   { value: 0.5, label: '0.5x' },

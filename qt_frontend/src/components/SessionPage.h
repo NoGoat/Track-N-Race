@@ -7,6 +7,8 @@
 #include <tnrp/rows.h>
 #include <tnrp/control_rows.h>
 
+#include "SessionLayout.h"
+
 #include <vector>
 
 class QLabel;
@@ -22,6 +24,11 @@ class SessionPage : public QWidget {
 
 public:
     explicit SessionPage(QWidget* parent = nullptr);
+
+    SessionLayout loadLayout();
+    void saveLayout(const SessionLayout& layout);
+    void applyLayout(const SessionLayout& layout);
+    void applyAndSaveLayout(const SessionLayout& layout);
 
     // Cached rows fed by MainWindow; nullptr = the row hasn't been seen yet.
     void updateSession(const tnrp::SessionRow* session, const TimingRow* timing);
@@ -45,7 +52,10 @@ public:
     // re-feeds the latest session row to repaint). Driven independently by Settings.
     void setCardsCompact(bool on);
     void setWeatherCompactLevel(int level);
-    void setHeaderCompact(bool on);
+    void setHeaderCompact(bool on) { setHeaderCompactLevel(on ? 1 : 0); }
+    void setHeaderCompactLevel(int level);
+    void setEventsCompact(bool on);
+    void setProximityCompact(bool on);
 
 private:
     void buildHeader();         // (re)populate the top header at the current density
@@ -61,8 +71,12 @@ private:
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
     QWidget*     sp_weatherStrip_ = nullptr;   // weather strip container, repopulated on compact toggle
     bool         cardsCompact_    = false;     // per-section compact density (ui/compact/session*)
-    int          weatherCompactLevel_ = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2
-    bool         headerCompact_   = false;
+    int          weatherCompactLevel_ = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2, 3 Compact 3
+    int          headerCompactLevel_  = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2
+    bool         eventsCompact_   = false;
+    QLabel*      sp_eventsHeader  = nullptr;
+    bool         proximityCompact_ = false;
+    QLabel*      sp_proxHeader    = nullptr;
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;
     QLabel*      sp_statRemain    = nullptr;
@@ -88,6 +102,22 @@ private:
 
     TrackMapWidget* trackMap_   = nullptr;
     int             mapTrackId_ = -1;   // last track loaded into the map widget
+
+    SessionLayout layout_;
+    QWidget* sp_headerSep_ = nullptr;
+    QWidget* sp_gpBlock_ = nullptr;
+    QWidget* sp_zoneBlock_ = nullptr;
+    QWidget* sp_tmBlock_ = nullptr;
+    QWidget* sp_headerDiv1_ = nullptr;
+    QWidget* sp_headerDiv2_ = nullptr;
+    QWidget* sp_statsSep_ = nullptr;
+    QWidget* sp_statCardFrames_[SessionLayout::StatCardCount] = {};
+    QWidget* sp_statCardDivs_[SessionLayout::StatCardCount - 1] = {};
+    QWidget* leftArea_ = nullptr;
+    QWidget* sp_weatherSep_ = nullptr;
+    QWidget* midVLine_ = nullptr;
+    QWidget* rightPanel_ = nullptr;
+    QWidget* sp_proxSep_ = nullptr;
 
     // Fullscreen map: hide every sibling of the map so it fills the session view,
     // mirroring the Electron app's maximised map. Toggled from the map's overlay

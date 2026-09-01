@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace tnrp {
 
@@ -25,15 +27,27 @@ inline Override overrideFromString(const std::string& s) {
     return Override::Auto;
 }
 
+struct UdpForwardTarget {
+    std::string address;
+    uint16_t    port = 20777;
+};
+
+inline constexpr size_t kMaxUdpForwardTargets = 15;
+
 // Runtime configuration for the engine. Supplied at construction (the bridge
-// fills it from CLI args) and mutated live via Engine::setOverride / setLogging
-// / restartUdp (driven by stdin commands from Electron).
+// fills it from CLI args) and mutated live via Engine::setOverride / setLogging /
+// setStrategyMinimumStops / restartUdp.
 struct Config {
     uint16_t    port           = 20777;
     std::string bindAddress    = "0.0.0.0";
     Override    protocol       = Override::Auto;
     bool        loggingEnabled = false;
     std::string outputDirectory;        // where .tnrd files are written
+    int         strategyMinimumStops = 1;
+
+    // Raw datagrams are copied to these IPv4 destinations before parsing. The
+    // listener caps this list at 15 even if a host supplies more.
+    std::vector<UdpForwardTarget> udpForwardTargets;
 
     // Electron/N-API playback fast path. When true, playback emits the hot
     // 60 Hz rows (telemetry/motion/motion_ex) packed via Sink::onBinary and

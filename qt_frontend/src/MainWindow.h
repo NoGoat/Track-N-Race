@@ -72,6 +72,8 @@ public:
     void    setCompactSection(tnr::CompactSection s, bool on);
     int     weatherCompactLevel() const;
     void    setWeatherCompactLevel(int level);
+    int     headerCompactLevel() const;
+    void    setHeaderCompactLevel(int level);
     // Overview tyre cards have four density levels (0 Full … 3 Ultra Compact 2),
     // so they use an int level rather than the on/off compactSection() path.
     int     tyresCompactLevel() const { return settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(); }
@@ -140,9 +142,9 @@ private:
     std::optional<tnrp::TyreSetsRow> lastTyreSetsData;
 
     // ── Strategy page ─────────────────────────────────────────────
-    // Self-contained: fed the cached JSON rows below on refresh, runs its own
-    // stint/undercut/wear calculations internally. No SessionModel binding.
+    // Snapshot-only renderer; libtnrp owns all strategy state and calculations.
     StrategyPage* strategyPage_ = nullptr;
+    std::optional<tnrp::StrategySnapshotRow> lastStrategyData;
 
     // ── Session page ──────────────────────────────────────────────
     // Self-contained page widget (header, stat cards, track map, proximity,

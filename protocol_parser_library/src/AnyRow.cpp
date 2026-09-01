@@ -50,6 +50,7 @@ std::optional<AnyRow> parseRow(std::string_view jsonl) {
     if (t == "session_history_fastest") return readAs<SessionHistoryFastestRow>(jsonl);
     if (t == "protocol_status")         return readAs<ProtocolStatusRow>(jsonl);
     if (t == "protocol_warning")        return readAs<ProtocolWarningRow>(jsonl);
+    if (t == "strategy")                return readAs<StrategySnapshotRow>(jsonl);
     return std::nullopt;
 }
 

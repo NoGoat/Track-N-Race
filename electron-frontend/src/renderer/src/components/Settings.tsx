@@ -1,16 +1,19 @@
-import { Fragment, useState, memo } from 'react'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical } from 'lucide-react'
+import { Fragment, useLayoutEffect, useRef, useState, memo } from 'react'
+import { flushSync } from 'react-dom'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid } from 'lucide-react'
 import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
-  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS,
+  GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
-  type GraphViewState, type GraphView, type CompactState, type ChartYAxisState, type YAxisBehavior,
+  type GraphViewState, type GraphView, type CompactState, type DensityMode, type ChartYAxisState, type YAxisBehavior,
 } from '../lib/graphSections'
 import iconTransparent from '../assets/icon_transparent.png'
 import iconTransparentLight from '../assets/icon_transparent_light.png'
 import { ATTRIBUTIONS, ATTRIBUTION_SECTIONS } from '../data/attributions'
 import type { ChartFrameRate } from '../lib/timechart/frameRate'
-import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS } from '../lib/buttonStyles'
+import type { PageLayouts, Theme, TitlebarUpdateInterval } from '../app/appConfig'
+import { useModalPresence } from '../lib/useModalPresence'
 
 interface Props {
   isOpen: boolean
@@ -21,8 +24,8 @@ interface Props {
   onTyreWearModeChange: (v: 'wear' | 'life') => void
   bannerDuration: number
   onBannerDurationChange: (v: number) => void
-  theme: 'dark' | 'light'
-  onThemeChange: (v: 'dark' | 'light') => void
+  theme: Theme
+  onThemeChange: (v: Theme) => void
   sectorColors: boolean
   onSectorColorsChange: (v: boolean) => void
   driversMode: 'dots' | 'both' | 'labels'
@@ -34,6 +37,8 @@ interface Props {
   forcedWarningFormat: number | null
   nativeTitlebar: boolean
   onNativeTitlebarChange: (v: boolean) => void
+  titlebarUpdateInterval: TitlebarUpdateInterval
+  onTitlebarUpdateIntervalChange: (v: TitlebarUpdateInterval) => void
   reduceAnimations: boolean
   onReduceAnimationsChange: (v: boolean) => void
   fpsInFocus: ChartFrameRate
@@ -42,6 +47,12 @@ interface Props {
   onFpsOutOfFocusChange: (v: ChartFrameRate) => void
   mapDimmed: boolean
   onMapDimmedChange: (v: boolean) => void
+  pageLayouts: PageLayouts
+  onPageLayoutsChange: (v: PageLayouts) => void
+  secondaryHorizontalCrosshairEnabled: boolean
+  onSecondaryHorizontalCrosshairEnabledChange: (v: boolean) => void
+  secondaryVerticalCrosshairEnabled: boolean
+  onSecondaryVerticalCrosshairEnabledChange: (v: boolean) => void
   graphView: GraphViewState
   onGraphViewChange: (v: GraphViewState) => void
   compact: CompactState
@@ -59,21 +70,61 @@ const SegmentedControl = memo(function SegmentedControl<T extends string | numbe
   value: T
   onChange: (v: T) => void
 }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef(new globalThis.Map<string, HTMLButtonElement>())
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null)
+
+  useLayoutEffect(() => {
+    const el = itemRefs.current.get(String(value))
+    if (!el) return
+
+    const updateIndicator = () => {
+      setIndicator(current => {
+        const next = { left: el.offsetLeft, width: el.offsetWidth }
+        return current !== null && current.left === next.left && current.width === next.width ? current : next
+      })
+    }
+
+    updateIndicator()
+    const container = containerRef.current
+    const resizeObserver = new ResizeObserver(updateIndicator)
+    if (container) resizeObserver.observe(container)
+    resizeObserver.observe(el)
+    return () => resizeObserver.disconnect()
+  }, [value, options])
+
   return (
-    <div className="flex gap-1">
-      {options.map((opt) => (
-        <button
-          key={String(opt.value)}
-          onClick={() => onChange(opt.value)}
-          className={`px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors border-b-2 ${
-            opt.value === value
-              ? 'border-[var(--border-focus)] text-[var(--text-primary)]'
-              : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
+    <div ref={containerRef} className="relative flex gap-1 isolate">
+      {indicator && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 left-0 h-[2px] rounded-full bg-[var(--border-focus)] transition-[transform,width] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+          style={{
+            width: indicator.width,
+            transform: `translateX(${indicator.left}px)`,
+          }}
+        />
+      )}
+      {options.map((opt) => {
+        const active = opt.value === value
+        return (
+          <button
+            key={String(opt.value)}
+            ref={(node) => {
+              if (node) itemRefs.current.set(String(opt.value), node)
+              else itemRefs.current.delete(String(opt.value))
+            }}
+            onClick={() => onChange(opt.value)}
+            className={`relative z-10 px-3 py-1 text-xs font-medium whitespace-nowrap transition-colors border-b-2 border-transparent ${
+              active
+                ? 'text-[var(--text-primary)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
     </div>
   )
 }) as <T extends string | number | boolean>(props: { options: Option<T>[]; value: T; onChange: (v: T) => void }) => React.ReactElement
@@ -102,7 +153,7 @@ const Row = memo(function Row({ label, description, warning, children }: {
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-8 px-4 py-3.5 hover:bg-[var(--bg-hover)]/30 rounded-xl transition-all duration-150">
+    <div className="flex items-center justify-between gap-8 px-4 py-3.5 rounded-xl">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-[var(--text-primary)] leading-none">{label}</p>
         <p className="text-xs text-[var(--text-muted)] mt-1.5 leading-relaxed">{description}</p>
@@ -119,6 +170,24 @@ const Row = memo(function Row({ label, description, warning, children }: {
 })
 
 type RestartStatus = 'idle' | 'applying' | 'ok' | 'error'
+type UdpForwardTarget = { address: string; port: number }
+
+function loadForwardTargets(): UdpForwardTarget[] {
+  const value = window.electronStore.get('udp.forwardTargets', [])
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 15).flatMap((item): UdpForwardTarget[] => {
+    if (!item || typeof item !== 'object') return []
+    const candidate = item as Record<string, unknown>
+    return typeof candidate.address === 'string' && typeof candidate.port === 'number'
+      ? [{ address: candidate.address, port: candidate.port }]
+      : []
+  })
+}
+
+function isIpv4Address(value: string): boolean {
+  const parts = value.trim().split('.')
+  return parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
 
 const Settings = memo(function Settings({
   isOpen, onClose,
@@ -134,6 +203,8 @@ const Settings = memo(function Settings({
   forcedWarningFormat,
   nativeTitlebar,
   onNativeTitlebarChange,
+  titlebarUpdateInterval,
+  onTitlebarUpdateIntervalChange,
   reduceAnimations,
   onReduceAnimationsChange,
   fpsInFocus,
@@ -142,6 +213,12 @@ const Settings = memo(function Settings({
   onFpsOutOfFocusChange,
   mapDimmed,
   onMapDimmedChange,
+  pageLayouts,
+  onPageLayoutsChange,
+  secondaryHorizontalCrosshairEnabled,
+  onSecondaryHorizontalCrosshairEnabledChange,
+  secondaryVerticalCrosshairEnabled,
+  onSecondaryVerticalCrosshairEnabledChange,
   graphView,
   onGraphViewChange,
   compact,
@@ -149,32 +226,117 @@ const Settings = memo(function Settings({
   chartYAxis,
   onChartYAxisChange,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
+  const modalPresence = useModalPresence(isOpen)
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
+  const settingsContentRef = useRef<HTMLDivElement>(null)
+  const settingsNavigationSequence = useRef(0)
+  const settingsSidebarRef = useRef<HTMLDivElement>(null)
+  const settingsSidebarItemRefs = useRef(new globalThis.Map<string, HTMLButtonElement>())
+  const [sidebarIndicator, setSidebarIndicator] = useState<{ top: number; height: number } | null>(null)
+  const selectedSidebarItem = view === 'category' ? activeCategory : view
+
+  useLayoutEffect(() => {
+    const sidebar = settingsSidebarRef.current
+    const item = settingsSidebarItemRefs.current.get(selectedSidebarItem)
+    if (!sidebar || !item) return
+
+    const updateIndicator = () => {
+      setSidebarIndicator(current => {
+        const next = { top: item.offsetTop, height: item.offsetHeight }
+        return current !== null && current.top === next.top && current.height === next.height ? current : next
+      })
+    }
+
+    updateIndicator()
+    const resizeObserver = new ResizeObserver(updateIndicator)
+    resizeObserver.observe(sidebar)
+    resizeObserver.observe(item)
+    return () => resizeObserver.disconnect()
+  }, [modalPresence.mounted, selectedSidebarItem])
+
+  function navigateToSettingsView(
+    nextView: 'category' | 'about' | 'attributions',
+    nextCategory = activeCategory,
+  ): void {
+    if (nextView === view && (nextView !== 'category' || nextCategory === activeCategory)) return
+
+    const updateView = () => {
+      setActiveCategory(nextCategory)
+      setView(nextView)
+    }
+    const content = settingsContentRef.current
+    if (reduceAnimations || !content) {
+      settingsNavigationSequence.current += 1
+      content?.getAnimations().forEach(animation => animation.cancel())
+      updateView()
+      return
+    }
+
+    const sequence = ++settingsNavigationSequence.current
+    content.getAnimations().forEach(animation => animation.cancel())
+    const currentOpacity = getComputedStyle(content).opacity
+    const fadeOut = content.animate(
+      [{ opacity: currentOpacity }, { opacity: 0 }],
+      { duration: 90, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'both' },
+    )
+
+    void fadeOut.finished.then(() => {
+      if (sequence !== settingsNavigationSequence.current) return
+      flushSync(updateView)
+      fadeOut.cancel()
+
+      const fadeIn = content.animate(
+        [
+          { opacity: 0, transform: 'translateY(10px)' },
+          { opacity: 1, transform: 'translateY(0)' },
+        ],
+        { duration: 210, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' },
+      )
+      void fadeIn.finished.then(() => fadeIn.cancel(), () => {})
+    }, () => {})
+  }
   
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
+  const [updateChecksEnabled, setUpdateChecksEnabled] = useState<boolean>(() => window.electronStore.get('updates.enabled', true) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
   
   const [port, setPort]         = useState<number>(() => window.electronStore.get('udp.port', 20777) as number)
   const [addr, setAddr]         = useState<string>(() => window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
+  const [forwardingEnabled, setForwardingEnabled] = useState<boolean>(
+    () => window.electronStore.get('udp.forwardingEnabled', false) as boolean,
+  )
+  const [forwardTargets, setForwardTargets] = useState<UdpForwardTarget[]>(loadForwardTargets)
   const [udpStatus, setUdpStatus] = useState<RestartStatus>('idle')
   const [errorMsg, setErrorMsg]   = useState('')
   const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25' | 'f1_26'>(
     () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25' | 'f1_26')
   )
 
-  if (!isOpen) return null
+  if (!modalPresence.mounted) return null
 
   const portValid = Number.isInteger(port) && port >= 1 && port <= 65535
+  const forwardTargetsValid = !forwardingEnabled || forwardTargets.every(target =>
+    isIpv4Address(target.address) && Number.isInteger(target.port) && target.port >= 1 && target.port <= 65535 &&
+    !(target.port === port && (target.address.trim().startsWith('127.') || target.address.trim() === addr.trim())),
+  )
   const dirty     = port !== (window.electronStore.get('udp.port', 20777) as number)
                  || addr !== (window.electronStore.get('udp.bindAddress', '0.0.0.0') as string)
+                 || forwardingEnabled !== (window.electronStore.get('udp.forwardingEnabled', false) as boolean)
+                 || JSON.stringify(forwardTargets) !== JSON.stringify(loadForwardTargets())
 
   async function applyUdp() {
-    if (!portValid || udpStatus === 'applying') return
+    if (!portValid || !forwardTargetsValid || udpStatus === 'applying') return
     setUdpStatus('applying')
+    const normalizedForwardTargets = forwardTargets.map(target => ({
+      address: target.address.trim(), port: target.port,
+    }))
+    setForwardTargets(normalizedForwardTargets)
     window.electronStore.set('udp.port', port)
     window.electronStore.set('udp.bindAddress', addr)
+    window.electronStore.set('udp.forwardingEnabled', forwardingEnabled)
+    window.electronStore.set('udp.forwardTargets', normalizedForwardTargets)
     const result = await window.udpBridge.restart()
     if (result.ok) {
       setUdpStatus('ok')
@@ -203,12 +365,18 @@ const Settings = memo(function Settings({
     window.electronStore.set('logging.enabled', val)
   }
 
+  function handleUpdateChecksToggle(value: boolean) {
+    setUpdateChecksEnabled(value)
+    window.electronStore.set('updates.enabled', value)
+  }
+
 
 
   const inputCls = 'bg-[var(--bg-input)] border border-[var(--border-muted)] rounded-lg text-xs text-[var(--text-primary)] px-3 h-8 outline-none focus:border-[var(--border-focus)] transition-colors w-full tabular-nums'
 
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
+    { id: 'layout' as const, label: 'Layout', icon: <LayoutGrid size={14} />, color: '#f97316' },
     { id: 'graphs' as const, label: 'Graphs', icon: <LineChart size={14} />, color: '#0ea5e9' },
     { id: 'yAxis' as const, label: 'Y Axis Behavior', icon: <MoveVertical size={14} />, color: '#6366f1' },
     { id: 'compact' as const, label: 'Compact', icon: <Shrink size={14} />, color: '#14b8a6' },
@@ -220,10 +388,14 @@ const Settings = memo(function Settings({
   ]
 
   const renderAppearance = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-      <Row label="Theme" description="Switch between dark and light interface">
-        <SegmentedControl
-          options={[{ value: 'dark' as const, label: 'Dark' }, { value: 'light' as const, label: 'Light' }]}
+    <div className="flex flex-col gap-1">
+      <Row label="Theme" description="Switch between dark, midnight, and light interface">
+        <SegmentedControl<Theme>
+          options={[
+            { value: 'dark', label: 'Dark' },
+            { value: 'midnight', label: 'Midnight' },
+            { value: 'light', label: 'Light' },
+          ]}
           value={theme} onChange={onThemeChange}
         />
       </Row>
@@ -245,6 +417,18 @@ const Settings = memo(function Settings({
         warning="Requires restarting the application to apply."
       >
         <Toggle value={nativeTitlebar} onChange={onNativeTitlebarChange} />
+      </Row>
+      <Row label="Delta Updates" description="How often the session timer and lap-comparison delta refresh.">
+        <SegmentedControl<TitlebarUpdateInterval>
+          options={[
+            { value: 0, label: 'Realtime' },
+            { value: 250, label: '250 ms' },
+            { value: 500, label: '500 ms' },
+            { value: 1000, label: '1 second' },
+          ]}
+          value={titlebarUpdateInterval}
+          onChange={onTitlebarUpdateIntervalChange}
+        />
       </Row>
       <Row
         label="Reduce Animations"
@@ -289,10 +473,111 @@ const Settings = memo(function Settings({
     <div className="px-4 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{children}</div>
   )
 
+  const renderLayout = () => (
+    <div className="flex flex-col gap-1">
+      <GroupLabel>Inputs</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Input page as a grid or a vertical stack. Every chart keeps its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.input}
+          onChange={(input) => onPageLayoutsChange({ ...pageLayouts, input })}
+        />
+      </Row>
+      <Row
+        label="Pedal Charts"
+        description="Combined uses a signed centre line; Combined 2 overlays both inputs from 0–100%; Split uses two independent charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'combined2' as const, label: 'Combined 2' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.inputPedals}
+          onChange={(inputPedals) => onPageLayoutsChange({ ...pageLayouts, inputPedals })}
+        />
+      </Row>
+      <GroupLabel>Misc</GroupLabel>
+      <Row
+        label="G-Force Charts"
+        description="Show lateral and longitudinal G-force together or as two aligned charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.miscGForce}
+          onChange={(miscGForce) => onPageLayoutsChange({ ...pageLayouts, miscGForce })}
+        />
+      </Row>
+      <Row
+        label="Ride Height Charts"
+        description="Show front and rear ride height together or as two aligned charts."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'combined' as const, label: 'Combined' },
+            { value: 'split' as const, label: 'Split' },
+          ]}
+          value={pageLayouts.miscRideHeight}
+          onChange={(miscRideHeight) => onPageLayoutsChange({ ...pageLayouts, miscRideHeight })}
+        />
+      </Row>
+      <GroupLabel>Power</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Power charts as a 2×2 grid or an aligned vertical stack. Every chart keeps its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.power}
+          onChange={(power) => onPageLayoutsChange({ ...pageLayouts, power })}
+        />
+      </Row>
+      <GroupLabel>Tyres</GroupLabel>
+      <Row
+        label="Chart Layout"
+        description="Arrange the Tyres charts as a 2×2 grid or an aligned vertical stack. Every chart keeps its own selectable horizontal axis."
+      >
+        <SegmentedControl
+          options={[
+            { value: 'grid' as const, label: 'Grid' },
+            { value: 'vertical' as const, label: 'Vertical' },
+          ]}
+          value={pageLayouts.tyres}
+          onChange={(tyres) => onPageLayoutsChange({ ...pageLayouts, tyres })}
+        />
+      </Row>
+      <GroupLabel>Shared Tooltip</GroupLabel>
+      <Row
+        label="Secondary Vertical Crosshair"
+        description="Draw the vertical cursor line on synchronized secondary charts. The hovered chart always keeps its normal crosshair."
+      >
+        <Toggle value={secondaryVerticalCrosshairEnabled} onChange={onSecondaryVerticalCrosshairEnabledChange} />
+      </Row>
+      <Row
+        label="Secondary Horizontal Crosshair"
+        description="Draw the horizontal cursor line on synchronized secondary charts. The hovered chart always keeps its normal crosshair."
+      >
+        <Toggle value={secondaryHorizontalCrosshairEnabled} onChange={onSecondaryHorizontalCrosshairEnabledChange} />
+      </Row>
+    </div>
+  )
+
   const BulkButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
     <button
       onClick={onClick}
-      className={TEXT_ACTION_BUTTON_CLASS}
+      className={BUTTON_CLASS}
     >
       {label}
     </button>
@@ -303,9 +588,8 @@ const Settings = memo(function Settings({
     const setAll = (v: GraphView) =>
       onGraphViewChange(Object.fromEntries(ALL_GRAPH_SECTIONS.map(k => [k, v])) as GraphViewState)
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Show each telemetry graph as its line chart or a raw-values table.</p>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-end px-4 py-3">
           <BulkButton label={anyChart ? 'Set All Table' : 'Set All Chart'} onClick={() => setAll(anyChart ? 'table' : 'chart')} />
         </div>
         {GRAPH_GROUPS.map(group => (
@@ -327,17 +611,22 @@ const Settings = memo(function Settings({
   }
 
   const renderCompact = () => {
-    const anyCompact = ALL_COMPACT_BOOL_KEYS.some(k => compact[k]) || compact.overviewTyres > 0 || compact.sessionWeather > 0
-    const setAll = (on: boolean) => {
-      const next = { ...compact, overviewTyres: on ? 1 : 0, sessionWeather: on ? 1 : 0 }
-      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = on
+    const setAllDensity = (mode: DensityMode) => {
+      const next: CompactState = {
+        ...compact,
+        overviewTyres: mode === 'spacious' ? 6 : mode === 'compact' ? 1 : 0,
+        sessionWeather: mode === 'spacious' ? 4 : mode === 'compact' ? 1 : 0,
+        sessionHeader: mode === 'spacious' ? 3 : mode === 'compact' ? 1 : 0,
+      }
+      for (const k of ALL_COMPACT_BOOL_KEYS) next[k] = mode
       onCompactChange(next)
     }
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Collapse a section's cards to a denser single-line layout.</p>
-          <BulkButton label={anyCompact ? 'Set All Normal' : 'Set All Compact'} onClick={() => setAll(!anyCompact)} />
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-end px-4 py-3 gap-2">
+          <BulkButton label="Set All Compact" onClick={() => setAllDensity('compact')} />
+          <BulkButton label="Set All Normal" onClick={() => setAllDensity('normal')} />
+          <BulkButton label="Set All Spacious" onClick={() => setAllDensity('spacious')} />
         </div>
         {COMPACT_GROUPS.map(group => (
           <div key={group.group}>
@@ -346,19 +635,28 @@ const Settings = memo(function Settings({
               <Fragment key={s.key}>
                 <Row label={s.label} description="">
                   <SegmentedControl
-                    options={[{ value: false, label: 'Normal' }, { value: true, label: 'Compact' }]}
+                    options={DENSITY_OPTIONS}
                     value={compact[s.key]}
                     onChange={(v) => onCompactChange({ ...compact, [s.key]: v })}
                   />
                 </Row>
                 {s.key === 'sessionCards' && (
-                  <Row label="Weather Strip" description="">
-                    <SegmentedControl
-                      options={WEATHER_LEVEL_OPTIONS}
-                      value={compact.sessionWeather}
-                      onChange={(v) => onCompactChange({ ...compact, sessionWeather: v })}
-                    />
-                  </Row>
+                  <>
+                    <Row label="Header" description="">
+                      <SegmentedControl
+                        options={HEADER_LEVEL_OPTIONS}
+                        value={compact.sessionHeader}
+                        onChange={(v) => onCompactChange({ ...compact, sessionHeader: v })}
+                      />
+                    </Row>
+                    <Row label="Weather Strip" description="">
+                      <SegmentedControl
+                        options={WEATHER_LEVEL_OPTIONS}
+                        value={compact.sessionWeather}
+                        onChange={(v) => onCompactChange({ ...compact, sessionWeather: v })}
+                      />
+                    </Row>
+                  </>
                 )}
               </Fragment>
             ))}
@@ -391,9 +689,8 @@ const Settings = memo(function Settings({
       onChartYAxisChange({ overview: { ...tyres }, tyres: { ...tyres }, power })
     }
     return (
-      <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
-        <div className="flex items-center justify-between px-4 py-3">
-          <p className="text-xs text-[var(--text-muted)]">Choose a fixed baseline or fit each graph to its visible data.</p>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-end px-4 py-3">
           <BulkButton
             label={anyDynamic ? 'Set All Fixed' : 'Set All Dynamic'}
             onClick={() => setAll(anyDynamic ? 'fixed' : 'dynamic')}
@@ -436,18 +733,24 @@ const Settings = memo(function Settings({
   }
 
   const renderNotifications = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="Event Banner Duration" description="How long each race event notification is shown before the next one">
         <SegmentedControl
           options={[2, 3, 5, 8, 10].map(v => ({ value: v, label: `${v}s` }))}
           value={bannerDuration} onChange={onBannerDurationChange}
         />
       </Row>
+      <Row
+        label="Check for Updates"
+        description="Check GitHub for a newer Track N Race release when the app starts, at most once per day."
+      >
+        <Toggle value={updateChecksEnabled} onChange={handleUpdateChecksToggle} />
+      </Row>
     </div>
   )
 
   const renderMap = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="Map Opacity" description="Dims the track outline to 40% opacity so driver dots and labels stand out.">
         <Toggle value={mapDimmed} onChange={onMapDimmedChange} />
       </Row>
@@ -485,7 +788,7 @@ const Settings = memo(function Settings({
   )
 
   const renderNetwork = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row label="UDP Port" description="Port the game broadcasts telemetry to (2025 default: 20777)">
         <div className="w-28">
           <input
@@ -507,6 +810,74 @@ const Settings = memo(function Settings({
           />
         </div>
       </Row>
+
+      <Row
+        label="UDP Forward Mode"
+        description="Forward every received packet unchanged to the configured destinations."
+      >
+        <Toggle value={forwardingEnabled} onChange={setForwardingEnabled} />
+      </Row>
+
+      {forwardingEnabled && (
+        <div className="mx-4 my-2 rounded-xl border border-[var(--border-muted)] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-[var(--border-muted)] bg-[var(--bg-input)]/40">
+            <div>
+              <p className="text-xs font-semibold text-[var(--text-primary)]">Forwarding channels</p>
+              <p className="text-[10px] text-[var(--text-muted)] mt-0.5">IPv4 destination and port · {forwardTargets.length}/15 configured</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setForwardTargets([...forwardTargets, { address: '', port: 20777 }])}
+              disabled={forwardTargets.length >= 15}
+              className={BUTTON_CLASS}
+            >
+              Add channel
+            </button>
+          </div>
+          {forwardTargets.length === 0 ? (
+            <p className="px-3 py-4 text-xs text-center text-[var(--text-muted)]">No forwarding channels configured.</p>
+          ) : forwardTargets.map((target, index) => {
+            const targetValid = isIpv4Address(target.address) && Number.isInteger(target.port) &&
+              target.port >= 1 && target.port <= 65535 &&
+              !(target.port === port && (target.address.trim().startsWith('127.') || target.address.trim() === addr.trim()))
+            return (
+              <div key={index} className="flex items-center gap-2 px-3 py-2 border-t first:border-t-0 border-[var(--border-muted)]">
+                <span className="w-5 text-[10px] text-[var(--text-muted)] tabular-nums">{index + 1}</span>
+                <input
+                  type="text"
+                  aria-label={`Forwarding channel ${index + 1} address`}
+                  value={target.address}
+                  placeholder="192.168.1.100"
+                  onChange={event => setForwardTargets(forwardTargets.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, address: event.target.value } : item))}
+                  className={`${inputCls} flex-1 ${!targetValid ? 'border-red-600/60' : ''}`}
+                />
+                <input
+                  type="number"
+                  aria-label={`Forwarding channel ${index + 1} port`}
+                  min={1}
+                  max={65535}
+                  value={target.port}
+                  onChange={event => setForwardTargets(forwardTargets.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, port: Number(event.target.value) } : item))}
+                  className={`${inputCls} no-number-spinner !w-20 shrink-0 ${!targetValid ? 'border-red-600/60' : ''}`}
+                />
+                <button
+                  type="button"
+                  aria-label={`Remove forwarding channel ${index + 1}`}
+                  onClick={() => setForwardTargets(forwardTargets.filter((_, itemIndex) => itemIndex !== index))}
+                  className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )
+          })}
+          {!forwardTargetsValid && (
+            <p className="px-3 pb-2 text-[10px] text-red-400">Enter valid IPv4 destinations and ports. Forwarding back to this listener would create a packet loop.</p>
+          )}
+        </div>
+      )}
       
       {/* Seamless Action Bar */}
       <div className="flex items-center justify-between px-4 py-3.5 mt-2">
@@ -521,8 +892,8 @@ const Settings = memo(function Settings({
         </p>
         <button
           onClick={applyUdp}
-          disabled={!portValid || udpStatus === 'applying'}
-          className={TEXT_ACTION_BUTTON_CLASS}
+          disabled={!portValid || !forwardTargetsValid || udpStatus === 'applying'}
+          className={BUTTON_CLASS}
         >
           {udpStatus === 'applying' ? 'Restarting…' : udpStatus === 'ok' ? 'Applied' : 'Apply & Restart'}
         </button>
@@ -531,7 +902,7 @@ const Settings = memo(function Settings({
   )
 
   const renderProtocol = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row
         label="Detected Protocol"
         description="The protocol version currently detected from incoming UDP packets"
@@ -577,7 +948,7 @@ const Settings = memo(function Settings({
   )
 
   const renderStorage = () => (
-    <div className="flex flex-col gap-1 animate-[eventFadeIn_0.2s_ease-out]">
+    <div className="flex flex-col gap-1">
       <Row
         label="Record Session Data"
         description="Write live telemetry to disk in .tnrd format for later playback or analysis. This may consume disk space."
@@ -598,7 +969,7 @@ const Settings = memo(function Settings({
           />
           <button
             onClick={handleSelectDirectory}
-            className={TEXT_ACTION_BUTTON_CLASS}
+            className={BUTTON_CLASS}
           >
             Browse
           </button>
@@ -608,10 +979,10 @@ const Settings = memo(function Settings({
   )
 
   const renderAbout = () => (
-    <div className="flex flex-col items-center justify-center text-center py-12 animate-[eventFadeIn_0.2s_ease-out] w-full max-w-[640px] select-none mx-auto my-auto">
+    <div className="flex flex-col items-center justify-center text-center py-12 w-full max-w-[640px] select-none mx-auto my-auto">
       {/* Logo */}
       <img
-        src={theme === 'dark' ? iconTransparent : iconTransparentLight}
+        src={theme === 'light' ? iconTransparentLight : iconTransparent}
         alt="Track N Race Logo"
         className="h-24 w-auto mb-6 select-none pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
         draggable="false"
@@ -646,7 +1017,7 @@ const Settings = memo(function Settings({
   )
 
   const renderAttributions = () => (
-    <div className="w-full animate-[eventFadeIn_0.2s_ease-out] select-none">
+    <div className="w-full select-none">
       <h2 className="text-xs font-bold font-mono uppercase tracking-widest text-[var(--text-primary)]">
         Attribution
       </h2>
@@ -663,15 +1034,19 @@ const Settings = memo(function Settings({
               {section.label}
             </div>
             <div className="flex flex-col gap-2">
-              {items.map(item => {
+              {items.map((item, itemIndex) => {
                 const expanded = expandedLicense === item.name
+                const licensePanelId = `attribution-license-${section.category}-${itemIndex}`
                 return (
                   <div
                     key={item.name}
                     className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)]/40 overflow-hidden"
                   >
                     <button
+                      type="button"
                       onClick={() => setExpandedLicense(expanded ? null : item.name)}
+                      aria-expanded={expanded}
+                      aria-controls={licensePanelId}
                       className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
                     >
                       <ChevronDown
@@ -706,11 +1081,17 @@ const Settings = memo(function Settings({
                         <ExternalLink size={13} />
                       </a>
                     </button>
-                    {expanded && (
-                      <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words bg-[var(--bg-input)] border-t border-[var(--border)] p-3 text-[10px] leading-relaxed font-mono text-[var(--text-secondary)]">
-                        {item.licenseText.trim()}
-                      </pre>
-                    )}
+                    <div
+                      id={licensePanelId}
+                      aria-hidden={!expanded}
+                      className={`attribution-license-panel grid ${expanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words bg-[var(--bg-input)] border-t border-[var(--border)] p-3 text-[10px] leading-relaxed font-mono text-[var(--text-secondary)]">
+                          {item.licenseText.trim()}
+                        </pre>
+                      </div>
+                    </div>
                   </div>
                 )
               })}
@@ -725,6 +1106,8 @@ const Settings = memo(function Settings({
     switch (activeCategory) {
       case 'appearance':
         return renderAppearance()
+      case 'layout':
+        return renderLayout()
       case 'graphs':
         return renderGraphs()
       case 'yAxis':
@@ -746,12 +1129,11 @@ const Settings = memo(function Settings({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
-      onClick={onClose}
+      data-state={modalPresence.visible ? 'open' : 'closed'}
+      className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
     >
       <div
-        className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
-        onClick={e => e.stopPropagation()}
+        className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
@@ -765,29 +1147,37 @@ const Settings = memo(function Settings({
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+            className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
           >
-            <X size={14} />
+            <X size={18} />
           </button>
         </div>
 
         {/* Body Container (Sidebar + Content) */}
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
-          <div className="w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none h-full">
+          <div ref={settingsSidebarRef} className="relative w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-card)]/30 p-4 flex flex-col gap-1.5 overflow-y-auto select-none h-full">
+            {sidebarIndicator && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute left-4 top-0 z-10 w-0.5 rounded-r-full bg-[var(--border-focus)] transition-[transform,height] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+                style={{ height: sidebarIndicator.height, transform: `translateY(${sidebarIndicator.top}px)` }}
+              />
+            )}
             {CATEGORIES.map(cat => {
               const active = activeCategory === cat.id
               return (
                 <button
                   key={cat.id}
-                  onClick={() => {
-                    setActiveCategory(cat.id)
-                    setView('category')
+                  ref={node => {
+                    if (node) settingsSidebarItemRefs.current.set(cat.id, node)
+                    else settingsSidebarItemRefs.current.delete(cat.id)
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+                  onClick={() => navigateToSettingsView('category', cat.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                     active && view === 'category'
-                      ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                      ? 'text-[var(--text-primary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
                   <span style={{ color: cat.color }}>{cat.icon}</span>
@@ -801,11 +1191,15 @@ const Settings = memo(function Settings({
 
             {/* Attribution Button */}
             <button
-              onClick={() => setView('attributions')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+              ref={node => {
+                if (node) settingsSidebarItemRefs.current.set('attributions', node)
+                else settingsSidebarItemRefs.current.delete('attributions')
+              }}
+              onClick={() => navigateToSettingsView('attributions')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                 view === 'attributions'
-                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
               <ScrollText size={14} style={{ color: '#a0a8b8' }} />
@@ -814,11 +1208,15 @@ const Settings = memo(function Settings({
 
             {/* About Button */}
             <button
-              onClick={() => setView('about')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-all text-left ${
+              ref={node => {
+                if (node) settingsSidebarItemRefs.current.set('about', node)
+                else settingsSidebarItemRefs.current.delete('about')
+              }}
+              onClick={() => navigateToSettingsView('about')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold font-mono transition-colors text-left ${
                 view === 'about'
-                  ? 'bg-[var(--border-focus)] text-white shadow-sm'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
               <Info size={14} style={{ color: '#a0a8b8' }} />
@@ -832,7 +1230,7 @@ const Settings = memo(function Settings({
               ? 'items-center justify-center'
               : 'items-start justify-start'
           }`}>
-            <div className="w-full max-w-[858px]">
+            <div ref={settingsContentRef} className="w-full max-w-[858px]">
               {view === 'about'
                 ? renderAbout()
                 : view === 'attributions'

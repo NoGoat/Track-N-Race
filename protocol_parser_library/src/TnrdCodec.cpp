@@ -88,173 +88,6 @@ void setError(std::string* out, const std::string& message) {
     if (out) *out = message;
 }
 
-class GzipOutputStream final : public TnrdOutputStream {
-public:
-    GzipOutputStream(const std::string& path, bool append)
-        : file_(openGzip(path, append ? "ab" : "wb")) {
-        if (!file_) {
-            const int openError = errno;
-            error_ = std::string("cannot open gzip output") +
-                (openError ? std::string(": ") + std::strerror(openError) : std::string{});
-        }
-    }
-
-    ~GzipOutputStream() override { (void)finish(); }
-
-    bool valid() const { return file_ != nullptr; }
-
-    bool write(std::string_view data) override {
-        if (!file_ || finished_) return fail("gzip stream is not open");
-        size_t pos = 0;
-        while (pos < data.size()) {
-            const size_t remaining = data.size() - pos;
-            const unsigned int chunk = static_cast<unsigned int>(
-                remaining > 0x7fffffffu ? 0x7fffffffu : remaining);
-            const int written = gzwrite(file_, data.data() + pos, chunk);
-            if (written <= 0) return failGzip("gzwrite failed");
-            pos += static_cast<size_t>(written);
-        }
-        return true;
-    }
-
-    bool flushRecoverable() override {
-        if (!file_ || finished_) return fail("gzip stream is not open");
-        if (gzflush(file_, Z_SYNC_FLUSH) != Z_OK) return failGzip("gzflush failed");
-        return true;
-    }
-
-    bool finish() override {
-        if (finished_) return error_.empty();
-        finished_ = true;
-        if (!file_) return error_.empty();
-        const int rc = gzclose(file_);
-        file_ = nullptr;
-        if (rc != Z_OK) return fail("gzclose failed");
-        return error_.empty();
-    }
-
-    const std::string& error() const override { return error_; }
-
-private:
-    bool fail(const std::string& message) {
-        if (error_.empty()) error_ = message;
-        return false;
-    }
-
-    bool failGzip(const char* prefix) {
-        int code = Z_OK;
-        const char* detail = file_ ? gzerror(file_, &code) : nullptr;
-        return fail(std::string(prefix) + (detail ? std::string(": ") + detail : std::string{}));
-    }
-
-    gzFile file_ = nullptr;
-    bool finished_ = false;
-    std::string error_;
-};
-
-class ZstdOutputStream final : public TnrdOutputStream {
-public:
-    ZstdOutputStream(const std::string& path, bool append) {
-        // Capture errno immediately after the open attempt. Allocating the
-        // compression context/output buffer first can overwrite the useful
-        // filesystem error that Electron needs to show the user.
-        file_ = openFile(path, append ? "ab" : "wb");
-        if (!file_) {
-            const int openError = errno;
-            error_ = std::string("cannot open Zstandard output") +
-                (openError ? std::string(": ") + std::strerror(openError) : std::string{});
-            return;
-        }
-        ctx_ = ZSTD_createCCtx();
-        if (!ctx_) {
-            error_ = "cannot allocate Zstandard compression context";
-            return;
-        }
-        output_.resize(ZSTD_CStreamOutSize());
-        if (!check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_compressionLevel, 3),
-                   "cannot set Zstandard compression level")) return;
-        (void)check(ZSTD_CCtx_setParameter(ctx_, ZSTD_c_checksumFlag, 1),
-                    "cannot enable Zstandard checksum");
-    }
-
-    ~ZstdOutputStream() override {
-        (void)finish();
-        if (ctx_) ZSTD_freeCCtx(ctx_);
-    }
-
-    bool valid() const { return file_ && ctx_ && error_.empty(); }
-
-    bool write(std::string_view data) override {
-        if (!valid() || finished_) return fail("Zstandard stream is not open");
-        ZSTD_inBuffer input{data.data(), data.size(), 0};
-        while (input.pos < input.size) {
-            if (!pump(input, ZSTD_e_continue, false)) return false;
-        }
-        return true;
-    }
-
-    bool flushRecoverable() override {
-        if (!valid() || finished_) return fail("Zstandard stream is not open");
-        ZSTD_inBuffer input{nullptr, 0, 0};
-        size_t remaining = 1;
-        while (remaining != 0) {
-            if (!pump(input, ZSTD_e_flush, true, &remaining)) return false;
-        }
-        if (std::fflush(file_) != 0) return fail("fflush failed for Zstandard output");
-        return true;
-    }
-
-    bool finish() override {
-        if (finished_) return error_.empty();
-        finished_ = true;
-        bool ok = error_.empty();
-        if (file_ && ctx_ && ok) {
-            ZSTD_inBuffer input{nullptr, 0, 0};
-            size_t remaining = 1;
-            while (remaining != 0) {
-                if (!pump(input, ZSTD_e_end, true, &remaining)) { ok = false; break; }
-            }
-        }
-        if (file_) {
-            if (std::fclose(file_) != 0 && ok) ok = fail("fclose failed for Zstandard output");
-            file_ = nullptr;
-        }
-        return ok && error_.empty();
-    }
-
-    const std::string& error() const override { return error_; }
-
-private:
-    bool check(size_t result, const char* prefix) {
-        if (!ZSTD_isError(result)) return true;
-        return fail(std::string(prefix) + ": " + ZSTD_getErrorName(result));
-    }
-
-    bool pump(ZSTD_inBuffer& input, ZSTD_EndDirective directive, bool allowEmpty,
-              size_t* remainingOut = nullptr) {
-        ZSTD_outBuffer output{output_.data(), output_.size(), 0};
-        const size_t remaining = ZSTD_compressStream2(ctx_, &output, &input, directive);
-        if (!check(remaining, "Zstandard compression failed")) return false;
-        if (output.pos > 0 && std::fwrite(output.dst, 1, output.pos, file_) != output.pos)
-            return fail("write failed for Zstandard output");
-        if (!allowEmpty && output.pos == 0 && input.pos == input.size && remaining != 0)
-            return fail("Zstandard compression made no progress");
-        if (remainingOut) *remainingOut = remaining;
-        return true;
-    }
-
-    bool fail(const std::string& message) {
-        if (error_.empty()) error_ = message;
-        return false;
-    }
-
-    std::FILE* file_ = nullptr;
-    ZSTD_CCtx* ctx_ = nullptr;
-    std::vector<char> output_;
-    bool finished_ = false;
-    std::string error_;
-};
-
 bool decompressGzip(const std::string& srcPath, std::FILE* output,
                     bool* partialOut, std::string* errorOut) {
     gzFile input = openGzip(srcPath, "rb");
@@ -341,7 +174,68 @@ bool decompressZstd(const std::string& srcPath, std::FILE* output,
     return !ioFailed && ((!failed && !partial) || written > 0);
 }
 
+TnrdFormat detectZstdVersion(const std::string& path, std::string* errorOut) {
+    std::FILE* input = openFile(path, "rb");
+    if (!input) {
+        setError(errorOut, "cannot reopen Zstandard recording for header detection");
+        return TnrdFormat::Unknown;
+    }
+    ZSTD_DCtx* ctx = ZSTD_createDCtx();
+    if (!ctx) {
+        std::fclose(input);
+        setError(errorOut, "cannot allocate Zstandard header decoder");
+        return TnrdFormat::Unknown;
+    }
+
+    std::vector<char> inputBuffer(ZSTD_DStreamInSize());
+    std::vector<char> outputBuffer(ZSTD_DStreamOutSize());
+    std::string header;
+    bool failed = false;
+    while (header.find('\n') == std::string::npos && header.size() <= 64 * 1024) {
+        const size_t read = std::fread(inputBuffer.data(), 1, inputBuffer.size(), input);
+        if (read == 0) break;
+        ZSTD_inBuffer in{inputBuffer.data(), read, 0};
+        while (in.pos < in.size && header.find('\n') == std::string::npos) {
+            ZSTD_outBuffer out{outputBuffer.data(), outputBuffer.size(), 0};
+            const size_t rc = ZSTD_decompressStream(ctx, &out, &in);
+            if (ZSTD_isError(rc)) {
+                setError(errorOut, std::string("Zstandard header decompression failed: ") +
+                                   ZSTD_getErrorName(rc));
+                failed = true;
+                break;
+            }
+            header.append(outputBuffer.data(), out.pos);
+        }
+        if (failed) break;
+    }
+    ZSTD_freeDCtx(ctx);
+    std::fclose(input);
+
+    if (failed) return TnrdFormat::Unknown;
+    const size_t newline = header.find('\n');
+    if (newline == std::string::npos) {
+        setError(errorOut, "Zstandard recording has no complete JSON header");
+        return TnrdFormat::Unknown;
+    }
+    header.resize(newline);
+    const size_t key = header.find("\"magic\"");
+    const size_t colon = key == std::string::npos ? key : header.find(':', key + 7);
+    const size_t quote = colon == std::string::npos ? colon : header.find('"', colon + 1);
+    const size_t endQuote = quote == std::string::npos ? quote : header.find('"', quote + 1);
+    const std::string_view magic = endQuote == std::string::npos
+        ? std::string_view{}
+        : std::string_view(header).substr(quote + 1, endQuote - quote - 1);
+    if (magic == "TNRD_V2") return TnrdFormat::ZstdV2;
+    if (magic == "TNRD_V3") return TnrdFormat::ZstdV3;
+    setError(errorOut, "Zstandard recording header is not TNRD_V2 or TNRD_V3");
+    return TnrdFormat::Unknown;
+}
+
 } // namespace
+
+std::FILE* openTnrdFile(const std::string& path, const char* mode) {
+    return openFile(path, mode);
+}
 
 TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
     std::FILE* file = openFile(path, "rb");
@@ -351,32 +245,16 @@ TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut) {
             (openError ? std::strerror(openError) : "unknown file-system error"));
         return TnrdFormat::Unknown;
     }
-    unsigned char magic[4]{};
+    unsigned char magic[8]{};
     const size_t read = std::fread(magic, 1, sizeof(magic), file);
     std::fclose(file);
     if (read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b) return TnrdFormat::GzipV1;
-    if (read == 4 && magic[0] == 0x28 && magic[1] == 0xb5 &&
-        magic[2] == 0x2f && magic[3] == 0xfd) return TnrdFormat::ZstdV2;
+    if (read == 8 && std::memcmp(magic, "TNRD_V4\0", 8) == 0) return TnrdFormat::ChunkedV4;
+    if (read == 8 && std::memcmp(magic, "TNRD_V5\0", 8) == 0) return TnrdFormat::ChunkedV5;
+    if (read >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 &&
+        magic[2] == 0x2f && magic[3] == 0xfd) return detectZstdVersion(path, errorOut);
     setError(errorOut, "unknown TNRD compression signature");
     return TnrdFormat::Unknown;
-}
-
-std::unique_ptr<TnrdOutputStream> openTnrdOutput(
-    const std::string& path, TnrdFormat format, bool append, std::string* errorOut) {
-    if (format == TnrdFormat::GzipV1) {
-        auto stream = std::make_unique<GzipOutputStream>(path, append);
-        if (stream->valid()) return stream;
-        setError(errorOut, stream->error());
-        return nullptr;
-    }
-    if (isZstd(format)) {
-        auto stream = std::make_unique<ZstdOutputStream>(path, append);
-        if (stream->valid()) return stream;
-        setError(errorOut, stream->error());
-        return nullptr;
-    }
-    setError(errorOut, "cannot open output for unknown TNRD format");
-    return nullptr;
 }
 
 bool decompressTnrd(const std::string& srcPath, const std::string& destPath,

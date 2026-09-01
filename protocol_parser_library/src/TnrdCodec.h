@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -7,6 +8,10 @@
 #include "tnrp/TnrdFormat.h"
 
 namespace tnrp::detail {
+
+// Opens a UTF-8 path. Windows callers transparently use the extended-length
+// namespace so recording and playback are not constrained by MAX_PATH.
+std::FILE* openTnrdFile(const std::string& path, const char* mode);
 
 #ifdef _WIN32
 // Converts a UTF-8 path to an absolute Windows extended-length path. Keep the
@@ -25,9 +30,6 @@ public:
 };
 
 TnrdFormat detectTnrdFormat(const std::string& path, std::string* errorOut = nullptr);
-
-std::unique_ptr<TnrdOutputStream> openTnrdOutput(
-    const std::string& path, TnrdFormat format, bool append, std::string* errorOut = nullptr);
 
 // Decompresses one or more concatenated frames/members into a plain JSONL
 // file. A truncated tail is accepted when at least some bytes were recovered;

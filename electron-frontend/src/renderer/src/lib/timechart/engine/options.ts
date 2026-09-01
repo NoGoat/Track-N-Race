@@ -100,11 +100,22 @@ export enum LineType {
 export interface TimeChartSeriesOptions {
     data: SeriesData;
     lineWidth?: number;
+    /** Multiplies the resolved line/fill alpha without changing its theme color. */
+    opacity?: number;
     name: string;
     color?: ColorSpecifier;
+    /** Optional WebGL area fill rendered beneath this series. */
+    fill?: ColorSpecifier;
+    fillBaseline?: number;
     visible: boolean;
     lineType: LineType;
     stepLocation: number;
+    /**
+     * Optional normalized vertical slice of the chart's render area. Series
+     * with the same slice share a panel while still using this chart's single
+     * canvas and WebGL context.
+     */
+    viewport?: { top: number; bottom: number; gapAfter?: number };
 }
 
 export function resolveColorRGBA(color: ColorSpecifier): [number, number, number, number] {

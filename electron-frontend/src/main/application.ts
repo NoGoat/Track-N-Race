@@ -2,11 +2,13 @@ import { app, BrowserWindow, shell, ipcMain, Menu, Tray, nativeTheme, nativeImag
 import * as path from 'path'
 import * as fs from 'fs'
 import { join } from 'path'
-import { execSync, spawn } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { configStore as store } from './configStore'
 import { setFatalFlushHandler } from './diagnostics'
+import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
+  setStrategyMinimumStops,
   restartUdp,
   startBridge,
   stopBridge,
@@ -19,8 +21,12 @@ import {
   playerPlay,
   playerPause,
   playerSeek,
+  playerSeekInstalled,
   playerSetSpeed,
   playerGetLapData,
+  playerGetAllLapsData,
+  playerGetWindowData,
+  playerSetDataRequirements,
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
@@ -67,6 +73,7 @@ let macStartupFilePath: string | null = null
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const LAST_DIALOG_DIRECTORY_KEY = 'dialogs.lastDirectory'
+let startupUpdateCheck: Promise<AvailableUpdate | null> | null = null
 
 function lastDialogDirectory(): string | undefined {
   const value = store.get(LAST_DIALOG_DIRECTORY_KEY)
@@ -151,22 +158,29 @@ ipcMain.on('store-get', (event, key: string, defaultValue: unknown) => {
 
 ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   store.set(key, value)
-  if (key === 'theme' && (process.platform === 'win32' || process.platform === 'linux') &&
-      store.get('nativeTitlebar', false) !== true && mainWindow && !mainWindow.isDestroyed()) {
-    const light = value === 'light'
-    mainWindow.setTitleBarOverlay({
-      color: '#00000000',
-      symbolColor: light ? '#565b70' : '#7c8098',
-      height: 40,
-    })
-  }
+  if (key === 'theme') updateWindowsTitleBarSymbolColor(value)
 })
 
-ipcMain.handle('dialog:showOpenDialog', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle('updates:check-on-startup', () => {
+  startupUpdateCheck ??= checkForUpdateOnStartup(__APP_VERSION__)
+  return startupUpdateCheck
+})
+
+ipcMain.on('updates:skip-version', (_event, version: string) => {
+  skipUpdateVersion(version)
+})
+
+ipcMain.handle('updates:open-download-page', () => shell.openExternal(RELEASE_PAGE_URL))
+
+ipcMain.handle('dialog:showOpenDialog', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     defaultPath: lastDialogDirectory(),
-    properties: ['openDirectory']
-  })
+    properties: ['openDirectory'] as ('openDirectory')[]
+  }
+  const { canceled, filePaths } = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
   if (canceled) {
     return null
   } else {
@@ -175,12 +189,16 @@ ipcMain.handle('dialog:showOpenDialog', async () => {
   }
 })
 
-ipcMain.handle('dialog:showOpenDialogTNRD', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle('dialog:showOpenDialogTNRD', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     defaultPath: lastDialogDirectory(),
     filters: [{ name: 'Track N Race Data', extensions: ['tnrd', 'trnd'] }],
-    properties: ['openFile']
-  })
+    properties: ['openFile'] as ('openFile')[]
+  }
+  const { canceled, filePaths } = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
   if (canceled) return null
   rememberDialogDirectory(filePaths[0])
   return filePaths[0]
@@ -198,12 +216,23 @@ ipcMain.handle('player:load', async (_event, filePath: string) => {
 ipcMain.on('page-visibility', (_e, visible: boolean) => setRendererVisible(visible))
 ipcMain.on('player:play', () => playerPlay())
 ipcMain.on('player:pause', () => playerPause())
-ipcMain.on('player:seek', (_event, pct: number) => playerSeek(pct))
+ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask?: number, windowSeconds?: number) =>
+  playerSeek(pct, allHistory === true, rowTypeMask, windowSeconds))
+ipcMain.on('player:seek-installed', (_event, requestId: number) =>
+  playerSeekInstalled(requestId))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
-ipcMain.on('player:getLapData', (_event, lapNum: number) => playerGetLapData(lapNum))
-ipcMain.on('player:close', () => playerClose())
+ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
+ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
+ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
+ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number) =>
+  playerSetDataRequirements(streamMask, historyMask, windowSeconds))
+ipcMain.on('player:close', () => {
+  console.log(`[close-trace] ${new Date().toISOString()} main received player:close`)
+  playerClose()
+  console.log(`[close-trace] ${new Date().toISOString()} main playerClose returned`)
+})
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
-ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number) => analysisGetLapData(lapNum))
+ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number, rowTypeMask?: number) => analysisGetLapData(lapNum, rowTypeMask))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
 ipcMain.handle('player:export-xlsx', async (event) => {
@@ -212,11 +241,15 @@ ipcMain.handle('player:export-xlsx', async (event) => {
 
   const base = path.basename(srcPath).replace(/\.(tnrd|trnd)$/i, '')
   const exportDirectory = lastDialogDirectory() ?? path.dirname(srcPath)
-  const { canceled, filePath } = await dialog.showSaveDialog({
+  const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+  const options = {
     title: 'Export Session to Excel',
     defaultPath: path.join(exportDirectory, `${base}.xlsx`),
     filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
-  })
+  }
+  const { canceled, filePath } = win
+    ? await dialog.showSaveDialog(win, options)
+    : await dialog.showSaveDialog(options)
   if (canceled || !filePath) return { ok: false, error: 'cancelled' }
   rememberDialogDirectory(filePath)
 
@@ -228,8 +261,8 @@ ipcMain.handle('player:export-xlsx', async (event) => {
 
 ipcMain.on('udp-restart', (event) => {
   try {
-    restartUdp()
-    event.reply('udp-restart-result', { ok: true })
+    const error = restartUdp()
+    event.reply('udp-restart-result', error ? { ok: false, error } : { ok: true })
   } catch (err) {
     event.reply('udp-restart-result', { ok: false, error: String(err) })
   }
@@ -247,34 +280,68 @@ ipcMain.on('protocol-request-status', () => {
   requestStatus()
 })
 
+ipcMain.on('strategy-set-minimum-stops', (_event, value: number) => {
+  setStrategyMinimumStops(value)
+})
 
 
-function getWindowsTaskbarThemeSync(): 'light' | 'dark' {
-  if (process.platform !== 'win32') return 'dark'
-  try {
-    const stdout = execSync(
-      'reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize /v SystemUsesLightTheme',
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+
+type TaskbarTheme = 'light' | 'dark'
+
+function nativeTaskbarTheme(): TaskbarTheme {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
+function getWindowsTaskbarTheme(): Promise<TaskbarTheme> {
+  if (process.platform !== 'win32') return Promise.resolve(nativeTaskbarTheme())
+
+  return new Promise((resolve) => {
+    execFile(
+      'reg.exe',
+      [
+        'query',
+        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize',
+        '/v',
+        'SystemUsesLightTheme'
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: 1000 },
+      (error, stdout) => {
+        if (!error) {
+          const match = /SystemUsesLightTheme\s+REG_DWORD\s+(0x\d+)/.exec(stdout)
+          if (match) {
+            resolve(parseInt(match[1], 16) === 1 ? 'light' : 'dark')
+            return
+          }
+        }
+
+        resolve(nativeTaskbarTheme())
+      }
     )
-    const match = /SystemUsesLightTheme\s+REG_DWORD\s+(0x\d+)/.exec(stdout)
-    if (match) {
-      const value = parseInt(match[1], 16)
-      return value === 1 ? 'light' : 'dark'
-    }
-  } catch (e) {
-    // Ignore error, fallback to dark
-  }
-  return 'dark'
+  })
+}
+
+function windowsTitleBarSymbolColor(theme: unknown): string {
+  return theme === 'light' ? '#000000' : '#ffffff'
+}
+
+function updateWindowsTitleBarSymbolColor(theme: unknown): void {
+  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return
+  if (store.get('nativeTitlebar', false) as boolean) return
+
+  mainWindow.setTitleBarOverlay({
+    color: '#00000000',
+    symbolColor: windowsTitleBarSymbolColor(theme),
+    height: 40,
+  })
 }
 
 function createWindow(): void {
   console.log('[main] createWindow() start')
-  const taskbarTheme = getWindowsTaskbarThemeSync()
+  const taskbarTheme = nativeTaskbarTheme()
   const iconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
   const useNativeTitlebar = store.get('nativeTitlebar', false) as boolean
   const isMacOS = process.platform === 'darwin'
   const useTitleBarOverlay = (process.platform === 'win32' || process.platform === 'linux') && !useNativeTitlebar
-  const lightTheme = store.get('theme', 'dark') === 'light'
 
   // Size the window to 60% of the primary display's work area. workAreaSize is
   // in DIPs, so this already accounts for the display's scale factor.
@@ -297,7 +364,9 @@ function createWindow(): void {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: {
         color: '#00000000',
-        symbolColor: lightTheme ? '#565b70' : '#7c8098',
+        ...(process.platform === 'win32' ? {
+          symbolColor: windowsTitleBarSymbolColor(store.get('theme', 'dark')),
+        } : {}),
         height: 40,
       },
     } : {}),
@@ -464,12 +533,14 @@ app.whenReady().then(() => {
 
   // Tray icons are decoded by a different, more restrictive loader than
   // BrowserWindow's `icon` option (no .ico support on Linux), so use a PNG here.
-  function trayPngForTheme(theme: 'light' | 'dark'): Electron.NativeImage {
+  function trayPngForTheme(theme: TaskbarTheme): Electron.NativeImage {
     const path = theme === 'light' ? iconTransparentLightPng : iconTransparentPng
-    return nativeImage.createFromPath(path).resize({ width: 32, height: 32 })
+    const size = process.platform === 'darwin' ? 20 : 32
+    return nativeImage.createFromPath(path).resize({ width: size, height: size })
   }
 
-  tray = new Tray(trayPngForTheme(getWindowsTaskbarThemeSync()))
+  const initialTheme = nativeTaskbarTheme()
+  tray = new Tray(trayPngForTheme(initialTheme))
   tray.setToolTip('Track N Race')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: showWindow },
@@ -478,41 +549,56 @@ app.whenReady().then(() => {
   tray.on('click', showWindow)
 
   // Track the current icon path to prevent redundant win.setIcon calls
-  let lastIconPath = ''
+  let lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
+  let taskbarThemeQueryInFlight = false
 
-  function updateTaskbarIconIfNeeded(): void {
-    const taskbarTheme = getWindowsTaskbarThemeSync()
-    const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
+  async function updateTaskbarIconIfNeeded(): Promise<void> {
+    if (taskbarThemeQueryInFlight) return
+    taskbarThemeQueryInFlight = true
 
-    if (currentIconPath !== lastIconPath) {
-      lastIconPath = currentIconPath
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.setIcon(currentIconPath)
+    try {
+      const taskbarTheme = await getWindowsTaskbarTheme()
+      const currentIconPath = taskbarTheme === 'light' ? iconTransparentLight : iconTransparent
+
+      if (currentIconPath !== lastIconPath) {
+        lastIconPath = currentIconPath
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) {
+            win.setIcon(currentIconPath)
+          }
+        }
+        if (tray && !tray.isDestroyed()) {
+          tray.setImage(trayPngForTheme(taskbarTheme))
         }
       }
-      tray?.setImage(trayPngForTheme(taskbarTheme))
+    } finally {
+      taskbarThemeQueryInFlight = false
     }
   }
 
-  // Initialize with startup icon theme
-  const initialTheme = getWindowsTaskbarThemeSync()
-  lastIconPath = initialTheme === 'light' ? iconTransparentLight : iconTransparent
-
   // Update on nativeTheme change
   nativeTheme.on('updated', () => {
-    updateTaskbarIconIfNeeded()
+    void updateTaskbarIconIfNeeded()
   })
+
+  // Reconcile the immediate nativeTheme fallback with the Windows taskbar setting.
+  void updateTaskbarIconIfNeeded()
 
   // Poll fallback (1.5s interval) to guarantee detection of custom taskbar theme changes
   const pollInterval = setInterval(() => {
-    updateTaskbarIconIfNeeded()
+    void updateTaskbarIconIfNeeded()
   }, 1500)
 
   app.on('will-quit', () => {
     console.log('[main] will-quit')
-    stopBridge()   // closes the player too (temp file cleanup happens in-engine)
     clearInterval(pollInterval)
+    const recordingEnabled = store.get('logging.enabled', false) as boolean
+    // Without an active recording, bypass native teardown: reader workers may
+    // hold the engine mutex or keep libuv alive, and none of their results can
+    // be consumed during shutdown. Preserve the existing orderly flush/finalize
+    // path whenever recording is enabled.
+    stopBridge(!recordingEnabled)
+    process.exit(0)
   })
 
 

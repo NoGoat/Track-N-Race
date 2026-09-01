@@ -1,6 +1,8 @@
 import type { StylesConfig } from 'react-select'
 
-export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false } = {}): StylesConfig<any, false> {
+export const SELECT_MENU_ANIMATION_MS = 220
+
+export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHeight = 28, labelStyleGroupHeadings = false, menuWidth, scrollableMenu = true }: { solidBg?: boolean; controlHeight?: number; labelStyleGroupHeadings?: boolean; menuWidth?: string | number; scrollableMenu?: boolean } = {}): StylesConfig<any, false> {
   return {
     container: (base) => ({
       ...base,
@@ -37,8 +39,9 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       '&:hover': { color: 'var(--text-primary)' },
     }),
     clearIndicator: (base) => ({ ...base, padding: '0 4px', color: 'var(--text-secondary)', '&:hover': { color: '#e10600' } }),
-    menu: (base) => ({
+    menu: (base, state) => ({
       ...base,
+      width: menuWidth ?? base.width,
       background: 'var(--bg-menu)',
       border: '1px solid var(--border)',
       borderRadius: 6,
@@ -48,9 +51,16 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       overflow: 'hidden',
       userSelect: 'none',
       WebkitUserSelect: 'none',
+      transformOrigin: state.placement === 'top' ? 'bottom center' : 'top center',
+      animation: `${state.placement === 'top' ? 'selectMenuEnterTop' : 'selectMenuEnterBottom'} ${SELECT_MENU_ANIMATION_MS}ms cubic-bezier(0.2, 0, 0, 1) both`,
+      willChange: 'clip-path',
     }),
     menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-    menuList:   (base) => ({ ...base, padding: 4 }),
+    menuList: (base) => ({
+      ...base,
+      padding: 4,
+      ...(scrollableMenu ? {} : { maxHeight: 'none', overflowY: 'visible' as const }),
+    }),
     group: (base) => labelStyleGroupHeadings ? ({
       ...base,
       paddingTop: 2,
@@ -75,7 +85,7 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       padding: '5px 8px',
       cursor: 'pointer',
       transition: 'background 0.1s',
-      '&:active': { background: 'var(--border-focus)' },
+      '&:active': { background: 'var(--border-focus)', color: '#fff' },
     }),
   }
 }

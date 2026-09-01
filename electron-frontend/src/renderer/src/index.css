@@ -48,53 +48,118 @@
   --text-muted: #484c62;
   --text-dim: #5a5e78;
   --text-inactive: #262a3a;
+  --color-info: #5794F2;
+  --color-fastest: #BF5FFF;
   --chart-grid: rgba(255,255,255,0.04);
   --chart-ref: rgba(255,255,255,0.08);
   --chart-axis: #7c8098;
   --chart-zero: rgba(255,255,255,0.2);
+  --shadow-overlay: 0 10px 28px rgba(0,0,0,0.48), 0 2px 6px rgba(0,0,0,0.32);
+}
+
+[data-theme='midnight'] {
+  color-scheme: dark;
+  --compound-soft:   #f01a3c;
+  --compound-medium: #ffd700;
+  --compound-hard:   #dcdfe8;
+  --compound-inter:  #36c759;
+  --compound-wet:    #3d8cff;
+  --bg-base: #06070a;
+  --bg-panel: #0c0d12;
+  --bg-card: #090a0e;
+  --bg-input: #050507;
+  --bg-menu: #101117;
+  --bg-hover: #151720;
+  --bg-accent: #111319;
+  --bg-modal: rgba(3, 4, 6, 0.82);
+  --bg-selected: #111826;
+  --bg-widget-active: #151f33;
+  --border: #171922;
+  --border-subtle: #0f1016;
+  --border-muted: #13151d;
+  --border-focus: #202c46;
+  --border-focus-hover: #2c3d62;
+  --text-primary: #e2e4ec;
+  --text-secondary: #7a7d8c;
+  --text-muted: #444754;
+  --text-dim: #565968;
+  --text-inactive: #1e2028;
+  --color-info: #5794F2;
+  --color-fastest: #c065f5;
+  --chart-grid: rgba(255,255,255,0.03);
+  --chart-ref: rgba(255,255,255,0.065);
+  --chart-axis: #7a7d8c;
+  --chart-zero: rgba(255,255,255,0.16);
+  --shadow-overlay: 0 10px 30px rgba(0,0,0,0.7), 0 2px 8px rgba(0,0,0,0.5);
 }
 
 [data-theme='light'] {
   color-scheme: light;
   --compound-soft:   #c8001a;
-  --compound-medium: #9e7a00;
+  --compound-medium: #765900;
   --compound-hard:   #555555;
   --compound-inter:  #1e7a2e;
   --compound-wet:    #1a55bb;
-  --bg-base: #eff1f5;
-  --bg-panel: #ffffff;
-  --bg-card: #f8f9fc;
-  --bg-input: #f1f4f8;
-  --bg-menu: #ffffff;
-  --bg-hover: #eaecf2;
-  --bg-accent: #e3e7f0;
-  --bg-modal: rgba(0,0,0,0.35);
-  --bg-selected: #d8e8f8;
-  --bg-widget-active: #d0dcf0;
-  --border: #d0d5e0;
-  --border-subtle: #e4e8f0;
-  --border-muted: #d8dce8;
-  --border-focus: #4a5f9e;
-  --border-focus-hover: #5a72be;
-  --text-primary: #1a1c26;
-  --text-secondary: #565b70;
-  --text-muted: #8890a8;
-  --text-dim: #9298b0;
-  --text-inactive: #b0b8cc;
-  --chart-grid: rgba(0,0,0,0.07);
-  --chart-ref: rgba(0,0,0,0.1);
-  --chart-axis: #6b7280;
-  --chart-zero: rgba(0,0,0,0.18);
+  --bg-base: #dededa;
+  --bg-panel: #ebeae6;
+  --bg-card: #e5e4e0;
+  --bg-input: #dcdcd8;
+  --bg-menu: #f1f0ec;
+  --bg-hover: #d7d7d3;
+  --bg-accent: #d2d3d1;
+  --bg-modal: rgba(35,37,39,0.32);
+  --bg-selected: #cfd9e1;
+  --bg-widget-active: #c4d0da;
+  --border: #afb1ae;
+  --border-subtle: #cecfcb;
+  --border-muted: #bec0bc;
+  --border-focus: #687e96;
+  --border-focus-hover: #566f8b;
+  --text-primary: #24272b;
+  --text-secondary: #454b51;
+  --shadow-overlay: 0 10px 28px rgba(35,37,39,0.14), 0 2px 6px rgba(35,37,39,0.1);
+  --text-muted: #5f656b;
+  --text-dim: #63696f;
+  --text-inactive: #a9acae;
+  --color-info: #0B57D0;
+  --color-fastest: #7C3BA6;
+  --chart-grid: rgba(36,39,43,0.075);
+  --chart-ref: rgba(36,39,43,0.11);
+  --chart-axis: #596168;
+  --chart-zero: rgba(36,39,43,0.2);
 }
 
 * {
   box-sizing: border-box;
 }
 
+.no-number-spinner {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.no-number-spinner::-webkit-inner-spin-button,
+.no-number-spinner::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
 body {
   margin: 0;
   font-family: 'Cascadia Code', ui-monospace, 'Fira Code', Consolas, monospace;
   background-color: var(--bg-base);
+  color: var(--text-primary);
+}
+
+/* Chart tooltips render outside chart overflow/stacking contexts. Normal app
+   overlays top out at z-40; modal backdrops begin at z-50. */
+#chart-tooltip-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 @keyframes posGainFlash {
@@ -112,19 +177,53 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes bannerSlideDown {
+/* Legacy utility colours still used by the layout editor and compact badges. */
+[data-theme='light'] .text-\[\#5794F2\] { color: var(--color-info); }
+[data-theme='light'] .text-\[\#5794F2\].opacity-60 { opacity: 1; }
+[data-theme='light'] .text-\[\#37872D\] { color: #0D6B2F; }
+[data-theme='light'] .text-\[\#9f7aea\] { color: var(--color-fastest); }
+
+.modal-backdrop {
+  opacity: 0;
+  transition: opacity 180ms ease-in;
+}
+
+.modal-backdrop[data-state='open'] {
+  opacity: 1;
+  transition-timing-function: ease-out;
+}
+
+.modal-panel {
+  opacity: 0;
+  transform: translateY(8px) scale(0.975);
+  transition:
+    opacity 150ms ease-in,
+    transform 180ms cubic-bezier(0.4, 0, 1, 1);
+  will-change: opacity, transform;
+}
+
+.modal-backdrop[data-state='open'] .modal-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 180ms ease-out,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes fullscreenEventBannerEnter {
   from {
     opacity: 0;
-    transform: translateY(-10px) scale(0.96);
+    transform: translateY(-100%);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
-.animate-banner-in {
-  animation: bannerSlideDown 0.38s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+.fullscreen-event-banner {
+  animation: fullscreenEventBannerEnter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  box-shadow: var(--shadow-overlay);
 }
 
 /* Scrollbars */
@@ -178,4 +277,451 @@ body {
   width: 16px !important;
   height: 16px !important;
   flex: 0 0 16px;
+}
+
+@keyframes selectMenuEnterBottom {
+  from {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuEnterTop {
+  from {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitBottom {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(0 0 100% 0 round 6px);
+  }
+}
+
+@keyframes selectMenuExitTop {
+  from {
+    clip-path: inset(0 0 0 0 round 6px);
+  }
+  to {
+    clip-path: inset(100% 0 0 0 round 6px);
+  }
+}
+
+/* Chart axes reserve their own label gutter. Keep the shared panel shell flush
+   on the left so that gutter is not duplicated by outer container padding. */
+.chart-panel {
+  padding: 0.75rem 1rem 1rem 0;
+}
+
+.chart-panel-title {
+  margin-left: 16px;
+}
+
+/* Each tyre graph responds to its own tile width, not the application width.
+   At compact widths the four-corner legend folds into a stable 2x2 grid. */
+.tyre-chart-container {
+  container-name: tyre-chart;
+  container-type: inline-size;
+}
+
+@container tyre-chart (max-width: 430px) {
+  .tyre-chart-legend {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 0.75rem;
+    row-gap: 0.125rem;
+  }
+}
+
+/* Titlebar mode changes are low-frequency. Animate their intrinsic layout
+   without putting animation work on the telemetry update path. */
+.titlebar-auto-width {
+  flex: 0 0 auto;
+  overflow: hidden;
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-filename {
+  max-width: 200px;
+  transition: max-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* React Select controls can live inside a draggable Electron titlebar, while
+   their menus are portaled to the document body. Exclude both complete trees
+   from native titlebar hit testing so rapid clicks remain control interactions. */
+.react-select-no-drag,
+.react-select-no-drag * {
+  -webkit-app-region: no-drag;
+}
+
+@media (max-width: 1400px) {
+  .titlebar-filename {
+    max-width: 100px;
+  }
+}
+
+.titlebar-delta-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-delta-slot > span {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.titlebar-delta-slot--visible {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.titlebar-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.75rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.titlebar-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.titlebar-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.chart-lap-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-left: -0.25rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chart-lap-slot__inner {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chart-lap-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+/* Map comparison colors occupy inline space beside the lap labels. Keeping
+   the slot mounted lets the adjacent flexing select resize with the reveal. */
+.analyze-map-color-slot {
+  display: grid;
+  grid-template-columns: 0fr;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-right 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.analyze-map-color-slot__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.analyze-map-color-slot--visible {
+  grid-template-columns: 1fr;
+  margin-right: 0.25rem;
+  margin-left: 0.25rem;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.analyze-lap-mode-switch {
+  display: grid;
+}
+
+.analyze-lap-mode-panel {
+  grid-area: 1 / 1;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+  transition:
+    opacity 160ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.analyze-lap-mode-panel--visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.analyze-lap-mode-panel--hidden-left,
+.analyze-lap-mode-panel--hidden-right {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.analyze-lap-mode-panel--hidden-left {
+  transform: translateX(-8px);
+}
+
+.analyze-lap-mode-panel--hidden-right {
+  transform: translateX(8px);
+}
+
+.analyze-toggle-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.analyze-toggle-button:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
+.analyze-toggle-button:focus-visible {
+  border-color: color-mix(in srgb, var(--color-info) 70%, transparent);
+}
+
+.analyze-toggle-button--active {
+  background: var(--border-focus);
+  color: white;
+}
+
+.analyze-toggle-button--active:hover:not(:disabled) {
+  background: var(--border-focus);
+  color: white;
+}
+
+.analysis-view-surface {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: opacity;
+}
+
+.analysis-view-surface--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analysis-chart-mode-surface {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  will-change: opacity;
+}
+
+.analysis-chart-mode-surface--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analysis-chart-empty-state {
+  opacity: 0;
+  transition: opacity 260ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.analysis-chart-empty-state--visible {
+  opacity: 1;
+}
+
+.attribution-license-panel {
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease-out;
+}
+
+html[data-reduce-animations='true'] *,
+html[data-reduce-animations='true'] *::before,
+html[data-reduce-animations='true'] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+.session-map-transition {
+  view-transition-name: session-map;
+}
+
+html[data-page-transition='true'] .session-map-transition {
+  view-transition-name: none;
+}
+
+.app-page-transition {
+  view-transition-name: app-page;
+}
+
+.tyres-view-transition {
+  view-transition-name: tyres-view;
+}
+
+html[data-page-transition='true'] .tyres-view-transition {
+  view-transition-name: none;
+}
+
+@keyframes appPageExitLeft {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-44px); }
+}
+
+@keyframes appPageEnterRight {
+  from { opacity: 0; transform: translateX(44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes appPageExitRight {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(44px); }
+}
+
+@keyframes appPageEnterLeft {
+  from { opacity: 0; transform: translateX(-44px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+html[data-page-transition-direction='right']::view-transition-old(app-page) {
+  animation: appPageExitLeft 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='right']::view-transition-new(app-page) {
+  animation: appPageEnterRight 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-old(app-page) {
+  animation: appPageExitRight 230ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-page-transition-direction='left']::view-transition-new(app-page) {
+  animation: appPageEnterLeft 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Allocation and Graphs are sibling states, so use a quiet fade-through rather
+   than implying spatial navigation. These remain compositor snapshots, keeping
+   the live WebGL charts out of the animation path. */
+@keyframes tyresViewFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes tyresViewFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-tyres-view-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-tyres-view-transition]::view-transition-old(tyres-view) {
+  z-index: 1;
+  animation: tyresViewFadeOut 140ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-tyres-view-transition]::view-transition-new(tyres-view) {
+  z-index: 2;
+  animation: tyresViewFadeIn 180ms 70ms cubic-bezier(0.4, 1, 0.6, 1) both;
+}
+
+html[data-tyres-view-transition-phase='preparing']::view-transition-new(tyres-view),
+html[data-tyres-view-transition-phase='preparing']::view-transition-old(tyres-view) {
+  animation-play-state: paused;
+}
+
+::view-transition-group(session-map) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html[data-theme-transition='true'] .session-map-transition,
+html[data-theme-transition='true'] .app-page-transition,
+html[data-theme-transition='true'] .tyres-view-transition {
+  view-transition-name: none !important;
+}
+
+html[data-theme-transition='true']::view-transition {
+  pointer-events: none;
+}
+
+html[data-theme-transition='true']::view-transition-old(root) {
+  animation: themeFadeOut 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+html[data-theme-transition='true']::view-transition-new(root) {
+  animation: themeFadeIn 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes themeFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes themeFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-reduce-animations='true']::view-transition-old(root),
+html[data-reduce-animations='true']::view-transition-new(root),
+html[data-reduce-animations='true']::view-transition-old(app-page),
+html[data-reduce-animations='true']::view-transition-new(app-page),
+html[data-reduce-animations='true']::view-transition-old(tyres-view),
+html[data-reduce-animations='true']::view-transition-new(tyres-view),
+html[data-reduce-animations='true']::view-transition-group(session-map),
+html[data-reduce-animations='true']::view-transition-old(session-map),
+html[data-reduce-animations='true']::view-transition-new(session-map) {
+  animation-duration: 0s !important;
 }

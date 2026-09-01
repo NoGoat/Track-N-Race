@@ -90,6 +90,15 @@ endif()
 if(APPLE)
     enable_language(OBJCXX)
 
+    # CodeQL's Swift extractor supports native Xcode/SwiftPM compilation, but
+    # cannot observe the direct swiftc custom command used by the distributable
+    # app below. Keep native Swift opt-in so normal builds still work with only
+    # Apple's standalone Command Line Tools.
+    option(TNR_CODEQL_SWIFT "Add a native Swift target for CodeQL extraction" OFF)
+    if(TNR_CODEQL_SWIFT)
+        enable_language(Swift)
+    endif()
+
     set(MINIMAL_MACOS_DEPLOYMENT_TARGET "13.0" CACHE STRING
         "Oldest macOS version supported by the SwiftUI frontend")
     if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -144,6 +153,19 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/RecorderViewModel.swift
         ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/ContentView.swift
         ${CMAKE_CURRENT_SOURCE_DIR}/src/macos/AttributionsView.swift)
+
+    if(TNR_CODEQL_SWIFT)
+        # This target exists only to expose the Swift sources as a native Xcode
+        # SwiftCompile phase. A static library needs the Objective-C declarations
+        # for type checking but does not need to link the recorder bridge.
+        add_library(minimal_swift_codeql STATIC EXCLUDE_FROM_ALL
+            ${MINIMAL_MACOS_SOURCES})
+        set_target_properties(minimal_swift_codeql PROPERTIES
+            Swift_MODULE_NAME TrackNRaceMinimalRecorder
+            XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/macos/TNRRecorderBridge.h")
+    endif()
+
     set(MINIMAL_MACOS_BUNDLE_NAME "Track N Race Minimal Recorder")
     set(MINIMAL_MACOS_APP
         "${CMAKE_CURRENT_BINARY_DIR}/${MINIMAL_MACOS_BUNDLE_NAME}.app")

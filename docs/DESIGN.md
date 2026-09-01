@@ -28,11 +28,12 @@ by both desktop UIs, while focused hosts can consume the same row stream.
 ```
 tnrp::Engine  — orchestrator; the only class hosts construct directly
   ├── UdpListener   dual backend: raw winsock2/POSIX (TNRP_USE_QT=OFF, addon)
-  │                 or QUdpSocket (ON, Qt recorder); one receive thread
+  │                 or QUdpSocket (ON, Qt recorder); one receive thread;
+  │                 optionally forwards each raw datagram to ≤15 IPv4 targets
   ├── Parser        pure decode: format detect + override + debounce +
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
-  ├── TnrdWriter    .tnrd recording (own disk thread)
-  ├── TnrdReader    .tnrd playback (index, per-lap blocks, binary stores)
+  ├── TnrdWriter    .tnrd V5 recording (own disk thread)
+  ├── TnrdReader    V1–V5 playback (index, per-lap blocks, binary stores)
   └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
 ```
 
@@ -44,7 +45,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   thread-safe. Both optional methods default to no-ops so JSON-only sinks stay
   trivial.
 - **`Config` (Config.h)** — host-supplied at construction: port, bind address,
-  protocol override, logging, plus two host-shape flags:
+  protocol override, logging, optional raw-UDP forwarding targets (maximum 15),
+  plus two host-shape flags:
   `binaryPlayback` (Electron: playback hot rows go out via `onBinary`, seeks
   via `onSeekFlush`) and `hotRowsAsJson` (emit live hot rows as JSON instead of
   binary; both apps currently leave this **off** and take the binary channel).
@@ -76,7 +78,7 @@ Three decoders exist and **must stay in lockstep** with the single C++ encoder:
 | Decoder | Used by |
 |---|---|
 | `tnrp::bin::decodeBatch` (BinaryRows.h) | Qt recorder (typed structs, in-process) |
-| `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths + session_time only, for the smoother) |
+| `electron-frontend/src/main/binaryRows.ts` | Electron main (record lengths used by hidden-window history filtering) |
 | `electron-frontend/src/renderer/src/lib/decodeBinaryBatch.ts` | Electron renderer (full decode to row objects) |
 
 A schema drift here is silent corruption; treat any field change in
@@ -120,6 +122,11 @@ declarative data**, so both UIs render from one model:
   `protocol_status`; selects the track-map overlay (DRS zones vs SLM dry/wet
   zones).
 
+For protocol 2026, `Session m_formula` gates those 2026 presentation overrides:
+Formula 13 uses the F1 26 catalog/capabilities, while any other captured value
+uses the legacy 2025 presentation without changing the 2026 wire parser. Missing
+Formula metadata (older recordings or pre-session live state) defaults to F1 26.
+
 `Parser::statusRow()` (live) and `Parser::statusRowForFormat()` (playback —
 labels a loaded clip with *its* recorded format) both emit the full
 `protocol_status` row: detected/active format, override, capabilities
@@ -146,12 +153,22 @@ intent so the per-packet fast path can skip the whole recording pipeline
 
 ### 1.6 Playback (`TnrdReader` + `Engine::player*`)
 
-`load()` detects the container signature and decompresses TNRD V1/gzip or
-TNRD V2/V3 Zstandard to a temp file (`tmpdir/tracknrace_*.tmp`),
-builds a time/type index in one pass, and in the same pass builds the per-lap
-blocks, scanned lap list, event log and fastest lap. Streaming reads return raw
-JSONL lines (no re-parse); block reads (`readBlock`) fetch contiguous index
-ranges with one `fread` into a reused scratch buffer.
+`load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
+Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
+time/type index. V4/V5 first open their uncompressed metadata, lap table, chunk
+directory, control summary, and commit footer. JSON-only consumers then decompress
+telemetry chunks on demand through a bounded cache. Electron's binary-playback load
+uses its existing asynchronous loading overlay to validate every chunk once, retain
+compact packed hot-row seek lanes plus sparse state rows, discover all chunk time
+bounds, and materialize completed-lap strategy checkpoints. Raw decompressed JSON
+still remains bounded by the LRU rather than being duplicated for the whole session.
+Every selected indexed chunk is an independent job
+on an eight-worker reader pool, so long All Laps/range requests decode up to eight
+chunks in parallel regardless of row type. Concurrent consumers of the same chunk
+share one in-flight read and decompression before the result enters the LRU.
+Legacy block reads (`readBlock`) fetch contiguous index
+ranges with one `fread` into a reused scratch buffer. Temp-file positions are
+64-bit on every platform because long sessions can decompress beyond 2 GiB.
 
 With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
 
@@ -163,7 +180,9 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
   10 Hz cadence for streaming playback, seeks and per-lap Analyze payloads;
 - fills slim per-lap chart points (`speed_kph`/`rpm` + `ers_pct`) into
   `lapBlocksMessage()` so the load payload is small; for V3 it also indexes
-  lap-distance/timing points used by Electron Analyze.
+  lap-distance/timing points used by Electron Analyze. The initial load scan
+  also interpolates each lap's S1/S2 end distances from those timing points;
+  V5 reads only its sparse Lap Data chunks for this metadata.
 
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:
@@ -176,11 +195,29 @@ an absolute session_time cursor scaled by speed:
   with their `session_time` string-spliced to the playhead. The cache is seeded
   on load and re-keyed on every seek via `latestOfTypesTagged` (a backward index
   walk reading only matching lines).
-- **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` — the hot
-  rows of `[min(target−600 s, currentLapStart), target]` as one binary slice
-  plus the window's cold status/damage/lap JSONL — then the state snapshot rows
-  and an explicit positions restore (positions has no cold cache). Legacy mode
+- **Seek** (`playerSeek`): binary mode emits one `Sink::onSeekFlush` containing
+  exactly the active history families for the selected mode: current lap,
+  `[target-windowSeconds,target]`, or `[startTime,target]` for AL. V4/V5 resolve
+  that range from its `(lap,rowType)` chunk directory and decodes only
+  intersecting ZSTD blocks. Visible sparse state is restored separately with a
+  single indexed latest-at-time query. Legacy mode
   emits a `playback_seek_flush` control row + snapshot instead.
+  Electron All Laps seeks request `[startTime, target]` in that same flush;
+  extraction runs on a libuv worker, the seek payload views the reader's
+  immutable packed store until one IPC-compatible V8 Buffer copy, and request ids
+  discard superseded scrubs before renderer IPC/decode.
+  For V4/V5, the packed history and sparse rows come from the load-time warm cache,
+  so the first random seek does not pay JSON decompression/encoding or progressively
+  build strategy checkpoints.
+  A request generation is registered before its worker is queued: playback is
+  gated until that generation commits, so an overtaken worker cannot move the
+  cursor or leak stale future rows into the winning seek. Electron adds a
+  delivery barrier across the seek, JSON, and binary IPC channels: queued rows
+  from the old cursor are discarded until the authoritative flush arrives,
+  rows produced while the renderer installs that flush are bounded and buffered,
+  and the renderer explicitly acknowledges the new timeline before those rows
+  are released. A seek is therefore published atomically instead of briefly
+  displaying samples from both sides of the cursor change.
 - **Lifecycle rows**: `playback_loaded` (with the file header, or `ok:false`),
   `playback_lap_blocks`, `protocol_status` for the clip's format (binary mode),
   `playback_state` on every transition, `playback_finished` at the end,
@@ -198,7 +235,7 @@ playback stream unchanged.
 ### 1.7 XLSX export
 
 `exportTnrdFileToXlsx()` opens its **own throwaway reader** on the file
-(independent of any active playback), walks the whole index in file order and
+(independent of any active playback), walks the legacy index or V4/V5 chunk directory and
 writes one sheet per row type plus an "Info" sheet from the header, reporting
 progress `(rowsDone, totalUnits, stage)`. Both apps run it off their UI thread
 (Electron: `AsyncProgressQueueWorker` on the libuv pool; Qt:
@@ -211,22 +248,23 @@ overlay flows.
 |---|---|---|
 | libtnrp Engine | UDP receive, playback, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. The writer thread drains an event queue; the parse path never blocks on disk. |
 | node_addon | engine threads → 3 TSFNs → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
-| Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick — the engine's playback thread drives; one flush timer paces both live and playback hot rows. |
-| Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves. |
+| Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
+| Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves; All Laps charts append directly from stable full-session arrays. |
 | Qt recorder | GUI thread + engine threads + playback load thread + export thread | `EngineSink` marshals rows to the GUI thread via queued signals. |
 
 ## 2. File format & shared conventions
 
-- **`.tnrd`**: compressed JSONL with three supported generations. TNRD V1 uses
-  gzip and `magic: "TNRD_V1"`; TNRD V2 and V3 use Zstandard with matching
+- **`.tnrd`**: four supported generations. TNRD V1 uses
+  gzip and `magic: "TNRD_V1"`; TNRD V2 and V3 use monolithic Zstandard with matching
   `magic` and `compression: "zstd"` header values. V3 adds `track_length_m` to
   the header and `lap_distance_m` to lap rows. `TnrdReader::load()` detects the
   codec from its native bytes, then uses and validates the JSON header to
-  distinguish V2 from V3. Normal recording writes V3. Explicit
+  distinguish V2 from V3. Normal recording writes V5. Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
   subsequent line is one typed row with `session_time`; other telemetry row
-  schemas remain compatible. Electron Analyze distance alignment and delta are
-  enabled only for V3; V1/V2 recordings retain elapsed-time overlays.
+  schemas remain compatible. V4/V5 use an uncompressed indexed control plane and
+  independently checksummed `(lap,rowType,segment)` Zstandard JSONL chunks. Electron Analyze distance alignment and delta are
+  enabled for V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,
@@ -248,14 +286,22 @@ overlay flows.
 F1 game ──UDP:20777──> tnrp::Engine (in-process via node_addon)
                           │ onRow (JSON batch)      │ onBinary (packed hot rows)
                           ▼                          ▼
-main: bridgeManager.ts  'telemetry-batch' IPC   HotRowSmoother → 'telemetry-binary' IPC
-                          │  (visibility-gated)     │  (paced to measured frame period)
+main: bridgeManager.ts  'telemetry-batch' IPC   direct real batches → 'telemetry-binary' IPC
+                          │  (visibility-gated)     │  (addon-coalesced, visibility-gated)
                           └──── bounded hidden-window cache ────┘
                                       'telemetry-resume' IPC
 preload (contextBridge)   ▼                          ▼
 renderer: telemetryStore.ts (Zustand) ── slices ──> pages/components
                                         └─ TimeChartView (WebGL) per chart
 ```
+
+The active page/layout is reduced through `historyDependencies.ts`, the single
+declarative chart/table/map-to-row registry. `AppShell` sends the union as one
+generation-tagged stream/history subscription. The engine filters cold and
+packed-hot rows before N-API; V4/V5 playback loads only selected chunk families.
+Hidden live chart families remain compact native raw history solely so a later
+visibility change can backfill them without prior renderer processing.
+Recording is never subscription-filtered.
 
 ### 3.2 node addon (`electron-frontend/node_addon/addon.cpp`)
 
@@ -293,16 +339,10 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   then per-line JSON.parse): `protocol_status` feeds a cached copy +
   `udp.lastDetectedProtocol` persistence; `playback_state`/`playback_close`
   drive the playback-state channel.
-- **Binary batches** accumulate in `binPending` and are flushed by a single
-  self-rescheduling timer through `HotRowSmoother`
-  (`binaryForwardFill.ts`): the smoother measures the real frame period
-  (median of telemetry session_time deltas, 0.01 ms granularity, so 20/40/60 Hz
-  and fps-capped rates all lock in), forward-fills empty ticks by re-emitting
-  the last telemetry/motion/motion_ex records with session_time advanced
-  exactly one frame (never more than one frame past the last real sample), and
-  the flush timer schedules against an **absolute deadline** so integer-ms
-  setTimeout rounding can't drift the cadence. Fills are display-only;
-  recording happened upstream in C++.
+- **Binary batches** are already coalesced by the addon's one-in-flight TSFN
+  flush and are forwarded unchanged as `'telemetry-binary'`. Electron does not
+  synthesize or retime hot rows, so chart samples retain the engine-provided
+  `session_time` values.
 - **Visibility gating** (`setRendererVisible`, fed by the renderer's
   `document.visibilityState` over IPC): while hidden, normal IPC forwarding
   stops and main retains only the selected chart window (hot chart records plus
@@ -313,17 +353,16 @@ the JS progress callback). Module-level exports: `labelsJson(format)`,
   `requestStatus()` lets a renderer pull the cached status on demand (e.g.
   after mounting with fallback labels).
 - **Playback glue**: `playerLoad` closes any open clip first, tracks the
-  active file path, resets the smoother, and adapts the engine's
+  active file path, and adapts the engine's
   `playback_state` (relative time → absolute, adds filename/isScanning) for
-  the renderer. The seek-flush callback resets the smoother *before*
-  broadcasting `playback_seek_flush_bin` so a held fill can't leak a stale
-  session_time across the jump.
+  the renderer. The seek-flush callback clears hidden-window history before
+  broadcasting `playback_seek_flush_bin`.
 
 **`index.ts`** — window/app lifecycle: single-instance lock (second instance
 forwards a `.tnrd` path and exits pre-flash), tray icon + menu, frameless
 window with custom titlebar (optional native titlebar setting), window sized to
 60% of the work area (min 1200×700), Windows taskbar/tray icon theme detection
-(sync `reg query` + 1.5 s poll + `nativeTheme` events), `.tnrd` open-file
+(async `reg.exe query` + 1.5 s poll + `nativeTheme` events), `.tnrd` open-file
 handling (argv, macOS `open-file`, drag/drop confirm flow), and the IPC surface
 (store get/set, dialogs, player controls, protocol config, UDP restart, XLSX
 export with progress relay). `stopBridge()` on `will-quit` closes the player
@@ -388,12 +427,13 @@ theme/resize is exactly what the migration removed):
   the fork's aligned circular store: append genuinely-new samples into one
   shared X timeline plus typed Y channels, advance a logical head for front
   eviction, and rebuild on any non-contiguous window (seek/flush/restart).
-- **`axisPlugin.ts`** draws axes/grid into TimeChart's SVG overlay with pooled
-  nodes (attribute mutation, not DOM churn), reproducing the uPlot look: fixed
-  or derived tick values, m:ss x labels, faint grid, L-frame borders, 11px
-  Cascadia Code. **`referenceLines.ts`** (zero/threshold lines),
-  **`areaFill.ts`** (translucent fill to a baseline, step-aware),
-  **`ticks.ts`** (`niceTicks`) and a draw profiler complete the plugin set.
+- **`axisPlugin.ts`** draws axes/grid into two stable canvas layers (grid below
+  WebGL, labels/borders above it), reproducing the uPlot look without per-tick
+  DOM mutation: fixed or derived tick values, m:ss x labels, faint grid,
+  L-frame borders, 11px Cascadia Code. **`referenceLines.ts`** supplies zero/threshold lines and
+  **`ticks.ts`** supplies `niceTicks`. Step-aware translucent area fills are
+  generated directly by the paged WebGL renderer from the complete series;
+  they do not rebuild or pixel-bin a CPU canvas path.
   Plugin configs live in mutable refs so theme changes update colours in place
   and just redraw.
 - **y-ranges** (`YRangeSpec`): `fixed`; `expand` (bounds only push outward on
@@ -423,6 +463,12 @@ Chart leaves are thin `TimeChartView` consumers: GForceChart, RideHeightChart
 SpeedRpmChart (Overview — mode logic for Current/Previous/Fastest/Compare lap
 overlays with normalized series and muted reference traces). `GraphTable` is
 the shared chart-alternative raw-values table.
+All Laps charts and tables subscribe to source-family-specific imperative
+signals, so a Motion append cannot wake Telemetry, Status, Damage, or MotionEx
+consumers. Signals are coalesced per renderer task while every source row stays
+in the bounded full-session arrays. Ordinary All Laps line traces use native
+GPU line strips (one vertex per retained point); stepped traces retain their
+explicit generated step geometry.
 
 ### 3.6 UI composition
 
@@ -465,7 +511,7 @@ MainWindow::onEngineBinary — tnrp::bin::decodeBatch → typed rows directly
 - **Typed rows everywhere**: the UI never touches dynamic JSON. Cold rows are
   glaze-parsed once into `AnyRow`; hot rows never round-trip through JSON at
   all (the engine is constructed with `hotRowsAsJson = false`).
-- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a C++ port of the Electron
+- **`HotRowSmoother` (`qt_frontend/src/HotRowSmoother.h`)** — a Qt-specific
   smoother, driven by `hotFillTimer_` at the measured cadence
   (`periodMs()` re-applied each tick): on an interval with no fresh telemetry
   it re-emits the last telemetry/motion/motion_ex one frame forward (capped at
@@ -606,12 +652,6 @@ types, stylesheet, scrolling hook, and diagnostic plugin have been removed.
 The obsolete `protocol_parser/` executable and its misleading README have been
 deleted. Electron uses the N-API addon in-process.
 
-### P2 — De-duplicate the smoothing/forward-fill logic
-Two ports of the same algorithm: `qt_frontend/src/HotRowSmoother.h`
-(typed rows, Qt timer) and `electron-frontend/src/main/binaryForwardFill.ts` (packed bytes,
-absolute-deadline timer). Candidate for a libtnrp-owned implementation behind
-the Sink.
-
 ### P2 — Table-drive the versioned protocol parsers
 `f1_24.cpp` / `f1_25.cpp` / `f1_26.cpp` are ~500 lines each and largely
 parallel. A shared field-offset table (or common structs with per-year deltas)
@@ -635,9 +675,6 @@ There are currently no tests. Highest-value, lowest-effort targets:
   emits; conversely the `playerGetLapData` chain (renderer preload → IPC →
   addon → `playback_lap_data`) is emitted but no renderer code consumes it.
   Delete both halves or wire them up.
-- Windows taskbar-theme detection shells out to `reg query` synchronously on a
-  1.5 s poll in the main process; replace with an async query or a registry
-  watcher.
 - `speedRpmBlocks` and the playback lap-block plumbing are typed `any[]` in
   the store and `App.tsx`.
 - Repo hygiene: sample `.tnrd`, `test_loop*.js`, `*.tsbuildinfo` at the root;

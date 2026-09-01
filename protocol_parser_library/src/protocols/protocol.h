@@ -24,6 +24,10 @@ struct HotOut {
     std::vector<std::string> hotJson;
     std::vector<uint8_t>     binary;
     bool                     wantHotJson = false;
+    uint32_t                 outputRowMask = 0xFFFFFFFFu;
+    bool wants(uint8_t rowType) const {
+        return (outputRowMask & (1u << rowType)) != 0;
+    }
 };
 
 // Binary reading helper functions

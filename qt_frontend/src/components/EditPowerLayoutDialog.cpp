@@ -50,7 +50,7 @@ EditPowerLayoutDialog::EditPowerLayoutDialog(PowerPage* page, QWidget* parent)
     QGroupBox* chartBox = new QGroupBox("Charts");
     QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
     
-    splitBtn_ = new ToggleButton("Power Split");
+    splitBtn_ = new ToggleButton("Power");
     splitBtn_->setCheckable(true);
     splitBtn_->setChecked(layout_.showSplit);
     connect(splitBtn_, &QPushButton::toggled, this, &EditPowerLayoutDialog::toggleSplit);

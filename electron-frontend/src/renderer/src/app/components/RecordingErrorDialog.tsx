@@ -1,6 +1,7 @@
 import { AlertTriangle, X } from 'lucide-react'
 import type { RecordingErrorMsg } from '../../types'
-import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
+import { BUTTON_CLASS } from '../../lib/buttonStyles'
+import { useModalPresenceValue } from '../../lib/useModalPresence'
 
 interface RecordingErrorDialogProps {
   error: RecordingErrorMsg | null
@@ -8,16 +9,19 @@ interface RecordingErrorDialogProps {
 }
 
 export default function RecordingErrorDialog({ error, onClose }: RecordingErrorDialogProps) {
-  if (!error) return null
+  const modalPresence = useModalPresenceValue(error)
+  const displayedError = modalPresence.value
+  if (!modalPresence.mounted || !displayedError) return null
 
   return (
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+      data-state={modalPresence.visible ? 'open' : 'closed'}
+      className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="recording-error-title"
     >
-      <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[540px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+      <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[540px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
           <div
             id="recording-error-title"
@@ -29,9 +33,9 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
           <button
             onClick={onClose}
             aria-label="Close recording error"
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+            className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
           >
-            <X size={14} />
+            <X size={18} />
           </button>
         </div>
 
@@ -42,19 +46,19 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
           <div className="p-3 rounded-lg bg-[#e10600]/[0.06] border border-[#e10600]/30 flex flex-col gap-2">
             <div className="text-xs font-mono text-[var(--text-secondary)] leading-relaxed break-words">
               <span className="text-[var(--text-muted)]">Operation: </span>
-              {error.operation}
+              {displayedError.operation}
             </div>
             <div className="text-xs font-mono text-[var(--text-secondary)] leading-relaxed break-words">
-              {error.message}
+              {displayedError.message}
             </div>
           </div>
-          {error.path && (
+          {displayedError.path && (
             <div className="flex flex-col gap-1.5">
               <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-wider">
                 Destination
               </span>
               <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] text-xs font-mono text-[var(--text-secondary)] leading-relaxed break-all select-text">
-                {error.path}
+                {displayedError.path}
               </div>
             </div>
           )}
@@ -64,7 +68,7 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
           <button
             autoFocus
             onClick={onClose}
-            className={TEXT_ACTION_BUTTON_CLASS}
+            className={BUTTON_CLASS}
           >
             OK
           </button>

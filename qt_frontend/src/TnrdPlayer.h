@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <tnrp/AnyRow.h>
+#include <tnrp/Strategy.h>
 #include <tnrp/TnrdReader.h>
 
 #include "SessionModel.h"
@@ -60,12 +61,14 @@ private slots:
 
 private:
     tnrp::TnrdReader reader_;   // owns the decompressed temp file + index; loaded on the bg thread
+    tnrp::StrategyProcessor strategy_;
     SessionData      scanned_;  // built on the load thread from reader_.readRange()
 
     float        startTime_   = 0.0f;
     float        totalTime_   = 0.0f;
     float        currentTime_ = 0.0f;
     float        speed_       = 1.0f;
+    int          sessionType_ = 0;
     bool         playing_     = false;
     bool         loading_     = false;
 
@@ -82,7 +85,8 @@ private:
     void scanIntoSessionData();
 
     // Parse raw JSONL rows into typed rows and emit each as a packetReady().
-    void emitRows(const std::vector<std::string>& rows);
+    void emitRows(const std::vector<std::string>& rows, bool deriveStrategy = true);
+    void rebuildStrategy(float targetTime);
     void emitState();
     void cleanup();
 };

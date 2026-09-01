@@ -4,6 +4,7 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -105,6 +106,67 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// Indexed AL and finite-window prefixes are extracted on libuv's worker pool.
+// Generation checks in Engine make rapid scrub requests monotonic even if
+// workers begin out of order.
+class PlayerSeekWorker : public Napi::AsyncWorker {
+public:
+    PlayerSeekWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                     float pct, bool allHistory, uint64_t requestId,
+                     uint32_t rowTypeMask, float windowSeconds)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), pct_(pct),
+          allHistory_(allHistory), requestId_(requestId), rowTypeMask_(rowTypeMask),
+          windowSeconds_(windowSeconds) {}
+    void Execute() override { engine_->playerSeek(pct_, allHistory_, requestId_, rowTypeMask_, windowSeconds_); }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    float pct_;
+    bool allHistory_;
+    uint64_t requestId_;
+    uint32_t rowTypeMask_;
+    float windowSeconds_;
+};
+
+class PlayerHistoryWorker : public Napi::AsyncWorker {
+public:
+    PlayerHistoryWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                        uint64_t requestId, uint32_t rowTypeMask,
+                        float windowSeconds = 0.0f, bool windowRequest = false)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)), requestId_(requestId),
+          rowTypeMask_(rowTypeMask), windowSeconds_(windowSeconds),
+          windowRequest_(windowRequest) {}
+    void Execute() override {
+        if (windowRequest_) engine_->playerGetWindowData(windowSeconds_, requestId_, rowTypeMask_);
+        else engine_->playerGetAllLapsData(requestId_, rowTypeMask_);
+    }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    uint64_t requestId_;
+    uint32_t rowTypeMask_;
+    float windowSeconds_;
+    bool windowRequest_;
+};
+
+class DataRequirementsWorker : public Napi::AsyncWorker {
+public:
+    DataRequirementsWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                           uint32_t streamMask, uint32_t historyMask,
+                           float windowSeconds, uint64_t requestId)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)),
+          streamMask_(streamMask), historyMask_(historyMask),
+          windowSeconds_(windowSeconds), requestId_(requestId) {}
+    void Execute() override {
+        engine_->setDataRequirements(streamMask_, historyMask_, windowSeconds_,
+                                     requestId_);
+    }
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    uint32_t streamMask_;
+    uint32_t historyMask_;
+    float windowSeconds_;
+    uint64_t requestId_;
+};
+
 struct AnalysisReaderState {
     std::mutex mutex;
     tnrp::TnrdReader reader;
@@ -167,17 +229,22 @@ public:
         TRACE("Init: before DefineClass");
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
+            InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
+            InstanceMethod("setStrategyMinimumStops", &TNRPAddon::SetStrategyMinimumStops),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
             InstanceMethod("setLoggingGzip", &TNRPAddon::SetLoggingGzip),
             InstanceMethod("flushRecording", &TNRPAddon::FlushRecording),
+            InstanceMethod("setDataRequirements", &TNRPAddon::SetDataRequirements),
             InstanceMethod("playerLoad", &TNRPAddon::PlayerLoad),
             InstanceMethod("playerPlay", &TNRPAddon::PlayerPlay),
             InstanceMethod("playerPause", &TNRPAddon::PlayerPause),
             InstanceMethod("playerSeek", &TNRPAddon::PlayerSeek),
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
+            InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
+            InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
@@ -221,8 +288,29 @@ public:
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();
         }
+        if (configObj.Has("forwardTargets") && configObj.Get("forwardTargets").IsArray()) {
+            Napi::Array targets = configObj.Get("forwardTargets").As<Napi::Array>();
+            const uint32_t count = std::min<uint32_t>(targets.Length(), tnrp::kMaxUdpForwardTargets);
+            config.udpForwardTargets.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                Napi::Value value = targets.Get(i);
+                if (!value.IsObject()) continue;
+                Napi::Object targetObj = value.As<Napi::Object>();
+                if (!targetObj.Has("address") || !targetObj.Get("address").IsString() ||
+                    !targetObj.Has("port") || !targetObj.Get("port").IsNumber()) continue;
+                const uint32_t targetPort = targetObj.Get("port").As<Napi::Number>().Uint32Value();
+                if (targetPort == 0 || targetPort > 65535) continue;
+                config.udpForwardTargets.push_back({
+                    targetObj.Get("address").As<Napi::String>().Utf8Value(),
+                    static_cast<uint16_t>(targetPort)
+                });
+            }
+        }
         if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
             config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
+        }
+        if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
+            config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
         }
         TRACE("TNRPAddon ctor: config parsed");
 
@@ -252,7 +340,8 @@ public:
         }
 
         // Optional third callback for the playback seek flush
-        // (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number).
+        // (binary: Buffer, coldJson: string, currentLapStart: number,
+        //  lapNum: number, allHistory: boolean).
         // Only fires when the engine runs with config.binaryPlayback.
         if (info.Length() >= 4 && info[3].IsFunction()) {
             Napi::Function seekCb = info[3].As<Napi::Function>();
@@ -345,26 +434,49 @@ public:
         }
     }
 
-    // Playback seek flush (Config::binaryPlayback only). Seeks arrive at user
-    // rate, so no coalescing — each flush is copied once and handed to JS whole.
-    void onSeekFlush(const uint8_t* bin, size_t len, const std::string& coldJson,
-                     float currentLapStart, int lapNum) override {
+    // Playback seek flush (Config::binaryPlayback only). The reader hands us a
+    // zero-copy view of its immutable packed store. Copy once into a normal V8
+    // Buffer here: Electron IPC cannot serialize an external-memory Buffer.
+    void onSeekFlush(std::shared_ptr<const std::vector<uint8_t>> binStore,
+                     size_t binBegin, size_t binEnd, std::string&& coldJson,
+                     float currentLapStart, int lapNum, bool allHistory,
+                     uint64_t requestId, bool authoritativeSeek,
+                     uint32_t rowTypeMask, float historyStart) override {
         if (!hasSeekCb_) return;
         struct SeekData {
-            std::vector<uint8_t> bin;
+            std::shared_ptr<const std::vector<uint8_t>> binStore;
+            size_t binBegin;
+            size_t binEnd;
             std::string cold;
             float lapStart;
             int lapNum;
+            bool allHistory;
+            uint64_t requestId;
+            bool authoritativeSeek;
+            uint32_t rowTypeMask;
+            float historyStart;
         };
-        auto* d = new SeekData{ std::vector<uint8_t>(bin, bin + len), coldJson,
-                                currentLapStart, lapNum };
+        auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
+                                currentLapStart, lapNum, allHistory, requestId,
+                                authoritativeSeek, rowTypeMask, historyStart };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
                 if (env != nullptr && cb != nullptr) {
-                    cb.Call({ Napi::Buffer<uint8_t>::Copy(env, d->bin.data(), d->bin.size()),
+                    const size_t len = d->binStore && d->binEnd > d->binBegin
+                        ? d->binEnd - d->binBegin : 0;
+                    auto buffer = len == 0
+                        ? Napi::Buffer<uint8_t>::New(env, 0)
+                        : Napi::Buffer<uint8_t>::Copy(
+                            env, d->binStore->data() + d->binBegin, len);
+                    cb.Call({ buffer,
                               Napi::String::New(env, d->cold),
                               Napi::Number::New(env, d->lapStart),
-                              Napi::Number::New(env, d->lapNum) });
+                              Napi::Number::New(env, d->lapNum),
+                              Napi::Boolean::New(env, d->allHistory),
+                              Napi::Number::New(env, static_cast<double>(d->requestId)),
+                              Napi::Boolean::New(env, d->authoritativeSeek),
+                              Napi::Number::New(env, d->rowTypeMask),
+                              Napi::Number::New(env, d->historyStart) });
                 }
                 delete d;
             });
@@ -407,6 +519,10 @@ private:
         return Napi::Boolean::New(info.Env(), ok);
     }
 
+    Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine->udpLastError());
+    }
+
     Napi::Value SetOverride(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsString()) {
             std::string ovr = info[0].As<Napi::String>().Utf8Value();
@@ -415,6 +531,12 @@ private:
             else if (ovr == "f1_25") engine->setOverride(tnrp::Override::F1_25);
             else if (ovr == "f1_26") engine->setOverride(tnrp::Override::F1_26);
         }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value SetStrategyMinimumStops(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 1 && info[0].IsNumber())
+            engine->setStrategyMinimumStops(info[0].As<Napi::Number>().Int32Value());
         return info.Env().Undefined();
     }
 
@@ -491,9 +613,39 @@ private:
         return info.Env().Undefined();
     }
 
+    Napi::Value SetDataRequirements(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 2 && info[0].IsNumber() &&
+            info[1].IsNumber()) {
+            const uint32_t streamMask = info[0].As<Napi::Number>().Uint32Value();
+            const uint32_t historyMask = info[1].As<Napi::Number>().Uint32Value();
+            const float windowSeconds = info.Length() >= 3 && info[2].IsNumber()
+                ? std::max(-1.0f, info[2].As<Napi::Number>().FloatValue()) : 0.0f;
+            const uint64_t requestId = info.Length() >= 4 && info[3].IsNumber()
+                ? static_cast<uint64_t>(info[3].As<Napi::Number>().Int64Value()) : 0;
+            engine->requestDataRequirements(requestId);
+            (new DataRequirementsWorker(info.Env(), engine, streamMask,
+                historyMask, windowSeconds, requestId))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
     Napi::Value PlayerSeek(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber()) {
-            engine->playerSeek(info[0].As<Napi::Number>().FloatValue());
+            const bool allHistory = info.Length() >= 2 && info[1].IsBoolean() &&
+                info[1].As<Napi::Boolean>().Value();
+            const uint64_t requestId = info.Length() >= 3 && info[2].IsNumber()
+                ? static_cast<uint64_t>(info[2].As<Napi::Number>().Int64Value()) : 0;
+            const uint32_t rowTypeMask = info.Length() >= 4 && info[3].IsNumber()
+                ? info[3].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            const float windowSeconds = info.Length() >= 5 && info[4].IsNumber()
+                ? std::max(0.0f, info[4].As<Napi::Number>().FloatValue()) : 0.0f;
+            engine->playerRequestSeek(requestId);
+            // Every indexed seek can decompress, rebuild sparse state and prime
+            // the streaming frontier. Never charge that work to Electron's
+            // main thread, including current-lap/zero-window seeks.
+            (new PlayerSeekWorker(info.Env(), engine,
+                info[0].As<Napi::Number>().FloatValue(), allHistory, requestId,
+                rowTypeMask, windowSeconds))->Queue();
         }
         return info.Env().Undefined();
     }
@@ -507,7 +659,33 @@ private:
 
     Napi::Value PlayerGetLapData(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber() && engine) {
-            engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value());
+            const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
+                ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            engine->playerGetLapData(info[0].As<Napi::Number>().Int32Value(), rowTypeMask);
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerGetAllLapsData(const Napi::CallbackInfo& info) {
+        if (engine) {
+            const uint64_t requestId = info.Length() >= 1 && info[0].IsNumber()
+                ? static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()) : 0;
+            const uint32_t rowTypeMask = info.Length() >= 2 && info[1].IsNumber()
+                ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask))->Queue();
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerGetWindowData(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsNumber()) {
+            const float windowSeconds = std::max(0.0f, info[0].As<Napi::Number>().FloatValue());
+            const uint64_t requestId = info.Length() >= 2 && info[1].IsNumber()
+                ? static_cast<uint64_t>(info[1].As<Napi::Number>().Int64Value()) : 0;
+            const uint32_t rowTypeMask = info.Length() >= 3 && info[2].IsNumber()
+                ? info[2].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu;
+            (new PlayerHistoryWorker(info.Env(), engine, requestId, rowTypeMask,
+                                     windowSeconds, true))->Queue();
         }
         return info.Env().Undefined();
     }
@@ -540,7 +718,9 @@ private:
         std::lock_guard<std::mutex> lock(analysisReader_->mutex);
         return Napi::String::New(
             info.Env(), analysisReader_->reader.getLapDataMessage(
-                info[0].As<Napi::Number>().Int32Value()));
+                info[0].As<Napi::Number>().Int32Value(),
+                info.Length() >= 2 && info[1].IsNumber()
+                    ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu));
     }
 
     Napi::Value AnalysisCloseFile(const Napi::CallbackInfo& info) {
@@ -562,7 +742,11 @@ private:
     }
 
     Napi::Value PlayerClose(const Napi::CallbackInfo& info) {
+        std::fprintf(stderr, "[close-trace] addon PlayerClose entry\n");
+        std::fflush(stderr);
         if (engine) engine->playerClose();
+        std::fprintf(stderr, "[close-trace] addon PlayerClose returned\n");
+        std::fflush(stderr);
         return info.Env().Undefined();
     }
 

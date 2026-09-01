@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import Select, { type GroupBase, type SingleValue } from 'react-select'
+import { type GroupBase, type SingleValue } from 'react-select'
+import Select from '../lib/AnimatedSelect'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, Columns3, Eye, GitCompareArrows, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
@@ -11,11 +12,17 @@ import {
 } from '../lib/analyzeMetrics'
 import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
-import { TEXT_ACTION_BUTTON_CLASS } from '../lib/buttonStyles'
+import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
+import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
+import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
+import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
+import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
+import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
+import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 
 interface Props {
   isDark: boolean
@@ -25,6 +32,10 @@ interface Props {
   onCompareLapChange: (lapNum: number | null) => void
   fixedLapMode: AnalyzeFixedLapMode
   onFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
+  mapDimmed: boolean
+  reduceAnimations: boolean
+  sectorColors: boolean
+  onDataMaskChange: (mask: number) => void
 }
 
 export interface AnalyzeFixedLapMode {
@@ -40,6 +51,10 @@ interface LapBlock {
   statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
 }
 interface SelectOption { value: string; label: string }
+const ANALYSIS_VIEW_OPTIONS: SelectOption[] = [
+  { value: 'graph', label: 'Graphs' },
+  { value: 'map', label: 'Map' },
+]
 interface LapOption {
   value: number
   label: string
@@ -54,15 +69,28 @@ interface ComparisonLapOption extends Omit<LapOption, 'value'> {
 }
 interface SecondaryFileData {
   filename: string
+  trackId: number | null
   blocks: LapBlock[]
   fastestLapNum: number | null
   lapTimesByNum: Record<number, number>
   deltaAvailable: boolean
 }
 type AnalysisFileSource = 'file1' | 'file2'
+const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
+const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
+const ANALYSIS_MOTION_DURATION = 260
+const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
+
+function easeInOutCubic(progress: number): number {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2
+}
+
 interface PendingCircuitMismatch {
   filePath: string
   data: any
+  trackId: number | null
   trackName: string
 }
 
@@ -84,7 +112,7 @@ function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | nu
 function FastestLapChip() {
   return <span
     className="ml-2 text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0"
-    style={{ backgroundColor: '#BF5FFF22', color: '#BF5FFF' }}
+    style={{ backgroundColor: 'color-mix(in srgb, var(--color-fastest) 14%, transparent)', color: 'var(--color-fastest)' }}
   >FL</span>
 }
 
@@ -115,6 +143,7 @@ function formatComparisonLapOption(option: ComparisonLapOption) {
 
 function AnalyzeComparisonSelector({
   id, label, placeholder, value, options, onChange, styles, isDisabled = false,
+  colorPicker, showColorPicker = false, displayOnly = false,
 }: {
   id: string
   label: string
@@ -124,14 +153,22 @@ function AnalyzeComparisonSelector({
   onChange: (option: SingleValue<ComparisonLapOption>) => void
   styles: ReturnType<typeof buildSelectStyles>
   isDisabled?: boolean
+  colorPicker?: ReactNode
+  showColorPicker?: boolean
+  displayOnly?: boolean
 }) {
-  return <div className="flex items-center gap-2">
-    <label htmlFor={id} className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+  return <div className="flex items-center">
+    <label htmlFor={id} className="mr-2 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+    <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
+      <div className="analyze-map-color-slot__inner">{colorPicker}</div>
+    </div>
     <div className="flex-1 min-w-0">
       <Select<ComparisonLapOption, false, GroupBase<ComparisonLapOption>>
         inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
-        formatOptionLabel={formatComparisonLapOption} styles={styles} components={selectComponents}
-        isSearchable={false} isClearable isDisabled={isDisabled} menuPortalTarget={document.body}
+        formatOptionLabel={formatComparisonLapOption} styles={styles}
+        components={displayOnly ? { DropdownIndicator: () => null, ClearIndicator: () => null } : selectComponents}
+        isSearchable={false} isClearable={!displayOnly} isDisabled={isDisabled || displayOnly}
+        menuPortalTarget={document.body}
       />
     </div>
   </div>
@@ -149,6 +186,8 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
     statusHistory: payload.statusHistory ?? [],
     damageHistory: payload.damageHistory ?? [],
     lapProgress: payload.lapProgress ?? [],
+    playerPositions: payload.playerPositions ?? [],
+    rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
   }
 }
 
@@ -287,7 +326,9 @@ function DeltaColorPicker({
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
-  currentLapNum, comparison, fixedMode, primaryOverride, distanceMode, controlsRef,
+  currentLapNum, comparison, comparisonSelected, fixedMode, primaryOverride, distanceMode,
+  analysisView, syncedTooltip, sectorBoundaries, sectorDelta,
+  graphControlsRef, stackedControlsRef, onInspectMap,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -295,51 +336,103 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   deltaNegativeColor: string
   currentLapNum: number | null
   comparison: AnalyzeLapData | null
+  comparisonSelected: boolean
   fixedMode: boolean
   primaryOverride: AnalyzeLapData | null
   distanceMode: boolean
-  controlsRef: MutableRefObject<AnalyzeChartControls | null>
+  analysisView: 'graph' | 'charts' | 'map'
+  syncedTooltip: boolean
+  sectorBoundaries: boolean
+  sectorDelta: boolean
+  graphControlsRef: MutableRefObject<AnalyzeChartControls | null>
+  stackedControlsRef: MutableRefObject<AnalyzeChartControls | null>
+  onInspectMap?: (elapsedSeconds: number) => void
 }) {
-  const telemetry = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapTelemetry)
-  const motion = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotion)
-  const motionEx = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapMotionEx)
-  const statusHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapStatusHistory)
-  const damageHistory = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapDamageHistory)
-  const lapProgress = useTelemetryStore(s => fixedMode ? EMPTY_ROWS : s.analyzeLapProgress)
-  const startSessionTime = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapStartTime)
-  const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
-  const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
+  const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION)
   const playbackCurrentLap = useTelemetryStore(s =>
     !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
       ? s.playbackLapDataCache[currentLapNum] ?? null
       : null)
+  const cachedMask = playbackCurrentLap?.rowTypeMask ?? 0
+  const telemetry = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.telemetry) !== 0 ? EMPTY_ROWS : s.analyzeLapTelemetry)
+  const motion = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.motion) !== 0 ? EMPTY_ROWS : s.analyzeLapMotion)
+  const motionEx = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.motionEx) !== 0 ? EMPTY_ROWS : s.analyzeLapMotionEx)
+  const statusHistory = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.status) !== 0 ? EMPTY_ROWS : s.analyzeLapStatusHistory)
+  const damageHistory = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.damage) !== 0 ? EMPTY_ROWS : s.analyzeLapDamageHistory)
+  const lapProgress = useTelemetryStore(s =>
+    fixedMode || (cachedMask & DATA_ROW.lap) !== 0 ? EMPTY_ROWS : s.analyzeLapProgress)
+  const startSessionTime = useTelemetryStore(s =>
+    fixedMode || playbackCurrentLap !== null ? 0 : s.analyzeLapStartTime)
+  const liveRevision = useTelemetryStore(s => fixedMode ? 0 : s.analyzeLapRevision)
+  const trackLengthM = useTelemetryStore(s => s.analyzeTrackLengthM)
 
   const liveCurrent = useMemo<AnalyzeLapData>(() => {
-    const ends = [telemetry, motion, motionEx, statusHistory, damageHistory]
+    // Playback Analysis already requests the current lap through the native
+    // indexed lap cache. Consume each installed family directly from that
+    // cache instead of relying on transient active-tab streaming slices: those
+    // slices are deliberately discarded while Analysis is hidden and can be
+    // incomplete for a frame (or indefinitely when their old coverage marker
+    // survives a tab switch). Live sessions continue using the rolling slices.
+    const currentTelemetry = playbackCurrentLap && (cachedMask & DATA_ROW.telemetry) ? playbackCurrentLap.telemetry : telemetry
+    const currentMotion = playbackCurrentLap && (cachedMask & DATA_ROW.motion) ? playbackCurrentLap.motion : motion
+    const currentMotionEx = playbackCurrentLap && (cachedMask & DATA_ROW.motionEx) ? playbackCurrentLap.motionEx : motionEx
+    const currentStatus = playbackCurrentLap && (cachedMask & DATA_ROW.status) ? playbackCurrentLap.statusHistory : statusHistory
+    const currentDamage = playbackCurrentLap && (cachedMask & DATA_ROW.damage) ? playbackCurrentLap.damageHistory : damageHistory
+    const currentProgress = playbackCurrentLap && (cachedMask & DATA_ROW.lap) ? playbackCurrentLap.lapProgress : lapProgress
+    const ends = [currentTelemetry, currentMotion, currentMotionEx, currentStatus, currentDamage]
       .flatMap(rows => rows.length ? [rows[rows.length - 1].session_time] : [])
     return {
       lapNum: currentLapNum ?? 0,
       startSessionTime: playbackCurrentLap?.startSessionTime ?? startSessionTime,
-      endSessionTime: ends.length ? Math.max(...ends) : startSessionTime,
-      telemetry, motion, motionEx, statusHistory, damageHistory,
-      lapProgress: playbackCurrentLap?.lapProgress ?? lapProgress,
+      endSessionTime: playbackCurrentLap?.endSessionTime ?? (ends.length ? Math.max(...ends) : startSessionTime),
+      telemetry: currentTelemetry,
+      motion: currentMotion,
+      motionEx: currentMotionEx,
+      statusHistory: currentStatus,
+      damageHistory: currentDamage,
+      lapProgress: currentProgress,
+      playerPositions: playbackCurrentLap?.playerPositions ?? [],
+      rowTypeMask: cachedMask,
     }
-  }, [currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
+  }, [cachedMask, currentLapNum, damageHistory, lapProgress, motion, motionEx, playbackCurrentLap, startSessionTime, statusHistory, telemetry])
   const current = fixedMode ? primaryOverride ?? EMPTY_ANALYZE_LAP : liveCurrent
   const currentRevision = fixedMode
     ? `fixed:${current.lapNum}:${current.startSessionTime}:${current.endSessionTime}`
-    : `${liveRevision}:${current.lapNum}:${playbackCurrentLap ? `cached:${playbackCurrentLap.startSessionTime}` : 'stream'}`
+    : `${liveRevision}:${current.lapNum}:${playbackCurrentLap
+      ? `cached:${playbackCurrentLap.startSessionTime}:${playbackCurrentLap.rowTypeMask ?? 0}`
+      : 'stream'}`
+
+  const chartProps = {
+    isDark, current, currentRevision, comparison, comparisonSelected, selected,
+    primaryLabel: fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined,
+    comparisonLabel: fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined,
+    distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
+    zoomEnabled: fixedMode && primaryOverride !== null,
+    realtimeCurrent: playbackCurrentLap !== null,
+    syncedTooltip, sectorBoundaries, sectorDelta,
+    onInspectMap,
+  }
 
   return <div className="absolute inset-0">
-    <AnalyzeTimeChart
-      isDark={isDark} current={current} currentRevision={currentRevision} comparison={comparison}
-      selected={selected}
-      primaryLabel={fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined}
-      comparisonLabel={fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined}
-      distanceMode={distanceMode} trackLengthM={trackLengthM}
-      deltaPositiveColor={deltaPositiveColor} deltaNegativeColor={deltaNegativeColor}
-      zoomEnabled={fixedMode && primaryOverride !== null} controlsRef={controlsRef}
-    />
+    <div
+      className={`analysis-chart-mode-surface absolute inset-0 ${stackedPresence.visible ? '' : 'analysis-chart-mode-surface--visible'}`}
+      aria-hidden={stackedPresence.visible}
+      inert={stackedPresence.visible}
+    >
+      <AnalyzeTimeChart {...chartProps} controlsRef={graphControlsRef} tooltipEnabled={analysisView === 'graph'} />
+    </div>
+    {stackedPresence.mounted && <div
+      className={`analysis-chart-mode-surface absolute inset-0 ${stackedPresence.visible ? 'analysis-chart-mode-surface--visible' : ''}`}
+      aria-hidden={!stackedPresence.visible}
+      inert={!stackedPresence.visible}
+    >
+      <AnalyzeStackedTimeCharts {...chartProps} controlsRef={stackedControlsRef} tooltipEnabled={stackedPresence.visible} />
+    </div>}
   </div>
 })
 
@@ -347,20 +440,29 @@ const EMPTY_ROWS: never[] = []
 const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
   lapNum: 0, startSessionTime: 0, endSessionTime: 0,
   telemetry: [], motion: [], motionEx: [], statusHistory: [], damageHistory: [],
-  lapProgress: [],
+  lapProgress: [], playerPositions: [],
+  rowTypeMask: 0,
 }
 
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
-  fixedLapMode, onFixedLapModeChange,
+  fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
+  onDataMaskChange,
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
+  const primaryView = !playbackFilename && config.view === 'map' ? 'graph' : config.view
+  const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
+  const chartAnalysisView = config.individualGraphs ? 'charts' : 'graph'
+  const mapPresence = useModalPresence(analysisView === 'map', ANALYSIS_PRESENCE_DURATION)
+  const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
+  useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
-  const liveLapNum = useTelemetryStore(s => s.lap?.lap_num ?? null)
-  const fastestLapNum = useTelemetryStore(s => s.fastestLap?.lapNum ?? null)
+  const liveLap = useTelemetryStore(s => s.lap)
+  const liveLapNum = liveLap?.lap_num ?? null
+  const fastestLapNum = useTelemetryStore(s => s.fastestLapNum)
   const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
   const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)
@@ -376,9 +478,17 @@ export default function AnalyzeScreen({
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
-  const requestedRef = useRef(new Set<number>())
-  const secondaryRequestedRef = useRef(new Set<number>())
-  const chartControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const circuitMismatchPresence = useModalPresenceValue(pendingCircuitMismatch)
+  const displayedCircuitMismatch = circuitMismatchPresence.value
+  const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
+  const mapFocusIdRef = useRef(0)
+  const requestedRef = useRef(new Map<number, number>())
+  const secondaryRequestedRef = useRef(new Map<number, number>())
+  const graphControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const stackedControlsRef = useRef<AnalyzeChartControls | null>(null)
+  const seriesRowRefs = useRef(new Map<string, HTMLDivElement>())
+  const seriesLayoutBeforeUpdateRef = useRef<Map<string, DOMRect> | null>(null)
+  const seriesLayoutReadyRef = useRef(false)
   const sidebarRef = useRef<HTMLElement>(null)
   const previousCollapsedRef = useRef(config.collapsed)
   const selectStyles = useMemo(() => buildSelectStyles(isDark, {
@@ -386,9 +496,57 @@ export default function AnalyzeScreen({
     controlHeight: 32,
     labelStyleGroupHeadings: true,
   }), [isDark])
+  const lapSelectStyles = useMemo(() => buildSelectStyles(isDark, {
+    solidBg: true,
+    controlHeight: 32,
+    labelStyleGroupHeadings: true,
+    menuWidth: 'calc(100% + 50px)',
+  }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
-  const updateSeries = useCallback((series: AnalyzeSeriesConfig[]) => save({ ...config, series }), [config, save])
+  const updateSeries = useCallback((series: AnalyzeSeriesConfig[]) => {
+    if (!reduceAnimations) {
+      seriesLayoutBeforeUpdateRef.current = new Map(
+        [...seriesRowRefs.current].map(([id, node]) => [id, node.getBoundingClientRect()]),
+      )
+    }
+    save({ ...config, series })
+  }, [config, reduceAnimations, save])
+
+  useLayoutEffect(() => {
+    if (!seriesLayoutReadyRef.current) {
+      seriesLayoutReadyRef.current = true
+      seriesLayoutBeforeUpdateRef.current = null
+      return
+    }
+    const previous = seriesLayoutBeforeUpdateRef.current
+    seriesLayoutBeforeUpdateRef.current = null
+    if (reduceAnimations || !previous) return
+    for (const [id, node] of seriesRowRefs.current) {
+      const before = previous.get(id)
+      if (!before) {
+        node.animate([
+          { opacity: 0, transform: 'translateY(4px)' },
+          { opacity: 1, transform: 'translateY(0)' },
+        ], { duration: ANALYSIS_MOTION_DURATION, easing: ANALYSIS_MOTION_EASING })
+        continue
+      }
+      const after = node.getBoundingClientRect()
+      const deltaX = before.left - after.left
+      const deltaY = before.top - after.top
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) continue
+      node.animate([
+        { transform: `translate(${deltaX}px, ${deltaY}px)` },
+        { transform: 'translate(0, 0)' },
+      ], { duration: ANALYSIS_MOTION_DURATION, easing: ANALYSIS_MOTION_EASING })
+    }
+  }, [config.series, reduceAnimations])
+  const inspectMapAt = useCallback((elapsedSeconds: number) => {
+    if (!playbackFilename) return
+    setMapFocus({ id: ++mapFocusIdRef.current, elapsedSeconds })
+    save({ ...config, view: 'map' })
+  }, [config, playbackFilename, save])
+
 
   const selectedIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
   const metricOptions = useMemo(() => ['Driving', 'Motion', 'Power', 'Tyres'].map(group => ({
@@ -436,6 +594,21 @@ export default function AnalyzeScreen({
   const compareValue = secondaryLapNum !== null
     ? file2CompareOptions.find(option => option.lapNum === secondaryLapNum) ?? null
     : file1CompareOptions.find(option => option.lapNum === compareLapNum) ?? null
+  const currentLapValue = useMemo<ComparisonLapOption | null>(() => {
+    if (effectiveCurrentLapNum === null) return null
+    const existing = file1CompareOptions.find(option => option.lapNum === effectiveCurrentLapNum)
+    const elapsedMs = liveLap?.lap_num === effectiveCurrentLapNum ? liveLap.current_lap_ms : undefined
+    const lapTime = existing?.lapTime ?? formatLapTimeMs(elapsedMs)
+    return {
+      value: `current:${effectiveCurrentLapNum}`,
+      lapNum: effectiveCurrentLapNum,
+      label: existing?.label ?? `Lap ${effectiveCurrentLapNum}${lapTime ? ` · ${lapTime}` : ''}`,
+      compound: existing?.compound ?? null,
+      compoundColor: existing?.compoundColor ?? null,
+      lapTime,
+      isFastest: existing?.isFastest ?? false,
+    }
+  }, [effectiveCurrentLapNum, file1CompareOptions, liveLap?.current_lap_ms, liveLap?.lap_num])
   const lapAValue = fixedLapMode.lapA === null ? null
     : (lapASource === 'file2' ? file2CompareOptions : file1CompareOptions)
       .find(option => option.lapNum === fixedLapMode.lapA) ?? null
@@ -455,12 +628,29 @@ export default function AnalyzeScreen({
     : secondaryLapNum !== null
       ? secondaryLapCache[secondaryLapNum] ?? null
       : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+  const current = fixedLapMode.enabled
+    ? fixedPrimary
+    : effectiveCurrentLapNum !== null ? lapCache[effectiveCurrentLapNum] ?? null : null
+  const mapTrackIds = [
+    fixedLapMode.enabled
+      ? fixedLapMode.lapA !== null ? (lapASource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null
+      : current ? primaryTrackId : null,
+    fixedLapMode.enabled
+      ? fixedLapMode.lapB !== null ? (lapBSource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null
+      : comparison ? (secondaryLapNum !== null ? secondaryFile?.trackId ?? null : primaryTrackId) : null,
+  ].filter((trackId): trackId is number => trackId !== null)
+  const distinctMapTrackIds = [...new Set(mapTrackIds)]
+  const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
+  const compatibleMapCircuit = distinctMapTrackIds.length <= 1
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
     ? (lapASource === 'file1' || secondaryFile?.deltaAvailable === true) &&
       (lapBSource === 'file1' || secondaryFile?.deltaAvailable === true)
     : secondaryLapNum === null || secondaryFile?.deltaAvailable === true)
+  const comparisonSelected = fixedLapMode.enabled
+    ? fixedLapMode.lapA !== null && fixedLapMode.lapB !== null
+    : compareLapNum !== null || secondaryLapNum !== null
 
-  const applySecondaryFile = useCallback((filePath: string, data: any) => {
+  const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
     const times: Record<number, number> = {}
     for (const lap of data?.laps ?? []) {
       if (Number.isFinite(lap.lapNum) && Number.isFinite(lap.lapTimeMs) && lap.lapTimeMs > 0) {
@@ -469,10 +659,11 @@ export default function AnalyzeScreen({
     }
     setSecondaryFile({
       filename: filePath.split(/[\\/]/).pop() ?? filePath,
+      trackId,
       blocks: Array.isArray(data?.blocks) ? data.blocks : [],
       fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
       lapTimesByNum: times,
-      deltaAvailable: data?.deltaAvailable === true && data?.tnrdVersion === 'TNRD_V3',
+      deltaAvailable: data?.lapDistanceAvailable === true || data?.deltaAvailable === true,
     })
     setSecondaryLapCache({})
     secondaryRequestedRef.current.clear()
@@ -503,11 +694,12 @@ export default function AnalyzeScreen({
       setPendingCircuitMismatch({
         filePath,
         data,
+        trackId: Number.isFinite(result.trackId) ? result.trackId! : null,
         trackName: result.trackName || `Circuit ${result.trackId}`,
       })
       return
     }
-    applySecondaryFile(filePath, data)
+    applySecondaryFile(filePath, data, Number.isFinite(result.trackId) ? result.trackId! : null)
   }, [applySecondaryFile, primaryTrackId])
 
   const clearSecondaryFile = useCallback(() => {
@@ -545,23 +737,23 @@ export default function AnalyzeScreen({
     previousCollapsedRef.current = config.collapsed
 
     const startWidth = sidebar.getBoundingClientRect().width
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || startWidth === targetWidth) {
+    if (reduceAnimations || startWidth === targetWidth) {
       sidebar.style.width = `${targetWidth}px`
       return
     }
 
-    const duration = 200
+    const duration = ANALYSIS_MOTION_DURATION
     const startedAt = performance.now()
     let animationFrame = 0
     const animate = (now: number) => {
       const progress = Math.min(1, (now - startedAt) / duration)
-      const eased = 1 - Math.pow(1 - progress, 3)
+      const eased = easeInOutCubic(progress)
       sidebar.style.width = `${startWidth + (targetWidth - startWidth) * eased}px`
       if (progress < 1) animationFrame = requestAnimationFrame(animate)
     }
     animationFrame = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(animationFrame)
-  }, [config.collapsed])
+  }, [config.collapsed, reduceAnimations])
 
   useEffect(() => {
     if (!playbackFilename) return
@@ -570,15 +762,16 @@ export default function AnalyzeScreen({
       : [compareLapNum, effectiveCurrentLapNum]
     for (const lapNum of targets) {
       if (lapNum === null) continue
-      if (lapCache[lapNum]) {
+      const loadedMask = lapCache[lapNum]?.rowTypeMask ?? 0
+      if ((loadedMask & dataMask) === dataMask) {
         requestedRef.current.delete(lapNum)
         continue
       }
-      if (requestedRef.current.has(lapNum)) continue
-      requestedRef.current.add(lapNum)
-      window.playerBridge.getLapData(lapNum)
+      if (((requestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask) continue
+      requestedRef.current.set(lapNum, dataMask)
+      window.playerBridge.getLapData(lapNum, dataMask)
     }
-  }, [compareLapNum, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
+  }, [compareLapNum, dataMask, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
 
   useEffect(() => {
     const targets = [
@@ -587,15 +780,20 @@ export default function AnalyzeScreen({
       fixedLapMode.enabled && lapBSource === 'file2' ? fixedLapMode.lapB : null,
     ]
     for (const lapNum of new Set(targets)) {
-      if (lapNum === null || secondaryLapCache[lapNum] || secondaryRequestedRef.current.has(lapNum)) continue
-      secondaryRequestedRef.current.add(lapNum)
-      window.analysisBridge.getLapData(lapNum).then(payload => {
+      const loadedMask = lapNum === null ? 0 : secondaryLapCache[lapNum]?.rowTypeMask ?? 0
+      if (lapNum === null || (loadedMask & dataMask) === dataMask ||
+          (((secondaryRequestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask)) continue
+      secondaryRequestedRef.current.set(lapNum, dataMask)
+      window.analysisBridge.getLapData(lapNum, dataMask).then(payload => {
         const lapData = parseAnalyzeLapData(payload)
-        if (lapData) setSecondaryLapCache(cache => ({ ...cache, [lapData.lapNum]: lapData }))
+        if (lapData) setSecondaryLapCache(cache => {
+          const prior = cache[lapData.lapNum]
+          return { ...cache, [lapData.lapNum]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData }
+        })
         else secondaryRequestedRef.current.delete(lapNum)
       })
     }
-  }, [fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
+  }, [dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
@@ -626,6 +824,12 @@ export default function AnalyzeScreen({
     setDraggedMetric(null)
   }, [config.series, draggedMetric, updateSeries])
 
+  const removeMetric = useCallback((metricId: string) => {
+    updateSeries(config.series.filter(entry => entry.metricId !== metricId))
+  }, [config.series, updateSeries])
+
+  const activeChartControlsRef = analysisView === 'charts' ? stackedControlsRef : graphControlsRef
+
   return (
     <div className="h-full flex overflow-hidden border-t border-[var(--border)] bg-[var(--bg-panel)]">
       <aside
@@ -634,9 +838,7 @@ export default function AnalyzeScreen({
       >
           <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
             <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)]">Analysis</div>
-              </div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
@@ -649,16 +851,56 @@ export default function AnalyzeScreen({
                   />
                 </div>
               </div>
-              {playbackFilename && blocks && <div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="analyze-view" className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">View</label>
+                <div className="flex-1 min-w-0">
+                  <Select<SelectOption, false>
+                    inputId="analyze-view"
+                    value={ANALYSIS_VIEW_OPTIONS.find(option => option.value === primaryView) ?? ANALYSIS_VIEW_OPTIONS[0]}
+                    options={ANALYSIS_VIEW_OPTIONS}
+                    onChange={option => {
+                      if (!option || (option.value !== 'graph' && option.value !== 'map')) return
+                      setMapFocus(null)
+                      save({ ...config, view: option.value })
+                    }}
+                    isOptionDisabled={option => option.value === 'map' && !playbackFilename}
+                    styles={selectStyles}
+                    components={selectComponents}
+                    isSearchable={false}
+                    menuPortalTarget={document.body}
+                  />
+                </div>
+              </div>
+              <div className="flex gap-2">
                 <button
-                  role="switch" aria-checked={fixedLapMode.enabled}
+                  type="button" aria-label="Individual Graphs" aria-pressed={config.individualGraphs} title="Individual Graphs"
+                  onClick={() => save({ ...config, individualGraphs: !config.individualGraphs })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.individualGraphs ? 'analyze-toggle-button--active' : ''}`}
+                ><Rows3 size={15} /></button>
+                <button
+                  type="button" aria-label="Synced Tooltip" aria-pressed={config.syncedTooltip} title="Synced Tooltip" disabled={!config.individualGraphs}
+                  onClick={() => save({ ...config, syncedTooltip: !config.syncedTooltip })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.syncedTooltip ? 'analyze-toggle-button--active' : ''}`}
+                ><SyncedTooltipIcon size={15} /></button>
+                <button
+                  type="button" aria-label="Sector Boundaries" aria-pressed={config.sectorBoundaries} title="Sector Boundaries"
+                  onClick={() => {
+                    const sectorBoundaries = !config.sectorBoundaries
+                    save({ ...config, sectorBoundaries, sectorDelta: sectorBoundaries && config.sectorDelta })
+                  }}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorBoundaries ? 'analyze-toggle-button--active' : ''}`}
+                ><Columns3 size={15} /></button>
+                <button
+                  type="button" aria-label="Sector Delta" aria-pressed={config.sectorDelta} title="Sector Delta" disabled={!config.sectorBoundaries}
+                  onClick={() => save({ ...config, sectorDelta: !config.sectorDelta })}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorDelta ? 'analyze-toggle-button--active' : ''}`}
+                ><ChartNoAxesCombined size={15} /></button>
+                {playbackFilename && blocks && <button
+                  type="button" aria-label="Comparison" aria-pressed={fixedLapMode.enabled} title="Comparison"
                   onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
-                  className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--text-secondary)]"
-                >
-                  <span>Compare Mode</span>
-                  <span className={`w-8 h-4 rounded-full p-0.5 transition-colors ${fixedLapMode.enabled ? 'bg-[var(--border-focus)]' : 'bg-[var(--border)]'}`}><span className={`block w-3 h-3 rounded-full bg-white transition-transform ${fixedLapMode.enabled ? 'translate-x-4' : ''}`} /></span>
-                </button>
-              </div>}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
+                ><GitCompareArrows size={15} /></button>}
+              </div>
               {playbackFilename && blocks && <div className="space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
                   <span
@@ -681,15 +923,25 @@ export default function AnalyzeScreen({
                 </div>
                 {secondaryError && <div className="px-1 text-[9px] text-[#d44252]">{secondaryError}</div>}
               </div>}
-              {fixedLapMode.enabled ? (
-                <div className="space-y-2">
+              <div className="analyze-lap-mode-switch">
+                <div
+                  className={`analyze-lap-mode-panel ${fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-left'}`}
+                  aria-hidden={!fixedLapMode.enabled}
+                  inert={!fixedLapMode.enabled}
+                >
                   <AnalyzeComparisonSelector
                     id="analyze-lap-a" label="Lap A" value={lapAValue} options={compareOptions} placeholder="Select Lap A…"
                     onChange={option => {
                       setLapASource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
                       onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })
                     }}
-                    styles={selectStyles}
+                    styles={lapSelectStyles}
+                    showColorPicker={analysisView === 'map'}
+                    colorPicker={<AnalyzeColorPicker
+                      label="Lap A"
+                      color={config.mapCurrentColor}
+                      onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
+                    />}
                   />
                   <AnalyzeComparisonSelector
                     id="analyze-lap-b" label="Lap B" value={lapBValue} options={compareOptions} placeholder="Select Lap B…"
@@ -697,13 +949,32 @@ export default function AnalyzeScreen({
                       setLapBSource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
                       onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })
                     }}
-                    styles={selectStyles}
+                    styles={lapSelectStyles}
+                    showColorPicker={analysisView === 'map'}
+                    colorPicker={<AnalyzeColorPicker
+                      label="Lap B"
+                      color={config.mapComparisonColor}
+                      onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
+                    />}
                   />
                 </div>
-              ) : (
-                <div>
+                <div
+                  className={`analyze-lap-mode-panel ${!fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-right'}`}
+                  aria-hidden={fixedLapMode.enabled}
+                  inert={fixedLapMode.enabled}
+                >
                   <AnalyzeComparisonSelector
-                    id="analyze-compare-lap" label="Compare Lap" placeholder="Select lap…"
+                    id="analyze-current-lap" label="Current" placeholder="No current lap"
+                    value={currentLapValue} options={[]} onChange={() => {}} styles={lapSelectStyles} displayOnly
+                    showColorPicker={analysisView === 'map'}
+                    colorPicker={<AnalyzeColorPicker
+                      label="Current"
+                      color={config.mapCurrentColor}
+                      onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
+                    />}
+                  />
+                  <AnalyzeComparisonSelector
+                    id="analyze-compare-lap" label="Compare" placeholder="Select lap…"
                     value={compareValue} options={compareOptions}
                     onChange={option => {
                       if (!option) {
@@ -717,14 +988,20 @@ export default function AnalyzeScreen({
                         onCompareLapChange(option.lapNum)
                       }
                     }}
-                    styles={selectStyles} isDisabled={!playbackFilename || !blocks}
+                    styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
+                    showColorPicker={analysisView === 'map'}
+                    colorPicker={<AnalyzeColorPicker
+                      label="Compare"
+                      color={config.mapComparisonColor}
+                      onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
+                    />}
                   />
                 </div>
-              )}
+              </div>
               <button
                 type="button"
                 onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
-                className={`${TEXT_ACTION_BUTTON_CLASS} w-full`}
+                className={`${BUTTON_CLASS} w-full`}
               >
                 <span>Toggle Y-Axes</span>
               </button>
@@ -735,6 +1012,7 @@ export default function AnalyzeScreen({
               {config.series.map((item, index) => {
                 if (item.metricId === 'delta') return (
                   <div
+                    ref={node => { if (node) seriesRowRefs.current.set('delta', node); else seriesRowRefs.current.delete('delta') }}
                     key="delta" draggable onDragStart={() => setDraggedMetric('delta')} onDragEnd={() => setDraggedMetric(null)}
                     onDragOver={event => event.preventDefault()} onDrop={() => dropMetric('delta')}
                     className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === 'delta' ? 'opacity-40' : ''}`}
@@ -767,6 +1045,7 @@ export default function AnalyzeScreen({
                 if (!def) return null
                 return (
                   <div
+                    ref={node => { if (node) seriesRowRefs.current.set(item.metricId, node); else seriesRowRefs.current.delete(item.metricId) }}
                     key={item.metricId} draggable onDragStart={() => setDraggedMetric(item.metricId)} onDragEnd={() => setDraggedMetric(null)}
                     onDragOver={event => event.preventDefault()} onDrop={() => dropMetric(item.metricId)}
                     className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded border border-transparent hover:border-[var(--border)] hover:bg-[var(--bg-hover)] ${draggedMetric === item.metricId ? 'opacity-40' : ''}`}
@@ -797,7 +1076,7 @@ export default function AnalyzeScreen({
                         <Eye size={11} />
                       </button>
                       <button title="Reset color" onClick={() => updateSeries(config.series.map(entry => entry.metricId === item.metricId ? { ...entry, color: def.defaultColor } : entry))} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><RotateCcw size={11} /></button>
-                      <button title="Remove metric" onClick={() => updateSeries(config.series.filter(entry => entry.metricId !== item.metricId))} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252]"><Trash2 size={11} /></button>
+                      <button title="Remove metric" onClick={() => void removeMetric(item.metricId)} className="p-1 text-[var(--text-secondary)] hover:text-[#d44252]"><Trash2 size={11} /></button>
                     </div>
                   </div>
                 )
@@ -816,43 +1095,79 @@ export default function AnalyzeScreen({
           >
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
-          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => chartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => chartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
-          <span className="h-5 w-px mx-1 bg-[var(--border)]" />
-          <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => chartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => chartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
-          <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => chartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
-          {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · drag to pan · double-click to reset</span>}
-          {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
+          {analysisView !== 'map' ? <>
+            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => activeChartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom in" onClick={() => activeChartControlsRef.current?.zoomIn()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomIn size={14} /></button>
+            <span className="h-5 w-px mx-1 bg-[var(--border)]" />
+            <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Pan</span>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => activeChartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => activeChartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
+            <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => activeChartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
+            {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · {analysisView === 'charts' ? 'Shift+wheel' : 'drag'} to pan · double-click to reset</span>}
+            {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
+          </> : <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Elapsed time comparison</span>}
         </div>
         <div className="flex-1 min-h-0 relative">
-          <AnalyzeChartSubscriber
-            isDark={isDark} selected={config.series}
-            deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
-            deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
-            currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
-            comparison={comparison} fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
-            distanceMode={selectedDistanceMode}
-            controlsRef={chartControlsRef}
-          />
+          <div
+            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? '' : 'analysis-view-surface--visible'}`}
+            aria-hidden={mapPresence.visible}
+            inert={mapPresence.visible}
+          >
+            <AnalyzeChartSubscriber
+              isDark={isDark} selected={config.series}
+              deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
+              deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
+              currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
+              comparison={comparison} comparisonSelected={comparisonSelected}
+              fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
+              distanceMode={selectedDistanceMode}
+              analysisView={chartAnalysisView}
+              syncedTooltip={config.syncedTooltip}
+              sectorBoundaries={config.sectorBoundaries}
+              sectorDelta={config.sectorDelta}
+              graphControlsRef={graphControlsRef}
+              stackedControlsRef={stackedControlsRef}
+              onInspectMap={playbackFilename ? inspectMapAt : undefined}
+            />
+          </div>
+          {mapPresence.mounted && <div
+            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
+            aria-hidden={!mapPresence.visible}
+            inert={!mapPresence.visible}
+          >
+            <AnalyzeMapComparison
+              current={current}
+              comparison={comparison}
+              currentColor={config.mapCurrentColor}
+              comparisonColor={config.mapComparisonColor}
+              fixedMode={fixedLapMode.enabled}
+              trackId={mapTrackId}
+              compatibleCircuit={compatibleMapCircuit}
+              isDark={isDark}
+              sectorColors={sectorColors}
+              reduceAnimations={reduceAnimations}
+              mapDimmed={mapDimmed}
+              focus={mapFocus}
+            />
+          </div>}
         </div>
       </section>
 
-      {pendingCircuitMismatch && <div
-        className="fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+      {circuitMismatchPresence.mounted && displayedCircuitMismatch && <div
+        data-state={circuitMismatchPresence.visible ? 'open' : 'closed'}
+        className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"
       >
-        <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+        <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[500px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
           <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
             <div id="analysis-circuit-mismatch-title" className="text-xs font-mono font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
               <AlertTriangle size={15} className="text-amber-500" />
               <span>Circuit Mismatch</span>
             </div>
-            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
-              <X size={14} />
+            <button onClick={() => setPendingCircuitMismatch(null)} aria-label="Cancel loading Secondary File" className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#d44252] transition-colors">
+              <X size={18} />
             </button>
           </div>
 
@@ -861,16 +1176,16 @@ export default function AnalyzeScreen({
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">Lap comparisons may not align correctly. You can cancel or load the file anyway.</p>
             <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] text-xs font-mono text-[var(--text-secondary)] space-y-2">
               <div><span className="text-[var(--text-muted)]">Loaded File: </span><span className="font-semibold">{primaryTrackName || `Circuit ${primaryTrackId}`}</span></div>
-              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{pendingCircuitMismatch.trackName}</span></div>
+              <div><span className="text-[var(--text-muted)]">Selected File: </span><span className="font-semibold">{displayedCircuitMismatch.trackName}</span></div>
             </div>
           </div>
 
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
-            <button onClick={() => setPendingCircuitMismatch(null)} className={TEXT_ACTION_BUTTON_CLASS}>Cancel</button>
+            <button onClick={() => setPendingCircuitMismatch(null)} className={BUTTON_CLASS}>Cancel</button>
             <button onClick={() => {
-              applySecondaryFile(pendingCircuitMismatch.filePath, pendingCircuitMismatch.data)
+              applySecondaryFile(displayedCircuitMismatch.filePath, displayedCircuitMismatch.data, displayedCircuitMismatch.trackId)
               setPendingCircuitMismatch(null)
-            }} className={`${TEXT_ACTION_BUTTON_CLASS} !border-[var(--border-focus)] !bg-[var(--border-focus)] !text-white hover:brightness-110`}>Load Anyway</button>
+            }} className={PRIMARY_BUTTON_CLASS}>Load Anyway</button>
           </div>
         </div>
       </div>}

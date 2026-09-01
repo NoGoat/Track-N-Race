@@ -1,5 +1,6 @@
 import { AlertTriangle, X } from 'lucide-react'
-import { TEXT_ACTION_BUTTON_CLASS } from '../../lib/buttonStyles'
+import { BUTTON_CLASS } from '../../lib/buttonStyles'
+import { useModalPresenceValue } from '../../lib/useModalPresence'
 
 interface PlaybackDialogsProps {
   confirmOpenFilePath: string | null
@@ -9,11 +10,16 @@ interface PlaybackDialogsProps {
 }
 
 export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playbackLoadError, setConfirmOpenFilePath, setLoadError: setPlaybackLoadError }: PlaybackDialogsProps) {
+  const confirmPresence = useModalPresenceValue(confirmOpenFilePath)
+  const errorPresence = useModalPresenceValue(playbackLoadError)
+  const displayedFilePath = confirmPresence.value
+  const displayedLoadError = errorPresence.value
+
   return (
     <>
-      {confirmOpenFilePath && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
-          <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+      {confirmPresence.mounted && displayedFilePath && (
+        <div data-state={confirmPresence.visible ? 'open' : 'closed'} className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
+          <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
               <div>
@@ -24,9 +30,9 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               </div>
               <button
                 onClick={() => setConfirmOpenFilePath(null)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
               >
-                <X size={14} />
+                <X size={18} />
               </button>
             </div>
 
@@ -41,13 +47,13 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
                 </p>
               </div>
               
-              {confirmOpenFilePath && (
+              {displayedFilePath && (
                 <div className="p-3 rounded-lg bg-[var(--bg-card)]/30 border border-[var(--border)] flex items-center gap-3 select-none">
                   <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-wider shrink-0">
                     Selected file:
                   </span>
                   <span className="text-xs font-mono text-[var(--text-secondary)] truncate flex-1 font-semibold">
-                    {confirmOpenFilePath.split(/[\\/]/).pop()}
+                    {displayedFilePath.split(/[\\/]/).pop()}
                   </span>
                 </div>
               )}
@@ -57,16 +63,16 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
             <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--border)] bg-[var(--bg-card)]/10 shrink-0">
               <button
                 onClick={() => setConfirmOpenFilePath(null)}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 No
               </button>
               <button
                 onClick={() => {
-                  window.playerBridge.load(confirmOpenFilePath)
+                  window.playerBridge.load(displayedFilePath)
                   setConfirmOpenFilePath(null)
                 }}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 Yes
               </button>
@@ -75,14 +81,15 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
         </div>
       )}
 
-      {playbackLoadError && (
+      {errorPresence.mounted && displayedLoadError && (
         <div
-          className="fixed inset-0 z-[110] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+          data-state={errorPresence.visible ? 'open' : 'closed'}
+          className="modal-backdrop fixed inset-0 z-[110] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
           role="dialog"
           aria-modal="true"
           aria-labelledby="playback-load-error-title"
         >
-          <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden animate-[eventFadeIn_0.2s_ease-out]">
+          <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] max-w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
               <div
                 id="playback-load-error-title"
@@ -94,9 +101,9 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               <button
                 onClick={() => setPlaybackLoadError(null)}
                 aria-label="Close error"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-[var(--text-secondary)] hover:text-[#e10600] transition-colors"
               >
-                <X size={14} />
+                <X size={18} />
               </button>
             </div>
 
@@ -106,7 +113,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               </p>
               <div className="p-3 rounded-lg bg-[#e10600]/[0.06] border border-[#e10600]/30">
                 <p className="text-xs font-mono text-[var(--text-secondary)] leading-relaxed break-words">
-                  {playbackLoadError}
+                  {displayedLoadError}
                 </p>
               </div>
             </div>
@@ -115,7 +122,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
               <button
                 autoFocus
                 onClick={() => setPlaybackLoadError(null)}
-                className={TEXT_ACTION_BUTTON_CLASS}
+                className={BUTTON_CLASS}
               >
                 OK
               </button>
@@ -126,4 +133,3 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
     </>
   )
 }
-

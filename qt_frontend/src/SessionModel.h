@@ -80,7 +80,8 @@ struct SessionData {
                 float innerFl, float innerFr, float innerRl, float innerRr,
                 float brakeFl, float brakeFr, float brakeRl, float brakeRr,
                 float wearFl,  float wearFr,  float wearRl,  float wearRr);
-    void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
+    void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid,
+               int driverStatus = -1, bool timedSession = false);
     void onSessionReset(float newTime);          // time went backward → fresh session
     void truncateAfter(float newTime);            // in-game rewind → drop samples newer than newTime
     void finalizeOpenLap();                       // push the trailing in-progress lap
@@ -115,7 +116,8 @@ public:
                 float innerFl, float innerFr, float innerRl, float innerRr,
                 float brakeFl, float brakeFr, float brakeRl, float brakeRr,
                 float wearFl,  float wearFr,  float wearRl,  float wearRr);
-    void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid);
+    void onLap(int lapNum, int currentLapMs, int lastLapMs, bool invalid,
+               int driverStatus = -1, bool timedSession = false);
     void onSessionReset(float newTime);
     void truncateAfter(float newTime);
     void clear();

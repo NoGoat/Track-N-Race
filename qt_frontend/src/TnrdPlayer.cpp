@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iterator>
 #include <thread>
+#include <type_traits>
 
 // Fast type tag extraction from a raw JSON line — avoids a full parse for the
 // cold rows the scan ignores. Mirrors the tags libtnrp writes.
@@ -95,6 +96,9 @@ void TnrdPlayer::load(const QString& path) {
         startTime_   = reader_.startTime();
         totalTime_   = reader_.totalTime();
         currentTime_ = startTime_;
+        sessionType_ = header.session_type;
+        strategy_.reset();
+        strategy_.setFormat(static_cast<uint16_t>(header.protocol));
         qInfo("[player] reader loaded: start=%.2f total=%.2f duration=%.2f",
               startTime_, totalTime_, totalTime_ - startTime_);
 
@@ -119,9 +123,10 @@ void TnrdPlayer::load(const QString& path) {
             // first seek. Mirrors seek(): the cold state snapshot (which includes
             // participants) plus the latest status/damage/positions (which the
             // snapshot omits). Type IDs: 2=status, 3=damage, 13=positions.
-            emitRows(reader_.stateSnapshot(startTime_));
+            rebuildStrategy(startTime_);
+            emitRows(reader_.stateSnapshot(startTime_), false);
             static const std::vector<uint8_t> kInitStateTypes = { 2, 3, 13 };
-            emitRows(reader_.latestOfTypes(startTime_, kInitStateTypes));
+            emitRows(reader_.latestOfTypes(startTime_, kInitStateTypes), false);
         }, Qt::QueuedConnection);
     });
 }
@@ -170,14 +175,15 @@ void TnrdPlayer::seek(float pct) {
     // those too, so the race panel, damage rows and track map reflect the seek
     // target. The chart itself needs no window — the whole session lives in
     // SessionModel and keys off currentTime_.
-    emitRows(reader_.stateSnapshot(targetTime));
+    rebuildStrategy(targetTime);
+    emitRows(reader_.stateSnapshot(targetTime), false);
 
     // Latest status / damage / positions at the seek point via a backward index
     // walk that reads only those rows. The previous approach read the whole 30 s
     // window (~5k string allocations per seek on a dense race), which dominated
     // scrub cost. Type IDs: 2=status, 3=damage, 13=positions.
     static const std::vector<uint8_t> kSeekStateTypes = { 2, 3, 13 };
-    emitRows(reader_.latestOfTypes(targetTime, kSeekStateTypes));
+    emitRows(reader_.latestOfTypes(targetTime, kSeekStateTypes), false);
 
     if (wasPlaying) { playing_ = true; elapsed_.start(); timer_->start(); }
     emitState();
@@ -280,7 +286,8 @@ void TnrdPlayer::scanIntoSessionData() {
             lastDmg[3] = (float)d->tyre_wear_rr;
             scanned_.onDamage(d->session_time, lastDmg[0], lastDmg[1], lastDmg[2], lastDmg[3]);
         } else if (const LapRow* l = std::get_if<LapRow>(&*parsed)) {
-            scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid);
+            scanned_.onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
+                           l->driver_status, sessionType_ >= 1 && sessionType_ <= 14);
         } else if (const MotionRow* m = std::get_if<MotionRow>(&*parsed)) {
             scanned_.onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
         } else if (const MotionExRow* me = std::get_if<MotionExRow>(&*parsed)) {
@@ -311,11 +318,32 @@ void TnrdPlayer::scanIntoSessionData() {
           (int)scanned_.motionExBuf.size(), (int)scanned_.laps.size(), parseFails);
 }
 
-void TnrdPlayer::emitRows(const std::vector<std::string>& rows) {
+void TnrdPlayer::emitRows(const std::vector<std::string>& rows, bool deriveStrategy) {
+    bool strategyInput = false;
     for (const std::string& s : rows) {
         std::optional<tnrp::AnyRow> parsed = tnrp::parseRow(s);
-        if (parsed) emit packetReady(*parsed);
+        if (!parsed) continue;
+        if (deriveStrategy) {
+            std::visit([this, &strategyInput](const auto& row) {
+                using T = std::decay_t<decltype(row)>;
+                if constexpr (std::is_same_v<T, LapRow> || std::is_same_v<T, tnrp::SessionRow> ||
+                              std::is_same_v<T, StatusRow> || std::is_same_v<T, DamageRow> ||
+                              std::is_same_v<T, TimingRow> || std::is_same_v<T, tnrp::ParticipantsRow> ||
+                              std::is_same_v<T, tnrp::TyreSetsRow> || std::is_same_v<T, AllStatusRow> ||
+                              std::is_same_v<T, tnrp::RaceEventRow>) {
+                    strategy_.ingest(row);
+                    strategyInput = true;
+                }
+            }, *parsed);
+        }
+        emit packetReady(*parsed);
     }
+    if (deriveStrategy && strategyInput)
+        emit packetReady(tnrp::AnyRow{strategy_.snapshot()});
+}
+
+void TnrdPlayer::rebuildStrategy(float targetTime) {
+    emit packetReady(tnrp::AnyRow{reader_.strategySnapshotAt(targetTime, &strategy_)});
 }
 
 void TnrdPlayer::emitState() {
@@ -332,6 +360,7 @@ void TnrdPlayer::cleanup() {
     // QueuedConnection (non-blocking) and never calls cleanup() itself.
     if (loadThread_.joinable()) loadThread_.join();
     reader_.close();
+    strategy_.reset();
     startTime_   = 0.0f;
     totalTime_   = 0.0f;
     currentTime_ = 0.0f;

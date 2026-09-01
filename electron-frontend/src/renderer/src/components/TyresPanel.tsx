@@ -1,4 +1,5 @@
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, useCallback, useRef, memo } from 'react'
+import { flushSync } from 'react-dom'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
@@ -7,6 +8,8 @@ import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
 import { useSize } from '../hooks/useSize'
 import type { TyreYAxisGroupState } from '../lib/graphSections'
+import { useChartCoordinates } from '../lib/chartCoordinates'
+import type { TyresPageLayout } from '../app/appConfig'
 
 interface Props {
   tyreSets:      TyreSetsMsg | null
@@ -22,6 +25,7 @@ interface Props {
   sessionType:   number | null
   windowSeconds?: number
   yAxis:          TyreYAxisGroupState
+  chartLayout?:   TyresPageLayout
 }
 
 const EMPTY_HISTORY: AlignedTable = [new Float64Array(0)]
@@ -29,27 +33,34 @@ const EMPTY_CORNER_HISTORIES: Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> = 
   fl: EMPTY_HISTORY, fr: EMPTY_HISTORY, rl: EMPTY_HISTORY, rr: EMPTY_HISTORY,
 }
 
-function useCornerHistories(telemetry: TelemetryRow[], enabled: boolean): Record<'fl' | 'fr' | 'rl' | 'rr', AlignedTable> {
+const CORNERS = ['fl', 'fr', 'rl', 'rr'] as const
+type Corner = typeof CORNERS[number]
+type TyresViewTransition = {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
+
+function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, boolean>, skip: boolean): Record<Corner, AlignedTable> {
   return useMemo(() => {
-    if (!enabled) return EMPTY_CORNER_HISTORIES
+    if (skip) return EMPTY_CORNER_HISTORIES
+    const requested = CORNERS.filter(corner => enabled[corner])
+    if (requested.length === 0) return EMPTY_CORNER_HISTORIES
     const n = telemetry.length
     const ts = new Float64Array(n)
-    const flS = new Float64Array(n), frS = new Float64Array(n), rlS = new Float64Array(n), rrS = new Float64Array(n)
-    const flI = new Float64Array(n), frI = new Float64Array(n), rlI = new Float64Array(n), rrI = new Float64Array(n)
-    const flB = new Float64Array(n), frB = new Float64Array(n), rlB = new Float64Array(n), rrB = new Float64Array(n)
+    const histories = { ...EMPTY_CORNER_HISTORIES }
+    for (const corner of requested) histories[corner] = [ts, new Float64Array(n), new Float64Array(n), new Float64Array(n)]
     telemetry.forEach((d, i) => {
       ts[i] = d.session_time
-      flS[i] = d.tyre_temp_surface_fl; frS[i] = d.tyre_temp_surface_fr; rlS[i] = d.tyre_temp_surface_rl; rrS[i] = d.tyre_temp_surface_rr
-      flI[i] = d.tyre_temp_inner_fl;   frI[i] = d.tyre_temp_inner_fr;   rlI[i] = d.tyre_temp_inner_rl;   rrI[i] = d.tyre_temp_inner_rr
-      flB[i] = d.brake_temp_fl;        frB[i] = d.brake_temp_fr;        rlB[i] = d.brake_temp_rl;        rrB[i] = d.brake_temp_rr
+      for (const corner of requested) {
+        const history = histories[corner]
+        ;(history[1] as Float64Array)[i] = d[`tyre_temp_surface_${corner}`]
+        ;(history[2] as Float64Array)[i] = d[`tyre_temp_inner_${corner}`]
+        ;(history[3] as Float64Array)[i] = d[`brake_temp_${corner}`]
+      }
     })
-    return {
-      fl: [ts, flS, flI, flB],
-      fr: [ts, frS, frI, frB],
-      rl: [ts, rlS, rlI, rlB],
-      rr: [ts, rrS, rrI, rrB],
-    }
-  }, [telemetry, enabled])
+    return histories
+  }, [telemetry, enabled, skip])
 }
 
 const WET_COMPOUNDS = new Set([7, 8])
@@ -139,7 +150,7 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
   const statusColor =
     isFitted             ? (isDark ? '#5794F2' : '#0B57D0') :
     status === 'NEW'     ? (isDark ? '#37872D' : '#137333') :
-    status === 'USED'    ? (isDark ? '#d4ad04' : '#B06000') :
+    status === 'USED'    ? (isDark ? '#d4ad04' : '#8B5200') :
     isReserved           ? (isDark ? '#a78bfa' : '#6d28d9') :
     (isDark ? '#484c62' : '#565B70')
 
@@ -236,16 +247,21 @@ const EmptySection = memo(function EmptySection({ title, count }: { title: strin
   )
 })
 
-export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis }: Props) {
+export default function TyresPanel({ tyreSets, latest, damage, damageHistory, telemetry, tyreWearMode, isDark, visibleGraphs, graphViews, cardViews, sessionType, windowSeconds = 30, yAxis, chartLayout = 'grid' }: Props) {
+  const fullLapMode = useChartCoordinates().allLapsMode
   const { tn } = useLabels()
   const colorFn = useColorFn(null, null, isDark)
   const [expanded, setExpanded] = useState(false)
+  const activeViewTransitionRef = useRef<TyresViewTransition | null>(null)
   const { ref: cardsRef, height: cardsHeight } = useSize()
   // Expanded mode renders the shared TimeCharts directly. Building thirteen
   // full-window Float64 columns for the hidden wheel cards was pure allocation
   // churn (hundreds of MB/s at long 60 Hz windows), so skip it entirely.
-  const needsCornerHistory = !expanded && Object.values(cardViews ?? {}).some(v => v === 'table')
-  const cornerHistory = useCornerHistories(telemetry, needsCornerHistory)
+  const tableCorners = useMemo(() => Object.fromEntries(CORNERS.map(corner => [
+    corner,
+    !expanded && cardViews?.[corner] === 'table',
+  ])) as Record<Corner, boolean>, [cardViews, expanded])
+  const cornerHistory = useCornerHistories(telemetry, tableCorners, fullLapMode)
 
   const drySets = useMemo(() => {
     return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
@@ -258,9 +274,59 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   const noData = !latest
   const compact = cardsHeight > 0 && cardsHeight < 720
 
+  const setExpandedAnimated = useCallback((next: boolean) => {
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => TyresViewTransition
+    }
+    const motionReduced = document.documentElement.dataset.reduceAnimations === 'true'
+    const root = document.documentElement
+
+    if (motionReduced || !transitionDocument.startViewTransition) {
+      activeViewTransitionRef.current?.skipTransition?.()
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+      return
+    }
+
+    // A click during the tail of the previous animation should reverse it,
+    // rather than being lost while Chromium finishes the old transition.
+    activeViewTransitionRef.current?.skipTransition?.()
+    root.dataset.tyresViewTransition = next ? 'graphs' : 'allocation'
+    root.dataset.tyresViewTransitionPhase = 'preparing'
+    try {
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => setExpanded(next))
+      })
+      activeViewTransitionRef.current = transition
+      void transition.ready.then(() => {
+        // WebGL chart construction can occupy the first frame after capture.
+        // Keep the compositor animation paused until that work has yielded so
+        // its first presented frame really is animation frame zero.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activeViewTransitionRef.current !== transition) return
+          root.dataset.tyresViewTransitionPhase = 'running'
+        }))
+      }, () => {})
+      const clearTransition = () => {
+        if (activeViewTransitionRef.current !== transition) return
+        activeViewTransitionRef.current = null
+        delete root.dataset.tyresViewTransition
+        delete root.dataset.tyresViewTransitionPhase
+      }
+      void transition.finished.then(clearTransition, clearTransition)
+    } catch {
+      activeViewTransitionRef.current = null
+      delete root.dataset.tyresViewTransition
+      delete root.dataset.tyresViewTransitionPhase
+      setExpanded(next)
+    }
+  }, [])
+
   if (expanded) {
     return (
-      <div className="h-full flex flex-col bg-[var(--bg-panel)] overflow-hidden">
+      <div className="tyres-view-transition h-full flex flex-col bg-[var(--bg-panel)] overflow-hidden">
         <div className="shrink-0 px-3 py-2 border-b border-[var(--border)] flex items-center">
           <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest w-32 shrink-0">Tyre Conditions</span>
           <div className="flex-1 flex justify-center items-center gap-2">
@@ -279,8 +345,8 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             })()}
           </div>
           <button
-            onClick={() => setExpanded(false)}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-32 shrink-0 justify-end"
+            onClick={() => setExpandedAnimated(false)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-32 shrink-0 justify-end"
           >
             <Minimize2 size={11} />
             <span>Allocation</span>
@@ -294,9 +360,10 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
             visibleGraphs={visibleGraphs}
             graphViews={graphViews}
             isDark={isDark}
-            layout="grid"
+            layout={chartLayout}
             windowSeconds={windowSeconds}
             yAxis={yAxis}
+            sectionGroup="tyres"
           />
         </div>
       </div>
@@ -304,7 +371,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   }
 
   return (
-    <div className="h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
+    <div className="tyres-view-transition h-full flex bg-[var(--bg-panel)] divide-x divide-[var(--border)] overflow-hidden">
       {/* Left: allocation table */}
       <div className="flex-1 min-w-0 h-full overflow-y-auto divide-y divide-[var(--border)]">
         {drySets
@@ -322,26 +389,26 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
         <div className="shrink-0 px-3 py-2 flex items-center justify-between">
           <span className="text-[10px] text-[var(--text-secondary)] uppercase tracking-widest">Conditions</span>
           <button
-            onClick={() => setExpanded(true)}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => setExpandedAnimated(true)}
+            className="flex select-none items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
             <Maximize2 size={11} />
             <span>Graphs</span>
           </button>
         </div>
         <div ref={cardsRef} className="flex-1 flex flex-col divide-y divide-[var(--border)]">
-          <WheelCard pos="Front Left"  surface={latest?.tyre_temp_surface_fl ?? 0} inner={latest?.tyre_temp_inner_fl ?? 0} brake={latest?.brake_temp_fl ?? 0}
+          <WheelCard pos="Front Left" corner="fl" surface={latest?.tyre_temp_surface_fl ?? 0} inner={latest?.tyre_temp_inner_fl ?? 0} brake={latest?.brake_temp_fl ?? 0}
             wear={damage?.tyre_wear_fl ?? null} blisters={damage?.blisters_fl ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.fl} history={cornerHistory.fl} />
-          <WheelCard pos="Front Right" surface={latest?.tyre_temp_surface_fr ?? 0} inner={latest?.tyre_temp_inner_fr ?? 0} brake={latest?.brake_temp_fr ?? 0}
+            view={cardViews?.fl} history={cornerHistory.fl} telemetry={telemetry} />
+          <WheelCard pos="Front Right" corner="fr" surface={latest?.tyre_temp_surface_fr ?? 0} inner={latest?.tyre_temp_inner_fr ?? 0} brake={latest?.brake_temp_fr ?? 0}
             wear={damage?.tyre_wear_fr ?? null} blisters={damage?.blisters_fr ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.fr} history={cornerHistory.fr} />
-          <WheelCard pos="Rear Left"   surface={latest?.tyre_temp_surface_rl ?? 0} inner={latest?.tyre_temp_inner_rl ?? 0} brake={latest?.brake_temp_rl ?? 0}
+            view={cardViews?.fr} history={cornerHistory.fr} telemetry={telemetry} />
+          <WheelCard pos="Rear Left" corner="rl" surface={latest?.tyre_temp_surface_rl ?? 0} inner={latest?.tyre_temp_inner_rl ?? 0} brake={latest?.brake_temp_rl ?? 0}
             wear={damage?.tyre_wear_rl ?? null} blisters={damage?.blisters_rl ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.rl} history={cornerHistory.rl} />
-          <WheelCard pos="Rear Right"  surface={latest?.tyre_temp_surface_rr ?? 0} inner={latest?.tyre_temp_inner_rr ?? 0} brake={latest?.brake_temp_rr ?? 0}
+            view={cardViews?.rl} history={cornerHistory.rl} telemetry={telemetry} />
+          <WheelCard pos="Rear Right" corner="rr" surface={latest?.tyre_temp_surface_rr ?? 0} inner={latest?.tyre_temp_inner_rr ?? 0} brake={latest?.brake_temp_rr ?? 0}
             wear={damage?.tyre_wear_rr ?? null} blisters={damage?.blisters_rr ?? null} noData={noData} compact={compact} isDark={isDark}
-            view={cardViews?.rr} history={cornerHistory.rr} />
+            view={cardViews?.rr} history={cornerHistory.rr} telemetry={telemetry} />
         </div>
       </div>
     </div>

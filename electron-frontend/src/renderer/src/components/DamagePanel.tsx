@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import type { TelemetryRow, DamageRow } from '../types'
+import type { DensityMode } from '../lib/graphSections'
 
 interface VisibleItems {
   wingFl: boolean; wingFr: boolean; wingRear: boolean; floor: boolean
@@ -14,12 +15,15 @@ interface Props {
   visibleItems: VisibleItems
   twoRow?: boolean
   isDark: boolean
-  compact?: boolean
+  compact?: DensityMode | boolean
 }
 
-const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compact }: { label: string; v: number; connected: boolean; isDark: boolean; compact?: boolean }) {
+const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compact }: { label: string; v: number; connected: boolean; isDark: boolean; compact?: DensityMode | boolean }) {
   const textColor = !connected ? undefined : v > 0 ? '#C4162A' : (isDark ? '#37872D' : '#137333')
-  if (compact) {
+  const isCompact = compact === true || compact === 'compact'
+  const isSpacious = compact === 'spacious'
+
+  if (isCompact) {
     // Single-line: label · value% — the row shrinks from two lines to one.
     return (
       <div className="flex-1 min-w-0 px-3 py-1 flex items-center justify-between gap-2">
@@ -33,6 +37,28 @@ const DamageCard = memo(function DamageCard({ label, v, connected, isDark, compa
       </div>
     )
   }
+
+  if (isSpacious) {
+    const statusText = !connected ? '—' : v === 0 ? 'Clean' : v > 20 ? 'Critical' : 'Minor'
+    return (
+      <div className="flex-1 min-w-0 px-4 py-3">
+        <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1">{label}</div>
+        <div className="flex items-baseline gap-0.5 overflow-hidden">
+          <span
+            className="text-2xl font-black tabular-nums truncate"
+            style={textColor ? { color: textColor } : undefined}
+          >
+            {!connected ? '—' : String(v)}
+          </span>
+          {connected && <span className="text-xs font-semibold text-[var(--text-secondary)] shrink-0">%</span>}
+        </div>
+        <div className="text-[10px] font-medium text-[var(--text-secondary)] mt-0.5 truncate" style={connected && v > 0 ? { color: textColor } : undefined}>
+          {statusText}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 min-w-0 px-3 py-2">
       <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-widest mb-0.5">{label}</div>

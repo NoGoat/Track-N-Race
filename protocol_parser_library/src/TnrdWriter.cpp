@@ -3,9 +3,14 @@
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
+#include "tnrd/TNRD_V1.h"
+#include "tnrd/TNRD_V2.h"
+#include "tnrd/TNRD_V3.h"
+#include "tnrd/TNRD_V5.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +36,25 @@ static constexpr int PID_SESSION = 1;
 struct SessionTimeOnly { float session_time{}; };
 namespace {
 constexpr glz::opts kPartialReadW{ .null_terminated = false, .error_on_unknown_keys = false };
+
+std::unique_ptr<detail::TnrdOutputStream> openVersionWriter(
+        TnrdFormat format, const std::string& path, bool append, std::string& error) {
+    switch (format) {
+        case TnrdFormat::GzipV1: return detail::TNRD_V1::openWriter(path, append, error);
+        case TnrdFormat::ZstdV2: return detail::TNRD_V2::openWriter(path, append, error);
+        case TnrdFormat::ZstdV3: return detail::TNRD_V3::openWriter(path, append, error);
+        default: error = "The selected TNRD format does not use a streaming writer."; return nullptr;
+    }
+}
+
+void prepareVersionHeader(TnrdFormat format, HeaderRow& header) {
+    switch (format) {
+        case TnrdFormat::GzipV1: detail::TNRD_V1::prepareHeader(header); break;
+        case TnrdFormat::ZstdV2: detail::TNRD_V2::prepareHeader(header); break;
+        case TnrdFormat::ZstdV3: detail::TNRD_V3::prepareHeader(header); break;
+        default: break; // Indexed formats stamp metadata in their writer's open().
+    }
+}
 }
 
 static std::string extractType(const std::string& json) {
@@ -121,7 +145,7 @@ void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
 }
 
 void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
-    setLoggingForFormat(enabled, outputDir, TnrdFormat::ZstdV3);
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV5);
 }
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
@@ -158,6 +182,16 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     cv_.notify_one();
 }
 
+void TnrdWriter::rewind(float sessionTime) {
+    if (!std::isfinite(sessionTime) || sessionTime < 0.0f) return;
+    std::unique_lock<std::mutex> lk(mu_);
+    WriterEvent ev;
+    ev.type = EventType::Rewind;
+    ev.sessionTime = sessionTime;
+    queue_.push(std::move(ev));
+    cv_.notify_one();
+}
+
 void TnrdWriter::record(const std::string& json, float sessionTime) {
     std::unique_lock<std::mutex> lk(mu_);
     WriterEvent ev;
@@ -190,8 +224,11 @@ void TnrdWriter::writerLoop() {
             // directory, instead of requiring an application restart.
             if (!ev.enabled || formatChanged || directoryChanged)
                 closeActiveStreamOnWriterThread();
+        } else if (ev.type == EventType::Rewind) {
+            if (streamActive() && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
+                truncateTimeline(ev.sessionTime);
         } else if (ev.type == EventType::NotePacket) {
-            if (activeStream_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
+            if (streamActive() && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime);
             else if (ev.sessionTime > lastSessionTime_)
                 lastSessionTime_ = ev.sessionTime;
@@ -200,12 +237,13 @@ void TnrdWriter::writerLoop() {
                 uint16_t trackLengthM = ReadUInt16(ev.packetData.data(), 33);
                 int8_t  trackId     = ReadInt8(ev.packetData.data(), 36);
                 uint8_t sessionType = ev.packetData[35];
+                uint8_t formula     = ev.packetData[37];
                 if (wantRecord_ && (trackId != currentTrackId_ ||
-                                    sessionType != currentSessionType_ || !activeStream_))
-                    startNewStream(trackId, trackLengthM, sessionType, ev.format);
+                                    sessionType != currentSessionType_ || !streamActive()))
+                    startNewStream(trackId, trackLengthM, formula, sessionType, ev.format);
             }
         } else if (ev.type == EventType::Record) {
-            if (!activeStream_) continue;
+            if (!streamActive()) continue;
             std::string type = extractType(ev.json);
             if (isDuplicate(type, ev.json)) continue;
             std::string line = ev.json + "\n";
@@ -227,7 +265,15 @@ void TnrdWriter::writerLoop() {
 }
 
 void TnrdWriter::flushToDiskOnWriterThread() {
-    if (!activeStream_) return;
+    if (!streamActive()) return;
+    if (v5Writer_) {
+        if (flushBufferToDisk(rollingBuffer_, false)) rollingBuffer_.clear();
+        std::string err;
+        if (!v5Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
+        else v4LastCheckpointTime_ = lastSessionTime_;
+        rowsSinceFlush_ = 0;
+        return;
+    }
     if (flushBufferToDisk(rollingBuffer_)) rollingBuffer_.clear();
     if (!activeStream_->flushRecoverable())
         reportError("flush", activeStream_->error(), activePath_);
@@ -235,6 +281,12 @@ void TnrdWriter::flushToDiskOnWriterThread() {
 }
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
+    if (v5Writer_) {
+        (void)flushBufferToDisk(rollingBuffer_, false);
+        std::string err;
+        if (!v5Writer_->finish(&err)) reportError("close", err, activePath_);
+        v5Writer_.reset();
+    }
     if (activeStream_) {
         (void)flushBufferToDisk(rollingBuffer_);
         if (!activeStream_->finish())
@@ -247,10 +299,11 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
     activePath_.clear();
     lastSessionTime_    = -1.0f;
     rowsSinceFlush_     = 0;
+    v4LastCheckpointTime_ = -1.0f;
     dedupeCache_.clear();
 }
 
-void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, int format) {
+void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int sessionType, int format) {
     closeActiveStreamOnWriterThread();
     if (!wantRecord_ || outputDirectory_.empty()) return;
 
@@ -273,26 +326,30 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
                          + tName + "_" + sName + "_" + filenameTimestamp() + ".tnrd";
 
     activePath_ = outputDirectory_ + "/" + filename;
-    std::string openError;
-    activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, false, &openError);
-
-    if (activeStream_) {
-        clearReportedError();
-        HeaderRow hdr;
-        hdr.magic        = writeFormat_ == TnrdFormat::ZstdV3 ? "TNRD_V3"
-                         : writeFormat_ == TnrdFormat::ZstdV2 ? "TNRD_V2"
-                                                              : "TNRD_V1";
-        if (isZstd(writeFormat_)) hdr.compression = "zstd";
-        hdr.protocol     = format;
-        hdr.track_id     = trackId;
-        hdr.track_name   = resolvedTrackName;
-        if (writeFormat_ == TnrdFormat::ZstdV3) hdr.track_length_m = trackLengthM;
-        hdr.session_type = sessionType;
-        hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
-        hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
+    HeaderRow hdr;
+    hdr.protocol     = format;
+    hdr.track_id     = trackId;
+    hdr.track_name   = resolvedTrackName;
+    hdr.track_length_m = trackLengthM;
+    if (writeFormat_ == TnrdFormat::ChunkedV5) hdr.formula = formula;
+    hdr.session_type = sessionType;
+    hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
+    hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
+    prepareVersionHeader(writeFormat_, hdr);
+
+    std::string openError;
+    if (writeFormat_ == TnrdFormat::ChunkedV5) {
+        v5Writer_ = std::make_unique<detail::TnrdV5Writer>();
+        if (!v5Writer_->open(activePath_, hdr, &openError)) v5Writer_.reset();
+    } else {
+        activeStream_ = openVersionWriter(writeFormat_, activePath_, false, openError);
+    }
+
+    if (streamActive()) {
+        clearReportedError();
         std::string hl = writeJson(hdr) + "\n";
-        if (!activeStream_->write(hl)) {
+        if (activeStream_ && !activeStream_->write(hl)) {
             reportError("header write", activeStream_->error(), activePath_);
             activeStream_.reset();
             activePath_.clear();
@@ -303,13 +360,38 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int sessionType, 
         currentSessionType_ = sessionType;
         lastSessionTime_    = -1.0f;
         rowsSinceFlush_     = 0;
+        v4LastCheckpointTime_ = -1.0f;
     } else {
         reportError("open", openError, activePath_);
         activePath_.clear();
     }
 }
 
-bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries) {
+bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries,
+                                   bool allowV4Checkpoint) {
+    if (v5Writer_) {
+        if (entries.empty()) return true;
+        std::vector<detail::V5SourceRow> rows; rows.reserve(entries.size());
+        for (const auto& e : entries) rows.push_back({e.line, e.sessionTime});
+        std::string err;
+        if (!v5Writer_->append(rows, &err)) {
+            reportError("data write", err, activePath_);
+            return false;
+        }
+        const float newestTime = entries.back().sessionTime;
+        if (allowV4Checkpoint && (v4LastCheckpointTime_ < 0.0f ||
+            newestTime - v4LastCheckpointTime_ >= V4_CHECKPOINT_INTERVAL_S)) {
+            if (!v5Writer_->checkpoint(&err)) {
+                reportError("checkpoint", err, activePath_);
+                // append() already transferred ownership of these rows to the
+                // V4 backend. Keep recording without duplicating them in the
+                // rolling buffer; the next checkpoint retries pending state.
+                return true;
+            }
+            v4LastCheckpointTime_ = newestTime;
+        }
+        return true;
+    }
     if (!activeStream_ || entries.empty()) return true;
     for (const auto& e : entries) {
         if (!activeStream_->write(e.line)) {
@@ -368,6 +450,19 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
     float bufStart = rollingBuffer_.empty()
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
+    if (v5Writer_) {
+        rollingBuffer_.erase(
+            std::remove_if(rollingBuffer_.begin(),rollingBuffer_.end(),
+                [newSessionTime](const BufferEntry& e){return e.sessionTime>newSessionTime;}),
+            rollingBuffer_.end());
+        if (newSessionTime < bufStart) {
+            std::string err;
+            if (!v5Writer_->rewind(newSessionTime,&err))
+                reportError("flashback",err,activePath_);
+        }
+        dedupeCache_.clear();lastSessionTime_=newSessionTime;return;
+    }
+
     if (newSessionTime >= bufStart) {
         rollingBuffer_.erase(
             std::remove_if(rollingBuffer_.begin(), rollingBuffer_.end(),
@@ -409,7 +504,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
             bool replaced = false;
             codecError.clear();
             auto rewritten = decompressed && !kept.empty()
-                ? detail::openTnrdOutput(compressedPath, writeFormat_, false, &codecError)
+                ? openVersionWriter(writeFormat_, compressedPath, false, codecError)
                 : nullptr;
             if (rewritten) {
                 bool writeOk = true;
@@ -448,7 +543,7 @@ void TnrdWriter::truncateTimeline(float newSessionTime) {
 #endif
 
             codecError.clear();
-            activeStream_ = detail::openTnrdOutput(activePath_, writeFormat_, true, &codecError);
+            activeStream_ = openVersionWriter(writeFormat_, activePath_, true, codecError);
             if (!activeStream_)
                 reportError("flashback append reopen", codecError, activePath_);
         }

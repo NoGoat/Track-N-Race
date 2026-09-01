@@ -25,12 +25,34 @@ export function createReferenceLinesPlugin(cfg: { current: RefLinesConfig }): Ti
       const g = document.createElementNS(SVGNS, 'g')
       chart.svgLayer.svgNode.appendChild(g)
       const nodes: SVGLineElement[] = []
+      let lastConfig: RefLinesConfig | null = null
+      let lastPlotLeft = NaN
+      let lastPlotRight = NaN
+      let lastYMin = NaN
+      let lastYMax = NaN
+      let lastPlotTop = NaN
+      let lastPlotBottom = NaN
 
       const draw = () => {
         const c = cfg.current
         const xScale = chart.model.xScale
         const yScale = chart.model.yScale
         const [plotLeft, plotRight] = xScale.range()
+        const [plotBottom, plotTop] = yScale.range()
+        const [yMin, yMax] = yScale.domain()
+        // Horizontal references do not depend on the scrolling x domain.
+        // Most charts keep the same y range for their lifetime, so avoid
+        // rewriting identical SVG attributes every display frame.
+        if (c === lastConfig && plotLeft === lastPlotLeft && plotRight === lastPlotRight &&
+            plotTop === lastPlotTop && plotBottom === lastPlotBottom &&
+            yMin === lastYMin && yMax === lastYMax) return
+        lastConfig = c
+        lastPlotLeft = plotLeft
+        lastPlotRight = plotRight
+        lastPlotTop = plotTop
+        lastPlotBottom = plotBottom
+        lastYMin = yMin
+        lastYMax = yMax
 
         for (let i = 0; i < c.lines.length; i++) {
           const ref = c.lines[i]
