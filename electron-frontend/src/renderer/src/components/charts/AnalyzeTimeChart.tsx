@@ -60,14 +60,35 @@ type Buffers = Record<Role, SourceBuffers> & {
   deltaNegative: AlignedDataBuffer
 }
 type SeriesRecord = Record<Role, Map<string, any>>
+type StackedAxisPanel = NonNullable<AxisConfig['panels']>[number]
+type StackedViewport = { top: number; bottom: number; gapAfter: number }
+type StackedTransition = {
+  from: StackedViewport
+  to: StackedViewport
+  fromOpacity: number
+  toOpacity: number
+}
 
 const SOURCES: AnalyzeSource[] = ['telemetry', 'motion', 'motionEx', 'status', 'damage']
 const Y_TICKS = [0, 0.25, 0.5, 0.75, 1]
 const TOP_PADDING = 16
 const STACKED_TOP_PADDING = 6
 const STACKED_PANEL_GAP = 10
+const ANALYSIS_MOTION_DURATION = 260
+const COLLAPSED_PANEL_SPAN = 0.0001
 const MIN_ZOOM_SECONDS = 0.5
 const MIN_ZOOM_METRES = 25
+
+function collapsedViewportAt(boundary: number): StackedViewport {
+  const top = Math.max(0, Math.min(1 - COLLAPSED_PANEL_SPAN, boundary - COLLAPSED_PANEL_SPAN / 2))
+  return { top, bottom: top + COLLAPSED_PANEL_SPAN, gapAfter: 0 }
+}
+
+function easeInOutCubic(progress: number): number {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2
+}
 
 function rowsFor(lap: AnalyzeLapData, source: AnalyzeSource): any[] {
   if (source === 'status') return lap.statusHistory
@@ -445,8 +466,14 @@ export default function AnalyzeTimeChart({
   const axisCfgRef = useRef<{ current: AxisConfig } | null>(null)
   const deltaSeriesRef = useRef<{ positive: any; negative: any } | null>(null)
   const stackedViewportAnimationRef = useRef(0)
+  const stackedAxisPanelsRef = useRef(new Map<string, StackedAxisPanel>())
+  const stackedExitingMetricIdsRef = useRef(new Set<string>())
+  const stackedPanelConfigsRef = useRef(new Map<string, AnalyzeSeriesConfig>())
   const stackedLayoutReadyRef = useRef(false)
   const stackedLayoutSignatureRef = useRef('')
+  const combinedSeriesAnimationRef = useRef(0)
+  const combinedSeriesVisibilityReadyRef = useRef(false)
+  const combinedSeriesDesiredVisibilityRef = useRef(new Map<any, boolean>())
   const deltaRangeRef = useRef(0.5)
   const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0 })
   const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
@@ -539,48 +566,90 @@ export default function AnalyzeTimeChart({
     } as any)
     chartRef.current = chart
 
-    const applyXDomain = (requestedMin: number, requestedMax: number) => {
-      if (!zoomEnabledRef.current) return
+    let xDomainAnimationFrame = 0
+    const clampXDomain = (requestedMin: number, requestedMax: number): [number, number] | null => {
+      if (!zoomEnabledRef.current) return null
       const full = fullXRangeRef.current
       const fullExtent = Math.max(0, full.max - full.min)
-      if (fullExtent <= 0) return
+      if (fullExtent <= 0) return null
       const minExtent = Math.min(distanceModeRef.current ? MIN_ZOOM_METRES : MIN_ZOOM_SECONDS, fullExtent)
       const extent = Math.min(fullExtent, Math.max(minExtent, requestedMax - requestedMin))
       let min = requestedMin - (extent - (requestedMax - requestedMin)) / 2
       min = Math.max(full.min, Math.min(min, full.max - extent))
+      return [min, min + extent]
+    }
+    const commitXDomain = ([min, max]: [number, number]) => {
       chart.options.xRange = null
-      chart.model.xScale.domain([min, min + extent])
+      chart.model.xScale.domain([min, max])
       chart.model.requestRedraw()
     }
-    const zoomBy = (factor: number, anchor?: number) => {
+    const applyXDomain = (requestedMin: number, requestedMax: number) => {
+      const target = clampXDomain(requestedMin, requestedMax)
+      if (!target) return
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+      xDomainAnimationFrame = 0
+      commitXDomain(target)
+    }
+    const animateXDomain = (requestedMin: number, requestedMax: number, allowWhenDisabled = false) => {
+      const target = allowWhenDisabled
+        ? [requestedMin, requestedMax] as [number, number]
+        : clampXDomain(requestedMin, requestedMax)
+      if (!target) return
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+      if (document.documentElement.dataset.reduceAnimations === 'true') {
+        xDomainAnimationFrame = 0
+        commitXDomain(target)
+        return
+      }
+      const from = chart.model.xScale.domain().map(Number) as [number, number]
+      const startedAt = performance.now()
+      const duration = ANALYSIS_MOTION_DURATION
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / duration)
+        const eased = easeInOutCubic(progress)
+        commitXDomain([
+          from[0] + (target[0] - from[0]) * eased,
+          from[1] + (target[1] - from[1]) * eased,
+        ])
+        if (progress < 1) xDomainAnimationFrame = requestAnimationFrame(animate)
+        else xDomainAnimationFrame = 0
+      }
+      xDomainAnimationFrame = requestAnimationFrame(animate)
+    }
+    const zoomBy = (factor: number, anchor?: number, animated = false) => {
       if (!zoomEnabledRef.current) return
       const [min, max] = chart.model.xScale.domain().map(Number)
       const center = anchor ?? (min + max) / 2
-      applyXDomain(center + (min - center) * factor, center + (max - center) * factor)
+      const apply = animated ? animateXDomain : applyXDomain
+      apply(center + (min - center) * factor, center + (max - center) * factor)
     }
-    const panBy = (fraction: number) => {
+    const panBy = (fraction: number, animated = false) => {
       if (!zoomEnabledRef.current) return
       const [min, max] = chart.model.xScale.domain().map(Number)
       const delta = (max - min) * fraction
-      applyXDomain(min + delta, max + delta)
+      const apply = animated ? animateXDomain : applyXDomain
+      apply(min + delta, max + delta)
     }
-    const resetZoom = () => {
+    const resetZoom = (animated = false) => {
       const full = fullXRangeRef.current
-      chart.options.xRange = { ...full }
-      chart.model.xScale.domain([full.min, full.max])
-      chart.model.requestRedraw()
+      if (animated) animateXDomain(full.min, full.max, true)
+      else {
+        if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
+        xDomainAnimationFrame = 0
+        commitXDomain([full.min, full.max])
+      }
     }
     const controls: AnalyzeChartControls = {
-      zoomIn: () => zoomBy(0.7),
-      zoomOut: () => zoomBy(1 / 0.7),
-      panLeft: () => panBy(-0.2),
-      panRight: () => panBy(0.2),
-      reset: resetZoom,
+      zoomIn: () => zoomBy(0.7, undefined, true),
+      zoomOut: () => zoomBy(1 / 0.7, undefined, true),
+      panLeft: () => panBy(-0.2, true),
+      panRight: () => panBy(0.2, true),
+      reset: () => resetZoom(true),
       zoomByFactor: (factor, anchorRatio = 0.5) => {
         const [min, max] = chart.model.xScale.domain().map(Number)
-        zoomBy(factor, min + (max - min) * Math.max(0, Math.min(1, anchorRatio)))
+        zoomBy(factor, min + (max - min) * Math.max(0, Math.min(1, anchorRatio)), true)
       },
-      panByFraction: panBy,
+      panByFraction: fraction => panBy(fraction, true),
     }
     controlsRef.current = controls
 
@@ -654,7 +723,7 @@ export default function AnalyzeTimeChart({
       if (onInspectMapRef.current) event.preventDefault()
     }
     const onDoubleClick = (event: MouseEvent) => {
-      if (event.button === 0) resetZoom()
+      if (event.button === 0) resetZoom(true)
     }
     interactionNode.addEventListener('wheel', onWheel, { passive: false })
     interactionNode.addEventListener('pointerdown', onPointerDown)
@@ -738,10 +807,16 @@ export default function AnalyzeTimeChart({
       interactionNode.removeEventListener('contextmenu', preventContextMenu)
       interactionNode.removeEventListener('dblclick', onDoubleClick)
       if (controlsRef.current === controls) controlsRef.current = null
+      if (xDomainAnimationFrame) cancelAnimationFrame(xDomainAnimationFrame)
       stopTooltipSync(); chart.dispose()
       if (stackedViewportAnimationRef.current) cancelAnimationFrame(stackedViewportAnimationRef.current)
+      if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
       chartRef.current = null; buffersRef.current = null; seriesRef.current = null; axisCfgRef.current = null
       deltaSeriesRef.current = null
+      stackedAxisPanelsRef.current.clear()
+      stackedExitingMetricIdsRef.current.clear()
+      stackedPanelConfigsRef.current.clear()
+      combinedSeriesDesiredVisibilityRef.current.clear()
     }
     // Stable chart lifetime; all changing inputs are applied imperatively below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -758,26 +833,79 @@ export default function AnalyzeTimeChart({
     })
     const visibleDefs = selectedDefs.filter(({ item }) => item.visible)
     const visibleIds = new Set(visibleDefs.map(({ def }) => def.id))
+    const deltaItem = selected.find(item => item.metricId === 'delta')
+    const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
+    const deltaSeries = deltaSeriesRef.current
+    const desiredVisibility = new Map<any, boolean>()
     for (const def of scopedMetricsRef.current) {
       const item = selectedDefs.find(candidate => candidate.def.id === def.id)?.item
       const visible = visibleIds.has(def.id)
       const currentOption = records.current.get(def.id)
       const comparisonOption = records.comparison.get(def.id)
       const color = themeSeriesColor(item?.color ?? def.defaultColor, isDark)
-      if (currentOption) { currentOption.visible = visible; currentOption.color = color }
-      if (comparisonOption) { comparisonOption.visible = visible && !!comparison; comparisonOption.color = blendColor(color, isDark) }
+      if (currentOption) { desiredVisibility.set(currentOption, visible); currentOption.color = color }
+      if (comparisonOption) { desiredVisibility.set(comparisonOption, visible && !!comparison); comparisonOption.color = blendColor(color, isDark) }
+    }
+    if (deltaSeries) {
+      desiredVisibility.set(deltaSeries.positive, showDelta)
+      deltaSeries.positive.color = themedDeltaPositive
+      desiredVisibility.set(deltaSeries.negative, showDelta)
+      deltaSeries.negative.color = themedDeltaNegative
+    }
+    if (stackedMode) {
+      for (const [option, visible] of desiredVisibility) option.visible = visible
+    } else {
+      const previousVisibility = combinedSeriesDesiredVisibilityRef.current
+      const visibilityChanged = combinedSeriesVisibilityReadyRef.current &&
+        [...desiredVisibility].some(([option, visible]) => previousVisibility.get(option) !== visible)
+      const animateVisibility = visibilityChanged &&
+        document.documentElement.dataset.reduceAnimations !== 'true'
+      if (animateVisibility) {
+        if (combinedSeriesAnimationRef.current) cancelAnimationFrame(combinedSeriesAnimationRef.current)
+        const transitions = new Map<any, { from: number; to: number }>()
+        for (const [option, visible] of desiredVisibility) {
+          const from = option.visible ? option.opacity ?? 1 : 0
+          const to = visible ? 1 : 0
+          if (Math.abs(to - from) < 0.001) {
+            option.visible = visible
+            option.opacity = 1
+            continue
+          }
+          option.visible = true
+          option.opacity = from
+          transitions.set(option, { from, to })
+        }
+        const startedAt = performance.now()
+        const duration = ANALYSIS_MOTION_DURATION
+        const animate = (now: number) => {
+          const progress = Math.min(1, (now - startedAt) / duration)
+          const eased = easeInOutCubic(progress)
+          for (const [option, { from, to }] of transitions) {
+            option.opacity = from + (to - from) * eased
+          }
+          chart.update()
+          if (progress < 1) combinedSeriesAnimationRef.current = requestAnimationFrame(animate)
+          else {
+            combinedSeriesAnimationRef.current = 0
+            for (const [option, visible] of combinedSeriesDesiredVisibilityRef.current) {
+              option.visible = visible
+              option.opacity = 1
+            }
+            chart.update()
+          }
+        }
+        combinedSeriesAnimationRef.current = requestAnimationFrame(animate)
+      } else if (!combinedSeriesAnimationRef.current) {
+        for (const [option, visible] of desiredVisibility) {
+          option.visible = visible
+          option.opacity = 1
+        }
+      }
+      combinedSeriesDesiredVisibilityRef.current = desiredVisibility
+      combinedSeriesVisibilityReadyRef.current = true
     }
     // WebGL paints later series over earlier ones, so reverse the sidebar order:
     // the first row in the sidebar is drawn last and remains visually on top.
-    const deltaItem = selected.find(item => item.metricId === 'delta')
-    const showDelta = !!deltaItem && deltaItem.visible !== false && distanceMode && comparisonSelected
-    const deltaSeries = deltaSeriesRef.current
-    if (deltaSeries) {
-      deltaSeries.positive.visible = showDelta
-      deltaSeries.positive.color = themedDeltaPositive
-      deltaSeries.negative.visible = showDelta
-      deltaSeries.negative.color = themedDeltaNegative
-    }
     const panelItems = selected.filter(item =>
       item.visible && (item.metricId !== 'delta' || showDelta),
     )
@@ -812,40 +940,94 @@ export default function AnalyzeTimeChart({
         : distanceMode ? fmtDistance : fmtLapTime
     if (!stackedMode) {
       for (const option of chart.options.series) option.viewport = undefined
+      stackedExitingMetricIdsRef.current.clear()
       stackedLayoutReadyRef.current = false
       stackedLayoutSignatureRef.current = ''
     }
-    const viewportAnimation = new Map<any, {
-      from: { top: number; bottom: number; gapAfter: number }
-      to: { top: number; bottom: number; gapAfter: number }
-    }>()
+    const viewportAnimation = new Map<any, StackedTransition>()
+    const panelViewportAnimation = new Map<string, StackedTransition>()
     let animateStackedLayout = false
+    let layoutChanged = false
     let stackedLayoutSignature = ''
+    let exitingItems: AnalyzeSeriesConfig[] = []
     if (stackedMode) {
+      const selectedById = new Map(selected.map(item => [item.metricId, item]))
+      const targetViewportById = new Map<string, StackedViewport>(panelItems.map((item, index) => [item.metricId, {
+        top: index / panelItems.length,
+        bottom: (index + 1) / panelItems.length,
+        gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
+      }]))
+      const representativeFor = (metricId: string) => metricId === 'delta'
+        ? deltaSeries?.positive
+        : records.current.get(metricId)
       stackedLayoutSignature = panelItems.map(item => item.metricId).join('|')
-      const layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature
+      layoutChanged = stackedLayoutSignatureRef.current !== stackedLayoutSignature
+      const previousPanelIds = stackedLayoutSignatureRef.current
+        ? stackedLayoutSignatureRef.current.split('|')
+        : []
+      const interruptedExits = new Set(stackedExitingMetricIdsRef.current)
       if (layoutChanged && stackedViewportAnimationRef.current) {
         cancelAnimationFrame(stackedViewportAnimationRef.current)
         stackedViewportAnimationRef.current = 0
       }
       animateStackedLayout = layoutChanged && stackedLayoutReadyRef.current &&
         document.documentElement.dataset.reduceAnimations !== 'true'
+      if (layoutChanged) {
+        const targetIds = new Set(panelItems.map(item => item.metricId))
+        const exitingIds = animateStackedLayout
+          ? new Set([...interruptedExits, ...previousPanelIds].filter(id => !targetIds.has(id)))
+          : new Set<string>()
+        stackedExitingMetricIdsRef.current = exitingIds
+      }
+      exitingItems = [...stackedExitingMetricIdsRef.current].flatMap(id => {
+        const item = selectedById.get(id) ?? stackedPanelConfigsRef.current.get(id)
+        return item ? [item] : []
+      })
+      stackedPanelConfigsRef.current = new Map([
+        ...stackedPanelConfigsRef.current,
+        ...selectedById,
+      ].filter(([id]) => selectedById.has(id) || stackedExitingMetricIdsRef.current.has(id)))
       panelItems.forEach((item, index) => {
-        const viewport = {
-          top: index / panelItems.length,
-          bottom: (index + 1) / panelItems.length,
-          gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
+        const viewport = targetViewportById.get(item.metricId)!
+        const representative = representativeFor(item.metricId)
+        const prior = representative?.viewport
+        let entryBoundary: number | null = null
+        if (!prior) {
+          for (let sibling = index - 1; sibling >= 0; sibling--) {
+            const siblingViewport = representativeFor(panelItems[sibling].metricId)?.viewport
+            if (siblingViewport) { entryBoundary = siblingViewport.bottom; break }
+          }
+          if (entryBoundary === null) {
+            for (let sibling = index + 1; sibling < panelItems.length; sibling++) {
+              const siblingViewport = representativeFor(panelItems[sibling].metricId)?.viewport
+              if (siblingViewport) { entryBoundary = siblingViewport.top; break }
+            }
+          }
         }
+        const enteringFrom: StackedViewport = entryBoundary === null
+          ? { ...viewport }
+          : collapsedViewportAt(entryBoundary)
+        panelViewportAnimation.set(item.metricId, {
+          from: prior
+            ? { top: prior.top, bottom: prior.bottom, gapAfter: prior.gapAfter ?? 0 }
+            : enteringFrom,
+          to: { ...viewport },
+          fromOpacity: prior ? representative?.opacity ?? 1 : 0,
+          toOpacity: 1,
+        })
         const applyViewport = (option: any) => {
           if (!option) return
-          const midpoint = (viewport.top + viewport.bottom) / 2
           const prior = option.viewport
           const from = prior
             ? { top: prior.top, bottom: prior.bottom, gapAfter: prior.gapAfter ?? 0 }
-            : { top: midpoint, bottom: midpoint, gapAfter: 0 }
+            : enteringFrom
           const to = { ...viewport }
-          viewportAnimation.set(option, { from, to })
-          if (layoutChanged) option.viewport = animateStackedLayout ? { ...from } : { ...to }
+          const fromOpacity = prior ? option.opacity ?? 1 : 0
+          viewportAnimation.set(option, { from, to, fromOpacity, toOpacity: 1 })
+          if (layoutChanged) {
+            option.viewport = animateStackedLayout ? { ...from } : { ...to }
+            option.opacity = animateStackedLayout ? fromOpacity : 1
+          }
         }
         if (item.metricId === 'delta') {
           if (deltaSeries) {
@@ -859,6 +1041,57 @@ export default function AnalyzeTimeChart({
         applyViewport(currentOption)
         applyViewport(comparisonOption)
       })
+      for (const item of exitingItems) {
+        const representative = representativeFor(item.metricId)
+        const prior = representative?.viewport
+        if (!prior) continue
+        const from: StackedViewport = {
+          top: prior.top,
+          bottom: prior.bottom,
+          gapAfter: prior.gapAfter ?? 0,
+        }
+        const previousIndex = previousPanelIds.indexOf(item.metricId)
+        let exitBoundary: number | null = null
+        if (previousIndex >= 0) {
+          for (let sibling = previousIndex + 1; sibling < previousPanelIds.length; sibling++) {
+            const target = targetViewportById.get(previousPanelIds[sibling])
+            if (target) { exitBoundary = target.top; break }
+          }
+          if (exitBoundary === null) {
+            for (let sibling = previousIndex - 1; sibling >= 0; sibling--) {
+              const target = targetViewportById.get(previousPanelIds[sibling])
+              if (target) { exitBoundary = target.bottom; break }
+            }
+          }
+        }
+        exitBoundary ??= (from.top + from.bottom) / 2
+        const to = collapsedViewportAt(exitBoundary)
+        panelViewportAnimation.set(item.metricId, {
+          from,
+          to,
+          fromOpacity: representative?.opacity ?? 1,
+          toOpacity: 0,
+        })
+        const applyExitViewport = (option: any) => {
+          if (!option) return
+          const optionPrior = option.viewport
+          const optionFrom: StackedViewport = optionPrior
+            ? { top: optionPrior.top, bottom: optionPrior.bottom, gapAfter: optionPrior.gapAfter ?? 0 }
+            : from
+          const fromOpacity = option.opacity ?? 1
+          viewportAnimation.set(option, { from: optionFrom, to, fromOpacity, toOpacity: 0 })
+          option.viewport = { ...optionFrom }
+          option.opacity = fromOpacity
+          option.visible = item.metricId === 'delta' || option.name.startsWith('current:') || !!comparison
+        }
+        if (item.metricId === 'delta') {
+          applyExitViewport(deltaSeries?.positive)
+          applyExitViewport(deltaSeries?.negative)
+        } else {
+          applyExitViewport(records.current.get(item.metricId))
+          applyExitViewport(records.comparison.get(item.metricId))
+        }
+      }
     }
     const drawOrder = [...selected].reverse().flatMap(item => {
       if (!item.visible) return []
@@ -867,6 +1100,16 @@ export default function AnalyzeTimeChart({
       const comparisonOption = records.comparison.get(item.metricId)
       return comparisonOption && comparison ? [comparisonOption, currentOption].filter(Boolean) : [currentOption].filter(Boolean)
     })
+    for (const item of [...exitingItems].reverse()) {
+      if (item.metricId === 'delta') {
+        if (deltaSeries) drawOrder.push(deltaSeries.positive, deltaSeries.negative)
+        continue
+      }
+      const currentOption = records.current.get(item.metricId)
+      const comparisonOption = records.comparison.get(item.metricId)
+      if (comparisonOption && comparison) drawOrder.push(comparisonOption)
+      if (currentOption) drawOrder.push(currentOption)
+    }
     const visibleOptions = new Set(drawOrder)
     const hidden = chart.options.series.filter(option => {
       return !visibleOptions.has(option)
@@ -878,6 +1121,31 @@ export default function AnalyzeTimeChart({
     const axis = isDark ? '#7c8098' : '#596168'
     if (stackedMode) {
       const left = panelItems.some(item => item.showYAxis) ? 48 : 12
+      const renderedPanelItems = [...panelItems, ...exitingItems]
+        .filter(item => panelViewportAnimation.has(item.metricId))
+      const axisPanels = renderedPanelItems.map((item): StackedAxisPanel => {
+        const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
+        const isDelta = item.metricId === 'delta'
+        const transition = panelViewportAnimation.get(item.metricId)!
+        // During an existing animation, `from` is the series' current
+        // interpolated viewport. This keeps frequent telemetry-driven effect
+        // updates from snapping the canvas axes to their final positions.
+        const position = layoutChanged && !animateStackedLayout ? transition.to : transition.from
+        return {
+          ...position,
+          opacity: layoutChanged && !animateStackedLayout ? transition.toOpacity : transition.fromOpacity,
+          showYAxis: item.showYAxis,
+          yAxisColor: isDelta ? themedDeltaPositive : themeSeriesColor(item.color, isDark),
+          yTickValues: Y_TICKS,
+          yTickColor: isDelta
+            ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
+            : undefined,
+          yTickFormat: (normalized: number) => isDelta
+            ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
+            : def ? def.axisFormat(def.min + normalized * (def.max - def.min)) : '',
+        }
+      })
+      stackedAxisPanelsRef.current = new Map(renderedPanelItems.map((item, index) => [item.metricId, axisPanels[index]]))
       axisHolder.current = {
         axisColor: axis,
         gridColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.07)',
@@ -891,24 +1159,7 @@ export default function AnalyzeTimeChart({
         xGap: 2,
         yGap: 4,
         showYGrid: true,
-        panels: panelItems.map((item, index) => {
-          const def = ANALYZE_METRIC_BY_ID.get(item.metricId)
-          const isDelta = item.metricId === 'delta'
-          return {
-            top: index / panelItems.length,
-            bottom: (index + 1) / panelItems.length,
-            showYAxis: item.showYAxis,
-            yAxisColor: isDelta ? themedDeltaPositive : themeSeriesColor(item.color, isDark),
-            yTickValues: Y_TICKS,
-            yTickColor: isDelta
-              ? (normalized: number) => normalized < 0.5 ? themedDeltaNegative : normalized > 0.5 ? themedDeltaPositive : axis
-              : undefined,
-            yTickFormat: (normalized: number) => isDelta
-              ? `${((normalized - 0.5) * 2 * deltaRangeRef.current).toFixed(1)}s`
-              : def ? def.axisFormat(def.min + normalized * (def.max - def.min)) : '',
-            gapAfter: index < panelItems.length - 1 ? STACKED_PANEL_GAP : 0,
-          }
-        }),
+        panels: axisPanels,
       }
       const paddingBottom = showXAxis ? 24 : 8
       Object.assign(chart.options, {
@@ -924,20 +1175,49 @@ export default function AnalyzeTimeChart({
       stackedLayoutSignatureRef.current = stackedLayoutSignature
       if (animateStackedLayout && viewportAnimation.size > 0) {
         const startedAt = performance.now()
-        const duration = 240
+        const duration = ANALYSIS_MOTION_DURATION
         const animate = (now: number) => {
           const progress = Math.min(1, (now - startedAt) / duration)
-          const eased = 1 - Math.pow(1 - progress, 3)
-          for (const [option, { from, to }] of viewportAnimation) {
+          const eased = easeInOutCubic(progress)
+          for (const [option, { from, to, fromOpacity, toOpacity }] of viewportAnimation) {
             option.viewport = {
               top: from.top + (to.top - from.top) * eased,
               bottom: from.bottom + (to.bottom - from.bottom) * eased,
               gapAfter: from.gapAfter + (to.gapAfter - from.gapAfter) * eased,
             }
+            option.opacity = fromOpacity + (toOpacity - fromOpacity) * eased
+          }
+          for (const [metricId, { from, to, fromOpacity, toOpacity }] of panelViewportAnimation) {
+            const panel = stackedAxisPanelsRef.current.get(metricId)
+            if (!panel) continue
+            panel.top = from.top + (to.top - from.top) * eased
+            panel.bottom = from.bottom + (to.bottom - from.bottom) * eased
+            panel.gapAfter = from.gapAfter + (to.gapAfter - from.gapAfter) * eased
+            panel.opacity = fromOpacity + (toOpacity - fromOpacity) * eased
           }
           chart.update()
           if (progress < 1) stackedViewportAnimationRef.current = requestAnimationFrame(animate)
-          else stackedViewportAnimationRef.current = 0
+          else {
+            stackedViewportAnimationRef.current = 0
+            for (const item of exitingItems) {
+              const options = item.metricId === 'delta'
+                ? [deltaSeries?.positive, deltaSeries?.negative]
+                : [records.current.get(item.metricId), records.comparison.get(item.metricId)]
+              for (const option of options) {
+                if (!option) continue
+                option.visible = false
+                option.viewport = undefined
+                option.opacity = 1
+              }
+              stackedAxisPanelsRef.current.delete(item.metricId)
+            }
+            stackedExitingMetricIdsRef.current.clear()
+            stackedPanelConfigsRef.current = new Map(selected.map(item => [item.metricId, item]))
+            axisHolder.current.panels = panelItems
+              .map(item => stackedAxisPanelsRef.current.get(item.metricId))
+              .filter((panel): panel is StackedAxisPanel => !!panel)
+            chart.update()
+          }
         }
         stackedViewportAnimationRef.current = requestAnimationFrame(animate)
       }

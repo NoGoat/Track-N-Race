@@ -6,7 +6,7 @@ function animationsAreReduced(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
 }
 
-export function useModalPresence(open: boolean) {
+export function useModalPresence(open: boolean, exitMs = MODAL_EXIT_MS) {
   const [mounted, setMounted] = useState(open)
   const [visible, setVisible] = useState(false)
   const exitTimerRef = useRef<number | null>(null)
@@ -37,7 +37,7 @@ export function useModalPresence(open: boolean) {
     exitTimerRef.current = window.setTimeout(() => {
       setMounted(false)
       exitTimerRef.current = null
-    }, MODAL_EXIT_MS)
+    }, exitMs)
 
     return () => {
       if (exitTimerRef.current !== null) {
@@ -45,7 +45,7 @@ export function useModalPresence(open: boolean) {
         exitTimerRef.current = null
       }
     }
-  }, [mounted, open])
+  }, [exitMs, mounted, open])
 
   return { mounted, visible }
 }

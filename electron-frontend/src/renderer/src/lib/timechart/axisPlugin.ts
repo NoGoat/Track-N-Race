@@ -50,6 +50,7 @@ export interface AxisConfig {
   panels?: Array<{
     top: number
     bottom: number
+    opacity?: number
     showYAxis: boolean
     yAxisColor: string
     yTickValues: number[]
@@ -143,22 +144,45 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
         const yTicks = c.yTickValues(yMin, yMax)
 
         if (c.panels) {
-          strokePath(grid, c.gridColor, c.gridDash, () => {
-            for (const panel of c.panels!) {
-              const panelTop = plotTop + panel.top * (plotBottom - plotTop)
-              const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
-              for (const tick of xTicks) {
-                const x = xScale(tick)
-                grid.moveTo(x, panelTop)
-                grid.lineTo(x, panelBottom)
-              }
-              for (const tick of panel.yTickValues) {
-                const y = panelBottom - tick * (panelBottom - panelTop)
-                grid.moveTo(plotLeft, y)
-                grid.lineTo(plotRight, y)
-              }
+          const hasPanelFade = c.panels.some(panel => (panel.opacity ?? 1) < 0.999)
+          if (hasPanelFade) {
+            for (const panel of c.panels) {
+              grid.save()
+              grid.globalAlpha = panel.opacity ?? 1
+              strokePath(grid, c.gridColor, c.gridDash, () => {
+                const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+                const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+                for (const tick of xTicks) {
+                  const x = xScale(tick)
+                  grid.moveTo(x, panelTop)
+                  grid.lineTo(x, panelBottom)
+                }
+                for (const tick of panel.yTickValues) {
+                  const y = panelBottom - tick * (panelBottom - panelTop)
+                  grid.moveTo(plotLeft, y)
+                  grid.lineTo(plotRight, y)
+                }
+              })
+              grid.restore()
             }
-          })
+          } else {
+            strokePath(grid, c.gridColor, c.gridDash, () => {
+              for (const panel of c.panels!) {
+                const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+                const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+                for (const tick of xTicks) {
+                  const x = xScale(tick)
+                  grid.moveTo(x, panelTop)
+                  grid.lineTo(x, panelBottom)
+                }
+                for (const tick of panel.yTickValues) {
+                  const y = panelBottom - tick * (panelBottom - panelTop)
+                  grid.moveTo(plotLeft, y)
+                  grid.lineTo(plotRight, y)
+                }
+              }
+            })
+          }
 
           labels.font = c.font
           labels.textBaseline = 'top'
@@ -176,24 +200,40 @@ export function createAxisPlugin(cfg: { current: AxisConfig }): TimeChartPlugin 
           labels.textAlign = 'right'
           for (const panel of c.panels) {
             if (!panel.showYAxis) continue
+            const faded = (panel.opacity ?? 1) < 0.999
+            if (faded) {
+              labels.save()
+              labels.globalAlpha = panel.opacity ?? 1
+            }
             const panelTop = plotTop + panel.top * (plotBottom - plotTop)
             const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
             for (const tick of panel.yTickValues) {
               labels.fillStyle = panel.yTickColor?.(tick) ?? panel.yAxisColor
               labels.fillText(panel.yTickFormat(tick), plotLeft - c.yGap, panelBottom - tick * (panelBottom - panelTop))
             }
+            if (faded) labels.restore()
           }
 
-          strokePath(labels, c.borderColor, undefined, () => {
-            for (const panel of c.panels!) {
-              const panelTop = plotTop + panel.top * (plotBottom - plotTop)
-              const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
-              labels.moveTo(plotLeft, panelTop)
-              labels.lineTo(plotLeft, panelBottom)
-              labels.moveTo(plotLeft, panelBottom)
-              labels.lineTo(plotRight, panelBottom)
+          const drawPanelBorder = (panel: NonNullable<AxisConfig['panels']>[number]) => {
+            const panelTop = plotTop + panel.top * (plotBottom - plotTop)
+            const panelBottom = plotTop + panel.bottom * (plotBottom - plotTop) - (panel.gapAfter ?? 0)
+            labels.moveTo(plotLeft, panelTop)
+            labels.lineTo(plotLeft, panelBottom)
+            labels.moveTo(plotLeft, panelBottom)
+            labels.lineTo(plotRight, panelBottom)
+          }
+          if (hasPanelFade) {
+            for (const panel of c.panels) {
+              labels.save()
+              labels.globalAlpha = panel.opacity ?? 1
+              strokePath(labels, c.borderColor, undefined, () => drawPanelBorder(panel))
+              labels.restore()
             }
-          })
+          } else {
+            strokePath(labels, c.borderColor, undefined, () => {
+              for (const panel of c.panels!) drawPanelBorder(panel)
+            })
+          }
           return
         }
 

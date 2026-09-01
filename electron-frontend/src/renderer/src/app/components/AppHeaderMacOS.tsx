@@ -1,6 +1,6 @@
 import { memo, type Dispatch, type SetStateAction } from 'react'
 import Select from '../../lib/AnimatedSelect'
-import { ChartLine, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
+import { Columns3, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { buildSelectStyles } from '../../lib/selectStyles'
 import { selectComponents } from '../../lib/selectComponents'
@@ -12,6 +12,7 @@ import type { BannerItem } from '../bannerHelpers'
 import SessionTimer from './SessionTimer'
 import AnimatedAutoWidth from './AnimatedAutoWidth'
 import { formatTabOptionLabel } from './TabOptionLabel'
+import SyncedTooltipIcon from './SyncedTooltipIcon'
 
 const selectStyles = buildSelectStyles(true)
 const tabSelectStyles = buildSelectStyles(true, { menuWidth: '120px' })
@@ -128,15 +129,16 @@ export default memo(function AppHeader({
           title={cursorSyncAvailable ? 'Sector Boundaries' : undefined}
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : sectorBoundariesEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
-        ><span className="block text-[9px] font-bold leading-[13px]">S1</span></button>
+        ><Columns3 size={13} /></button>
         <button
           onClick={() => cursorSyncAvailable && setInputCursorSyncEnabled(!inputCursorSyncEnabled)}
           disabled={!cursorSyncAvailable}
+          aria-label="Synchronize Tooltip"
           aria-pressed={cursorSyncAvailable && inputCursorSyncEnabled}
           title={cursorSyncAvailable ? 'Synchronize Tooltip' : undefined}
           style={{ WebkitAppRegion: 'no-drag' }}
           className={`p-1.5 rounded transition-colors ${!cursorSyncAvailable ? 'text-[var(--text-inactive)] cursor-not-allowed' : inputCursorSyncEnabled ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}
-        ><ChartLine size={13} /></button>
+        ><SyncedTooltipIcon size={13} /></button>
         <button onClick={() => editable && setEditOpen(value => !value)} title="Edit layout" style={{ WebkitAppRegion: 'no-drag' }} className={`p-1.5 rounded transition-colors ${!editable ? 'text-[var(--text-inactive)] cursor-not-allowed' : editOpen ? 'bg-[var(--border-focus)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)]'}`}><Pencil size={13} /></button>
         <button onClick={() => window.windowControls.minimizeToTray()} title="Background Mode" style={{ WebkitAppRegion: 'no-drag' }} className="p-1.5 rounded transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--border)] shrink-0"><PictureInPicture2 size={13} /></button>
       </header>

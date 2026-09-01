@@ -85,7 +85,7 @@ export function buildSelectStyles(isDark: boolean, { solidBg = false, controlHei
       padding: '5px 8px',
       cursor: 'pointer',
       transition: 'background 0.1s',
-      '&:active': { background: 'var(--border-focus)' },
+      '&:active': { background: 'var(--border-focus)', color: '#fff' },
     }),
   }
 }

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChevronLeft, ChevronRight, Eye, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, Columns3, Eye, GitCompareArrows, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
@@ -22,6 +22,7 @@ import type { AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
+import SyncedTooltipIcon from '../app/components/SyncedTooltipIcon'
 
 interface Props {
   isDark: boolean
@@ -75,7 +76,17 @@ interface SecondaryFileData {
   deltaAvailable: boolean
 }
 type AnalysisFileSource = 'file1' | 'file2'
-const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button h-8 min-w-0 rounded px-2 text-[9px] uppercase tracking-wider focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
+const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
+const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
+const ANALYSIS_MOTION_DURATION = 260
+const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
+
+function easeInOutCubic(progress: number): number {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2
+}
+
 interface PendingCircuitMismatch {
   filePath: string
   data: any
@@ -337,7 +348,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   stackedControlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
 }) {
-  const stackedPresence = useModalPresence(analysisView === 'charts')
+  const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION)
   const playbackCurrentLap = useTelemetryStore(s =>
     !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
       ? s.playbackLapDataCache[currentLapNum] ?? null
@@ -409,14 +420,14 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
 
   return <div className="absolute inset-0">
     <div
-      className={`analysis-chart-mode-surface analysis-chart-mode-surface--combined absolute inset-0 ${stackedPresence.visible ? '' : 'analysis-chart-mode-surface--visible'}`}
+      className={`analysis-chart-mode-surface absolute inset-0 ${stackedPresence.visible ? '' : 'analysis-chart-mode-surface--visible'}`}
       aria-hidden={stackedPresence.visible}
       inert={stackedPresence.visible}
     >
       <AnalyzeTimeChart {...chartProps} controlsRef={graphControlsRef} tooltipEnabled={analysisView === 'graph'} />
     </div>
     {stackedPresence.mounted && <div
-      className={`analysis-chart-mode-surface analysis-chart-mode-surface--individual absolute inset-0 ${stackedPresence.visible ? 'analysis-chart-mode-surface--visible' : ''}`}
+      className={`analysis-chart-mode-surface absolute inset-0 ${stackedPresence.visible ? 'analysis-chart-mode-surface--visible' : ''}`}
       aria-hidden={!stackedPresence.visible}
       inert={!stackedPresence.visible}
     >
@@ -443,7 +454,7 @@ export default function AnalyzeScreen({
   const primaryView = !playbackFilename && config.view === 'map' ? 'graph' : config.view
   const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
   const chartAnalysisView = config.individualGraphs ? 'charts' : 'graph'
-  const mapPresence = useModalPresence(analysisView === 'map')
+  const mapPresence = useModalPresence(analysisView === 'map', ANALYSIS_PRESENCE_DURATION)
   const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
   useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
@@ -515,9 +526,9 @@ export default function AnalyzeScreen({
       const before = previous.get(id)
       if (!before) {
         node.animate([
-          { opacity: 0, transform: 'translateY(8px) scale(0.97)' },
-          { opacity: 1, transform: 'translateY(0) scale(1)' },
-        ], { duration: 200, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+          { opacity: 0, transform: 'translateY(4px)' },
+          { opacity: 1, transform: 'translateY(0)' },
+        ], { duration: ANALYSIS_MOTION_DURATION, easing: ANALYSIS_MOTION_EASING })
         continue
       }
       const after = node.getBoundingClientRect()
@@ -527,7 +538,7 @@ export default function AnalyzeScreen({
       node.animate([
         { transform: `translate(${deltaX}px, ${deltaY}px)` },
         { transform: 'translate(0, 0)' },
-      ], { duration: 220, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      ], { duration: ANALYSIS_MOTION_DURATION, easing: ANALYSIS_MOTION_EASING })
     }
   }, [config.series, reduceAnimations])
   const inspectMapAt = useCallback((elapsedSeconds: number) => {
@@ -731,12 +742,12 @@ export default function AnalyzeScreen({
       return
     }
 
-    const duration = 200
+    const duration = ANALYSIS_MOTION_DURATION
     const startedAt = performance.now()
     let animationFrame = 0
     const animate = (now: number) => {
       const progress = Math.min(1, (now - startedAt) / duration)
-      const eased = 1 - Math.pow(1 - progress, 3)
+      const eased = easeInOutCubic(progress)
       sidebar.style.width = `${startWidth + (targetWidth - startWidth) * eased}px`
       if (progress < 1) animationFrame = requestAnimationFrame(animate)
     }
@@ -813,17 +824,9 @@ export default function AnalyzeScreen({
     setDraggedMetric(null)
   }, [config.series, draggedMetric, updateSeries])
 
-  const removeMetric = useCallback(async (metricId: string) => {
-    const row = seriesRowRefs.current.get(metricId)
-    if (!reduceAnimations && row) {
-      const animation = row.animate([
-        { opacity: 1, transform: 'translateX(0) scale(1)' },
-        { opacity: 0, transform: 'translateX(10px) scale(0.97)' },
-      ], { duration: 150, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' })
-      try { await animation.finished } catch { return }
-    }
+  const removeMetric = useCallback((metricId: string) => {
     updateSeries(config.series.filter(entry => entry.metricId !== metricId))
-  }, [config.series, reduceAnimations, updateSeries])
+  }, [config.series, updateSeries])
 
   const activeChartControlsRef = analysisView === 'charts' ? stackedControlsRef : graphControlsRef
 
@@ -868,35 +871,35 @@ export default function AnalyzeScreen({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex gap-2">
                 <button
-                  type="button" aria-pressed={config.individualGraphs}
+                  type="button" aria-label="Individual Graphs" aria-pressed={config.individualGraphs} title="Individual Graphs"
                   onClick={() => save({ ...config, individualGraphs: !config.individualGraphs })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.individualGraphs ? 'analyze-toggle-button--active' : ''}`}
-                >Individual Graphs</button>
+                ><Rows3 size={15} /></button>
                 <button
-                  type="button" aria-pressed={config.syncedTooltip} disabled={!config.individualGraphs}
+                  type="button" aria-label="Synced Tooltip" aria-pressed={config.syncedTooltip} title="Synced Tooltip" disabled={!config.individualGraphs}
                   onClick={() => save({ ...config, syncedTooltip: !config.syncedTooltip })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.syncedTooltip ? 'analyze-toggle-button--active' : ''}`}
-                >Synced Tooltip</button>
+                ><SyncedTooltipIcon size={15} /></button>
                 <button
-                  type="button" aria-pressed={config.sectorBoundaries}
+                  type="button" aria-label="Sector Boundaries" aria-pressed={config.sectorBoundaries} title="Sector Boundaries"
                   onClick={() => {
                     const sectorBoundaries = !config.sectorBoundaries
                     save({ ...config, sectorBoundaries, sectorDelta: sectorBoundaries && config.sectorDelta })
                   }}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorBoundaries ? 'analyze-toggle-button--active' : ''}`}
-                >Sector Boundaries</button>
+                ><Columns3 size={15} /></button>
                 <button
-                  type="button" aria-pressed={config.sectorDelta} disabled={!config.sectorBoundaries}
+                  type="button" aria-label="Sector Delta" aria-pressed={config.sectorDelta} title="Sector Delta" disabled={!config.sectorBoundaries}
                   onClick={() => save({ ...config, sectorDelta: !config.sectorDelta })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorDelta ? 'analyze-toggle-button--active' : ''}`}
-                >Sector Delta</button>
+                ><ChartNoAxesCombined size={15} /></button>
                 {playbackFilename && blocks && <button
-                  type="button" aria-pressed={fixedLapMode.enabled}
+                  type="button" aria-label="Comparison" aria-pressed={fixedLapMode.enabled} title="Comparison"
                   onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
-                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} col-span-2 ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
-                >Comparison</button>}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
+                ><GitCompareArrows size={15} /></button>}
               </div>
               {playbackFilename && blocks && <div className="space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
@@ -1108,7 +1111,7 @@ export default function AnalyzeScreen({
         </div>
         <div className="flex-1 min-h-0 relative">
           <div
-            className={`analysis-view-surface analysis-view-surface--graph absolute inset-0 ${mapPresence.visible ? '' : 'analysis-view-surface--visible'}`}
+            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? '' : 'analysis-view-surface--visible'}`}
             aria-hidden={mapPresence.visible}
             inert={mapPresence.visible}
           >
@@ -1130,7 +1133,7 @@ export default function AnalyzeScreen({
             />
           </div>
           {mapPresence.mounted && <div
-            className={`analysis-view-surface analysis-view-surface--map absolute inset-0 ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
+            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
             aria-hidden={!mapPresence.visible}
             inert={!mapPresence.visible}
           >

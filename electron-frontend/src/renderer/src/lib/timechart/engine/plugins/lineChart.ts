@@ -522,10 +522,12 @@ export class LineChartRenderer {
     private colorCache = new Map<TimeChartSeriesOptions, {
         source: ResolvedCoreOptions['color'] | TimeChartSeriesOptions['color'];
         rgba: ReturnType<typeof resolveColorRGBA>;
+        baseAlpha: number;
     }>();
     private fillColorCache = new Map<TimeChartSeriesOptions, {
         source: TimeChartSeriesOptions['fill'];
         rgba: ReturnType<typeof resolveColorRGBA>;
+        baseAlpha: number;
     }>();
 
     constructor(
@@ -587,20 +589,26 @@ export class LineChartRenderer {
 
     private colorFor(series: TimeChartSeriesOptions) {
         const source = series.color ?? this.options.color;
-        const cached = this.colorCache.get(series);
-        if (cached?.source === source) return cached.rgba;
-        const rgba = resolveColorRGBA(source);
-        this.colorCache.set(series, { source, rgba });
-        return rgba;
+        let cached = this.colorCache.get(series);
+        if (!cached || cached.source !== source) {
+            const rgba = resolveColorRGBA(source);
+            cached = { source, rgba, baseAlpha: rgba[3] };
+            this.colorCache.set(series, cached);
+        }
+        cached.rgba[3] = cached.baseAlpha * Math.max(0, Math.min(1, series.opacity ?? 1));
+        return cached.rgba;
     }
 
     private fillColorFor(series: TimeChartSeriesOptions) {
         const source = series.fill!;
-        const cached = this.fillColorCache.get(series);
-        if (cached?.source === source) return cached.rgba;
-        const rgba = resolveColorRGBA(source);
-        this.fillColorCache.set(series, { source, rgba });
-        return rgba;
+        let cached = this.fillColorCache.get(series);
+        if (!cached || cached.source !== source) {
+            const rgba = resolveColorRGBA(source);
+            cached = { source, rgba, baseAlpha: rgba[3] };
+            this.fillColorCache.set(series, cached);
+        }
+        cached.rgba[3] = cached.baseAlpha * Math.max(0, Math.min(1, series.opacity ?? 1));
+        return cached.rgba;
     }
 
     drawFrame() {
