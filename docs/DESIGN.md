@@ -11,10 +11,10 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Android frontend | `android_frontend/` | Java, Material Components, JNI | Physical-device live dashboard; currently the Standings timing tower |
+| Android frontend | `android_frontend/` | Java, Material Components, JNI | Physical-device steering-wheel dashboard with native TNRD recording |
 
 The two desktop apps have feature parity and read/write the same `.tnrd` files.
-The Android host currently provides a focused live-only subset.
+The Android host provides a focused live dashboard and recording subset.
 
 ## 1. The shared engine (libtnrp)
 
@@ -598,19 +598,21 @@ only the panels. While in playback, live engine rows are dropped at
 The Android app links `protocol_parser_library` directly through a small JNI
 sink. It configures `tnrp::Engine` with `hotRowsAsJson=true`, binds the raw UDP
 backend to `0.0.0.0:20777`, and forwards library-produced JSON rows into a
-thread-safe Java timing store. The first screen mirrors the Electron Standings
-table: timing rows provide order/laps/sectors/penalties, participants provide
-driver identity and livery colour, and all-status rows provide tyre compounds.
+thread-safe latest-value store. Hot telemetry is coalesced into one Android UI
+snapshot at roughly 30 fps; no per-row history or unbounded queue is retained.
 
-The Java UI uses Material 2 app bars, cards, chips and bottom navigation. The
-persistent navigation shell reserves Overview, Standings, Session, Strategy
-and More; More routes the remaining dashboard destinations and the bundled
-open-source notices. Standings adapts the desktop tower into vertically
-scrolling driver cards instead of forcing a wide table onto a phone.
-`build-and-run.ps1` assembles the debug APK, installs it through ADB, and
-launches the activity on a physical device. The frontend is currently
-live-only; non-Standings destinations are ready UI shells rather than complete
-telemetry pages.
+The first of the planned three screens is a full-screen steering-wheel
+dashboard. It presents shift lights, gear, speed/RPM, position/lap timing,
+ERS/fuel, tyre state, DRS/SLM and pedal inputs in responsive portrait and
+landscape layouts. There is deliberately no placeholder navigation shell.
+
+The JNI bridge also exposes `Engine::setLogging`, so the dashboard can toggle
+the shared asynchronous TNRD V5 writer without reimplementing recording in
+Java. Recording intent is persisted and sessions are written under the app's
+external Documents directory (`Track N Race/`); native `recording_error` rows
+are surfaced in the UI. `build-and-run.ps1` assembles the debug APK, installs
+it through ADB, and launches the activity on a physical device. Playback and
+the other two screens remain out of scope for this first-screen pass.
 
 ## 6. Build & packaging
 

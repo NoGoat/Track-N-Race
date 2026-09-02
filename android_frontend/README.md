@@ -1,11 +1,20 @@
 # Track N Race Android frontend
 
-The first Android screen is the live Standings/Timing Tower. It hosts the
-repository's existing C++ `protocol_parser_library` through JNI, listens for F1
-UDP telemetry on port 20777, and renders timing, participants, tyre compounds,
-fastest lap and penalty state as Material 2 driver cards designed for a phone.
-Persistent bottom navigation provides homes for Overview, Standings, Session,
-Strategy and the remaining dashboard pages under More.
+The Android app is a focused, full-screen steering-wheel dashboard backed by
+the same C++ `protocol_parser_library` as the desktop apps. It listens for F1
+24/25/26 UDP telemetry on port 20777 and displays shift lights, gear,
+speed/RPM, position and lap timing, ERS and fuel, tyre state, DRS/SLM, and
+brake/throttle inputs. The layout adapts to both portrait and landscape.
+
+The **REC** control calls the shared engine's TNRD V5 writer through JNI.
+Recording is enabled by default, persists across launches, and writes sessions
+to the app's external Documents directory under `Track N Race/`. Turning REC
+off finalizes the active file. Recording errors from the native disk thread are
+shown in the dashboard.
+
+This is the first of three planned screens. The old placeholder-heavy
+navigation shell has intentionally been removed; the remaining screens will be
+designed separately.
 
 ## Build and run on a physical phone
 
@@ -30,47 +39,34 @@ If the SDK is not in the default `%LOCALAPPDATA%\Android\Sdk` location:
 .\android_frontend\build-and-run.ps1 -SdkRoot 'D:\Android\Sdk'
 ```
 
-The standalone Platform-Tools download is not a full Android SDK. Put Google's
-Command-line Tools under `Sdk\cmdline-tools\latest`, install the components
-listed above with `sdkmanager`, and accept their licences from PowerShell:
-
-```powershell
-& "$env:LOCALAPPDATA\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat" --licenses
-```
-
 If more than one ADB device is connected:
 
 ```powershell
 .\android_frontend\build-and-run.ps1 -DeviceSerial '<adb serial>'
 ```
 
-The script prefers an authorized USB device. If none is available, it discovers
-paired Wireless Debugging devices on the local network and connects
-automatically. The first wireless connection must be paired from the phone's
-**Developer options > Wireless debugging > Pair device with pairing code**:
+The script prefers an authorized USB device. If none is available, it
+discovers paired Wireless Debugging devices and connects automatically. The
+first wireless connection must be paired from **Developer options > Wireless
+debugging > Pair device with pairing code**:
 
 ```powershell
 adb pair '<phone-ip>:<pairing-port>'
 ```
 
-The pairing port is temporary and is not the same as the connection port shown
-on the main Wireless debugging screen. If network mDNS discovery is blocked,
-pass that main-screen connection address explicitly:
-
-```powershell
-.\android_frontend\build-and-run.ps1 -DeviceSerial '<phone-ip>:<connect-port>'
-```
-
-The first native build downloads the dependencies already pinned by
-`protocol_parser_library` (glaze, zlib, Zstandard and libxlsxwriter), so it
-requires internet access and takes longer than subsequent builds.
+The first native build downloads the dependencies pinned by
+`protocol_parser_library`, so it requires internet access and takes longer than
+subsequent builds.
 
 ## Phone and game network setup
 
 Keep the phone and the PC/console running F1 on the same local network. In the
 game's Telemetry settings, enable UDP telemetry, set the destination IP to the
-phone's Wi-Fi IPv4 address and the port to `20777`. Keep the app in the
-foreground while receiving; Android may suspend its listener in the background.
+phone's Wi-Fi IPv4 address, and use port `20777`. Keep the dashboard in the
+foreground while receiving; Android may suspend its listener in the
+background.
 
-No runtime permission prompt is expected. The app only declares Android's
-normal `INTERNET` permission, which also permits local UDP sockets.
+No runtime permission prompt is expected. The app declares Android's normal
+`INTERNET` permission, which also permits local UDP sockets. Recordings use the
+app's scoped external Documents directory and therefore need no storage
+permission.

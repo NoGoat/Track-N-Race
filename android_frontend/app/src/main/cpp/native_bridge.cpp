@@ -101,3 +101,20 @@ Java_com_tracknrace_android_NativeTelemetry_nativeStop(JNIEnv*, jobject) {
     std::lock_guard lock(gMutex);
     stopLocked();
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_tracknrace_android_NativeTelemetry_nativeSetRecording(
+    JNIEnv* env, jobject, jboolean enabled, jstring outputDirectory) {
+    std::lock_guard lock(gMutex);
+    if (!gEngine) return;
+
+    std::string directory;
+    if (outputDirectory) {
+        const char* utf = env->GetStringUTFChars(outputDirectory, nullptr);
+        if (utf) {
+            directory = utf;
+            env->ReleaseStringUTFChars(outputDirectory, utf);
+        }
+    }
+    gEngine->setLogging(enabled == JNI_TRUE, directory);
+}

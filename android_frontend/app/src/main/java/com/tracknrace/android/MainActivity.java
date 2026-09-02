@@ -1,217 +1,184 @@
 package com.tracknrace.android;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.LinearLayout;
 
-import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import com.google.android.material.appbar.AppBarLayout;
-import com.google.android.material.appbar.MaterialToolbar;
-import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.color.MaterialColors;
+import com.google.android.material.snackbar.Snackbar;
 
+import java.io.File;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/** Single-screen host for the steering-wheel dashboard. */
 public final class MainActivity extends AppCompatActivity implements NativeTelemetry.Listener {
     private static final int UDP_PORT = 20777;
-    private static final long UI_REFRESH_INTERVAL_MS = 100L;
+    private static final long FRAME_INTERVAL_MS = 33L;
+    private static final String PREFS = "track_n_race_android";
+    private static final String PREF_RECORDING = "recording_enabled";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final TimingStore store = new TimingStore();
-    private final AtomicBoolean refreshScheduled = new AtomicBoolean();
+    private final DashboardTelemetryStore store = new DashboardTelemetryStore();
+    private final AtomicBoolean frameScheduled = new AtomicBoolean();
+
     private NativeTelemetry telemetry;
-    private MaterialToolbar toolbar;
-    private ConnectionStatusView connectionStatus;
-    private FrameLayout pageHost;
-    private BottomNavigationView navigation;
-    private StandingsPageView standingsPage;
-    private OnBackPressedCallback secondaryBackCallback;
-    private boolean receiving;
+    private WheelDashboardView dashboard;
+    private MaterialButton recordButton;
+    private SharedPreferences preferences;
+    private volatile boolean engineRunning;
+    private boolean recordingEnabled;
+    private String lastRecordingError;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        telemetry = new NativeTelemetry(this);
-        setContentView(buildShell());
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        secondaryBackCallback = new OnBackPressedCallback(false) {
-            @Override public void handleOnBackPressed() {
-                showMorePage();
-            }
-        };
-        getOnBackPressedDispatcher().addCallback(this, secondaryBackCallback);
-        navigation.setSelectedItemId(R.id.navigation_standings);
+        preferences = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        recordingEnabled = preferences.getBoolean(PREF_RECORDING, true);
+        telemetry = new NativeTelemetry(this);
+        setContentView(buildDashboard());
     }
 
     @Override protected void onStart() {
         super.onStart();
-        setConnectionStatus(ConnectionStatusView.State.STARTING,
-            getString(R.string.status_starting));
+        dashboard.setHostState(WheelDashboardView.HostState.STARTING, UDP_PORT, 0);
         new Thread(() -> {
             String error = telemetry.start(UDP_PORT);
-            mainHandler.post(() -> setConnectionStatus(
-                error == null ? ConnectionStatusView.State.LISTENING : ConnectionStatusView.State.ERROR,
-                error == null
-                    ? getString(R.string.status_listening, UDP_PORT)
-                    : getString(R.string.status_error, error)));
+            if (error == null) {
+                engineRunning = true;
+                telemetry.setRecording(recordingEnabled, recordingDirectory().getAbsolutePath());
+            }
+            mainHandler.post(() -> {
+                dashboard.setHostState(
+                    error == null ? WheelDashboardView.HostState.LISTENING
+                        : WheelDashboardView.HostState.ERROR,
+                    UDP_PORT, store.snapshot().activeFormat);
+                if (error != null) Snackbar.make(dashboard,
+                    getString(R.string.status_error, error), Snackbar.LENGTH_INDEFINITE).show();
+                syncRecordButton();
+            });
         }, "tnrp-start").start();
     }
 
     @Override protected void onStop() {
+        engineRunning = false;
         telemetry.stop();
-        receiving = false;
-        refreshScheduled.set(false);
+        frameScheduled.set(false);
         super.onStop();
     }
 
     @Override public void onTelemetryRow(String json) {
         try {
-            if (store.accept(json)) scheduleUiRefresh();
+            if (store.accept(json)) scheduleFrame();
         } catch (Exception ignored) {
-            // Unknown or malformed rows must never stop the native receiver.
+            // A malformed or future row must never stop libtnrp's receiver thread.
         }
     }
 
-    private void scheduleUiRefresh() {
-        if (!refreshScheduled.compareAndSet(false, true)) return;
-        mainHandler.postDelayed(() -> {
-            refreshScheduled.set(false);
-            standingsPage.setCars(store.snapshot());
-            int format = store.activeFormat();
-            if (format > 0) receiving = true;
-            setConnectionStatus(
-                receiving ? ConnectionStatusView.State.RECEIVING : ConnectionStatusView.State.LISTENING,
-                receiving
-                    ? getString(R.string.status_receiving, format, UDP_PORT)
-                    : getString(R.string.status_listening, UDP_PORT));
-        }, UI_REFRESH_INTERVAL_MS);
-    }
+    private View buildDashboard() {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(getColor(R.color.dashboard_background));
 
-    private View buildShell() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(MaterialColors.getColor(
-            root, android.R.attr.colorBackground));
+        dashboard = new WheelDashboardView(this);
+        root.addView(dashboard, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        AppBarLayout appBar = new AppBarLayout(this);
-        toolbar = new MaterialToolbar(this);
-        toolbar.setTitle(R.string.navigation_standings);
-        appBar.addView(toolbar, new AppBarLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, Ui.dimen(this, R.dimen.m2_toolbar_height)));
-        root.addView(appBar);
+        recordButton = new MaterialButton(this, null,
+            com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        recordButton.setAllCaps(true);
+        recordButton.setCheckable(true);
+        recordButton.setMinWidth(0);
+        recordButton.setInsetTop(0);
+        recordButton.setInsetBottom(0);
+        recordButton.setTextSize(12f);
+        recordButton.setOnClickListener(view -> setRecordingEnabled(!recordingEnabled));
+        FrameLayout.LayoutParams recordParams = new FrameLayout.LayoutParams(
+            Ui.dp(this, 82), Ui.dp(this, 40), Gravity.TOP | Gravity.END);
+        recordParams.setMargins(0, Ui.dp(this, 12), Ui.dp(this, 14), 0);
+        root.addView(recordButton, recordParams);
 
-        connectionStatus = new ConnectionStatusView(this);
-        connectionStatus.setStatus(ConnectionStatusView.State.STARTING,
-            getString(R.string.status_starting));
-        root.addView(connectionStatus, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            Ui.dimen(this, R.dimen.m2_connection_status_height)));
-
-        pageHost = new FrameLayout(this);
-        standingsPage = new StandingsPageView(this);
-        root.addView(pageHost, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-
-        navigation = new BottomNavigationView(this);
-        navigation.inflateMenu(R.menu.main_navigation);
-        navigation.setLabelVisibilityMode(BottomNavigationView.LABEL_VISIBILITY_LABELED);
-        navigation.setItemHorizontalTranslationEnabled(false);
-        ViewCompat.setElevation(navigation,
-            Ui.dimen(this, R.dimen.m2_bottom_navigation_elevation));
-        navigation.setOnItemSelectedListener(item -> {
-            showDestination(item.getItemId());
-            return true;
-        });
-        root.addView(navigation, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            Ui.dimen(this, R.dimen.m2_bottom_navigation_height)));
-        applySystemBarInsets(root, appBar);
-        return root;
-    }
-
-    private void applySystemBarInsets(View root, AppBarLayout appBar) {
-        final int navigationHeight = Ui.dimen(this, R.dimen.m2_bottom_navigation_height);
-        final int horizontalMargin = Ui.dimen(this, R.dimen.m2_screen_margin);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets bars = windowInsets.getInsets(
                 WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-            appBar.setPadding(bars.left, bars.top, bars.right, 0);
-            connectionStatus.setPadding(bars.left + horizontalMargin, 0,
-                bars.right + horizontalMargin, 0);
-            pageHost.setPadding(bars.left, 0, bars.right, 0);
-            navigation.setPadding(bars.left, 0, bars.right, bars.bottom);
-            ViewGroup.LayoutParams params = navigation.getLayoutParams();
-            params.height = navigationHeight + bars.bottom;
-            navigation.setLayoutParams(params);
+            dashboard.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) recordButton.getLayoutParams();
+            params.topMargin = bars.top + Ui.dp(this, 12);
+            params.rightMargin = bars.right + Ui.dp(this, 14);
+            recordButton.setLayoutParams(params);
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
+        syncRecordButton();
+        return root;
     }
 
-    private void showDestination(int id) {
-        if (id == R.id.navigation_standings) {
-            showPrimaryPage(R.string.navigation_standings, standingsPage);
-        } else if (id == R.id.navigation_overview) {
-            showPrimaryPage(R.string.navigation_overview,
-                new PlaceholderPageView(this, R.string.overview_placeholder));
-        } else if (id == R.id.navigation_session) {
-            showPrimaryPage(R.string.navigation_session,
-                new PlaceholderPageView(this, R.string.session_placeholder));
-        } else if (id == R.id.navigation_strategy) {
-            showPrimaryPage(R.string.navigation_strategy,
-                new PlaceholderPageView(this, R.string.strategy_placeholder));
-        } else {
-            showMorePage();
+    private void scheduleFrame() {
+        if (!frameScheduled.compareAndSet(false, true)) return;
+        mainHandler.postDelayed(() -> {
+            frameScheduled.set(false);
+            DashboardTelemetryStore.Snapshot snapshot = store.snapshot();
+            dashboard.setTelemetry(snapshot);
+            dashboard.setHostState(
+                snapshot.receiving ? WheelDashboardView.HostState.RECEIVING
+                    : WheelDashboardView.HostState.LISTENING,
+                UDP_PORT, snapshot.activeFormat);
+            if (snapshot.recordingError != null &&
+                !snapshot.recordingError.equals(lastRecordingError)) {
+                lastRecordingError = snapshot.recordingError;
+                Snackbar.make(dashboard, snapshot.recordingError, Snackbar.LENGTH_LONG).show();
+            }
+        }, FRAME_INTERVAL_MS);
+    }
+
+    private void setRecordingEnabled(boolean enabled) {
+        recordingEnabled = enabled;
+        preferences.edit().putBoolean(PREF_RECORDING, enabled).apply();
+        if (engineRunning) {
+            new Thread(() -> telemetry.setRecording(
+                enabled, recordingDirectory().getAbsolutePath()), "tnrp-recording").start();
         }
+        syncRecordButton();
+        Snackbar.make(dashboard,
+            enabled ? getString(R.string.recording_enabled,
+                recordingDirectory().getAbsolutePath()) : getString(R.string.recording_disabled),
+            Snackbar.LENGTH_LONG).show();
     }
 
-    private void showMorePage() {
-        showPrimaryPage(R.string.navigation_more,
-            new MorePageView(this, this::showSecondaryPage));
+    private File recordingDirectory() {
+        File documents = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+        if (documents == null) documents = getFilesDir();
+        File directory = new File(documents, "Track N Race");
+        if (!directory.exists()) directory.mkdirs();
+        return directory;
     }
 
-    private void showSecondaryPage(int title, int description) {
-        secondaryBackCallback.setEnabled(true);
-        toolbar.setTitle(title);
-        toolbar.setNavigationIcon(R.drawable.ic_arrow_back);
-        toolbar.setNavigationContentDescription(R.string.navigation_up);
-        toolbar.setNavigationOnClickListener(view -> showMorePage());
-        replacePage(new PlaceholderPageView(this, description));
-    }
-
-    private void showPrimaryPage(int title, View content) {
-        if (secondaryBackCallback != null) secondaryBackCallback.setEnabled(false);
-        toolbar.setTitle(title);
-        toolbar.setNavigationIcon(null);
-        toolbar.setNavigationOnClickListener(null);
-        replacePage(content);
-    }
-
-    private void replacePage(View content) {
-        pageHost.removeAllViews();
-        content.setAlpha(0f);
-        pageHost.addView(content, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        content.animate()
-            .alpha(1f)
-            .setDuration(Ui.MOTION_DURATION_SHORT)
-            .setInterpolator(AnimationUtils.loadInterpolator(
-                this, android.R.interpolator.fast_out_slow_in))
-            .start();
-    }
-
-    private void setConnectionStatus(ConnectionStatusView.State state, String text) {
-        connectionStatus.setStatus(state, text);
+    private void syncRecordButton() {
+        if (recordButton == null) return;
+        recordButton.setChecked(recordingEnabled);
+        recordButton.setText(recordingEnabled ? R.string.recording_on : R.string.recording_off);
+        int color = getColor(recordingEnabled
+            ? R.color.dashboard_recording : R.color.dashboard_text_secondary);
+        recordButton.setTextColor(color);
+        recordButton.setStrokeColor(ColorStateList.valueOf(color));
+        recordButton.setRippleColor(ColorStateList.valueOf(
+            MaterialColors.getColor(recordButton,
+                android.R.attr.colorControlHighlight)));
     }
 }

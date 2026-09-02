@@ -12,6 +12,12 @@
     <string name="status_receiving">Receiving F1 %1$d · UDP %2$d</string>
     <string name="status_error">UDP error · %1$s</string>
 
+    <string name="dashboard_accessibility">Live steering wheel telemetry dashboard</string>
+    <string name="recording_on">● REC</string>
+    <string name="recording_off">REC OFF</string>
+    <string name="recording_enabled">Recording enabled. TNRD sessions save to %1$s</string>
+    <string name="recording_disabled">Recording stopped. The current TNRD session has been finalized.</string>
+
     <string name="standings_summary">Live classification · %1$d cars</string>
     <string name="standings_empty_title">Waiting for live timing</string>
     <string name="standings_empty_body">Set the F1 telemetry destination to this phone’s Wi-Fi address on UDP port 20777.</string>

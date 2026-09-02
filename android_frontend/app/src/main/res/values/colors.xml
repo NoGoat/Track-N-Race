@@ -19,4 +19,18 @@
     <color name="connection_listening">#F9A825</color>
     <color name="connection_receiving">#2E7D32</color>
     <color name="connection_error">#B00020</color>
+
+    <!-- High-contrast fixed palette for the steering-wheel dashboard. -->
+    <color name="dashboard_background">#07090C</color>
+    <color name="dashboard_panel">#10151B</color>
+    <color name="dashboard_panel_border">#26313B</color>
+    <color name="dashboard_text_primary">#F5F7FA</color>
+    <color name="dashboard_text_secondary">#8F9AA6</color>
+    <color name="dashboard_accent">#43A5FF</color>
+    <color name="dashboard_green">#32D583</color>
+    <color name="dashboard_amber">#F5B942</color>
+    <color name="dashboard_red">#FF4D5E</color>
+    <color name="dashboard_purple">#C875FF</color>
+    <color name="dashboard_recording">#FF4D5E</color>
+    <color name="ic_launcher_background">#10151B</color>
 </resources>

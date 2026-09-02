@@ -23,11 +23,16 @@ final class NativeTelemetry {
         nativeStop();
     }
 
-    @SuppressWarnings("unused") // Invoked by JNI on the libtnrp worker thread.
+    void setRecording(boolean enabled, String outputDirectory) {
+        nativeSetRecording(enabled, outputDirectory);
+    }
+
+    @SuppressWarnings("unused") // Invoked by JNI on libtnrp worker threads.
     private void onNativeRow(String json) {
         listener.onTelemetryRow(json);
     }
 
     private native String nativeStart(int port);
     private native void nativeStop();
+    private native void nativeSetRecording(boolean enabled, String outputDirectory);
 }
