@@ -34,7 +34,7 @@ function Find-AndroidSdk {
     throw @"
 A complete Android SDK was not found.$adbNote
 Install Android Studio (no emulator required), then use SDK Manager to install:
-  - Android SDK Platform 35
+  - Android SDK Platform 36
   - Android SDK Build-Tools
   - Android SDK Platform-Tools
   - NDK (Side by side) 27.0.12077973
@@ -77,7 +77,38 @@ function Find-Gradle {
     if (Test-Path -LiteralPath $localWrapper) { return $localWrapper }
     $fromPath = Get-Command gradle -ErrorAction SilentlyContinue
     if ($fromPath) { return $fromPath.Source }
-    throw 'Gradle was not found. Install Gradle 8.9+ or generate a Gradle wrapper in android_frontend.'
+    throw 'Gradle was not found. Install Gradle 8.13+ or generate a Gradle wrapper in android_frontend.'
+}
+
+function Assert-AndroidSdkPackages([string]$AndroidSdk) {
+    $required = @(
+        @{ Path = 'platforms\android-36\android.jar'; Name = 'Android SDK Platform 36' },
+        @{ Path = 'ndk\27.0.12077973'; Name = 'NDK 27.0.12077973' },
+        @{ Path = 'cmake\3.22.1'; Name = 'CMake 3.22.1' },
+        @{ Path = 'platform-tools\adb.exe'; Name = 'Android SDK Platform-Tools' }
+    )
+    $missing = @($required | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $AndroidSdk $_.Path))
+    } | ForEach-Object { $_.Name })
+    if ($missing.Count -gt 0) {
+        throw "Missing Android SDK packages: $($missing -join ', '). Install them with Android Studio SDK Manager, then rerun."
+    }
+}
+
+function Find-Npm {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $node -or -not $npm) {
+        throw 'Node.js 22.12+ and npm are required to build the React/Capacitor frontend.'
+    }
+
+    $nodeVersionText = & $node.Source -p 'process.versions.node'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not determine the installed Node.js version.' }
+    $nodeVersion = [Version]$nodeVersionText
+    if ($nodeVersion -lt [Version]'22.12.0') {
+        throw "Node.js 22.12+ is required; found $nodeVersionText."
+    }
+    return $npm.Source
 }
 
 function Get-AuthorizedDevices([string]$AdbPath) {
@@ -104,14 +135,14 @@ function Connect-WirelessDevices([string]$AdbPath) {
     $endpoints = @(Get-WirelessDebuggingEndpoints $AdbPath)
     if ($endpoints.Count -eq 0) { return }
 
-    Write-Host 'No authorized USB device found. Trying paired Wireless Debugging devices...' -ForegroundColor Yellow
+    Write-Host 'No authorized Android device found. Trying paired Wireless Debugging devices...' -ForegroundColor Yellow
     foreach ($endpoint in $endpoints) {
         Write-Host "  Connecting to $endpoint"
         & $AdbPath connect $endpoint | Out-Host
     }
 }
 
-function Resolve-DeviceSerial([string]$AdbPath, [string]$RequestedSerial) {
+function Resolve-DeviceSerials([string]$AdbPath, [string]$RequestedSerial) {
     if ($RequestedSerial) {
         $devices = @(Get-AuthorizedDevices $AdbPath)
         if ($RequestedSerial -notin $devices -and $RequestedSerial -match ':\d+$') {
@@ -121,27 +152,17 @@ function Resolve-DeviceSerial([string]$AdbPath, [string]$RequestedSerial) {
         if ($RequestedSerial -notin $devices) {
             throw "Device '$RequestedSerial' is not connected and authorized."
         }
-        return $RequestedSerial
+        return @($RequestedSerial)
     }
 
     $devices = @(Get-AuthorizedDevices $AdbPath)
-    $usbDevices = @($devices | Where-Object { $_ -notmatch ':\d+$' })
-    if ($usbDevices.Count -eq 1) { return $usbDevices[0] }
-    if ($usbDevices.Count -gt 1) {
-        throw "Several authorized USB devices are connected: $($usbDevices -join ', '). Pass -DeviceSerial to choose one."
-    }
-
-    $wirelessDevices = @($devices | Where-Object { $_ -match ':\d+$' })
-    if ($wirelessDevices.Count -eq 0) {
+    if ($devices.Count -eq 0) {
         Connect-WirelessDevices $AdbPath
         $devices = @(Get-AuthorizedDevices $AdbPath)
-        $wirelessDevices = @($devices | Where-Object { $_ -match ':\d+$' })
     }
 
-    if ($wirelessDevices.Count -eq 1) { return $wirelessDevices[0] }
-    if ($wirelessDevices.Count -gt 1) {
-        throw "Several authorized Wireless Debugging devices are connected: $($wirelessDevices -join ', '). Pass -DeviceSerial to choose one."
-    }
+    $devices = @($devices | Sort-Object -Unique)
+    if ($devices.Count -gt 0) { return $devices }
 
     throw @"
 No authorized Android device was found over USB or Wireless Debugging.
@@ -159,16 +180,30 @@ if (-not $SkipBuild) {
     $env:ANDROID_SDK_ROOT = $ResolvedSdk
     $env:ANDROID_HOME = $ResolvedSdk
     Assert-AndroidSdkLicenses $ResolvedSdk
+    Assert-AndroidSdkPackages $ResolvedSdk
 }
 $Adb = Find-Adb $ResolvedSdk
 
 & $Adb start-server | Out-Null
-$ResolvedDeviceSerial = Resolve-DeviceSerial $Adb $DeviceSerial
-$AdbArgs = @('-s', $ResolvedDeviceSerial)
-Write-Host "Using Android device $ResolvedDeviceSerial"
+$ResolvedDeviceSerials = @(Resolve-DeviceSerials $Adb $DeviceSerial)
+if ($ResolvedDeviceSerials.Count -eq 1) {
+    Write-Host "Using Android device $($ResolvedDeviceSerials[0])"
+} else {
+    Write-Host "Using $($ResolvedDeviceSerials.Count) Android devices: $($ResolvedDeviceSerials -join ', ')"
+}
 
 if (-not $SkipBuild) {
+    $Npm = Find-Npm
+    Write-Host 'Installing React/Capacitor dependencies...' -ForegroundColor Cyan
+    & $Npm --prefix $ProjectDir install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE." }
+
+    Write-Host 'Building and syncing the Capacitor web frontend...' -ForegroundColor Cyan
+    & $Npm --prefix $ProjectDir run build
+    if ($LASTEXITCODE -ne 0) { throw "Web frontend build failed with exit code $LASTEXITCODE." }
+
     $Gradle = Find-Gradle
+    Write-Host 'Building the Android APK...' -ForegroundColor Cyan
     & $Gradle --no-daemon -p $ProjectDir :app:assembleDebug
     if ($LASTEXITCODE -ne 0) { throw "Gradle build failed with exit code $LASTEXITCODE." }
 }
@@ -177,12 +212,31 @@ if (-not (Test-Path -LiteralPath $ApkPath)) {
     throw "APK not found at $ApkPath. Run without -SkipBuild first."
 }
 
-& $Adb @AdbArgs install -r $ApkPath
-if ($LASTEXITCODE -ne 0) { throw "ADB install failed with exit code $LASTEXITCODE." }
+$deviceFailures = @()
+foreach ($serial in $ResolvedDeviceSerials) {
+    $AdbArgs = @('-s', $serial)
+    Write-Host "Installing Track N Race on $serial..." -ForegroundColor Cyan
+    & $Adb @AdbArgs install -r $ApkPath
+    if ($LASTEXITCODE -ne 0) {
+        $deviceFailures += "$serial (install exit code $LASTEXITCODE)"
+        Write-Warning "Install failed on $serial; continuing with the remaining devices."
+        continue
+    }
 
-& $Adb @AdbArgs shell am force-stop com.tracknrace.android | Out-Null
-& $Adb @AdbArgs shell am start -n com.tracknrace.android/.MainActivity
-if ($LASTEXITCODE -ne 0) { throw "Could not launch Track N Race on the device." }
+    & $Adb @AdbArgs shell am force-stop com.tracknrace.android | Out-Null
+    & $Adb @AdbArgs shell am start -n com.tracknrace.android/.MainActivity
+    if ($LASTEXITCODE -ne 0) {
+        $deviceFailures += "$serial (launch exit code $LASTEXITCODE)"
+        Write-Warning "Launch failed on $serial; continuing with the remaining devices."
+        continue
+    }
 
-Write-Host 'Track N Race installed and launched.' -ForegroundColor Green
+    Write-Host "Track N Race installed and launched on $serial." -ForegroundColor Green
+}
+
+if ($deviceFailures.Count -gt 0) {
+    throw "Install or launch failed for: $($deviceFailures -join ', ')."
+}
+
+Write-Host "Track N Race installed and launched on $($ResolvedDeviceSerials.Count) device(s)." -ForegroundColor Green
 Write-Host 'In the F1 game telemetry settings, send UDP to this phone on port 20777.'

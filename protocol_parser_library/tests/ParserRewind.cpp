@@ -28,12 +28,17 @@ int main() {
     const std::string missingFormula = tnrp::Parser::statusRowForFormat(2026);
     assert(missingFormula.find("\"active_format\":2026") != std::string::npos);
     assert(missingFormula.find("\"presentation_format\":2026") != std::string::npos);
+    assert(missingFormula.find("\"formula\":null") != std::string::npos);
     assert(missingFormula.find("\"aero_mode\":\"slm\"") != std::string::npos);
+    assert(missingFormula.find("\"ui.overview.drs\":\"SLM\"") != std::string::npos);
+    assert(missingFormula.find("\"drs.label\":\"Straight Line Mode\"") != std::string::npos);
     const std::string legacyFormula = tnrp::Parser::statusRowForFormat(2026, 0);
     assert(legacyFormula.find("\"active_format\":2026") != std::string::npos);
     assert(legacyFormula.find("\"presentation_format\":2025") != std::string::npos);
+    assert(legacyFormula.find("\"formula\":0") != std::string::npos);
     assert(legacyFormula.find("\"hasMguh\":true") != std::string::npos);
     assert(legacyFormula.find("\"aero_mode\":\"drs\"") != std::string::npos);
+    assert(legacyFormula.find("\"ui.overview.drs\":\"DRS\"") != std::string::npos);
 
     std::vector<uint8_t> legacySession(926, 0);
     put16(legacySession, 0, 2026);
@@ -46,11 +51,21 @@ int main() {
         static_cast<int>(legacySession.size()), "2026-08-16T00:00:00Z", false, 0);
     assert(legacyResult.control.size() == 1);
     assert(legacyResult.control[0].find("\"presentation_format\":2025") != std::string::npos);
+    assert(legacyResult.control[0].find("\"formula\":0") != std::string::npos);
     legacySession[37] = 13;
     const auto modernResult = formulaParser.feed(legacySession.data(),
         static_cast<int>(legacySession.size()), "2026-08-16T00:00:01Z", false, 0);
     assert(modernResult.control.size() == 1);
     assert(modernResult.control[0].find("\"presentation_format\":2026") != std::string::npos);
+    assert(modernResult.control[0].find("\"formula\":13") != std::string::npos);
+
+    // The raw Formula becoming known is itself a status change, even when it
+    // leaves the presentation format at the initial 2026 default.
+    tnrp::Parser freshFormulaParser(tnrp::Override::F1_26);
+    const auto firstModernResult = freshFormulaParser.feed(legacySession.data(),
+        static_cast<int>(legacySession.size()), "2026-08-16T00:00:02Z", false, 0);
+    assert(firstModernResult.control.size() == 1);
+    assert(firstModernResult.control[0].find("\"formula\":13") != std::string::npos);
 
     const struct Case { uint16_t format; tnrp::Override overrideValue; } cases[] = {
         {2024, tnrp::Override::F1_24},

@@ -282,7 +282,8 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             t.gear          = ReadInt8(data, o);   o += 1;
             t.rpm           = ReadUInt16(data, o); o += 2;
             t.drs           = data[o++];
-            o += 1; o += 2;
+            t.rev_lights_pct       = data[o++];
+            t.rev_lights_bit_value = ReadUInt16(data, o); o += 2;
             t.brake_temp_rl = ReadUInt16(data, o); o += 2;
             t.brake_temp_rr = ReadUInt16(data, o); o += 2;
             t.brake_temp_fl = ReadUInt16(data, o); o += 2;

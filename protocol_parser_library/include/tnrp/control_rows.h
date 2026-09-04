@@ -183,6 +183,8 @@ struct ProtocolStatusRow {
     // UI/catalog format after applying the 2026 Formula gate. The parser still
     // routes packets using active_format.
     std::optional<int> presentation_format;
+    // Raw PacketSessionData::m_formula value when known.
+    std::optional<int> formula;
     std::string        override_;   // mapped to "override" below
     Capabilities       capabilities;
     // Library-owned i18n label catalog for the active format (see tnrp/Labels.h).
@@ -356,6 +358,7 @@ struct glz::meta<tnrp::ProtocolStatusRow> {
         "detected_format", &T::detected_format,
         "active_format",   &T::active_format,
         "presentation_format", &T::presentation_format,
+        "formula",         &T::formula,
         "override",        &T::override_,
         "capabilities",    &T::capabilities,
         "labels",          &T::labels,

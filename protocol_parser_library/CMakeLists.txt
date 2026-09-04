@@ -105,6 +105,7 @@ add_library(tnrp STATIC
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
+    src/PairDiscovery.cpp
     src/Engine.cpp
     src/XlsxExport.cpp
 )

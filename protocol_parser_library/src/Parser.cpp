@@ -88,6 +88,7 @@ std::string Parser::statusRow() const {
     if (detectedFormat_) row.detected_format = detectedFormat_;
     if (activeFormat_)   row.active_format   = activeFormat_;
     if (displayFormat)   row.presentation_format = displayFormat;
+    row.formula = formula_;
     row.override_ = toString(override_v_);
     // Ship the i18n catalog for the active format (default to 2025 before any
     // packet is seen) so the renderer always has labels to resolve against.
@@ -113,6 +114,7 @@ std::string Parser::statusRowForFormat(uint16_t format, std::optional<int> formu
     row.detected_format = format;
     row.active_format   = format;
     row.presentation_format = displayFormat;
+    row.formula = formula;
     row.override_ = toString(Override::Auto);
     const auto& cat = labelsFor(displayFormat);
     row.labels.insert(cat.all().begin(), cat.all().end());
@@ -185,8 +187,10 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     // to the legacy presentation; no captured value preserves the 2026 default.
     if (eff == 2026 && packetId == PID_SESSION && length > 37) {
         const uint16_t previousPresentation = presentationFormat(activeFormat_, formula_);
+        const std::optional<int> previousFormula = formula_;
         formula_ = static_cast<int>(data[37]);
-        if (presentationFormat(activeFormat_, formula_) != previousPresentation)
+        if (formula_ != previousFormula ||
+            presentationFormat(activeFormat_, formula_) != previousPresentation)
             r.control.push_back(statusRow());
     }
 

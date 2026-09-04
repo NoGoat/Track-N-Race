@@ -4,6 +4,7 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
+#include <tnrp/PairDiscovery.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -250,6 +251,9 @@ public:
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
             InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
+            InstanceMethod("startPairDiscovery", &TNRPAddon::StartPairDiscovery),
+            InstanceMethod("updatePairDiscovery", &TNRPAddon::UpdatePairDiscovery),
+            InstanceMethod("stopPairDiscovery", &TNRPAddon::StopPairDiscovery),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
         TRACE("Init: after DefineClass");
@@ -501,6 +505,7 @@ private:
     };
 
     std::shared_ptr<tnrp::Engine> engine;
+    tnrp::PairDiscoveryAdvertiser pairDiscovery_;
     Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction tsfnBin;
     Napi::ThreadSafeFunction tsfnSeek;
@@ -517,6 +522,43 @@ private:
         bool ok = engine->startUdp();
         TRACE("StartUdp: returned");
         return Napi::Boolean::New(info.Env(), ok);
+    }
+
+    Napi::Value StartPairDiscovery(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        if (info.Length() < 4 || !info[0].IsString() || !info[1].IsString() ||
+            !info[2].IsNumber() || !info[3].IsBoolean()) {
+            Napi::TypeError::New(env,
+                "Expected (serverId, name, port, pairing)").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        tnrp::PairServiceInfo service{
+            info[0].As<Napi::String>().Utf8Value(),
+            info[1].As<Napi::String>().Utf8Value(),
+            static_cast<uint16_t>(info[2].As<Napi::Number>().Uint32Value()),
+            info[3].As<Napi::Boolean>().Value()
+        };
+        std::string error;
+        if (pairDiscovery_.start(std::move(service), &error)) return env.Null();
+        return Napi::String::New(env, error);
+    }
+
+    Napi::Value UpdatePairDiscovery(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 4 && info[0].IsString() && info[1].IsString() &&
+            info[2].IsNumber() && info[3].IsBoolean()) {
+            pairDiscovery_.update({
+                info[0].As<Napi::String>().Utf8Value(),
+                info[1].As<Napi::String>().Utf8Value(),
+                static_cast<uint16_t>(info[2].As<Napi::Number>().Uint32Value()),
+                info[3].As<Napi::Boolean>().Value()
+            });
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value StopPairDiscovery(const Napi::CallbackInfo& info) {
+        pairDiscovery_.stop();
+        return info.Env().Undefined();
     }
 
     Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
@@ -734,6 +776,7 @@ private:
     Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (destroyed_) return info.Env().Undefined();
         destroyed_ = true;
+        pairDiscovery_.stop();
         engine.reset();   // a pending PlayerLoadWorker holds its own ref
         tsfn.Release();
         if (hasBinCb_) tsfnBin.Release();

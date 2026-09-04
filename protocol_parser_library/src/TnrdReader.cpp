@@ -335,6 +335,10 @@ bool TnrdReader::buildIndex(const std::string& filePath, const std::string* memo
             std::string_view sv(ld, (size_t)ll);
             if (tid == 1) {
                 (void)glz::read<kPartialRead>(telRow, sv);
+                if (loadedFormat_ != TnrdFormat::ChunkedV5) {
+                    telRow.rev_lights_pct.reset();
+                    telRow.rev_lights_bit_value.reset();
+                }
                 hotStart_.push_back(hotBin_->size());
                 hotTimes_.push_back(t);
                 bin::encodeTelemetry(*hotBin_, telRow);
@@ -1549,7 +1553,7 @@ void TnrdReader::prefetchV4PlaybackChunk() {
 }
 
 bool TnrdReader::encodeV4HotRow(uint8_t type,std::string_view json,std::vector<uint8_t>& out){
-    if(type==1){TelemetryRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeTelemetry(out,row);return true;}
+    if(type==1){TelemetryRow row{};if(glz::read<kPartialRead>(row,json))return false;if(loadedFormat_!=TnrdFormat::ChunkedV5){row.rev_lights_pct.reset();row.rev_lights_bit_value.reset();}bin::encodeTelemetry(out,row);return true;}
     if(type==11){MotionRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeMotion(out,row);return true;}
     if(type==12){MotionExRow row{};if(glz::read<kPartialRead>(row,json))return false;bin::encodeMotionEx(out,row);return true;}
     return false;

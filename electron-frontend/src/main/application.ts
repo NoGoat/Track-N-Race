@@ -4,6 +4,15 @@ import * as fs from 'fs'
 import { join } from 'path'
 import { execFile, spawn } from 'child_process'
 import { configStore as store } from './configStore'
+import {
+  closePairingWindow,
+  getPairServiceState,
+  onPairServiceState,
+  openPairingWindow,
+  removePairDevice,
+  startPairService,
+  stopPairService,
+} from './pairService'
 import { setFatalFlushHandler } from './diagnostics'
 import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
@@ -171,6 +180,18 @@ ipcMain.on('updates:skip-version', (_event, version: string) => {
 })
 
 ipcMain.handle('updates:open-download-page', () => shell.openExternal(RELEASE_PAGE_URL))
+
+ipcMain.handle('pairing:get-state', () => getPairServiceState())
+ipcMain.handle('pairing:set-enabled', (_event, enabled: boolean) =>
+  enabled ? startPairService() : stopPairService())
+ipcMain.handle('pairing:open-window', () => openPairingWindow())
+ipcMain.handle('pairing:close-window', () => closePairingWindow())
+ipcMain.handle('pairing:remove-device', (_event, id: string) => removePairDevice(id))
+onPairServiceState(state => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('pairing:state', state)
+  }
+})
 
 ipcMain.handle('dialog:showOpenDialog', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
@@ -592,6 +613,7 @@ app.whenReady().then(() => {
   app.on('will-quit', () => {
     console.log('[main] will-quit')
     clearInterval(pollInterval)
+    stopPairService(false)
     const recordingEnabled = store.get('logging.enabled', false) as boolean
     // Without an active recording, bypass native teardown: reader workers may
     // hold the engine mutex or keep libuv alive, and none of their results can

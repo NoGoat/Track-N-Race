@@ -69,7 +69,7 @@ const char* sheetNameForType(uint8_t type) {
 const std::vector<const char*>& columnsForType(uint8_t type) {
     static const std::vector<const char*> telemetry = {
         "row_index", "session_time", "ts", "speed_kph", "rpm", "gear", "throttle", "brake",
-        "steering", "drs", "slm",
+        "steering", "drs", "rev_lights_pct", "rev_lights_bit_value", "slm",
         "tyre_temp_surface_rl", "tyre_temp_surface_rr", "tyre_temp_surface_fl", "tyre_temp_surface_fr",
         "tyre_temp_inner_rl", "tyre_temp_inner_rr", "tyre_temp_inner_fl", "tyre_temp_inner_fr",
         "brake_temp_rl", "brake_temp_rr", "brake_temp_fl", "brake_temp_fr", "engine_temp"
@@ -180,6 +180,12 @@ void writeDataRow(lxw_worksheet* ws, lxw_row_t& row, float t, uint8_t type, cons
         worksheet_write_number(ws, row, c++, r.brake, nullptr);
         worksheet_write_number(ws, row, c++, r.steering, nullptr);
         worksheet_write_number(ws, row, c++, r.drs, nullptr);
+        if (r.rev_lights_pct)
+            worksheet_write_number(ws, row, c, *r.rev_lights_pct, nullptr);
+        ++c;
+        if (r.rev_lights_bit_value)
+            worksheet_write_number(ws, row, c, *r.rev_lights_bit_value, nullptr);
+        ++c;
         worksheet_write_number(ws, row, c++, r.slm, nullptr);
         worksheet_write_number(ws, row, c++, r.tyre_temp_surface_rl, nullptr);
         worksheet_write_number(ws, row, c++, r.tyre_temp_surface_rr, nullptr);

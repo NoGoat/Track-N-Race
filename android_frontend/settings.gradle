@@ -7,7 +7,6 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
@@ -16,3 +15,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "TrackNRaceAndroid"
 include(":app")
+
+include(":capacitor-android")
+project(":capacitor-android").projectDir =
+    new File(settingsDir, "node_modules/@capacitor/android/capacitor")

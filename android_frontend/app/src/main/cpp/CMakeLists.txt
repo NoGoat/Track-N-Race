@@ -14,3 +14,10 @@ add_subdirectory(
 add_library(tracknrace_android SHARED native_bridge.cpp)
 target_link_libraries(tracknrace_android PRIVATE tnrp android log)
 target_compile_definitions(tracknrace_android PRIVATE _FILE_OFFSET_BITS=64)
+
+# NDK r27 still defaults ELF LOAD segments to 4 KiB. Android 15+ devices can
+# use 16 KiB memory pages, so align the final JNI library for both page sizes.
+target_link_options(tracknrace_android PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)

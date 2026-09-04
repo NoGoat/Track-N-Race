@@ -7,7 +7,7 @@
 // Byte length of the record starting at offset `o`, or -1 for an unknown tag.
 function recordLen(batch: Buffer, o: number): number {
   switch (batch[o]) {
-    case 1: return 46                       // telemetry
+    case 1: return 49                       // telemetry
     case 2: return 29                       // motion
     case 4: return 21                       // motion_ex
     case 3: return 3 + batch[o + 2] * 16    // positions: tag + player_idx + n + n*(x,z)
@@ -26,6 +26,20 @@ export function chartHistoryRecords(batch: Buffer): Buffer {
     const len = recordLen(batch, o)
     if (len < 0 || o + len > batch.length) break
     if (batch[o] !== 3) parts.push(Buffer.from(batch.subarray(o, o + len)))
+    o += len
+  }
+  return parts.length === 0 ? Buffer.alloc(0) : Buffer.concat(parts)
+}
+
+/** Keep only packed records whose libtnrp row-type bit is requested. */
+export function filterBinaryRows(batch: Buffer, rowTypeMask: number): Buffer {
+  const parts: Buffer[] = []
+  let o = 0
+  while (o < batch.length) {
+    const len = recordLen(batch, o)
+    if (len < 0 || o + len > batch.length) break
+    const rowType = batch[o] === 1 ? 1 : batch[o] === 2 ? 11 : batch[o] === 4 ? 12 : 13
+    if ((rowTypeMask & (1 << rowType)) !== 0) parts.push(Buffer.from(batch.subarray(o, o + len)))
     o += len
   }
   return parts.length === 0 ? Buffer.alloc(0) : Buffer.concat(parts)

@@ -283,8 +283,8 @@ private:
         float fromTime, float toTime, bool includeFrom,
         const std::function<void(float, std::string_view)>& callback,
         const std::function<bool()>& cancelled = {});
-    static bool encodeV4HotRow(uint8_t type, std::string_view json,
-                               std::vector<uint8_t>& out);
+    bool encodeV4HotRow(uint8_t type, std::string_view json,
+                        std::vector<uint8_t>& out);
     bool encodeV4HotRowCached(const detail::V4TimedRow& row,
                               std::vector<uint8_t>& out);
 };

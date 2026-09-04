@@ -3,6 +3,7 @@ package com.tracknrace.android;
 final class NativeTelemetry {
     interface Listener {
         void onTelemetryRow(String json);
+        void onTelemetryBinary(byte[] bytes);
     }
 
     static {
@@ -30,6 +31,11 @@ final class NativeTelemetry {
     @SuppressWarnings("unused") // Invoked by JNI on libtnrp worker threads.
     private void onNativeRow(String json) {
         listener.onTelemetryRow(json);
+    }
+
+    @SuppressWarnings("unused") // Invoked by JNI on libtnrp worker threads.
+    private void onNativeBinary(byte[] bytes) {
+        listener.onTelemetryBinary(bytes);
     }
 
     private native String nativeStart(int port);

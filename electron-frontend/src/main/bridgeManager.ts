@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
+import { configurePairService, publishPairBinary, publishPairJsonBatch, publishPairSnapshot } from './pairService'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
@@ -102,6 +103,10 @@ function sendResumeCache(): void {
 
 let engine: any = null
 let nextDataRequirementsRequestId = 0
+let rendererStreamMask = 0xFFFFFFFF
+let rendererHistoryMask = 0
+let rendererHistoryWindow = 0
+let pairedStreamMask = 0
 let unsubLogging: Array<() => void> = []
 
 // ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
@@ -208,6 +213,7 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
   if (seekForwardPhase === 'waiting-flush') return
+  publishPairBinary(batch)
   if (seekForwardPhase === 'waiting-renderer') {
     bufferSeekBinary(batch)
     return
@@ -359,6 +365,9 @@ export function startBridge(): string | null {
     }
 
     engine = new addon.Engine(config, (batch: string) => {
+      // Paired displays are independent consumers and must continue receiving
+      // data when Chromium is hidden or throttled.
+      if (seekForwardPhase !== 'waiting-flush') publishPairJsonBatch(batch)
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
       // through this channel too, so it's a high-volume path worth gating —
       // except one-shot playback control rows, which must never be dropped.
@@ -420,6 +429,7 @@ export function startBridge(): string | null {
           seekForwardPhase = 'waiting-renderer'
       } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
+        if (authoritativeSeek) publishPairSnapshot(binary, coldJson)
         clearResumeCache()
         broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart })
       } catch (error) {
@@ -437,6 +447,10 @@ export function startBridge(): string | null {
       engine = null
       return error
     }
+    configurePairService(engine, (streamMask) => {
+      pairedStreamMask = streamMask >>> 0
+      applyAggregateDataRequirements()
+    })
     pushLogging()
     
     // Listen for logging changes
@@ -560,9 +574,16 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
 }
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
                                           windowSeconds = 0): void {
+  rendererStreamMask = streamMask >>> 0
+  rendererHistoryMask = historyMask >>> 0
+  rendererHistoryWindow = Math.max(-1, windowSeconds)
+  applyAggregateDataRequirements()
+}
+
+function applyAggregateDataRequirements(): void {
   const requestId = ++nextDataRequirementsRequestId
-  engine?.setDataRequirements(streamMask >>> 0, historyMask >>> 0,
-    Math.max(-1, windowSeconds), requestId)
+  engine?.setDataRequirements((rendererStreamMask | pairedStreamMask) >>> 0,
+    rendererHistoryMask, rendererHistoryWindow, requestId)
 }
 export function playerClose(): void {
   console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)

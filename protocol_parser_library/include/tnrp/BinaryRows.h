@@ -32,6 +32,9 @@ enum Tag : uint8_t {
     kMotionEx  = 4,
 };
 
+inline constexpr uint8_t kRevLightsPercentUnavailable = UINT8_MAX;
+inline constexpr uint16_t kRevLightsBitValueUnavailable = UINT16_MAX;
+
 inline uint8_t rowTypeForTag(uint8_t tag) {
     switch (tag) {
         case kTelemetry: return 1;
@@ -52,7 +55,7 @@ inline bool forEachPackedRecord(const uint8_t* data, size_t len, F&& callback) {
         const uint8_t tag = data[offset];
         size_t recordLen = 0;
         switch (tag) {
-            case kTelemetry: recordLen = 46; break;
+            case kTelemetry: recordLen = 49; break;
             case kMotion: recordLen = 29; break;
             case kMotionEx: recordLen = 21; break;
             case kPositions:
@@ -92,6 +95,12 @@ inline void encodeTelemetry(std::vector<uint8_t>& b, const TelemetryRow& t) {
     put<uint16_t>(b, (uint16_t)t.rpm);
     put<int8_t>(b, (int8_t)t.gear);
     put<uint8_t>(b, (uint8_t)t.drs);
+    put<uint8_t>(b, t.rev_lights_pct
+        ? static_cast<uint8_t>(*t.rev_lights_pct)
+        : kRevLightsPercentUnavailable);
+    put<uint16_t>(b, t.rev_lights_bit_value
+        ? static_cast<uint16_t>(*t.rev_lights_bit_value)
+        : kRevLightsBitValueUnavailable);
     put<float>(b, t.throttle);
     put<float>(b, t.brake);
     put<double>(b, t.steering);
@@ -164,11 +173,15 @@ struct BinReader {
 };
 
 inline bool decodeTelemetry(BinReader& r, TelemetryRow& t) {
-    return r.get(t.session_time)
+    uint8_t revLightsPercent = kRevLightsPercentUnavailable;
+    uint16_t revLightsBitValue = kRevLightsBitValueUnavailable;
+    if (!(r.get(t.session_time)
         && r.getAs<uint16_t>(t.speed_kph)
         && r.getAs<uint16_t>(t.rpm)
         && r.getAs<int8_t>(t.gear)
         && r.getAs<uint8_t>(t.drs)
+        && r.get(revLightsPercent)
+        && r.get(revLightsBitValue)
         && r.get(t.throttle)
         && r.get(t.brake)
         && r.get(t.steering)
@@ -185,7 +198,17 @@ inline bool decodeTelemetry(BinReader& r, TelemetryRow& t) {
         && r.getAs<uint16_t>(t.brake_temp_fl)
         && r.getAs<uint16_t>(t.brake_temp_fr)
         && r.getAs<uint16_t>(t.engine_temp)
-        && r.getAs<uint8_t>(t.slm);
+        && r.getAs<uint8_t>(t.slm))) return false;
+
+    if (revLightsPercent != kRevLightsPercentUnavailable)
+        t.rev_lights_pct = revLightsPercent;
+    else
+        t.rev_lights_pct.reset();
+    if (revLightsBitValue != kRevLightsBitValueUnavailable)
+        t.rev_lights_bit_value = revLightsBitValue;
+    else
+        t.rev_lights_bit_value.reset();
+    return true;
 }
 
 inline bool decodeMotion(BinReader& r, MotionRow& m) {

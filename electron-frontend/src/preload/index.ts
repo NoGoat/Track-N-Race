@@ -91,6 +91,19 @@ const updateBridge = {
   openDownloadPage: (): Promise<void> => ipcRenderer.invoke('updates:open-download-page'),
 }
 
+const pairingBridge = {
+  getState: (): Promise<unknown> => ipcRenderer.invoke('pairing:get-state'),
+  setEnabled: (enabled: boolean): Promise<unknown> => ipcRenderer.invoke('pairing:set-enabled', enabled),
+  openWindow: (): Promise<unknown> => ipcRenderer.invoke('pairing:open-window'),
+  closeWindow: (): Promise<unknown> => ipcRenderer.invoke('pairing:close-window'),
+  removeDevice: (id: string): Promise<unknown> => ipcRenderer.invoke('pairing:remove-device', id),
+  onState: (callback: (state: unknown) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('pairing:state', listener)
+    return () => ipcRenderer.removeListener('pairing:state', listener)
+  },
+}
+
 
 let playerAllLapsMode = false
 let playerAllLapsRowMask = 0xFFFFFFFF
@@ -166,5 +179,6 @@ contextBridge.exposeInMainWorld('strategyBridge', strategyBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)
 contextBridge.exposeInMainWorld('recordingBridge', recordingBridge)
 contextBridge.exposeInMainWorld('updateBridge', updateBridge)
+contextBridge.exposeInMainWorld('pairingBridge', pairingBridge)
 contextBridge.exposeInMainWorld('playerBridge', playerBridge)
 contextBridge.exposeInMainWorld('analysisBridge', analysisBridge)

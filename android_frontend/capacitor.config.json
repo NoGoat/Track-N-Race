@@ -1,0 +1,13 @@
+{
+  "appId": "com.tracknrace.android",
+  "appName": "Track N Race",
+  "webDir": "build/web",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css"
+    }
+  }
+}

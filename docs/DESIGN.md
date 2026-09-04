@@ -11,7 +11,7 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Android frontend | `android_frontend/` | Java, Material Components, JNI | Physical-device steering-wheel dashboard with native TNRD recording |
+| Android frontend | `android_frontend/` | React, Vite, Capacitor, Java/JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
 
 The two desktop apps have feature parity and read/write the same `.tnrd` files.
 The Android host provides a focused live dashboard and recording subset.
@@ -129,7 +129,8 @@ Formula metadata (older recordings or pre-session live state) defaults to F1 26.
 
 `Parser::statusRow()` (live) and `Parser::statusRowForFormat()` (playback —
 labels a loaded clip with *its* recorded format) both emit the full
-`protocol_status` row: detected/active format, override, capabilities
+`protocol_status` row: detected/active/presentation format, raw Session
+`m_formula` (when known), override, capabilities
 (gameYear, hasBlisters, hasLiveryColors, hasLapPositions — 2025+), labels,
 cardColors, aero_mode.
 
@@ -261,10 +262,13 @@ overlay flows.
   codec from its native bytes, then uses and validates the JSON header to
   distinguish V2 from V3. Normal recording writes V5. Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
-  subsequent line is one typed row with `session_time`; other telemetry row
-  schemas remain compatible. V4/V5 use an uncompressed indexed control plane and
-  independently checksummed `(lap,rowType,segment)` Zstandard JSONL chunks. Electron Analyze distance alignment and delta are
-  enabled for V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
+  subsequent line is one typed row with `session_time`. Telemetry rows expose the
+  game's exact `rev_lights_pct` and 15-bit `rev_lights_bit_value` fields for live
+  data and V5 recordings; V1-V4 playback deliberately marks them unavailable so
+  clients do not synthesize rev lights from RPM. V4/V5 use an uncompressed indexed
+  control plane and independently checksummed `(lap,rowType,segment)` Zstandard
+  JSONL chunks. Electron Analyze distance alignment and delta are enabled for
+  V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,
@@ -595,24 +599,38 @@ only the panels. While in playback, live engine rows are dropped at
 
 ## 5. Android frontend (`android_frontend/`)
 
-The Android app links `protocol_parser_library` directly through a small JNI
-sink. It configures `tnrp::Engine` with `hotRowsAsJson=true`, binds the raw UDP
-backend to `0.0.0.0:20777`, and forwards library-produced JSON rows into a
-thread-safe latest-value store. Hot telemetry is coalesced into one Android UI
-snapshot at roughly 30 fps; no per-row history or unbounded queue is retained.
+The Android activity is a Capacitor host for a React/Vite frontend. Platform
+and engine operations are exposed through a narrow `Telemetry` Capacitor
+plugin; the existing Java discovery, WebSocket pairing, scoped-storage, and JNI
+implementations remain native. Direct mode links `protocol_parser_library`,
+configures `tnrp::Engine` with `hotRowsAsJson=false`, and binds UDP to
+`0.0.0.0:20777`.
 
-The first of the planned three screens is a full-screen steering-wheel
-dashboard. It presents shift lights, gear, speed/RPM, position/lap timing,
-ERS/fuel, tyre state, DRS/SLM and pedal inputs in responsive portrait and
-landscape layouts. There is deliberately no placeholder navigation shell.
+Hot rows bypass Capacitor's JSON bridge. JNI and paired WebSocket callbacks
+append the existing `BinaryRows.h` records to an immediate, bounded native
+drain and post an `ArrayBuffer` to the WebView. The frontend reuses Electron's
+binary decoder and applies every row to mutable dashboard state; there is no
+timer, fixed-rate ingestion gate, or latest-value replacement. A Canvas reads
+that state on `requestAnimationFrame`, separating display refresh from ingest.
+The 8 MiB native buffer reports an explicit `stream_overrun` rather than
+silently coalescing samples.
 
-The JNI bridge also exposes `Engine::setLogging`, so the dashboard can toggle
-the shared asynchronous TNRD V5 writer without reimplementing recording in
-Java. Recording intent is persisted and sessions are written under the app's
-external Documents directory (`Track N Race/`); native `recording_error` rows
-are surfaced in the UI. `build-and-run.ps1` assembles the debug APK, installs
-it through ADB, and launches the activity on a physical device. Playback and
-the other two screens remain out of scope for this first-screen pass.
+The React frontend provides a responsive steering-wheel dashboard, recording
+settings, direct/paired source selection, desktop discovery, QR/manual-code
+pairing, and open-source notices.
+
+The JNI bridge also exposes `Engine::setLogging`, so the full-page Settings
+screen can control the shared asynchronous TNRD V5 writer without
+reimplementing recording in Java. Recording is disabled by default; opt-in
+intent is persisted and sessions are staged under the app's external Documents
+directory (`Track N Race/`), which the Android host creates and verifies before
+enabling the native writer. An optional Storage Access Framework tree URI is
+persisted when the user chooses another folder; after libtnrp finalizes a file,
+a serial background worker moves it to that tree. Native `recording_error` rows
+are surfaced in the UI.
+`build-and-run.ps1` installs npm dependencies, type-checks and builds the Vite
+bundle, syncs it into Capacitor assets, assembles the debug APK, installs it
+through ADB, and launches the activity on a physical device.
 
 ## 6. Build & packaging
 
@@ -629,8 +647,8 @@ the other two screens remain out of scope for this first-screen pass.
 - **Native recorder**: standalone CMake project; Qt 6 preferred (enables
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
-- **Android**: Gradle/AGP application with an NDK CMake build; arm64 debug APK
-  installed and launched on a physical device by
+- **Android**: React/Vite bundle in a Capacitor Gradle/AGP application with an
+  NDK CMake build; arm64 debug APK installed and launched on a physical device by
   `android_frontend/build-and-run.ps1`.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
   Zstandard v1.5.7, libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);

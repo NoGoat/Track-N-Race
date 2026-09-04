@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 #include <glaze/glaze.hpp>
@@ -26,6 +27,8 @@ struct TelemetryRow {
     float       brake{};
     double      steering{};
     int         drs{};
+    std::optional<int> rev_lights_pct;
+    std::optional<int> rev_lights_bit_value;
     int         slm{};   // 2026 active-aero / "straight line mode" wing state (kept separate from drs)
     int         tyre_temp_surface_rl{};
     int         tyre_temp_surface_rr{};
@@ -56,6 +59,8 @@ struct glz::meta<TelemetryRow> {
         "brake",                &T::brake,
         "steering",             &T::steering,
         "drs",                  &T::drs,
+        "rev_lights_pct",       &T::rev_lights_pct,
+        "rev_lights_bit_value", &T::rev_lights_bit_value,
         "slm",                  &T::slm,
         "tyre_temp_surface_rl", &T::tyre_temp_surface_rl,
         "tyre_temp_surface_rr", &T::tyre_temp_surface_rr,

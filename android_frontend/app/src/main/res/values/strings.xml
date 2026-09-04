@@ -7,16 +7,38 @@
     <string name="navigation_more">More</string>
     <string name="navigation_up">Navigate up</string>
 
-    <string name="status_starting">Starting UDP listener…</string>
-    <string name="status_listening">Listening on UDP %1$d · Auto-detect</string>
-    <string name="status_receiving">Receiving F1 %1$d · UDP %2$d</string>
     <string name="status_error">UDP error · %1$s</string>
 
     <string name="dashboard_accessibility">Live steering wheel telemetry dashboard</string>
-    <string name="recording_on">● REC</string>
-    <string name="recording_off">REC OFF</string>
-    <string name="recording_enabled">Recording enabled. TNRD sessions save to %1$s</string>
-    <string name="recording_disabled">Recording stopped. The current TNRD session has been finalized.</string>
+    <string name="dashboard_tab">Dashboard</string>
+    <string name="dashboard_tab_menu">Choose dashboard page</string>
+    <string name="settings_open">Open settings</string>
+    <string name="settings_pairing_section">TELEMETRY SOURCE</string>
+    <string name="settings_pairing_title">Paired desktop</string>
+    <string name="settings_pairing_summary">Pair, reconnect, or manage the desktop that sends decoded live and playback telemetry.</string>
+    <string name="settings_pairing_open">Open paired devices</string>
+    <string name="settings_use_direct_udp">Use direct UDP</string>
+    <string name="settings_source_direct">Current source: Direct UDP</string>
+    <string name="settings_source_paired">Current source: %1$s</string>
+    <string name="settings_recording_section">RECORDING</string>
+    <string name="settings_recording_title">Record telemetry sessions</string>
+    <string name="settings_recording_summary">Automatically save complete sessions as TNRD V5 recordings. Recording is disabled by default.</string>
+    <string name="settings_storage_section">STORAGE</string>
+    <string name="settings_storage_title">Recording folder</string>
+    <string name="settings_storage_choose">Choose another folder</string>
+    <string name="settings_storage_use_default">Use the app folder</string>
+    <string name="settings_storage_root">Storage root</string>
+    <string name="settings_storage_unavailable">App recording folder unavailable</string>
+    <string name="settings_storage_default_summary">Recordings stay in the app’s Documents folder.</string>
+    <string name="settings_storage_custom_summary">Finalized recordings are moved here using Android’s document access.</string>
+    <string name="settings_storage_updated">Recording folder updated</string>
+    <string name="settings_storage_permission_error">Track N Race could not keep access to that folder.</string>
+    <string name="settings_storage_export_error">Could not move a recording: %1$s</string>
+    <string name="recording_directory_error">Recording disabled: %1$s</string>
+    <plurals name="settings_storage_files_moved">
+        <item quantity="one">Moved %1$d recording to the selected folder</item>
+        <item quantity="other">Moved %1$d recordings to the selected folder</item>
+    </plurals>
 
     <string name="standings_summary">Live classification · %1$d cars</string>
     <string name="standings_empty_title">Waiting for live timing</string>
@@ -60,6 +82,19 @@
     <string name="about_summary">Track N Race and open-source notices</string>
     <string name="about_close">Close</string>
     <string name="placeholder_title">Coming soon</string>
+
+    <string name="pairing_title">Paired devices</string>
+    <string name="pairing_searching">Searching for Track N Race desktops on this network…</string>
+    <string name="pairing_scan_qr">Scan desktop QR</string>
+    <string name="pairing_scan_prompt">Scan the QR shown by the desktop app</string>
+    <string name="pairing_discovered">DISCOVERED DESKTOPS</string>
+    <string name="pairing_code_hint">6-digit matching code</string>
+    <string name="pairing_connect_code">Connect with code</string>
+    <string name="pairing_select_desktop">Select a discovered desktop first.</string>
+    <string name="pairing_selected">Selected %1$s — enter the code shown there.</string>
+    <string name="pairing_discovery_error">LAN discovery unavailable: %1$s. QR pairing still works.</string>
+    <string name="pairing_invalid_qr">Could not use that QR: %1$s</string>
+    <string name="pairing_success">Desktop paired</string>
 
     <string name="overview_placeholder">Live speed, gear and race-state cards will live here.</string>
     <string name="session_placeholder">Weather, session clock, flags and proximity will live here.</string>
