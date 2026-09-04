@@ -3,8 +3,11 @@
 #include <QMainWindow>
 #include <QSettings>
 #include <QByteArray>
+#include <QHash>
+#include <QVector>
 
 #include <string>
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -34,6 +37,14 @@ class QTimer;
 class QLabel;
 class QProgressBar;
 class QThread;
+class QMessageBox;
+
+struct UdpForwardTargetSetting {
+    QString address;
+    int     port = 20777;
+
+    bool operator==(const UdpForwardTargetSetting&) const = default;
+};
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -55,9 +66,9 @@ public:
     bool tyreGraphLifeMode() const;
     void setTyreGraphLifeMode(bool life);
 
-    // Settings dialog reads/writes through these — it owns its own widgets
-    // and persists immediately on every change, same immediate-apply pattern
-    // as the Overview layout dialog above.
+    // Settings dialog reads/writes through these. Most controls apply
+    // immediately; network controls are the exception and remain a local draft
+    // until Apply & Restart is pressed.
     QString currentOutputDirectory() const { return outputDirectory; }
     void    setOutputDirectory(const QString& dir);
     bool    autoRecordEnabled() const { return wantRecord; }
@@ -81,10 +92,21 @@ public:
     // Per-graph view mode: false = chart (default), true = raw-values table.
     bool    graphView(tnr::GraphSection s) const { return settings.value(tnr::graphViewKey(s), false).toBool(); }
     void    setGraphView(tnr::GraphSection s, bool table);
+    bool    chartDynamicYAxis(tnr::GraphSection s) const;
+    void    setChartDynamicYAxis(tnr::GraphSection s, bool dynamic);
+    bool    chartSecondaryVerticalCrosshair() const;
+    bool    chartSecondaryHorizontalCrosshair() const;
+    void    setChartSecondaryCrosshairs(bool vertical, bool horizontal);
     float   contrastThreshold() const { return settings.value("ui/contrastThreshold", 1.75f).toFloat(); }
     void    setContrastThreshold(float val);
     int     chartMsaaSamples() const { return settings.value("ui/chartMsaaSamples", 4).toInt(); }
     void    setChartMsaaSamples(int samples);
+    QString chartGraphicsBackend() const { return settings.value("ui/chartGraphicsBackend", "auto").toString(); }
+    void    setChartGraphicsBackend(const QString& backend);
+    int     chartFpsInFocus() const { return settings.value("ui/chartFpsInFocus", -1).toInt(); }
+    int     chartFpsOutOfFocus() const { return settings.value("ui/chartFpsOutOfFocus", 30).toInt(); }
+    void    setChartFpsInFocus(int fps);
+    void    setChartFpsOutOfFocus(int fps);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
     bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", true).toBool(); }
@@ -100,14 +122,24 @@ public:
     QString currentProtocolOverride() const { return settings.value("protocolOverride", "auto").toString(); }
     void    setProtocolOverride(const QString& ovr);
     int     lastDetectedProtocolFormat() const { return lastDetectedProtocolFormat_; }
+    int     detectedProtocolWarningFormat() const { return detectedProtocolWarningFormat_; }
+    int     forcedProtocolWarningFormat() const { return forcedProtocolWarningFormat_; }
     int     udpPort() const { return settings.value("udp/port", 20777).toInt(); }
-    void    setUdpPort(int port);
     QString udpBindAddress() const { return settings.value("udp/bindAddress", "0.0.0.0").toString(); }
-    void    setUdpBindAddress(const QString& addr);
+    bool    udpForwardingEnabled() const { return settings.value("udp/forwardingEnabled", false).toBool(); }
+    QVector<UdpForwardTargetSetting> udpForwardTargets() const;
+    // Persists the normalized draft first, then recreates the host-owned engine
+    // so Config::udpForwardTargets takes effect. Returns an empty string on success.
+    QString applyUdpConfiguration(int port, const QString& bindAddress,
+                                  bool forwardingEnabled,
+                                  const QVector<UdpForwardTargetSetting>& targets);
+
+signals:
+    void protocolWarningChanged(int detectedFormat, int forcedFormat);
 
 private slots:
-    // Receives one pre-serialised JSON row (cold/control) from the libtnrp engine
-    // (marshalled onto the GUI thread by EngineSink) and parses it into a typed
+    // Receives a coalesced JSONL batch (cold/control) from the libtnrp engine
+    // (marshalled onto the GUI thread by EngineSink) and parses it into typed
     // tnrp::AnyRow. Hot 60 Hz rows arrive packed via onEngineBinary instead.
     void onEngineRow(const QByteArray& json);
     // Receives one packed hot-row batch (telemetry/motion/motion_ex/positions)
@@ -176,10 +208,14 @@ private:
     AppToolbar* toolbar_ = nullptr;
 
     // ── Playback ──────────────────────────────────────────────────
-    // Self-contained (TnrdPlayer + transport bar); MainWindow reacts to its
-    // entered/exited/rowReady/timeChanged signals.
+    // Self-contained (engine command facade + transport bar); MainWindow reacts
+    // to its entered/exited/timeChanged signals.
     PlaybackController* playback_ = nullptr;
     bool         inPlayback_     = false;
+    bool         playbackSeekInstalling_ = false;
+    bool         playbackRequirementsPending_ = false;
+    uint64_t     playbackSeekGeneration_ = 0;
+    QHash<QByteArray, QByteArray> pendingSeekStateRows_;
     QWidget*     container_      = nullptr;
     QWidget*     loadingOverlay_ = nullptr;
 
@@ -200,11 +236,18 @@ private:
     std::unique_ptr<tnrp::Engine> engine_;
     EngineSink*                   engineSink_ = nullptr;
     void applyEngineLogging();   // push wantRecord/outputDirectory to the engine
+    QString recreateEngine();    // stop/create/start using the current persisted host config
+    bool handleRecordingErrorRow(const QByteArray& json);
+    void showRecordingError(const QString& operation, const QString& message,
+                            const QString& path);
+    QMessageBox* recordingErrorDialog_ = nullptr;
 
     // Cached from the most recent protocol_status row (see onEngineRow()) so the
     // on-demand Settings dialog can show "Detected Protocol" without a push
     // channel into a dialog that may not be open. 0 = not yet known.
     int lastDetectedProtocolFormat_ = 0;
+    int detectedProtocolWarningFormat_ = 0;
+    int forcedProtocolWarningFormat_   = 0;
 
     // Forward-fill smoother for the live hot stream: on a dropped/late frame it
     // re-emits the last telemetry/motion/motion_ex one frame forward so the charts
@@ -246,7 +289,6 @@ private:
     // Packets can arrive in bursts (especially fast playback); rebuilding a
     // panel per packet locks the UI. Each packet only marks its panel dirty and
     // the heavy rebuild runs once per refresh tick.
-    QTimer* uiRefreshTimer_ = nullptr;
     Page currentPage_    = Overview;   // visible stack page; updaters skip hidden pages
     bool dirtyTiming_    = false;
     bool dirtyRacePanel_ = false;
@@ -256,8 +298,11 @@ private:
     bool dirtySession_   = false;
     bool dirtyEvents_    = false;
     bool dirtyProximity_ = false;
-    bool dirtyTrackMap_  = false;
+    bool dirtyTrackMapSession_      = false;
+    bool dirtyTrackMapParticipants_ = false;
+    bool dirtyTrackMapPositions_    = false;
     bool dirtyPower_     = false;
+    bool uiRefreshPending_ = false;
     void scheduleUiRefresh();
     void flushUiRefresh();
 
@@ -293,4 +338,6 @@ private:
     // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
     bool scSuppressOnce_ = false;
     void ingestForModel(const tnrp::AnyRow& row);
+    void schedulePlaybackDataRequirements();
+    void updatePlaybackDataRequirements();
 };

@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
+#include <QBrush>
 #include <QLabel>
 #include <QFont>
 #include <QPalette>
@@ -20,6 +21,7 @@
 #include <QStyledItemDelegate>
 #include <QPainter>
 #include <QEvent>
+#include <QVariant>
 
 #include <algorithm>
 #include <limits>
@@ -53,6 +55,14 @@ QColor ensureContrast(const QColor& fg, const QColor& bg, const QColor& fallback
     if (!fg.isValid()) return fallback;
     if (contrastRatio(fg, bg) < threshold) return fallback;
     return fg;
+}
+
+void setLabelText(QLabel* label, const QString& text) {
+    if (label && label->text() != text) label->setText(text);
+}
+
+void setLabelStyle(QLabel* label, const QString& style) {
+    if (label && label->styleSheet() != style) label->setStyleSheet(style);
 }
 
 QString formatLapTime(int ms) {
@@ -401,13 +411,14 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
                 }
             }
         }
-        rp_driverName->setText(name.isEmpty() ? (targetIdx >= 0 ? QString("Car %1").arg(targetIdx) : "—") : name);
+        setLabelText(rp_driverName,
+                     name.isEmpty() ? (targetIdx >= 0 ? QString("Car %1").arg(targetIdx) : "—") : name);
 
         const QColor bg = rp_driverName->palette().color(QPalette::Window);
         if (liveryColor.isValid() && contrastRatio(liveryColor, bg) >= contrastThreshold())
-            rp_driverName->setStyleSheet(QString("color: %1;").arg(liveryColor.name()));
+            setLabelStyle(rp_driverName, QString("color: %1;").arg(liveryColor.name()));
         else
-            rp_driverName->setStyleSheet(QString());
+            setLabelStyle(rp_driverName, QString());
     }
 
     // Generic over LapRow and TimingCar — both carry the same timing field names.
@@ -422,21 +433,21 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         bool invalid  = lap.lap_invalid;
         int  penS     = lap.penalties_s;
 
-        rp_lapNum->setText(lapNum > 0 ? QString::number(lapNum) : "—");
-        rp_position->setText(pos > 0 ? "P" + QString::number(pos) : "—");
+        setLabelText(rp_lapNum, lapNum > 0 ? QString::number(lapNum) : "—");
+        setLabelText(rp_position, pos > 0 ? "P" + QString::number(pos) : "—");
 
         QStringList flags;
         if (pitSt == 1)      flags << "In pit lane";
         else if (pitSt == 2) flags << "In pit";
         if (invalid)         flags << "INVALID";
         if (penS > 0)        flags << ("+" + QString::number(penS) + "s");
-        rp_pitStatus->setText(flags.isEmpty() ? "—" : flags.join(" · "));
-        rp_pitStatus->setStyleSheet(flags.isEmpty() ? "" : "color: #C4162A; font-weight: bold;");
+        setLabelText(rp_pitStatus, flags.isEmpty() ? "—" : flags.join(" · "));
+        setLabelStyle(rp_pitStatus, flags.isEmpty() ? "" : "color: #C4162A; font-weight: bold;");
 
-        rp_currentLap->setText(formatLapTime(currentMs));
-        rp_lastLap->setText(formatLapTime(lastMs));
-        rp_s1->setText(formatSector(s1Ms));
-        rp_s2->setText(formatSector(s2Ms));
+        setLabelText(rp_currentLap, formatLapTime(currentMs));
+        setLabelText(rp_lastLap, formatLapTime(lastMs));
+        setLabelText(rp_s1, formatSector(s1Ms));
+        setLabelText(rp_s2, formatSector(s2Ms));
     };
 
     if (viewingOther && timing) {
@@ -460,33 +471,33 @@ void StandingsPage::updateRacePanel(const TimingRow* timing,
         float brakeBias = (float)st.front_brake_bias;
         bool  drsOk     = st.drs_allowed;
 
-        rp_ersPct->setText(QString::number((int)ersPct) + "%");
-        rp_ersBar->setValue((int)ersPct);
+        setLabelText(rp_ersPct, QString::number((int)ersPct) + "%");
+        if (rp_ersBar->value() != (int)ersPct) rp_ersBar->setValue((int)ersPct);
         const char* ersColor = ersPct > 60 ? "#4488ff" : ersPct > 30 ? "#ffd700" : "#C4162A";
-        rp_ersBar->setStyleSheet(
-            QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor));
+        const QString ersStyle = QString("QProgressBar::chunk { background-color: %1; }").arg(ersColor);
+        if (rp_ersBar->styleSheet() != ersStyle) rp_ersBar->setStyleSheet(ersStyle);
 
         // ERS deploy mode label (protocol-aware: "Overtake" → "Boost" in 2026).
-        rp_ersMode->setText(ersMode >= 0 && ersMode < 4 ? tnr::Ln("ers.mode", ersMode) : "—");
+        setLabelText(rp_ersMode, ersMode >= 0 && ersMode < 4 ? tnr::Ln("ers.mode", ersMode) : "—");
 
-        rp_drs->setText(drsOk ? "AVAILABLE" : "LOCKED");
-        rp_drs->setStyleSheet(drsOk ? "color: #37872D; font-weight: bold;" : "");
+        setLabelText(rp_drs, drsOk ? "AVAILABLE" : "LOCKED");
+        setLabelStyle(rp_drs, drsOk ? "color: #37872D; font-weight: bold;" : "");
 
-        rp_fuelKg->setText(QString::number(fuelKg, 'f', 1) + " kg");
-        rp_fuelLaps->setText(QString::number(fuelLaps, 'f', 1) + "L");
+        setLabelText(rp_fuelKg, QString::number(fuelKg, 'f', 1) + " kg");
+        setLabelText(rp_fuelLaps, QString::number(fuelLaps, 'f', 1) + "L");
         const char* fuelColor = fuelLaps > 1.0f ? "#37872D" : fuelLaps >= 0.0f ? "#ffd700" : "#C4162A";
-        rp_fuelKg->setStyleSheet(QString("color: %1; font-weight: bold;").arg(fuelColor));
+        setLabelStyle(rp_fuelKg, QString("color: %1; font-weight: bold;").arg(fuelColor));
 
         static const char* mixes[] = {"Lean", "Standard", "Rich", "Max Power"};
-        rp_fuelMix->setText(fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
+        setLabelText(rp_fuelMix, fuelMix >= 0 && fuelMix < 4 ? mixes[fuelMix] : "—");
 
-        rp_tyre->setText(tyreLabel(compound));
+        setLabelText(rp_tyre, tyreLabel(compound));
         QColor tyreFg = tyreTextColor(visual);
-        rp_tyre->setStyleSheet(tyreFg.isValid()
+        setLabelStyle(rp_tyre, tyreFg.isValid()
             ? QString("color: %1; font-weight: bold;").arg(tyreFg.name())
             : "font-weight: bold;");
-        rp_tyreAge->setText(tyreAge > 0 ? QString::number(tyreAge) + "L" : "—");
-        rp_brakeBias->setText(brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
+        setLabelText(rp_tyreAge, tyreAge > 0 ? QString::number(tyreAge) + "L" : "—");
+        setLabelText(rp_brakeBias, brakeBias > 0 ? QString::number(brakeBias, 'f', 1) + "% front" : "—");
     };
 
     if (viewingOther && allStatus) {
@@ -582,10 +593,36 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         }
     }
 
-    timingTable_->setRowCount((int)active.size());
+    // Keep the table's item objects stable. Replacing ~240 QTableWidgetItems on
+    // every timing packet caused allocator churn, delegate invalidation and a
+    // repaint per cell. Batch the mutations and touch only changed roles.
+    timingTable_->setUpdatesEnabled(false);
+    if (timingTable_->rowCount() != (int)active.size())
+        timingTable_->setRowCount((int)active.size());
     tableRowCarIdx_.resize(active.size());
     for (int i = 0; i < (int)active.size(); ++i)
         tableRowCarIdx_[i] = active[i]->idx;
+
+    auto updateItem = [this](int row, int column, const QString& text,
+                             Qt::Alignment alignment = {}, const QColor& foreground = {},
+                             const QBrush& background = {}, const QVariant& userData = {}) {
+        QTableWidgetItem* item = timingTable_->item(row, column);
+        if (!item) {
+            item = new QTableWidgetItem;
+            timingTable_->setItem(row, column, item);
+        }
+        if (item->text() != text) item->setText(text);
+        const int desiredAlignment = alignment == Qt::Alignment{}
+            ? 0 : static_cast<int>(alignment);
+        if (item->textAlignment() != desiredAlignment)
+            item->setTextAlignment(alignment);
+
+        const QVariant fg = foreground.isValid() ? QVariant(foreground) : QVariant();
+        if (item->data(Qt::ForegroundRole) != fg) item->setData(Qt::ForegroundRole, fg);
+        const QVariant bg = background.style() != Qt::NoBrush ? QVariant(background) : QVariant();
+        if (item->data(Qt::BackgroundRole) != bg) item->setData(Qt::BackgroundRole, bg);
+        if (item->data(Qt::UserRole) != userData) item->setData(Qt::UserRole, userData);
+    };
 
     for (int row = 0; row < (int)active.size(); ++row) {
         const TimingCar& car = *active[row];
@@ -637,8 +674,6 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         // — explicit selection, or player when nothing is selected
         bool showingThisDriver = (idx == selectedCarIdx_) ||
                                  (isPlayer && selectedCarIdx_ == -1);
-        QFont cellFont;
-
         bool isFastest = (idx == fastestLapCarIdx_);
         QBrush bgBrush;
         bool hasCustomBg = false;
@@ -653,18 +688,9 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
             hasCustomBg = true;
         }
 
-        auto makeItem = [&](const QString& text, bool center = false) {
-            auto* item = new QTableWidgetItem(text);
-            item->setFont(cellFont);
-            if (center) item->setTextAlignment(Qt::AlignCenter);
-            if (hasCustomBg) item->setBackground(bgBrush);
-            return item;
-        };
-
         // Col 0: POS
-        auto* posItem = makeItem(QString("P%1").arg(pos), true);
-        if (posColor.isValid()) posItem->setForeground(posColor);
-        timingTable_->setItem(row, 0, posItem);
+        updateItem(row, 0, QString("P%1").arg(pos), Qt::AlignCenter,
+                   posColor, hasCustomBg ? bgBrush : QBrush());
 
         QColor safeDriverColor;
         if (showingThisDriver) safeDriverColor = rowSafeColors_[row].highlighted;
@@ -672,37 +698,43 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         else                   safeDriverColor = rowSafeColors_[row].normal;
 
         // Col 1: #
-        auto* numItem = makeItem(raceNum > 0 ? QString::number(raceNum) : "—", true);
-        numItem->setForeground(safeDriverColor);
-        timingTable_->setItem(row, 1, numItem);
+        updateItem(row, 1, raceNum > 0 ? QString::number(raceNum) : "—",
+                   Qt::AlignCenter, safeDriverColor,
+                   hasCustomBg ? bgBrush : QBrush());
 
         // Col 2: DRIVER
-        auto* drvItem = makeItem(driverName);
-        drvItem->setForeground(safeDriverColor);
-        if (isPlayer) drvItem->setData(Qt::UserRole, true);
-        timingTable_->setItem(row, 2, drvItem);
+        updateItem(row, 2, driverName, {}, safeDriverColor,
+                   hasCustomBg ? bgBrush : QBrush(), isPlayer);
 
-        timingTable_->setItem(row, 3, makeItem(lapNum > 0 ? QString::number(lapNum) : "—", true));
-        timingTable_->setItem(row, 4, makeItem(formatLapTime(lastLapMs), true));
-        timingTable_->setItem(row, 5, makeItem(formatGap(gapMs, pos == 1), true));
-        timingTable_->setItem(row, 6, makeItem(formatSector(s1Ms), true));
-        timingTable_->setItem(row, 7, makeItem(formatSector(s2Ms), true));
-        timingTable_->setItem(row, 8, makeItem(formatSector(s3Ms), true));
+        updateItem(row, 3, lapNum > 0 ? QString::number(lapNum) : "—",
+                   Qt::AlignCenter, {}, hasCustomBg ? bgBrush : QBrush());
+        updateItem(row, 4, formatLapTime(lastLapMs), Qt::AlignCenter, {},
+                   hasCustomBg ? bgBrush : QBrush());
+        updateItem(row, 5, formatGap(gapMs, pos == 1), Qt::AlignCenter, {},
+                   hasCustomBg ? bgBrush : QBrush());
+        updateItem(row, 6, formatSector(s1Ms), Qt::AlignCenter, {},
+                   hasCustomBg ? bgBrush : QBrush());
+        updateItem(row, 7, formatSector(s2Ms), Qt::AlignCenter, {},
+                   hasCustomBg ? bgBrush : QBrush());
+        updateItem(row, 8, formatSector(s3Ms), Qt::AlignCenter, {},
+                   hasCustomBg ? bgBrush : QBrush());
 
         // Col 9: TYRE
-        auto* tyreItem = makeItem(tyreLabel(compound), true);
         QColor tyreFg = tyreTextColor(visual);
-        if (tyreFg.isValid()) tyreItem->setForeground(tyreFg);
-        timingTable_->setItem(row, 9, tyreItem);
+        updateItem(row, 9, tyreLabel(compound), Qt::AlignCenter, tyreFg,
+                   hasCustomBg ? bgBrush : QBrush());
 
         // Col 10: PENALTIES
-        auto* penItem = makeItem(penText);
-        if (!penText.isEmpty()) penItem->setForeground(QColor("#C4162A"));
-        timingTable_->setItem(row, 10, penItem);
+        updateItem(row, 10, penText, {},
+                   penText.isEmpty() ? QColor() : QColor("#C4162A"),
+                   hasCustomBg ? bgBrush : QBrush());
 
         // Col 11: STATUS
-        timingTable_->setItem(row, 11, makeItem(statusText));
+        updateItem(row, 11, statusText, {}, {},
+                   hasCustomBg ? bgBrush : QBrush());
 
-        timingTable_->setRowHeight(row, 22);
+        if (timingTable_->rowHeight(row) != 22) timingTable_->setRowHeight(row, 22);
     }
+    timingTable_->setUpdatesEnabled(true);
+    timingTable_->viewport()->update();
 }

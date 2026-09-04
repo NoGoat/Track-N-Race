@@ -97,7 +97,7 @@ void AnalyzePage::rebuildSeriesList(){seriesList_->clear();for(int i=0;i<series_
 void AnalyzePage::moveSeries(int from,int to){if(from<0||to<0||from>=series_.size()||to>=series_.size())return;series_.move(from,to);saveSettings();rebuildSeriesList();applyState();}
 
 void AnalyzePage::refreshLapSelectors(){auto fill=[&](QComboBox*box){QSignalBlocker guard(box);int old=box->currentData().toInt();box->clear();box->addItem("No option selected",-1);for(const LapBlock&lap:model_->data().laps){QString compound;for(auto it=lap.sts.crbegin();it!=lap.sts.crend();++it)if(it->tyre_compound>0){compound=tnr::Ln("tyre.actual",it->tyre_compound);break;}QString text=QString("%1%2Lap %3%4").arg(compound,compound.isEmpty()?"":" · ").arg(lap.lapNum).arg(lap.lapNum==model_->data().fastestLapNum?" · FL":"");box->addItem(text,lap.lapNum);}int idx=box->findData(old);box->setCurrentIndex(idx>=0?idx:0);};fill(compareLap_);fill(lapA_);fill(lapB_);applyState();}
-void AnalyzePage::applyState(){const bool fixed=playback_&&fixedMode_->isChecked();fixedMode_->setEnabled(playback_&&!model_->data().laps.isEmpty());compareLap_->parentWidget()->setVisible(!fixed);compareLap_->setEnabled(playback_);compareClear_->setVisible(!fixed);compareClear_->setEnabled(playback_&&compareLap_->currentData().toInt()>0);lapA_->parentWidget()->setVisible(fixed);lapB_->parentWidget()->setVisible(fixed);chart_->setConfig(series_,showYAxis_->isChecked());chart_->setComparisonLap(playback_&&!fixed?compareLap_->currentData().toInt():-1);chart_->setFixedLaps(fixed,lapA_->currentData().toInt(),lapB_->currentData().toInt());emit navigationEnabledChanged(fixed&&lapA_->currentData().toInt()>0);}
+void AnalyzePage::applyState(){const bool fixed=playback_&&fixedMode_->isChecked();fixedMode_->setEnabled(playback_&&!model_->data().laps.isEmpty());compareLap_->parentWidget()->setVisible(!fixed);compareLap_->setEnabled(playback_);compareClear_->setVisible(!fixed);compareClear_->setEnabled(playback_&&compareLap_->currentData().toInt()>0);lapA_->parentWidget()->setVisible(fixed);lapB_->parentWidget()->setVisible(fixed);chart_->setConfig(series_,showYAxis_->isChecked());chart_->setComparisonLap(playback_&&!fixed?compareLap_->currentData().toInt():-1);chart_->setFixedLaps(fixed,lapA_->currentData().toInt(),lapB_->currentData().toInt());emit navigationEnabledChanged(fixed&&lapA_->currentData().toInt()>0);emit dataRequirementsChanged();}
 void AnalyzePage::setPlaybackMode(bool on,float t){playback_=on;chart_->setPlaybackMode(on);chart_->setCurrentTime(t);if(!on)resetPlaybackSelections();fixedMode_->setEnabled(on&&!model_->data().laps.isEmpty());applyState();}
 void AnalyzePage::setCurrentTime(float t){chart_->setCurrentTime(t);}
 void AnalyzePage::resetPlaybackSelections(){fixedMode_->setChecked(false);compareLap_->setCurrentIndex(0);if(lapA_->count())lapA_->setCurrentIndex(0);if(lapB_->count())lapB_->setCurrentIndex(0);applyState();}
@@ -106,3 +106,35 @@ void AnalyzePage::zoomOut(){chart_->zoomOut();}
 void AnalyzePage::panLeft(){chart_->panLeft();}
 void AnalyzePage::panRight(){chart_->panRight();}
 void AnalyzePage::resetZoom(){chart_->resetZoom();}
+
+uint32_t AnalyzePage::playbackRowMask() const {
+    uint32_t mask = 1u << 4;
+    for (const AnalyzeSeriesSetting& setting : series_) {
+        if (!setting.visible) continue;
+        const AnalyzeMetric* metric = analyzeMetric(setting.metricId);
+        if (!metric) continue;
+        switch (metric->source) {
+            case AnalyzeSource::Telemetry:
+            case AnalyzeSource::Tyre: mask |= 1u << 1; break;
+            case AnalyzeSource::Status: mask |= 1u << 2; break;
+            case AnalyzeSource::Damage: mask |= 1u << 3; break;
+            case AnalyzeSource::Motion: mask |= 1u << 11; break;
+            case AnalyzeSource::MotionEx: mask |= 1u << 12; break;
+        }
+    }
+    return mask;
+}
+
+QVector<int> AnalyzePage::requestedPlaybackLaps() const {
+    QVector<int> result;
+    if (!playback_) return result;
+    if (fixedMode_->isChecked()) {
+        if (lapA_->currentData().toInt() > 0) result.push_back(lapA_->currentData().toInt());
+        if (lapB_->currentData().toInt() > 0 &&
+            !result.contains(lapB_->currentData().toInt()))
+            result.push_back(lapB_->currentData().toInt());
+    } else if (compareLap_->currentData().toInt() > 0) {
+        result.push_back(compareLap_->currentData().toInt());
+    }
+    return result;
+}

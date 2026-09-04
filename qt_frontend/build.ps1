@@ -75,11 +75,21 @@ if ($WithBreeze) {
 }
 
 & $cmakePath @cmakeArgs
+$configureExitCode = $LASTEXITCODE
+if ($configureExitCode -ne 0) {
+    Write-Host "CMake configuration failed (exit code $configureExitCode)." -ForegroundColor Red
+    exit $configureExitCode
+}
 
 # 4. Build Release binary (parallel across all logical cores)
 Write-Host "`n[2/2] Compiling..." -ForegroundColor Yellow
 $jobs = $env:NUMBER_OF_PROCESSORS
 & $cmakePath --build $buildDir --config Release --parallel $jobs
+$buildExitCode = $LASTEXITCODE
+if ($buildExitCode -ne 0) {
+    Write-Host "Build failed (exit code $buildExitCode)." -ForegroundColor Red
+    exit $buildExitCode
+}
 
 # 5. Verify output
 $exePath = Join-Path $buildDir "Release\Track-N-Race - Qt.exe"
@@ -100,5 +110,5 @@ if (Test-Path $windeployqt) {
     & $windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw $exePath
     Write-Host "Qt DLLs deployed." -ForegroundColor Green
 } else {
-    Write-Warning "windeployqt not found at $windeployqt — Qt DLLs not copied. The exe may fail to launch."
+    Write-Warning "windeployqt not found at $windeployqt - Qt DLLs not copied. The exe may fail to launch."
 }

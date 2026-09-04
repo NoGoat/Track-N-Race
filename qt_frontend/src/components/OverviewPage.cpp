@@ -3,6 +3,7 @@
 #include "../Labels.h"
 #include "../TelemetryChart.h"
 #include "../SessionModel.h"
+#include "../ChartCoordinates.h"
 #include "CardColors.h"
 #include "PageUiHelpers.h"
 #include "TyreCardsWidget.h"
@@ -25,6 +26,7 @@
 #include <QGridLayout>
 #include <QApplication>
 #include <QLocale>
+#include <QShowEvent>
 
 #include <algorithm>
 
@@ -173,9 +175,13 @@ QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, bool compact) {
 }
 
 void setDmgValue(QLabel* lbl, int val) {
-    if (val < 0) { lbl->setText("—"); lbl->setStyleSheet(""); return; }
-    lbl->setText(QString::number(val));
-    lbl->setStyleSheet(val == 0 ? "color: #37872D;" : "color: #C4162A;");
+    if (!lbl) return;
+    const QString text = val < 0 ? QStringLiteral("—") : QString::number(val);
+    const QString style = val < 0 ? QString() :
+        (val == 0 ? QStringLiteral("color: #37872D;")
+                  : QStringLiteral("color: #C4162A;"));
+    if (lbl->text() != text) lbl->setText(text);
+    if (lbl->styleSheet() != style) lbl->setStyleSheet(style);
 }
 
 } // namespace
@@ -268,6 +274,11 @@ OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     }
 
     vbox->addWidget(modeBar_);
+    // Chart-window selection and the clickable legend now live in the shared
+    // global/per-chart controls. Retain the legacy widgets only as inert members
+    // for compatibility with the existing playback plumbing.
+    modeBar_->setMaximumHeight(0);
+    modeBar_->hide();
 
     connect(lapCombo_, &QComboBox::currentIndexChanged, this, [this](int idx) {
         if (chart_ && idx >= 0)
@@ -514,6 +525,7 @@ void OverviewPage::setDamageCompact(bool on) {
     buildDamageCards();
     applyLayout(loadLayout());
     if (lastDamage_) { const DamageRow d = *lastDamage_; onDamage(d); }
+    flushPending();
 }
 
 void OverviewPage::setTyresLevel(int level) {
@@ -537,7 +549,7 @@ void OverviewPage::onTelemetry(const TelemetryRow& row) {
     cache_.drs        = row.drs != 0;
     cache_.slm        = row.slm != 0;
     cache_.engineTemp = row.engine_temp;
-    refreshCards();
+    cardsDirty_ = true;
 }
 
 void OverviewPage::onStatus(const StatusRow& row) {
@@ -549,11 +561,20 @@ void OverviewPage::onStatus(const StatusRow& row) {
     cache_.tyreAgeLaps    = row.tyre_age_laps;
     cache_.fuelMix        = row.fuel_mix;
     cache_.visualCompound = row.visual_compound;
-    refreshCards();
+    cardsDirty_ = true;
 }
 
 void OverviewPage::onDamage(const DamageRow& row) {
     lastDamage_ = row;   // cached so a compact-mode rebuild can repaint while paused
+    cache_.drsFault = row.drs_fault == 1;
+    cache_.ersFault = row.ers_fault == 1;
+    cardsDirty_ = true;
+    damageDirty_ = true;
+}
+
+void OverviewPage::refreshDamage() {
+    if (!lastDamage_) return;
+    const DamageRow& row = *lastDamage_;
     setDmgValue(dmgTyreFl,   row.tyre_dmg_fl);
     setDmgValue(dmgTyreFr,   row.tyre_dmg_fr);
     setDmgValue(dmgTyreRl,   row.tyre_dmg_rl);
@@ -571,15 +592,29 @@ void OverviewPage::onDamage(const DamageRow& row) {
     setDmgValue(dmgGearbox,  row.gearbox_damage);
     setDmgValue(dmgEngine,   row.engine_damage);
 
-    cache_.drsFault = row.drs_fault == 1;
-    cache_.ersFault = row.ers_fault == 1;
-    refreshCards();
 }
 
 void OverviewPage::onLap(const LapRow& row) {
     cache_.pos    = row.position;
     cache_.lapNum = row.lap_num;
-    refreshCards();
+    cardsDirty_ = true;
+}
+
+void OverviewPage::flushPending() {
+    if (!isVisible()) return;
+    if (damageDirty_) {
+        damageDirty_ = false;
+        refreshDamage();
+    }
+    if (cardsDirty_) {
+        cardsDirty_ = false;
+        refreshCards();
+    }
+}
+
+void OverviewPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    flushPending();
 }
 
 void OverviewPage::updateTyreCards(const TelemetryRow* telemetry, const DamageRow* damage) {
@@ -601,14 +636,17 @@ void OverviewPage::refreshCards() {
 
     auto setCard = [this](const QString& key, const QString& value, const QColor& color) {
         if (QLabel* l = cardValue_.value(key)) {
-            l->setText(value);
-            l->setStyleSheet(tnr::cardColorStyle(color));
+            const QString style = tnr::cardColorStyle(color);
+            if (l->text() != value) l->setText(value);
+            if (l->styleSheet() != style) l->setStyleSheet(style);
         }
     };
     auto setSub = [this](const QString& key, const QString& sub, const QColor& subColor = QColor()) {
         if (QLabel* l = cardSub_.value(key)) {
-            l->setText(sub);
-            l->setStyleSheet(subColor.isValid() ? QString("color: %1;").arg(subColor.name()) : QString());
+            const QString style = subColor.isValid()
+                ? QString("color: %1;").arg(subColor.name()) : QString();
+            if (l->text() != sub) l->setText(sub);
+            if (l->styleSheet() != style) l->setStyleSheet(style);
         }
     };
 
@@ -696,7 +734,7 @@ void OverviewPage::setTelemetryTable(bool table) {
     if (telemetryTable_) { telemetryTable_->setVisible(table); if (table) telemetryTable_->raise(); }
     // The mode bar (Default/Current Lap/… chart-mode buttons, lap-compare combo and
     // the Speed/RPM/ERS legend) only applies to the chart — hide it in table mode.
-    if (modeBar_) modeBar_->setVisible(!table);
+    if (modeBar_) modeBar_->hide();
     if (table) refreshTelemetryTable();
 }
 
@@ -712,25 +750,38 @@ void OverviewPage::refreshTelemetryTable() {
     if (!telemetryTable_ || !model_) return;
     const SessionData& d = model_->data();
     const float endTime = playback_ ? currentTime_ : d.latestTime;
-    const float left    = endTime - windowS_;
+    const auto section = tnr::GraphSection::OverviewTelemetry;
+    const ChartWindow window = model_->effectiveChartWindow(section);
+    const int selectedLap = model_->referenceLap(section);
+    const ChartDomain domain = resolveChartDomain(
+        d, window, selectedLap, endTime, model_->sectorBoundaries(),
+        model_->chartPrimaryLap(endTime),
+        model_->chartReferenceLap(window, selectedLap, endTime));
+    telemetryTable_->setDistanceMode(domain.distance);
+    const QVector<TelSample>& telemetry = domain.distance && domain.primary
+        ? domain.primary->tel : d.telBuf;
+    const QVector<StsSample>& status = domain.distance && domain.primary
+        ? domain.primary->sts : d.stsBuf;
 
     // ERS lives in stsBuf, sampled independently of telBuf — match each telemetry
     // sample to the most recent status sample at or before it.
     auto ersAt = [&](float t) -> float {
-        const auto& s = d.stsBuf;
-        if (s.isEmpty()) return 0.0f;
-        auto it = std::upper_bound(s.begin(), s.end(), t,
+        if (status.isEmpty()) return 0.0f;
+        auto it = std::upper_bound(status.begin(), status.end(), t,
             [](float key, const StsSample& x) { return key < x.t; });
-        if (it == s.begin()) return it->ers;
+        if (it == status.begin()) return it->ers;
         return (it - 1)->ers;
     };
 
-    telemetryTable_->beginRebuild();
-    for (int i = d.telBuf.size() - 1; i >= 0 && !telemetryTable_->full(); --i) {
-        const auto& s = d.telBuf[i];
-        if (s.t > endTime) continue;
-        if (s.t < left)    break;
-        telemetryTable_->addRow(s.t, s.speed, s.rpm, ersAt(s.t));
+    telemetryTable_->beginRebuild(domain.lower, domain.upper,
+                                  chartWindowAccumulatesLaps(domain.window));
+    for (int i = telemetry.size() - 1; i >= 0 && !telemetryTable_->full(); --i) {
+        const TelSample& sample = telemetry[i];
+        if (sample.t > domain.currentTime) continue;
+        const double coordinate = domain.distance
+            ? d.distanceAtTime(domain.primary, sample.t) : sample.t;
+        if (!qIsFinite(coordinate) || coordinate < domain.lower || coordinate > domain.upper) continue;
+        telemetryTable_->addRow(coordinate, sample.speed, sample.rpm, ersAt(sample.t));
     }
     telemetryTable_->endRebuild();
 }
@@ -831,7 +882,7 @@ void OverviewPage::applyLayout(const OverviewLayout& L)
     // Toggle the chart's wrapper (its parent) so hiding it collapses the row
     // instead of leaving the inset wrapper as an empty stretched gap.
     if (chart_ && chart_->parentWidget()) chart_->parentWidget()->setVisible(L.showChart);
-    if (modeBar_) modeBar_->setVisible(L.showChart);
+    if (modeBar_) modeBar_->hide();
 
     // Tyre section — visibility derived from whether any card/chart is enabled
     bool anyCard  = false, anyChart = false;

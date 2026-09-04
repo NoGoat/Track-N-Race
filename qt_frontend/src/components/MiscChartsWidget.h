@@ -2,15 +2,15 @@
 
 #include <QWidget>
 #include <QPointer>
+#include <QString>
 
 class ChartView;
 class SessionModel;
-class QTimer;
 class QGridLayout;
 class GraphTable;
 
 // The Misc page's two graphs — G-force / ride-height — rendered as panels of ONE
-// ChartView (a single QCustomPlot / OpenGL context / replot) rather than two
+// ChartView (a single QRhi render target / repaint) rather than two
 // separate widgets. Stacked full-width (G-force over ride height); either can be
 // hidden. G-force reads motionBuf, ride height reads motionExBuf.
 class MiscChartsWidget : public QWidget {
@@ -40,7 +40,6 @@ private:
     float currentTime() const;
 
     QPointer<SessionModel> model_;
-    QTimer*   refreshTimer_ = nullptr;
     bool      dirty_        = false;
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
@@ -49,6 +48,7 @@ private:
     // Separate cursors: G-force and ride-height come from different buffers.
     float     lastMotionT_   = -1.0f;
     float     lastMotionExT_ = -1.0f;
+    QString   dataModeKey_;
 
     enum Section { GFORCE = 0, RIDEHEIGHT = 1, SECTIONS = 2 };
     ChartView* chart_ = nullptr;
@@ -62,4 +62,8 @@ private:
     int longId_  = -1;
     int frontId_ = -1;
     int rearId_  = -1;
+    int latRefId_ = -1;
+    int longRefId_ = -1;
+    int frontRefId_ = -1;
+    int rearRefId_ = -1;
 };

@@ -77,6 +77,12 @@ int main() {
     const uint64_t afterFirstRead = archive.decompressedChunkCount();
     assert(archive.rowsForLap(1, tnrp::detail::v4TypeBit(1), lazyRows, &error));
     assert(archive.decompressedChunkCount() == afterFirstRead); // LRU hit
+    assert(archive.cacheBytes() > 0);
+    archive.releaseTransientMemory();
+    assert(archive.isOpen());
+    assert(archive.cacheBytes() == 0);
+    assert(archive.rowsForLap(1, tnrp::detail::v4TypeBit(1), lazyRows, &error));
+    assert(archive.decompressedChunkCount() == afterFirstRead + 1);
     std::vector<tnrp::detail::V4TimedRow> narrowLapRows;
     assert(archive.rowsForLapRange(1, 1.15f, 1.25f,
         tnrp::detail::v4TypeBit(1) | tnrp::detail::v4TypeBit(2),
@@ -375,14 +381,15 @@ int main() {
     }));
     assert(corrupted.decompressedChunkCount() == 1);
     corrupted.close();
-    // Electron's binary-playback load performs the complete warm pass while
-    // its loading overlay is visible, so latent payload corruption is rejected
-    // before the first seek instead of surfacing interactively.
-    tnrp::TnrdReader warmValidated;
-    warmValidated.setBinaryPlayback(true);
-    tnrp::HeaderRow warmHeader;
-    assert(!warmValidated.load(path.string(), warmHeader));
-    assert(!warmValidated.lastError().empty());
+    // V4 loading is metadata-only just like V5. Payload corruption is rejected
+    // when a query touches that chunk, without retaining a whole-file warm
+    // mirror in memory.
+    tnrp::TnrdReader lazyValidated;
+    lazyValidated.setBinaryPlayback(true);
+    tnrp::HeaderRow lazyHeader;
+    assert(lazyValidated.load(path.string(), lazyHeader));
+    assert(lazyValidated.readRange(0.0f, 2.0f).empty());
+    assert(!lazyValidated.lastError().empty());
     std::error_code ec;
 #ifdef _WIN32
     fs::remove_all(fs::path(tnrp::detail::windowsExtendedPath(root.string())), ec);

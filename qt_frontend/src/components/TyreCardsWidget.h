@@ -12,7 +12,6 @@
 class QBoxLayout;
 class QGridLayout;
 class QStackedWidget;
-class QTimer;
 class SessionModel;
 class GraphTable;
 
@@ -90,8 +89,8 @@ private:
     // swaps the card body for cornerTable_. All null on the Overview strip and at
     // compact levels. The mode is set externally (Settings), not persisted here.
     QPointer<SessionModel> model_;
-    QTimer*         refreshTimer_ = nullptr;
     bool            dirty_        = false;
+    bool            refreshQueued_ = false;
     bool            playback_     = false;
     float           currentTime_  = 0.0f;
     float           windowS_      = 30.0f;      // view window; matches TyreChartsWidget default

@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <limits>
 #include <iterator>
-#include <queue>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
@@ -615,31 +614,32 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             auto it=lapBlocks_.find((int)s.lapNumber);if(it!=lapBlocks_.end())it->second.slimStatus.push_back({"status",s.sessionTime,s.ersPct,s.tyreCompound,s.visualCompound});
         }
         strategyProtocol_ = static_cast<uint16_t>(outHeader.protocol >= 2024 ? outHeader.protocol : 2025);
-        // V5 stores exact chunk time bounds and row offsets in its control
-        // tables, so opening it must not decompress the whole recording just
-        // to reconstruct a second in-memory seek index. V4 still needs the
-        // legacy warm pass because its directory lacks that metadata.
-        if (binaryPlayback_ && detected != TnrdFormat::ChunkedV5 && !buildIndexedSeekCache()) {
-            std::fprintf(stderr, "[tnrd] load FAILED: indexed warm pass failed for '%s': %s\n",
-                         path.c_str(), lastError_.c_str());
-            close();
-            return false;
-        }
         if (!buildSectorDistanceMetadata()) {
             std::fprintf(stderr, "[tnrd] load FAILED: sector metadata scan failed for '%s': %s\n",
                          path.c_str(), lastError_.c_str());
             close();
             return false;
         }
-        if (indexedSeekCacheReady_) {
-            // Pay the complete strategy replay cost under the existing
-            // asynchronous loading overlay. Later random seeks restore the
-            // nearest completed-lap checkpoint and process only its short tail.
-            StrategyProcessor warmed(strategyProtocol_);
-            (void)strategySnapshotAt(totalTime_, &warmed);
+
+        // Walk only the cold row families needed by StrategyProcessor and
+        // retain one deep checkpoint per completed lap. The range walker is
+        // bounded to short time slices, so no complete decoded recording is
+        // resident at once. Once the final checkpoint exists, discard the
+        // archive LRU and worker-thread scratch; later playback reads restart
+        // the pool lazily and decode indexed chunks on demand.
+        lastError_.clear();
+        StrategyProcessor completeStrategy(strategyProtocol_);
+        (void)strategySnapshotAt(totalTime_, &completeStrategy);
+        if (!lastError_.empty()) {
+            std::fprintf(stderr, "[tnrd] load FAILED: strategy checkpoint scan failed for '%s': %s\n",
+                         path.c_str(), lastError_.c_str());
+            close();
+            return false;
         }
+        const size_t checkpointCount = strategyCheckpoints_.size();
+        indexedArchive_->releaseTransientMemory();
         setCursor(startTime_);
-        std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
+        std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu strategyCheckpoints=%zu cacheBytes=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),checkpointCount,indexedArchive_->cacheBytes(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         return true;
     }
     bool loadedOk = false;
@@ -744,48 +744,27 @@ void TnrdReader::close() {
     std::fprintf(stderr, "[close-trace] resetting indexed archive\n");
     std::fflush(stderr);
     indexedArchive_.reset();
-    size_t indexedPackedBytes = 0;
-    size_t indexedPackedRows = 0;
-    size_t indexedSparseRows = 0;
-    for (const auto& lane : indexedPackedHistory_) {
-        indexedPackedBytes += lane.bytes.size();
-        indexedPackedRows += lane.times.size();
-    }
-    for (const auto& rows : indexedSparseRows_) indexedSparseRows += rows.size();
-    std::fprintf(stderr,
-                 "[close-trace] indexed archive reset; retiring indexed histories packedBytes=%zu packedRows=%zu sparseRows=%zu\n",
-                 indexedPackedBytes, indexedPackedRows, indexedSparseRows);
+    std::fprintf(stderr, "[close-trace] indexed archive reset; retiring bounded seek caches\n");
     std::fflush(stderr);
 
-    // A long V4 warm pass can retain millions of packed offsets/timestamps and
-    // sparse JSON strings. Destroying those allocations here stalls Electron's
-    // main thread even though the reader is already logically closed. Move the
-    // ownership out in constant time and let a dedicated thread return the
-    // memory to the allocator. This intentionally does not use libuv's worker
-    // pool, which may itself be occupied by playback reads.
-    auto retiredPackedHistory = std::move(indexedPackedHistory_);
-    auto retiredSparseRows = std::move(indexedSparseRows_);
+    // Seek buffers can still be moderately large after an All Laps request.
+    // Retire them away from the caller so closing playback remains responsive.
     auto retiredSeekCache = std::move(packedSeekCache_);
     auto retiredSeekLru = std::move(packedSeekLru_);
     auto retiredPlaybackLanes = std::move(v4PlaybackLanes_);
     std::thread([
-        packedHistory = std::move(retiredPackedHistory),
-        sparseRows = std::move(retiredSparseRows),
         seekCache = std::move(retiredSeekCache),
         seekLru = std::move(retiredSeekLru),
         playbackLanes = std::move(retiredPlaybackLanes)
     ]() mutable {
         std::fprintf(stderr, "[close-trace] background indexed-cache release started\n");
         std::fflush(stderr);
-        packedHistory = {};
-        sparseRows = {};
         seekCache.clear();
         seekLru.clear();
         playbackLanes = {};
         std::fprintf(stderr, "[close-trace] background indexed-cache release complete\n");
         std::fflush(stderr);
     }).detach();
-    indexedSeekCacheReady_ = false;
     packedSeekCacheBytes_ = 0;
     v4PlaybackLap_ = 0;
     v4PlaybackCursor_ = 0.0f;
@@ -880,7 +859,7 @@ std::vector<std::string> TnrdReader::damageRowsAtCadence(
     if(cancelled&&cancelled())return out;
     std::vector<TimedRaw> v4Damage;
     const std::vector<TimedRaw>* source=&coldDamage_;
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_ && !indexedSeekCacheReady_) {
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         std::vector<detail::V4TimedRow> rows, initial;
         std::string error;
         auto* archive = const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get());
@@ -937,136 +916,6 @@ std::vector<std::string> TnrdReader::damageRowsAtCadence(
     return out;
 }
 
-bool TnrdReader::buildIndexedSeekCache() {
-    if (!indexedArchive_ || !indexedArchive_->isOpen()) return false;
-
-    for (auto& lane : indexedPackedHistory_) lane = {};
-    for (auto& rows : indexedSparseRows_) rows.clear();
-    coldStatus_.clear();
-    coldDamage_.clear();
-    coldLap_.clear();
-    legacyStrategyRows_.clear();
-    indexedSeekCacheReady_ = false;
-
-    // Reserve from the directory before touching payloads. The packed record
-    // byte size varies by hot family, but reserving the metadata exactly avoids
-    // the largest source of allocation churn during a long recording load.
-    std::array<size_t, 16> rowCounts{};
-    for (const auto& chunk : indexedArchive_->chunks()) {
-        const uint8_t type = static_cast<uint8_t>(chunk.rowType);
-        if (type < rowCounts.size()) rowCounts[type] += chunk.rowCount;
-    }
-    for (const uint8_t type : {uint8_t{1}, uint8_t{11}, uint8_t{12}}) {
-        indexedPackedHistory_[type].times.reserve(rowCounts[type]);
-        indexedPackedHistory_[type].offsets.reserve(rowCounts[type] + 1);
-    }
-    for (uint8_t type = 5; type <= 10; ++type)
-        indexedSparseRows_[type].reserve(rowCounts[type]);
-    indexedSparseRows_[14].reserve(rowCounts[14]);
-    coldStatus_.reserve(rowCounts[2]);
-    coldDamage_.reserve(rowCounts[3]);
-    coldLap_.reserve(rowCounts[4]);
-
-    std::string callbackError;
-    std::string archiveError;
-    const bool walked = indexedArchive_->forEachChunk(
-        0xFFFFFFFFu,
-        [&](const detail::V4ChunkInfo& chunk, std::string_view plain) {
-            const uint8_t type = static_cast<uint8_t>(chunk.rowType);
-            size_t pos = 0;
-            while (pos < plain.size()) {
-                size_t nl = plain.find('\n', pos);
-                if (nl == std::string_view::npos) nl = plain.size();
-                if (nl > pos) {
-                    const std::string_view line = plain.substr(pos, nl - pos);
-                    const float time = scanSessionTime(line.data(), static_cast<int>(line.size()));
-                    if (!std::isfinite(time) || time < 0.0f) {
-                        callbackError = "indexed warm pass produced a row without a valid session_time";
-                        return false;
-                    }
-
-                    if (type == 1 || type == 11 || type == 12) {
-                        auto& lane = indexedPackedHistory_[type];
-                        lane.offsets.push_back(lane.bytes.size());
-                        lane.times.push_back(time);
-                        if (!encodeV4HotRow(type, line, lane.bytes)) {
-                            callbackError = "indexed warm pass could not encode a hot row";
-                            return false;
-                        }
-                    } else if ((type >= 2 && type <= 10) || type == 14) {
-                        std::string json(line);
-                        if (type == 2) coldStatus_.push_back({time, json, chunk.sequence});
-                        else if (type == 3) coldDamage_.push_back({time, json, chunk.sequence});
-                        else if (type == 4) coldLap_.push_back({time, json, chunk.sequence});
-                        if ((type >= 5 && type <= 10) || type == 14)
-                            indexedSparseRows_[type].push_back({time, json, chunk.sequence});
-                    }
-                }
-                if (nl == plain.size()) break;
-                pos = nl + 1;
-            }
-            return true;
-        }, &archiveError);
-    if (!walked) {
-        lastError_ = callbackError.empty()
-            ? (archiveError.empty() ? "The indexed recording could not be warmed." : archiveError)
-            : callbackError;
-        return false;
-    }
-
-    auto sortTimed = [](std::vector<TimedRaw>& rows) {
-        std::stable_sort(rows.begin(), rows.end(), [](const TimedRaw& a, const TimedRaw& b) {
-            return a.t < b.t || (a.t == b.t && a.sequence < b.sequence);
-        });
-    };
-    sortTimed(coldStatus_);
-    sortTimed(coldDamage_);
-    sortTimed(coldLap_);
-    for (auto& rows : indexedSparseRows_) sortTimed(rows);
-
-    // Writer ordering is normally monotonic within a row family. Preserve
-    // correctness for recovered/early recordings that contain limited packet
-    // reordering by sorting fixed packed records alongside their timestamps.
-    for (const uint8_t type : {uint8_t{1}, uint8_t{11}, uint8_t{12}}) {
-        auto& lane = indexedPackedHistory_[type];
-        lane.offsets.push_back(lane.bytes.size());
-        if (std::is_sorted(lane.times.begin(), lane.times.end())) continue;
-        std::vector<size_t> order(lane.times.size());
-        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-            return lane.times[a] < lane.times[b];
-        });
-        std::vector<uint8_t> sortedBytes;
-        std::vector<float> sortedTimes;
-        std::vector<size_t> sortedOffsets;
-        sortedBytes.reserve(lane.bytes.size());
-        sortedTimes.reserve(lane.times.size());
-        sortedOffsets.reserve(lane.offsets.size());
-        for (size_t index : order) {
-            sortedOffsets.push_back(sortedBytes.size());
-            sortedTimes.push_back(lane.times[index]);
-            sortedBytes.insert(sortedBytes.end(),
-                lane.bytes.begin() + static_cast<std::ptrdiff_t>(lane.offsets[index]),
-                lane.bytes.begin() + static_cast<std::ptrdiff_t>(lane.offsets[index + 1]));
-        }
-        sortedOffsets.push_back(sortedBytes.size());
-        lane.bytes = std::move(sortedBytes);
-        lane.times = std::move(sortedTimes);
-        lane.offsets = std::move(sortedOffsets);
-    }
-
-    indexedSeekCacheReady_ = true;
-    size_t packedBytes = 0;
-    for (const auto& lane : indexedPackedHistory_) packedBytes += lane.bytes.size();
-    size_t strategyRows = coldStatus_.size() + coldDamage_.size() + coldLap_.size();
-    for (uint8_t type = 5; type <= 10; ++type)
-        strategyRows += indexedSparseRows_[type].size();
-    std::fprintf(stderr,
-        "[tnrd] indexed warm cache: packed=%zu bytes status=%zu damage=%zu lap=%zu strategy=%zu\n",
-        packedBytes, coldStatus_.size(), coldDamage_.size(), coldLap_.size(), strategyRows);
-    return true;
-}
-
 bool TnrdReader::buildSectorDistanceMetadata() {
     for (auto& [_, block] : lapBlocks_) {
         block.sector1EndDistanceM = 0.0f;
@@ -1099,38 +948,34 @@ bool TnrdReader::buildSectorDistanceMetadata() {
             });
         };
 
-        if (indexedSeekCacheReady_) {
-            for (const auto& row : coldLap_) appendLapRow(row.t, row.json);
-        } else {
-            std::string callbackError;
-            std::string archiveError;
-            const bool walked = indexedArchive_ && indexedArchive_->forEachChunk(
-                detail::v4TypeBit(4),
-                [&](const detail::V4ChunkInfo&, std::string_view plain) {
-                    size_t pos = 0;
-                    while (pos < plain.size()) {
-                        size_t nl = plain.find('\n', pos);
-                        if (nl == std::string_view::npos) nl = plain.size();
-                        if (nl > pos) {
-                            const std::string_view line = plain.substr(pos, nl - pos);
-                            const float time = scanSessionTime(line.data(), static_cast<int>(line.size()));
-                            if (!std::isfinite(time) || time < 0.0f) {
-                                callbackError = "sector metadata contains a lap row without a valid session_time";
-                                return false;
-                            }
-                            appendLapRow(time, line);
+        std::string callbackError;
+        std::string archiveError;
+        const bool walked = indexedArchive_ && indexedArchive_->forEachChunk(
+            detail::v4TypeBit(4),
+            [&](const detail::V4ChunkInfo&, std::string_view plain) {
+                size_t pos = 0;
+                while (pos < plain.size()) {
+                    size_t nl = plain.find('\n', pos);
+                    if (nl == std::string_view::npos) nl = plain.size();
+                    if (nl > pos) {
+                        const std::string_view line = plain.substr(pos, nl - pos);
+                        const float time = scanSessionTime(line.data(), static_cast<int>(line.size()));
+                        if (!std::isfinite(time) || time < 0.0f) {
+                            callbackError = "sector metadata contains a lap row without a valid session_time";
+                            return false;
                         }
-                        if (nl == plain.size()) break;
-                        pos = nl + 1;
+                        appendLapRow(time, line);
                     }
-                    return true;
-                }, &archiveError);
-            if (!walked) {
-                lastError_ = callbackError.empty()
-                    ? (archiveError.empty() ? "The recording's lap rows could not be scanned." : archiveError)
-                    : callbackError;
-                return false;
-            }
+                    if (nl == plain.size()) break;
+                    pos = nl + 1;
+                }
+                return true;
+            }, &archiveError);
+        if (!walked) {
+            lastError_ = callbackError.empty()
+                ? (archiveError.empty() ? "The recording's lap rows could not be scanned." : archiveError)
+                : callbackError;
+            return false;
         }
     }
 
@@ -1162,34 +1007,13 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
     std::vector<std::pair<uint8_t, std::string>> out;
     if(cancelled&&cancelled())return out;
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
-        std::vector<uint8_t> archiveTypes;
-        for (const uint8_t type : types) {
-            if (cancelled && cancelled()) return {};
-            const std::vector<TimedRaw>* cached = nullptr;
-            if (indexedSeekCacheReady_) {
-                if (type == 2) cached = &coldStatus_;
-                else if (type == 3) cached = &coldDamage_;
-                else if (type == 4) cached = &coldLap_;
-                else if ((type >= 5 && type <= 10) || type == 14)
-                    cached = &indexedSparseRows_[type];
-            }
-            if (!cached) {
-                archiveTypes.push_back(type);
-                continue;
-            }
-            const auto it = std::upper_bound(cached->begin(), cached->end(), t,
-                [](float value, const TimedRaw& row) { return value < row.t; });
-            if (it != cached->begin()) out.emplace_back(type, std::prev(it)->json);
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!indexedArchive_->latestRows(t, types, rows, &error, cancelled)) {
+            if (!cancelled || !cancelled()) lastError_ = error;
+            return {};
         }
-        if (!archiveTypes.empty()) {
-            std::vector<detail::V4TimedRow> rows;
-            std::string error;
-            if (!indexedArchive_->latestRows(t, archiveTypes, rows, &error, cancelled)) {
-                if (!cancelled || !cancelled()) lastError_ = error;
-                return {};
-            }
-            for (auto& row : rows) out.emplace_back(row.rowType, std::move(row.json));
-        }
+        for (auto& row : rows) out.emplace_back(row.rowType, std::move(row.json));
         std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
             return scanSessionTime(a.second.data(), static_cast<int>(a.second.size())) <
                    scanSessionTime(b.second.data(), static_cast<int>(b.second.size()));
@@ -1261,6 +1085,42 @@ std::vector<std::string> TnrdReader::readRange(float fromTime, float toTime) {
     return out;
 }
 
+bool TnrdReader::forEachIndexedRange(
+    float fromTime, float toTime, uint32_t rowTypeMask,
+    const std::function<bool(const detail::V4TimedRow&)>& callback,
+    const std::function<bool()>& cancelled) {
+    if (!indexedArchive_ || !isChunkedTnrd(loadedFormat_) ||
+        !std::isfinite(fromTime) || !std::isfinite(toTime) ||
+        toTime < fromTime || rowTypeMask == 0) return false;
+
+    // Keep the transient decoded representation bounded. A V4 chunk can span
+    // much of a lap and lacks persisted time bounds until first use, but this
+    // still limits aggregation to one short timeline slice instead of retaining
+    // every decoded JSON row from a long All Laps/strategy request at once.
+    constexpr float SLICE_SECONDS = 30.0f;
+    float sliceStart = fromTime;
+    for (;;) {
+        if (cancelled && cancelled()) return false;
+        const float sliceEnd = std::min(toTime, sliceStart + SLICE_SECONDS);
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!indexedArchive_->rowsForRange(sliceStart, sliceEnd, rowTypeMask,
+                                            rows, &error, cancelled)) {
+            if (!cancelled || !cancelled()) lastError_ = std::move(error);
+            return false;
+        }
+        for (const auto& row : rows) {
+            if (cancelled && cancelled()) return false;
+            if (!callback(row)) return false;
+        }
+        if (sliceEnd >= toTime) return true;
+        // session_time is float in every row. Advancing by one representable
+        // value makes adjacent inclusive range reads neither duplicate nor
+        // omit any possible timestamp.
+        sliceStart = std::nextafter(sliceEnd, std::numeric_limits<float>::infinity());
+    }
+}
+
 void TnrdReader::setStrategyMinimumStops(int stops) {
     const int clamped=std::clamp(stops,0,8);
     if(strategyMinimumStops_==clamped)return;
@@ -1324,59 +1184,13 @@ bool TnrdReader::forEachStrategyRow(
     const std::function<bool()>& cancelled) {
     if(cancelled&&cancelled())return false;
     if (toTime < fromTime) return true;
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_ && indexedSeekCacheReady_) {
-        struct Cursor {
-            const std::vector<TimedRaw>* rows{};
-            size_t index{};
-            size_t end{};
-        };
-        const auto later = [](const Cursor& a, const Cursor& b) {
-            const auto& left = (*a.rows)[a.index];
-            const auto& right = (*b.rows)[b.index];
-            return left.t > right.t ||
-                (left.t == right.t && left.sequence > right.sequence);
-        };
-        std::priority_queue<Cursor, std::vector<Cursor>, decltype(later)> pending(later);
-        for (uint8_t type = 2; type <= 10; ++type) {
-            const std::vector<TimedRaw>* rows = type == 2 ? &coldStatus_
-                : type == 3 ? &coldDamage_
-                : type == 4 ? &coldLap_
-                : &indexedSparseRows_[type];
-            const auto begin = includeFrom
-                ? std::lower_bound(rows->begin(), rows->end(), fromTime,
-                    [](const TimedRaw& row, float value) { return row.t < value; })
-                : std::upper_bound(rows->begin(), rows->end(), fromTime,
-                    [](float value, const TimedRaw& row) { return value < row.t; });
-            const auto end = std::upper_bound(begin, rows->end(), toTime,
-                [](float value, const TimedRaw& row) { return value < row.t; });
-            if (begin != end)
-                pending.push({rows, static_cast<size_t>(begin - rows->begin()),
-                              static_cast<size_t>(end - rows->begin())});
-        }
-        while (!pending.empty()) {
-            if (cancelled && cancelled()) return false;
-            Cursor cursor = pending.top();
-            pending.pop();
-            const auto& row = (*cursor.rows)[cursor.index];
-            callback(row.t, row.json);
-            if (++cursor.index < cursor.end) pending.push(cursor);
-        }
-        return true;
-    }
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_ && !indexedSeekCacheReady_) {
-        std::vector<detail::V4TimedRow> rows;
-        std::string error;
-        if (!indexedArchive_->rowsForRange(fromTime, toTime, kStrategyDependencyMask,
-                                       rows, &error, cancelled)) {
-            if(!cancelled||!cancelled())lastError_ = error;
-            return false;
-        }
-        for (const auto& row : rows) {
-            if(cancelled&&cancelled())return false;
-            if (!includeFrom && row.sessionTime <= fromTime) continue;
-            callback(row.sessionTime, row.json);
-        }
-        return true;
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        return forEachIndexedRange(fromTime, toTime, kStrategyDependencyMask,
+            [&](const detail::V4TimedRow& row) {
+                if (!includeFrom && row.sessionTime <= fromTime) return true;
+                callback(row.sessionTime, row.json);
+                return true;
+            }, cancelled);
     }
     if (!isLoaded()) return false;
     const auto begin = includeFrom
@@ -1728,67 +1542,38 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
     const uint32_t mask = (allHistory || !includeMandatoryState)
         ? requestedTypes : (requestedTypes | mandatory);
 
-    if (isChunkedTnrd(loadedFormat_) && indexedArchive_ && indexedSeekCacheReady_) {
-        auto binary = std::make_shared<std::vector<uint8_t>>();
-        for (const uint8_t type : {uint8_t{1}, uint8_t{11}, uint8_t{12}}) {
-            if (!(mask & detail::v4TypeBit(type))) continue;
-            const auto& lane = indexedPackedHistory_[type];
-            const size_t lo = static_cast<size_t>(std::lower_bound(
-                lane.times.begin(), lane.times.end(), windowStart) - lane.times.begin());
-            const size_t hi = static_cast<size_t>(std::upper_bound(
-                lane.times.begin(), lane.times.end(), target) - lane.times.begin());
-            if (hi <= lo || hi >= lane.offsets.size()) continue;
-            binary->insert(binary->end(),
-                lane.bytes.begin() + static_cast<std::ptrdiff_t>(lane.offsets[lo]),
-                lane.bytes.begin() + static_cast<std::ptrdiff_t>(lane.offsets[hi]));
-        }
-        auto gather = [&](uint8_t type, const std::vector<TimedRaw>& rows) {
-            if (!(mask & detail::v4TypeBit(type))) return;
-            auto it = std::lower_bound(rows.begin(), rows.end(), windowStart,
-                [](const TimedRaw& row, float value) { return row.t < value; });
-            const auto end = std::upper_bound(it, rows.end(), target,
-                [](float value, const TimedRaw& row) { return value < row.t; });
-            for (; it != end; ++it) {
-                f.coldJson += it->json;
-                f.coldJson.push_back('\n');
-            }
-        };
-        gather(2, coldStatus_);
-        gather(4, coldLap_);
-        if (mask & detail::v4TypeBit(3)) {
-            auto damage = damageRowsAtCadence(windowStart, target, true, cancelled);
-            if (cancelled && cancelled()) return {};
-            if (!damage.empty()) {
-                v4PlaybackDamageState_ = {
-                    scanSessionTime(damage.back().data(), static_cast<int>(damage.back().size())),
-                    damage.back()};
-                v4PlaybackDamageStateReady_ = true;
-            }
-            for (auto& row : damage) {
-                f.coldJson += row;
-                f.coldJson.push_back('\n');
-            }
-        }
-        if (!f.coldJson.empty()) f.coldJson.pop_back();
-        if (!binary->empty()) {
-            f.binaryStore = std::move(binary);
-            f.binaryEnd = f.binaryStore->size();
-        }
-        return f;
-    }
-
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
-        std::vector<detail::V4TimedRow> rows;std::string error;
         const bool currentLapOnly=!allHistory&&windowSeconds<=0.0f;
         // Damage is reconstructed at its fixed cadence below. Excluding it from
         // this query avoids parsing and allocating the same JSON rows twice.
         const uint32_t directMask=mask&~detail::v4TypeBit(3);
         if(cancelled&&cancelled())return f;
-        const bool loaded=!directMask||(currentLapOnly
-            ? indexedArchive_->rowsForLapRange((uint32_t)indexedArchive_->lapAt(target),windowStart,target,directMask,rows,&error,cancelled)
-            : indexedArchive_->rowsForRange(windowStart,target,directMask,rows,&error,cancelled));
-        if(!loaded){if(!cancelled||!cancelled())lastError_=error;return f;}
-        auto binary=std::make_shared<std::vector<uint8_t>>();for(const auto&r:rows){if(r.rowType==1||r.rowType==11||r.rowType==12)(void)encodeV4HotRowCached(r,*binary);else{f.coldJson+=r.json;f.coldJson.push_back('\n');}}
+        auto binary=std::make_shared<std::vector<uint8_t>>();
+        const auto appendRow = [&](const detail::V4TimedRow& row) {
+            if (row.rowType == 1 || row.rowType == 11 || row.rowType == 12)
+                return encodeV4HotRowCached(row, *binary);
+            f.coldJson += row.json;
+            f.coldJson.push_back('\n');
+            return true;
+        };
+        bool loaded = true;
+        if (directMask && currentLapOnly) {
+            std::vector<detail::V4TimedRow> rows;
+            std::string error;
+            loaded = indexedArchive_->rowsForLapRange(
+                (uint32_t)indexedArchive_->lapAt(target), windowStart, target,
+                directMask, rows, &error, cancelled);
+            if (!loaded) {
+                if (!cancelled || !cancelled()) lastError_ = std::move(error);
+            } else {
+                for (const auto& row : rows)
+                    if (!appendRow(row)) { loaded = false; break; }
+            }
+        } else if (directMask) {
+            loaded = forEachIndexedRange(windowStart, target, directMask,
+                                         appendRow, cancelled);
+        }
+        if(!loaded)return f;
         if(cancelled&&cancelled())return {};
         if(mask&detail::v4TypeBit(3)){auto damage=damageRowsAtCadence(windowStart,target,true,cancelled);if(cancelled&&cancelled())return {};if(!damage.empty()){v4PlaybackDamageState_={scanSessionTime(damage.back().data(),(int)damage.back().size()),damage.back()};v4PlaybackDamageStateReady_=true;}for(auto&row:damage){f.coldJson+=row;f.coldJson.push_back('\n');}}if(!f.coldJson.empty())f.coldJson.pop_back();if(!binary->empty()){f.binaryStore=binary;f.binaryBegin=0;f.binaryEnd=binary->size();}return f;
     }

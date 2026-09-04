@@ -3,6 +3,7 @@
 #include "AnalyzeMetrics.h"
 #include <QSettings>
 #include <QWidget>
+#include <cstdint>
 
 class AnalyzeChart;
 class SessionModel;
@@ -19,6 +20,8 @@ public:
     void setPlaybackMode(bool on, float currentTime = 0);
     void setCurrentTime(float t);
     void resetPlaybackSelections();
+    uint32_t playbackRowMask() const;
+    QVector<int> requestedPlaybackLaps() const;
 
 public slots:
     void zoomIn();
@@ -29,6 +32,7 @@ public slots:
 
 signals:
     void navigationEnabledChanged(bool enabled);
+    void dataRequirementsChanged();
 
 private:
     SessionModel* model_ = nullptr;

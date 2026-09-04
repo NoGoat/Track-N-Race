@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QTableView>
+#include <QElapsedTimer>
 #include <QString>
 #include <QVector>
 #include <functional>
@@ -11,7 +12,7 @@ class GraphTableModel;
 
 // A read-only raw-values table used to replace a telemetry graph (see the
 // per-graph Chart/Table toggle in the Settings "Graphs" tab). One column per
-// series plus a leading time column; oldest sample at the top, newest at the
+// series plus a leading time/distance column; oldest sample at the top, newest at the
 // bottom, holding every sample in the visible window (no row cap — the toolbar's
 // time window is the only bound). Auto-scrolls to the newest row unless the user
 // has scrolled up to inspect history.
@@ -26,8 +27,8 @@ class GraphTableModel;
 //   t->beginRebuild();
 //   for (samples newest-first, within the window) t->addRow(s.t, valueA, valueB);
 //   t->endRebuild();
-// The first value of every row is the session time (seconds); each column's Fmt
-// (set at construction) decides how its raw value renders. Rows are fed newest-
+// The first value of every row is the active chart coordinate; each column's Fmt
+// decides how its raw value renders. Rows are fed newest-
 // first; the table shows them oldest-first (newest last).
 class GraphTable : public QTableView {
     Q_OBJECT
@@ -42,25 +43,39 @@ public:
     // enable/disable a chart series).
     void setColumns(const QVector<Column>& columns);
 
+    // Keep the leading coordinate column aligned with the chart domain. Lap
+    // modes show distance; time/all-laps modes show absolute session time.
+    void setDistanceMode(bool distance);
+
     // Format a session time (seconds) as "m:ss.mmm".
     static QString fmtTime(float t);
 
-    // Rebuild cycle — see the class comment. Pass each row's values (session time
-    // first) as numbers; they're stored raw and formatted lazily. full() always
-    // returns false (the time window is the only bound); kept so existing feed loops
-    // that guard on it compile.
-    void beginRebuild();
+    // Rebuild cycle — see the class comment. Pass the selected coordinate range,
+    // then each row's values (coordinate first) as numbers; they're stored raw and
+    // formatted lazily. Electron only throttles the continuously growing All
+    // Laps table (to 5 Hz); ordinary time and lap-relative tables rebuild on
+    // every published data frame. full() is true on skipped All Laps frames so
+    // callers avoid walking the source history.
+    void beginRebuild(double lowerTime, double upperTime, bool allLapsMode = false);
     template <typename... Ts>
     void addRow(Ts... values) {
         const double v[] = { static_cast<double>(values)... };
         addRowImpl(v, int(sizeof...(values)));
     }
-    bool full() const { return false; }
+    bool full() const { return !acceptingRows_; }
     void endRebuild();
 
 private:
     void addRowImpl(const double* values, int n);
     GraphTableModel* model_ = nullptr;
+    QElapsedTimer refreshClock_;
+    double lastLowerTime_ = 0.0;
+    double lastUpperTime_ = 0.0;
+    double pendingLowerTime_ = 0.0;
+    double pendingUpperTime_ = 0.0;
+    bool haveCommittedRange_ = false;
+    bool acceptingRows_ = true;
+    bool distanceMode_ = false;
 };
 
 namespace tnr {

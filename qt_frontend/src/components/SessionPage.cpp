@@ -25,6 +25,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <utility>
 
 namespace {
 
@@ -36,6 +37,14 @@ void clearLayout(QLayout* lay) {
         if (QWidget* w = item->widget()) delete w;
         delete item;
     }
+}
+
+void setLabelText(QLabel* label, const QString& text) {
+    if (label && label->text() != text) label->setText(text);
+}
+
+void setLabelStyle(QLabel* label, const QString& style) {
+    if (label && label->styleSheet() != style) label->setStyleSheet(style);
 }
 
 // ── Marshal zones strip widget ────────────────────────────────────────────
@@ -123,6 +132,10 @@ void applyWeatherIcon(QLabel* lbl, int w, int px) {
     if (w < 0 || w > 5) w = 2;
     const WeatherVis& v = kWeatherVis[w];
     const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
+    const QString cacheKey = QStringLiteral("%1:%2:%3")
+        .arg(w).arg(px).arg(dark ? 1 : 0);
+    if (lbl->property("tnrWeatherIcon").toString() == cacheKey) return;
+    lbl->setProperty("tnrWeatherIcon", cacheKey);
     QIcon ic = breezeIcon(v.icon, QColor(dark ? v.dark : v.light));
     QPixmap pm = ic.isNull() ? QPixmap() : ic.pixmap(QSize(px, px), lbl->devicePixelRatioF());
     if (pm.isNull()) lbl->clear();
@@ -254,6 +267,13 @@ SessionPage::SessionPage(QWidget* parent)
             [this]{ setMapFullscreen(!mapFullscreen_); });
     // Enlarge/Restore Map button label follows the global toolbar-labels setting.
     trackMap_->setShowLabels(settings_.value("ui/toolbarShowLabels", false).toBool());
+    // These settings change only through MainWindow's live setters. Applying
+    // them once avoids four QSettings lookups on every positions frame.
+    trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(
+        settings_.value("ui/trackMapLabelMode", 0).toInt()));
+    trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", true).toBool());
+    trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
+    trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
 
     // Weather strip pinned to bottom
     sp_weatherSep_ = tnrui::hline();
@@ -368,11 +388,20 @@ SessionPage::SessionPage(QWidget* parent)
 // ── Event log maintenance ─────────────────────────────────────────────────
 
 void SessionPage::addEvent(const tnrp::RaceEventRow& eventRow) {
+    constexpr size_t kMaxEvents = 1000;
+    if (eventLog_.size() >= kMaxEvents) {
+        eventLog_.erase(eventLog_.begin());
+        if (renderedEventCount_ > 0) --renderedEventCount_;
+        if (sp_eventsList && sp_eventsList->count() > 0)
+            delete sp_eventsList->takeItem(sp_eventsList->count() - 1);
+    }
     eventLog_.push_back(eventRow);
 }
 
 void SessionPage::clearEvents() {
     eventLog_.clear();
+    renderedEventCount_ = 0;
+    if (sp_eventsList) sp_eventsList->clear();
 }
 
 void SessionPage::setRenderingActive(bool on) {
@@ -751,6 +780,9 @@ void SessionPage::setEventsCompact(bool on) {
             sp_eventsHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         }
     }
+    // Existing rows use a different widget structure at each density. Rebuild
+    // them once on the next event refresh, then return to incremental inserts.
+    renderedEventCount_ = 0;
 }
 
 void SessionPage::setProximityCompact(bool on) {
@@ -825,46 +857,46 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
         ? trackMap_->trackName() : QStringLiteral("Grand Prix");
     const QString mapCircuitName = trackMap_ && trackMap_->hasTrack()
         ? trackMap_->circuitName() : QStringLiteral("—");
-    sp_gpName->setText(resolvedMapName("track_name", mapTrackName));
+    setLabelText(sp_gpName, resolvedMapName("track_name", mapTrackName));
     if (sp_circuitName)
-        sp_circuitName->setText(resolvedMapName("circuit_name", mapCircuitName));
+        setLabelText(sp_circuitName, resolvedMapName("circuit_name", mapCircuitName));
 
-    sp_timeLeft->setText(QString("%1:%2")
+    setLabelText(sp_timeLeft, QString("%1:%2")
         .arg(timeLeft / 60, 2, 10, QChar('0'))
         .arg(timeLeft % 60, 2, 10, QChar('0')));
 
-    sp_statTotalLaps->setText(totalLaps > 0 ? QString::number(totalLaps) : "—");
-    sp_statPitSpeed->setText(pitSpeed > 0 ? QString::number(pitSpeed) + " km/h" : "—");
+    setLabelText(sp_statTotalLaps, totalLaps > 0 ? QString::number(totalLaps) : "—");
+    setLabelText(sp_statPitSpeed, pitSpeed > 0 ? QString::number(pitSpeed) + " km/h" : "—");
 
     if (idealLap > 0 && latestLap > 0)
-        sp_statPitWin->setText(QString("L%1–%2").arg(idealLap).arg(latestLap));
+        setLabelText(sp_statPitWin, QString("L%1–%2").arg(idealLap).arg(latestLap));
     else
-        sp_statPitWin->setText("—");
+        setLabelText(sp_statPitWin, "—");
 
-    sp_statRejoin->setText(rejoin > 0 ? QString("P%1").arg(rejoin) : "—");
+    setLabelText(sp_statRejoin, rejoin > 0 ? QString("P%1").arg(rejoin) : "—");
 
-    sp_trackTemp->setText(QString::number(trackTemp) + "°C");
-    sp_trackTemp->setStyleSheet("color:" + tnr::cardColor("session.trackTemp", trackTemp).name() + ";");
+    setLabelText(sp_trackTemp, QString::number(trackTemp) + "°C");
+    setLabelStyle(sp_trackTemp, "color:" + tnr::cardColor("session.trackTemp", trackTemp).name() + ";");
 
-    sp_airTemp->setText(QString::number(airTemp) + "°C");
-    sp_airTemp->setStyleSheet("color:" + tnr::cardColor("session.airTemp", airTemp).name() + ";");
+    setLabelText(sp_airTemp, QString::number(airTemp) + "°C");
+    setLabelStyle(sp_airTemp, "color:" + tnr::cardColor("session.airTemp", airTemp).name() + ";");
 
-    sp_trackLen->setText(trackLenM > 0 ? QString::number(trackLenM / 1000.0, 'f', 3) + " km" : "—");
+    setLabelText(sp_trackLen, trackLenM > 0 ? QString::number(trackLenM / 1000.0, 'f', 3) + " km" : "—");
 
     // time_of_day is minutes since midnight; show 12-hour clock like the app.
     const int tod  = (int)todS;
     const int h24  = (tod / 60) % 24;
     const int mins = tod % 60;
     const int h12  = (h24 % 12) ? (h24 % 12) : 12;
-    sp_timeOfDay->setText(QString("%1:%2 %3")
+    setLabelText(sp_timeOfDay, QString("%1:%2 %3")
         .arg(h12)
         .arg(mins, 2, 10, QChar('0'))
         .arg(h24 >= 12 ? "PM" : "AM"));
 
-    sp_weatherNow->setText(weatherLabel(weather));
+    setLabelText(sp_weatherNow, weatherLabel(weather));
     // Compact 1 uses the standard card text colour beside its tinted icon.
     // Compact 2 has no icon, so the name carries the weather tint instead.
-    if (weatherCompactLevel_ == 2) sp_weatherNow->setStyleSheet("color:" + weatherColor(weather).name() + ";");
+    if (weatherCompactLevel_ == 2) setLabelStyle(sp_weatherNow, "color:" + weatherColor(weather).name() + ";");
     applyWeatherIcon(sp_weatherNowIcon, weather, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
 
     {
@@ -873,37 +905,43 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
         for (int i = 0; i < 5; ++i) {
             if (i < count) {
                 const int fw = fc[i].weather;
-                sp_fcTime[i]->setText(QString("+%1m").arg(fc[i].time_offset));
-                sp_fcWeather[i]->setText(weatherLabel(fw));
-                if (weatherCompactLevel_ == 2) sp_fcWeather[i]->setStyleSheet("color:" + weatherColor(fw).name() + ";");
+                setLabelText(sp_fcTime[i], QString("+%1m").arg(fc[i].time_offset));
+                setLabelText(sp_fcWeather[i], weatherLabel(fw));
+                if (weatherCompactLevel_ == 2) setLabelStyle(sp_fcWeather[i], "color:" + weatherColor(fw).name() + ";");
                 applyWeatherIcon(sp_fcIcon[i], fw, weatherCompactLevel_ == 3 ? 18 : weatherCompactLevel_ == 1 ? 26 : 40);
                 int rain = fc[i].rain_percentage;
-                sp_fcRain[i]->setText(rain > 0 ? QString("%1%").arg(rain) : "");
+                setLabelText(sp_fcRain[i], rain > 0 ? QString("%1%").arg(rain) : "");
             } else {
-                sp_fcTime[i]->setText("");
-                sp_fcWeather[i]->setText("");
-                if (sp_fcIcon[i]) sp_fcIcon[i]->clear();
-                sp_fcRain[i]->setText("");
+                setLabelText(sp_fcTime[i], "");
+                setLabelText(sp_fcWeather[i], "");
+                if (sp_fcIcon[i] && sp_fcIcon[i]->property("tnrWeatherIcon").isValid()) {
+                    sp_fcIcon[i]->clear();
+                    sp_fcIcon[i]->setProperty("tnrWeatherIcon", QVariant());
+                }
+                setLabelText(sp_fcRain[i], "");
             }
         }
     }
 
     {
         auto* ms = static_cast<MarshalStripWidget*>(sp_marshalStrip);
-        ms->zones.clear();
+        std::vector<std::pair<float, int>> zones;
         for (const tnrp::MarshalZone& z : session->marshal_zones) {
             if (z.flag != -1) {
-                ms->zones.push_back({(float)z.zone_start, z.flag});
+                zones.push_back({(float)z.zone_start, z.flag});
             }
         }
-        ms->update();
+        if (ms->zones != zones) {
+            ms->zones = std::move(zones);
+            ms->update();
+        }
     }
 
     if (timing) {
         for (const TimingCar& car : timing->cars) {
             if (car.idx == timing->player_idx) {
                 int lap = car.lap_num;
-                sp_statRemain->setText((totalLaps > 0 && lap > 0)
+                setLabelText(sp_statRemain, (totalLaps > 0 && lap > 0)
                     ? QString::number(totalLaps - lap + 1) : "—");
                 break;
             }
@@ -916,7 +954,13 @@ void SessionPage::updateSession(const tnrp::SessionRow* session, const TimingRow
 void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
     if (!sp_eventsList || eventLog_.empty()) return;
 
-    sp_eventsList->clear();
+    const bool rebuild = renderedEventCount_ == 0 || renderedEventCount_ > eventLog_.size();
+    if (!rebuild && renderedEventCount_ == eventLog_.size()) return;
+    if (rebuild) sp_eventsList->clear();
+
+    int avail = sp_eventsList->viewport()->width();
+    if (avail <= 0) avail = sp_eventsList->width() - 4;
+    if (avail <= 0) avail = 240;
 
     auto get3LetterCode = [&](int carIdx) -> QString {
         if (carIdx < 0 || !participants) return "—";
@@ -931,7 +975,16 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
         return "—";
     };
 
-    for (int i = (int)eventLog_.size() - 1; i >= 0; --i) {
+    // Initial population is newest-first. Later calls create only the newly
+    // arrived rows and insert each at the front, preserving that same order.
+    const int first = rebuild ? (int)eventLog_.size() - 1 : (int)renderedEventCount_;
+    const int step = rebuild ? -1 : 1;
+    auto installRow = [this, rebuild](QListWidgetItem* item, QWidget* widget) {
+        if (rebuild) sp_eventsList->addItem(item);
+        else         sp_eventsList->insertItem(0, item);
+        sp_eventsList->setItemWidget(item, widget);
+    };
+    for (int i = first; rebuild ? i >= 0 : i < (int)eventLog_.size(); i += step) {
         const tnrp::RaceEventRow& ev = eventLog_[i];
         const std::string& code = ev.code;
 
@@ -1032,8 +1085,7 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
 
             auto* item = new QListWidgetItem;
             item->setSizeHint(QSize(avail, rowH));
-            sp_eventsList->addItem(item);
-            sp_eventsList->setItemWidget(item, rowW);
+            installRow(item, rowW);
         } else {
             const int hPad = 8, vPad = 6, gap = 2;
             QWidget* rowW = new QWidget;
@@ -1087,10 +1139,10 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
 
             auto* item = new QListWidgetItem;
             item->setSizeHint(QSize(avail, rowH));
-            sp_eventsList->addItem(item);
-            sp_eventsList->setItemWidget(item, rowW);
+            installRow(item, rowW);
         }
     }
+    renderedEventCount_ = eventLog_.size();
 }
 
 // ── Proximity widget updater ──────────────────────────────────────────────
@@ -1100,7 +1152,8 @@ void SessionPage::updateProximity(const TimingRow* timing, const tnrp::Participa
 
     int playerIdx = timing->player_idx;
     if (playerIdx < 0) {
-        for (int i = 0; i < 3; ++i) sp_proxRow[i]->setVisible(false);
+        for (int i = 0; i < 3; ++i)
+            if (sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(false);
         return;
     }
 
@@ -1117,7 +1170,8 @@ void SessionPage::updateProximity(const TimingRow* timing, const tnrp::Participa
         if (cars[i].idx == playerIdx) { playerSortIdx = i; break; }
 
     if (playerSortIdx < 0) {
-        for (int i = 0; i < 3; ++i) sp_proxRow[i]->setVisible(false);
+        for (int i = 0; i < 3; ++i)
+            if (sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(false);
         return;
     }
 
@@ -1148,28 +1202,31 @@ void SessionPage::updateProximity(const TimingRow* timing, const tnrp::Participa
 
     for (int i = 0; i < 3; ++i) {
         int si = rowSlot[i];
-        if (si < 0 || si >= n) { sp_proxRow[i]->setVisible(false); continue; }
-        sp_proxRow[i]->setVisible(true);
+        if (si < 0 || si >= n) {
+            if (sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(false);
+            continue;
+        }
+        if (!sp_proxRow[i]->isVisible()) sp_proxRow[i]->setVisible(true);
         const CarEntry& ce = cars[si];
         bool isPlayer = (ce.idx == playerIdx);
         bool isLeader = (ce.pos == 1);
 
-        sp_proxPos[i]->setText(QString("P%1").arg(ce.pos));
-        sp_proxName[i]->setText(driverName(ce.idx));
+        setLabelText(sp_proxPos[i], QString("P%1").arg(ce.pos));
+        setLabelText(sp_proxName[i], driverName(ce.idx));
 
         if (isPlayer) {
-            sp_proxPos[i]->setStyleSheet("color:#5794F2;");
-            sp_proxName[i]->setStyleSheet("color:#5794F2;");
-            sp_proxGap[i]->setText("—");
+            setLabelStyle(sp_proxPos[i], "color:#5794F2;");
+            setLabelStyle(sp_proxName[i], "color:#5794F2;");
+            setLabelText(sp_proxGap[i], "—");
         } else {
-            sp_proxPos[i]->setStyleSheet("");
-            sp_proxName[i]->setStyleSheet("");
+            setLabelStyle(sp_proxPos[i], "");
+            setLabelStyle(sp_proxName[i], "");
             if (isLeader)
-                sp_proxGap[i]->setText("LEAD");
+                setLabelText(sp_proxGap[i], "LEAD");
             else if (ce.gapMs > 0)
-                sp_proxGap[i]->setText(QString("+%1.%2").arg(ce.gapMs/1000).arg(ce.gapMs%1000, 3, 10, QChar('0')));
+                setLabelText(sp_proxGap[i], QString("+%1.%2").arg(ce.gapMs/1000).arg(ce.gapMs%1000, 3, 10, QChar('0')));
             else
-                sp_proxGap[i]->setText("—");
+                setLabelText(sp_proxGap[i], "—");
         }
     }
 }
@@ -1195,14 +1252,10 @@ void SessionPage::updateTrackMap(const tnrp::SessionRow* session,
         trackMap_->setSlmTrackStatus(session->active_aero_track_status);
     }
 
-    // Theme: derive light/dark from the active palette.
+    // Theme can change at runtime; the map setter is guarded and rebuilds only
+    // when the effective palette actually changed.
     const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
     trackMap_->setDark(dark);
-    trackMap_->setLabelMode(static_cast<TrackMapWidget::LabelMode>(
-        settings_.value("ui/trackMapLabelMode", 0).toInt()));
-    trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", true).toBool());
-    trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
-    trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
 
     if (participants)
         trackMap_->setParticipants(*participants);

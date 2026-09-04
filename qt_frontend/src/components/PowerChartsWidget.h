@@ -2,16 +2,16 @@
 
 #include <QWidget>
 #include <QPointer>
+#include <QString>
 #include <cstdint>
 
 class ChartView;
 class SessionModel;
-class QTimer;
 class QGridLayout;
 class GraphTable;
 
 // The Power page's four graphs — power split / ERS harvest / ERS store / fuel —
-// rendered as panels of ONE ChartView (a single QCustomPlot / OpenGL context /
+// rendered as panels of ONE ChartView (a single QRhi render target /
 // replot) rather than four separate widgets. Laid out 2×2 (split + harvest over
 // store + fuel); any section can be hidden. All four read stsBuf.
 class PowerChartsWidget : public QWidget {
@@ -45,13 +45,13 @@ private:
     float currentTime() const;
 
     QPointer<SessionModel> model_;
-    QTimer*   refreshTimer_ = nullptr;
     bool      dirty_        = false;
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;
     float     prevEndTime_  = -9999.0f;
     float     lastAddedTime_= -9999.0f;
+    QString   dataModeKey_;
 
     enum Section { SPLIT = 0, HARVEST = 1, STORE = 2, FUEL = 3, SECTIONS = 4 };
     ChartView* chart_ = nullptr;
@@ -68,5 +68,12 @@ private:
     int storeId_     = -1;
     int fuelId_      = -1;
     int harvYId_     = -1;   // harvest Y axis, retargeted by applyHarvestScale
+    int splitIceRefId_ = -1;
+    int splitMgukRefId_ = -1;
+    int harvKRefId_ = -1;
+    int harvHRefId_ = -1;
+    int storeRefId_ = -1;
+    int fuelRefId_ = -1;
+    double harvestFixedMax_ = 4000.0;
     bool mguhVisible_ = true;
 };

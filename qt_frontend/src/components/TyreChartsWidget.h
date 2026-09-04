@@ -2,10 +2,10 @@
 
 #include <QWidget>
 #include <QPointer>
+#include <QString>
 
 class ChartView;
 class SessionModel;
-class QTimer;
 class QGridLayout;
 class GraphTable;
 
@@ -39,7 +39,6 @@ private:
     void ensureTable(int section);   // build a section's raw-values table on demand
 
     QPointer<SessionModel> model_;
-    QTimer*   refreshTimer_ = nullptr;
     bool      grid_         = false;    // 2×2 layout vs 1×4 row
     bool      dirty_        = false;
     bool      playback_     = false;
@@ -52,14 +51,17 @@ private:
     float prevEndTime_  = -9999.0f;
     float lastAddedTime_= -9999.0f;
     float lastAddedDamageTime_ = -9999.0f;
+    QString dataModeKey_;
 
     // The four sections (surface / inner / brake / wear) are panels of ONE ChartView
-    // — a single QCustomPlot / GL context / replot instead of four separate widgets.
+    // — a single QRhi render target / repaint instead of four separate widgets.
     enum Section { SURF = 0, INNER = 1, BRAKE = 2, WEAR = 3, SECTIONS = 4 };
     ChartView* chart_ = nullptr;
     QGridLayout* outer_ = nullptr;   // holds chart_ + any table-mode section tables
     int  xId_[SECTIONS]             = {};   // bottom (time) axis id per panel
+    int  yId_[SECTIONS]             = {};
     int  seriesIds_[SECTIONS][4]    = {};   // [section][FL/FR/RL/RR]
+    int  referenceIds_[SECTIONS][4] = {};
     bool visible_[SECTIONS]         = { true, true, true, true };
     bool tableMode_[SECTIONS]       = { false, false, false, false };   // false = chart, true = table
     GraphTable* table_[SECTIONS]    = { nullptr, nullptr, nullptr, nullptr };

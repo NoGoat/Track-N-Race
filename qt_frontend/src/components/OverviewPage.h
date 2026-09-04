@@ -15,6 +15,7 @@ class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QShowEvent;
 class SessionModel;
 class TelemetryChart;
 class TyreCardsWidget;
@@ -39,6 +40,7 @@ public:
     void onStatus(const StatusRow& row);
     void onDamage(const DamageRow& row);
     void onLap(const LapRow& row);
+    void flushPending();
 
     // Refresh the per-corner tyre cards from the latest telemetry + damage rows
     // (nullptr = not yet seen).
@@ -75,8 +77,12 @@ public:
     // 1 Compact, 2 Ultra Compact 1, 3 Ultra Compact 2.
     void setTyresLevel(int level);
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private:
     void refreshCards();   // recompute value + colour for every built card
+    void refreshDamage();
     void refreshTelemetryTable();   // repopulate the Speed/RPM/ERS raw-values table
     void buildStatCards();     // (re)populate the stats row with cards at the current density
     void buildDamageCards();   // (re)populate both damage rows at the current density
@@ -100,6 +106,8 @@ private:
         int pos = 0; int lapNum = 0;
     } cache_;
     std::optional<DamageRow> lastDamage_;   // last damage row, replayed after a compact rebuild
+    bool cardsDirty_ = true;
+    bool damageDirty_ = false;
     bool statsCompact_  = false;  // per-section compact density (ui/compact/overview*)
     bool damageCompact_ = false;
     int  tyresLevel_    = 0;       // TyreCardsWidget::Level (0 Full … 3 Ultra Compact 2)

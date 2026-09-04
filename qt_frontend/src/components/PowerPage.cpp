@@ -103,7 +103,7 @@ PowerPage::PowerPage(SessionModel* model, QWidget* parent)
 
     // ── Charts ───────────────────────────────────────────────
     // Split / harvest / store / fuel are now panels of one ChartView (a single
-    // QCustomPlot / OpenGL context / replot), laid out 2×2 — see PowerChartsWidget.
+    // QRhi render target / repaint), laid out 2×2 — see PowerChartsWidget.
     charts_ = new PowerChartsWidget;
     charts_->setModel(model);
     vbox->addWidget(charts_, 1);
@@ -252,9 +252,9 @@ void PowerPage::update(const StatusRow* status) {
     for (const PCard& pc : cards) {
         QLabel* l = cardValue_.value(pc.key);
         if (!l) continue;
-        l->setText(pc.value);
+        if (l->text() != pc.value) l->setText(pc.value);
         const QColor c = tnr::cardColor(pc.colorSpec, pc.self);
-        if (c.isValid()) {
+        if (c.isValid() && l->palette().color(QPalette::WindowText) != c) {
             QPalette p = l->palette();
             p.setColor(QPalette::WindowText, c);
             l->setPalette(p);

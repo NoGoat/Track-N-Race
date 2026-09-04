@@ -24,10 +24,10 @@ namespace detail { class TnrdIndexedArchive; struct V4TimedRow; }
 // Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
 // header distinguishes V2 from V3.
-// Legacy formats decompress to a temp file and build a time/type index. In
-// Electron binary-playback mode V4/V5 use their asynchronous load phase to
-// validate every indexed chunk and build a compact seek cache; JSON-only hosts
-// retain the metadata-only/lazy-chunk path.
+// Legacy formats decompress to a temp file and build a time/type index. V4/V5
+// stream their strategy row families once at load to retain one processor
+// checkpoint per completed lap, then release all decoded payloads and worker
+// scratch. Playback data remains lazy through the compact control-plane index.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
@@ -48,11 +48,9 @@ public:
     TnrdFormat loadedFormat() const { return loadedFormat_; }
     const std::string& lastError() const { return lastError_; }
 
-    // Enable the Electron binary playback fast path BEFORE load(): the index
-    // pass additionally pre-encodes the hot rows (telemetry/motion/motion_ex)
-    // into a packed binary store (tnrp/BinaryRows.h), keeps the sparse cold
-    // rows (status/damage/lap) for seek flushes, and fills the slim per-lap
-    // chart points in lapBlocksMessage(). Off by default (JSON-only consumers).
+    // Enable packed binary delivery for hot playback rows and seek flushes.
+    // Indexed V4/V5 recordings remain metadata-only at load; requested chunks
+    // are decoded and packed on demand through bounded caches.
     void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
 
     // Include the small per-lap status summaries used for tyre labels without
@@ -159,12 +157,6 @@ private:
     // A stored raw JSONL row plus its session_time (for ordering). The json is
     // emitted verbatim into the playback payload via glz::raw_json.
     struct TimedRaw { float t; std::string json; uint64_t sequence{}; };
-    struct PackedHistoryLane {
-        std::vector<uint8_t> bytes;
-        std::vector<float> times;
-        // One start per record plus a sentinel end offset.
-        std::vector<size_t> offsets;
-    };
     struct V4PlaybackRow { float t; uint64_t sequence; std::string json; };
     struct V4PlaybackLane {
         std::vector<size_t> chunks;
@@ -198,13 +190,6 @@ private:
     std::FILE*  tempFile_    = nullptr;
     std::string tempPath_;
     std::unique_ptr<detail::TnrdIndexedArchive> indexedArchive_;
-    // Load-time V4/V5 seek cache. Hot history is retained in the same compact
-    // packed form sent to Electron. Sparse rows stay as JSON because they are
-    // small and must be restored verbatim. Positions intentionally remain in
-    // the archive LRU: retaining every multi-car snapshot would dominate RAM.
-    std::array<PackedHistoryLane, 16> indexedPackedHistory_;
-    std::array<std::vector<TimedRaw>, 16> indexedSparseRows_;
-    bool indexedSeekCacheReady_ = false;
     struct PackedSeekCacheEntry {
         std::vector<uint8_t> bytes;
         std::list<uint64_t>::iterator lru;
@@ -264,10 +249,13 @@ private:
     size_t lowerBoundTime(float t) const;
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
-    bool buildIndexedSeekCache();
     bool buildSectorDistanceMetadata();
     bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
     std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
+    bool forEachIndexedRange(
+        float fromTime, float toTime, uint32_t rowTypeMask,
+        const std::function<bool(const detail::V4TimedRow&)>& callback,
+        const std::function<bool()>& cancelled = {});
 
     // Linear forward walk from playPos_ (same early-stop semantics as the old
     // per-row pullUntil on out-of-order rows): first index >= playPos_ whose

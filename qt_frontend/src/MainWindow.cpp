@@ -29,6 +29,7 @@
 #include "components/XlsxExportWorker.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
+#include "PresentationScheduler.h"
 #include <tnrp/Capabilities.h>
 
 #include <QApplication>
@@ -55,9 +56,13 @@
 #include <QWindowStateChangeEvent>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QSet>
 #include <QWindow>
 #include <QProgressBar>
 #include <QStyleFactory>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <algorithm>
 #include <map>
@@ -94,7 +99,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
     setWindowTitle("Track N Race Background Recorder");
-    setMinimumSize(480, 520);   // toolbar collapses into its ⋯ menu below ~full width
+    setMinimumSize(1200, 700);  // match the Electron frontend's minimum window size
     // Restore the last windowed size/position, then maximize directly if we were
     // closed maximized — setting the state before the first show maps the window
     // maximized straight away (no small-window flash). Un-maximizing afterwards is
@@ -136,6 +141,15 @@ MainWindow::MainWindow(QWidget* parent)
         QApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
 
+    // Match Electron's TimeChart defaults before any chart can enqueue work:
+    // display refresh while focused, 30 Hz while another app has focus.
+    PresentationScheduler::instance().configureChartFrameRates(
+        chartFpsInFocus(), chartFpsOutOfFocus());
+
+    // Lap-aware session model is also the single source of truth for ordinary
+    // chart configuration, so create it before wiring the toolbar.
+    model_ = new SessionModel(this);
+
     // Self-contained toolbar: page tabs, session timer, chart-window segment,
     // Open/Edit Layout/Settings actions, ⋯ overflow. Page names must match the
     // Page enum and the stack->addWidget() order below.
@@ -148,13 +162,36 @@ MainWindow::MainWindow(QWidget* parent)
     // suppressed so no stray line shows under the toolbar.
     setStyleSheet("QMainWindow::separator { width: 0px; height: 0px; background: transparent; }");
 
-    connect(toolbar_, &AppToolbar::chartWindowChanged, this, [this](float secs) {
-        if (overviewPage_) overviewPage_->setWindowSeconds(secs);
-        if (tyresPage_) tyresPage_->setWindowSeconds(secs);
-        if (inputPage_) inputPage_->setWindowSeconds(secs);
-        if (powerPage_) powerPage_->setWindowSeconds(secs);
-        if (miscPage_) miscPage_->setWindowSeconds(secs);
+    connect(toolbar_, &AppToolbar::chartWindowChanged, model_, &SessionModel::setGlobalChartWindow);
+    connect(toolbar_, &AppToolbar::chartReferenceLapChanged, model_, &SessionModel::setGlobalReferenceLap);
+    connect(toolbar_, &AppToolbar::sectorBoundariesChanged, model_, &SessionModel::setSectorBoundaries);
+    connect(toolbar_, &AppToolbar::cursorSyncChanged, model_, &SessionModel::setCursorSync);
+    connect(model_, &SessionModel::chartConfigurationChanged, this, [this] {
+        QVector<int> laps;
+        for (const LapBlock& lap : model_->data().laps)
+            if (!lap.progress.isEmpty() || model_->playbackCatalogHasLapDistance())
+                laps.push_back(lap.lapNum);
+        if (model_->data().curLapNum >= 0 && !model_->data().curLap.progress.isEmpty()) laps.push_back(model_->data().curLapNum);
+        toolbar_->setChartLapAvailability(laps, model_->playbackMode(),
+                                          model_->lapCoordinatesAvailable());
+        toolbar_->setChartOptions(model_->globalChartWindow(), model_->globalReferenceLap(),
+                                  model_->sectorBoundaries(), model_->cursorSync());
+        updatePlaybackDataRequirements();
     });
+    connect(model_, &SessionModel::lapsChanged, this, [this] {
+        QVector<int> laps;
+        for (const LapBlock& lap : model_->data().laps)
+            if (!lap.progress.isEmpty() || model_->playbackCatalogHasLapDistance())
+                laps.push_back(lap.lapNum);
+        if (model_->data().curLapNum >= 0 && !model_->data().curLap.progress.isEmpty()) laps.push_back(model_->data().curLapNum);
+        toolbar_->setChartLapAvailability(laps, model_->playbackMode(),
+                                          model_->lapCoordinatesAvailable());
+        toolbar_->setChartOptions(model_->globalChartWindow(), model_->globalReferenceLap(),
+                                  model_->sectorBoundaries(), model_->cursorSync());
+    });
+    toolbar_->setChartLapAvailability({}, false, true);
+    toolbar_->setChartOptions(model_->globalChartWindow(), model_->globalReferenceLap(),
+                              model_->sectorBoundaries(), model_->cursorSync());
     connect(toolbar_, &AppToolbar::editLayoutRequested, this, [this] {
         if (currentPage_ == Overview) {
             EditOverviewLayoutDialog* dlg = new EditOverviewLayoutDialog(overviewPage_, this);
@@ -184,10 +221,6 @@ MainWindow::MainWindow(QWidget* parent)
         dlg->show();
     });
 
-    // Lap-aware session model — the chart's single source of truth, fed by both
-    // live UDP and playback. Created before the Overview tab so the chart can bind it.
-    model_ = new SessionModel(this);
-
     // Order must match the Page enum and the AppToolbar page-name list above.
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(overviewPage_ = new OverviewPage(model_));   // Overview
@@ -212,17 +245,10 @@ MainWindow::MainWindow(QWidget* parent)
     // Apply persisted per-graph Chart/Table choices now that every page exists.
     applyGraphViews();
 
-    // Coalesces panel rebuilds to one per event-loop pass (one per arriving packet,
-    // 20..60 Hz) so bursts can't stack redundant rebuilds, without a fixed rate cap.
-    uiRefreshTimer_ = new QTimer(this);
-    uiRefreshTimer_->setSingleShot(true);
-    uiRefreshTimer_->setInterval(0);
-    connect(uiRefreshTimer_, &QTimer::timeout, this, &MainWindow::flushUiRefresh);
-
     // ── Bottom playback bar ────────────────────────────────────────────────────
-    // Owns the TnrdPlayer and the transport bar; MainWindow reacts to its
-    // entered/exited/rowReady/timeChanged signals below.
-    playback_ = new PlaybackController(model_, this);
+    // Owns the shared-engine command facade and transport bar. The engine is
+    // attached after recreateEngine() below.
+    playback_ = new PlaybackController(model_, nullptr, this);
     playback_->setShowLabels(toolbarLabelsEnabled());   // match the toolbar labels option
 
     // Stack + separator + playback bar stacked vertically as the central widget
@@ -288,13 +314,20 @@ MainWindow::MainWindow(QWidget* parent)
     connect(toolbar_, &AppToolbar::analyzeResetZoomRequested, analyzePage_, &AnalyzePage::resetZoom);
     connect(analyzePage_, &AnalyzePage::navigationEnabledChanged,
             toolbar_, &AppToolbar::setAnalyzeControlsEnabled);
+    connect(analyzePage_, &AnalyzePage::dataRequirementsChanged,
+            this, &MainWindow::updatePlaybackDataRequirements);
     connect(toolbar_, &AppToolbar::pageSelected, this, [this](int i) {
         currentPage_ = static_cast<Page>(i);   // refresh the newly-shown page from any pending data
+        if (currentPage_ == Overview || currentPage_ == Tyres) dirtyTyres_ = true;
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
                                        currentPage_ == Power || currentPage_ == Misc ||
                                        currentPage_ == Session);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
-        flushUiRefresh();
+        // Return from the click handler before pruning/requesting history or
+        // rebuilding the newly visible page.  This lets the tab selection paint
+        // immediately and collapses rapid tab changes onto the final page.
+        schedulePlaybackDataRequirements();
+        scheduleUiRefresh();
     });
 
     connect(toolbar_, &AppToolbar::openRecordingRequested, this, [this] {
@@ -363,6 +396,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
         if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
         if (miscPage_) miscPage_->setPlaybackMode(true, currentTime);
+        model_->setPlaybackMode(true);
+        updatePlaybackDataRequirements();
         hotSmoother_.reset();   // entering playback: drop live fill state
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
         const QString trackName = hdr.track_name.empty()
@@ -372,22 +407,61 @@ MainWindow::MainWindow(QWidget* parent)
         setWindowTitle(QString("Track N Race — %1 %2 [Playback]").arg(trackName, sessName));
     });
 
-    connect(playback_, &PlaybackController::rowReady, this, [this](const tnrp::AnyRow& row) {
-        emitLiveData(row);   // panels only — the charts read the pre-scanned model
-    });
-
     // A seek replays a state snapshot (incl. the session packet); swallow the one
     // safety-car toast that snapshot would otherwise raise — race_events aren't
     // replayed on seek, so those need no special handling.
     connect(playback_, &PlaybackController::seeked, this, [this] { scSuppressOnce_ = true; });
+    connect(playback_, &PlaybackController::lapCatalogInstalled,
+            this, &MainWindow::updatePlaybackDataRequirements);
+    connect(playback_, &PlaybackController::activeLapChanged,
+            this, [this](int) { updatePlaybackDataRequirements(); });
+    connect(playback_, &PlaybackController::seekStarted, this, [this](uint64_t generation) {
+        playbackSeekInstalling_ = true;
+        playbackSeekGeneration_ = generation;
+        pendingSeekStateRows_.clear();
+    });
+    connect(playback_, &PlaybackController::historyInstalled, this, [this](uint64_t generation) {
+        if (!playbackSeekInstalling_ || generation != playbackSeekGeneration_) return;
+        playbackSeekInstalling_ = false;
+        static const QByteArray orderedTypes[] = {
+            "session", "participants", "timing", "all_status", "lap",
+            "status", "damage", "positions", "tyre_sets", "strategy"
+        };
+        for (const QByteArray& type : orderedTypes) {
+            const auto it = pendingSeekStateRows_.constFind(type);
+            if (it == pendingSeekStateRows_.cend()) continue;
+            if (auto parsed = tnrp::parseRow(std::string_view(
+                    it->constData(), static_cast<size_t>(it->size()))))
+                emitLiveData(*parsed);
+        }
+        pendingSeekStateRows_.clear();
+        // The active seek window changed, while the independent indexed-lap
+        // cache remains valid. Re-evaluate current/selected dependencies so a
+        // newly active lap is materialised immediately.
+        updatePlaybackDataRequirements();
+        const float t = playback_->currentTime();
+        switch (currentPage_) {
+            case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
+            case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
+            case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+            case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
+            case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
+            case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
+            default: break;
+        }
+    });
 
     connect(playback_, &PlaybackController::timeChanged, this, [this](float t) {
-        if (overviewPage_) overviewPage_->setCurrentTime(t);
-        if (analyzePage_) analyzePage_->setCurrentTime(t);
-        if (tyresPage_) tyresPage_->setCurrentTime(t);
-        if (inputPage_) inputPage_->setCurrentTime(t);
-        if (powerPage_) powerPage_->setCurrentTime(t);
-        if (miscPage_) miscPage_->setCurrentTime(t);
+        if (playbackSeekInstalling_ || !renderingActive_) return;
+        switch (currentPage_) {
+            case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
+            case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
+            case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+            case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
+            case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
+            case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
+            default: break;
+        }
     });
 
     connect(playback_, &PlaybackController::exited, this, [this] {
@@ -402,6 +476,9 @@ MainWindow::MainWindow(QWidget* parent)
         if (inputPage_) inputPage_->setPlaybackMode(false);
         if (powerPage_) powerPage_->setPlaybackMode(false);
         if (miscPage_) miscPage_->setPlaybackMode(false);
+        model_->setPlaybackMode(false);
+        playbackSeekInstalling_ = false;
+        pendingSeekStateRows_.clear();
         setWindowTitle("Track N Race Background Recorder");
     });
 
@@ -411,22 +488,16 @@ MainWindow::MainWindow(QWidget* parent)
     // sink connection must exist before the engine is constructed, because the
     // engine emits an initial protocol_status row from its constructor.
     engineSink_ = new EngineSink(this);
-    connect(engineSink_, &EngineSink::rowReady, this, &MainWindow::onEngineRow);
+    connect(engineSink_, &EngineSink::rowsReady, this, &MainWindow::onEngineRow);
     connect(engineSink_, &EngineSink::binaryReady, this, &MainWindow::onEngineBinary);
+    connect(engineSink_, &EngineSink::seekFlushReady, this,
+            [this](const std::shared_ptr<EngineSeekFlush>& flush) {
+        if (playback_) playback_->handleSeekFlush(flush);
+    });
 
-    tnrp::Config cfg;
-    cfg.port            = static_cast<uint16_t>(udpPort());
-    cfg.bindAddress     = udpBindAddress().toStdString();
-    cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
-    cfg.hotRowsAsJson   = false;  // hot 60 Hz rows arrive packed via onEngineBinary — no JSON round-trip
-    cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty();
-    cfg.outputDirectory = outputDirectory.toStdString();
-    engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
-
-    if (!engine_->startUdp())
-        QMessageBox::critical(this, "UDP Error",
-            QString("Failed to bind to UDP port %1.\n"
-            "Is another telemetry tool or Track-N-Race already open?").arg(udpPort()));
+    const QString udpError = recreateEngine();
+    if (!udpError.isEmpty())
+        QMessageBox::critical(this, "UDP Error", udpError);
 
     // Forward-fill timer: re-emits the last hot row during dropped/late frames so
     // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
@@ -456,6 +527,7 @@ void MainWindow::setTyreGraphLifeMode(bool life) {
 }
 
 MainWindow::~MainWindow() {
+    if (playback_) playback_->shutdown();
     // The engine's destructor stops the UDP thread and flushes/closes any active
     // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
     engine_.reset();
@@ -605,17 +677,17 @@ void MainWindow::updateRenderingState() {
 
 void MainWindow::setRenderingActive(bool on) {
     renderingActive_ = on;
+    updatePlaybackDataRequirements();
     if (on) {
-        // Resume: let the model flush the data it kept ingesting while paused (one
-        // emit rebuilds the charts from full history), wake the track map, and
-        // rebuild the visible page from the dirty flags accumulated while paused.
+        // Resume after the engine has restored the selected bounded history.
         if (model_)    model_->setLiveFlushActive(true);
         if (sessionPage_) sessionPage_->setRenderingActive(true);
         flushUiRefresh();
     } else {
-        // Pause: stop every timer-driven repaint. Data ingest (ingestForModel)
-        // and the engine's UDP/recording path keep running so nothing is lost.
-        if (uiRefreshTimer_) uiRefreshTimer_->stop();
+        // Pause presentation and unsubscribe the host. UDP parsing/recording and
+        // the native playback clock remain independent of this UI gate.
+        PresentationScheduler::instance().cancel(this);
+        uiRefreshPending_ = false;
         if (model_)    model_->setLiveFlushActive(false);
         if (sessionPage_) sessionPage_->setRenderingActive(false);
     }
@@ -706,9 +778,8 @@ void MainWindow::setStyleName(const QString& name) {
     }
 
     // Breeze reloads its animation/window/shadow machinery when its application
-    // palette is installed below. Release QCustomPlot's offscreen GL surfaces
-    // before that synchronous repolish/palette pass; queued palette replots then
-    // use software buffers until the GL resources are recreated next turn.
+    // palette is installed below. The compatibility hook is now a no-op for the
+    // QRhi renderer, which safely survives widget repolishing.
     if (breeze)
         ChartView::suspendOpenGlForStyleChange();
 
@@ -883,6 +954,22 @@ void MainWindow::setChartMsaaSamples(int samples) {
     ChartView::reapplyRenderSettings();   // live re-apply to every chart, no restart
 }
 
+void MainWindow::setChartGraphicsBackend(const QString& backend) {
+    settings.setValue("ui/chartGraphicsBackend", backend);
+}
+
+void MainWindow::setChartFpsInFocus(int fps) {
+    settings.setValue("ui/chartFpsInFocus", fps);
+    PresentationScheduler::instance().configureChartFrameRates(
+        chartFpsInFocus(), chartFpsOutOfFocus());
+}
+
+void MainWindow::setChartFpsOutOfFocus(int fps) {
+    settings.setValue("ui/chartFpsOutOfFocus", fps);
+    PresentationScheduler::instance().configureChartFrameRates(
+        chartFpsInFocus(), chartFpsOutOfFocus());
+}
+
 void MainWindow::setTrackMapLabelMode(int mode) {
     settings.setValue("ui/trackMapLabelMode", mode);
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr) {
@@ -913,26 +1000,194 @@ void MainWindow::setProtocolOverride(const QString& ovr) {
     if (engine_) engine_->setOverride(tnrp::overrideFromString(ovr.toStdString()));
 }
 
-// Port / bind-address changes rebind the live UDP socket without recreating the
-// engine (Engine::restartUdp stops the listener, re-binds and resets the parser).
-// Both guard against no-op re-applies so the socket isn't churned when the field
-// loses focus unchanged.
-void MainWindow::setUdpPort(int port) {
-    if (port == udpPort()) return;
-    settings.setValue("udp/port", port);
-    if (engine_) engine_->restartUdp(static_cast<uint16_t>(port), udpBindAddress().toStdString());
+bool MainWindow::chartDynamicYAxis(tnr::GraphSection section) const {
+    return model_ && model_->dynamicYAxis(section);
 }
 
-void MainWindow::setUdpBindAddress(const QString& addr) {
-    if (addr == udpBindAddress()) return;
-    settings.setValue("udp/bindAddress", addr);
-    if (engine_) engine_->restartUdp(static_cast<uint16_t>(udpPort()), addr.toStdString());
+void MainWindow::setChartDynamicYAxis(tnr::GraphSection section, bool dynamic) {
+    if (model_) model_->setDynamicYAxis(section, dynamic);
+}
+
+bool MainWindow::chartSecondaryVerticalCrosshair() const {
+    return model_ && model_->secondaryVerticalCrosshair();
+}
+
+bool MainWindow::chartSecondaryHorizontalCrosshair() const {
+    return model_ && model_->secondaryHorizontalCrosshair();
+}
+
+void MainWindow::setChartSecondaryCrosshairs(bool vertical, bool horizontal) {
+    if (model_) model_->setSecondaryCrosshairs(vertical, horizontal);
+}
+
+QVector<UdpForwardTargetSetting> MainWindow::udpForwardTargets() const {
+    QVector<UdpForwardTargetSetting> targets;
+    const QJsonDocument document = QJsonDocument::fromJson(
+        settings.value("udp/forwardTargets", "[]").toByteArray());
+    if (!document.isArray()) return targets;
+
+    const QJsonArray array = document.array();
+    const qsizetype count = std::min<qsizetype>(
+        array.size(), static_cast<qsizetype>(tnrp::kMaxUdpForwardTargets));
+    targets.reserve(count);
+    for (qsizetype i = 0; i < count; ++i) {
+        const QJsonObject object = array.at(i).toObject();
+        if (!object.value("address").isString() || !object.value("port").isDouble())
+            continue;
+        targets.push_back({object.value("address").toString(), object.value("port").toInt()});
+    }
+    return targets;
+}
+
+QString MainWindow::applyUdpConfiguration(
+    int port, const QString& bindAddress, bool forwardingEnabled,
+    const QVector<UdpForwardTargetSetting>& targets)
+{
+    // Match Electron's apply order exactly: the draft becomes persisted state
+    // before restart, and a bind/start failure does not roll those values back.
+    QJsonArray serializedTargets;
+    for (const UdpForwardTargetSetting& target : targets) {
+        if (serializedTargets.size() >= static_cast<qsizetype>(tnrp::kMaxUdpForwardTargets))
+            break;
+        QJsonObject object;
+        object.insert("address", target.address.trimmed());
+        object.insert("port", target.port);
+        serializedTargets.append(object);
+    }
+    settings.setValue("udp/port", port);
+    settings.setValue("udp/bindAddress", bindAddress);
+    settings.setValue("udp/forwardingEnabled", forwardingEnabled);
+    settings.setValue("udp/forwardTargets",
+                      QJsonDocument(serializedTargets).toJson(QJsonDocument::Compact));
+
+    return recreateEngine();
+}
+
+QString MainWindow::recreateEngine() {
+    // Config owns forwarding targets, so applying a changed target list requires
+    // the same stop/create/start lifecycle used by Electron's bridge manager.
+    // This is host adaptation only: the shared library and its public API remain
+    // unchanged.
+    if (playback_) playback_->setEngine(nullptr);
+    if (engine_) engine_->flushRecording();
+    engine_.reset();
+
+    tnrp::Config cfg;
+    cfg.port            = static_cast<uint16_t>(udpPort());
+    cfg.bindAddress     = udpBindAddress().toStdString();
+    cfg.protocol        = tnrp::overrideFromString(currentProtocolOverride().toStdString());
+    cfg.binaryPlayback  = true;
+    cfg.hotRowsAsJson   = false;
+    cfg.loggingEnabled  = wantRecord && !outputDirectory.isEmpty() && !inPlayback_;
+    cfg.outputDirectory = outputDirectory.toStdString();
+    if (udpForwardingEnabled()) {
+        for (const UdpForwardTargetSetting& target : udpForwardTargets()) {
+            const QString address = target.address.trimmed();
+            if (address.isEmpty() || target.port < 1 || target.port > 65535)
+                continue;
+            cfg.udpForwardTargets.push_back({address.toStdString(),
+                                             static_cast<uint16_t>(target.port)});
+        }
+    }
+
+    engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
+    if (playback_) playback_->setEngine(engine_.get());
+    updatePlaybackDataRequirements();
+    if (engine_->startUdp()) return {};
+
+    const QString nativeError = QString::fromStdString(engine_->udpLastError());
+    if (playback_) playback_->setEngine(nullptr);
+    engine_.reset();
+    if (!nativeError.isEmpty()) return nativeError;
+    return QString("Failed to bind to UDP port %1.\n"
+                   "Is another telemetry tool or Track-N-Race already open?")
+        .arg(udpPort());
+}
+
+bool MainWindow::handleRecordingErrorRow(const QByteArray& json) {
+    // recording_error deliberately is not part of AnyRow: intercept the raw
+    // host-control row before parseRow, just as Electron main does before it
+    // forwards telemetry to the renderer.
+    if (!json.contains("recording_error")) return false;
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return false;
+    const QJsonObject object = document.object();
+    if (object.value("type").toString() != QStringLiteral("recording_error"))
+        return false;
+
+    const QString operation = object.value("operation").isString()
+        ? object.value("operation").toString() : QStringLiteral("unknown operation");
+    const QString message = object.value("message").isString()
+        ? object.value("message").toString() : QStringLiteral("Unknown recording error");
+    const QString path = object.value("path").isString()
+        ? object.value("path").toString() : QString();
+    qCritical("[recording] Native writer error: operation='%s' message='%s' path='%s'",
+              qUtf8Printable(operation), qUtf8Printable(message), qUtf8Printable(path));
+    showRecordingError(operation, message, path);
+    return true;
+}
+
+void MainWindow::showRecordingError(const QString& operation, const QString& message,
+                                    const QString& path)
+{
+    QString details = QStringLiteral("Operation: ") + operation + QStringLiteral("\n\n") + message;
+    if (!path.isEmpty())
+        details += QStringLiteral("\n\nDestination\n") + path;
+
+    // Maintain one current modal. A newer writer error replaces its contents;
+    // errors are neither queued nor deduplicated.
+    if (!recordingErrorDialog_) {
+        recordingErrorDialog_ = new QMessageBox(QMessageBox::Critical,
+            QStringLiteral("Session Recording Failed"),
+            QStringLiteral("Track N Race could not write the session recording."),
+            QMessageBox::Ok, this);
+        recordingErrorDialog_->setWindowModality(Qt::ApplicationModal);
+        recordingErrorDialog_->setDefaultButton(QMessageBox::Ok);
+        QMessageBox* dialog = recordingErrorDialog_;
+        connect(dialog, &QMessageBox::finished, this, [this, dialog] {
+            if (recordingErrorDialog_ == dialog) recordingErrorDialog_ = nullptr;
+            dialog->deleteLater();
+        });
+    }
+    recordingErrorDialog_->setInformativeText(details);
+    if (!recordingErrorDialog_->isVisible()) recordingErrorDialog_->open();
+    recordingErrorDialog_->raise();
+    recordingErrorDialog_->activateWindow();
 }
 
 void MainWindow::onEngineRow(const QByteArray& json) {
-    // While a clip is loaded, TnrdPlayer drives the UI; drop any live rows the
-    // engine is still parsing in the background (mirrors the old datagram drain).
-    if (inPlayback_) return;
+    // EngineSink coalesces cold/control traffic into JSONL. Process each row in
+    // order while retaining only one GUI callback for the whole producer burst.
+    if (json.contains('\n')) {
+        qsizetype offset = 0;
+        while (offset < json.size()) {
+            qsizetype end = json.indexOf('\n', offset);
+            if (end < 0) end = json.size();
+            if (end > offset) onEngineRow(json.mid(offset, end - offset));
+            offset = end + 1;
+        }
+        return;
+    }
+    if (handleRecordingErrorRow(json)) return;
+
+    // Playback lifecycle/state payloads belong to the engine-backed player
+    // facade, not AnyRow. Handling playback_loaded synchronously flips
+    // inPlayback_ before the following initial snapshot rows are routed.
+    if (playback_ && playback_->handleControlRow(json)) return;
+
+    if (inPlayback_ && playbackSeekInstalling_) {
+        const QByteArray key("\"type\":\"");
+        const qsizetype begin = json.indexOf(key);
+        if (begin >= 0) {
+            const qsizetype value = begin + key.size();
+            const qsizetype end = json.indexOf('"', value);
+            if (end > value) pendingSeekStateRows_.insert(json.mid(value, end - value), json);
+        }
+        return;
+    }
 
     std::optional<tnrp::AnyRow> parsed =
         tnrp::parseRow(std::string_view(json.constData(), (size_t)json.size()));
@@ -955,29 +1210,61 @@ void MainWindow::onEngineRow(const QByteArray& json) {
             if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
                 map->setAeroMode(tnrp::aeroMode(fmt) == "slm");
         }
-        return;
+        if (!inPlayback_) return;
     }
 
-    // The engine has already done format detection, duplicate rejection, recording and
-    // (when enabled) state-row deduplication; we only fan the row out to the live
-    // UI panels and the lap-aware SessionModel.
+    if (const auto* warning = std::get_if<tnrp::ProtocolWarningRow>(&*parsed)) {
+        const int detected = warning->detected_format && warning->forced_format
+            ? *warning->detected_format : 0;
+        const int forced = warning->detected_format && warning->forced_format
+            ? *warning->forced_format : 0;
+        if (detected != detectedProtocolWarningFormat_ ||
+            forced != forcedProtocolWarningFormat_) {
+            detectedProtocolWarningFormat_ = detected;
+            forcedProtocolWarningFormat_ = forced;
+            emit protocolWarningChanged(detected, forced);
+        }
+        if (!inPlayback_) return;
+    }
+
+    // The same typed path serves live and playback. In playback, histories are
+    // bounded by SessionModel and authoritative seeks replace them atomically.
     routeLiveRow(*parsed);
 }
 
 // Hot 60 Hz rows (telemetry/motion/motion_ex/positions) as one packed batch —
 // decoded straight into typed structs, no JSON anywhere on this path.
 void MainWindow::onEngineBinary(const QByteArray& batch) {
-    if (inPlayback_) return;
+    if (inPlayback_ && playbackSeekInstalling_) return;
+
+    // Every sample still enters SessionModel, but panel widgets need only the
+    // newest telemetry/position snapshot from a producer burst.  Publishing a
+    // panel update per packed record made catch-up batches monopolise the GUI
+    // thread without changing anything the user could see.
+    std::optional<TelemetryRow> latestTelemetry;
+    std::optional<PositionsRow> latestPositions;
+    if (model_) model_->beginIngestBatch();
     tnrp::bin::decodeBatch(reinterpret_cast<const uint8_t*>(batch.constData()),
                            (size_t)batch.size(),
-                           [this](auto&& row) { routeLiveRow(tnrp::AnyRow(std::move(row))); });
+                           [this, &latestTelemetry, &latestPositions](auto&& decoded) {
+        tnrp::AnyRow row(std::move(decoded));
+        ingestForModel(row);
+        if (!inPlayback_) feedHotSmoother(row);
+        if (const auto* telemetry = std::get_if<TelemetryRow>(&row))
+            latestTelemetry = *telemetry;
+        else if (const auto* positions = std::get_if<PositionsRow>(&row))
+            latestPositions = *positions;
+    });
+    if (model_) model_->endIngestBatch();
+    if (latestTelemetry) emitLiveData(*latestTelemetry);
+    if (latestPositions) emitLiveData(*latestPositions);
 }
 
 // Shared tail of the live paths: panels + SessionModel + forward-fill smoother.
 void MainWindow::routeLiveRow(const tnrp::AnyRow& row) {
     emitLiveData(row);
     ingestForModel(row);
-    feedHotSmoother(row);
+    if (!inPlayback_) feedHotSmoother(row);
 }
 
 // Records the latest real hot row in the forward-fill smoother (live only). The
@@ -994,10 +1281,14 @@ void MainWindow::feedHotSmoother(const tnrp::AnyRow& row) {
 // push through the same live path as real rows — display-only, never recorded.
 void MainWindow::onHotFillTick() {
     if (inPlayback_) return;   // playback feeds the model from the file, no fills
+    if (model_) model_->beginIngestBatch();
     for (const tnrp::AnyRow& f : hotSmoother_.tick()) {
-        emitLiveData(f);
         ingestForModel(f);
+        // Motion and MotionEx have no QWidget consumers; only telemetry needs
+        // to publish a latest-value panel snapshot.
+        if (std::holds_alternative<TelemetryRow>(f)) emitLiveData(f);
     }
+    if (model_) model_->endIngestBatch();
     // Track the detected cadence so the timer beats with the game's send rate.
     const int p = hotSmoother_.periodMs();
     if (hotFillTimer_ && hotFillTimer_->interval() != p) hotFillTimer_->setInterval(p);
@@ -1017,21 +1308,21 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
     } else if (const auto* status = std::get_if<StatusRow>(&row)) {
         if (overviewPage_) overviewPage_->onStatus(*status);
         lastPlayerStatusData = *status;
-        dirtyRacePanel_ = true; dirtyPower_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; dirtyPower_ = true; scheduleUiRefresh();
     } else if (const auto* dmg = std::get_if<DamageRow>(&row)) {
         if (overviewPage_) overviewPage_->onDamage(*dmg);
         lastPlayerDamageData = *dmg;
-        dirtyTyres_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyTyres_ = true; scheduleUiRefresh();
     } else if (const auto* ts = std::get_if<tnrp::TyreSetsRow>(&row)) {
         lastTyreSetsData = *ts;
-        dirtyTyreSets_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyTyreSets_ = true; scheduleUiRefresh();
     } else if (const auto* lap = std::get_if<LapRow>(&row)) {
         if (overviewPage_) overviewPage_->onLap(*lap);
         lastPlayerLapData = *lap;
-        dirtyRacePanel_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyRacePanel_ = true; scheduleUiRefresh();
     } else if (const auto* pos = std::get_if<PositionsRow>(&row)) {
         lastPositionsData = *pos;
-        dirtyTrackMap_ = true; scheduleUiRefresh();
+        dirtyTrackMapPositions_ = true; scheduleUiRefresh();
     } else if (const auto* session = std::get_if<tnrp::SessionRow>(&row)) {
         lastSessionData = *session;
         // Safety-car state changes update the persistent banner. SC/VSC/FL show a
@@ -1049,7 +1340,7 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
             }
         }
         lastSafetyCarStatus_ = sc;
-        dirtySession_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtySession_ = true; dirtyTrackMapSession_ = true; scheduleUiRefresh();
     } else if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
         if (ev->code == "SSTA") {
             if (sessionPage_) sessionPage_->clearEvents();
@@ -1064,13 +1355,13 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (const auto* timing = std::get_if<TimingRow>(&row)) {
         lastTimingData = *timing;
-        dirtyTiming_ = true; dirtyProximity_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (const auto* part = std::get_if<tnrp::ParticipantsRow>(&row)) {
         lastParticipantsData = *part;
-        dirtyTiming_ = true; dirtyTrackMap_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; dirtyTrackMapParticipants_ = true; scheduleUiRefresh();
     } else if (const auto* as = std::get_if<AllStatusRow>(&row)) {
         lastAllStatusData = *as;
-        dirtyTiming_ = true; dirtyStrategy_ = true; scheduleUiRefresh();
+        dirtyTiming_ = true; scheduleUiRefresh();
     } else if (const auto* strategy = std::get_if<tnrp::StrategySnapshotRow>(&row)) {
         lastStrategyData = *strategy;
         dirtyStrategy_ = true; scheduleUiRefresh();
@@ -1098,16 +1389,22 @@ void MainWindow::updateStrategyPage() {
 // The Overview and Tyres pages show the same per-corner tyre cards, refreshed
 // together off the single dirtyTyres_ flag so neither goes stale while hidden.
 void MainWindow::updateTyreCards() {
-    if (tyresPage_) tyresPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
-    if (overviewPage_) overviewPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
+    if (currentPage_ == Tyres && tyresPage_)
+        tyresPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
+    else if (currentPage_ == Overview && overviewPage_)
+        overviewPage_->updateTyreCards(optPtr(lastPlayerTelemetryData), optPtr(lastPlayerDamageData));
 }
 
 void MainWindow::scheduleUiRefresh() {
     // While paused (window hidden/minimized/occluded) packets still set the dirty
     // flags, but we don't run the timer — the visible page is rebuilt once on
     // resume (see setRenderingActive).
-    if (!renderingActive_) return;
-    if (!uiRefreshTimer_->isActive()) uiRefreshTimer_->start();
+    if (!renderingActive_ || uiRefreshPending_) return;
+    uiRefreshPending_ = true;
+    PresentationScheduler::instance().request(this, [this] {
+        uiRefreshPending_ = false;
+        flushUiRefresh();
+    });
 }
 
 void MainWindow::flushUiRefresh() {
@@ -1117,6 +1414,7 @@ void MainWindow::flushUiRefresh() {
     // animations on the shared UI thread.
     switch (currentPage_) {
         case Overview:
+            if (overviewPage_) overviewPage_->flushPending();
             if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
             break;
         case Standings:
@@ -1127,7 +1425,13 @@ void MainWindow::flushUiRefresh() {
             if (dirtyProximity_) { sessionPage_->updateProximity(optPtr(lastTimingData), optPtr(lastParticipantsData)); dirtyProximity_ = false; }
             if (dirtySession_)   { sessionPage_->updateSession(optPtr(lastSessionData), optPtr(lastTimingData));        dirtySession_   = false; }
             if (dirtyEvents_)    { sessionPage_->updateEvents(optPtr(lastParticipantsData));                            dirtyEvents_    = false; }
-            if (dirtyTrackMap_)  { sessionPage_->updateTrackMap(optPtr(lastSessionData), optPtr(lastParticipantsData), optPtr(lastPositionsData)); dirtyTrackMap_ = false; }
+            if (dirtyTrackMapSession_ || dirtyTrackMapParticipants_ || dirtyTrackMapPositions_) {
+                sessionPage_->updateTrackMap(
+                    dirtyTrackMapSession_ ? optPtr(lastSessionData) : nullptr,
+                    dirtyTrackMapParticipants_ ? optPtr(lastParticipantsData) : nullptr,
+                    dirtyTrackMapPositions_ ? optPtr(lastPositionsData) : nullptr);
+                dirtyTrackMapSession_ = dirtyTrackMapParticipants_ = dirtyTrackMapPositions_ = false;
+            }
             break;
         case Tyres:
             if (dirtyTyres_)     { updateTyreCards();        dirtyTyres_     = false; }
@@ -1148,9 +1452,11 @@ void MainWindow::flushUiRefresh() {
 // path and (for completeness) any streamed source. The model — not the chart —
 // owns chart state; the chart re-queries the model on its change signals.
 void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
-    if (!model_ || inPlayback_) return;   // playback feeds the model via the load scan
+    if (!model_) return;
     if (const auto* ev = std::get_if<tnrp::RaceEventRow>(&row)) {
-        if (ev->code == "FLBK" && ev->flashback_session_time &&
+        // Electron never applies live-rewind mutation to playback. A delayed
+        // pre-seek row must not truncate the immutable playback lap catalog.
+        if (!inPlayback_ && ev->code == "FLBK" && ev->flashback_session_time &&
             std::isfinite(*ev->flashback_session_time) && *ev->flashback_session_time >= 0.0f)
             model_->truncateAfter(*ev->flashback_session_time);
     }
@@ -1159,7 +1465,7 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         // samples newer than the rewind point and keep the rest (NOT a full reset — that
         // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
         // anyway. Same 0.2s guard as the recording-side truncate above.
-        if (t->session_time < model_->data().latestTime - 0.2f)
+        if (!inPlayback_ && t->session_time < model_->data().latestTime - 0.2f)
             model_->truncateAfter(t->session_time);
         model_->onTelemetry(t->session_time, (float)t->speed_kph, t->rpm, t->gear,
                             t->throttle, t->brake, (float)t->steering);
@@ -1183,7 +1489,7 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
                          (float)s->engine_power_mguk_kw,
                          (float)s->ers_harvested_mguk_j,
                          (float)s->ers_harvested_mguh_j,
-                         s->tyre_compound, s->visual_compound);
+                         s->tyre_compound, s->visual_compound, s->tyre_age_laps);
     else if (const auto* d = std::get_if<DamageRow>(&row))
         model_->onDamage(d->session_time,
                          (float)d->tyre_wear_fl, (float)d->tyre_wear_fr,
@@ -1191,7 +1497,8 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
     else if (const auto* l = std::get_if<LapRow>(&row)) {
         const int sessionType = lastSessionData ? lastSessionData->session_type : 0;
         model_->onLap(l->lap_num, l->current_lap_ms, l->last_lap_ms, l->lap_invalid,
-                      l->driver_status, sessionType >= 1 && sessionType <= 14);
+                      l->driver_status, sessionType >= 1 && sessionType <= 14,
+                      l->session_time, (float)l->lap_distance_m, l->sector, l->pit_status);
     }
     else if (const auto* m = std::get_if<MotionRow>(&row))
         model_->onMotion(m->session_time, (float)m->g_lat, (float)m->g_long);
@@ -1199,4 +1506,132 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         model_->onMotionEx(me->session_time,
                            (float)me->front_aero_height_mm,
                            (float)me->rear_aero_height_mm);
+}
+
+void MainWindow::schedulePlaybackDataRequirements() {
+    if (playbackRequirementsPending_) return;
+    playbackRequirementsPending_ = true;
+    QTimer::singleShot(0, this, [this] {
+        playbackRequirementsPending_ = false;
+        updatePlaybackDataRequirements();
+    });
+}
+
+void MainWindow::updatePlaybackDataRequirements() {
+    if (!playback_ || !model_) return;
+    constexpr auto bit = [](uint8_t type) { return 1u << type; };
+    if (!renderingActive_) {
+        playback_->setDataRequirements(0, 0, 0.0f);
+        return;
+    }
+
+    // Global clock/session banners plus the active page. These are logical TNRD
+    // row-family bits, not UDP packet ids. History is narrower than streaming:
+    // cards and tables need only their latest state.
+    uint32_t stream = bit(1) | bit(4) | bit(5) | bit(6) | bit(8) | bit(14);
+    uint32_t history = 0;
+    QVector<tnr::GraphSection> sections;
+    switch (currentPage_) {
+        case Overview:
+            stream |= bit(1) | bit(2) | bit(3) | bit(4);
+            history |= bit(1) | bit(2) | bit(3);
+            sections = {tnr::GraphSection::OverviewTelemetry,
+                        tnr::GraphSection::OverviewTyreSurface,
+                        tnr::GraphSection::OverviewTyreInner,
+                        tnr::GraphSection::OverviewTyreBrake,
+                        tnr::GraphSection::OverviewTyreWear};
+            break;
+        case Analyze:
+            history |= analyzePage_ ? analyzePage_->playbackRowMask()
+                                    : bit(1) | bit(2) | bit(4);
+            stream |= history;
+            break;
+        case Standings:
+            stream |= bit(2) | bit(4) | bit(7) | bit(8) | bit(9);
+            break;
+        case Session:
+            stream |= bit(5) | bit(6) | bit(7) | bit(8) | bit(13);
+            break;
+        case Tyres:
+            stream |= bit(1) | bit(3) | bit(5) | bit(10);
+            history |= bit(1) | bit(3);
+            sections = {tnr::GraphSection::TyreSurface, tnr::GraphSection::TyreInner,
+                        tnr::GraphSection::TyreBrake, tnr::GraphSection::TyreWear};
+            break;
+        case Strategy:
+            stream |= bit(15);
+            break;
+        case Input:
+            stream |= bit(1); history |= bit(1);
+            sections = {tnr::GraphSection::InputGear,
+                        tnr::GraphSection::InputThrottleBrake,
+                        tnr::GraphSection::InputSteering};
+            break;
+        case Power:
+            stream |= bit(2); history |= bit(2);
+            sections = {tnr::GraphSection::PowerSplit,
+                        tnr::GraphSection::PowerHarvest,
+                        tnr::GraphSection::PowerStore,
+                        tnr::GraphSection::PowerFuel};
+            break;
+        case Misc:
+            stream |= bit(11) | bit(12); history |= bit(11) | bit(12);
+            sections = {tnr::GraphSection::MiscGForce,
+                        tnr::GraphSection::MiscRideHeight};
+            break;
+        default:
+            break;
+    }
+
+    float windowSeconds = currentPage_ == Analyze ? 0.0f : 30.0f;
+    bool sawFinite = false;
+    bool sawLap = currentPage_ == Analyze;
+    for (tnr::GraphSection section : sections) {
+        const ChartWindow window = model_->effectiveChartWindow(section);
+        if (window == ChartWindow::AllLaps || window == ChartWindow::StintLaps) {
+            windowSeconds = -1.0f;
+            sawFinite = false;
+            sawLap = false;
+            break;
+        }
+        if (chartWindowIsTime(window)) {
+            windowSeconds = sawFinite ? qMax(windowSeconds, chartWindowSeconds(window))
+                                      : chartWindowSeconds(window);
+            sawFinite = true;
+        } else {
+            sawLap = true;
+        }
+    }
+    if (!sawFinite && sawLap) windowSeconds = 0.0f;
+    playback_->setDataRequirements(stream, history, windowSeconds);
+
+    if (!inPlayback_) return;
+    QSet<int> requestedLaps;
+    const LapBlock* currentLap = model_->data().currentLapAt(playback_->currentTime());
+    if (currentPage_ == Analyze && analyzePage_) {
+        // Electron materialises the current playback lap in the same indexed
+        // cache used by fixed/compare laps. Analyze must do that too: its active
+        // seek window is only a fallback and may not contain the full lap.
+        if (currentLap) requestedLaps.insert(currentLap->lapNum);
+        for (int lap : analyzePage_->requestedPlaybackLaps()) requestedLaps.insert(lap);
+    }
+    for (tnr::GraphSection section : sections) {
+        const ChartWindow window = model_->effectiveChartWindow(section);
+        // Distance/lap-relative charts read from LapBlock rather than the rolling
+        // timeline. Always materialise their primary lap explicitly; relying on
+        // the generic history window left only packets streamed after a tab switch.
+        if (chartWindowIsDistance(window) && currentLap)
+            requestedLaps.insert(currentLap->lapNum);
+        int lap = 0;
+        if (window == ChartWindow::SelectedLap) lap = model_->referenceLap(section);
+        else if (window == ChartWindow::FastestLap) lap = model_->data().fastestLapNum;
+        else if (window == ChartWindow::PreviousLap && currentLap)
+            lap = currentLap->lapNum - 1;
+        if (lap > 0) requestedLaps.insert(lap);
+    }
+    const uint32_t lapMask = history == 0 ? 0u : history | bit(4);
+    for (int lap : requestedLaps) {
+        const uint32_t missing = model_->missingPlaybackLapMask(lap, lapMask);
+        if (missing) playback_->requestLapData(lap, missing);
+    }
 }

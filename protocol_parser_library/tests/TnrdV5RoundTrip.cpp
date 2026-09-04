@@ -83,6 +83,12 @@ int main() {
     const uint64_t afterFirstRead = archive.decompressedChunkCount();
     assert(archive.rowsForLap(1, tnrp::detail::v5TypeBit(1), lazyRows, &error));
     assert(archive.decompressedChunkCount() == afterFirstRead); // LRU hit
+    assert(archive.cacheBytes() > 0);
+    archive.releaseTransientMemory();
+    assert(archive.isOpen());
+    assert(archive.cacheBytes() == 0);
+    assert(archive.rowsForLap(1, tnrp::detail::v5TypeBit(1), lazyRows, &error));
+    assert(archive.decompressedChunkCount() == afterFirstRead + 1);
     std::vector<tnrp::detail::V5TimedRow> narrowLapRows;
     assert(archive.rowsForLapRange(1, 1.15f, 1.25f,
         tnrp::detail::v5TypeBit(1) | tnrp::detail::v5TypeBit(2),

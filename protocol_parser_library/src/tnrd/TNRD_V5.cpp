@@ -476,6 +476,15 @@ bool TnrdV5Archive::forEachChunk(V5RowTypeMask mask,const std::function<bool(con
     while(active){std::unique_lock<std::mutex> lock(completed->mutex);completed->cv.wait(lock,[&]{return !completed->ready.empty();});while(!completed->ready.empty()){auto ready=std::move(completed->ready.front());completed->ready.pop_front();prepared[ready.first]=std::make_unique<Prepared>(std::move(ready.second));--active;}lock.unlock();while(!stopped&&nextEmit<prepared.size()&&prepared[nextEmit]){auto current=std::move(prepared[nextEmit]);if(!current->ok){fail(errorOut,current->error);stopped=true;}else if(!callback(impl_->chunks[selected[nextEmit]],*current->plain)){stopped=true;callbackStopped=true;}++nextEmit;}while(!stopped&&nextSchedule<selected.size()&&active<MAX_PARALLEL_CHUNKS&&nextSchedule<nextEmit+LOOKAHEAD)schedule(nextSchedule++);}
     if(callbackStopped)return false;if(stopped)return false;return nextEmit==selected.size();
 }
+void TnrdV5Archive::releaseTransientMemory(){
+    // Stopping the pool destroys each worker's thread-local compressed input
+    // and Zstandard context. The next query starts a fresh pool lazily.
+    impl_->executor.stop();
+    std::lock_guard<std::mutex> lock(impl_->stateMutex);
+    impl_->cache.clear();
+    impl_->lru.clear();
+    impl_->cacheBytes=0;
+}
 void TnrdV5Archive::setCacheLimitBytes(size_t bytes){std::lock_guard<std::mutex> lock(impl_->stateMutex);impl_->cacheLimit=bytes;while(impl_->cacheBytes>bytes&&!impl_->lru.empty()){const size_t old=impl_->lru.back();impl_->lru.pop_back();auto it=impl_->cache.find(old);impl_->cacheBytes-=it->second.bytes;impl_->cache.erase(it);}}
 size_t TnrdV5Archive::cacheBytes()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->cacheBytes;}
 uint64_t TnrdV5Archive::decompressedChunkCount()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->decompressions;}

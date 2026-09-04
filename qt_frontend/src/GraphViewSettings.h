@@ -87,4 +87,11 @@ inline const char* graphViewKey(GraphSection s) {
     }
 }
 
+// Stable, UI-independent identity used by the chart-window and Y-axis settings.
+// Do not derive persistence keys from translated display labels.
+inline const char* graphSectionId(GraphSection s) {
+    const char* key = graphViewKey(s);
+    return key && key[0] ? key + 13 : "";   // strip "ui/graphView/"
+}
+
 }  // namespace tnr

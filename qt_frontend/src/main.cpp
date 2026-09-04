@@ -10,13 +10,10 @@
 #include <QFont>
 #include <QStandardPaths>
 #include <QDir>
-#include <QOffscreenSurface>
-#include <QOpenGLContext>
-#include <QOpenGLFunctions>
-#include <QSurfaceFormat>
 #include <cstdio>
 #include <array>
 #include "MainWindow.h"
+#include "ChartGraphicsBackend.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
 
@@ -87,58 +84,6 @@ static QIcon loadAppIcon(const QString& resource) {
     return icon;
 }
 
-// --- OpenGL / hardware-acceleration diagnostics ------------------------------
-// The charts (all QCustomPlot-based, via ChartView) can rasterize on the GPU,
-// but only when two independent things line up:
-//   (1) OpenGL was *compiled in* — CMake defines QCUSTOMPLOT_USE_OPENGL only
-//       when Qt6 + OpenGL/OpenGLWidgets were found at configure time.
-//   (2) a GL context can actually be *obtained at runtime* — an AppImage may
-//       land on a host with no GPU driver, or a Wayland session missing the EGL
-//       client integration, in which case QCustomPlot silently falls back to the
-//       (much slower) software QPainter path.
-// Log both facts at startup so the fallback isn't invisible. Runs after
-// QApplication exists (QOpenGLContext needs a QGuiApplication).
-static void logOpenGlSupport() {
-#ifdef QCUSTOMPLOT_USE_OPENGL
-    qInfo("[opengl] compiled-in support: YES (QCUSTOMPLOT_USE_OPENGL defined) "
-          "- charts request GPU rasterization");
-#else
-    qInfo("[opengl] compiled-in support: NO (QCUSTOMPLOT_USE_OPENGL not defined) "
-          "- charts always use software QPainter");
-#endif
-
-    QOffscreenSurface surface;
-    surface.setFormat(QSurfaceFormat::defaultFormat());
-    surface.create();
-
-    QOpenGLContext ctx;
-    if (!ctx.create() || !ctx.makeCurrent(&surface)) {
-        qWarning("[opengl] runtime context: UNAVAILABLE - no GL context could be "
-                 "created; charts fall back to software rendering");
-        return;
-    }
-
-    QOpenGLFunctions* f = ctx.functions();
-    const char* vendor   = reinterpret_cast<const char*>(f->glGetString(GL_VENDOR));
-    const char* renderer = reinterpret_cast<const char*>(f->glGetString(GL_RENDERER));
-    const char* version  = reinterpret_cast<const char*>(f->glGetString(GL_VERSION));
-    const QString rendererStr = QString::fromLatin1(renderer ? renderer : "");
-    // Mesa's software rasterizers name themselves in the renderer string.
-    const bool software = rendererStr.contains("llvmpipe",  Qt::CaseInsensitive)
-                       || rendererStr.contains("softpipe",  Qt::CaseInsensitive)
-                       || rendererStr.contains("swrast",    Qt::CaseInsensitive)
-                       || rendererStr.contains("software",  Qt::CaseInsensitive);
-
-    qInfo("[opengl] runtime context: AVAILABLE");
-    qInfo("[opengl]   vendor   : %s", vendor   ? vendor   : "(null)");
-    qInfo("[opengl]   renderer : %s", renderer ? renderer : "(null)");
-    qInfo("[opengl]   version  : %s", version  ? version  : "(null)");
-    qInfo("[opengl]   hardware accelerated: %s",
-          software ? "NO (software rasterizer, e.g. llvmpipe)" : "YES");
-
-    ctx.doneCurrent();
-}
-
 int main(int argc, char* argv[]) {
 #ifdef Q_OS_LINUX
     // On Linux the XDG desktop-portal plugin (bundled as platformthemes/libqxdgdesktopportal.so)
@@ -163,8 +108,9 @@ int main(int argc, char* argv[]) {
     app.setOrganizationName("TrackNRace");
     app.setWindowIcon(loadAppIcon(":/icon.ico"));
 
-    // Report whether the charts will actually be GPU-accelerated (see above).
-    logOpenGlSupport();
+    // Probe once before MainWindow creates the first QRhiWidget. The selected
+    // backend is fixed for the top-level window for the lifetime of this process.
+    tnr::graphics::initialize();
 
     // Remember the platform's default style *before* anything can override it, so
     // a later "System default" choice can be restored at runtime (the style's

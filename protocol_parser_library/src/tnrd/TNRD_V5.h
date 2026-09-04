@@ -64,6 +64,7 @@ public:
                       const std::function<bool(const V5ChunkInfo&, std::string_view)>& callback,
                       std::string* errorOut);
 
+    void releaseTransientMemory();
     void setCacheLimitBytes(size_t bytes);
     size_t cacheBytes() const;
     uint64_t decompressedChunkCount() const;

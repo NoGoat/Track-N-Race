@@ -1,13 +1,15 @@
 #include "PowerChartsWidget.h"
+#include "../PresentationScheduler.h"
 #include "ChartView.h"
 #include "GraphTable.h"
 #include "../SessionModel.h"
+#include "../ChartCoordinates.h"
 
 #include <QGridLayout>
 #include <QColor>
-#include <QTimer>
 #include <QShowEvent>
 #include <QStringList>
+#include <QtMath>
 #include <algorithm>
 
 namespace {
@@ -24,7 +26,7 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     outer_->setSpacing(ChartView::PanelGap);   // match the chart's inter-panel gap so
                                                // overlaid tables align with chart cells
 
-    // All four sections are panels of one ChartView — a single QCustomPlot / GL
+    // All four sections are panels of one ChartView — a single QRhi render target /
     // context / replot. Each carries its own in-plot title (no colour key, matching
     // the old headers). All four read stsBuf. Table-mode sections render as
     // GraphTables overlaid in the same grid cell (see rebuildLayout).
@@ -40,46 +42,52 @@ PowerChartsWidget::PowerChartsWidget(QWidget* parent)
     timeAxis(SPLIT);
     const int axSplit = chart_->addAxis({ ChartView::Side::Left, 0.0, 500.0, QColor(), true, 'f', 0 }, SPLIT);
     chart_->setPanelTitle(SPLIT, "POWER");
-    chart_->setPanelLegendVisible(SPLIT, false);
-    splitIceId_  = chart_->addSeries({ "ICE",   C_ICE,  1.5, xId_[SPLIT], axSplit, "", 2, false, true });
-    splitMgukId_ = chart_->addSeries({ "MGU-K", C_MGUK, 1.5, xId_[SPLIT], axSplit, "", 2, false, true });
+    chart_->setPanelLegendVisible(SPLIT, true);
+    splitIceId_  = chart_->addSeries({ "ICE",   C_ICE,  1.5, xId_[SPLIT], axSplit, "", 2 });
+    splitMgukId_ = chart_->addSeries({ "MGU-K", C_MGUK, 1.5, xId_[SPLIT], axSplit, "", 2 });
+    QColor iceRef = C_ICE; iceRef.setAlpha(105); QColor mgukRef = C_MGUK; mgukRef.setAlpha(105);
+    splitIceRefId_ = chart_->addSeries({ "", iceRef, 1.1, xId_[SPLIT], axSplit, "", 2 });
+    splitMgukRefId_ = chart_->addSeries({ "", mgukRef, 1.1, xId_[SPLIT], axSplit, "", 2 });
 
     // ── ERS HARVEST (panel 1) ────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(HARVEST);
     harvYId_ = chart_->addAxis({ ChartView::Side::Left, 0.0, 4000.0, QColor(), true, 'f', 0 }, HARVEST);
     chart_->setPanelTitle(HARVEST, "ERS HARVEST THIS LAP");
-    chart_->setPanelLegendVisible(HARVEST, false);
-    harvKId_ = chart_->addSeries({ "MGU-K Harvest", C_HARV_K, 1.5, xId_[HARVEST], harvYId_, "", 2, false, true });
-    harvHId_ = chart_->addSeries({ "MGU-H Harvest", C_HARV_H, 1.5, xId_[HARVEST], harvYId_, "", 2, false, true });
+    chart_->setPanelLegendVisible(HARVEST, true);
+    harvKId_ = chart_->addSeries({ "MGU-K Harvest", C_HARV_K, 1.5, xId_[HARVEST], harvYId_, "", 2 });
+    harvHId_ = chart_->addSeries({ "MGU-H Harvest", C_HARV_H, 1.5, xId_[HARVEST], harvYId_, "", 2 });
+    QColor hkRef = C_HARV_K; hkRef.setAlpha(105); QColor hhRef = C_HARV_H; hhRef.setAlpha(105);
+    harvKRefId_ = chart_->addSeries({ "", hkRef, 1.1, xId_[HARVEST], harvYId_, "", 2 });
+    harvHRefId_ = chart_->addSeries({ "", hhRef, 1.1, xId_[HARVEST], harvYId_, "", 2 });
 
     // ── ERS STORE (panel 2) ──────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(STORE);
     const int axStore = chart_->addAxis({ ChartView::Side::Left, 0.0, 100.0, QColor(), true, 'f', 0 }, STORE);
     chart_->setPanelTitle(STORE, "ERS STORE HISTORY");
-    chart_->setPanelLegendVisible(STORE, false);
-    storeId_ = chart_->addSeries({ "ERS Store", C_ICE, 1.5, xId_[STORE], axStore, "", 2, false, true });
+    chart_->setPanelLegendVisible(STORE, true);
+    storeId_ = chart_->addSeries({ "ERS Store", C_ICE, 1.5, xId_[STORE], axStore, "", 2 });
+    storeRefId_ = chart_->addSeries({ "", iceRef, 1.1, xId_[STORE], axStore, "", 2 });
 
     // ── FUEL (panel 3) ───────────────────────────────────────────────────────
     chart_->addPanel();
     timeAxis(FUEL);
     const int axFuel = chart_->addAxis({ ChartView::Side::Left, 0.0, 110.0, QColor(), true, 'f', 0 }, FUEL);
     chart_->setPanelTitle(FUEL, "FUEL HISTORY");
-    chart_->setPanelLegendVisible(FUEL, false);
-    fuelId_ = chart_->addSeries({ "Fuel", C_FUEL, 1.5, xId_[FUEL], axFuel, "", 2, false, true });
+    chart_->setPanelLegendVisible(FUEL, true);
+    fuelId_ = chart_->addSeries({ "Fuel", C_FUEL, 1.5, xId_[FUEL], axFuel, "", 2 });
+    QColor fuelRef = C_FUEL; fuelRef.setAlpha(105);
+    fuelRefId_ = chart_->addSeries({ "", fuelRef, 1.1, xId_[FUEL], axFuel, "", 2 });
+    const int primary[] = { splitIceId_, splitMgukId_, harvKId_, harvHId_, storeId_, fuelId_ };
+    const int refs[] = { splitIceRefId_, splitMgukRefId_, harvKRefId_, harvHRefId_, storeRefId_, fuelRefId_ };
+    for (int i = 0; i < 6; ++i) { chart_->setSeriesVisible(refs[i], false); chart_->linkSeriesVisibility(primary[i], refs[i]); }
 
     chart_->setHoverReadout(true);
     rebuildLayout();
 
     // Zero-delay single-shot armed from requestRefresh(): coalesces to one rebuild
     // per event-loop pass (one per arriving packet, 20..60 Hz), no fixed rate cap.
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->setSingleShot(true);
-    refreshTimer_->setInterval(0);
-    connect(refreshTimer_, &QTimer::timeout, this, [this] {
-        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
-    });
 }
 
 void PowerChartsWidget::showEvent(QShowEvent* e) {
@@ -92,17 +100,27 @@ void PowerChartsWidget::setModel(SessionModel* m) {
     if (!m) return;
     connect(m, &SessionModel::telemetryAppended, this, &PowerChartsWidget::requestRefresh);
     connect(m, &SessionModel::wasReset,          this, &PowerChartsWidget::requestRefresh);
+    connect(m, &SessionModel::chartConfigurationChanged, this, &PowerChartsWidget::requestRefresh);
+    const tnr::GraphSection sections[SECTIONS] = { tnr::GraphSection::PowerSplit,
+        tnr::GraphSection::PowerHarvest, tnr::GraphSection::PowerStore, tnr::GraphSection::PowerFuel };
+    for (int i = 0; i < SECTIONS; ++i) chart_->bindPanelChartSettings(i, m, sections[i]);
     requestRefresh();
 }
 
 void PowerChartsWidget::setPlaybackMode(bool on) { playback_ = on; requestRefresh(); }
 void PowerChartsWidget::setCurrentTime(float t)  { currentTime_ = t; requestRefresh(); }
 void PowerChartsWidget::setWindowSeconds(float s) { windowS_ = s; prevEndTime_ = -9999.0f; requestRefresh(); }
-void PowerChartsWidget::requestRefresh() { dirty_ = true; if (!refreshTimer_->isActive()) refreshTimer_->start(); }
+void PowerChartsWidget::requestRefresh() {
+    dirty_ = true;
+    if (!isVisible()) return;
+    PresentationScheduler::instance().request(this, [this] {
+        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
+    }, PresentationScheduler::Policy::Chart);
+}
 
 void PowerChartsWidget::applyHarvestScale(uint16_t format) {
-    if (chart_ && harvYId_ >= 0)
-        chart_->setXRange(harvYId_, 0.0, format >= 2026 ? 8000.0 : 4000.0);
+    harvestFixedMax_ = format >= 2026 ? 8000.0 : 4000.0;
+    requestRefresh();
 }
 
 void PowerChartsWidget::setMguhVisible(bool visible) {
@@ -110,6 +128,7 @@ void PowerChartsWidget::setMguhVisible(bool visible) {
     mguhVisible_ = visible;
     if (chart_ && harvHId_ >= 0) {
         chart_->setSeriesVisible(harvHId_, visible);
+        chart_->setSeriesVisible(harvHRefId_, visible);
         chart_->clear(harvHId_);
     }
     if (table_[HARVEST]) {
@@ -186,42 +205,129 @@ void PowerChartsWidget::refresh() {
 
     const SessionData& d = model_->data();
     const float endTime = currentTime();
-    const float left    = endTime - windowS_;
-
-    if (std::abs(endTime - prevEndTime_) > 1.0f || endTime < prevEndTime_) {
-        chart_->clear(splitIceId_); chart_->clear(splitMgukId_);
-        chart_->clear(harvKId_);    chart_->clear(harvHId_);
-        chart_->clear(storeId_);
-        chart_->clear(fuelId_);
-        lastAddedTime_ = left;
+    const tnr::GraphSection sections[SECTIONS] = { tnr::GraphSection::PowerSplit,
+        tnr::GraphSection::PowerHarvest, tnr::GraphSection::PowerStore, tnr::GraphSection::PowerFuel };
+    ChartDomain domains[SECTIONS];
+    QString cursorModeKey;
+    for (int section = 0; section < SECTIONS; ++section) {
+        const ChartWindow window = model_->effectiveChartWindow(sections[section]);
+        const int selectedLap = model_->referenceLap(sections[section]);
+        domains[section] = resolveChartDomain(d, window, selectedLap, endTime,
+            model_->sectorBoundaries(), model_->chartPrimaryLap(endTime),
+            model_->chartReferenceLap(window, selectedLap, endTime));
+        chart_->setXRange(xId_[section], domains[section].lower, domains[section].upper);
+        chart_->setAxisDistanceMode(xId_[section], domains[section].distance);
+        chart_->syncAxisSessionMap(xId_[section],
+            domains[section].distance ? domains[section].primary : nullptr,
+            domains[section].currentTime);
+        if (!domains[section].ticks.isEmpty()) chart_->setAxisLabelMap(
+            xId_[section], domains[section].ticks, domains[section].tickLabels,
+            chartWindowAccumulatesLaps(domains[section].window));
+        else chart_->setAxisTimeTicker(xId_[section], "%m:%s");
+        cursorModeKey += chartWindowKey(domains[section].window) + '|';
     }
-
-    auto lb = [](const auto& v, float t) {
-        return std::lower_bound(v.begin(), v.end(), t,
-            [](const auto& s, float key) { return s.t < key; });
+    chart_->setCursorModeKey(cursorModeKey);
+    chart_->setCursorSync(model_->cursorSync(), model_->secondaryVerticalCrosshair(),
+                          model_->secondaryHorizontalCrosshair());
+    QString runtimeKey = cursorModeKey;
+    for (const ChartDomain& domain : domains)
+        runtimeKey += QString("%1:%2:%3|")
+            .arg(domain.primary ? domain.primary->lapNum : -1)
+            .arg(domain.reference ? domain.reference->lapNum : -1)
+            .arg(domain.window == ChartWindow::StintLaps ? qRound64(domain.lower * 1000.0) : 0);
+    runtimeKey += QString("rev:%1").arg(model_->playbackDataRevision());
+    bool allTime = true;
+    for (const ChartDomain& domain : domains) allTime = allTime && chartWindowIsTime(domain.window);
+    if (allTime) {
+        const bool rebuild = dataModeKey_ != runtimeKey || endTime < prevEndTime_ ||
+                             std::abs(endTime - prevEndTime_) > 1.0f;
+        if (rebuild) {
+            for (int id : { splitIceId_, splitMgukId_, harvKId_, harvHId_, storeId_, fuelId_,
+                            splitIceRefId_, splitMgukRefId_, harvKRefId_, harvHRefId_, storeRefId_, fuelRefId_ })
+                chart_->clear(id);
+            lastAddedTime_ = domains[0].lower;
+            for (int section = 1; section < SECTIONS; ++section)
+                lastAddedTime_ = qMin(lastAddedTime_, float(domains[section].lower));
+            dataModeKey_ = runtimeKey;
+        }
+        auto start = std::lower_bound(d.stsBuf.begin(), d.stsBuf.end(), lastAddedTime_ + 0.0001f,
+            [](const StsSample& sample, float value) { return sample.t < value; });
+        for (auto it = start; it != d.stsBuf.end(); ++it) {
+            if (it->t > endTime) break;
+            chart_->appendPoint(splitIceId_, it->t, it->ice_kw);
+            chart_->appendPoint(splitMgukId_, it->t, it->mguk_kw);
+            chart_->appendPoint(harvKId_, it->t, it->mguk_harvest_j / 1000.0f);
+            if (mguhVisible_) chart_->appendPoint(harvHId_, it->t, it->mguh_harvest_j / 1000.0f);
+            chart_->appendPoint(storeId_, it->t, it->ers);
+            chart_->appendPoint(fuelId_, it->t, it->fuel_kg);
+            lastAddedTime_ = it->t;
+        }
+        for (int id : { splitIceId_, splitMgukId_ }) chart_->trimBefore(id, domains[SPLIT].lower);
+        for (int id : { harvKId_, harvHId_ }) chart_->trimBefore(id, domains[HARVEST].lower);
+        chart_->trimBefore(storeId_, domains[STORE].lower); chart_->trimBefore(fuelId_, domains[FUEL].lower);
+        for (int id : { splitIceRefId_, splitMgukRefId_, harvKRefId_, harvHRefId_, storeRefId_, fuelRefId_ })
+            chart_->setSeriesVisible(id, false);
+    }
+    bool uniformNonTime = !allTime;
+    for (int section = 1; section < SECTIONS && uniformNonTime; ++section)
+        uniformNonTime = domains[section].window == domains[0].window &&
+                         domains[section].primary == domains[0].primary &&
+                         domains[section].reference == domains[0].reference &&
+                         domains[section].lower == domains[0].lower;
+    const bool nonTimeRebuild = !allTime && (dataModeKey_ != runtimeKey || endTime < prevEndTime_ ||
+                                             std::abs(endTime - prevEndTime_) > 1.0f || !uniformNonTime);
+    QVector<StsSample> samples[SECTIONS];
+    if (nonTimeRebuild)
+        for (int section = 0; section < SECTIONS; ++section) samples[section] = chartStatusSamples(d, domains[section]);
+    auto fill = [&](int section, int primaryId, int referenceId, auto value, bool enabled = true) {
+        if (!nonTimeRebuild) return;
+        const ChartDomain& domain = domains[section];
+        QVector<double> x, y, rx, ry;
+        for (const StsSample& sample : samples[section]) {
+            const double key = domain.distance ? d.distanceAtTime(domain.primary, sample.t) : sample.t;
+            if (!qIsFinite(key)) continue;
+            x.push_back(key); y.push_back(value(sample));
+        }
+        if (domain.comparison && domain.reference) for (const StsSample& sample : domain.reference->sts) {
+            const double key = projectReferenceTime(d, domain, sample.t);
+            if (qIsFinite(key)) { rx.push_back(key); ry.push_back(value(sample)); }
+        }
+        chart_->setSeriesData(primaryId, x, y); chart_->setSeriesData(referenceId, rx, ry);
+        chart_->setSeriesVisible(referenceId, enabled && domain.comparison && chart_->seriesVisible(primaryId));
     };
-
-    int startIdx = (int)std::distance(d.stsBuf.begin(), lb(d.stsBuf, lastAddedTime_ + 0.0001f));
-    for (int i = startIdx; i < d.stsBuf.size(); ++i) {
-        const auto& s = d.stsBuf[i];
-        if (s.t > endTime) break;
-        chart_->appendPoint(splitIceId_,  s.t, s.ice_kw);
-        chart_->appendPoint(splitMgukId_, s.t, s.mguk_kw);
-        chart_->appendPoint(harvKId_, s.t, s.mguk_harvest_j / 1000.0f);   // J → kJ
-        if (mguhVisible_) chart_->appendPoint(harvHId_, s.t, s.mguh_harvest_j / 1000.0f);
-        chart_->appendPoint(storeId_, s.t, s.ers);                        // ERS %
-        chart_->appendPoint(fuelId_,  s.t, s.fuel_kg);
-        lastAddedTime_ = s.t;
+    fill(SPLIT, splitIceId_, splitIceRefId_, [](const StsSample& s) { return double(s.ice_kw); });
+    fill(SPLIT, splitMgukId_, splitMgukRefId_, [](const StsSample& s) { return double(s.mguk_kw); });
+    fill(HARVEST, harvKId_, harvKRefId_, [](const StsSample& s) { return double(s.mguk_harvest_j / 1000.0f); });
+    fill(HARVEST, harvHId_, harvHRefId_, [](const StsSample& s) { return double(s.mguh_harvest_j / 1000.0f); }, mguhVisible_);
+    fill(STORE, storeId_, storeRefId_, [](const StsSample& s) { return double(s.ers); });
+    fill(FUEL, fuelId_, fuelRefId_, [](const StsSample& s) { return double(s.fuel_kg); });
+    if (nonTimeRebuild) {
+        lastAddedTime_ = samples[SPLIT].isEmpty() ? float(domains[SPLIT].lower)
+                                                  : samples[SPLIT].last().t;
+        dataModeKey_ = runtimeKey;
+    } else if (!allTime && uniformNonTime) {
+        const ChartDomain& domain = domains[SPLIT];
+        const QVector<StsSample>& source = domain.distance && domain.primary
+            ? domain.primary->sts : d.stsBuf;
+        auto start = std::lower_bound(source.begin(), source.end(), lastAddedTime_ + 0.0001f,
+            [](const StsSample& sample, float value) { return sample.t < value; });
+        for (auto it = start; it != source.end(); ++it) {
+            if (it->t > endTime) break;
+            if (it->t < domain.lower) continue;
+            const double key = domain.distance ? d.distanceAtTime(domain.primary, it->t) : it->t;
+            if (!qIsFinite(key)) continue;
+            chart_->appendPoint(splitIceId_, key, it->ice_kw);
+            chart_->appendPoint(splitMgukId_, key, it->mguk_kw);
+            chart_->appendPoint(harvKId_, key, it->mguk_harvest_j / 1000.0f);
+            if (mguhVisible_) chart_->appendPoint(harvHId_, key, it->mguh_harvest_j / 1000.0f);
+            chart_->appendPoint(storeId_, key, it->ers);
+            chart_->appendPoint(fuelId_, key, it->fuel_kg);
+            lastAddedTime_ = it->t;
+        }
     }
-
-    for (int id : { splitIceId_, splitMgukId_, harvKId_, harvHId_, storeId_, fuelId_ })
-        chart_->trimBefore(id, left);
-
-    const double lo = (double)std::max(0.0f, left);
-    const double hi = (double)std::max(windowS_, endTime);
-    const double hiClamped = hi > lo ? hi : lo + 1.0;
-    for (int s = 0; s < SECTIONS; ++s)
-        chart_->setXRange(xId_[s], lo, hiClamped);
+    chart_->fitAxisToVisibleSeries(harvYId_,
+        { harvKId_, harvHId_, harvKRefId_, harvHRefId_ }, 0.0, harvestFixedMax_,
+        model_->dynamicYAxis(tnr::GraphSection::PowerHarvest), true);
 
     // Feed any table-mode sections from the same window (newest sample on top).
     if (tableMode_[SPLIT] || tableMode_[HARVEST] || tableMode_[STORE] || tableMode_[FUEL]) {
@@ -229,29 +335,37 @@ void PowerChartsWidget::refresh() {
         GraphTable* tHarvest = (tableMode_[HARVEST] && visible_[HARVEST]) ? table_[HARVEST] : nullptr;
         GraphTable* tStore   = (tableMode_[STORE]   && visible_[STORE])   ? table_[STORE]   : nullptr;
         GraphTable* tFuel    = (tableMode_[FUEL]    && visible_[FUEL])    ? table_[FUEL]    : nullptr;
-        for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel }) if (t) t->beginRebuild();
-        for (int i = d.stsBuf.size() - 1; i >= 0; --i) {
-            const auto& s = d.stsBuf[i];
-            if (s.t > endTime) continue;
-            if (s.t < left)    break;
-            if (tSplit && !tSplit->full())
-                tSplit->addRow(s.t, s.ice_kw, s.mguk_kw);
-            if (tHarvest && !tHarvest->full()) {
-                if (mguhVisible_)
-                    tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f, s.mguh_harvest_j / 1000.0f);
-                else
-                    tHarvest->addRow(s.t, s.mguk_harvest_j / 1000.0f);
+        auto feed = [&](GraphTable* table, int section, auto add) {
+            if (!table) return;
+            const ChartDomain& domain = domains[section];
+            table->setDistanceMode(domain.distance);
+            table->beginRebuild(domain.lower, domain.upper,
+                                chartWindowAccumulatesLaps(domain.window));
+            const QVector<StsSample>& source = domain.distance && domain.primary
+                ? domain.primary->sts : d.stsBuf;
+            for (int i = source.size() - 1; i >= 0 && !table->full(); --i) {
+                const StsSample& sample = source[i];
+                if (sample.t > domain.currentTime) continue;
+                const double coordinate = domain.distance
+                    ? d.distanceAtTime(domain.primary, sample.t) : sample.t;
+                if (!qIsFinite(coordinate) || coordinate < domain.lower || coordinate > domain.upper) continue;
+                add(table, coordinate, sample);
             }
-            if (tStore && !tStore->full())
-                tStore->addRow(s.t, s.ers);
-            if (tFuel && !tFuel->full())
-                tFuel->addRow(s.t, s.fuel_kg);
-            bool allFull = true;
-            for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel })
-                if (t && !t->full()) { allFull = false; break; }
-            if (allFull) break;
-        }
-        for (GraphTable* t : { tSplit, tHarvest, tStore, tFuel }) if (t) t->endRebuild();
+            table->endRebuild();
+        };
+        feed(tSplit, SPLIT, [](GraphTable* table, double x, const StsSample& s) {
+            table->addRow(x, s.ice_kw, s.mguk_kw);
+        });
+        feed(tHarvest, HARVEST, [this](GraphTable* table, double x, const StsSample& s) {
+            if (mguhVisible_) table->addRow(x, s.mguk_harvest_j / 1000.0f, s.mguh_harvest_j / 1000.0f);
+            else table->addRow(x, s.mguk_harvest_j / 1000.0f);
+        });
+        feed(tStore, STORE, [](GraphTable* table, double x, const StsSample& s) {
+            table->addRow(x, s.ers);
+        });
+        feed(tFuel, FUEL, [](GraphTable* table, double x, const StsSample& s) {
+            table->addRow(x, s.fuel_kg);
+        });
     }
 
     // ONE replot renders all four panels — but skip it when the chart is hidden

@@ -2,6 +2,7 @@
 #include "TyreHelpers.h"
 #include "GraphTable.h"
 #include "../SessionModel.h"
+#include "../PresentationScheduler.h"
 
 #include <QBoxLayout>
 #include <QHBoxLayout>
@@ -13,7 +14,6 @@
 #include <QPalette>
 #include <QSizePolicy>
 #include <QStackedWidget>
-#include <QTimer>
 #include <QShowEvent>
 #include <QVector>
 #include <algorithm>
@@ -40,15 +40,6 @@ TyreCardsWidget::TyreCardsWidget(Qt::Orientation orientation, QWidget* parent)
         : static_cast<QBoxLayout*>(new QVBoxLayout(this));
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
-
-    // Coalesce table refills to one per event-loop pass (mirrors TyreChartsWidget):
-    // packets arrive 20..60 Hz but we only rebuild the table once per pass, when shown.
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->setSingleShot(true);
-    refreshTimer_->setInterval(0);
-    connect(refreshTimer_, &QTimer::timeout, this, [this] {
-        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
-    });
 
     buildCards();
 }
@@ -396,7 +387,12 @@ void TyreCardsWidget::setWindowSeconds(float s) { windowS_ = s;      requestRefr
 
 void TyreCardsWidget::requestRefresh() {
     dirty_ = true;
-    if (refreshTimer_ && !refreshTimer_->isActive()) refreshTimer_->start();
+    if (!isVisible() || refreshQueued_) return;
+    refreshQueued_ = true;
+    PresentationScheduler::instance().request(this, [this] {
+        refreshQueued_ = false;
+        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
+    });
 }
 
 void TyreCardsWidget::showEvent(QShowEvent* e) {
@@ -448,11 +444,18 @@ void TyreCardsWidget::refresh() {
     const float left    = endTime - windowS_;
 
     for (int i = 0; i < 4; ++i)
-        if (cornerTableMode_[i] && cornerTable_[i]) cornerTable_[i]->beginRebuild();
+        if (cornerTableMode_[i] && cornerTable_[i]) cornerTable_[i]->beginRebuild(left, endTime);
+
+    bool acceptingRows = false;
+    for (int i = 0; i < 4; ++i)
+        if (cornerTableMode_[i] && cornerTable_[i] && !cornerTable_[i]->full()) {
+            acceptingRows = true;
+            break;
+        }
 
     // Feed newest-first over the visible window (the table renders oldest→newest);
     // stop once we walk past the window's start. Mirrors TyreChartsWidget's table feed.
-    for (int k = (int)d.tyreBuf.size() - 1; k >= 0; --k) {
+    for (int k = (int)d.tyreBuf.size() - 1; acceptingRows && k >= 0; --k) {
         const TyreSample& s = d.tyreBuf[k];
         if (s.t > endTime) continue;
         if (s.t < left)    break;
@@ -471,6 +474,11 @@ void TyreCardsWidget::refresh() {
 }
 
 void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* damage) {
+    auto setLabel = [](QLabel* label, const QString& text, const QString& style) {
+        if (!label) return;
+        if (label->text() != text) label->setText(text);
+        if (label->styleSheet() != style) label->setStyleSheet(style);
+    };
     // Per-corner values in FL, FR, RL, RR order (matching the card slots).
     int surf[4] = {}, inner[4] = {}, brake[4] = {};
     if (telemetry) {
@@ -493,31 +501,33 @@ void TyreCardsWidget::update(const TelemetryRow* telemetry, const DamageRow* dam
 
     for (int i = 0; i < 4; ++i) {
         if (telemetry) {
-            surfaceTemp_[i]->setText(QString::number(surf[i]) + "°C");
-            surfaceTemp_[i]->setStyleSheet("color: " + tyreTempColor(surf[i]).name() + "; font-weight: bold;");
-            innerTemp_[i]->setText(QString::number(inner[i]) + "°C");
-            innerTemp_[i]->setStyleSheet("color: " + tyreTempColor(inner[i]).name() + "; font-weight: bold;");
-            brakeTemp_[i]->setText(QString::number(brake[i]) + "°C");
-            brakeTemp_[i]->setStyleSheet("color: " + brakeTempColor(brake[i]).name() + "; font-weight: bold;");
+            setLabel(surfaceTemp_[i], QString::number(surf[i]) + "°C",
+                     "color: " + tyreTempColor(surf[i]).name() + "; font-weight: bold;");
+            setLabel(innerTemp_[i], QString::number(inner[i]) + "°C",
+                     "color: " + tyreTempColor(inner[i]).name() + "; font-weight: bold;");
+            setLabel(brakeTemp_[i], QString::number(brake[i]) + "°C",
+                     "color: " + brakeTempColor(brake[i]).name() + "; font-weight: bold;");
         }
 
         if (damage) {
             const QString wearCol = wearPctColor(wear[i]).name();
-            wearLabel_[i]->setText(QString::number(wear[i]) + "%");
-            wearLabel_[i]->setStyleSheet("color: " + wearCol + "; font-weight: bold;");
+            setLabel(wearLabel_[i], QString::number(wear[i]) + "%",
+                     "color: " + wearCol + "; font-weight: bold;");
             if (wear_[i]) {   // no wear bar in compact mode
-                wear_[i]->setValue(wear[i]);
-                wear_[i]->setStyleSheet(QString(
+                if (wear_[i]->value() != wear[i]) wear_[i]->setValue(wear[i]);
+                const QString wearStyle = QString(
                     "QProgressBar { border: none; background: palette(mid); border-radius: 3px; }"
                     "QProgressBar::chunk { background: %1; border-radius: 3px; }"
-                ).arg(wearCol));
+                ).arg(wearCol);
+                if (wear_[i]->styleSheet() != wearStyle) wear_[i]->setStyleSheet(wearStyle);
             }
             if (blisters_[i]) {   // no blister line in compact mode
                 if (blisters[i] > 0) {
-                    blisters_[i]->setText(QString("· %1% blisters").arg(blisters[i]));
-                    blisters_[i]->setVisible(true);
+                    const QString text = QString("· %1% blisters").arg(blisters[i]);
+                    if (blisters_[i]->text() != text) blisters_[i]->setText(text);
+                    if (!blisters_[i]->isVisible()) blisters_[i]->setVisible(true);
                 } else {
-                    blisters_[i]->setVisible(false);
+                    if (blisters_[i]->isVisible()) blisters_[i]->setVisible(false);
                 }
             }
         }

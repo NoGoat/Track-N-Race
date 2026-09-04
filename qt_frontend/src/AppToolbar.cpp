@@ -15,6 +15,7 @@
 #include <QStyle>
 #include <QStyleOptionButton>
 #include <QStylePainter>
+#include <QStandardItemModel>
 #include <QTimer>
 #include <QToolButton>
 // TEMP DIAGNOSTIC (icon blur investigation) — remove with the logging block below.
@@ -23,11 +24,15 @@
 #include <QDir>
 
 // Chart window-size options, shown as a segmented toolbar control.
-static const struct { const char* label; float secs; } kWindowOptions[] = {
-    {"15s", 15}, {"30s", 30}, {"1m", 60},
-    {"2m", 120}, {"5m", 300}, {"10m", 600}
+static const struct { const char* label; ChartWindow window; } kWindowOptions[] = {
+    {"15s", ChartWindow::Seconds15}, {"30s", ChartWindow::Seconds30},
+    {"1m", ChartWindow::Seconds60}, {"2m", ChartWindow::Seconds120},
+    {"5m", ChartWindow::Seconds300}, {"10m", ChartWindow::Seconds600},
+    {"Current", ChartWindow::CurrentLap}, {"Previous", ChartWindow::PreviousLap},
+    {"Fastest", ChartWindow::FastestLap}, {"Selected", ChartWindow::SelectedLap},
+    {"Stint Laps", ChartWindow::StintLaps}, {"All Laps", ChartWindow::AllLaps}
 };
-static constexpr int kWindowOptionCount = 6;
+static constexpr int kWindowOptionCount = 12;
 
 static constexpr int kToolbarHeight = 44;
 
@@ -220,15 +225,46 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
 
     // Window-size selector: a frameless combo box showing the current window,
     // with the options as its dropdown list.
-    windowBtn_ = new QComboBox;
+    QWidget* windowTools = new QWidget;
+    auto* windowToolsLayout = new QHBoxLayout(windowTools);
+    windowToolsLayout->setContentsMargins(0, 0, 0, 0);
+    windowToolsLayout->setSpacing(2);
+    windowBtn_ = new QComboBox(windowTools);
     windowBtn_->setFrame(false);
-    for (int i = 0; i < kWindowOptionCount; ++i)
-        windowBtn_->addItem(kWindowOptions[i].label);
+    for (int i = 0; i < kWindowOptionCount; ++i) {
+        windowBtn_->addItem(kWindowOptions[i].label, chartWindowKey(kWindowOptions[i].window));
+    }
     windowBtn_->setCurrentIndex(windowIdx_);                        // default 30s
     windowBtn_->setToolTip("Chart window");
     connect(windowBtn_, QOverload<int>::of(&QComboBox::activated),
             this, &AppToolbar::applyChartWindow);
-    windowAct_ = addWidget(windowBtn_);
+    windowToolsLayout->addWidget(windowBtn_);
+
+    referenceLap_ = new QComboBox(windowTools);
+    referenceLap_->setFrame(false);
+    referenceLap_->setToolTip("Selected reference lap");
+    referenceLap_->hide();
+    connect(referenceLap_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
+        emit chartReferenceLapChanged(referenceLap_->currentData().toInt());
+    });
+    windowToolsLayout->addWidget(referenceLap_);
+
+    sectorBtn_ = new QToolButton(windowTools);
+    sectorBtn_->setText("S1|S2");
+    sectorBtn_->setCheckable(true);
+    sectorBtn_->setAutoRaise(true);
+    sectorBtn_->setToolTip("Sector Boundaries");
+    connect(sectorBtn_, &QToolButton::toggled, this, &AppToolbar::sectorBoundariesChanged);
+    windowToolsLayout->addWidget(sectorBtn_);
+
+    syncBtn_ = new QToolButton(windowTools);
+    syncBtn_->setText("Sync");
+    syncBtn_->setCheckable(true);
+    syncBtn_->setAutoRaise(true);
+    syncBtn_->setToolTip("Synchronize chart tooltips");
+    connect(syncBtn_, &QToolButton::toggled, this, &AppToolbar::cursorSyncChanged);
+    windowToolsLayout->addWidget(syncBtn_);
+    windowAct_ = addWidget(windowTools);
 
     openAct_ = addAction(openRecordingIcon(this), "Open File");
     connect(openAct_, &QAction::triggered, this, &AppToolbar::openRecordingRequested);
@@ -384,10 +420,62 @@ void AppToolbar::refreshThemedIcons() {
 void AppToolbar::applyChartWindow(int idx) {
     if (idx < 0 || idx >= kWindowOptionCount) return;
     windowIdx_ = idx;
-    emit chartWindowChanged(kWindowOptions[idx].secs);
+    const ChartWindow selected = kWindowOptions[idx].window;
+    emit chartWindowChanged(selected);
     // Reflect the choice on the combo box (the choice may have come from the
     // combo box itself or the overflow menu).
     if (windowBtn_ && windowBtn_->currentIndex() != idx) windowBtn_->setCurrentIndex(idx);
+    if (referenceLap_) referenceLap_->setVisible(playback_ && selected == ChartWindow::SelectedLap);
+}
+
+void AppToolbar::setChartLapAvailability(const QVector<int>& laps, bool playback,
+                                         bool lapCoordinatesAvailable)
+{
+    playback_ = playback;
+    const int selected = referenceLap_ ? referenceLap_->currentData().toInt() : 0;
+    if (referenceLap_) {
+        referenceLap_->blockSignals(true);
+        referenceLap_->clear();
+        for (int lap : laps) referenceLap_->addItem(QString("Lap %1").arg(lap), lap);
+        int idx = referenceLap_->findData(selected);
+        if (idx < 0) idx = referenceLap_->findData(1);
+        referenceLap_->setCurrentIndex(idx >= 0 ? idx :
+            (referenceLap_->count() > 0 ? 0 : -1));
+        referenceLap_->blockSignals(false);
+        referenceLap_->setVisible(playback &&
+            kWindowOptions[windowIdx_].window == ChartWindow::SelectedLap);
+    }
+    if (windowBtn_) {
+        for (int i = 0; i < windowBtn_->count(); ++i) {
+            const ChartWindow w = chartWindowFromKey(windowBtn_->itemData(i).toString());
+            auto* standardModel = qobject_cast<QStandardItemModel*>(windowBtn_->model());
+            if (standardModel) if (auto* item = standardModel->item(i))
+                item->setEnabled(!chartWindowIsDistance(w) ||
+                    (lapCoordinatesAvailable && w != ChartWindow::SelectedLap) ||
+                    (lapCoordinatesAvailable && w == ChartWindow::SelectedLap && playback));
+        }
+        if (sectorBtn_) sectorBtn_->setVisible(lapCoordinatesAvailable);
+    }
+}
+
+void AppToolbar::setChartOptions(ChartWindow window, int referenceLap,
+                                 bool sectorBoundaries, bool cursorSync)
+{
+    for (int i = 0; i < kWindowOptionCount; ++i)
+        if (kWindowOptions[i].window == window) { windowIdx_ = i; break; }
+    if (windowBtn_) windowBtn_->setCurrentIndex(windowIdx_);
+    if (referenceLap_) {
+        const int idx = referenceLap_->findData(referenceLap);
+        if (idx >= 0) referenceLap_->setCurrentIndex(idx);
+        referenceLap_->setVisible(playback_ && window == ChartWindow::SelectedLap);
+    }
+    if (sectorBtn_) {
+        sectorBtn_->blockSignals(true); sectorBtn_->setChecked(sectorBoundaries);
+        sectorBtn_->blockSignals(false);
+    }
+    if (syncBtn_) {
+        syncBtn_->blockSignals(true); syncBtn_->setChecked(cursorSync); syncBtn_->blockSignals(false);
+    }
 }
 
 // Collapse low-priority toolbar items into the "⋯" menu when the window is too
@@ -422,7 +510,7 @@ void AppToolbar::relayout() {
     int sumTabs = 0;
     for (int i = 0; i < n; ++i) { tabW[i] = pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
     const int wSeg   = analyzeVisible_ ? analyzeControls_->sizeHint().width()
-                                       : windowBtn_->sizeHint().width();
+                                       : actW(windowAct_);
     const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = overflowBtn_->sizeHint().width();
     // The session timer lives inside the (otherwise collapsible) spacer, so the
@@ -481,8 +569,32 @@ void AppToolbar::relayout() {
             QAction* a = overflowMenu_->addAction(kWindowOptions[i].label);
             a->setCheckable(true);
             a->setChecked(i == windowIdx_);
+            if (auto* items = qobject_cast<QStandardItemModel*>(windowBtn_->model()))
+                if (auto* item = items->item(i)) a->setEnabled(item->isEnabled());
             connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
         }
+        if (playback_ && kWindowOptions[windowIdx_].window == ChartWindow::SelectedLap && referenceLap_) {
+            overflowMenu_->addSection("Reference Lap");
+            for (int i = 0; i < referenceLap_->count(); ++i) {
+                QAction* lap = overflowMenu_->addAction(referenceLap_->itemText(i));
+                lap->setCheckable(true);
+                lap->setChecked(i == referenceLap_->currentIndex());
+                connect(lap, &QAction::triggered, this, [this, i] {
+                    referenceLap_->setCurrentIndex(i);
+                    emit chartReferenceLapChanged(referenceLap_->itemData(i).toInt());
+                });
+            }
+        }
+        if (sectorBtn_ && !sectorBtn_->isHidden()) {
+            QAction* sectors = overflowMenu_->addAction("Sector Boundaries");
+            sectors->setCheckable(true);
+            sectors->setChecked(sectorBtn_->isChecked());
+            connect(sectors, &QAction::toggled, sectorBtn_, &QToolButton::setChecked);
+        }
+        QAction* sync = overflowMenu_->addAction("Synchronize Tooltips");
+        sync->setCheckable(true);
+        sync->setChecked(syncBtn_ && syncBtn_->isChecked());
+        connect(sync, &QAction::toggled, syncBtn_, &QToolButton::setChecked);
     }
     if (!iconsIn) {
         overflowMenu_->addSeparator();

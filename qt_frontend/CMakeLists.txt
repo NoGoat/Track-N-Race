@@ -37,21 +37,13 @@ include(FetchContent)
 # TNRD compression is owned entirely by libtnrp: Zstandard for V2/default writes,
 # plus zlib for V1/gzip read and deprecated-write compatibility.
 
-# Find Qt6 (fallback to Qt5). PrintSupport is required by the vendored QCustomPlot.
-# OpenGL/OpenGLWidgets let QCustomPlot rasterize on the GPU — software QPainter
-# rendering of the Speed/RPM/ERS chart costs ~100 ms/frame (and seconds/frame at
-# a 10-min window), which GPU rendering cuts to single-digit ms. See setOpenGl().
-find_package(Qt6 QUIET COMPONENTS Core Widgets Network Svg PrintSupport OpenGL OpenGLWidgets)
-if(Qt6_FOUND)
-    set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::PrintSupport
-                Qt6::OpenGL Qt6::OpenGLWidgets)
-    set(QCP_OPENGL ON)
-    message(STATUS "Using Qt6 (QCustomPlot OpenGL rendering enabled)")
-else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets Network Svg PrintSupport)
-    set(QT_LIBS Qt5::Core Qt5::Widgets Qt5::Network Qt5::Svg Qt5::PrintSupport)
-    message(STATUS "Using Qt5 (Qt6 not found; software chart rendering)")
-endif()
+# The purpose-built chart renderer uses QRhiWidget (Qt 6.7+) and Qt's shader
+# pipeline. QRhi selects Vulkan, Direct3D, Metal or OpenGL at runtime; GuiPrivate
+# is intentionally confined to the chart/backend translation units.
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Widgets Network Svg ShaderTools)
+find_package(Qt6GuiPrivate REQUIRED)
+set(QT_LIBS Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::GuiPrivate)
+message(STATUS "Using Qt6 QRhi telemetry renderer")
 
 # Shared telemetry engine (libtnrp / target `tnrp`): UDP receive, F1 24/25 packet
 # parsing, .tnrd recording + playback — the single source of truth also used by the
@@ -74,6 +66,7 @@ set(SOURCES
     src/PlaybackController.h
     src/EngineSink.h
     src/HotRowSmoother.h
+    src/PresentationScheduler.h
     src/CompactSettings.h
     src/GraphViewSettings.h
     src/BreezePalette.cpp
@@ -81,7 +74,10 @@ set(SOURCES
     src/TnrdPlayer.cpp
     src/TnrdPlayer.h
     src/SessionModel.cpp
+    src/ChartCoordinates.cpp
     src/SessionModel.h
+    src/ChartGraphicsBackend.cpp
+    src/ChartGraphicsBackend.h
     src/TelemetryChart.cpp
     src/TelemetryChart.h
     src/components/ChartView.cpp
@@ -89,8 +85,6 @@ set(SOURCES
     src/components/GraphTable.cpp
     src/components/GraphTable.h
     src/components/PageUiHelpers.h
-    src/third_party/qcustomplot/qcustomplot.cpp
-    src/third_party/qcustomplot/qcustomplot.h
     src/components/Toast.cpp
     src/components/Toast.h
     src/components/XlsxExportWorker.cpp
@@ -172,6 +166,14 @@ set_target_properties(native_recorder PROPERTIES OUTPUT_NAME "Track-N-Race - Qt"
 target_compile_definitions(native_recorder PRIVATE APP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(native_recorder PRIVATE tnrp ${QT_LIBS})
 
+qt_add_shaders(native_recorder "tnr_chart_shaders"
+    PREFIX "/shaders"
+    BASE "shaders"
+    FILES
+        shaders/chart.vert
+        shaders/chart.frag
+)
+
 # Keep every directly-linked Qt module in DT_NEEDED even if whole-program LTO
 # proves none of its symbols are reachable (e.g. QSvgRenderer/QPrinter/
 # QOpenGLWidget calls fully inlined away). Some toolchains' --as-needed default
@@ -221,15 +223,6 @@ else()
             $<$<NOT:$<CONFIG:Debug>>:-march=native>)
         message(STATUS "Building with -march=native (binary not portable to other CPUs)")
     endif()
-endif()
-
-# GPU rendering for QCustomPlot (Qt6 only). The macro must reach qcustomplot.cpp,
-# so define it on the whole target. OpenGL::GL provides the GL symbols the
-# QCustomPlot OpenGL paint path references directly.
-if(QCP_OPENGL)
-    find_package(OpenGL REQUIRED)
-    target_compile_definitions(native_recorder PRIVATE QCUSTOMPLOT_USE_OPENGL)
-    target_link_libraries(native_recorder PRIVATE OpenGL::GL)
 endif()
 
 # ── Optional: bundle a prebuilt Breeze style stack (see breeze_stack/) ────────

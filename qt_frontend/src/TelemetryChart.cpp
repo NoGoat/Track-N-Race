@@ -1,8 +1,10 @@
 #include "TelemetryChart.h"
 #include "SessionModel.h"
+#include "ChartCoordinates.h"
+#include "PresentationScheduler.h"
 
 #include <QColor>
-#include <QTimer>
+#include <QtMath>
 #include <algorithm>
 
 namespace {
@@ -54,19 +56,12 @@ TelemetryChart::TelemetryChart(QWidget* parent)
 
     showReference(false);
     setHoverReadout(true);
-    setLegendVisible(false);   // legend lives in the toolbar (see OverviewPage)
+    setPanelTitle(0, "SPEED / RPM / ERS");
+    setPanelLegendVisible(0, true);
+    linkSeriesVisibility(spId_, rSpId_);
+    linkSeriesVisibility(rpId_, rRpId_);
+    linkSeriesVisibility(erId_, rErId_);
 
-    // Coalesces rebuilds to one per event-loop pass (i.e. one per arriving packet,
-    // 20..60 Hz) via a zero-delay single-shot armed from requestRefresh() — no fixed
-    // rate cap.
-    refreshTimer_ = new QTimer(this);
-    refreshTimer_->setSingleShot(true);
-    refreshTimer_->setInterval(0);
-    connect(refreshTimer_, &QTimer::timeout, this, [this] {
-        // Only rebuild while shown; the model keeps accumulating either way, and
-        // showEvent re-pulls when the Overview tab comes back into view.
-        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
-    });
 }
 
 void TelemetryChart::showEvent(QShowEvent* e)
@@ -82,6 +77,8 @@ void TelemetryChart::setModel(SessionModel* m)
     connect(m, &SessionModel::telemetryAppended, this, &TelemetryChart::requestRefresh);
     connect(m, &SessionModel::lapsChanged,       this, &TelemetryChart::requestRefresh);
     connect(m, &SessionModel::wasReset,          this, &TelemetryChart::requestRefresh);
+    connect(m, &SessionModel::chartConfigurationChanged, this, &TelemetryChart::requestRefresh);
+    bindPanelChartSettings(0, m, tnr::GraphSection::OverviewTelemetry);
     requestRefresh();
 }
 
@@ -99,7 +96,10 @@ void TelemetryChart::setWindowSeconds(float seconds)
 
 void TelemetryChart::requestRefresh() {
     dirty_ = true;
-    if (!refreshTimer_->isActive()) refreshTimer_->start();
+    if (!isVisible()) return;
+    PresentationScheduler::instance().request(this, [this] {
+        if (dirty_ && isVisible()) { dirty_ = false; refresh(); }
+    }, PresentationScheduler::Policy::Chart);
 }
 
 float TelemetryChart::currentTime() const
@@ -134,14 +134,133 @@ void TelemetryChart::refresh()
 {
     if (!model_) return;
     const float now = currentTime();
-    switch (mode_) {
-        case ChartMode::Default:     buildDefault(now); break;
-        case ChartMode::CurrentLap:  buildOverlay(currentLapBlock(), currentLapBlock(), now); break;
-        case ChartMode::PreviousLap: buildOverlay(previousLapBlock(), currentLapBlock(), now); break;
-        case ChartMode::FastestLap:  buildOverlay(model_->data().fastestLap(), currentLapBlock(), now); break;
-        case ChartMode::Compare:     buildOverlay(model_->data().lapByNum(compareLap_), currentLapBlock(), now); break;
+    const SessionData& data = model_->data();
+    const auto section = tnr::GraphSection::OverviewTelemetry;
+    const ChartWindow window = model_->effectiveChartWindow(section);
+    const int selectedLap = model_->referenceLap(section);
+    const ChartDomain domain = resolveChartDomain(data, window, selectedLap, now,
+        model_->sectorBoundaries(), model_->chartPrimaryLap(now),
+        model_->chartReferenceLap(window, selectedLap, now));
+    setXRange(axXId_, domain.lower, domain.upper);
+    setAxisDistanceMode(axXId_, domain.distance);
+    syncAxisSessionMap(axXId_, domain.distance ? domain.primary : nullptr, domain.currentTime);
+    if (!domain.ticks.isEmpty()) setAxisLabelMap(axXId_, domain.ticks, domain.tickLabels,
+        chartWindowAccumulatesLaps(domain.window));
+    else setAxisTimeTicker(axXId_, "%m:%s");
+    setCursorModeKey(chartWindowKey(domain.window));
+    setCursorSync(model_->cursorSync(), model_->secondaryVerticalCrosshair(),
+                  model_->secondaryHorizontalCrosshair());
+
+    const QString modeKey = chartWindowKey(domain.window);
+    const QString primaryKey = QString("%1:%2:%3")
+        .arg(modeKey)
+        .arg(domain.primary ? domain.primary->lapNum : -1)
+        .arg(domain.window == ChartWindow::StintLaps ? qRound64(domain.lower * 1000.0) : 0)
+        + QString(":%1").arg(model_->playbackDataRevision());
+    if (chartWindowIsTime(domain.window)) {
+        const bool rebuild = dataModeKey_ != primaryKey || now < prevEndTime_ ||
+                             std::abs(now - prevEndTime_) > 1.0f;
+        if (rebuild) {
+            clear(spId_); clear(rpId_); clear(erId_);
+            clear(rSpId_); clear(rRpId_); clear(rErId_);
+            lastAddedTime_ = domain.lower;
+            lastAddedStsTime_ = domain.lower;
+            dataModeKey_ = primaryKey;
+        }
+        auto lb = [](const auto& rows, float t) {
+            return std::lower_bound(rows.begin(), rows.end(), t,
+                [](const auto& row, float value) { return row.t < value; });
+        };
+        for (auto it = lb(data.telBuf, lastAddedTime_ + 0.0001f); it != data.telBuf.end(); ++it) {
+            if (it->t > now) break;
+            appendPoint(spId_, it->t, it->speed);
+            appendPoint(rpId_, it->t, it->rpm);
+            lastAddedTime_ = it->t;
+        }
+        for (auto it = lb(data.stsBuf, lastAddedStsTime_ + 0.0001f); it != data.stsBuf.end(); ++it) {
+            if (it->t > now) break;
+            appendPoint(erId_, it->t, it->ers);
+            lastAddedStsTime_ = it->t;
+        }
+        trimBefore(spId_, domain.lower); trimBefore(rpId_, domain.lower); trimBefore(erId_, domain.lower);
+        showReference(false);
+    } else {
+        const bool rebuild = dataModeKey_ != primaryKey || now < prevEndTime_ ||
+                             std::abs(now - prevEndTime_) > 1.0f;
+        if (rebuild) {
+            QVector<double> tx, speed, rpm, sx, ers;
+            const QVector<TelSample> tel = chartTelSamples(data, domain);
+            const QVector<StsSample> sts = chartStatusSamples(data, domain);
+            for (const TelSample& sample : tel) {
+                const double key = domain.distance ? data.distanceAtTime(domain.primary, sample.t) : sample.t;
+                if (!qIsFinite(key)) continue;
+                tx.push_back(key); speed.push_back(sample.speed); rpm.push_back(sample.rpm);
+                lastAddedTime_ = sample.t;
+            }
+            for (const StsSample& sample : sts) {
+                const double key = domain.distance ? data.distanceAtTime(domain.primary, sample.t) : sample.t;
+                if (!qIsFinite(key)) continue;
+                sx.push_back(key); ers.push_back(sample.ers);
+                lastAddedStsTime_ = sample.t;
+            }
+            setSeriesData(spId_, tx, speed); setSeriesData(rpId_, tx, rpm); setSeriesData(erId_, sx, ers);
+            if (tel.isEmpty()) lastAddedTime_ = domain.lower;
+            if (sts.isEmpty()) lastAddedStsTime_ = domain.lower;
+            dataModeKey_ = primaryKey;
+        } else {
+            const QVector<TelSample>& tel = domain.distance && domain.primary
+                ? domain.primary->tel : data.telBuf;
+            const QVector<StsSample>& sts = domain.distance && domain.primary
+                ? domain.primary->sts : data.stsBuf;
+            auto telStart = std::lower_bound(tel.begin(), tel.end(), lastAddedTime_ + 0.0001f,
+                [](const TelSample& sample, float value) { return sample.t < value; });
+            for (auto it = telStart; it != tel.end(); ++it) {
+                if (it->t > now) break;
+                if (it->t < domain.lower) continue;
+                const double key = domain.distance ? data.distanceAtTime(domain.primary, it->t) : it->t;
+                if (!qIsFinite(key)) continue;
+                appendPoint(spId_, key, it->speed); appendPoint(rpId_, key, it->rpm);
+                lastAddedTime_ = it->t;
+            }
+            auto stsStart = std::lower_bound(sts.begin(), sts.end(), lastAddedStsTime_ + 0.0001f,
+                [](const StsSample& sample, float value) { return sample.t < value; });
+            for (auto it = stsStart; it != sts.end(); ++it) {
+                if (it->t > now) break;
+                if (it->t < domain.lower) continue;
+                const double key = domain.distance ? data.distanceAtTime(domain.primary, it->t) : it->t;
+                if (!qIsFinite(key)) continue;
+                appendPoint(erId_, key, it->ers);
+                lastAddedStsTime_ = it->t;
+            }
+        }
     }
+
+    const QString referenceKey = domain.comparison && domain.reference
+        ? QString("%1:%2:%3").arg(modeKey).arg(domain.reference->lapNum)
+            .arg(model_->playbackDataRevision())
+        : QString();
+    if (referenceKey != referenceModeKey_) {
+        QVector<double> rtx, rspeed, rrpm, rsx, rers;
+        if (domain.comparison && domain.reference) {
+        for (const TelSample& sample : domain.reference->tel) {
+            const double key = projectReferenceTime(data, domain, sample.t);
+            if (!qIsFinite(key)) continue;
+            rtx.push_back(key); rspeed.push_back(sample.speed); rrpm.push_back(sample.rpm);
+        }
+        for (const StsSample& sample : domain.reference->sts) {
+            const double key = projectReferenceTime(data, domain, sample.t);
+            if (!qIsFinite(key)) continue;
+            rsx.push_back(key); rers.push_back(sample.ers);
+        }
+        }
+        setSeriesData(rSpId_, rtx, rspeed); setSeriesData(rRpId_, rtx, rrpm); setSeriesData(rErId_, rsx, rers);
+        referenceModeKey_ = referenceKey;
+    }
+    setSeriesVisible(rSpId_, domain.comparison && seriesVisible(spId_));
+    setSeriesVisible(rRpId_, domain.comparison && seriesVisible(rpId_));
+    setSeriesVisible(rErId_, domain.comparison && seriesVisible(erId_));
     requestReplot();
+    prevEndTime_ = now;
 }
 
 void TelemetryChart::buildDefault(float endTime)

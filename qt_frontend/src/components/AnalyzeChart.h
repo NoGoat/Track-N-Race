@@ -8,7 +8,6 @@
 #include <QVector>
 
 class SessionModel;
-class QTimer;
 
 class AnalyzeChart : public ChartView {
     Q_OBJECT
@@ -34,7 +33,6 @@ protected:
 private:
     struct Handles { int current=-1, comparison=-1; };
     QPointer<SessionModel> model_;
-    QTimer* refreshTimer_ = nullptr;
     QVector<AnalyzeSeriesSetting> selected_;
     QVector<Handles> handles_;
     QHash<QString,int> axes_;

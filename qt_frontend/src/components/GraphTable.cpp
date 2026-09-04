@@ -8,6 +8,7 @@
 #include <QLayoutItem>
 #include <QScrollBar>
 #include <algorithm>
+#include <cmath>
 
 // Model behind GraphTable's QTableView. Rows are stored as raw doubles (row-major,
 // in the order callers feed them — i.e. newest-first) and a cell is formatted only
@@ -73,6 +74,14 @@ public:
         endResetModel();
     }
 
+    void setDistanceMode(bool distance) {
+        if (cols_.isEmpty()) return;
+        cols_[0].header = distance ? QStringLiteral("Distance (m)") : QStringLiteral("Time");
+        cols_[0].fmt = distance ? GraphTable::Fixed0 : GraphTable::Time;
+        emit headerDataChanged(Qt::Horizontal, 0, 0);
+        if (rows_ > 0) emit dataChanged(index(0, 0), index(rows_ - 1, 0));
+    }
+
 private:
     static QString format(double v, GraphTable::Fmt f) {
         switch (f) {
@@ -133,13 +142,39 @@ QString GraphTable::fmtTime(float t) {
 
 void GraphTable::setColumns(const QVector<Column>& columns) {
     model_->setColumns(columns);
+    model_->setDistanceMode(distanceMode_);
+    haveCommittedRange_ = false;
 }
 
-void GraphTable::beginRebuild() { model_->begin(); }
+void GraphTable::setDistanceMode(bool distance) {
+    if (distanceMode_ == distance) return;
+    distanceMode_ = distance;
+    model_->setDistanceMode(distance);
+    haveCommittedRange_ = false;
+}
 
-void GraphTable::addRowImpl(const double* values, int n) { model_->add(values, n); }
+void GraphTable::beginRebuild(double lowerTime, double upperTime, bool allLapsMode) {
+    constexpr qint64 kAllLapsTableFrameMs = 200;
+    const double span = upperTime - lowerTime;
+    const double previousSpan = lastUpperTime_ - lastLowerTime_;
+    const bool structural = !haveCommittedRange_ || upperTime < lastUpperTime_ ||
+        std::abs(upperTime - lastUpperTime_) > 0.5 ||
+        std::abs(span - previousSpan) > 0.05;
+    acceptingRows_ = !allLapsMode || structural || !refreshClock_.isValid() ||
+        refreshClock_.elapsed() >= kAllLapsTableFrameMs;
+    if (acceptingRows_) {
+        pendingLowerTime_ = lowerTime;
+        pendingUpperTime_ = upperTime;
+        model_->begin();
+    }
+}
+
+void GraphTable::addRowImpl(const double* values, int n) {
+    if (acceptingRows_) model_->add(values, n);
+}
 
 void GraphTable::endRebuild() {
+    if (!acceptingRows_) return;
     // Preserve the "stick to newest" behaviour: only auto-scroll to the bottom if
     // the user was already there (or the table was empty). If they scrolled up to
     // read history, leave the viewport where it is.
@@ -151,6 +186,10 @@ void GraphTable::endRebuild() {
     // are actually painted (and formatted), so this stays O(on-screen rows).
     viewport()->update();
     if (stickToBottom) scrollToBottom();
+    haveCommittedRange_ = true;
+    lastLowerTime_ = pendingLowerTime_;
+    lastUpperTime_ = pendingUpperTime_;
+    refreshClock_.restart();
 }
 
 void tnr::layoutSectionGrid(QGridLayout* outer, ChartView* chart,

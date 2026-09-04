@@ -154,12 +154,14 @@ intent so the per-packet fast path can skip the whole recording pipeline
 `load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
 Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
 time/type index. V4/V5 first open their uncompressed metadata, lap table, chunk
-directory, control summary, and commit footer. JSON-only consumers then decompress
-telemetry chunks on demand through a bounded cache. Electron's binary-playback load
-uses its existing asynchronous loading overlay to validate every chunk once, retain
-compact packed hot-row seek lanes plus sparse state rows, discover all chunk time
-bounds, and materialize completed-lap strategy checkpoints. Raw decompressed JSON
-still remains bounded by the LRU rather than being duplicated for the whole session.
+directory, control summary, and commit footer. Load then streams only the cold
+strategy dependencies to retain one processor checkpoint per completed lap;
+decoded chunks, parsed rows, and worker scratch are released when that pass
+finishes. Every consumer then decompresses requested playback chunks on demand
+through a bounded cache. Binary playback packs hot rows
+only as they are requested and retains those packed records in a separate bounded
+seek cache. Raw decompressed JSON remains bounded by the archive LRU rather than
+being duplicated for the whole session.
 Every selected indexed chunk is an independent job
 on an eight-worker reader pool, so long All Laps/range requests decode up to eight
 chunks in parallel regardless of row type. Concurrent consumers of the same chunk
@@ -168,19 +170,17 @@ Legacy block reads (`readBlock`) fetch contiguous index
 ranges with one `fread` into a reused scratch buffer. Temp-file positions are
 64-bit on every platform because long sessions can decompress beyond 2 GiB.
 
-With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
+With `setBinaryPlayback(true)` (used by both frontends), requested data uses the
+packed playback path:
 
-- pre-encodes hot rows (telemetry/motion/motion_ex) into a packed binary store
-  with per-record times/offsets and a cumulative count per index position, so
-  any index range maps to a contiguous byte slice;
-- keeps the sparse cold rows (status/damage/lap) whole for seek flushes;
+- requested hot rows (telemetry/motion/motion_ex) are encoded into packed binary
+  and cached only within a bounded LRU;
+- sparse cold rows (status/damage/lap) are read from indexed chunks on demand;
 - reconstructs deduplicated Car Damage state at the specification's fixed
   10 Hz cadence for streaming playback, seeks and per-lap Analyze payloads;
-- fills slim per-lap chart points (`speed_kph`/`rpm` + `ers_pct`) into
-  `lapBlocksMessage()` so the load payload is small; for V3 it also indexes
-  lap-distance/timing points used by Electron Analyze. The initial load scan
-  also interpolates each lap's S1/S2 end distances from those timing points;
-  V5 reads only its sparse Lap Data chunks for this metadata.
+- keeps `lapBlocksMessage()` to compact lap/control metadata for indexed files;
+  detailed lap data is materialized only when requested. The initial metadata
+  scan interpolates each lap's S1/S2 end distances from sparse Lap Data chunks.
 
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:
@@ -204,9 +204,10 @@ an absolute session_time cursor scaled by speed:
   extraction runs on a libuv worker, the seek payload views the reader's
   immutable packed store until one IPC-compatible V8 Buffer copy, and request ids
   discard superseded scrubs before renderer IPC/decode.
-  For V4/V5, the packed history and sparse rows come from the load-time warm cache,
-  so the first random seek does not pay JSON decompression/encoding or progressively
-  build strategy checkpoints.
+  For V4/V5, requested chunks are decompressed through the bounded archive LRU;
+  no whole-recording packed or JSON history is retained. V5 selects exact rows
+  from persisted time metadata, while V4 discovers missing chunk time bounds as
+  chunks are first touched.
   A request generation is registered before its worker is queued: playback is
   gated until that generation commits, so an overtaken worker cannot move the
   cursor or leak stale future rows into the winning seek. Electron adds a
