@@ -231,6 +231,7 @@ public:
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
+            InstanceMethod("liveDiagnostics", &TNRPAddon::LiveDiagnostics),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
@@ -522,6 +523,45 @@ private:
 
     Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
         return Napi::String::New(info.Env(), engine->udpLastError());
+    }
+
+    Napi::Value LiveDiagnostics(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        Napi::Object out = Napi::Object::New(env);
+        if (!engine) return out;
+        const auto snapshot = engine->liveDiagnostics();
+        out.Set("udpRunning", snapshot.udpRunning);
+        out.Set("inPlayback", snapshot.inPlayback);
+        out.Set("recording", snapshot.recording);
+        out.Set("datagrams", Napi::Number::New(env, static_cast<double>(snapshot.datagrams)));
+        out.Set("bytes", Napi::Number::New(env, static_cast<double>(snapshot.bytes)));
+        out.Set("tooShort", Napi::Number::New(env, static_cast<double>(snapshot.tooShort)));
+        out.Set("unsupportedFormat", Napi::Number::New(env, static_cast<double>(snapshot.unsupportedFormat)));
+        out.Set("parserDropped", Napi::Number::New(env, static_cast<double>(snapshot.parserDropped)));
+        out.Set("accepted", Napi::Number::New(env, static_cast<double>(snapshot.accepted)));
+        out.Set("rowsProduced", Napi::Number::New(env, static_cast<double>(snapshot.rowsProduced)));
+        out.Set("binaryBytesProduced", Napi::Number::New(env, static_cast<double>(snapshot.binaryBytesProduced)));
+        out.Set("noOutput", Napi::Number::New(env, static_cast<double>(snapshot.noOutput)));
+        Napi::Object packetIds = Napi::Object::New(env);
+        for (size_t i = 0; i < snapshot.packetIds.size(); ++i) {
+            if (snapshot.packetIds[i] == 0) continue;
+            packetIds.Set(i == 17 ? "other" : std::to_string(i),
+                Napi::Number::New(env, static_cast<double>(snapshot.packetIds[i])));
+        }
+        out.Set("packetIds", packetIds);
+        Napi::Object formats = Napi::Object::New(env);
+        formats.Set("2024", Napi::Number::New(env, static_cast<double>(snapshot.format2024)));
+        formats.Set("2025", Napi::Number::New(env, static_cast<double>(snapshot.format2025)));
+        formats.Set("2026", Napi::Number::New(env, static_cast<double>(snapshot.format2026)));
+        out.Set("formats", formats);
+        out.Set("lastIncomingFormat", snapshot.lastIncomingFormat);
+        out.Set("lastPacketId", snapshot.lastPacketId);
+        out.Set("lastDatagramLength", snapshot.lastDatagramLength);
+        out.Set("lastSessionTime", snapshot.lastSessionTime);
+        out.Set("consumerRowMask", snapshot.consumerRowMask);
+        out.Set("consumerHistoryMask", snapshot.consumerHistoryMask);
+        out.Set("consumerWindowSeconds", snapshot.consumerWindowSeconds);
+        return out;
     }
 
     Napi::Value SetOverride(const Napi::CallbackInfo& info) {

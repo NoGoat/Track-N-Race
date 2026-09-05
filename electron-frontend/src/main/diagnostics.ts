@@ -1,5 +1,6 @@
 import { app, crashReporter } from 'electron'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { formatWithOptions } from 'util'
 
@@ -128,6 +129,19 @@ function logStartupMetadata(diagnostics: Diagnostics, appVersion: string): void 
     commandLine: process.argv,
     userData: app.getPath('userData'),
     locale: app.getLocale(),
+    networkInterfaces: Object.fromEntries(
+      Object.entries(os.networkInterfaces()).map(([name, addresses]) => [
+        name,
+        (addresses ?? []).map(address => ({
+          address: address.address,
+          netmask: address.netmask,
+          family: address.family,
+          internal: address.internal,
+          cidr: address.cidr,
+          scopeid: address.scopeid,
+        })),
+      ])
+    ),
   })
 }
 

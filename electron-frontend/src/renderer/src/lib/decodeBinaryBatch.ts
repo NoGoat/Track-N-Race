@@ -79,7 +79,7 @@ export function decodeBinaryBatch(batch: Uint8Array | ArrayBuffer): DecodedHotRo
       }
       default:
         // Unknown tag: record length is unknown, so we can't safely continue.
-        return rows
+        throw new Error(`Unknown telemetry binary tag ${tag} at byte offset ${o - 1} of ${len}`)
     }
   }
   return rows

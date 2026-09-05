@@ -162,10 +162,39 @@ std::string Engine::udpLastError() const {
     return udp_.lastError();
 }
 
+Engine::LiveDiagnostics Engine::liveDiagnostics() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    LiveDiagnostics snapshot = liveDiagnostics_;
+    snapshot.udpRunning = udp_.isRunning();
+    snapshot.inPlayback = inPlayback_.load();
+    snapshot.recording = writer_.isRecording();
+    snapshot.consumerRowMask = consumerRowMask_;
+    snapshot.consumerHistoryMask = consumerHistoryMask_;
+    snapshot.consumerWindowSeconds = consumerWindowSeconds_;
+    return snapshot;
+}
+
 void Engine::onDatagram(const uint8_t* data, int length) {
     if (inPlayback_.load()) return;
 
     std::lock_guard<std::mutex> lk(mutex_);
+    liveDiagnostics_.datagrams++;
+    if (length > 0) liveDiagnostics_.bytes += static_cast<uint64_t>(length);
+    liveDiagnostics_.lastDatagramLength = length;
+    if (length < 29) {
+        liveDiagnostics_.tooShort++;
+    } else {
+        const uint16_t incoming = static_cast<uint16_t>(data[0]) |
+            (static_cast<uint16_t>(data[1]) << 8);
+        const uint8_t packetId = data[6];
+        liveDiagnostics_.lastIncomingFormat = incoming;
+        liveDiagnostics_.lastPacketId = packetId;
+        liveDiagnostics_.packetIds[packetId <= 16 ? packetId : 17]++;
+        if (incoming == 2024) liveDiagnostics_.format2024++;
+        else if (incoming == 2025) liveDiagnostics_.format2025++;
+        else if (incoming == 2026) liveDiagnostics_.format2026++;
+        else liveDiagnostics_.unsupportedFormat++;
+    }
     std::string ts = isoTimestamp();
 
     // Only touch the recording pipeline when logging is enabled. When it's off
@@ -181,9 +210,18 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ |
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
+    liveDiagnostics_.lastSessionTime = r.sessionTime;
+    liveDiagnostics_.rowsProduced += static_cast<uint64_t>(r.rows.size());
+    liveDiagnostics_.binaryBytesProduced += static_cast<uint64_t>(r.binary.size());
 
     for (const auto& c : r.control) emitRow(c);
-    if (r.dropped) return;
+    if (r.dropped) {
+        liveDiagnostics_.parserDropped++;
+        return;
+    }
+    liveDiagnostics_.accepted++;
+    if (r.rows.empty() && r.binary.empty() && r.control.empty())
+        liveDiagnostics_.noOutput++;
 
     if (recording) {
         writer_.notePacket(r.format, r.packetId, r.sessionTime, data, length);

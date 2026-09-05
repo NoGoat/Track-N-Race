@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
+import * as fs from 'fs'
 import * as path from 'path'
-import { chartHistoryRecords } from './binaryRows'
+import { chartHistoryRecords, inspectBinaryBatch } from './binaryRows'
 import { configStore as store } from './configStore'
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
@@ -40,6 +41,159 @@ let lastStatusRow: Record<string, unknown> | null = null
 // We pause forwarding the hot channels while hidden; the engine/recording keep
 // running unaffected.
 let rendererVisible = true
+
+const DIAGNOSTIC_INTERVAL_MS = 10_000
+interface BridgeDiagnostics {
+  startedAt: number
+  jsonCallbacks: number
+  jsonBytes: number
+  jsonRows: number
+  jsonTypes: Record<string, number>
+  lastJsonAt: number | null
+  binaryCallbacks: number
+  binaryBytes: number
+  binaryRecords: number
+  binaryTypes: Record<string, number>
+  invalidBinaryBatches: number
+  lastBinaryAt: number | null
+  jsonForwardedBatches: number
+  jsonHiddenBatches: number
+  binaryForwardedBatches: number
+  binaryHiddenBatches: number
+  ipcSendTargets: number
+}
+
+function freshBridgeDiagnostics(): BridgeDiagnostics {
+  return {
+    startedAt: Date.now(),
+    jsonCallbacks: 0, jsonBytes: 0, jsonRows: 0, jsonTypes: {}, lastJsonAt: null,
+    binaryCallbacks: 0, binaryBytes: 0, binaryRecords: 0, binaryTypes: {},
+    invalidBinaryBatches: 0, lastBinaryAt: null,
+    jsonForwardedBatches: 0, jsonHiddenBatches: 0,
+    binaryForwardedBatches: 0, binaryHiddenBatches: 0, ipcSendTargets: 0,
+  }
+}
+
+let bridgeDiagnostics = freshBridgeDiagnostics()
+let diagnosticTimer: ReturnType<typeof setInterval> | null = null
+let activeUdpConfig: Record<string, unknown> | null = null
+let warnedNoDatagrams = false
+let warnedNoTelemetryOutput = false
+let warnedZeroConsumerMask = false
+let warnedMissingNativeDiagnostics = false
+
+function increment(map: Record<string, number>, key: string, count = 1): void {
+  map[key] = (map[key] ?? 0) + count
+}
+
+function observeJsonBatch(batch: string): { rows: number; types: Record<string, number> } {
+  const types: Record<string, number> = {}
+  let rows = 0
+  let start = 0
+  while (start < batch.length) {
+    let end = batch.indexOf('\n', start)
+    if (end === -1) end = batch.length
+    if (end > start) {
+      rows++
+      const match = /"type"\s*:\s*"([^"]+)"/.exec(batch.slice(start, end))
+      increment(types, match?.[1] ?? '<missing-type>')
+    }
+    start = end + 1
+  }
+  bridgeDiagnostics.jsonCallbacks++
+  bridgeDiagnostics.jsonBytes += Buffer.byteLength(batch)
+  bridgeDiagnostics.jsonRows += rows
+  bridgeDiagnostics.lastJsonAt = Date.now()
+  for (const [type, count] of Object.entries(types)) increment(bridgeDiagnostics.jsonTypes, type, count)
+  if (bridgeDiagnostics.jsonCallbacks === 1) {
+    console.info('[telemetry-diagnostics][main] first native JSON callback:', { bytes: Buffer.byteLength(batch), rows, types })
+  }
+  return { rows, types }
+}
+
+function windowDiagnostics(): Array<Record<string, unknown>> {
+  return BrowserWindow.getAllWindows().map(win => ({
+    id: win.id,
+    destroyed: win.isDestroyed(),
+    visible: win.isVisible(),
+    minimized: win.isMinimized(),
+    focused: win.isFocused(),
+    loading: win.webContents.isLoading(),
+    crashed: win.webContents.isCrashed(),
+    url: win.webContents.getURL(),
+  }))
+}
+
+function logBridgeHealth(reason: string): void {
+  const now = Date.now()
+  let native: Record<string, unknown> | null = null
+  let nativeError: string | null = null
+  if (engine?.liveDiagnostics) {
+    try {
+      native = engine.liveDiagnostics() as Record<string, unknown>
+      nativeError = String(engine.udpLastError?.() ?? '') || null
+    } catch (error) {
+      nativeError = `diagnostic snapshot failed: ${String(error)}`
+    }
+  } else if (engine && !warnedMissingNativeDiagnostics) {
+    warnedMissingNativeDiagnostics = true
+    console.warn('[telemetry-diagnostics][main] Native addon has no liveDiagnostics() method; the packaged addon may be stale.')
+  }
+
+  console.info('[telemetry-diagnostics][main] health:', {
+    reason,
+    elapsedMs: now - bridgeDiagnostics.startedAt,
+    engineReady: Boolean(engine),
+    udpConfig: activeUdpConfig,
+    rendererVisible,
+    activePlaybackFile: activeFilename(),
+    protocol: lastStatus,
+    native,
+    nativeError,
+    bridge: {
+      ...bridgeDiagnostics,
+      lastJsonAgeMs: bridgeDiagnostics.lastJsonAt == null ? null : now - bridgeDiagnostics.lastJsonAt,
+      lastBinaryAgeMs: bridgeDiagnostics.lastBinaryAt == null ? null : now - bridgeDiagnostics.lastBinaryAt,
+    },
+    resumeCache: {
+      binaryEntries: hiddenBinary.length - hiddenBinaryStart,
+      jsonEntries: hiddenJson.length - hiddenJsonStart,
+      windowMs: resumeWindowMs,
+    },
+    windows: windowDiagnostics(),
+  })
+
+  const datagrams = Number(native?.datagrams ?? -1)
+  const produced = Number(native?.rowsProduced ?? 0) + Number(native?.binaryBytesProduced ?? 0)
+  if (!warnedNoDatagrams && datagrams === 0 && now - bridgeDiagnostics.startedAt >= DIAGNOSTIC_INTERVAL_MS) {
+    warnedNoDatagrams = true
+    console.warn('[telemetry-diagnostics][main] Listener is bound but the native socket has received zero UDP datagrams. Check the game UDP destination IP/port, network interface, firewall, and whether UDP telemetry is enabled.')
+  } else if (!warnedNoTelemetryOutput && datagrams > 0 && produced === 0) {
+    warnedNoTelemetryOutput = true
+    console.warn('[telemetry-diagnostics][main] UDP datagrams are reaching the native socket but the parser has produced no telemetry output. Inspect formats, packetIds, tooShort, unsupportedFormat, parserDropped, noOutput, and consumerRowMask in this snapshot.')
+  }
+  if (!warnedZeroConsumerMask && now - bridgeDiagnostics.startedAt >= DIAGNOSTIC_INTERVAL_MS && Number(native?.consumerRowMask ?? -1) === 0) {
+    warnedZeroConsumerMask = true
+    console.warn('[telemetry-diagnostics][main] Native consumerRowMask is still zero. The renderer has not declared any visible telemetry row requirements, so parsed output will be filtered before the N-API callbacks.')
+  }
+}
+
+function startDiagnosticTimer(): void {
+  if (diagnosticTimer) clearInterval(diagnosticTimer)
+  bridgeDiagnostics = freshBridgeDiagnostics()
+  warnedNoDatagrams = false
+  warnedNoTelemetryOutput = false
+  warnedZeroConsumerMask = false
+  warnedMissingNativeDiagnostics = false
+  diagnosticTimer = setInterval(() => logBridgeHealth('periodic'), DIAGNOSTIC_INTERVAL_MS)
+  diagnosticTimer.unref?.()
+}
+
+function stopDiagnosticTimer(): void {
+  if (!diagnosticTimer) return
+  clearInterval(diagnosticTimer)
+  diagnosticTimer = null
+}
 
 interface TimedBinary { at: number; data: Buffer }
 interface TimedJson { at: number; data: string }
@@ -96,8 +250,12 @@ function sendResumeCache(): void {
     : Buffer.concat(hiddenBinary.slice(hiddenBinaryStart).map(entry => entry.data))
   const coldJson = hiddenJson.slice(hiddenJsonStart).map(entry => entry.data).join('\n')
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('telemetry-resume', { binary, coldJson })
+    if (!win.isDestroyed()) {
+      win.webContents.send('telemetry-resume', { binary, coldJson })
+      bridgeDiagnostics.ipcSendTargets++
+    }
   }
+  console.info('[telemetry-diagnostics][main] sent renderer resume cache:', { binaryBytes: binary.length, coldJsonBytes: Buffer.byteLength(coldJson) })
 }
 
 let engine: any = null
@@ -146,12 +304,34 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // flight. Forward each real batch unchanged so display data keeps the engine's
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
+  const buffer = Buffer.from(batch)
+  const inspection = inspectBinaryBatch(buffer)
+  bridgeDiagnostics.binaryCallbacks++
+  bridgeDiagnostics.binaryBytes += buffer.length
+  bridgeDiagnostics.binaryRecords += inspection.records
+  bridgeDiagnostics.lastBinaryAt = Date.now()
+  increment(bridgeDiagnostics.binaryTypes, 'telemetry', inspection.telemetry)
+  increment(bridgeDiagnostics.binaryTypes, 'motion', inspection.motion)
+  increment(bridgeDiagnostics.binaryTypes, 'positions', inspection.positions)
+  increment(bridgeDiagnostics.binaryTypes, 'motion_ex', inspection.motionEx)
+  if (!inspection.valid) {
+    bridgeDiagnostics.invalidBinaryBatches++
+    console.error('[telemetry-diagnostics][main] invalid packed binary batch:', inspection)
+  }
+  if (bridgeDiagnostics.binaryCallbacks === 1) {
+    console.info('[telemetry-diagnostics][main] first native binary callback:', inspection)
+  }
   if (rendererVisible) {
     for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send('telemetry-binary', batch)
+      if (!win.isDestroyed()) {
+        win.webContents.send('telemetry-binary', batch)
+        bridgeDiagnostics.ipcSendTargets++
+      }
     }
+    bridgeDiagnostics.binaryForwardedBatches++
   } else {
-    const history = chartHistoryRecords(Buffer.from(batch))
+    bridgeDiagnostics.binaryHiddenBatches++
+    const history = chartHistoryRecords(buffer)
     if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
     trimResumeCache(performance.now())
   }
@@ -159,7 +339,10 @@ function forwardBinary(batch: Uint8Array): void {
 
 function broadcast(row: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('telemetry', row)
+    if (!win.isDestroyed()) {
+      win.webContents.send('telemetry', row)
+      bridgeDiagnostics.ipcSendTargets++
+    }
   }
 }
 
@@ -173,6 +356,13 @@ function handleRow(row: Record<string, unknown>): void {
       active: (row.active_format as number) ?? null,
     }
     lastStatusRow = row
+    console.info('[telemetry-diagnostics][main] protocol status:', {
+      override: lastStatus.override,
+      detected: lastStatus.detected,
+      active: lastStatus.active,
+      aeroMode: row.aero_mode ?? null,
+      gameYear: (row.capabilities as Record<string, unknown> | undefined)?.gameYear ?? null,
+    })
     if (lastStatus.override === 'auto' && lastStatus.detected != null) {
       store.set('udp.lastDetectedProtocol', lastStatus.detected)
     }
@@ -236,7 +426,16 @@ function loadAddon(): any {
     )
   }
   let p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
+  let addonFile: Record<string, unknown> = { path: p, exists: false }
+  try {
+    const stat = fs.statSync(p)
+    addonFile = { path: p, exists: true, bytes: stat.size, modifiedAt: stat.mtime.toISOString() }
+  } catch (error) {
+    addonFile = { ...addonFile, statError: String(error) }
+  }
+  console.info('[telemetry-diagnostics][main] loading native addon:', addonFile)
   addonModule = require(p)
+  console.info('[telemetry-diagnostics][main] native addon exports:', Object.keys(addonModule).sort())
   return addonModule
 }
 
@@ -244,6 +443,7 @@ function pushLogging(): void {
   if (engine) {
     const enabled = store.get('logging.enabled', false) as boolean
     const dir = store.get('logging.directory', '') as string
+    console.info('[telemetry-diagnostics][main] applying recording settings:', { enabled, directory: dir || '<default>' })
     engine.setLogging(enabled, dir)
   }
 }
@@ -269,8 +469,15 @@ export function startBridge(): string | null {
       binaryPlayback: true
     }
 
+    activeUdpConfig = { ...config }
+    console.info('[telemetry-diagnostics][main] constructing native engine:', {
+      config,
+      storedLastDetectedProtocol: store.get('udp.lastDetectedProtocol', null),
+      forwardingEnabled: store.get('udp.forwardingEnabled', false),
+    })
     console.info(`[udp] Starting listener on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
     engine = new addon.Engine(config, (batch: string) => {
+      observeJsonBatch(batch)
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
       // through this channel too, so it's a high-volume path worth gating —
       // except one-shot playback control rows, which must never be dropped.
@@ -279,10 +486,17 @@ export function startBridge(): string | null {
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
       if (rendererVisible || forwardWhileHidden) {
+        let targets = 0
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('telemetry-batch', batch)
+          if (!win.isDestroyed()) {
+            win.webContents.send('telemetry-batch', batch)
+            targets++
+          }
         }
+        bridgeDiagnostics.jsonForwardedBatches++
+        bridgeDiagnostics.ipcSendTargets += targets
       } else {
+        bridgeDiagnostics.jsonHiddenBatches++
         cacheResumeJson(batch, performance.now())
       }
 
@@ -343,6 +557,8 @@ export function startBridge(): string | null {
       return error
     }
     console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
+    startDiagnosticTimer()
+    logBridgeHealth('listener-started')
     pushLogging()
     
     // Listen for logging changes
@@ -362,10 +578,13 @@ export function startBridge(): string | null {
 }
 
 export function stopBridge(): void {
+  if (engine) logBridgeHealth('bridge-stopping')
+  stopDiagnosticTimer()
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
   clearResumeCache()
   activeFilePath = null
+  activeUdpConfig = null
   if (engine) {
     // Synchronous native barrier: preserve queued rows and the rolling buffer
     // before teardown, even though Engine destruction also finalizes the stream.
@@ -448,6 +667,15 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
                                           windowSeconds = 0): void {
   const requestId = ++nextDataRequirementsRequestId
+  console.info('[telemetry-diagnostics][main] renderer data requirements:', {
+    requestId,
+    streamMask: streamMask >>> 0,
+    streamMaskHex: `0x${(streamMask >>> 0).toString(16).padStart(8, '0')}`,
+    historyMask: historyMask >>> 0,
+    historyMaskHex: `0x${(historyMask >>> 0).toString(16).padStart(8, '0')}`,
+    windowSeconds: Math.max(-1, windowSeconds),
+    engineReady: Boolean(engine),
+  })
   engine?.setDataRequirements(streamMask >>> 0, historyMask >>> 0,
     Math.max(-1, windowSeconds), requestId)
 }
@@ -506,6 +734,7 @@ export function exportSessionXlsx(
 }
 
 export function setOverride(value: ProtocolOverride): void {
+  console.info('[telemetry-diagnostics][main] protocol override changed:', { previous: lastStatus.override, next: value, engineReady: Boolean(engine) })
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
 }
@@ -514,6 +743,7 @@ export function setOverride(value: ProtocolOverride): void {
 // window that missed the one-shot emission (or fell back to default labels) can
 // recover the catalog. No-op until the engine has emitted at least one status.
 export function requestStatus(): void {
+  console.info('[telemetry-diagnostics][main] renderer requested protocol status:', { cached: Boolean(lastStatusRow), protocol: lastStatus })
   if (lastStatusRow) broadcast(lastStatusRow)
 }
 
@@ -522,6 +752,9 @@ export function requestStatus(): void {
 // as a single resume payload on return, and refreshes the protocol catalog.
 export function setRendererVisible(visible: boolean): void {
   const wasVisible = rendererVisible
+  if (visible !== wasVisible) {
+    console.info('[telemetry-diagnostics][main] renderer visibility changed:', { previous: wasVisible, next: visible })
+  }
   if (!visible && wasVisible) {
     const selectedSeconds = Number(store.get('timeWindow', 30))
     resumeWindowMs = Math.min(600, Math.max(15, Number.isFinite(selectedSeconds) ? selectedSeconds : 30)) * 1000

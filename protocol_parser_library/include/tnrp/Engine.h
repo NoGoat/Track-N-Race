@@ -34,6 +34,32 @@ namespace tnrp {
 // concurrently.
 class Engine {
 public:
+    struct LiveDiagnostics {
+        bool udpRunning = false;
+        bool inPlayback = false;
+        bool recording = false;
+        uint64_t datagrams = 0;
+        uint64_t bytes = 0;
+        uint64_t tooShort = 0;
+        uint64_t unsupportedFormat = 0;
+        uint64_t parserDropped = 0;
+        uint64_t accepted = 0;
+        uint64_t rowsProduced = 0;
+        uint64_t binaryBytesProduced = 0;
+        uint64_t noOutput = 0;
+        std::array<uint64_t, 18> packetIds{}; // 0..16 plus an "other" bucket
+        uint64_t format2024 = 0;
+        uint64_t format2025 = 0;
+        uint64_t format2026 = 0;
+        uint16_t lastIncomingFormat = 0;
+        uint8_t lastPacketId = 0;
+        int lastDatagramLength = 0;
+        float lastSessionTime = 0.0f;
+        uint32_t consumerRowMask = 0;
+        uint32_t consumerHistoryMask = 0;
+        float consumerWindowSeconds = 0.0f;
+    };
+
     Engine(const Config& config, Sink* sink);
     ~Engine();
 
@@ -41,6 +67,7 @@ public:
     bool startUdp();                       // bind + begin receiving
     bool restartUdp(uint16_t port, const std::string& bindAddress);
     std::string udpLastError() const;
+    LiveDiagnostics liveDiagnostics() const;
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
@@ -120,6 +147,7 @@ private:
     uint32_t          consumerRowMask_ = 0xFFFFFFFFu;
     uint32_t          consumerHistoryMask_ = 0;
     float             consumerWindowSeconds_ = 0.0f;
+    LiveDiagnostics   liveDiagnostics_{};
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void emitRow(const std::string& json);               // forward to the sink
