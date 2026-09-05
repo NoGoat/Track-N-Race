@@ -49,11 +49,18 @@ const windowControls = {
 }
 
 const udpBridge = {
+  getStatus: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('udp-get-status'),
   restart: (): Promise<{ ok: boolean; error?: string }> =>
     new Promise((resolve) => {
       ipcRenderer.once('udp-restart-result', (_event, result) => resolve(result))
       ipcRenderer.send('udp-restart')
     }),
+  onStatusChange: (callback: (status: { ok: boolean; error?: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: { ok: boolean; error?: string }) => callback(status)
+    ipcRenderer.on('udp-status', listener)
+    return () => ipcRenderer.removeListener('udp-status', listener)
+  },
 }
 
 const protocolBridge = {

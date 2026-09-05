@@ -30,13 +30,14 @@ const jobs = Math.max(1, os.cpus().length - 2)
 process.env.CMAKE_BUILD_PARALLEL_LEVEL = String(jobs)
 
 console.log(`[build-bridge] Compiling N-API addon via cmake-js (Threads: ${jobs})...`)
-const cmd = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-const r = spawnSync(cmd, ['cmake-js', 'compile', '-d', 'node_addon'], {
+// Invoke cmake-js through Node directly. Spawning npx.cmd required shell:true
+// on Windows, which concatenates arguments into a command string and triggers
+// Node's DEP0190 command-injection warning.
+const cmakeJsCli = join(root, 'node_modules', 'cmake-js', 'bin', 'cmake-js')
+const r = spawnSync(process.execPath, [cmakeJsCli, 'compile', '-d', 'node_addon'], {
   stdio: 'inherit',
   cwd: root,
-  // .cmd files can't be spawned with shell: false on Windows (Node throws
-  // EINVAL as of the CVE-2024-27980 fix) — they need the shell to resolve.
-  shell: process.platform === 'win32'
+  shell: false
 })
 
 if (r.status !== 0) {

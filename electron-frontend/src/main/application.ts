@@ -72,6 +72,14 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const LAST_DIALOG_DIRECTORY_KEY = 'dialogs.lastDirectory'
 let startupUpdateCheck: Promise<AvailableUpdate | null> | null = null
+let udpListenerError: string | null = null
+
+function publishUdpListenerStatus(error: string | null): void {
+  udpListenerError = error
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('udp-status', { ok: error === null, error: error ?? undefined })
+  }
+}
 
 function lastDialogDirectory(): string | undefined {
   const value = store.get(LAST_DIALOG_DIRECTORY_KEY)
@@ -242,11 +250,20 @@ ipcMain.handle('player:export-xlsx', async (event) => {
 ipcMain.on('udp-restart', (event) => {
   try {
     const error = restartUdp()
+    publishUdpListenerStatus(error)
     event.reply('udp-restart-result', error ? { ok: false, error } : { ok: true })
   } catch (err) {
-    event.reply('udp-restart-result', { ok: false, error: String(err) })
+    const error = String(err)
+    console.error('[udp] Listener restart failed:', err)
+    publishUdpListenerStatus(error)
+    event.reply('udp-restart-result', { ok: false, error })
   }
 })
+
+ipcMain.handle('udp-get-status', () => ({
+  ok: udpListenerError === null,
+  error: udpListenerError ?? undefined,
+}))
 
 ipcMain.handle('protocol-get-config', () => {
   return getProtocolConfig()
@@ -480,6 +497,7 @@ app.whenReady().then(() => {
 
   console.log('[main] calling startBridge()')
   const bridgeStartupError = startBridge()
+  publishUdpListenerStatus(bridgeStartupError)
   console.log('[main] calling createWindow()')
   createWindow()
   if (bridgeStartupError) {

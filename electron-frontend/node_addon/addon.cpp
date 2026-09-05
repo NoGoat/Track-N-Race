@@ -6,6 +6,7 @@
 #include <tnrp/XlsxExport.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -282,7 +283,13 @@ public:
             config.protocol = tnrp::overrideFromString(fmt);
         }
         if (configObj.Has("port") && configObj.Get("port").IsNumber()) {
-            config.port = configObj.Get("port").As<Napi::Number>().Uint32Value();
+            const double port = configObj.Get("port").As<Napi::Number>().DoubleValue();
+            if (!std::isfinite(port) || std::trunc(port) != port || port < 1 || port > 65535) {
+                Napi::RangeError::New(env, "UDP port must be an integer from 1 to 65535")
+                    .ThrowAsJavaScriptException();
+                return;
+            }
+            config.port = static_cast<uint16_t>(port);
         }
         if (configObj.Has("bindAddress") && configObj.Get("bindAddress").IsString()) {
             config.bindAddress = configObj.Get("bindAddress").As<Napi::String>().Utf8Value();

@@ -41,13 +41,14 @@ interface AppHeaderProps {
   tab: Tab
   theme: 'dark' | 'light'
   titlebarUpdateInterval: TitlebarUpdateInterval
+  udpListenerError: string | null
 }
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen,
   isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
   referenceLapNum, referenceLapOptions, setHeaderVisible, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
-  titlebarUpdateInterval,
+  titlebarUpdateInterval, udpListenerError,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
   const editable = tab === 'core' || tab === 'input' || tab === 'misc' || tab === 'power' || tab === 'tyres'
@@ -113,6 +114,18 @@ export default memo(function AppHeader({
           <span className="text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0" style={{ backgroundColor: accent + '22', color: accent }}>{SESSION_TYPES[sessionType!] ?? 'Unknown'}</span>
         ) : (
           <span className="text-[10px] font-medium uppercase tracking-wide rounded px-2 py-0.5 select-none shrink-0 bg-[var(--bg-panel)] text-[var(--text-secondary)]">Offline</span>
+        )}
+
+        {udpListenerError && (
+          <button
+            type="button"
+            title={udpListenerError}
+            onClick={() => setSettingsOpen(true)}
+            style={{ WebkitAppRegion: 'no-drag' }}
+            className="shrink-0 rounded border border-red-500/60 bg-red-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-400 hover:bg-red-500/25"
+          >
+            UDP error
+          </button>
         )}
 
         <div className="flex-1 min-w-0 overflow-hidden px-2 pointer-events-none">

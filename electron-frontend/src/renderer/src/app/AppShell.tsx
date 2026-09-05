@@ -47,6 +47,7 @@ export default function AppShell() {
   const [editOpen, setEditOpen] = useState(false)
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
+  const [udpListenerError, setUdpListenerError] = useState<string | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
   const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
@@ -132,6 +133,22 @@ export default function AppShell() {
   }, [reduceAnimations, tab])
 
   useEffect(() => window.recordingBridge.onError(setRecordingError), [])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.udpBridge.getStatus().then(status => {
+      if (!cancelled) setUdpListenerError(status.ok ? null : status.error ?? 'UDP listener failed')
+    }).catch(error => {
+      console.warn('[udp] could not request listener status:', error)
+    })
+    const unsubscribe = window.udpBridge.onStatusChange(status => {
+      setUdpListenerError(status.ok ? null : status.error ?? 'UDP listener failed')
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -328,6 +345,7 @@ export default function AppShell() {
         tab={tab}
         theme={theme}
         titlebarUpdateInterval={titlebarUpdateInterval}
+        udpListenerError={udpListenerError}
       />
 
       <StatusOverlays

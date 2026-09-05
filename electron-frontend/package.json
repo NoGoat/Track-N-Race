@@ -1,6 +1,6 @@
 {
   "name": "track-n-race",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Track N Race",
   "author": "NoGoat",
   "main": "out/main/index.js",

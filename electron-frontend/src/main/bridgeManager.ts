@@ -253,9 +253,15 @@ export function startBridge(): string | null {
 
   try {
     const addon = loadAddon()
+    const storedPort = Number(store.get('udp.port', 20777))
+    if (!Number.isInteger(storedPort) || storedPort < 1 || storedPort > 65535) {
+      const error = `Invalid saved UDP port: ${String(store.get('udp.port', 20777))}. Expected an integer from 1 to 65535.`
+      console.error('[udp]', error)
+      return error
+    }
     const config = {
       format: store.get('udp.protocol', 'auto'),
-      port: store.get('udp.port', 20777),
+      port: storedPort,
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
       forwardTargets: storedForwardTargets(),
       // Playback fast path: hot playback rows arrive on the binary channel
@@ -263,6 +269,7 @@ export function startBridge(): string | null {
       binaryPlayback: true
     }
 
+    console.info(`[udp] Starting listener on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
     engine = new addon.Engine(config, (batch: string) => {
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
       // through this channel too, so it's a high-volume path worth gating —
@@ -330,10 +337,12 @@ export function startBridge(): string | null {
 
     if (!engine.startUdp()) {
       const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
+      console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${error}`)
       engine.destroy()
       engine = null
       return error
     }
+    console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
     pushLogging()
     
     // Listen for logging changes

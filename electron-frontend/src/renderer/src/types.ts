@@ -459,7 +459,9 @@ declare global {
       onFullscreenChange: (cb: (isFullscreen: boolean) => void) => () => void
     }
     udpBridge: {
+      getStatus: () => Promise<{ ok: boolean; error?: string }>
       restart: () => Promise<{ ok: boolean; error?: string }>
+      onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
     }
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
