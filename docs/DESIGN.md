@@ -11,7 +11,7 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Android frontend | `android_frontend/` | React, Vite, Capacitor, Java/JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
+| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, Java/JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
 
 The two desktop apps have feature parity and read/write the same `.tnrd` files.
 The Android host provides a focused live dashboard and recording subset.
@@ -599,25 +599,26 @@ only the panels. While in playback, live engine rows are dropped at
 
 ## 5. Android frontend (`android_frontend/`)
 
-The Android activity is a Capacitor host for a React/Vite frontend. Platform
-and engine operations are exposed through a narrow `Telemetry` Capacitor
-plugin; the existing Java discovery, WebSocket pairing, scoped-storage, and JNI
+The Android activity is a native Kotlin/Jetpack Compose Material 3 host. The
+existing Java discovery, WebSocket pairing, scoped-storage, QR and JNI
 implementations remain native. Direct mode links `protocol_parser_library`,
 configures `tnrp::Engine` with `hotRowsAsJson=false`, and binds UDP to
 `0.0.0.0:20777`.
 
-Hot rows bypass Capacitor's JSON bridge. JNI and paired WebSocket callbacks
-append the existing `BinaryRows.h` records to an immediate, bounded native
-drain and post an `ArrayBuffer` to the WebView. The frontend reuses Electron's
-binary decoder and applies every row to mutable dashboard state; there is no
-timer, fixed-rate ingestion gate, or latest-value replacement. A Canvas reads
-that state on `requestAnimationFrame`, separating display refresh from ingest.
-The 8 MiB native buffer reports an explicit `stream_overrun` rather than
-silently coalescing samples.
+Hot rows have no UI-thread queue or platform bridge. JNI and paired WebSocket
+callbacks decode their existing `BinaryRows.h` batches on the producing worker
+thread, retain only the latest immutable telemetry sample in an atomic slot,
+and never mutate Compose state. The visible dashboard samples that slot on the
+Compose display frame clock; equal values do not invalidate composition. Direct
+JNI delivery filters unused motion, positions and motion_ex records in C++.
+Cold rows are parsed off-thread and posted to Compose snapshot state on the main
+thread at their native low cadence. This separates ingest rate from display
+refresh and gives back-pressure constant memory.
 
-The React frontend provides a responsive steering-wheel dashboard, recording
-settings, direct/paired source selection, desktop discovery, QR/manual-code
-pairing, and open-source notices.
+The Compose frontend provides the responsive steering-wheel dashboard, tyre
+allocation, recording settings, direct/paired source selection, desktop
+discovery, QR/manual-code pairing, and open-source notices. Material You dynamic
+color is used on Android 12+ with light/dark Material 3 fallback schemes.
 
 The JNI bridge also exposes `Engine::setLogging`, so the full-page Settings
 screen can control the shared asynchronous TNRD V5 writer without
@@ -628,9 +629,9 @@ enabling the native writer. An optional Storage Access Framework tree URI is
 persisted when the user chooses another folder; after libtnrp finalizes a file,
 a serial background worker moves it to that tree. Native `recording_error` rows
 are surfaced in the UI.
-`build-and-run.ps1` installs npm dependencies, type-checks and builds the Vite
-bundle, syncs it into Capacitor assets, assembles the debug APK, installs it
-through ADB, and launches the activity on a physical device.
+`build-and-run.ps1` builds the Kotlin/Compose UI and NDK library with Gradle,
+assembles the debug APK, installs it through ADB, and launches the activity on
+a physical device.
 
 ## 6. Build & packaging
 
@@ -647,7 +648,7 @@ through ADB, and launches the activity on a physical device.
 - **Native recorder**: standalone CMake project; Qt 6 preferred (enables
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
-- **Android**: React/Vite bundle in a Capacitor Gradle/AGP application with an
+- **Android**: Kotlin/Jetpack Compose Material 3 Gradle/AGP application with an
   NDK CMake build; arm64 debug APK installed and launched on a physical device by
   `android_frontend/build-and-run.ps1`.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,

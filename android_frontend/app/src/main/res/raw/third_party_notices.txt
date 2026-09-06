@@ -1,0 +1,31 @@
+Track N Race for Android — third-party notices
+
+Jetpack Compose and AndroidX
+Copyright The Android Open Source Project.
+Licensed under the Apache License 2.0.
+https://developer.android.com/jetpack/androidx
+
+Material Components for Android
+Copyright The Android Open Source Project.
+Licensed under the Apache License 2.0.
+https://github.com/material-components/material-components-android
+
+Kotlin
+Copyright 2010-2026 JetBrains s.r.o. and Kotlin Programming Language contributors.
+Licensed under the Apache License 2.0.
+https://kotlinlang.org/
+
+OkHttp 5.3.0
+Copyright 2019 Square, Inc.
+Licensed under the Apache License 2.0.
+https://square.github.io/okhttp/
+
+ZXing Android Embedded 4.3.0 and ZXing
+Copyright Journey Mobile, Inc. and ZXing authors.
+Licensed under the Apache License 2.0.
+https://github.com/journeyapps/zxing-android-embedded
+
+The complete Apache License 2.0 follows this notice in the in-app licence
+screen. Additional notices for the native telemetry engine are available in
+the project source distribution.
+

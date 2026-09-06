@@ -9,7 +9,9 @@ const PAIR_PROTOCOL_VERSION = 1
 const BINARY_ROWS_VERSION = 2
 const PAIR_WINDOW_MS = 2 * 60_000
 const MAX_CLIENT_BUFFERED_BYTES = 8 * 1024 * 1024
-const RACE_DASHBOARD_MASK = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5)
+// Data needed by every page currently available in the paired Android app:
+// telemetry, status, lap, session, and tyre_sets.
+const ANDROID_PAGE_MASK = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 10)
 const ROW_TYPES: Record<string, number> = {
   telemetry: 1,
   status: 2,
@@ -17,7 +19,7 @@ const ROW_TYPES: Record<string, number> = {
   session: 5,
   damage: 3,
   participants: 6,
-  tyre_sets: 7,
+  tyre_sets: 10,
   tyre_stints: 8,
   classification: 9,
   event: 10,
@@ -183,7 +185,7 @@ function authenticate(client: Client, message: Record<string, unknown>): void {
   saveDevices(known)
   client.authenticated = true
   client.deviceId = deviceId
-  client.streamMask = RACE_DASHBOARD_MASK
+  client.streamMask = ANDROID_PAGE_MASK
   if (initialPair) closePairingWindow()
   sendJson(client.socket, {
     type: 'welcome', pairProtocol: PAIR_PROTOCOL_VERSION,
@@ -208,9 +210,9 @@ function handleMessage(client: Client, raw: RawData): void {
     return
   }
   if (message.type === 'subscribe') {
-    // The only Android page today is the race dashboard. It has no history
-    // dependency and cannot broaden its subscription beyond its exact mask.
-    client.streamMask = (Number(message.streamMask) >>> 0) & RACE_DASHBOARD_MASK
+    // Android has no history dependency and cannot broaden its subscription
+    // beyond the data families used by its current pages.
+    client.streamMask = (Number(message.streamMask) >>> 0) & ANDROID_PAGE_MASK
     aggregateRequirements()
     sendJson(client.socket, { type: 'subscribed', streamMask: client.streamMask, historyMask: 0, backfill: 'none' })
   } else if (message.type === 'ping') {

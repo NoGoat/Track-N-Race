@@ -95,22 +95,6 @@ function Assert-AndroidSdkPackages([string]$AndroidSdk) {
     }
 }
 
-function Find-Npm {
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-    if (-not $node -or -not $npm) {
-        throw 'Node.js 22.12+ and npm are required to build the React/Capacitor frontend.'
-    }
-
-    $nodeVersionText = & $node.Source -p 'process.versions.node'
-    if ($LASTEXITCODE -ne 0) { throw 'Could not determine the installed Node.js version.' }
-    $nodeVersion = [Version]$nodeVersionText
-    if ($nodeVersion -lt [Version]'22.12.0') {
-        throw "Node.js 22.12+ is required; found $nodeVersionText."
-    }
-    return $npm.Source
-}
-
 function Get-AuthorizedDevices([string]$AdbPath) {
     return @(& $AdbPath devices |
         Select-Object -Skip 1 |
@@ -193,17 +177,8 @@ if ($ResolvedDeviceSerials.Count -eq 1) {
 }
 
 if (-not $SkipBuild) {
-    $Npm = Find-Npm
-    Write-Host 'Installing React/Capacitor dependencies...' -ForegroundColor Cyan
-    & $Npm --prefix $ProjectDir install --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE." }
-
-    Write-Host 'Building and syncing the Capacitor web frontend...' -ForegroundColor Cyan
-    & $Npm --prefix $ProjectDir run build
-    if ($LASTEXITCODE -ne 0) { throw "Web frontend build failed with exit code $LASTEXITCODE." }
-
     $Gradle = Find-Gradle
-    Write-Host 'Building the Android APK...' -ForegroundColor Cyan
+    Write-Host 'Building the native Jetpack Compose Android APK...' -ForegroundColor Cyan
     & $Gradle --no-daemon -p $ProjectDir :app:assembleDebug
     if ($LASTEXITCODE -ne 0) { throw "Gradle build failed with exit code $LASTEXITCODE." }
 }

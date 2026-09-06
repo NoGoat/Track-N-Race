@@ -29,7 +29,11 @@ final class PairedTelemetryClient {
     private static final String PREF_TOKEN = "pairing.token";
     private static final int PAIR_PROTOCOL_VERSION = 1;
     private static final int BINARY_ROWS_VERSION = 2;
-    private static final int RACE_DASHBOARD_MASK = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5);
+    // telemetry, status, lap, session, and tyre_sets. These are the canonical
+    // libtnrp row-family bits; keep this in sync with
+    // the desktop pair service's ANDROID_PAGE_MASK.
+    private static final int ANDROID_PAGE_MASK =
+        (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 10);
 
     interface Listener {
         void onRow(String json);
@@ -179,7 +183,7 @@ final class PairedTelemetryClient {
                     .putString(PREF_TOKEN, token)
                     .putString(PREF_SOURCE, SOURCE_PAIRED).apply();
                 webSocket.send(new JSONObject().put("type", "subscribe")
-                    .put("page", "race-dashboard").put("streamMask", RACE_DASHBOARD_MASK)
+                    .put("page", "android").put("streamMask", ANDROID_PAGE_MASK)
                     .put("historyMask", 0).put("backfill", "none").toString());
                 listener.onState("connected", endpoint.name);
                 listener.onPaired();
