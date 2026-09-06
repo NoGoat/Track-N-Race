@@ -11,7 +11,7 @@ one repository:
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
-| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, Java/JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
+| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
 
 The two desktop apps have feature parity and read/write the same `.tnrd` files.
 The Android host provides a focused live dashboard and recording subset.
@@ -600,7 +600,7 @@ only the panels. While in playback, live engine rows are dropped at
 ## 5. Android frontend (`android_frontend/`)
 
 The Android activity is a native Kotlin/Jetpack Compose Material 3 host. The
-existing Java discovery, WebSocket pairing, scoped-storage, QR and JNI
+existing Kotlin discovery, WebSocket pairing, scoped-storage, QR and JNI
 implementations remain native. Direct mode links `protocol_parser_library`,
 configures `tnrp::Engine` with `hotRowsAsJson=false`, and binds UDP to
 `0.0.0.0:20777`.

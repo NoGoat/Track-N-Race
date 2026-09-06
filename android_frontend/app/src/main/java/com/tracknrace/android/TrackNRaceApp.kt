@@ -73,7 +73,6 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -599,17 +598,21 @@ private fun TyresScreen(cold: DashboardColdState) {
     val wet = cold.tyreSets.filter { it.actualCompound in setOf(7, 8) }
         .sortedWith(compareBy({ wetOrder(it.actualCompound) }, { it.index }))
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val showWearBar = maxWidth >= 600.dp
+        val showTable = maxWidth >= 600.dp
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(0.dp),
+            contentPadding = PaddingValues(
+                horizontal = if (showTable) 16.dp else 12.dp,
+                vertical = 12.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 TyreTableSection(
                     title = "Dry sets (slicks)",
                     sets = dry,
                     cold = cold,
-                    showWearBar = showWearBar,
+                    showTable = showTable,
                 )
             }
             item {
@@ -617,7 +620,7 @@ private fun TyresScreen(cold: DashboardColdState) {
                     title = "Wet / intermediate sets",
                     sets = wet,
                     cold = cold,
-                    showWearBar = showWearBar,
+                    showTable = showTable,
                 )
             }
         }
@@ -629,161 +632,297 @@ private fun TyreTableSection(
     title: String,
     sets: List<TyreSetEntry>,
     cold: DashboardColdState,
-    showWearBar: Boolean,
+    showTable: Boolean,
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerLow),
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                title.uppercase(),
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                sets.size.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        HorizontalDivider()
-        TyreTableHeader(showWearBar)
-        if (sets.isEmpty()) {
-            HorizontalDivider()
-            Text(
-                "Waiting for tyre allocation data…",
-                modifier = Modifier.fillMaxWidth().padding(20.dp),
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        } else {
-            sets.forEach { set ->
-                HorizontalDivider()
-                TyreTableRow(set, cold, showWearBar)
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Text(
+                        sets.size.toString(),
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            if (sets.isEmpty()) {
+                Text(
+                    "Waiting for tyre allocation data…",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 28.dp),
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else if (showTable) {
+                TyreTableHeader()
+                sets.forEach { set ->
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    TyreTableRow(set, cold)
+                }
+            } else {
+                sets.forEachIndexed { index, set ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
+                    CompactTyreRow(set, cold)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TyreTableHeader(showWearBar: Boolean) {
+private fun TyreTableHeader() {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 7.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TyreTableText("#", tyreColumnModifier(TyreColumn.SET, showWearBar), header = true)
-        TyreTableText("Tyre", tyreColumnModifier(TyreColumn.COMPOUND, showWearBar), header = true)
-        TyreTableText("Status", tyreColumnModifier(TyreColumn.STATUS, showWearBar), header = true)
-        TyreTableText("Wear", tyreColumnModifier(TyreColumn.WEAR, showWearBar), header = true)
-        TyreTableText("Life", tyreColumnModifier(TyreColumn.LIFE, showWearBar), header = true)
-        TyreTableText("Rec.", tyreColumnModifier(TyreColumn.RECOMMENDED, showWearBar), header = true)
-        TyreTableText("Δ Lap", tyreColumnModifier(TyreColumn.DELTA, showWearBar), header = true, align = TextAlign.End)
+        TyreTableText("#", tyreColumnModifier(TyreColumn.SET), header = true)
+        TyreTableText("Tyre", tyreColumnModifier(TyreColumn.COMPOUND), header = true)
+        TyreTableText("Status", tyreColumnModifier(TyreColumn.STATUS), header = true)
+        TyreTableText("Wear", tyreColumnModifier(TyreColumn.WEAR), header = true)
+        TyreTableText("Life", tyreColumnModifier(TyreColumn.LIFE), header = true)
+        TyreTableText("Rec", tyreColumnModifier(TyreColumn.RECOMMENDED), header = true)
+        TyreTableText("Δ lap", tyreColumnModifier(TyreColumn.DELTA), header = true, align = TextAlign.End)
     }
 }
 
 @Composable
-private fun TyreTableRow(set: TyreSetEntry, cold: DashboardColdState, showWearBar: Boolean) {
+private fun CompactTyreRow(set: TyreSetEntry, cold: DashboardColdState) {
     val status = tyreStatus(set, cold.sessionType)
     val compound = cold.labels["tyre.actual.${set.actualCompound}"] ?: compoundLabel(set.actualCompound)
-    val wearColor = when {
-        set.wear >= 75 -> MaterialTheme.colorScheme.error
-        set.wear >= 50 -> Color(0xfff5b942)
-        else -> Color(0xff32d583)
-    }
-    val statusColor = when (status) {
-        "FITTED" -> MaterialTheme.colorScheme.primary
-        "NEW" -> Color(0xff32d583)
-        "USED" -> Color(0xfff5b942)
-        "RESERVED" -> Color(0xffa78bfa)
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val rowColor = if (set.fitted) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.18f) else Color.Transparent
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(rowColor)
-            .alpha(if (status == "RETURNED") 0.48f else 1f)
-            .height(46.dp)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    val wearColor = tyreWearColor(set.wear)
+    val primaryText = MaterialTheme.colorScheme.onSurface
+    val secondaryText = MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        color = Color.Transparent,
+        contentColor = primaryText,
     ) {
-        TyreTableText("#${set.index + 1}", tyreColumnModifier(TyreColumn.SET, showWearBar))
-        TyreTableText(
-            compound,
-            tyreColumnModifier(TyreColumn.COMPOUND, showWearBar),
-            color = compoundColor(set.visualCompound),
-            weight = FontWeight.Black,
-        )
-        TyreTableText(
-            status,
-            tyreColumnModifier(TyreColumn.STATUS, showWearBar),
-            color = statusColor,
-            weight = FontWeight.SemiBold,
-        )
-        if (showWearBar) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CompactTyreIdentity(
+                label = compound,
+                accent = compoundColor(set.visualCompound),
+                setNumber = set.index + 1,
+                status = status,
+                numberColor = secondaryText,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${set.lifeSpan}/${set.usableLife} L  ·  Rec ${sessionLabel(set.recommendedSession)}",
+                        modifier = Modifier.weight(1f),
+                        color = secondaryText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        lapDelta(set),
+                        color = tyreDeltaColor(set),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Δ lap",
+                        color = secondaryText,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                Spacer(Modifier.height(5.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Wear", color = secondaryText, style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${set.wear.roundToInt()}%",
+                        color = wearColor,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { (set.wear / 100f).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(MaterialTheme.shapes.extraLarge),
+                    color = wearColor,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TyreTableRow(set: TyreSetEntry, cold: DashboardColdState) {
+    val status = tyreStatus(set, cold.sessionType)
+    val compound = cold.labels["tyre.actual.${set.actualCompound}"] ?: compoundLabel(set.actualCompound)
+    val wearColor = tyreWearColor(set.wear)
+    val rowTextColor = MaterialTheme.colorScheme.onSurface
+    Surface(color = Color.Transparent, contentColor = rowTextColor) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TyreTableText("${set.index + 1}", tyreColumnModifier(TyreColumn.SET), color = rowTextColor)
+            TyreTableText(
+                compound,
+                tyreColumnModifier(TyreColumn.COMPOUND),
+                color = compoundColor(set.visualCompound),
+                weight = FontWeight.Black,
+            )
+            Box(tyreColumnModifier(TyreColumn.STATUS), contentAlignment = Alignment.Center) {
+                TyreStatusPill(status)
+            }
             Row(
-                modifier = tyreColumnModifier(TyreColumn.WEAR, true).padding(horizontal = 8.dp),
+                modifier = tyreColumnModifier(TyreColumn.WEAR).padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 LinearProgressIndicator(
                     progress = { (set.wear / 100f).coerceIn(0f, 1f) },
                     modifier = Modifier.weight(1f).height(6.dp).clip(MaterialTheme.shapes.extraLarge),
                     color = wearColor,
                     trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round,
                 )
                 Text(
                     "${set.wear.roundToInt()}%",
-                    modifier = Modifier.width(38.dp),
+                    modifier = Modifier.width(40.dp),
                     color = wearColor,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.End,
                 )
             }
-        } else {
+            TyreTableText("${set.lifeSpan}/${set.usableLife} L", tyreColumnModifier(TyreColumn.LIFE), color = rowTextColor)
+            TyreTableText(sessionLabel(set.recommendedSession), tyreColumnModifier(TyreColumn.RECOMMENDED), color = rowTextColor)
             TyreTableText(
-                "${set.wear.roundToInt()}%",
-                tyreColumnModifier(TyreColumn.WEAR, false),
-                color = wearColor,
-                align = TextAlign.Center,
+                lapDelta(set),
+                tyreColumnModifier(TyreColumn.DELTA),
+                color = tyreDeltaColor(set),
+                weight = FontWeight.SemiBold,
+                align = TextAlign.End,
             )
         }
-        TyreTableText("${set.lifeSpan}/${set.usableLife}L", tyreColumnModifier(TyreColumn.LIFE, showWearBar))
-        TyreTableText(sessionLabel(set.recommendedSession), tyreColumnModifier(TyreColumn.RECOMMENDED, showWearBar))
-        TyreTableText(
-            lapDelta(set),
-            tyreColumnModifier(TyreColumn.DELTA, showWearBar),
-            color = when {
-                set.lapDeltaMs > 0 -> MaterialTheme.colorScheme.error
-                set.lapDeltaMs < 0 -> Color(0xff32d583)
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            align = TextAlign.End,
+    }
+}
+
+@Composable
+private fun CompactTyreIdentity(
+    label: String,
+    accent: Color,
+    setNumber: Int,
+    status: String,
+    numberColor: Color,
+) {
+    val compoundTextColor = when (accent) {
+        Color.Unspecified -> MaterialTheme.colorScheme.primary
+        Color(0xffeceff1) -> MaterialTheme.colorScheme.outline
+        else -> accent
+    }
+    Column(
+        modifier = Modifier.width(88.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                setNumber.toString(),
+                color = numberColor,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                label,
+                color = compoundTextColor,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        TyreStatusPill(status)
+    }
+}
+
+@Composable
+private fun TyreStatusPill(status: String) {
+    val (containerColor, contentColor) = when (status) {
+        "FITTED" -> MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.onPrimary
+        "NEW" -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+        "USED" -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        modifier = Modifier.width(78.dp),
+        shape = MaterialTheme.shapes.small,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        Text(
+            status.lowercase().replaceFirstChar { it.titlecase() },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
         )
     }
 }
 
-private fun RowScope.tyreColumnModifier(column: TyreColumn, showWearBar: Boolean): Modifier {
-    if (!showWearBar) {
-        return when (column) {
-            TyreColumn.SET -> Modifier.weight(0.50f)
-            TyreColumn.COMPOUND -> Modifier.weight(0.55f)
-            TyreColumn.STATUS -> Modifier.weight(1.60f)
-            TyreColumn.WEAR -> Modifier.weight(0.60f)
-            TyreColumn.LIFE -> Modifier.weight(1.10f)
-            TyreColumn.RECOMMENDED -> Modifier.weight(0.85f)
-            TyreColumn.DELTA -> Modifier.weight(1.35f)
-        }
-    }
+@Composable
+private fun tyreWearColor(wear: Float): Color = when {
+    wear >= 75f -> MaterialTheme.colorScheme.error
+    wear >= 50f -> MaterialTheme.colorScheme.tertiary
+    else -> MaterialTheme.colorScheme.primary
+}
+
+@Composable
+private fun tyreDeltaColor(set: TyreSetEntry): Color = when {
+    set.lapDeltaMs > 0 -> MaterialTheme.colorScheme.error
+    set.lapDeltaMs < 0 -> MaterialTheme.colorScheme.primary
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+private fun RowScope.tyreColumnModifier(column: TyreColumn): Modifier {
     return when (column) {
         TyreColumn.SET -> Modifier.width(40.dp)
         TyreColumn.COMPOUND -> Modifier.width(50.dp)
@@ -807,9 +946,15 @@ private fun TyreTableText(
     Text(
         text,
         modifier = modifier.padding(horizontal = 2.dp),
-        color = if (color == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color,
-        fontFamily = if (header) FontFamily.SansSerif else FontFamily.Monospace,
-        fontSize = if (header) 9.sp else 10.sp,
+        color = if (color == Color.Unspecified) {
+            if (header) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+        } else {
+            color
+        },
+        style = (if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall).copy(
+            fontFamily = FontFamily.SansSerif,
+            fontFeatureSettings = "tnum",
+        ),
         fontWeight = if (header) FontWeight.Bold else weight,
         textAlign = align,
         maxLines = 1,

@@ -1,7 +1,7 @@
 # Track N Race Android frontend
 
 The Android app is a native Kotlin/Jetpack Compose Material 3 application. It
-uses the shared C++ `protocol_parser_library` through the existing Java/JNI
+uses the shared C++ `protocol_parser_library` through a Kotlin/JNI
 host, supports direct UDP telemetry and paired desktop telemetry, and records
 TNRD V5 sessions through the shared engine.
 
