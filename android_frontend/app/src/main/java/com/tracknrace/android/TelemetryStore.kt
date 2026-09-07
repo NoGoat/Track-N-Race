@@ -29,11 +29,15 @@ internal class TelemetryStore {
 
     var cold by mutableStateOf(DashboardColdState())
         private set
+    var timing by mutableStateOf(TimingTowerState())
+        private set
     var settings by mutableStateOf(AndroidSettings())
         private set
     var sourceStatus by mutableStateOf(SourceStatus())
         private set
     var pairingBusy by mutableStateOf(false)
+        private set
+    var pairingSuccessId by mutableStateOf(0L)
         private set
     var message by mutableStateOf<UiMessage?>(null)
         private set
@@ -106,6 +110,85 @@ internal class TelemetryStore {
                 post { cold = cold.copy(tyreSets = sets) }
             }
 
+            "timing" -> {
+                val cars = row.optJSONArray("cars")?.let { array ->
+                    List(array.length()) { arrayIndex ->
+                        val car = array.optJSONObject(arrayIndex) ?: JSONObject()
+                        TimingCarEntry(
+                            index = car.optInt("idx", arrayIndex),
+                            position = car.optInt("position"),
+                            lapNumber = car.optInt("lap_num"),
+                            currentLapMs = car.optInt("current_lap_ms"),
+                            lastLapMs = car.optInt("last_lap_ms"),
+                            gapMs = car.optInt("gap_ms"),
+                            pitStatus = car.optInt("pit_status"),
+                            lapInvalid = car.optBoolean("lap_invalid"),
+                            penaltiesSeconds = car.optInt("penalties_s"),
+                            driveThroughPenalties = car.optInt("num_dt_pens"),
+                            stopGoPenalties = car.optInt("num_sg_pens"),
+                            resultStatus = car.optInt("result_status"),
+                        )
+                    }
+                }.orEmpty()
+                val playerIndex = row.optInt("player_idx", -1)
+                post { timing = timing.copy(playerIndex = playerIndex, cars = cars) }
+            }
+
+            "participants" -> {
+                val drivers = row.optJSONArray("drivers")?.let { array ->
+                    buildMap {
+                        repeat(array.length()) { arrayIndex ->
+                            val driver = when (val value = array.opt(arrayIndex)) {
+                                is JSONObject -> value
+                                is String -> runCatching { JSONObject(value) }.getOrNull()
+                                else -> null
+                            } ?: return@repeat
+                            val index = driver.optInt("idx", arrayIndex)
+                            val name = driver.optString("name").trim()
+                            if (name.isEmpty()) return@repeat
+                            put(
+                                index,
+                                TimingDriver(
+                                    index = index,
+                                    name = name,
+                                    raceNumber = driver.optInt("race_number"),
+                                    teamColor = driver.optString("livery_color", "#8e8e8e"),
+                                ),
+                            )
+                        }
+                    }
+                }.orEmpty()
+                post {
+                    // A malformed/empty roster is not a successful Participants
+                    // update. Keep a valid roster if one is already displayed and
+                    // leave the missing flag set so paired mode retries after 3 s.
+                    if (drivers.isNotEmpty()) {
+                        timing = timing.copy(drivers = drivers, hasParticipants = true)
+                    } else if (timing.drivers.isEmpty()) {
+                        timing = timing.copy(hasParticipants = false)
+                    }
+                }
+            }
+
+            "all_status" -> {
+                val statuses = row.optJSONArray("cars")?.let { array ->
+                    buildMap {
+                        repeat(array.length()) { arrayIndex ->
+                            val status = array.optJSONObject(arrayIndex) ?: return@repeat
+                            put(
+                                status.optInt("idx", arrayIndex),
+                                TimingTyreStatus(
+                                    actualCompound = status.optInt("tyre_compound"),
+                                    visualCompound = status.optInt("visual_compound"),
+                                    ageLaps = status.optInt("tyre_age_laps"),
+                                ),
+                            )
+                        }
+                    }
+                }.orEmpty()
+                post { timing = timing.copy(tyreStatuses = statuses) }
+            }
+
             "protocol_context" -> {
                 val year = row.optionalInt("protocol_year")
                 val formula = row.optionalInt("formula")
@@ -118,7 +201,25 @@ internal class TelemetryStore {
                         sessionType = null,
                         tyreSets = emptyList(),
                     )
+                    timing = TimingTowerState(
+                        drivers = timing.drivers,
+                        hasParticipants = timing.hasParticipants,
+                    )
                 }
+            }
+
+            "timeline_reset" -> post {
+                // A seek/reset may be delivered after its reconstructed
+                // Participants row. Keep that roster; a real game-session
+                // change has its own participants_reset signal.
+                timing = TimingTowerState(
+                    drivers = timing.drivers,
+                    hasParticipants = timing.hasParticipants,
+                )
+            }
+
+            "participants_reset" -> post {
+                timing = timing.copy(drivers = emptyMap(), hasParticipants = false)
             }
 
             "protocol_status" -> {
@@ -160,6 +261,8 @@ internal class TelemetryStore {
     }
 
     fun updatePairingBusy(value: Boolean) = post { pairingBusy = value }
+
+    fun notifyPairingSucceeded() = post { pairingSuccessId++ }
 
     fun clearDiscovery() = post { discoveredDesktops.clear() }
 

@@ -2,7 +2,13 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
-import { configurePairService, publishPairBinary, publishPairJsonBatch, publishPairSnapshot } from './pairService'
+import {
+  configurePairService,
+  pairEngineConfig,
+  receivePairServiceState,
+} from './pairHostAdapter'
+
+declare const __ENABLE_PAIR_DIAGNOSTICS__: boolean
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
@@ -106,7 +112,6 @@ let nextDataRequirementsRequestId = 0
 let rendererStreamMask = 0xFFFFFFFF
 let rendererHistoryMask = 0
 let rendererHistoryWindow = 0
-let pairedStreamMask = 0
 let unsubLogging: Array<() => void> = []
 
 // ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
@@ -213,7 +218,6 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
   if (seekForwardPhase === 'waiting-flush') return
-  publishPairBinary(batch)
   if (seekForwardPhase === 'waiting-renderer') {
     bufferSeekBinary(batch)
     return
@@ -361,13 +365,18 @@ export function startBridge(): string | null {
       strategyMinimumStops: 1,
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
-      binaryPlayback: true
+      binaryPlayback: true,
+      ...pairEngineConfig(),
     }
 
+    const pairDiagnosticCallback = __ENABLE_PAIR_DIAGNOSTICS__
+      ? (message: string): void => {
+          // initializeDiagnostics() captures this in the per-launch main.log.
+          console.info('[pair-native]', message)
+        }
+      : undefined
+
     engine = new addon.Engine(config, (batch: string) => {
-      // Paired displays are independent consumers and must continue receiving
-      // data when Chromium is hidden or throttled.
-      if (seekForwardPhase !== 'waiting-flush') publishPairJsonBatch(batch)
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
       // through this channel too, so it's a high-volume path worth gating —
       // except one-shot playback control rows, which must never be dropped.
@@ -429,7 +438,6 @@ export function startBridge(): string | null {
           seekForwardPhase = 'waiting-renderer'
       } else if (requestId !== 0 && requestId <= latestSeekRequestId) return
       try {
-        if (authoritativeSeek) publishPairSnapshot(binary, coldJson)
         clearResumeCache()
         broadcast({ type: 'playback_seek_flush_bin', binary, coldJson, currentLapStart, lapNum, allHistory, requestId, authoritativeSeek, rowTypeMask, historyStart })
       } catch (error) {
@@ -439,7 +447,9 @@ export function startBridge(): string | null {
         broadcast({ type: 'playback_seek_flush_failed', requestId })
         if (requestId === seekForwardRequestId) resetSeekForwarding()
       }
-    })
+    }, (publicJson: string, persistedJson: string) => {
+      receivePairServiceState(publicJson, persistedJson)
+    }, pairDiagnosticCallback)
 
     if (!engine.startUdp()) {
       const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
@@ -447,10 +457,7 @@ export function startBridge(): string | null {
       engine = null
       return error
     }
-    configurePairService(engine, (streamMask) => {
-      pairedStreamMask = streamMask >>> 0
-      applyAggregateDataRequirements()
-    })
+    configurePairService(engine)
     pushLogging()
     
     // Listen for logging changes
@@ -582,7 +589,7 @@ export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask =
 
 function applyAggregateDataRequirements(): void {
   const requestId = ++nextDataRequirementsRequestId
-  engine?.setDataRequirements((rendererStreamMask | pairedStreamMask) >>> 0,
+  engine?.setDataRequirements(rendererStreamMask,
     rendererHistoryMask, rendererHistoryWindow, requestId)
 }
 export function playerClose(): void {

@@ -26,6 +26,12 @@ namespace tnrp {
 static constexpr uint8_t kDupTypeIds[] = { 2, 5, 7, 9, 13 };
 static constexpr uint32_t kDupRowMask =
     (1u << 2) | (1u << 5) | (1u << 7) | (1u << 9) | (1u << 13);
+// Seek history contains sampled/hot rows, not the rare Participants or tyre-set
+// state. These families must always be reconstructed at the target even when
+// the renderer's requested row mask includes them; otherwise paired clients
+// have no current roster/set snapshot to receive or request after a seek.
+static constexpr uint32_t kSeekPanelRestoreMask =
+    kDupRowMask | (1u << 8) | (1u << 10);
 static constexpr uint32_t kRestoreRowMask =
     (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 7) |
     (1u << 8) | (1u << 9) | (1u << 10) | (1u << 13) | (1u << 14);
@@ -36,18 +42,19 @@ static constexpr size_t kMaxLiveHistoryRows = 750000;
 
 static uint8_t rowTypeOf(std::string_view json) {
     static constexpr std::pair<std::string_view, uint8_t> TYPES[] = {
-        {"\"type\":\"telemetry\"", 1}, {"\"type\":\"status\"", 2},
-        {"\"type\":\"damage\"", 3}, {"\"type\":\"lap\"", 4},
-        {"\"type\":\"session\"", 5}, {"\"type\":\"race_event\"", 6},
-        {"\"type\":\"timing\"", 7}, {"\"type\":\"participants\"", 8},
-        {"\"type\":\"all_status\"", 9}, {"\"type\":\"tyre_sets\"", 10},
-        {"\"type\":\"motion\"", 11}, {"\"type\":\"motion_ex\"", 12},
-        {"\"type\":\"positions\"", 13},
-        {"\"type\":\"session_history_fastest\"", 14},
-        {"\"type\":\"strategy\"", 15},
+        {"telemetry", 1}, {"status", 2}, {"damage", 3}, {"lap", 4},
+        {"session", 5}, {"race_event", 6}, {"timing", 7},
+        {"participants", 8}, {"all_status", 9}, {"tyre_sets", 10},
+        {"motion", 11}, {"motion_ex", 12}, {"positions", 13},
+        {"session_history_fastest", 14}, {"strategy", 15},
     };
-    for (const auto& [needle, type] : TYPES)
-        if (json.find(needle) != std::string_view::npos) return type;
+    static constexpr std::string_view TYPE_KEY = "\"type\":\"";
+    const size_t key = json.find(TYPE_KEY);
+    if (key == std::string_view::npos) return 0;
+    const std::string_view value = json.substr(key + TYPE_KEY.size());
+    for (const auto& [name, type] : TYPES)
+        if (value.starts_with(name) && value.size() > name.size() &&
+            value[name.size()] == '\"') return type;
     return 0;
 }
 
@@ -117,23 +124,66 @@ Engine::Engine(const Config& config, Sink* sink)
     // Electron declares its visible consumers immediately after renderer
     // mount. Start that host closed so no telemetry can slip through before
     // the first aggregate subscription; JSON-only/Qt hosts keep legacy-all.
-    if (config_.binaryPlayback) consumerRowMask_ = 0;
+    if (config_.binaryPlayback) {
+        consumerRowMask_ = 0;
+        hostConsumerRowMask_ = 0;
+    }
     strategy_.setMinimumStops(config_.strategyMinimumStops);
     reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
+    pairServer_.configure({config.pairPort, config.pairName,
+                           config.pairStateJson, config.pairEnabled},
+        [this](const std::string& publicJson,
+               const std::string& persistedJson) {
+            if (sink_) sink_->onPairState(publicJson, persistedJson);
+        },
+        [this](uint32_t streamMask) { setPairDataRequirements(streamMask); },
+        [this](const std::string& message) {
+            if (sink_) sink_->onPairDiagnostic(message);
+        });
     emitRow(parser_.statusRow());
     TRACE("Engine ctor: emitRow(statusRow) done");
 }
 
 Engine::~Engine() {
+    pairServer_.stop(false);
     stopPlaybackThread();
     udp_.stop();
     writer_.closeActiveStream();
 }
 
 void Engine::emitRow(const std::string& json) {
+    pairServer_.publishRow(json);
     if (sink_) sink_->onRow(json);
+}
+
+void Engine::emitBinary(const uint8_t* data, size_t length) {
+    pairServer_.publishBinary(data, length);
+    if (sink_) sink_->onBinary(data, length);
+}
+
+bool Engine::pairStart(std::string* errorOut) {
+    return pairServer_.start(errorOut);
+}
+
+void Engine::pairStop(bool persistDisabled) {
+    pairServer_.stop(persistDisabled);
+}
+
+void Engine::pairOpenWindow() { pairServer_.openPairingWindow(); }
+void Engine::pairCloseWindow() { pairServer_.closePairingWindow(); }
+
+void Engine::pairRemoveDevice(const std::string& id) {
+    pairServer_.removeDevice(id);
+}
+
+std::string Engine::pairStateJson() const {
+    return pairServer_.publicStateJson();
+}
+
+std::string Engine::pairPersistedStateJson() const {
+    return pairServer_.persistedStateJson();
 }
 
 // ── Live ─────────────────────────────────────────────────────────────────────
@@ -249,6 +299,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
     strategy_.setFormat(r.format);
+    if (r.format != 0) pairServer_.noteSession(r.sessionUid);
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) return;
@@ -327,12 +378,12 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             const uint8_t type = rowTypeOf(hj);
             if (type == 0 || (consumerRowMask_ & (1u << type))) emitRow(hj);
         }
-    } else if (!r.binary.empty() && sink_) {
+    } else if (!r.binary.empty()) {
         std::vector<uint8_t> selected;
         selected.reserve(r.binary.size());
         if (bin::appendFilteredBatch(selected, r.binary.data(), r.binary.size(),
                                      consumerRowMask_) && !selected.empty())
-            sink_->onBinary(selected.data(), selected.size());
+            emitBinary(selected.data(), selected.size());
     }
 }
 
@@ -424,12 +475,18 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         std::lock_guard<std::mutex> lk(mutex_);
         if (requestId != 0 && requestId !=
             latestRequirementsRequestId_.load(std::memory_order_acquire)) return;
-        const uint32_t newlyEnabled = streamRowMask & ~consumerRowMask_;
+        hostConsumerRowMask_ = streamRowMask;
+        hostConsumerHistoryMask_ = historyRowMask & streamRowMask;
+        hostConsumerWindowSeconds_ = std::max(-1.0f, windowSeconds);
+        const uint32_t aggregateStreamMask =
+            hostConsumerRowMask_ | pairConsumerRowMask_;
+        const uint32_t newlyEnabled = aggregateStreamMask & ~consumerRowMask_;
         const uint32_t oldHistoryMask = consumerHistoryMask_;
         const float oldWindowSeconds = consumerWindowSeconds_;
-        consumerRowMask_ = streamRowMask;
-        consumerHistoryMask_ = historyRowMask & streamRowMask;
-        consumerWindowSeconds_ = std::max(-1.0f, windowSeconds);
+        consumerRowMask_ = aggregateStreamMask;
+        // Paired displays need latest state, never chart-history backfills.
+        consumerHistoryMask_ = hostConsumerHistoryMask_;
+        consumerWindowSeconds_ = hostConsumerWindowSeconds_;
         const uint32_t backfillMask = oldWindowSeconds == consumerWindowSeconds_
             ? consumerHistoryMask_ & ~oldHistoryMask
             : consumerHistoryMask_;
@@ -517,6 +574,21 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                            liveBackfillLapNum, true, 0, false,
                            liveBackfillMask, liveBackfillStart);
     }
+}
+
+void Engine::setPairDataRequirements(uint32_t streamRowMask) {
+    uint32_t hostStreamMask = 0;
+    uint32_t hostHistoryMask = 0;
+    float hostWindowSeconds = 0.0f;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        pairConsumerRowMask_ = streamRowMask;
+        hostStreamMask = hostConsumerRowMask_;
+        hostHistoryMask = hostConsumerHistoryMask_;
+        hostWindowSeconds = hostConsumerWindowSeconds_;
+    }
+    setDataRequirements(hostStreamMask, hostHistoryMask,
+                        hostWindowSeconds, 0);
 }
 
 // ── Playback ─────────────────────────────────────────────────────────────────
@@ -661,7 +733,7 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                                          windowSeconds, false, cancelled);
             if (cancelled()) return;
             const uint32_t restoreMask = consumerRowMask_ & kRestoreRowMask &
-                (~rowTypeMask | kDupRowMask);
+                (~rowTypeMask | kSeekPanelRestoreMask);
             panels = reader_.latestOfTypesTagged(target, typesInMask(restoreMask), cancelled);
             if (cancelled()) return;
         } else {
@@ -702,6 +774,14 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     }
 
     if (config_.binaryPlayback) {
+        const size_t pairLength = binFlush.binaryStore &&
+                binFlush.binaryEnd > binFlush.binaryBegin
+            ? binFlush.binaryEnd - binFlush.binaryBegin : 0;
+        pairServer_.publishSeekSnapshot(
+            pairLength > 0
+                ? binFlush.binaryStore->data() + binFlush.binaryBegin
+                : nullptr,
+            pairLength, binFlush.coldJson);
         if (sink_) sink_->onSeekFlush(std::move(binFlush.binaryStore), binFlush.binaryBegin,
                                       binFlush.binaryEnd, std::move(binFlush.coldJson),
                                       lapStart, lapNum, allHistory, requestId, true,
@@ -965,7 +1045,7 @@ void Engine::playbackLoop() {
             }
         }
         if (!strategyMsg.empty()) emitRow(strategyMsg);
-        if (!binBatch.empty() && sink_) sink_->onBinary(binBatch.data(), binBatch.size());
+        if (!binBatch.empty()) emitBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();
         if (finished) emitRow(writeJson(TypeOnlyRow{"playback_finished"}));
     }

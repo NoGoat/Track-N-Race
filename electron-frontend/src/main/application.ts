@@ -12,7 +12,7 @@ import {
   removePairDevice,
   startPairService,
   stopPairService,
-} from './pairService'
+} from './pairHostAdapter'
 import { setFatalFlushHandler } from './diagnostics'
 import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {

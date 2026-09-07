@@ -2,12 +2,15 @@
 param(
     [string]$DeviceSerial,
     [string]$SdkRoot,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [ValidateSet('Debug', 'Release')]
+    [string]$BuildType = 'Debug'
 )
 
 $ErrorActionPreference = 'Stop'
 $ProjectDir = $PSScriptRoot
-$ApkPath = Join-Path $ProjectDir 'app\build\outputs\apk\debug\app-debug.apk'
+$BuildTypeLower = $BuildType.ToLowerInvariant()
+$ApkPath = Join-Path $ProjectDir "app\build\outputs\apk\$BuildTypeLower\app-$BuildTypeLower.apk"
 
 function Test-FullAndroidSdk([string]$Path) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
@@ -178,8 +181,16 @@ if ($ResolvedDeviceSerials.Count -eq 1) {
 
 if (-not $SkipBuild) {
     $Gradle = Find-Gradle
-    Write-Host 'Building the native Jetpack Compose Android APK...' -ForegroundColor Cyan
-    & $Gradle --no-daemon -p $ProjectDir :app:assembleDebug
+    $GradleTask = ":app:assemble$BuildType"
+    $GradleArgs = @('--no-daemon', '-p', $ProjectDir, $GradleTask)
+    if ($BuildType -eq 'Release') {
+        # Release APKs are unsigned by default. Opt in to the standard Android
+        # debug key for this local build-and-run workflow only.
+        $GradleArgs += '-PtnrLocalReleaseSigning'
+    }
+
+    Write-Host "Building the native Jetpack Compose Android $BuildTypeLower APK..." -ForegroundColor Cyan
+    & $Gradle @GradleArgs
     if ($LASTEXITCODE -ne 0) { throw "Gradle build failed with exit code $LASTEXITCODE." }
 }
 

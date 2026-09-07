@@ -48,9 +48,49 @@ internal data class DashboardColdState(
     val labels: Map<String, String> = emptyMap(),
 )
 
+internal data class TimingCarEntry(
+    val index: Int,
+    val position: Int,
+    val lapNumber: Int,
+    val currentLapMs: Int,
+    val lastLapMs: Int,
+    val gapMs: Int,
+    val pitStatus: Int,
+    val lapInvalid: Boolean,
+    val penaltiesSeconds: Int,
+    val driveThroughPenalties: Int,
+    val stopGoPenalties: Int,
+    val resultStatus: Int,
+)
+
+internal data class TimingDriver(
+    val index: Int,
+    val name: String,
+    val raceNumber: Int,
+    val teamColor: String,
+)
+
+internal data class TimingTyreStatus(
+    val actualCompound: Int,
+    val visualCompound: Int,
+    val ageLaps: Int,
+)
+
+internal data class TimingTowerState(
+    val playerIndex: Int = -1,
+    val cars: List<TimingCarEntry> = emptyList(),
+    val drivers: Map<Int, TimingDriver> = emptyMap(),
+    val tyreStatuses: Map<Int, TimingTyreStatus> = emptyMap(),
+    val hasParticipants: Boolean = false,
+)
+
+internal fun TimingTowerState.needsParticipantsRefresh(): Boolean =
+    !hasParticipants || drivers.isEmpty()
+
 internal data class AndroidSettings(
     val source: String = PairedTelemetryClient.SOURCE_DIRECT,
     val recordingEnabled: Boolean = false,
+    val timingOneLine: Boolean = false,
     val hasSavedDesktop: Boolean = false,
     val desktopName: String = "",
     val recordingDirectory: String = "",
@@ -71,4 +111,3 @@ internal data class DiscoveredDesktop(
 )
 
 internal data class UiMessage(val id: Long, val text: String)
-

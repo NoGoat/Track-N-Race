@@ -87,6 +87,10 @@
     <string name="pairing_searching">Searching for Track N Race desktops on this network…</string>
     <string name="pairing_scan_qr">Scan desktop QR</string>
     <string name="pairing_scan_prompt">Scan the QR shown by the desktop app</string>
+    <string name="scanner_title">Scan QR code</string>
+    <string name="scanner_close">Close scanner</string>
+    <string name="scanner_instruction_title">Find the desktop QR code</string>
+    <string name="scanner_instruction_body">Keep the code inside the frame. Pairing starts automatically.</string>
     <string name="pairing_discovered">DISCOVERED DESKTOPS</string>
     <string name="pairing_code_hint">6-digit matching code</string>
     <string name="pairing_connect_code">Connect with code</string>

@@ -16,6 +16,7 @@ internal class TelemetryController(
 ) : NativeTelemetry.Listener, PairedTelemetryClient.Listener, NativePairDiscovery.Listener {
     companion object {
         private const val UDP_PORT = 20777
+        private const val PREF_TIMING_ONE_LINE = "timing_one_line"
     }
 
     private val context: Context = activity.applicationContext
@@ -30,6 +31,7 @@ internal class TelemetryController(
     @Volatile private var sourceGeneration = 0
     @Volatile private var pairingPending = false
     @Volatile private var discoveryRequested = false
+    @Volatile private var qrScannerActive = false
     private var multicastLock: WifiManager.MulticastLock? = null
 
     init {
@@ -37,12 +39,17 @@ internal class TelemetryController(
     }
 
     fun onHostStart() {
+        // CaptureActivity temporarily stops MainActivity while remaining inside
+        // this app. Keep the current source and discovery browser alive across
+        // that handoff instead of racing the activity-result pairing attempt.
+        if (qrScannerActive) return
         sourceRequested = true
         restartConfiguredSource()
         if (discoveryRequested) startDiscoveryInternal()
     }
 
     fun onHostStop() {
+        if (qrScannerActive) return
         stopDiscoveryInternal()
         suspendSourcesAsync()
     }
@@ -52,6 +59,7 @@ internal class TelemetryController(
         sourceGeneration++
         pairingPending = false
         discoveryRequested = false
+        qrScannerActive = false
         stopDiscoveryInternal()
         directTelemetry.stop()
         pairedTelemetry.close()
@@ -69,6 +77,14 @@ internal class TelemetryController(
         }
         sourceRequested = true
         restartConfiguredSource()
+    }
+
+    fun requestParticipants() {
+        if (!isDirectSource()) pairedTelemetry.requestParticipants()
+    }
+
+    fun setActivePage(page: PairedTelemetryPage) {
+        pairedTelemetry.setPage(page)
     }
 
     fun setSource(source: String) {
@@ -106,6 +122,11 @@ internal class TelemetryController(
         if (active != enabled) {
             preferences().edit().putBoolean(RecordingStorage.PREF_RECORDING, false).apply()
         }
+        publishSettings()
+    }
+
+    fun setTimingOneLine(enabled: Boolean) {
+        preferences().edit().putBoolean(PREF_TIMING_ONE_LINE, enabled).apply()
         publishSettings()
     }
 
@@ -177,6 +198,14 @@ internal class TelemetryController(
         setPrompt(context.getString(R.string.pairing_scan_prompt))
         setBeepEnabled(false)
         setOrientationLocked(true)
+    }
+
+    fun onQrScannerLaunching() {
+        qrScannerActive = true
+    }
+
+    fun onQrScannerFinished() {
+        qrScannerActive = false
     }
 
     fun pairQr(payload: String) {
@@ -258,6 +287,7 @@ internal class TelemetryController(
         store.updateSource("paired", PairedTelemetryClient.savedDesktopName(context))
         publishSettings()
         store.showMessage(context.getString(R.string.pairing_success))
+        store.notifyPairingSucceeded()
     }
 
     override fun onService(service: NativePairDiscovery.Service) {
@@ -286,6 +316,7 @@ internal class TelemetryController(
             PairedTelemetryClient.SOURCE_DIRECT,
         ) ?: PairedTelemetryClient.SOURCE_DIRECT,
         recordingEnabled = preferences().getBoolean(RecordingStorage.PREF_RECORDING, false),
+        timingOneLine = preferences().getBoolean(PREF_TIMING_ONE_LINE, false),
         hasSavedDesktop = PairedTelemetryClient.hasSavedDesktop(context),
         desktopName = PairedTelemetryClient.savedDesktopName(context),
         recordingDirectory = RecordingStorage.selectedDirectoryLabel(context),

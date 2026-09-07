@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.provider.Settings
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -11,6 +12,35 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
+
+private const val ROW_TELEMETRY = 1 shl 1
+private const val ROW_STATUS = 1 shl 2
+private const val ROW_LAP = 1 shl 4
+private const val ROW_SESSION = 1 shl 5
+private const val ROW_TIMING = 1 shl 7
+private const val ROW_PARTICIPANTS = 1 shl 8
+private const val ROW_ALL_STATUS = 1 shl 9
+private const val ROW_TYRE_SETS = 1 shl 10
+
+/** Complete paired-stream requirement for one visible Android page. */
+internal enum class PairedTelemetryPage(
+    val pageId: String,
+    val streamMask: Int,
+) {
+    DASHBOARD(
+        "dashboard",
+        ROW_TELEMETRY or ROW_STATUS or ROW_LAP or ROW_SESSION,
+    ),
+    TIMING(
+        "timing",
+        ROW_TIMING or ROW_PARTICIPANTS or ROW_ALL_STATUS,
+    ),
+    TYRES(
+        "tyres",
+        ROW_SESSION or ROW_TYRE_SETS,
+    ),
+    NONE("none", 0),
+}
 
 internal class PairedTelemetryClient(
     context: Context,
@@ -47,12 +77,6 @@ internal class PairedTelemetryClient(
         private const val PAIR_PROTOCOL_VERSION = 1
         private const val BINARY_ROWS_VERSION = 2
 
-        // Telemetry, status, lap, session, and tyre_sets. These are the canonical
-        // libtnrp row-family bits; keep this in sync with the desktop pair
-        // service's ANDROID_PAGE_MASK.
-        private const val ANDROID_PAGE_MASK =
-            (1 shl 1) or (1 shl 2) or (1 shl 4) or (1 shl 5) or (1 shl 10)
-
         private fun preferences(context: Context): SharedPreferences =
             RecordingStorage.preferences(context)
 
@@ -80,6 +104,29 @@ internal class PairedTelemetryClient(
 
     @Volatile
     private var socket: WebSocket? = null
+
+    private val subscriptionLock = Any()
+    private val subscriptionIds = AtomicLong()
+    private var subscribedSocket: WebSocket? = null
+    private var activePage = PairedTelemetryPage.DASHBOARD
+
+    fun setPage(page: PairedTelemetryPage) {
+        synchronized(subscriptionLock) {
+            if (activePage == page) return
+            activePage = page
+            subscribedSocket?.let { sendSubscription(it, page) }
+        }
+    }
+
+    fun requestParticipants() {
+        val active = synchronized(subscriptionLock) { subscribedSocket }
+        active?.send(
+            JSONObject()
+                .put("type", "request_latest")
+                .put("rowType", "participants")
+                .toString(),
+        )
+    }
 
     fun connectSaved() {
         val preferences = preferences(context)
@@ -140,12 +187,14 @@ internal class PairedTelemetryClient(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (socket !== webSocket) return
                 socket = null
+                clearSubscribedSocket(webSocket)
                 listener.onState("disconnected", reason)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (socket !== webSocket) return
                 socket = null
+                clearSubscribedSocket(webSocket)
                 listener.onState("error", t.message)
             }
         })
@@ -158,7 +207,14 @@ internal class PairedTelemetryClient(
                 "welcome" -> handleWelcome(webSocket, endpoint, message)
                 "rows" -> {
                     val rows = message.optJSONArray("rows") ?: return
-                    for (index in 0 until rows.length()) listener.onRow(rows.optString(index))
+                    for (index in 0 until rows.length()) {
+                        val row = when (val value = rows.opt(index)) {
+                            is String -> value
+                            is JSONObject -> value.toString()
+                            else -> continue
+                        }
+                        if (row.isNotBlank()) listener.onRow(row)
+                    }
                 }
                 "error" -> listener.onState(
                     "error",
@@ -200,17 +256,38 @@ internal class PairedTelemetryClient(
             .putString(PREF_TOKEN, token)
             .putString(PREF_SOURCE, SOURCE_PAIRED)
             .apply()
+
+        // Invalidate the previous connection's roster before asking the
+        // desktop for this page's snapshot. Doing this from onPaired() happens
+        // after subscribe() and can race the snapshot, clearing names that
+        // have already arrived.
+        listener.onRow("{\"type\":\"participants_reset\"}")
+        synchronized(subscriptionLock) {
+            if (socket !== webSocket) return
+            subscribedSocket = webSocket
+            sendSubscription(webSocket, activePage)
+        }
+        listener.onState("connected", endpoint.name)
+        listener.onPaired()
+    }
+
+    private fun sendSubscription(webSocket: WebSocket, page: PairedTelemetryPage) {
         webSocket.send(
             JSONObject()
                 .put("type", "subscribe")
-                .put("page", "android")
-                .put("streamMask", ANDROID_PAGE_MASK)
+                .put("pageId", page.pageId)
+                .put("streamMask", page.streamMask)
                 .put("historyMask", 0)
                 .put("backfill", "none")
+                .put("requestId", subscriptionIds.incrementAndGet())
                 .toString(),
         )
-        listener.onState("connected", endpoint.name)
-        listener.onPaired()
+    }
+
+    private fun clearSubscribedSocket(webSocket: WebSocket) {
+        synchronized(subscriptionLock) {
+            if (subscribedSocket === webSocket) subscribedSocket = null
+        }
     }
 
     private fun deviceId(): String {
@@ -229,6 +306,9 @@ internal class PairedTelemetryClient(
     fun close() {
         val active = socket
         socket = null
+        synchronized(subscriptionLock) {
+            subscribedSocket = null
+        }
         active?.close(1000, "Android page closed")
     }
 }

@@ -32,5 +32,6 @@
     <color name="dashboard_red">#FF4D5E</color>
     <color name="dashboard_purple">#C875FF</color>
     <color name="dashboard_recording">#FF4D5E</color>
+    <color name="scanner_mask">#A607090C</color>
     <color name="ic_launcher_background">#10151B</color>
 </resources>

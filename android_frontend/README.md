@@ -52,6 +52,17 @@ For a specific connected device:
 The script builds the Kotlin/Compose app and native C++ library, assembles the
 debug APK, installs it on every selected device, and launches the activity.
 
+To build, install, and launch the release variant instead:
+
+```powershell
+.\android_frontend\build-and-run-release.ps1
+```
+
+The release script supports the same `-SdkRoot`, `-DeviceSerial`, and
+`-SkipBuild` options. It uses the real release build type and signs the local
+APK with Android's standard debug key so that `adb` can install it. This local
+signature is not intended for a distributed release.
+
 ## Phone and game network setup
 
 Keep the phone and the PC/console running F1 on the same local network. Enable

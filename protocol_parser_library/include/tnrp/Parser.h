@@ -33,6 +33,7 @@ public:
         bool                     dropped    = false;  // invalid format or duplicate frame
         uint16_t                 format     = 0;      // effective format used (2024/2025)
         uint8_t                  packetId   = 0;
+        uint64_t                 sessionUid = 0;      // header identity shared by every session packet
         float                    sessionTime = -1.0f;
         std::optional<float>     rewindSessionTime;
         std::optional<uint32_t>  rewindFrameIdentifier;

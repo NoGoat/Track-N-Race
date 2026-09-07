@@ -7,4 +7,16 @@
         <item name="android:windowBackground">?attr/colorSurface</item>
         <item name="android:fontFamily">sans</item>
     </style>
+
+    <style name="QrScannerTheme" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/dashboard_background</item>
+        <item name="android:statusBarColor">@color/dashboard_background</item>
+        <item name="android:navigationBarColor">@color/dashboard_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/dashboard_accent</item>
+    </style>
 </resources>

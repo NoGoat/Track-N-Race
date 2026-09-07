@@ -182,7 +182,11 @@ Java_com_tracknrace_android_NativePairDiscovery_nativeStart(
         jmethodID callback = nullptr;
         {
             std::lock_guard callbackLock(gDiscoveryMutex);
-            receiverRef = gDiscoveryReceiver;
+            // Keep the receiver alive after releasing the mutex. Pairing-screen
+            // disposal and scanner lifecycle can call nativeStop() here and
+            // delete the global reference while this callback is in flight.
+            if (gDiscoveryReceiver)
+                receiverRef = callbackEnv->NewLocalRef(gDiscoveryReceiver);
             callback = gDiscoveryCallback;
         }
         if (receiverRef && callback) {
@@ -196,6 +200,7 @@ Java_com_tracknrace_android_NativePairDiscovery_nativeStart(
             callbackEnv->DeleteLocalRef(address);
             if (callbackEnv->ExceptionCheck()) callbackEnv->ExceptionClear();
         }
+        if (receiverRef) callbackEnv->DeleteLocalRef(receiverRef);
         if (attached) gVm->DetachCurrentThread();
     }, &error);
     if (!started) {

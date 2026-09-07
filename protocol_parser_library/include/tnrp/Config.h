@@ -63,6 +63,13 @@ struct Config {
     // the process/N-API boundary. An in-process consumer (the native Qt recorder)
     // sets this so it receives one uniform JSON stream and need not decode binary.
     bool        hotRowsAsJson  = false;
+
+    // Shared paired-display server. libtnrp owns the complete transport and
+    // protocol; hosts only supply a display name and opaque persisted state.
+    bool        pairEnabled = false;
+    uint16_t    pairPort = 20779;
+    std::string pairName = "Track N Race";
+    std::string pairStateJson;
 };
 
 } // namespace tnrp

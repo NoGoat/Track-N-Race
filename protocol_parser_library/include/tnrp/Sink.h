@@ -42,6 +42,19 @@ public:
                              bool /*authoritativeSeek*/ = true,
                              uint32_t /*rowTypeMask*/ = 0xFFFFFFFFu,
                              float /*historyStart*/ = 0.0f) {}
+
+    // Paired-display state is emitted as two documents: public state for UI
+    // presentation and opaque private state for host persistence. Keeping the
+    // latter opaque prevents credentials and protocol ownership leaking into
+    // Electron or a future Qt frontend.
+    virtual void onPairState(const std::string& /*publicStateJson*/,
+                             const std::string& /*persistedStateJson*/) {}
+
+    // Low-volume paired-transport lifecycle diagnostics. These messages are
+    // deliberately separate from public UI state and never contain pairing
+    // secrets or device credentials. Hosts may persist them in their normal
+    // diagnostic log.
+    virtual void onPairDiagnostic(const std::string& /*message*/) {}
 };
 
 } // namespace tnrp

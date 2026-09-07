@@ -68,13 +68,12 @@ implement them.
 The existing code already provides most of the correct data boundary:
 
 ```text
-Live:      game UDP -> libtnrp Parser -> Engine -> Sink
-Playback:  .tnrd    -> libtnrp Reader -> Engine -> Sink
+Live:      game UDP -> libtnrp Parser -> Engine -> Sink -> host UI
+Playback:  .tnrd    -> libtnrp Reader -> Engine -> Sink -> host UI
+                                      \-> PairServer -> Android paired client
 
-Electron Sink -> N-API callbacks -> Electron main -> renderer IPC / PairService
-Android direct JNI binary ---------\
-                                      -> Capacitor ArrayBuffer -> shared TS decoder -> Canvas
-Android paired WebSocket binary ----/
+Android direct JNI binary ---------------------------> Compose telemetry store
+Android paired WebSocket binary ---------------------> Compose telemetry store
 ```
 
 Relevant current behavior:
@@ -82,18 +81,21 @@ Relevant current behavior:
 - `libtnrp::Sink` is the common post-decode seam for live and playback.
 - Cold and control rows use canonical JSON. The four hot families use the
   version-sensitive packed format in `BinaryRows.h` on Electron's fast path.
-- Electron receives both paths through the same addon callbacks. Renderer
-  visibility currently gates renderer IPC, but does not stop parsing or
-  recording.
+- `tnrp::PairServer` receives both paths directly inside `Engine`, before the
+  host sink and therefore before Electron renderer visibility/seek gating.
+- Electron receives its host path through addon callbacks. Its TypeScript
+  pairing adapter only invokes native controls, persists opaque engine state,
+  and publishes public state to Settings IPC.
 - Android direct mode creates its own native `Engine`, binds UDP port `20777`,
   and requests packed hot rows. Both direct and paired hot batches use the same
   binary decoder in the Capacitor frontend. Every accepted row updates mutable
   Canvas state immediately; drawing follows the display refresh rate.
 - Engine playback has an authoritative seek barrier. A seek replaces the
   timeline, restores sparse panel state, and then releases new-cursor rows.
-- `Engine::setDataRequirements` currently represents one aggregate consumer.
-  A paired phone must not lose data because the desktop renderer is hidden or
-  because its active page requests a different row mask.
+- `Engine::setDataRequirements` accepts host requirements; `Engine` unions
+  those with `PairServer` requirements internally. A paired phone therefore
+  does not lose data because the desktop renderer is hidden or requests a
+  different row mask.
 - Electron already derives stream and history masks from its active tab and
   visible layout through `historyDependencies.ts`. Android should use the same
   declarative pattern rather than subscribing from individual widgets.
@@ -260,25 +262,23 @@ desktop endpoint needed by this Electron application.
 The user can get the same router-free result in v1 by enabling a phone or PC
 hotspot and using the normal LAN path.
 
-## 7. Recommended architecture
+## 7. Architecture
 
 ```text
-                                  +-> Electron renderer IPC
-Game UDP -> Parser -> Engine Sink -|
-TNRD ----> Reader -> Engine Sink   +-> Pair service -> secure socket -> Android
-                                                        |
-                                                        +-> same dashboard store
+                                  +-> Sink -> Electron/Qt host UI
+Game UDP -> Parser -> Engine -----|
+TNRD ----> Reader -> Engine       +-> PairServer -> socket -> Android store
 
 Android Direct UDP -> native Engine -> same dashboard store
 ```
 
-### 7.1 Desktop pair service
+### 7.1 Shared pair service
 
-Create a main-process `PairService` that:
+`tnrp::PairServer`:
 
 - owns discovery, pairing windows, saved-device authentication, sockets,
   per-client subscriptions, and bounded outgoing queues;
-- receives engine JSON and binary callbacks before renderer visibility gating;
+- receives engine JSON and binary rows directly before host visibility gating;
 - is independent of `BrowserWindow` visibility and renderer seek acknowledgement;
 - filters the union engine stream into each peer's subscription;
 - replaces a peer's requirements when its visible Android page changes and
@@ -287,32 +287,28 @@ Create a main-process `PairService` that:
   bounded socket backlog exceeds the hard limit;
 - forwards the desktop engine's authoritative playback state without creating
   a second clock;
-- exposes status and device-management IPC to the desktop Settings UI;
-- never performs JSON parsing or socket writes on the engine callback thread.
+- exposes public state and host controls through `Engine`/`Sink`;
+- queues socket writes onto per-client workers rather than blocking telemetry.
 
-The service should stay alive while the Electron main process is alive. Closing
-or hiding the window must not disconnect a phone if the app is configured to
-remain in the tray. Exiting the app closes the service cleanly.
+The service stays alive with its host `Engine`. Closing or hiding an Electron
+window does not disconnect a phone while the app remains in the tray, and a Qt
+host can enable the identical service without reimplementing it.
 
-### 7.2 Shared library responsibilities
+### 7.2 Host responsibilities
 
-It is appropriate to add pairing support to `protocol_parser_library`, but the
-library boundary should remain narrow:
+Electron and Qt remain thin hosts. They:
 
-- define the versioned Pair Protocol envelope and capability structures;
-- provide row-mask helpers and binary-frame validation;
-- reuse `tnrp::bin::decodeBatch` rather than creating an Android-specific
-  fourth binary decoder;
-- provide an atomic current-state snapshot API for a row mask;
-- expose explicit timeline-reset metadata for playback load/seek/close and live
-  rewind/session replacement;
-- optionally implement the transport-independent pairing/authentication state
-  machine if an audited cryptographic implementation is shared by desktop and
-  Android.
+- provide the server display name, port and enabled preference at construction;
+- persist the opaque private-state JSON emitted through `Sink::onPairState`;
+- display the separate public-state JSON and invoke the narrow device/window
+  controls on `Engine`;
+- never inspect credentials, authenticate clients, filter telemetry, cache
+  participants, or own paired sockets.
 
-The parser, UDP listener, TNRD reader, and writer should not know about QR,
-mDNS, Android device names, sockets, or Electron settings. Platform hosts own
-network discovery, credential storage, QR UI, and firewall messaging.
+The parser, UDP listener, TNRD reader, and writer still know nothing about QR,
+discovery, Android device names, sockets, or frontend settings. Those concerns
+are isolated in `PairServer`; only presentation and durable storage remain
+host-specific.
 
 ### 7.3 Consumer requirements
 
@@ -618,6 +614,17 @@ latest state. It never implies or triggers historical backfill. For the race
 dashboard, it contains no more than the latest `telemetry`, `status`, `lap`, and
 `session` rows plus mandatory control state.
 
+The pair service retains the latest distinct `participants` row independently
+of connected phones. It sends that roster once on connection and once whenever
+its contents change. A change of the F1 packet header's `m_sessionUID`
+invalidates the cached roster so the first Participants packet of a new session
+is sent even when the driver list is identical. Subscribed phones receive a
+`participants_reset` row at that boundary so they cannot mistake the previous
+session's roster for the current one. A subscribed client that still has no
+roster after three seconds sends
+`{"type":"request_latest","rowType":"participants"}` to request the cached
+roster again without waiting for the game's next five-second update.
+
 ### 10.4 Selective subscription and backfill
 
 The `subscribe` message replaces, rather than adds to, the phone's prior page
@@ -790,28 +797,21 @@ features unsafe by construction.
 
 ## 15. Implementation map
 
-Likely code areas, without prescribing final filenames:
-
 - `protocol_parser_library/`
-  - Pair Protocol structs/framing validation;
-  - consumer-scoped stream/history requirements or a compatible aggregate API;
-  - atomic latest-state snapshot;
-  - timeline generation/reset signals and authoritative playback state;
-  - shared binary decode and optional PAKE adapter.
+  - `PairServer`: discovery, WebSocket framing, authentication, device state,
+    subscriptions, latest-state caches, per-peer filtering and backpressure;
+  - `Engine`: host/pair requirement union and live/playback output taps;
+  - shared binary validation plus future TLS/PAKE adapters.
 - `electron-frontend/node_addon/addon.cpp`
-  - expose snapshot and consumer registration;
-  - surface timeline resets without blocking TSFN callbacks.
+  - expose narrow `Engine::pair*` controls and paired-state callback.
 - `electron-frontend/src/main/bridgeManager.ts`
-  - feed `PairService` before renderer visibility/seek gating;
-  - keep renderer and pair-client requirements independent.
-- `electron-frontend/src/main/`
-  - PairService, DNS-SD, secure server, credential storage, per-peer filtering,
-    page-subscription replacement, backfill routing, bounded backpressure, and
-    IPC.
+  - provide construction configuration and renderer requirements only.
+- `electron-frontend/src/main/pairHostAdapter.ts`
+  - persist opaque native state and adapt public state/native controls to IPC.
 - `electron-frontend/src/preload/index.ts` and renderer Settings
   - narrow device-management APIs and pairing/status UI.
-- `android_frontend/src/` and `android_frontend/.../java/com/tracknrace/android/`
-  - Capacitor UI, binary runtime, source abstraction, discovery, pair client,
+- `android_frontend/.../java/com/tracknrace/android/`
+  - Compose UI, binary runtime, source abstraction, discovery, pair client,
     credentials, subscription lifecycle, snapshot installation, and stale-state
     handling.
 - `android_frontend/.../cpp/native_bridge.cpp`

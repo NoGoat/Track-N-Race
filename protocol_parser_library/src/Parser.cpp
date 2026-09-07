@@ -176,10 +176,12 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
 
     // ── Exact duplicate-frame rejection ─────────────────────────────────────
     uint8_t  packetId = data[6];
+    uint64_t sessionUid = ReadUInt64(data, 7);
     float    sessionTime = ReadFloat(data, 15);
     uint32_t frameId  = ReadUInt32(data, 23);
     r.format      = eff;
     r.packetId    = packetId;
+    r.sessionUid  = sessionUid;
     r.sessionTime = sessionTime;
 
     // Formula is presentation state, not a wire-format selector. A known

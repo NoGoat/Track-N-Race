@@ -12,6 +12,7 @@
 
 #include "tnrp/Config.h"
 #include "tnrp/Parser.h"
+#include "tnrp/PairServer.h"
 #include "tnrp/Sink.h"
 #include "tnrp/Strategy.h"
 #include "tnrp/TnrdReader.h"
@@ -62,6 +63,17 @@ public:
     void setDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
                              float windowSeconds, uint64_t requestId = 0);
 
+    // ── Paired displays ──────────────────────────────────────────────────
+    // The transport, authentication, discovery, subscriptions and latest-row
+    // cache all live in libtnrp so every host gets identical behaviour.
+    bool pairStart(std::string* errorOut = nullptr);
+    void pairStop(bool persistDisabled = true);
+    void pairOpenWindow();
+    void pairCloseWindow();
+    void pairRemoveDevice(const std::string& id);
+    std::string pairStateJson() const;
+    std::string pairPersistedStateJson() const;
+
     // ── Playback ─────────────────────────────────────────────────────────
     // Loads a .tnrd, switches the engine into playback mode (UDP ignored),
     // emits the initial reconstructed snapshot, and stays paused.
@@ -88,6 +100,7 @@ private:
     StrategyProcessor strategy_;
     TnrdReader    reader_;
     UdpListener   udp_;
+    PairServer    pairServer_;
 
     mutable std::mutex mutex_;             // guards all mutable state below
 
@@ -126,10 +139,16 @@ private:
     uint32_t          consumerRowMask_ = 0xFFFFFFFFu;
     uint32_t          consumerHistoryMask_ = 0;
     float             consumerWindowSeconds_ = 0.0f;
+    uint32_t          hostConsumerRowMask_ = 0xFFFFFFFFu;
+    uint32_t          hostConsumerHistoryMask_ = 0;
+    float             hostConsumerWindowSeconds_ = 0.0f;
+    uint32_t          pairConsumerRowMask_ = 0;
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void rewindLiveTimeline(float sessionTime);          // mutex_ held
     void emitRow(const std::string& json);               // forward to the sink
+    void emitBinary(const uint8_t* data, size_t length);
+    void setPairDataRequirements(uint32_t streamRowMask);
     void ingestStrategyRow(const std::string& json);
     void emitStrategy(bool force = false);
     // Rebuilds and commits the derived playback strategy while mutex_ is held.

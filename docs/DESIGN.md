@@ -7,7 +7,7 @@ one repository:
 
 | Component | Path | Tech | Role |
 |---|---|---|---|
-| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, XLSX export, label/colour catalogs |
+| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, paired-display server, XLSX export, label/colour catalogs |
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
@@ -34,13 +34,16 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
   ├── TnrdWriter    .tnrd V5 recording (own disk thread)
   ├── TnrdReader    V1–V5 playback (index, per-lap blocks, binary stores)
-  └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
+  ├── PairServer    discovery + WebSocket/auth/subscriptions/latest-state cache
+  └── Sink*         host seam (onRow/onBinary/onSeekFlush/onPairState)
 ```
 
 - **`Sink` (Sink.h)** — the engine pushes every parsed row through this
   interface. `onRow(json)` delivers pre-serialised JSON strings (cold + control
   rows); `onBinary(bytes)` delivers packed hot-row batches; `onSeekFlush(...)`
-  delivers a playback seek backfill (binary-playback mode only). Calls arrive
+  delivers a playback seek backfill (binary-playback mode only), and
+  `onPairState(public, persisted)` exposes UI-safe state plus an opaque document
+  for host persistence. Calls arrive
   on the engine's UDP or playback thread — implementations must be
   thread-safe. Both optional methods default to no-ops so JSON-only sinks stay
   trivial.
@@ -49,7 +52,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   plus two host-shape flags:
   `binaryPlayback` (Electron: playback hot rows go out via `onBinary`, seeks
   via `onSeekFlush`) and `hotRowsAsJson` (emit live hot rows as JSON instead of
-  binary; both apps currently leave this **off** and take the binary channel).
+  binary; both apps currently leave this **off** and take the binary channel),
+  plus paired-server enablement, identity label, port and opaque saved state.
 - **`AnyRow` (AnyRow.h)** — typed decode seam for in-process consumers: one
   call turns a raw JSONL row into a `std::variant` of the typed structs from
   `rows.h`/`control_rows.h` (glaze-parsed after a cheap type-tag sniff). The Qt

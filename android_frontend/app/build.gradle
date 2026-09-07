@@ -40,8 +40,16 @@ android {
             debuggable true
         }
         release {
-            minifyEnabled false
+            // Compose performance should be evaluated with R8 optimization;
+            // a non-debuggable build alone is not an optimized release.
+            minifyEnabled true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            // Local release builds must be signed before adb can install them.
+            // Distribution builds remain unsigned unless their caller supplies
+            // a production signing configuration.
+            if (project.hasProperty("tnrLocalReleaseSigning")) {
+                signingConfig signingConfigs.debug
+            }
         }
     }
 

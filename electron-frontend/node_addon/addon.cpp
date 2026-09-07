@@ -4,7 +4,6 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
-#include <tnrp/PairDiscovery.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -251,9 +250,12 @@ public:
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
             InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
-            InstanceMethod("startPairDiscovery", &TNRPAddon::StartPairDiscovery),
-            InstanceMethod("updatePairDiscovery", &TNRPAddon::UpdatePairDiscovery),
-            InstanceMethod("stopPairDiscovery", &TNRPAddon::StopPairDiscovery),
+            InstanceMethod("pairStart", &TNRPAddon::PairStart),
+            InstanceMethod("pairStop", &TNRPAddon::PairStop),
+            InstanceMethod("pairOpenWindow", &TNRPAddon::PairOpenWindow),
+            InstanceMethod("pairCloseWindow", &TNRPAddon::PairCloseWindow),
+            InstanceMethod("pairRemoveDevice", &TNRPAddon::PairRemoveDevice),
+            InstanceMethod("pairGetState", &TNRPAddon::PairGetState),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
         TRACE("Init: after DefineClass");
@@ -316,6 +318,19 @@ public:
         if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
             config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
         }
+        if (configObj.Has("pairEnabled") && configObj.Get("pairEnabled").IsBoolean()) {
+            config.pairEnabled = configObj.Get("pairEnabled").As<Napi::Boolean>().Value();
+        }
+        if (configObj.Has("pairPort") && configObj.Get("pairPort").IsNumber()) {
+            const uint32_t port = configObj.Get("pairPort").As<Napi::Number>().Uint32Value();
+            if (port > 0 && port <= 65535) config.pairPort = static_cast<uint16_t>(port);
+        }
+        if (configObj.Has("pairName") && configObj.Get("pairName").IsString()) {
+            config.pairName = configObj.Get("pairName").As<Napi::String>().Utf8Value();
+        }
+        if (configObj.Has("pairStateJson") && configObj.Get("pairStateJson").IsString()) {
+            config.pairStateJson = configObj.Get("pairStateJson").As<Napi::String>().Utf8Value();
+        }
         TRACE("TNRPAddon ctor: config parsed");
 
         Napi::Function cb = info[1].As<Napi::Function>();
@@ -354,6 +369,29 @@ public:
             tsfnSeek.Unref(env);
             hasSeekCb_ = true;
         }
+
+        // Optional fourth callback for public paired-mode UI state plus the
+        // opaque private state document that the host persists unchanged.
+        if (info.Length() >= 5 && info[4].IsFunction()) {
+            Napi::Function pairCb = info[4].As<Napi::Function>();
+            tsfnPair = Napi::ThreadSafeFunction::New(
+                env, pairCb, "TNRP Pair State Callback", 0, 1,
+                [](Napi::Env) {});
+            tsfnPair.Unref(env);
+            hasPairCb_ = true;
+        }
+
+        // Optional fifth callback for low-volume native paired-transport
+        // lifecycle diagnostics. It is intentionally independent of the UI
+        // state callback so diagnostics never become persisted pair state.
+        if (info.Length() >= 6 && info[5].IsFunction()) {
+            Napi::Function pairDiagnosticCb = info[5].As<Napi::Function>();
+            tsfnPairDiagnostic = Napi::ThreadSafeFunction::New(
+                env, pairDiagnosticCb, "TNRP Pair Diagnostic Callback", 0, 1,
+                [](Napi::Env) {});
+            tsfnPairDiagnostic.Unref(env);
+            hasPairDiagnosticCb_ = true;
+        }
         TRACE("TNRPAddon ctor: about to construct Engine");
 
         engine = std::make_shared<tnrp::Engine>(config, this);
@@ -362,10 +400,16 @@ public:
 
     ~TNRPAddon() {
         if (!destroyed_) {
-            if (engine) engine->playerClose();
+            if (engine) {
+                engine->pairStop(false);
+                engine->playerClose();
+                engine.reset();
+            }
             tsfn.Release();
             if (hasBinCb_) tsfnBin.Release();
             if (hasSeekCb_) tsfnSeek.Release();
+            if (hasPairCb_) tsfnPair.Release();
+            if (hasPairDiagnosticCb_) tsfnPairDiagnostic.Release();
         }
     }
 
@@ -487,6 +531,39 @@ public:
         if (status != napi_ok) delete d;
     }
 
+    void onPairState(const std::string& publicJson,
+                     const std::string& persistedJson) override {
+        if (!hasPairCb_) return;
+        struct PairStateData {
+            std::string publicJson;
+            std::string persistedJson;
+        };
+        auto* data = new PairStateData{publicJson, persistedJson};
+        const auto status = tsfnPair.NonBlockingCall(
+            data, [](Napi::Env env, Napi::Function callback,
+                     PairStateData* state) {
+                if (env != nullptr && callback != nullptr) {
+                    callback.Call({Napi::String::New(env, state->publicJson),
+                                   Napi::String::New(env, state->persistedJson)});
+                }
+                delete state;
+            });
+        if (status != napi_ok) delete data;
+    }
+
+    void onPairDiagnostic(const std::string& message) override {
+        if (!hasPairDiagnosticCb_) return;
+        auto* data = new std::string(message);
+        const auto status = tsfnPairDiagnostic.NonBlockingCall(
+            data, [](Napi::Env env, Napi::Function callback,
+                     std::string* diagnostic) {
+                if (env != nullptr && callback != nullptr)
+                    callback.Call({Napi::String::New(env, *diagnostic)});
+                delete diagnostic;
+            });
+        if (status != napi_ok) delete data;
+    }
+
 private:
     // Shared so queued flush callbacks remain valid even if the wrapper is torn down.
     struct FlushState {
@@ -505,13 +582,16 @@ private:
     };
 
     std::shared_ptr<tnrp::Engine> engine;
-    tnrp::PairDiscoveryAdvertiser pairDiscovery_;
     Napi::ThreadSafeFunction tsfn;
     Napi::ThreadSafeFunction tsfnBin;
     Napi::ThreadSafeFunction tsfnSeek;
+    Napi::ThreadSafeFunction tsfnPair;
+    Napi::ThreadSafeFunction tsfnPairDiagnostic;
     bool destroyed_ = false;
     bool hasBinCb_  = false;
     bool hasSeekCb_ = false;
+    bool hasPairCb_ = false;
+    bool hasPairDiagnosticCb_ = false;
     std::shared_ptr<FlushState>    flush_    = std::make_shared<FlushState>();
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
@@ -524,41 +604,39 @@ private:
         return Napi::Boolean::New(info.Env(), ok);
     }
 
-    Napi::Value StartPairDiscovery(const Napi::CallbackInfo& info) {
-        Napi::Env env = info.Env();
-        if (info.Length() < 4 || !info[0].IsString() || !info[1].IsString() ||
-            !info[2].IsNumber() || !info[3].IsBoolean()) {
-            Napi::TypeError::New(env,
-                "Expected (serverId, name, port, pairing)").ThrowAsJavaScriptException();
-            return env.Undefined();
-        }
-        tnrp::PairServiceInfo service{
-            info[0].As<Napi::String>().Utf8Value(),
-            info[1].As<Napi::String>().Utf8Value(),
-            static_cast<uint16_t>(info[2].As<Napi::Number>().Uint32Value()),
-            info[3].As<Napi::Boolean>().Value()
-        };
+    Napi::Value PairStart(const Napi::CallbackInfo& info) {
         std::string error;
-        if (pairDiscovery_.start(std::move(service), &error)) return env.Null();
-        return Napi::String::New(env, error);
+        if (engine && engine->pairStart(&error)) return info.Env().Null();
+        return Napi::String::New(info.Env(), error.empty()
+            ? "The paired-display server is unavailable." : error);
     }
 
-    Napi::Value UpdatePairDiscovery(const Napi::CallbackInfo& info) {
-        if (info.Length() >= 4 && info[0].IsString() && info[1].IsString() &&
-            info[2].IsNumber() && info[3].IsBoolean()) {
-            pairDiscovery_.update({
-                info[0].As<Napi::String>().Utf8Value(),
-                info[1].As<Napi::String>().Utf8Value(),
-                static_cast<uint16_t>(info[2].As<Napi::Number>().Uint32Value()),
-                info[3].As<Napi::Boolean>().Value()
-            });
-        }
-        return info.Env().Undefined();
+    Napi::Value PairStop(const Napi::CallbackInfo& info) {
+        const bool persistDisabled = info.Length() == 0 || !info[0].IsBoolean() ||
+            info[0].As<Napi::Boolean>().Value();
+        if (engine) engine->pairStop(persistDisabled);
+        return PairGetState(info);
     }
 
-    Napi::Value StopPairDiscovery(const Napi::CallbackInfo& info) {
-        pairDiscovery_.stop();
-        return info.Env().Undefined();
+    Napi::Value PairOpenWindow(const Napi::CallbackInfo& info) {
+        if (engine) engine->pairOpenWindow();
+        return PairGetState(info);
+    }
+
+    Napi::Value PairCloseWindow(const Napi::CallbackInfo& info) {
+        if (engine) engine->pairCloseWindow();
+        return PairGetState(info);
+    }
+
+    Napi::Value PairRemoveDevice(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsString())
+            engine->pairRemoveDevice(info[0].As<Napi::String>().Utf8Value());
+        return PairGetState(info);
+    }
+
+    Napi::Value PairGetState(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine
+            ? engine->pairStateJson() : "{}");
     }
 
     Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
@@ -776,11 +854,13 @@ private:
     Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (destroyed_) return info.Env().Undefined();
         destroyed_ = true;
-        pairDiscovery_.stop();
+        if (engine) engine->pairStop(false);
         engine.reset();   // a pending PlayerLoadWorker holds its own ref
         tsfn.Release();
         if (hasBinCb_) tsfnBin.Release();
         if (hasSeekCb_) tsfnSeek.Release();
+        if (hasPairCb_) tsfnPair.Release();
+        if (hasPairDiagnosticCb_) tsfnPairDiagnostic.Release();
         return info.Env().Undefined();
     }
 
