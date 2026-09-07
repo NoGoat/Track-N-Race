@@ -1,7 +1,8 @@
-import { Fragment, useLayoutEffect, useRef, useState, memo } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid } from 'lucide-react'
-import type { ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone } from 'lucide-react'
+import QRCode from 'qrcode'
+import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
   GRAPH_GROUPS, ALL_GRAPH_SECTIONS, COMPACT_GROUPS, ALL_COMPACT_BOOL_KEYS, DENSITY_OPTIONS, TYRE_LEVEL_OPTIONS, WEATHER_LEVEL_OPTIONS, HEADER_LEVEL_OPTIONS,
   TYRE_Y_AXIS_SECTIONS, POWER_Y_AXIS_SECTIONS,
@@ -227,7 +228,7 @@ const Settings = memo(function Settings({
   onChartYAxisChange,
 }: Props) {
   const modalPresence = useModalPresence(isOpen)
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
@@ -313,6 +314,25 @@ const Settings = memo(function Settings({
   const [protocolOverride, setProtocolOverride] = useState<'auto' | 'f1_24' | 'f1_25' | 'f1_26'>(
     () => (window.electronStore.get('udp.protocol', 'auto') as 'auto' | 'f1_24' | 'f1_25' | 'f1_26')
   )
+  const [pairing, setPairing] = useState<PairServiceState | null>(null)
+  const [pairQr, setPairQr] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.pairingBridge.getState().then(setPairing)
+    return window.pairingBridge.onState(setPairing)
+  }, [])
+
+  useEffect(() => {
+    let current = true
+    if (!pairing?.qrPayload) {
+      setPairQr(null)
+      return () => { current = false }
+    }
+    void QRCode.toDataURL(pairing.qrPayload, { width: 240, margin: 2,
+      color: { dark: '#111827', light: '#ffffff' } })
+      .then(value => { if (current) setPairQr(value) })
+    return () => { current = false }
+  }, [pairing?.qrPayload])
 
   if (!modalPresence.mounted) return null
 
@@ -383,6 +403,7 @@ const Settings = memo(function Settings({
     { id: 'notifications' as const, label: 'Notifications', icon: <Clock size={14} />, color: '#8b5cf6' },
     { id: 'map' as const, label: 'Map', icon: <Map size={14} />, color: '#10b981' },
     { id: 'network' as const, label: 'Network', icon: <Network size={14} />, color: '#0ea5e9' },
+    { id: 'pairing' as const, label: 'Paired Devices', icon: <Smartphone size={14} />, color: '#8b5cf6' },
     { id: 'protocol' as const, label: 'Protocol', icon: <Radio size={14} />, color: '#e879f9' },
     { id: 'storage' as const, label: 'Data Storage', icon: <HardDrive size={14} />, color: '#10b981' },
   ]
@@ -947,6 +968,63 @@ const Settings = memo(function Settings({
     </div>
   )
 
+  const renderPairing = () => (
+    <div className="flex flex-col gap-1">
+      <Row label="Enable paired mode" description="Let Android displays discover this computer and receive decoded telemetry over the local network.">
+        <Toggle value={pairing?.enabled ?? false} onChange={enabled => {
+          void window.pairingBridge.setEnabled(enabled).then(setPairing)
+        }} />
+      </Row>
+
+      {pairing?.enabled && (
+        <>
+          <div className="mx-4 my-3 rounded-xl border border-[var(--border-muted)] bg-[var(--bg-input)]/30 p-4">
+            {!pairing.pairingOpen ? (
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-[var(--text-primary)]">Add an Android display</p>
+                  <p className="mt-1 text-[10px] text-[var(--text-muted)]">Opens discovery, QR, and matching-code pairing for two minutes.</p>
+                </div>
+                <button className={BUTTON_CLASS} onClick={() => void window.pairingBridge.openWindow().then(setPairing)}>
+                  Pair a device
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-6 items-center">
+                {pairQr && <img src={pairQr} alt="Desktop pairing QR code" className="h-44 w-44 rounded-lg bg-white p-1" />}
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Matching code</p>
+                  <p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em] text-[var(--text-primary)]">{pairing.matchingCode}</p>
+                  <p className="mt-3 text-[11px] text-[var(--text-secondary)]">Scan the QR in Android Settings, or select this desktop and enter the same code.</p>
+                  <button className={`${BUTTON_CLASS} mt-4`} onClick={() => void window.pairingBridge.closeWindow().then(setPairing)}>
+                    Cancel pairing
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mx-4 mt-2">
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[var(--text-muted)]">Saved devices</p>
+            {pairing.devices.length === 0 ? (
+              <p className="py-5 text-xs text-[var(--text-muted)]">No Android devices paired.</p>
+            ) : pairing.devices.map(device => (
+              <div key={device.id} className="mt-2 flex items-center gap-3 rounded-lg border border-[var(--border-muted)] px-3 py-2.5">
+                <span className={`h-2 w-2 rounded-full ${device.connected ? 'bg-green-400' : 'bg-[var(--text-muted)]'}`} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-semibold text-[var(--text-primary)]">{device.name}</p>
+                  <p className="text-[10px] text-[var(--text-muted)]">{device.connected ? 'Connected' : 'Offline'}</p>
+                </div>
+                <button className={BUTTON_CLASS} onClick={() => void window.pairingBridge.removeDevice(device.id).then(setPairing)}>Remove</button>
+              </div>
+            ))}
+          </div>
+          {pairing.error && <p className="mx-4 mt-3 text-xs text-red-400">{pairing.error}</p>}
+        </>
+      )}
+    </div>
+  )
+
   const renderStorage = () => (
     <div className="flex flex-col gap-1">
       <Row
@@ -1120,6 +1198,8 @@ const Settings = memo(function Settings({
         return renderMap()
       case 'network':
         return renderNetwork()
+      case 'pairing':
+        return renderPairing()
       case 'protocol':
         return renderProtocol()
       case 'storage':

@@ -4,6 +4,7 @@
 #include "tnrd/TNRD_V3.h"
 #include "tnrd/TNRD_V4.h"
 #include "tnrd/TNRD_V5.h"
+#include "tnrp/BinaryRows.h"
 #include "tnrp/TnrdReader.h"
 
 #include <array>
@@ -69,7 +70,7 @@ int main() {
     const std::vector<tnrp::detail::V4SourceRow> rows = {
         {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0,"lap_distance_m":0})", 1.0f},
         {R"({"type":"session","session_time":1.1,"track_id":7,"session_type":10})", 1.1f},
-        {R"({"type":"telemetry","session_time":1.2,"speed_kph":100})", 1.2f},
+        {R"({"type":"telemetry","session_time":1.2,"speed_kph":100,"rev_lights_pct":50,"rev_lights_bit_value":255})", 1.2f},
         {R"({"type":"lap","session_time":31,"lap_num":1,"current_lap_ms":30000,"last_lap_ms":0,"lap_distance_m":1600,"sector":0})", 31.0f},
         {R"({"type":"lap","session_time":32,"lap_num":1,"current_lap_ms":31000,"last_lap_ms":0,"lap_distance_m":1760,"sector":1,"s1_ms":30000})", 32.0f},
         {R"({"type":"lap","session_time":61,"lap_num":1,"current_lap_ms":60000,"last_lap_ms":0,"lap_distance_m":3300,"sector":1,"s1_ms":30000})", 61.0f},
@@ -102,12 +103,29 @@ int main() {
 
         assert(tnrp::detail::detectTnrdFormat(path.string(), &error) == format);
         tnrp::TnrdReader reader;
+        reader.setBinaryPlayback(true);
         tnrp::HeaderRow loadedHeader;
         assert(reader.load(path.string(), loadedHeader));
         assert(reader.loadedFormat() == format);
         assert(loadedHeader.magic == magicFor(format));
         assert(loadedHeader.formula == header.formula);
         assert(reader.readRange(0.0f, 100.0f).size() == rows.size());
+        const auto hot = reader.seekFlush(
+            1.3f, 1.0f, true, tnrp::detail::v4TypeBit(1), 0.0f, false);
+        assert(hot.binaryStore && hot.binaryEnd - hot.binaryBegin == 49);
+        assert((*hot.binaryStore)[hot.binaryBegin] == tnrp::bin::kTelemetry);
+        TelemetryRow telemetry;
+        tnrp::bin::BinReader binaryReader{
+            hot.binaryStore->data() + hot.binaryBegin + 1,
+            hot.binaryStore->data() + hot.binaryEnd};
+        assert(tnrp::bin::decodeTelemetry(binaryReader, telemetry));
+        if (format == tnrp::TnrdFormat::ChunkedV5) {
+            assert(telemetry.rev_lights_pct == 50);
+            assert(telemetry.rev_lights_bit_value == 255);
+        } else {
+            assert(!telemetry.rev_lights_pct);
+            assert(!telemetry.rev_lights_bit_value);
+        }
         tnrp::PlaybackLapBlocksRow lapBlocks;
         assert(!glz::read_json(lapBlocks, reader.lapBlocksMessage()));
         assert(!lapBlocks.blocks.empty());

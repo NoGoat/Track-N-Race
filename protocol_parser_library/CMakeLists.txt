@@ -93,6 +93,7 @@ add_library(tnrp STATIC
     src/DisplayNames.cpp
     src/Labels.cpp
     src/CardColors.cpp
+    src/LapDelta.cpp
     src/Strategy.cpp
     src/Parser.cpp
     src/AnyRow.cpp
@@ -105,6 +106,8 @@ add_library(tnrp STATIC
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp
+    src/PairDiscovery.cpp
+    src/PairServer.cpp
     src/Engine.cpp
     src/XlsxExport.cpp
 )
@@ -117,6 +120,11 @@ target_include_directories(tnrp
 # glaze is in public headers. Both compression libraries are implementation
 # details, but static-library consumers still receive their link dependencies.
 target_link_libraries(tnrp PUBLIC glaze::glaze xlsxwriter PRIVATE zlibstatic libzstd_static)
+
+# PairDiscovery and PairServer use the native socket API in both backend modes.
+if(WIN32)
+    target_link_libraries(tnrp PUBLIC ws2_32)
+endif()
 
 # zlib's generated zconf.h lives in its build dir; expose it to consumers too.
 target_include_directories(tnrp PUBLIC
@@ -134,9 +142,6 @@ if(TNRP_USE_QT)
     target_compile_definitions(tnrp PUBLIC TNRP_USE_QT)
     message(STATUS "tnrp: UDP backend = QUdpSocket (Qt)")
 else()
-    if(WIN32)
-        target_link_libraries(tnrp PUBLIC ws2_32)
-    endif()
     message(STATUS "tnrp: UDP backend = raw sockets")
 endif()
 

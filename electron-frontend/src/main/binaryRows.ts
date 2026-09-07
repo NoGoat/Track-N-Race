@@ -7,7 +7,7 @@
 // Byte length of the record starting at offset `o`, or -1 for an unknown tag.
 function recordLen(batch: Buffer, o: number): number {
   switch (batch[o]) {
-    case 1: return 46                       // telemetry
+    case 1: return 49                       // telemetry
     case 2: return 29                       // motion
     case 4: return 21                       // motion_ex
     case 3: return 3 + batch[o + 2] * 16    // positions: tag + player_idx + n + n*(x,z)

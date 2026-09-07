@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- A compact racing tyre: sidewall, wheel opening, and directional tread. -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,2A10,10 0,1 1,12,22A10,10 0,1 1,12,2M12,7A5,5 0,1 0,12,17A5,5 0,1 0,12,7"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M7.2,3.2L9,6.4M12,2L12,6M16.8,3.2L15,6.4M20.8,7.2L17.6,9M22,12L18,12M20.8,16.8L17.6,15M16.8,20.8L15,17.6M12,22L12,18M7.2,20.8L9,17.6M3.2,16.8L6.4,15M2,12L6,12M3.2,7.2L6.4,9"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.5" />
+</vector>

@@ -11,6 +11,8 @@ export interface TelemetryRow {
   brake: number
   steering: number
   drs: number
+  rev_lights_pct?: number
+  rev_lights_bit_value?: number
   slm: number   // 2026 active-aero / straight line mode (0/1), separate from drs
   tyre_temp_surface_rl: number; tyre_temp_surface_rr: number
   tyre_temp_surface_fl: number; tyre_temp_surface_fr: number
@@ -64,6 +66,20 @@ export interface LapProgressPoint {
   sector?: number
   s1_ms?: number
   s2_ms?: number
+}
+
+export interface AnalyzeDeltaSample {
+  lap_distance_m: number
+  delta_seconds: number
+  valid: boolean
+}
+
+export interface AnalyzeDeltaData {
+  currentLapNum: number
+  comparisonLapNum: number
+  sectorDelta: boolean
+  maxAbsDeltaSeconds: number
+  samples: AnalyzeDeltaSample[]
 }
 
 export interface StatusRow {
@@ -451,6 +467,7 @@ export interface ProtocolStatusMsg {
   detected_format: 2024 | 2025 | 2026 | null
   active_format:   2024 | 2025 | 2026 | null
   presentation_format?: 2024 | 2025 | 2026 | null // Formula-gated UI format
+  formula?:        number | null // Raw PacketSessionData::m_formula
   override:        'auto' | 'f1_24' | 'f1_25' | 'f1_26'
   capabilities:    ProtocolCapabilities
   labels?:         Record<string, string>
@@ -475,6 +492,18 @@ export interface AvailableUpdate {
   latestVersion: string
   releaseUrl: string
   publishedAt: string | null
+}
+
+export interface PairServiceState {
+  enabled: boolean
+  serverId: string
+  port: number
+  pairingOpen: boolean
+  pairingExpiresAt: number
+  matchingCode: string | null
+  qrPayload: string | null
+  devices: Array<{ id: string; name: string; pairedAt: number; lastSeenAt: number; connected: boolean }>
+  error: string | null
 }
 
 declare global {
@@ -522,6 +551,14 @@ declare global {
       skipVersion: (version: string) => void
       openDownloadPage: () => Promise<void>
     }
+    pairingBridge: {
+      getState: () => Promise<PairServiceState>
+      setEnabled: (enabled: boolean) => Promise<PairServiceState>
+      openWindow: () => Promise<PairServiceState>
+      closeWindow: () => Promise<PairServiceState>
+      removeDevice: (id: string) => Promise<PairServiceState>
+      onState: (callback: (state: PairServiceState) => void) => () => void
+    }
     playerBridge: {
       setPageVisible: (visible: boolean) => void
       load: (filePath: string) => Promise<{ ok: boolean; error?: string }>
@@ -546,6 +583,13 @@ declare global {
     analysisBridge: {
       loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
       getLapData: (lapNum: number, rowTypeMask?: number) => Promise<unknown | null>
+      compareLaps: (
+        currentLapNum: number,
+        currentSource: 'file1' | 'file2',
+        comparisonLapNum: number,
+        comparisonSource: 'file1' | 'file2',
+        sectorDelta: boolean,
+      ) => Promise<unknown | null>
       closeFile: () => void
     }
 

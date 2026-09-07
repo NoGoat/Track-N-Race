@@ -6,9 +6,22 @@ function animationsAreReduced(): boolean {
   return document.documentElement.dataset.reduceAnimations === 'true'
 }
 
-export function useModalPresence(open: boolean, exitMs = MODAL_EXIT_MS) {
+interface ModalPresenceOptions {
+  /**
+   * Keep this enabled for dialogs that should animate when first mounted open.
+   * Persistent view selectors can disable it so a parent View Transition
+   * snapshots their already-selected state instead of their enter frame.
+   */
+  animateInitialEnter?: boolean
+}
+
+export function useModalPresence(
+  open: boolean,
+  exitMs = MODAL_EXIT_MS,
+  { animateInitialEnter = true }: ModalPresenceOptions = {},
+) {
   const [mounted, setMounted] = useState(open)
-  const [visible, setVisible] = useState(false)
+  const [visible, setVisible] = useState(() => open && !animateInitialEnter)
   const exitTimerRef = useRef<number | null>(null)
 
   useLayoutEffect(() => {

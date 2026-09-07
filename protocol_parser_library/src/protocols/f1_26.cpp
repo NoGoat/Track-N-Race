@@ -297,10 +297,11 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             t.gear          = ReadInt8(data, o);   o += 1;
             t.rpm           = ReadUInt16(data, o); o += 2;
             t.drs           = data[o++];   // raw DRS (0 under 2026 regs)
+            t.rev_lights_pct       = data[o++];
+            t.rev_lights_bit_value = ReadUInt16(data, o); o += 2;
             // 2026 wing-open state lives in its own field, sourced from active aero
             // (Car Telemetry 2, PID 16). Kept strictly separate from drs.
             t.slm           = s_playerActiveAero ? 1 : 0;
-            o += 1; o += 2;
             t.brake_temp_rl = ReadUInt16(data, o); o += 2;
             t.brake_temp_rr = ReadUInt16(data, o); o += 2;
             t.brake_temp_fl = ReadUInt16(data, o); o += 2;

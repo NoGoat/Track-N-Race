@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Track N Race brand roles consumed by Material 2 component styles. -->
+    <color name="brand_primary">#D32F2F</color>
+    <color name="brand_primary_variant">#B71C1C</color>
+    <color name="brand_on_primary">#FFFFFF</color>
+    <color name="brand_secondary">#3F51B5</color>
+    <color name="brand_secondary_variant">#303F9F</color>
+    <color name="brand_on_secondary">#FFFFFF</color>
+
+    <!-- Racing-domain colors only. General UI color is owned by Material 2. -->
+    <color name="racing_fastest_lap">#9C27B0</color>
+    <color name="racing_pit">#8D6E00</color>
+    <color name="racing_penalty">#A05A00</color>
+    <color name="racing_podium_gold">#B8860B</color>
+    <color name="racing_podium_silver">#757575</color>
+    <color name="racing_podium_bronze">#8D5524</color>
+    <color name="connection_starting">#F9A825</color>
+    <color name="connection_listening">#F9A825</color>
+    <color name="connection_receiving">#2E7D32</color>
+    <color name="connection_error">#B00020</color>
+
+    <!-- High-contrast fixed palette for the steering-wheel dashboard. -->
+    <color name="dashboard_background">#07090C</color>
+    <color name="dashboard_panel">#10151B</color>
+    <color name="dashboard_panel_border">#26313B</color>
+    <color name="dashboard_text_primary">#F5F7FA</color>
+    <color name="dashboard_text_secondary">#8F9AA6</color>
+    <color name="dashboard_accent">#43A5FF</color>
+    <color name="dashboard_green">#32D583</color>
+    <color name="dashboard_amber">#F5B942</color>
+    <color name="dashboard_red">#FF4D5E</color>
+    <color name="dashboard_purple">#C875FF</color>
+    <color name="dashboard_recording">#FF4D5E</color>
+    <color name="scanner_mask">#A607090C</color>
+    <color name="ic_launcher_background">#10151B</color>
+</resources>

@@ -37,6 +37,12 @@ inline float ReadFloat(const uint8_t* data, int offset) {
 inline uint32_t ReadUInt32(const uint8_t* data, int offset) {
     return *(const uint32_t*)(data + offset);
 }
+inline uint64_t ReadUInt64(const uint8_t* data, int offset) {
+    uint64_t value = 0;
+    for (int byte = 0; byte < 8; ++byte)
+        value |= static_cast<uint64_t>(data[offset + byte]) << (byte * 8);
+    return value;
+}
 inline uint16_t ReadUInt16(const uint8_t* data, int offset) {
     return *(const uint16_t*)(data + offset);
 }

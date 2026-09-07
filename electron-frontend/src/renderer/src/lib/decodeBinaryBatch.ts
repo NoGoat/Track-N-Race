@@ -1,4 +1,58 @@
-import type { TelemetryRow, MotionRow, MotionExRow, PositionsMsg } from '../types'
+// Keep these wire-row shapes local. Importing the renderer-wide `types.ts`
+// makes this otherwise standalone decoder depend on React's module graph,
+// which prevents non-Electron consumers (the Capacitor app) from sharing it.
+interface TelemetryRow {
+  type: 'telemetry'
+  ts: string
+  session_time: number
+  speed_kph: number
+  rpm: number
+  gear: number
+  throttle: number
+  brake: number
+  steering: number
+  drs: number
+  rev_lights_pct?: number
+  rev_lights_bit_value?: number
+  slm: number
+  tyre_temp_surface_rl: number
+  tyre_temp_surface_rr: number
+  tyre_temp_surface_fl: number
+  tyre_temp_surface_fr: number
+  tyre_temp_inner_rl: number
+  tyre_temp_inner_rr: number
+  tyre_temp_inner_fl: number
+  tyre_temp_inner_fr: number
+  brake_temp_rl: number
+  brake_temp_rr: number
+  brake_temp_fl: number
+  brake_temp_fr: number
+  engine_temp: number
+}
+
+interface MotionRow {
+  type: 'motion'
+  ts: string
+  session_time: number
+  g_lat: number
+  g_long: number
+  g_vert: number
+}
+
+interface MotionExRow {
+  type: 'motion_ex'
+  ts: string
+  session_time: number
+  front_aero_height_mm: number
+  rear_aero_height_mm: number
+}
+
+interface PositionsMsg {
+  type: 'positions'
+  ts: string
+  player_idx: number
+  cars: Array<{ idx: number; x: number; z: number }>
+}
 
 // Decoder for the hot-row binary wire format produced by the native engine.
 // MUST stay in lockstep with protocol_parser_library/include/tnrp/BinaryRows.h.
@@ -12,6 +66,8 @@ const TAG_TELEMETRY = 1
 const TAG_MOTION = 2
 const TAG_POSITIONS = 3
 const TAG_MOTION_EX = 4
+const REV_LIGHTS_PERCENT_UNAVAILABLE = 0xff
+const REV_LIGHTS_BIT_VALUE_UNAVAILABLE = 0xffff
 
 export type DecodedHotRow = TelemetryRow | MotionRow | MotionExRow | PositionsMsg
 
@@ -40,6 +96,14 @@ export function decodeBinaryBatchRange(
         const rpm = dv.getUint16(o, true); o += 2
         const gear = dv.getInt8(o); o += 1
         const drs = dv.getUint8(o); o += 1
+        const rawRevLightsPercent = dv.getUint8(o); o += 1
+        const rawRevLightsBitValue = dv.getUint16(o, true); o += 2
+        const rev_lights_pct = rawRevLightsPercent === REV_LIGHTS_PERCENT_UNAVAILABLE
+          ? undefined
+          : rawRevLightsPercent
+        const rev_lights_bit_value = rawRevLightsBitValue === REV_LIGHTS_BIT_VALUE_UNAVAILABLE
+          ? undefined
+          : rawRevLightsBitValue
         const throttle = dv.getFloat32(o, true); o += 4
         const brake = dv.getFloat32(o, true); o += 4
         const steering = dv.getFloat64(o, true); o += 8
@@ -52,7 +116,8 @@ export function decodeBinaryBatchRange(
         const engine_temp = dv.getUint16(o, true); o += 2
         const slm = dv.getUint8(o); o += 1
         visit({
-          type: 'telemetry', ts: '', session_time, speed_kph, rpm, gear, throttle, brake, steering, drs, slm,
+          type: 'telemetry', ts: '', session_time, speed_kph, rpm, gear, throttle, brake, steering,
+          drs, rev_lights_pct, rev_lights_bit_value, slm,
           tyre_temp_surface_rl: tsrl, tyre_temp_surface_rr: tsrr, tyre_temp_surface_fl: tsfl, tyre_temp_surface_fr: tsfr,
           tyre_temp_inner_rl: tirl, tyre_temp_inner_rr: tirr, tyre_temp_inner_fl: tifl, tyre_temp_inner_fr: tifr,
           brake_temp_rl: brl, brake_temp_rr: brr, brake_temp_fl: bfl, brake_temp_fr: bfr, engine_temp,

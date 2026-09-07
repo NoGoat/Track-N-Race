@@ -8,7 +8,7 @@ import { buildLapProgressMap, findSectorSplits, interpolateLapElapsed, type LapP
 import { formatChartDeltaTooltip } from '../../lib/chartDeltaTooltip'
 import { themeSeriesColor } from '../../lib/themeColors'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../../lib/playbackCursor'
-import type { AnalyzeLapData } from '../../types'
+import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../../types'
 
 export interface AnalyzeTimeChartProps {
   isDark: boolean
@@ -25,6 +25,7 @@ export interface AnalyzeTimeChartProps {
   deltaNegativeColor: string
   zoomEnabled: boolean
   realtimeCurrent: boolean
+  deltaData: AnalyzeDeltaData | null
   controlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
   /** Restrict storage and GPU series to these metrics (used by stacked charts). */
@@ -244,9 +245,8 @@ function syncSourceDistance(
   return rebuild || changed
 }
 
-interface DeltaSampleState {
-  revision: string
-  samples: Array<[number, number]>
+interface DeltaRenderState {
+  source: AnalyzeDeltaData | null
   renderedCount: number
   renderedRange: number
 }
@@ -254,7 +254,7 @@ interface DeltaSampleState {
 function rewriteDeltaRange(
   positive: AlignedDataBuffer,
   negative: AlignedDataBuffer,
-  samples: Array<[number, number]>,
+  samples: readonly AnalyzeDeltaSample[],
   count: number,
   range: number,
 ) {
@@ -263,8 +263,8 @@ function rewriteDeltaRange(
   let previous: [number, number] | null = null
   for (let index = 0; index < count; index++) {
     const sample = samples[index]
-    const delta = sample[1]
-    if (!Number.isFinite(delta)) {
+    const delta = sample.delta_seconds
+    if (!sample.valid || !Number.isFinite(delta)) {
       positiveValues.push(NaN)
       negativeValues.push(NaN)
       previous = null
@@ -277,117 +277,73 @@ function rewriteDeltaRange(
     const normalized = 0.5 + delta / (2 * range)
     positiveValues.push(delta >= 0 ? normalized : NaN)
     negativeValues.push(delta <= 0 ? normalized : NaN)
-    previous = sample
+    previous = [sample.lap_distance_m, delta]
   }
   positive.replaceChannel(0, positiveValues)
   negative.replaceChannel(0, negativeValues)
 }
 
-function syncDelta(
+function syncNativeDelta(
   positive: AlignedDataBuffer,
   negative: AlignedDataBuffer,
-  current: LapProgressMap | null,
-  comparison: LapProgressMap | null,
-  state: DeltaSampleState,
+  deltaData: AnalyzeDeltaData | null,
+  state: DeltaRenderState,
   currentMaxDistance: number,
-  sectorDelta: boolean,
-  sectorStarts: readonly number[],
 ): { range: number; changed: boolean } {
-  if (!current || !comparison) {
+  if (!deltaData) {
     const changed = positive.length > 0 || negative.length > 0
-    state.samples.length = 0
+    state.source = null
     state.renderedCount = 0
     state.renderedRange = 0
     positive.clear()
     negative.clear()
     return { range: 0.5, changed }
   }
-  const maxDistance = Math.min(current.maxDistance, comparison.maxDistance, currentMaxDistance)
-  if (maxDistance <= 0) return { range: state.renderedRange || 0.5, changed: false }
-  let lastSampleDistance = -Infinity
-  for (let index = state.samples.length - 1; index >= 0; index--) {
-    if (!Number.isFinite(state.samples[index][1])) continue
-    lastSampleDistance = state.samples[index][0]
-    break
-  }
-  let lastStoredX = state.samples.length ? state.samples[state.samples.length - 1][0] : -Infinity
-  for (const point of current.points) {
-    const distance = point.lap_distance_m
-    if (distance <= lastSampleDistance) continue
-    if (distance > maxDistance) break
-    const currentElapsed = interpolateLapElapsed(current, distance)
-    const comparisonElapsed = interpolateLapElapsed(comparison, distance)
-    let currentBase = 0
-    let comparisonBase = 0
-    if (sectorDelta) {
-      let sectorStart = 0
-      for (const boundary of sectorStarts) {
-        if (boundary > distance) break
-        sectorStart = boundary
-      }
-      if (sectorStart > 0) {
-        currentBase = interpolateLapElapsed(current, sectorStart)
-        comparisonBase = interpolateLapElapsed(comparison, sectorStart)
-      }
-    }
-    const delta = (currentElapsed - currentBase) - (comparisonElapsed - comparisonBase)
-    if (!Number.isFinite(delta)) continue
-    if (sectorDelta) {
-      for (const boundary of sectorStarts) {
-        if (boundary > lastStoredX && boundary <= distance) {
-          let previousSectorStart = 0
-          for (const priorBoundary of sectorStarts) {
-            if (priorBoundary >= boundary) break
-            previousSectorStart = priorBoundary
-          }
-          const boundaryCurrentElapsed = interpolateLapElapsed(current, boundary)
-          const boundaryComparisonElapsed = interpolateLapElapsed(comparison, boundary)
-          const previousCurrentBase = previousSectorStart > 0
-            ? interpolateLapElapsed(current, previousSectorStart)
-            : 0
-          const previousComparisonBase = previousSectorStart > 0
-            ? interpolateLapElapsed(comparison, previousSectorStart)
-            : 0
-          const completedSectorDelta =
-            (boundaryCurrentElapsed - previousCurrentBase) -
-            (boundaryComparisonElapsed - previousComparisonBase)
-          if (Number.isFinite(completedSectorDelta)) {
-            // Preserve both values at the boundary while the NaN between them
-            // breaks the WebGL strip: completed-sector delta, gap, new-sector 0.
-            state.samples.push([boundary, completedSectorDelta])
-          }
-          state.samples.push([boundary, NaN])
-          state.samples.push([boundary, 0])
-          lastStoredX = boundary
-        }
-      }
-    }
-    state.samples.push([distance, delta])
-    lastStoredX = distance
-  }
-  const maxAbs = state.samples.reduce((max, sample) =>
-    Number.isFinite(sample[1]) ? Math.max(max, Math.abs(sample[1])) : max, 0)
-  const range = Math.max(0.5, Math.ceil(maxAbs * 10) / 10)
-  const newRevision = state.renderedCount === 0 && (positive.length > 0 || negative.length > 0)
-  if (newRevision) {
+  const sourceChanged = state.source !== deltaData
+  if (sourceChanged) {
+    state.source = deltaData
+    state.renderedCount = 0
+    state.renderedRange = 0
     positive.clear()
     negative.clear()
-  } else if (state.renderedCount > 0 && state.renderedRange !== range) {
-    rewriteDeltaRange(positive, negative, state.samples, state.renderedCount, range)
   }
-  if (state.renderedCount >= state.samples.length) {
-    const changed = state.renderedRange !== range
+
+  let visibleCount = 0
+  while (visibleCount < deltaData.samples.length &&
+         deltaData.samples[visibleCount].lap_distance_m <= currentMaxDistance) visibleCount++
+  if (visibleCount < state.renderedCount) {
+    state.renderedCount = 0
+    positive.clear()
+    negative.clear()
+  }
+
+  const range = Math.max(0.5, Math.ceil(deltaData.maxAbsDeltaSeconds * 10) / 10)
+  let changed = sourceChanged
+  if (state.renderedCount > 0 && state.renderedRange !== range) {
+    rewriteDeltaRange(positive, negative, deltaData.samples, state.renderedCount, range)
+    changed = true
+  }
+  if (state.renderedCount >= visibleCount) {
+    changed = changed || state.renderedRange !== range
     state.renderedRange = range
     return { range, changed }
   }
+
   const positiveY = new Float64Array(1)
   const negativeY = new Float64Array(1)
   let previous: [number, number] | null = state.renderedCount > 0
-    ? state.samples[state.renderedCount - 1]
+    ? (() => {
+        const sample = deltaData.samples[state.renderedCount - 1]
+        return sample.valid
+          ? [sample.lap_distance_m, sample.delta_seconds] as [number, number]
+          : null
+      })()
     : null
-  for (let index = state.renderedCount; index < state.samples.length; index++) {
-    const [distance, delta] = state.samples[index]
-    if (!Number.isFinite(delta)) {
+  for (let index = state.renderedCount; index < visibleCount; index++) {
+    const sample = deltaData.samples[index]
+    const distance = sample.lap_distance_m
+    const delta = sample.delta_seconds
+    if (!sample.valid || !Number.isFinite(delta)) {
       positiveY[0] = negativeY[0] = NaN
       positive.append(distance, positiveY)
       negative.append(distance, negativeY)
@@ -407,7 +363,7 @@ function syncDelta(
     negative.append(distance, negativeY)
     previous = [distance, delta]
   }
-  state.renderedCount = state.samples.length
+  state.renderedCount = visibleCount
   state.renderedRange = range
   return { range, changed: true }
 }
@@ -442,6 +398,7 @@ export default function AnalyzeTimeChart({
   isDark, current, currentRevision, comparison, comparisonSelected, selected, primaryLabel, comparisonLabel,
   distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
   zoomEnabled, realtimeCurrent, controlsRef, onInspectMap,
+  deltaData,
   metricScope, showXAxis = true, interactionEnabled = true, stackedMode = false,
   tooltipEnabled = true, syncedTooltip = false, sectorBoundaries = false, sectorDelta = false,
 }: AnalyzeTimeChartProps) {
@@ -475,7 +432,7 @@ export default function AnalyzeTimeChart({
   const combinedSeriesVisibilityReadyRef = useRef(false)
   const combinedSeriesDesiredVisibilityRef = useRef(new Map<any, boolean>())
   const deltaRangeRef = useRef(0.5)
-  const deltaSamplesRef = useRef<DeltaSampleState>({ revision: '', samples: [], renderedCount: 0, renderedRange: 0 })
+  const deltaSamplesRef = useRef<DeltaRenderState>({ source: null, renderedCount: 0, renderedRange: 0 })
   const deltaColorsRef = useRef({ positive: themedDeltaPositive, negative: themedDeltaNegative })
   const selectedRef = useRef(selected)
   const isDarkRef = useRef(isDark)
@@ -1317,8 +1274,6 @@ export default function AnalyzeTimeChart({
       current: distanceMode ? buildLapProgressMap(current) : null,
       comparison: distanceMode ? buildLapProgressMap(comparison) : null,
     }
-    const useSectorDelta = sectorBoundaries && sectorDelta
-    const sectorStarts = useSectorDelta ? resolvedSectorSplits(current, comparison).map(split => split.distance) : []
     const syncData = () => {
       const currentCutoff = realtimeCurrent ? getPlaybackCursorTime() ?? -Infinity : Infinity
       const cursorRewound = realtimeCurrent &&
@@ -1331,7 +1286,7 @@ export default function AnalyzeTimeChart({
         // Force the current buffers to rebuild immediately so future samples
         // from the old cursor are never left visible during that gap.
         for (const source of activeSourcesRef.current) revisionsRef.current[`current:${source}`] = ''
-        deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
+        deltaSamplesRef.current = { source: null, renderedCount: 0, renderedRange: 0 }
       }
       let changed = false
       for (const role of ['current', 'comparison'] as Role[]) {
@@ -1381,10 +1336,6 @@ export default function AnalyzeTimeChart({
         }
       }
       if (distanceMode) {
-        const deltaRevision = `${currentRevision}:${comparison?.lapNum ?? 0}:${comparison?.startSessionTime ?? 0}:${useSectorDelta ? sectorStarts.join(',') : 'lap'}`
-        if (deltaSamplesRef.current.revision !== deltaRevision) {
-          deltaSamplesRef.current = { revision: deltaRevision, samples: [], renderedCount: 0, renderedRange: 0 }
-        }
         const currentProgress = progressByRole.current
         const cursorDistance = realtimeCurrent && currentProgress
           ? interpolateDistance(currentProgress, currentCutoff)
@@ -1392,18 +1343,16 @@ export default function AnalyzeTimeChart({
         const currentMaxDistance = realtimeCurrent
           ? Number.isFinite(cursorDistance) ? cursorDistance : 0
           : Infinity
-        const deltaResult = syncDelta(
+        const deltaResult = syncNativeDelta(
           buffers.deltaPositive, buffers.deltaNegative,
-          currentProgress, progressByRole.comparison,
+          deltaData,
           deltaSamplesRef.current,
           currentMaxDistance,
-          useSectorDelta,
-          sectorStarts,
         )
         deltaRangeRef.current = deltaResult.range
         if (deltaResult.changed) changed = true
       } else if (buffers.deltaPositive.length || buffers.deltaNegative.length) {
-        deltaSamplesRef.current = { revision: '', samples: [], renderedCount: 0, renderedRange: 0 }
+        deltaSamplesRef.current = { source: null, renderedCount: 0, renderedRange: 0 }
         buffers.deltaPositive.clear()
         buffers.deltaNegative.clear()
         changed = true
@@ -1437,7 +1386,7 @@ export default function AnalyzeTimeChart({
     return () => {
       if (syncPlaybackCursorRef.current === syncData) syncPlaybackCursorRef.current = null
     }
-  }, [comparison, current, currentRevision, distanceMode, realtimeCurrent, sectorBoundaries, sectorDelta, trackLengthM])
+  }, [comparison, current, currentRevision, deltaData, distanceMode, realtimeCurrent, trackLengthM])
 
   useEffect(() => {
     if (!tooltipEnabled) hide()

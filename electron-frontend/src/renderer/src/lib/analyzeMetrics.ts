@@ -150,7 +150,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
       : value?.view === 'charts',
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
-    sectorDelta: sectorBoundaries && value?.sectorDelta === true,
+    sectorDelta: value?.sectorDelta === true,
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),

@@ -18,7 +18,7 @@ import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { useTelemetryStore } from '../stores/telemetryStore'
-import type { AnalyzeLapData } from '../types'
+import type { AnalyzeDeltaData, AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
@@ -191,6 +191,25 @@ function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
   }
 }
 
+function parseAnalyzeDeltaData(payload: any): AnalyzeDeltaData | null {
+  if (!payload || !Number.isFinite(payload.currentLapNum) ||
+      !Number.isFinite(payload.comparisonLapNum) || !Array.isArray(payload.samples)) return null
+  return {
+    currentLapNum: payload.currentLapNum,
+    comparisonLapNum: payload.comparisonLapNum,
+    sectorDelta: payload.sectorDelta === true,
+    maxAbsDeltaSeconds: Number.isFinite(payload.maxAbsDeltaSeconds) ? payload.maxAbsDeltaSeconds : 0,
+    samples: payload.samples.flatMap((sample: any) =>
+      Number.isFinite(sample?.lap_distance_m) && Number.isFinite(sample?.delta_seconds)
+        ? [{
+            lap_distance_m: sample.lap_distance_m,
+            delta_seconds: sample.delta_seconds,
+            valid: sample.valid !== false,
+          }]
+        : []),
+  }
+}
+
 function AnalyzeColorPicker({
   label, color, onChange, triggerClassName, triggerStyle,
 }: {
@@ -328,7 +347,7 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
   currentLapNum, comparison, comparisonSelected, fixedMode, primaryOverride, distanceMode,
   analysisView, syncedTooltip, sectorBoundaries, sectorDelta,
-  graphControlsRef, stackedControlsRef, onInspectMap,
+  deltaData, graphControlsRef, stackedControlsRef, onInspectMap,
 }: {
   isDark: boolean
   selected: AnalyzeSeriesConfig[]
@@ -344,15 +363,19 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
+  deltaData: AnalyzeDeltaData | null
   graphControlsRef: MutableRefObject<AnalyzeChartControls | null>
   stackedControlsRef: MutableRefObject<AnalyzeChartControls | null>
   onInspectMap?: (elapsedSeconds: number) => void
 }) {
-  const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION)
+  const stackedPresence = useModalPresence(analysisView === 'charts', ANALYSIS_PRESENCE_DURATION, {
+    animateInitialEnter: false,
+  })
   const playbackCurrentLap = useTelemetryStore(s =>
     !fixedMode && currentLapNum !== null && s.speedRpmBlocks !== null
       ? s.playbackLapDataCache[currentLapNum] ?? null
       : null)
+  const playbackActive = useTelemetryStore(s => s.speedRpmBlocks !== null)
   const cachedMask = playbackCurrentLap?.rowTypeMask ?? 0
   const telemetry = useTelemetryStore(s =>
     fixedMode || (cachedMask & DATA_ROW.telemetry) !== 0 ? EMPTY_ROWS : s.analyzeLapTelemetry)
@@ -413,7 +436,12 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
     comparisonLabel: fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined,
     distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
     zoomEnabled: fixedMode && primaryOverride !== null,
-    realtimeCurrent: playbackCurrentLap !== null,
+    // The current playback lap remains cursor-clipped even during the brief
+    // rollover interval before its indexed payload reaches the store. Tying
+    // this to cache presence reveals the complete native delta curve whenever
+    // a minimized renderer wakes on a new lap.
+    realtimeCurrent: !fixedMode && playbackActive && currentLapNum !== null,
+    deltaData,
     syncedTooltip, sectorBoundaries, sectorDelta,
     onInspectMap,
   }
@@ -454,7 +482,9 @@ export default function AnalyzeScreen({
   const primaryView = !playbackFilename && config.view === 'map' ? 'graph' : config.view
   const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
   const chartAnalysisView = config.individualGraphs ? 'charts' : 'graph'
-  const mapPresence = useModalPresence(analysisView === 'map', ANALYSIS_PRESENCE_DURATION)
+  const mapPresence = useModalPresence(analysisView === 'map', ANALYSIS_PRESENCE_DURATION, {
+    animateInitialEnter: false,
+  })
   const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
   useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
@@ -475,6 +505,7 @@ export default function AnalyzeScreen({
   const [lapASource, setLapASource] = useState<AnalysisFileSource>('file1')
   const [lapBSource, setLapBSource] = useState<AnalysisFileSource>('file1')
   const [secondaryLapCache, setSecondaryLapCache] = useState<Record<number, AnalyzeLapData>>({})
+  const [deltaData, setDeltaData] = useState<AnalyzeDeltaData | null>(null)
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
@@ -642,6 +673,10 @@ export default function AnalyzeScreen({
   const distinctMapTrackIds = [...new Set(mapTrackIds)]
   const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
   const compatibleMapCircuit = distinctMapTrackIds.length <= 1
+  const mismatchedFiles = primaryTrackId !== null && secondaryFile !== null &&
+    secondaryFile.trackId !== null && primaryTrackId !== secondaryFile.trackId
+  const sectorBoundariesEnabled = !mismatchedFiles && config.sectorBoundaries
+  const sectorDeltaEnabled = sectorBoundariesEnabled && config.sectorDelta
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
     ? (lapASource === 'file1' || secondaryFile?.deltaAvailable === true) &&
       (lapBSource === 'file1' || secondaryFile?.deltaAvailable === true)
@@ -649,6 +684,41 @@ export default function AnalyzeScreen({
   const comparisonSelected = fixedLapMode.enabled
     ? fixedLapMode.lapA !== null && fixedLapMode.lapB !== null
     : compareLapNum !== null || secondaryLapNum !== null
+  const deltaCurrentLapNum = fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum
+  const deltaComparisonLapNum = fixedLapMode.enabled
+    ? fixedLapMode.lapB
+    : secondaryLapNum ?? compareLapNum
+  const deltaCurrentSource: AnalysisFileSource = fixedLapMode.enabled ? lapASource : 'file1'
+  const deltaComparisonSource: AnalysisFileSource = fixedLapMode.enabled
+    ? lapBSource
+    : secondaryLapNum !== null ? 'file2' : 'file1'
+
+  useEffect(() => {
+    let cancelled = false
+    if (!playbackFilename || analysisView === 'map' || !selectedDistanceMode ||
+        deltaCurrentLapNum === null || deltaComparisonLapNum === null) {
+      setDeltaData(null)
+      return () => { cancelled = true }
+    }
+    setDeltaData(null)
+    void window.analysisBridge.compareLaps(
+      deltaCurrentLapNum,
+      deltaCurrentSource,
+      deltaComparisonLapNum,
+      deltaComparisonSource,
+      sectorDeltaEnabled,
+    ).then(payload => {
+      if (!cancelled) setDeltaData(parseAnalyzeDeltaData(payload))
+    }).catch(() => {
+      if (!cancelled) setDeltaData(null)
+    })
+    return () => { cancelled = true }
+  }, [
+    analysisView,
+    deltaComparisonLapNum, deltaComparisonSource, deltaCurrentLapNum,
+    deltaCurrentSource, playbackFilename, secondaryFile,
+    sectorDeltaEnabled, selectedDistanceMode,
+  ])
 
   const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
     const times: Record<number, number> = {}
@@ -859,11 +929,12 @@ export default function AnalyzeScreen({
                     value={ANALYSIS_VIEW_OPTIONS.find(option => option.value === primaryView) ?? ANALYSIS_VIEW_OPTIONS[0]}
                     options={ANALYSIS_VIEW_OPTIONS}
                     onChange={option => {
-                      if (!option || (option.value !== 'graph' && option.value !== 'map')) return
+                      if (!option || (option.value !== 'graph' && option.value !== 'map') ||
+                          (option.value === 'map' && mismatchedFiles)) return
                       setMapFocus(null)
                       save({ ...config, view: option.value })
                     }}
-                    isOptionDisabled={option => option.value === 'map' && !playbackFilename}
+                    isOptionDisabled={option => option.value === 'map' && (!playbackFilename || mismatchedFiles)}
                     styles={selectStyles}
                     components={selectComponents}
                     isSearchable={false}
@@ -883,15 +954,12 @@ export default function AnalyzeScreen({
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.syncedTooltip ? 'analyze-toggle-button--active' : ''}`}
                 ><SyncedTooltipIcon size={15} /></button>
                 <button
-                  type="button" aria-label="Sector Boundaries" aria-pressed={config.sectorBoundaries} title="Sector Boundaries"
-                  onClick={() => {
-                    const sectorBoundaries = !config.sectorBoundaries
-                    save({ ...config, sectorBoundaries, sectorDelta: sectorBoundaries && config.sectorDelta })
-                  }}
+                  type="button" aria-label="Sector Boundaries" aria-pressed={config.sectorBoundaries} title="Sector Boundaries" disabled={mismatchedFiles}
+                  onClick={() => save({ ...config, sectorBoundaries: !config.sectorBoundaries })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorBoundaries ? 'analyze-toggle-button--active' : ''}`}
                 ><Columns3 size={15} /></button>
                 <button
-                  type="button" aria-label="Sector Delta" aria-pressed={config.sectorDelta} title="Sector Delta" disabled={!config.sectorBoundaries}
+                  type="button" aria-label="Sector Delta" aria-pressed={config.sectorDelta} title="Sector Delta" disabled={mismatchedFiles || !config.sectorBoundaries}
                   onClick={() => save({ ...config, sectorDelta: !config.sectorDelta })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorDelta ? 'analyze-toggle-button--active' : ''}`}
                 ><ChartNoAxesCombined size={15} /></button>
@@ -1125,11 +1193,12 @@ export default function AnalyzeScreen({
               distanceMode={selectedDistanceMode}
               analysisView={chartAnalysisView}
               syncedTooltip={config.syncedTooltip}
-              sectorBoundaries={config.sectorBoundaries}
-              sectorDelta={config.sectorDelta}
+              sectorBoundaries={sectorBoundariesEnabled}
+              sectorDelta={sectorDeltaEnabled}
+              deltaData={deltaData}
               graphControlsRef={graphControlsRef}
               stackedControlsRef={stackedControlsRef}
-              onInspectMap={playbackFilename ? inspectMapAt : undefined}
+              onInspectMap={playbackFilename && !mismatchedFiles ? inspectMapAt : undefined}
             />
           </div>
           {mapPresence.mounted && <div

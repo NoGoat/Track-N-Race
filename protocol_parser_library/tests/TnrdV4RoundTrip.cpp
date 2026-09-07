@@ -45,7 +45,7 @@ int main() {
 
     const std::vector<V4SourceRow> rows = {
         {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0,"lap_distance_m":0})", 1},
-        {R"({"type":"telemetry","session_time":1.1,"speed_kph":100,"throttle":0.5,"brake":0,"steer":0,"gear":3,"rpm":9000,"drs":0,"rev_lights_pct":50})", 1.1f},
+        {R"({"type":"telemetry","session_time":1.1,"speed_kph":100,"throttle":0.5,"brake":0,"steer":0,"gear":3,"rpm":9000,"drs":0,"rev_lights_pct":50,"rev_lights_bit_value":255})", 1.1f},
         {R"({"type":"positions","ts":"2026-08-11T00:00:01.150Z","player_idx":0,"cars":[{"idx":0,"x":10,"z":20}]})", 1.15f},
         {R"({"type":"status","session_time":1.2,"fuel_kg":50,"ers_pct":80,"tyre_compound":16,"visual_compound":16})", 1.2f},
         {R"({"type":"race_event","session_time":2,"code":"SCAR","event_type":3})" "\n", 2.0f},
@@ -56,7 +56,7 @@ int main() {
         // Lap packets are menu-rate snapshots, so the first row of a new lap
         // commonly arrives one frame after the true boundary.
         {R"({"type":"lap","session_time":91.016,"lap_num":2,"current_lap_ms":16,"last_lap_ms":90000,"lap_distance_m":0})", 91.016f},
-        {R"({"type":"telemetry","session_time":91.1,"speed_kph":110,"throttle":0.6,"brake":0,"steer":0,"gear":4,"rpm":9500,"drs":1,"rev_lights_pct":60})", 91.1f},
+        {R"({"type":"telemetry","session_time":91.1,"speed_kph":110,"throttle":0.6,"brake":0,"steer":0,"gear":4,"rpm":9500,"drs":1,"rev_lights_pct":60,"rev_lights_bit_value":511})", 91.1f},
         {R"({"type":"positions","ts":"2026-08-11T00:01:31.150Z","player_idx":0,"cars":[{"idx":0,"x":30,"z":40}]})", 91.15f},
     };
 
@@ -232,6 +232,20 @@ int main() {
         91.15f, 91.0f, false, tnrp::detail::v4TypeBit(1), 100.0f, false);
     assert(packedWindow.binaryStore && cachedPackedWindow.binaryStore);
     assert(*packedWindow.binaryStore == *cachedPackedWindow.binaryStore);
+    size_t legacyTelemetryRows = 0;
+    assert(tnrp::bin::forEachPackedRecord(
+        packedWindow.binaryStore->data() + packedWindow.binaryBegin,
+        packedWindow.binaryEnd - packedWindow.binaryBegin,
+        [&](uint8_t rowType, const uint8_t* record, size_t recordLen) {
+            assert(rowType == 1 && recordLen == 49);
+            TelemetryRow legacyTelemetry;
+            tnrp::bin::BinReader legacyReader{record + 1, record + recordLen};
+            assert(tnrp::bin::decodeTelemetry(legacyReader, legacyTelemetry));
+            assert(!legacyTelemetry.rev_lights_pct);
+            assert(!legacyTelemetry.rev_lights_bit_value);
+            ++legacyTelemetryRows;
+        }));
+    assert(legacyTelemetryRows == 2);
     const fs::path xlsxPath = longDir /
         "export_with_a_deliberately_long_filename_for_extended_windows_path_testing.xlsx";
     assert(reader.exportXlsx(loadedHeader, xlsxPath.string(), &error));

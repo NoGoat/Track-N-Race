@@ -2,6 +2,13 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
+import {
+  configurePairService,
+  pairEngineConfig,
+  receivePairServiceState,
+} from './pairHostAdapter'
+
+declare const __ENABLE_PAIR_DIAGNOSTICS__: boolean
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
@@ -102,6 +109,9 @@ function sendResumeCache(): void {
 
 let engine: any = null
 let nextDataRequirementsRequestId = 0
+let rendererStreamMask = 0xFFFFFFFF
+let rendererHistoryMask = 0
+let rendererHistoryWindow = 0
 let unsubLogging: Array<() => void> = []
 
 // ── Playback (driven by the C++ engine's player, see tnrp::Engine) ──────────
@@ -355,8 +365,16 @@ export function startBridge(): string | null {
       strategyMinimumStops: 1,
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
-      binaryPlayback: true
+      binaryPlayback: true,
+      ...pairEngineConfig(),
     }
+
+    const pairDiagnosticCallback = __ENABLE_PAIR_DIAGNOSTICS__
+      ? (message: string): void => {
+          // initializeDiagnostics() captures this in the per-launch main.log.
+          console.info('[pair-native]', message)
+        }
+      : undefined
 
     engine = new addon.Engine(config, (batch: string) => {
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
@@ -364,6 +382,12 @@ export function startBridge(): string | null {
       // except one-shot playback control rows, which must never be dropped.
       const forwardWhileHidden =
         batch.includes('"type":"playback_lap_blocks"') ||
+        // Indexed Analysis lap payloads are one-shot request responses. Dropping
+        // one during the minimize/restore visibility race permanently leaves
+        // that lap marked as requested in the renderer, so comparisons and
+        // sector metadata never recover. They are immutable and safe to send
+        // while hidden, just like the load metadata above.
+        batch.includes('"type":"playback_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
       if (seekForwardPhase === 'waiting-flush') {
@@ -429,7 +453,9 @@ export function startBridge(): string | null {
         broadcast({ type: 'playback_seek_flush_failed', requestId })
         if (requestId === seekForwardRequestId) resetSeekForwarding()
       }
-    })
+    }, (publicJson: string, persistedJson: string) => {
+      receivePairServiceState(publicJson, persistedJson)
+    }, pairDiagnosticCallback)
 
     if (!engine.startUdp()) {
       const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
@@ -437,6 +463,7 @@ export function startBridge(): string | null {
       engine = null
       return error
     }
+    configurePairService(engine)
     pushLogging()
     
     // Listen for logging changes
@@ -560,9 +587,16 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
 }
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
                                           windowSeconds = 0): void {
+  rendererStreamMask = streamMask >>> 0
+  rendererHistoryMask = historyMask >>> 0
+  rendererHistoryWindow = Math.max(-1, windowSeconds)
+  applyAggregateDataRequirements()
+}
+
+function applyAggregateDataRequirements(): void {
   const requestId = ++nextDataRequirementsRequestId
-  engine?.setDataRequirements(streamMask >>> 0, historyMask >>> 0,
-    Math.max(-1, windowSeconds), requestId)
+  engine?.setDataRequirements(rendererStreamMask,
+    rendererHistoryMask, rendererHistoryWindow, requestId)
 }
 export function playerClose(): void {
   console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)
@@ -587,6 +621,29 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
 export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): unknown | null {
   if (!engine) return null
   const json = engine.analysisGetLapData(lapNum, rowTypeMask >>> 0)
+  if (!json) return null
+  try {
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+export async function analysisCompareLaps(
+  currentLapNum: number,
+  currentSource: 'file1' | 'file2',
+  comparisonLapNum: number,
+  comparisonSource: 'file1' | 'file2',
+  sectorDelta: boolean,
+): Promise<unknown | null> {
+  if (!engine) return null
+  const json = await engine.analysisCompareLaps(
+    currentLapNum,
+    currentSource === 'file2',
+    comparisonLapNum,
+    comparisonSource === 'file2',
+    sectorDelta,
+  )
   if (!json) return null
   try {
     return JSON.parse(json)

@@ -1,25 +1,27 @@
 # Track N Race — Architecture & Design
 
-_Last updated: 2026-07-16 (branch `feature/opengl-charts`)._
+_Last updated: 2026-08-06._
 
-Track N Race is an F1 24/25/26 telemetry suite consisting of four components in
+Track N Race is an F1 24/25/26 telemetry suite consisting of five components in
 one repository:
 
 | Component | Path | Tech | Role |
 |---|---|---|---|
-| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, XLSX export, label/colour catalogs |
+| Telemetry engine (libtnrp) | `protocol_parser_library/` | C++20, glaze, Zstandard, zlib, libxlsxwriter | UDP receive, packet parsing, `.tnrd` record/playback, paired-display server, XLSX export, label/colour catalogs |
 | Node addon | `electron-frontend/node_addon/` | N-API (node-addon-api, cmake-js) | In-process bridge exposing libtnrp to Electron's main process |
 | Electron dashboard | `electron-frontend/src/` | Electron 42, React 18, Zustand, TimeChart (WebGL), Tailwind | Primary live dashboard + session player UI |
 | Qt frontend | `qt_frontend/` | Qt 6 (Qt 5 fallback), QCustomPlot (OpenGL) | Standalone lightweight desktop app (recording + full dashboard UI) |
+| Android frontend | `android_frontend/` | Kotlin, Jetpack Compose Material 3, JNI | Physical-device steering-wheel dashboard with native TNRD recording and desktop pairing |
 
-Both apps have feature parity and read/write the same `.tnrd` files.
+The two desktop apps have feature parity and read/write the same `.tnrd` files.
+The Android host provides a focused live dashboard and recording subset.
 
 ## 1. The shared engine (libtnrp)
 
-Everything protocol- or file-format-shaped lives in the library; the two apps
-are hosts. The design rule: **one engine, two hosts** — a feature that touches
-parsing, recording or playback is implemented once in C++ and consumed by both
-UIs.
+Everything protocol- or file-format-shaped lives in the library; the frontends
+are hosts. The design rule is **one engine, multiple hosts** — a feature that
+touches parsing, recording or playback is implemented once in C++ and consumed
+by both desktop UIs, while focused hosts can consume the same row stream.
 
 ### 1.1 Components
 
@@ -32,13 +34,16 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   │                 duplicate rejection + dispatch to protocols/f1_24|25|26.cpp
   ├── TnrdWriter    .tnrd V5 recording (own disk thread)
   ├── TnrdReader    V1–V5 playback (index, per-lap blocks, binary stores)
-  └── Sink*         the single seam to the host (onRow/onBinary/onSeekFlush)
+  ├── PairServer    discovery + WebSocket/auth/subscriptions/latest-state cache
+  └── Sink*         host seam (onRow/onBinary/onSeekFlush/onPairState)
 ```
 
 - **`Sink` (Sink.h)** — the engine pushes every parsed row through this
   interface. `onRow(json)` delivers pre-serialised JSON strings (cold + control
   rows); `onBinary(bytes)` delivers packed hot-row batches; `onSeekFlush(...)`
-  delivers a playback seek backfill (binary-playback mode only). Calls arrive
+  delivers a playback seek backfill (binary-playback mode only), and
+  `onPairState(public, persisted)` exposes UI-safe state plus an opaque document
+  for host persistence. Calls arrive
   on the engine's UDP or playback thread — implementations must be
   thread-safe. Both optional methods default to no-ops so JSON-only sinks stay
   trivial.
@@ -47,7 +52,8 @@ tnrp::Engine  — orchestrator; the only class hosts construct directly
   plus two host-shape flags:
   `binaryPlayback` (Electron: playback hot rows go out via `onBinary`, seeks
   via `onSeekFlush`) and `hotRowsAsJson` (emit live hot rows as JSON instead of
-  binary; both apps currently leave this **off** and take the binary channel).
+  binary; both apps currently leave this **off** and take the binary channel),
+  plus paired-server enablement, identity label, port and opaque saved state.
 - **`AnyRow` (AnyRow.h)** — typed decode seam for in-process consumers: one
   call turns a raw JSONL row into a `std::variant` of the typed structs from
   `rows.h`/`control_rows.h` (glaze-parsed after a cheap type-tag sniff). The Qt
@@ -127,7 +133,8 @@ Formula metadata (older recordings or pre-session live state) defaults to F1 26.
 
 `Parser::statusRow()` (live) and `Parser::statusRowForFormat()` (playback —
 labels a loaded clip with *its* recorded format) both emit the full
-`protocol_status` row: detected/active format, override, capabilities
+`protocol_status` row: detected/active/presentation format, raw Session
+`m_formula` (when known), override, capabilities
 (gameYear, hasBlisters, hasLiveryColors, hasLapPositions — 2025+), labels,
 cardColors, aero_mode.
 
@@ -181,6 +188,14 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
   lap-distance/timing points used by Electron Analyze. The initial load scan
   also interpolates each lap's S1/S2 end distances from those timing points;
   V5 reads only its sparse Lap Data chunks for this metadata.
+
+Analysis lap delta is also library-owned. `LapDelta` cleans the recorded lap
+progress streams, interpolates both laps at common physical distances, applies
+optional per-sector baselines, and returns a complete immutable delta curve.
+Electron sends only the selected lap numbers/file sources through the addon;
+the renderer clips the native curve to the playback cursor and performs WebGL
+presentation work. Consequently delta progress is independent of Chromium's
+hidden/minimized renderer scheduling.
 
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:
@@ -259,10 +274,13 @@ overlay flows.
   codec from its native bytes, then uses and validates the JSON header to
   distinguish V2 from V3. Normal recording writes V5. Explicit
   `setLoggingGzip()` retains deprecated V1 writing for compatibility. Every
-  subsequent line is one typed row with `session_time`; other telemetry row
-  schemas remain compatible. V4/V5 use an uncompressed indexed control plane and
-  independently checksummed `(lap,rowType,segment)` Zstandard JSONL chunks. Electron Analyze distance alignment and delta are
-  enabled for V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
+  subsequent line is one typed row with `session_time`. Telemetry rows expose the
+  game's exact `rev_lights_pct` and 15-bit `rev_lights_bit_value` fields for live
+  data and V5 recordings; V1-V4 playback deliberately marks them unavailable so
+  clients do not synthesize rev lights from RPM. V4/V5 use an uncompressed indexed
+  control plane and independently checksummed `(lap,rowType,segment)` Zstandard
+  JSONL chunks. Electron Analyze distance alignment and delta are enabled for
+  V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
   4 lap, 5 session, 6 race_event, 7 timing, 8 participants, 9 all_status,
@@ -591,7 +609,43 @@ only the panels. While in playback, live engine rows are dropped at
   the deploy tool bundles their plugins.
 - Fonts (Noto Sans), track maps, and licences ship as Qt resources.
 
-## 5. Build & packaging
+## 5. Android frontend (`android_frontend/`)
+
+The Android activity is a native Kotlin/Jetpack Compose Material 3 host. The
+existing Kotlin discovery, WebSocket pairing, scoped-storage, QR and JNI
+implementations remain native. Direct mode links `protocol_parser_library`,
+configures `tnrp::Engine` with `hotRowsAsJson=false`, and binds UDP to
+`0.0.0.0:20777`.
+
+Hot rows have no UI-thread queue or platform bridge. JNI and paired WebSocket
+callbacks decode their existing `BinaryRows.h` batches on the producing worker
+thread, retain only the latest immutable telemetry sample in an atomic slot,
+and never mutate Compose state. The visible dashboard samples that slot on the
+Compose display frame clock; equal values do not invalidate composition. Direct
+JNI delivery filters unused motion, positions and motion_ex records in C++.
+Cold rows are parsed off-thread and posted to Compose snapshot state on the main
+thread at their native low cadence. This separates ingest rate from display
+refresh and gives back-pressure constant memory.
+
+The Compose frontend provides the responsive steering-wheel dashboard, tyre
+allocation, recording settings, direct/paired source selection, desktop
+discovery, QR/manual-code pairing, and open-source notices. Material You dynamic
+color is used on Android 12+ with light/dark Material 3 fallback schemes.
+
+The JNI bridge also exposes `Engine::setLogging`, so the full-page Settings
+screen can control the shared asynchronous TNRD V5 writer without
+reimplementing recording in Java. Recording is disabled by default; opt-in
+intent is persisted and sessions are staged under the app's external Documents
+directory (`Track N Race/`), which the Android host creates and verifies before
+enabling the native writer. An optional Storage Access Framework tree URI is
+persisted when the user chooses another folder; after libtnrp finalizes a file,
+a serial background worker moves it to that tree. Native `recording_error` rows
+are surfaced in the UI.
+`build-and-run.ps1` builds the Kotlin/Compose UI and NDK library with Gradle,
+assembles the debug APK, installs it through ADB, and launches the activity on
+a physical device.
+
+## 6. Build & packaging
 
 - **Electron**: `npm run dev/build` → electron-vite; `pre*` hooks run
   `scripts/gen-icon.mjs` and `scripts/build-bridge.mjs` (cmake-js build of the
@@ -606,6 +660,9 @@ only the panels. While in playback, live engine rows are dropped at
 - **Native recorder**: standalone CMake project; Qt 6 preferred (enables
   QCustomPlot OpenGL), Qt 5 fallback (software rendering); Release + LTO/IPO
   by default, optional `-march=native`; `TNRP_USE_QT=ON`.
+- **Android**: Kotlin/Jetpack Compose Material 3 Gradle/AGP application with an
+  NDK CMake build; arm64 debug APK installed and launched on a physical device by
+  `android_frontend/build-and-run.ps1`.
 - **Library dependencies** are FetchContent-pinned (glaze v7.8.3, zlib v1.3.2,
   Zstandard v1.5.7, libxlsxwriter v1.2.4) with parent-project reuse guards (`if(NOT TARGET …)`);
   a shadowed `FindZLIB.cmake` points libxlsxwriter at the fetched zlib.
@@ -614,11 +671,11 @@ only the panels. While in playback, live engine rows are dropped at
   `npm run build` / `dist` / `dist:win:portable`, with an optional
   version-bump commit. `build-release-candidate.ps1` is the RC variant.
 
-## 6. Known issues & roadmap (prioritised)
+## 7. Known issues & roadmap (prioritised)
 
 ### ~~P1 — Consolidate the duplicated playback engine~~ (done)
 `sessionPlayer.ts` is deleted; the Electron app drives the addon's `player*`
-API with `Config::binaryPlayback`. One engine, two hosts — see §1.6.
+API with `Config::binaryPlayback`. One engine, multiple hosts — see §1.6.
 
 ### ~~P1 — uPlot → TimeChart (WebGL) chart migration~~ (done on this branch)
 All chart leaves render through `TimeChartView`; the old chart dependencies,

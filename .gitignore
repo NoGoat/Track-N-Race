@@ -23,7 +23,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 .python-version
 
-# Java
+# Java / Kotlin / Android
 *.class
 *.jar
 *.war
@@ -39,6 +39,11 @@ hs_err_pid*
 *.iws
 .idea/
 .gradle/
+.kotlin/
+.cxx/
+.externalNativeBuild/
+captures/
+local.properties
 build/
 out/
 
