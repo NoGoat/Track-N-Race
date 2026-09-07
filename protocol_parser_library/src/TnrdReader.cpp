@@ -1489,6 +1489,40 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
     return writeJson(msg);
 }
 
+bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const {
+    const auto it = lapBlocks_.find(lapNum);
+    if (it == lapBlocks_.end()) return false;
+    const LapBlock& block = it->second;
+
+    AnalysisLapProgress result;
+    result.lapNum = block.lapNum;
+    result.startSessionTime = block.startSessionTime;
+    result.endSessionTime = block.endSessionTime;
+    result.sector1EndDistanceM = block.sector1EndDistanceM;
+    result.sector2EndDistanceM = block.sector2EndDistanceM;
+
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap(
+                static_cast<uint32_t>(lapNum), detail::v4TypeBit(4), rows, &error)) return false;
+        for (const auto& row : rows) {
+            if (row.rowType != 4 || row.sessionTime < block.startSessionTime ||
+                row.sessionTime > block.endSessionTime) continue;
+            LapScanFields lap{};
+            (void)glz::read<kPartialRead>(lap, row.json);
+            result.points.push_back({row.sessionTime, lap.current_lap_ms,
+                lap.lap_distance_m, lap.sector, lap.s1_ms, lap.s2_ms});
+        }
+    } else if (loadedFormat_ == TnrdFormat::ZstdV3) {
+        result.points = block.lapProgress;
+    }
+
+    if (result.points.empty()) return false;
+    out = std::move(result);
+    return true;
+}
+
 void TnrdReader::prepareV4PlaybackLap() {
     const float inf=std::numeric_limits<float>::infinity();
     for(auto& lane:v4PlaybackLanes_){lane.chunks.clear();lane.nextChunk=0;lane.nextPrefetched=false;lane.rows.clear();lane.rowPos=0;lane.maxDecodedTime=-inf;lane.safeThrough=inf;}

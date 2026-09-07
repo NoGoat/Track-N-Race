@@ -2,6 +2,7 @@
 #include <tnrp/Engine.h>
 #include <tnrp/Labels.h>
 #include <tnrp/CardColors.h>
+#include <tnrp/LapDelta.h>
 #include <tnrp/TnrdReader.h>
 #include <tnrp/XlsxExport.h>
 #include <algorithm>
@@ -223,6 +224,67 @@ private:
     Napi::Promise::Deferred deferred_;
 };
 
+// Computes a complete lap-to-lap delta off the Electron main thread. The two
+// laps may come from the active player or the independent secondary Analysis
+// reader; the renderer sends identities only and never performs interpolation.
+class AnalysisDeltaWorker : public Napi::AsyncWorker {
+public:
+    AnalysisDeltaWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
+                        std::shared_ptr<AnalysisReaderState> secondary,
+                        int currentLap, bool currentSecondary,
+                        int comparisonLap, bool comparisonSecondary,
+                        bool sectorDelta)
+        : Napi::AsyncWorker(env), engine_(std::move(engine)),
+          secondary_(std::move(secondary)), currentLap_(currentLap),
+          currentSecondary_(currentSecondary), comparisonLap_(comparisonLap),
+          comparisonSecondary_(comparisonSecondary), sectorDelta_(sectorDelta),
+          deferred_(Napi::Promise::Deferred::New(env)) {}
+
+    void Execute() override {
+        tnrp::AnalysisLapProgress current;
+        tnrp::AnalysisLapProgress comparison;
+        bool haveCurrent = false;
+        bool haveComparison = false;
+
+        if (currentSecondary_ && comparisonSecondary_) {
+            std::lock_guard<std::mutex> lock(secondary_->mutex);
+            haveCurrent = secondary_->reader.getAnalysisLapProgress(currentLap_, current);
+            haveComparison = secondary_->reader.getAnalysisLapProgress(comparisonLap_, comparison);
+        } else {
+            if (currentSecondary_) {
+                std::lock_guard<std::mutex> lock(secondary_->mutex);
+                haveCurrent = secondary_->reader.getAnalysisLapProgress(currentLap_, current);
+            } else if (engine_) {
+                haveCurrent = engine_->playerGetAnalysisLapProgress(currentLap_, current);
+            }
+            if (comparisonSecondary_) {
+                std::lock_guard<std::mutex> lock(secondary_->mutex);
+                haveComparison = secondary_->reader.getAnalysisLapProgress(comparisonLap_, comparison);
+            } else if (engine_) {
+                haveComparison = engine_->playerGetAnalysisLapProgress(comparisonLap_, comparison);
+            }
+        }
+
+        if (!haveCurrent || !haveComparison) return;
+        json_ = tnrp::writeJson(tnrp::calculateLapDelta(current, comparison, sectorDelta_));
+    }
+
+    void OnOK() override { deferred_.Resolve(Napi::String::New(Env(), json_)); }
+    void OnError(const Napi::Error& error) override { deferred_.Reject(error.Value()); }
+    Napi::Promise GetPromise() { return deferred_.Promise(); }
+
+private:
+    std::shared_ptr<tnrp::Engine> engine_;
+    std::shared_ptr<AnalysisReaderState> secondary_;
+    int currentLap_;
+    bool currentSecondary_;
+    int comparisonLap_;
+    bool comparisonSecondary_;
+    bool sectorDelta_;
+    std::string json_;
+    Napi::Promise::Deferred deferred_;
+};
+
 class TNRPAddon : public Napi::ObjectWrap<TNRPAddon>, public tnrp::Sink {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -248,6 +310,7 @@ public:
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
             InstanceMethod("analysisLoadFile", &TNRPAddon::AnalysisLoadFile),
             InstanceMethod("analysisGetLapData", &TNRPAddon::AnalysisGetLapData),
+            InstanceMethod("analysisCompareLaps", &TNRPAddon::AnalysisCompareLaps),
             InstanceMethod("analysisCloseFile", &TNRPAddon::AnalysisCloseFile),
             InstanceMethod("playerExportXlsx", &TNRPAddon::PlayerExportXlsx),
             InstanceMethod("pairStart", &TNRPAddon::PairStart),
@@ -841,6 +904,26 @@ private:
                 info[0].As<Napi::Number>().Int32Value(),
                 info.Length() >= 2 && info[1].IsNumber()
                     ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu));
+    }
+
+    Napi::Value AnalysisCompareLaps(const Napi::CallbackInfo& info) {
+        auto resolveEmpty = [&info]() {
+            auto deferred = Napi::Promise::Deferred::New(info.Env());
+            deferred.Resolve(Napi::String::New(info.Env(), ""));
+            return deferred.Promise();
+        };
+        if (info.Length() < 5 || !info[0].IsNumber() || !info[1].IsBoolean() ||
+            !info[2].IsNumber() || !info[3].IsBoolean() || !info[4].IsBoolean() ||
+            !engine || analysisReader_->busy.load()) return resolveEmpty();
+
+        auto* worker = new AnalysisDeltaWorker(
+            info.Env(), engine, analysisReader_,
+            info[0].As<Napi::Number>().Int32Value(), info[1].As<Napi::Boolean>().Value(),
+            info[2].As<Napi::Number>().Int32Value(), info[3].As<Napi::Boolean>().Value(),
+            info[4].As<Napi::Boolean>().Value());
+        Napi::Promise promise = worker->GetPromise();
+        worker->Queue();
+        return promise;
     }
 
     Napi::Value AnalysisCloseFile(const Napi::CallbackInfo& info) {

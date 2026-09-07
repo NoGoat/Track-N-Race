@@ -166,6 +166,16 @@ const analysisBridge = {
     ipcRenderer.invoke('analysis:load-file', filePath),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF): Promise<unknown | null> =>
     ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0),
+  compareLaps: (
+    currentLapNum: number,
+    currentSource: 'file1' | 'file2',
+    comparisonLapNum: number,
+    comparisonSource: 'file1' | 'file2',
+    sectorDelta: boolean,
+  ): Promise<unknown | null> => ipcRenderer.invoke(
+    'analysis:compare-laps', currentLapNum, currentSource,
+    comparisonLapNum, comparisonSource, sectorDelta,
+  ),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
 }
 

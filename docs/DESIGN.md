@@ -189,6 +189,14 @@ With `setBinaryPlayback(true)` (the Electron path) the index pass additionally:
   also interpolates each lap's S1/S2 end distances from those timing points;
   V5 reads only its sparse Lap Data chunks for this metadata.
 
+Analysis lap delta is also library-owned. `LapDelta` cleans the recorded lap
+progress streams, interpolates both laps at common physical distances, applies
+optional per-sector baselines, and returns a complete immutable delta curve.
+Electron sends only the selected lap numbers/file sources through the addon;
+the renderer clips the native curve to the playback cursor and performs WebGL
+presentation work. Consequently delta progress is independent of Chromium's
+hidden/minimized renderer scheduling.
+
 `Engine`'s playback thread ticks every 16 ms (step capped at 0.1 s), advancing
 an absolute session_time cursor scaled by speed:
 

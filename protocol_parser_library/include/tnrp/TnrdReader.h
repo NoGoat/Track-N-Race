@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "tnrp/control_rows.h"
+#include "tnrp/LapDelta.h"
 #include "tnrp/Strategy.h"
 #include "tnrp/TnrdFormat.h"
 
@@ -143,6 +144,7 @@ public:
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
     std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu) const;
+    bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const;
 
     // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
     // Walks the whole index in file order and writes one XLSX sheet per row

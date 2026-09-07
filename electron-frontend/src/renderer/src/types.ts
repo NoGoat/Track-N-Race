@@ -68,6 +68,20 @@ export interface LapProgressPoint {
   s2_ms?: number
 }
 
+export interface AnalyzeDeltaSample {
+  lap_distance_m: number
+  delta_seconds: number
+  valid: boolean
+}
+
+export interface AnalyzeDeltaData {
+  currentLapNum: number
+  comparisonLapNum: number
+  sectorDelta: boolean
+  maxAbsDeltaSeconds: number
+  samples: AnalyzeDeltaSample[]
+}
+
 export interface StatusRow {
   type: 'status'
   ts: string
@@ -569,6 +583,13 @@ declare global {
     analysisBridge: {
       loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
       getLapData: (lapNum: number, rowTypeMask?: number) => Promise<unknown | null>
+      compareLaps: (
+        currentLapNum: number,
+        currentSource: 'file1' | 'file2',
+        comparisonLapNum: number,
+        comparisonSource: 'file1' | 'file2',
+        sectorDelta: boolean,
+      ) => Promise<unknown | null>
       closeFile: () => void
     }
 

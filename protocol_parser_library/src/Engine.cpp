@@ -816,6 +816,11 @@ void Engine::playerGetLapData(int lapNum, uint32_t rowTypeMask) {
     if (!msg.empty()) emitRow(msg);
 }
 
+bool Engine::playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return inPlayback_.load() && reader_.getAnalysisLapProgress(lapNum, out);
+}
+
 void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     float lapStart = 0.0f;
     int lapNum = 0;

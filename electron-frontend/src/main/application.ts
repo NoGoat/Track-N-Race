@@ -39,6 +39,7 @@ import {
   playerClose,
   analysisLoadFile,
   analysisGetLapData,
+  analysisCompareLaps,
   analysisCloseFile,
   setOnPlaybackState,
   getActiveFilePath,
@@ -254,6 +255,14 @@ ipcMain.on('player:close', () => {
 })
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
 ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number, rowTypeMask?: number) => analysisGetLapData(lapNum, rowTypeMask))
+ipcMain.handle('analysis:compare-laps', (
+  _event,
+  currentLapNum: number,
+  currentSource: 'file1' | 'file2',
+  comparisonLapNum: number,
+  comparisonSource: 'file1' | 'file2',
+  sectorDelta: boolean,
+) => analysisCompareLaps(currentLapNum, currentSource, comparisonLapNum, comparisonSource, sectorDelta))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
 ipcMain.handle('player:export-xlsx', async (event) => {

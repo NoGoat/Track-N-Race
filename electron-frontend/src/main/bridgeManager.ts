@@ -382,6 +382,12 @@ export function startBridge(): string | null {
       // except one-shot playback control rows, which must never be dropped.
       const forwardWhileHidden =
         batch.includes('"type":"playback_lap_blocks"') ||
+        // Indexed Analysis lap payloads are one-shot request responses. Dropping
+        // one during the minimize/restore visibility race permanently leaves
+        // that lap marked as requested in the renderer, so comparisons and
+        // sector metadata never recover. They are immutable and safe to send
+        // while hidden, just like the load metadata above.
+        batch.includes('"type":"playback_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
       if (seekForwardPhase === 'waiting-flush') {
@@ -615,6 +621,29 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
 export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): unknown | null {
   if (!engine) return null
   const json = engine.analysisGetLapData(lapNum, rowTypeMask >>> 0)
+  if (!json) return null
+  try {
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+export async function analysisCompareLaps(
+  currentLapNum: number,
+  currentSource: 'file1' | 'file2',
+  comparisonLapNum: number,
+  comparisonSource: 'file1' | 'file2',
+  sectorDelta: boolean,
+): Promise<unknown | null> {
+  if (!engine) return null
+  const json = await engine.analysisCompareLaps(
+    currentLapNum,
+    currentSource === 'file2',
+    comparisonLapNum,
+    comparisonSource === 'file2',
+    sectorDelta,
+  )
   if (!json) return null
   try {
     return JSON.parse(json)
