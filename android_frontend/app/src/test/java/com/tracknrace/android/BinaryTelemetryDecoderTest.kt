@@ -28,6 +28,14 @@ class BinaryTelemetryDecoderTest {
         assertEquals(0x5a5a, result.latest?.revLightsBitValue)
         assertEquals(104, result.latest?.engineTemp)
         assertEquals(1, result.latest?.slm)
+        assertEquals(82, result.latest?.tyreSurfaceFl)
+        assertEquals(83, result.latest?.tyreSurfaceFr)
+        assertEquals(80, result.latest?.tyreSurfaceRl)
+        assertEquals(81, result.latest?.tyreSurfaceRr)
+        assertEquals(86, result.latest?.tyreInnerFl)
+        assertEquals(87, result.latest?.tyreInnerFr)
+        assertEquals(84, result.latest?.tyreInnerRl)
+        assertEquals(85, result.latest?.tyreInnerRr)
     }
 
     @Test

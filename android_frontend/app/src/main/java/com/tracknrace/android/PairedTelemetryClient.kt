@@ -15,6 +15,7 @@ import org.json.JSONObject
 
 private const val ROW_TELEMETRY = 1 shl 1
 private const val ROW_STATUS = 1 shl 2
+private const val ROW_DAMAGE = 1 shl 3
 private const val ROW_LAP = 1 shl 4
 private const val ROW_SESSION = 1 shl 5
 private const val ROW_TIMING = 1 shl 7
@@ -29,7 +30,7 @@ internal enum class PairedTelemetryPage(
 ) {
     DASHBOARD(
         "dashboard",
-        ROW_TELEMETRY or ROW_STATUS or ROW_LAP or ROW_SESSION,
+        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION,
     ),
     TIMING(
         "timing",

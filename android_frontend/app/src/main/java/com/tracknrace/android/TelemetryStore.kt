@@ -75,11 +75,24 @@ internal class TelemetryStore {
 
             "status" -> post {
                 cold = cold.copy(
+                    statusAvailable = true,
                     ersPercent = row.optDouble("ers_pct").roundToInt(),
+                    ersMode = row.optInt("ers_mode"),
+                    fuelKg = row.optDouble("fuel_kg"),
                     fuelLaps = row.optDouble("fuel_laps"),
                     brakeBias = row.optInt("front_brake_bias"),
                     tyreCompound = row.optInt("visual_compound"),
                     tyreAgeLaps = row.optInt("tyre_age_laps"),
+                )
+            }
+
+            "damage" -> post {
+                cold = cold.copy(
+                    tyreWearFl = row.optDouble("tyre_wear_fl").toFloat(),
+                    tyreWearFr = row.optDouble("tyre_wear_fr").toFloat(),
+                    tyreWearRl = row.optDouble("tyre_wear_rl").toFloat(),
+                    tyreWearRr = row.optDouble("tyre_wear_rr").toFloat(),
+                    tyreWearAvailable = true,
                 )
             }
 
@@ -200,6 +213,12 @@ internal class TelemetryStore {
                         labels = emptyMap(),
                         sessionType = null,
                         tyreSets = emptyList(),
+                        statusAvailable = false,
+                        tyreWearFl = 0f,
+                        tyreWearFr = 0f,
+                        tyreWearRl = 0f,
+                        tyreWearRr = 0f,
+                        tyreWearAvailable = false,
                     )
                     timing = TimingTowerState(
                         drivers = timing.drivers,

@@ -141,7 +141,7 @@ constexpr int64_t kPairWindowMs = 2 * 60 * 1000;
 constexpr size_t kMaxFrameBytes = 1024 * 1024;
 constexpr size_t kMaxBufferedBytes = 8 * 1024 * 1024;
 constexpr uint32_t kAndroidPageMask =
-    (1u << 1) | (1u << 2) | (1u << 4) | (1u << 5) |
+    (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) |
     (1u << 7) | (1u << 8) | (1u << 9) | (1u << 10);
 constexpr uint32_t kParticipantsMask = 1u << 8;
 constexpr glz::opts kPartialRead{

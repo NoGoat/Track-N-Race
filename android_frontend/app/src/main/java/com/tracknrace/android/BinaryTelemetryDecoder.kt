@@ -46,7 +46,14 @@ internal object BinaryTelemetryDecoder {
                     val throttle = buffer.float
                     val brake = buffer.float
                     val steering = buffer.double
-                    buffer.position(buffer.position() + 8) // Surface + inner tyre temperatures.
+                    val tyreSurfaceRl = buffer.get().toInt() and 0xff
+                    val tyreSurfaceRr = buffer.get().toInt() and 0xff
+                    val tyreSurfaceFl = buffer.get().toInt() and 0xff
+                    val tyreSurfaceFr = buffer.get().toInt() and 0xff
+                    val tyreInnerRl = buffer.get().toInt() and 0xff
+                    val tyreInnerRr = buffer.get().toInt() and 0xff
+                    val tyreInnerFl = buffer.get().toInt() and 0xff
+                    val tyreInnerFr = buffer.get().toInt() and 0xff
                     buffer.position(buffer.position() + 8) // Four uint16 brake temperatures.
                     val engineTemp = buffer.short.toInt() and 0xffff
                     val slm = buffer.get().toInt() and 0xff
@@ -63,6 +70,14 @@ internal object BinaryTelemetryDecoder {
                         revLightsBitValue = rawRevBits.takeUnless { it == 0xffff },
                         slm = slm,
                         engineTemp = engineTemp,
+                        tyreSurfaceFl = tyreSurfaceFl,
+                        tyreSurfaceFr = tyreSurfaceFr,
+                        tyreSurfaceRl = tyreSurfaceRl,
+                        tyreSurfaceRr = tyreSurfaceRr,
+                        tyreInnerFl = tyreInnerFl,
+                        tyreInnerFr = tyreInnerFr,
+                        tyreInnerRl = tyreInnerRl,
+                        tyreInnerRr = tyreInnerRr,
                     )
                     telemetryRows++
                 }

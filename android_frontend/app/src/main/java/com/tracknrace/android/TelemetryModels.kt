@@ -13,6 +13,14 @@ internal data class HotTelemetry(
     val revLightsBitValue: Int? = null,
     val slm: Int = 0,
     val engineTemp: Int = 0,
+    val tyreSurfaceFl: Int = 0,
+    val tyreSurfaceFr: Int = 0,
+    val tyreSurfaceRl: Int = 0,
+    val tyreSurfaceRr: Int = 0,
+    val tyreInnerFl: Int = 0,
+    val tyreInnerFr: Int = 0,
+    val tyreInnerRl: Int = 0,
+    val tyreInnerRr: Int = 0,
 )
 
 internal data class TyreSetEntry(
@@ -29,6 +37,7 @@ internal data class TyreSetEntry(
 )
 
 internal data class DashboardColdState(
+    val statusAvailable: Boolean = false,
     val position: Int = 0,
     val lapNumber: Int = 0,
     val totalLaps: Int = 0,
@@ -36,10 +45,17 @@ internal data class DashboardColdState(
     val lastLapMs: Int = 0,
     val lapInvalid: Boolean = false,
     val ersPercent: Int = 0,
+    val ersMode: Int = 0,
+    val fuelKg: Double = 0.0,
     val fuelLaps: Double = 0.0,
     val brakeBias: Int = 0,
     val tyreCompound: Int = 0,
     val tyreAgeLaps: Int = 0,
+    val tyreWearFl: Float = 0f,
+    val tyreWearFr: Float = 0f,
+    val tyreWearRl: Float = 0f,
+    val tyreWearRr: Float = 0f,
+    val tyreWearAvailable: Boolean = false,
     val sessionType: Int? = null,
     val tyreSets: List<TyreSetEntry> = emptyList(),
     val aeroMode: String = "drs",
