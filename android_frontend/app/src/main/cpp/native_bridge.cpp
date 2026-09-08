@@ -47,24 +47,23 @@ public:
     }
 
     void onBinary(const uint8_t* data, size_t len) override {
-        // The focused Android UI only displays the telemetry hot row. Filter
-        // motion, positions, and motion_ex before JNI so unused data never
-        // crosses into the managed runtime. The thread-local buffer reuses its
-        // allocation on libtnrp's receive thread.
-        thread_local std::vector<uint8_t> telemetry;
-        telemetry.clear();
-        telemetry.reserve(len);
-        if (!tnrp::bin::appendFilteredBatch(telemetry, data, len, 1u << 1)
-            || telemetry.empty()) return;
+        // The dashboard consumes telemetry plus all-car positions. The filter
+        // takes logical row ids (1 and 13), not packed wire tags (1 and 3).
+        thread_local std::vector<uint8_t> dashboardRows;
+        dashboardRows.clear();
+        dashboardRows.reserve(len);
+        constexpr uint32_t mask = (1u << 1) | (1u << 13);
+        if (!tnrp::bin::appendFilteredBatch(dashboardRows, data, len, mask)
+            || dashboardRows.empty()) return;
 
         bool attached = false;
         JNIEnv* env = environment(attached);
         if (!env || !receiver_ || !onBinary_) return;
 
-        jbyteArray value = env->NewByteArray(static_cast<jsize>(telemetry.size()));
+        jbyteArray value = env->NewByteArray(static_cast<jsize>(dashboardRows.size()));
         if (value) {
-            env->SetByteArrayRegion(value, 0, static_cast<jsize>(telemetry.size()),
-                reinterpret_cast<const jbyte*>(telemetry.data()));
+            env->SetByteArrayRegion(value, 0, static_cast<jsize>(dashboardRows.size()),
+                reinterpret_cast<const jbyte*>(dashboardRows.data()));
             env->CallVoidMethod(receiver_, onBinary_, value);
             env->DeleteLocalRef(value);
         }

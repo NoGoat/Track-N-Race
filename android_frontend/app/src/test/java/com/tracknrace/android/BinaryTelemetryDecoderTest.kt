@@ -58,6 +58,33 @@ class BinaryTelemetryDecoderTest {
         assertEquals(0, result.telemetryRows)
     }
 
+    @Test
+    fun decodesPositionsIntoIndexedPrimitiveArrays() {
+        val bytes = ByteBuffer.allocate(3 + 3 * 16).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(3.toByte())
+            put(1.toByte())
+            put(3.toByte())
+            putDouble(10.25).putDouble(-20.5)
+            putDouble(30.75).putDouble(40.125)
+            putDouble(0.0).putDouble(0.0)
+        }.array()
+
+        val result = BinaryTelemetryDecoder.decodeLatest(bytes)
+        val positions = result.latestPositions
+
+        assertFalse(result.malformed)
+        assertEquals(1, result.positionRows)
+        assertEquals(1, positions?.playerIndex)
+        assertEquals(3, positions?.carCount)
+        assertEquals(10.25, positions?.xAt(0) ?: Double.NaN, 0.0)
+        assertEquals(-20.5, positions?.zAt(0) ?: Double.NaN, 0.0)
+        assertEquals(30.75, positions?.xAt(1) ?: Double.NaN, 0.0)
+        assertEquals(40.125, positions?.zAt(1) ?: Double.NaN, 0.0)
+        assertTrue(positions?.hasPosition(1) == true)
+        assertTrue(positions?.hasPosition(2) == true)
+        assertFalse(positions?.hasPosition(3) == true)
+    }
+
     private fun ByteBuffer.putTelemetry(
         speed: Int,
         rpm: Int,

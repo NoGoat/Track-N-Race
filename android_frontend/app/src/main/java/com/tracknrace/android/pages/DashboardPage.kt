@@ -21,7 +21,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,7 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tracknrace.android.DashboardColdState
 import com.tracknrace.android.HotTelemetry
+import com.tracknrace.android.MapPositions
 import com.tracknrace.android.TelemetryStore
+import com.tracknrace.android.TimingDriver
 import kotlin.math.roundToInt
 
 private val DashboardBackground = Color(0xff07090c)
@@ -54,9 +60,8 @@ private val DashboardSecondary = Color(0xff8f9aa6)
 internal fun DashboardScreen(
     store: TelemetryStore,
     active: Boolean = true,
-    cold: DashboardColdState = store.cold,
 ) {
-    val hot = rememberFrameSample(store, active)
+    val frame = rememberDashboardFrameState(store, active)
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val wideLandscape = landscape && configuration.screenWidthDp >= 600
@@ -71,42 +76,146 @@ internal fun DashboardScreen(
         ) {
             if (landscape) {
                 Box(Modifier.fillMaxWidth().height(30.dp).padding(bottom = 8.dp)) {
-                    RpmLights(hot.revLightsBitValue, Modifier.fillMaxSize())
+                    RpmLights(frame, Modifier.fillMaxSize())
                 }
                 HorizontalDashboardDivider()
-                LandscapeDashboard(hot, cold, wideLandscape, Modifier.weight(1f))
+                LandscapeDashboard(
+                    frame,
+                    wideLandscape,
+                    Modifier.weight(1f),
+                )
             } else {
                 Card(modifier = Modifier.fillMaxWidth().weight(1f)) {
                     Box(
                         Modifier.fillMaxWidth().height(26.dp)
                             .padding(horizontal = 10.dp, vertical = 4.dp),
                     ) {
-                        RpmLights(hot.revLightsBitValue, Modifier.fillMaxSize())
+                        RpmLights(frame, Modifier.fillMaxSize())
                     }
                     HorizontalDashboardDivider()
-                    PortraitDashboard(hot, cold, Modifier.weight(1f))
+                    PortraitDashboard(
+                        frame,
+                        Modifier.weight(1f),
+                    )
                 }
             }
         }
     }
 }
 
+/**
+ * Stable holder whose fields are independent Compose states. The dashboard
+ * passes this holder without reading it, so a telemetry tick invalidates only
+ * the leaf composables that actually consume a changed field. Positions are
+ * exposed as State and consumed by Canvas during draw, bypassing composition.
+ */
+@Stable
+private class DashboardFrameState(initialHot: HotTelemetry, initialPositions: MapPositions) {
+    var speedKph by mutableIntStateOf(initialHot.speedKph)
+        private set
+    var rpm by mutableIntStateOf(initialHot.rpm)
+        private set
+    var gear by mutableIntStateOf(initialHot.gear)
+        private set
+    var throttle by mutableFloatStateOf(initialHot.throttle)
+        private set
+    var brake by mutableFloatStateOf(initialHot.brake)
+        private set
+    var revLightsBitValue by mutableStateOf(initialHot.revLightsBitValue)
+        private set
+    var tyreSurfaceFl by mutableIntStateOf(initialHot.tyreSurfaceFl)
+        private set
+    var tyreSurfaceFr by mutableIntStateOf(initialHot.tyreSurfaceFr)
+        private set
+    var tyreSurfaceRl by mutableIntStateOf(initialHot.tyreSurfaceRl)
+        private set
+    var tyreSurfaceRr by mutableIntStateOf(initialHot.tyreSurfaceRr)
+        private set
+    var tyreInnerFl by mutableIntStateOf(initialHot.tyreInnerFl)
+        private set
+    var tyreInnerFr by mutableIntStateOf(initialHot.tyreInnerFr)
+        private set
+    var tyreInnerRl by mutableIntStateOf(initialHot.tyreInnerRl)
+        private set
+    var tyreInnerRr by mutableIntStateOf(initialHot.tyreInnerRr)
+        private set
+
+    private val mutablePositions = mutableStateOf(initialPositions)
+    val positions: State<MapPositions> = mutablePositions
+    var cold by mutableStateOf(DashboardColdState())
+        private set
+    var trackId by mutableIntStateOf(-1)
+        private set
+    var drivers by mutableStateOf<Map<Int, TimingDriver>>(emptyMap())
+        private set
+
+    private var lastHot = initialHot
+    private var lastPositions = initialPositions
+    private var lastCold = cold
+    private var lastDrivers = drivers
+
+    fun update(
+        hot: HotTelemetry,
+        positions: MapPositions,
+        latestCold: DashboardColdState,
+        latestDrivers: Map<Int, TimingDriver>,
+    ) {
+        if (hot !== lastHot) {
+            speedKph = hot.speedKph
+            rpm = hot.rpm
+            gear = hot.gear
+            throttle = hot.throttle
+            brake = hot.brake
+            revLightsBitValue = hot.revLightsBitValue
+            tyreSurfaceFl = hot.tyreSurfaceFl
+            tyreSurfaceFr = hot.tyreSurfaceFr
+            tyreSurfaceRl = hot.tyreSurfaceRl
+            tyreSurfaceRr = hot.tyreSurfaceRr
+            tyreInnerFl = hot.tyreInnerFl
+            tyreInnerFr = hot.tyreInnerFr
+            tyreInnerRl = hot.tyreInnerRl
+            tyreInnerRr = hot.tyreInnerRr
+            lastHot = hot
+        }
+        if (positions !== lastPositions) {
+            mutablePositions.value = positions
+            lastPositions = positions
+        }
+        if (latestCold !== lastCold) {
+            cold = latestCold
+            trackId = latestCold.trackId
+            lastCold = latestCold
+        }
+        if (latestDrivers !== lastDrivers) {
+            drivers = latestDrivers
+            lastDrivers = latestDrivers
+        }
+    }
+}
+
 @Composable
-private fun rememberFrameSample(store: TelemetryStore, active: Boolean): HotTelemetry {
-    var displayed by remember(store) { mutableStateOf(store.latestHot()) }
+private fun rememberDashboardFrameState(store: TelemetryStore, active: Boolean): DashboardFrameState {
+    val displayed = remember(store) {
+        DashboardFrameState(store.latestHot(), store.latestMapPositions())
+    }
     LaunchedEffect(store, active) {
         if (!active) return@LaunchedEffect
         while (true) {
             withFrameNanos { }
-            val latest = store.latestHot()
-            if (latest != displayed) displayed = latest
+            displayed.update(
+                store.latestHot(),
+                store.latestMapPositions(),
+                store.cold,
+                store.timing.drivers,
+            )
         }
     }
     return displayed
 }
 
 @Composable
-private fun RpmLights(bitValue: Int?, modifier: Modifier = Modifier) {
+private fun RpmLights(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    val bitValue = frame.revLightsBitValue
     val off = Color(0xff2a3540)
     val green = Color(0xff32d583)
     val red = Color(0xffff4d5e)
@@ -135,8 +244,7 @@ private fun RpmLights(bitValue: Int?, modifier: Modifier = Modifier) {
 
 @Composable
 private fun LandscapeDashboard(
-    hot: HotTelemetry,
-    cold: DashboardColdState,
+    frame: DashboardFrameState,
     unframed: Boolean,
     modifier: Modifier,
 ) {
@@ -145,13 +253,17 @@ private fun LandscapeDashboard(
             Modifier.weight(1f).fillMaxHeight()
                 .background(if (unframed) Color.Transparent else DashboardCard),
         ) {
-            ValueCell(lapLabel(cold), DashboardPrimary, Modifier.weight(0.54f))
+            LandscapeLapCell(frame, Modifier.weight(0.54f))
             HorizontalDashboardDivider()
-            EmptyDashboardCell(Modifier.weight(0.96f))
+            DriverTrackMap(
+                frame.trackId,
+                frame.positions,
+                frame.drivers,
+                Modifier.weight(0.96f).fillMaxWidth(),
+            )
             HorizontalDashboardDivider()
             SideTyreBlock(
-                hot = hot,
-                cold = cold,
+                frame = frame,
                 leftSide = true,
                 showDividers = true,
                 modifier = Modifier.weight(0.86f),
@@ -159,8 +271,7 @@ private fun LandscapeDashboard(
         }
         VerticalDashboardDivider()
         CenterReadout(
-            hot,
-            cold,
+            frame,
             Modifier.weight(1.95f).fillMaxHeight()
                 .background(if (unframed) Color.Transparent else DashboardCard),
         )
@@ -169,13 +280,12 @@ private fun LandscapeDashboard(
             Modifier.weight(1f).fillMaxHeight()
                 .background(if (unframed) Color.Transparent else DashboardCard),
         ) {
-            FuelCell(cold, Modifier.weight(0.54f))
+            LandscapeFuelCell(frame, Modifier.weight(0.54f))
             HorizontalDashboardDivider()
             EmptyDashboardCell(Modifier.weight(0.96f))
             HorizontalDashboardDivider()
             SideTyreBlock(
-                hot = hot,
-                cold = cold,
+                frame = frame,
                 leftSide = false,
                 showDividers = true,
                 modifier = Modifier.weight(0.86f),
@@ -185,32 +295,57 @@ private fun LandscapeDashboard(
 }
 
 @Composable
-private fun PortraitDashboard(hot: HotTelemetry, cold: DashboardColdState, modifier: Modifier) {
+private fun LandscapeLapCell(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    ValueCell(lapLabel(frame.cold), DashboardPrimary, modifier)
+}
+
+@Composable
+private fun LandscapeFuelCell(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    FuelCell(frame.cold, modifier)
+}
+
+@Composable
+private fun PortraitDashboard(
+    frame: DashboardFrameState,
+    modifier: Modifier,
+) {
     Column(modifier.fillMaxWidth()) {
-        CenterReadout(hot, cold, Modifier.fillMaxWidth().weight(1.34f))
+        CenterReadout(frame, Modifier.fillMaxWidth().weight(1.34f))
         HorizontalDashboardDivider()
-        Row(Modifier.fillMaxWidth().weight(0.38f)) {
-            ValueCell(lapLabel(cold), DashboardPrimary, Modifier.weight(1f).fillMaxHeight())
-            VerticalDashboardDivider()
-            FuelCell(cold, Modifier.weight(1f).fillMaxHeight())
-        }
+        PortraitStatusRow(frame, Modifier.fillMaxWidth().weight(0.38f))
         HorizontalDashboardDivider()
         Row(Modifier.fillMaxWidth().weight(0.54f)) {
-            EmptyDashboardCell(Modifier.weight(1f).fillMaxHeight())
+            DriverTrackMap(
+                frame.trackId,
+                frame.positions,
+                frame.drivers,
+                Modifier.weight(1f).fillMaxHeight(),
+            )
             VerticalDashboardDivider()
             EmptyDashboardCell(Modifier.weight(1f).fillMaxHeight())
         }
         HorizontalDashboardDivider()
         Row(Modifier.fillMaxWidth().weight(0.76f)) {
-            SideTyreBlock(hot, cold, leftSide = true, modifier = Modifier.weight(1f).fillMaxHeight())
+            SideTyreBlock(frame, leftSide = true, modifier = Modifier.weight(1f).fillMaxHeight())
             VerticalDashboardDivider()
-            SideTyreBlock(hot, cold, leftSide = false, modifier = Modifier.weight(1f).fillMaxHeight())
+            SideTyreBlock(frame, leftSide = false, modifier = Modifier.weight(1f).fillMaxHeight())
         }
     }
 }
 
 @Composable
-private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier: Modifier = Modifier) {
+private fun PortraitStatusRow(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    val cold = frame.cold
+    Row(modifier) {
+        ValueCell(lapLabel(cold), DashboardPrimary, Modifier.weight(1f).fillMaxHeight())
+        VerticalDashboardDivider()
+        FuelCell(cold, Modifier.weight(1f).fillMaxHeight())
+    }
+}
+
+@Composable
+private fun CenterReadout(frame: DashboardFrameState, modifier: Modifier = Modifier) {
+    val cold = frame.cold
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val gearSize = if (landscape) 100.sp else 72.sp
     val speedSize = if (landscape) 26.sp else 22.sp
@@ -242,7 +377,7 @@ private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier:
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                "${hot.speedKph} KM/H",
+                "${frame.speedKph} KM/H",
                 color = DashboardPrimary,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
@@ -250,7 +385,7 @@ private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier:
                 lineHeight = speedSize,
             )
             Text(
-                gearLabel(hot.gear),
+                gearLabel(frame.gear),
                 color = DashboardPrimary,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Black,
@@ -258,7 +393,7 @@ private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier:
                 lineHeight = gearSize,
             )
             Text(
-                "${hot.rpm} RPM",
+                "${frame.rpm} RPM",
                 color = DashboardSecondary,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
@@ -267,7 +402,7 @@ private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier:
         }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                InputMeter(hot.throttle, Color(0xff32d583), Modifier.weight(1f))
+                InputMeter(frame.throttle, Color(0xff32d583), Modifier.weight(1f))
                 Column(
                     Modifier.padding(horizontal = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -280,7 +415,7 @@ private fun CenterReadout(hot: HotTelemetry, cold: DashboardColdState, modifier:
                         maxLines = 1,
                     )
                 }
-                InputMeter(hot.brake, Color(0xffff4d5e), Modifier.weight(1f))
+                InputMeter(frame.brake, Color(0xffff4d5e), Modifier.weight(1f))
             }
             ErsMeter(cold.ersPercent)
         }
@@ -370,21 +505,21 @@ private fun EmptyDashboardCell(modifier: Modifier = Modifier) {
 
 @Composable
 private fun SideTyreBlock(
-    hot: HotTelemetry,
-    cold: DashboardColdState,
+    frame: DashboardFrameState,
     leftSide: Boolean,
     showDividers: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    val cold = frame.cold
     Column(modifier) {
         if (leftSide) {
-            TyreDataRow(hot.tyreSurfaceFl, hot.tyreInnerFl, cold.tyreWearFl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
+            TyreDataRow(frame.tyreSurfaceFl, frame.tyreInnerFl, cold.tyreWearFl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
             if (showDividers) HorizontalDashboardDivider()
-            TyreDataRow(hot.tyreSurfaceRl, hot.tyreInnerRl, cold.tyreWearRl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
+            TyreDataRow(frame.tyreSurfaceRl, frame.tyreInnerRl, cold.tyreWearRl, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
         } else {
-            TyreDataRow(hot.tyreSurfaceFr, hot.tyreInnerFr, cold.tyreWearFr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
+            TyreDataRow(frame.tyreSurfaceFr, frame.tyreInnerFr, cold.tyreWearFr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
             if (showDividers) HorizontalDashboardDivider()
-            TyreDataRow(hot.tyreSurfaceRr, hot.tyreInnerRr, cold.tyreWearRr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
+            TyreDataRow(frame.tyreSurfaceRr, frame.tyreInnerRr, cold.tyreWearRr, cold.tyreWearAvailable, showDividers, Modifier.weight(1f))
         }
     }
 }

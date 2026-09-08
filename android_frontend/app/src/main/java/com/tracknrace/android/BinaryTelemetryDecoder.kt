@@ -7,8 +7,8 @@ import java.nio.ByteOrder
  * Allocation-light decoder for the libtnrp hot-row wire format.
  *
  * Keep this in lockstep with protocol_parser_library/include/tnrp/BinaryRows.h.
- * The Android dashboard only consumes telemetry, so motion/position records are
- * bounds-checked and skipped without constructing intermediate objects.
+ * The Android dashboard consumes the player telemetry and the all-car position
+ * row. Motion and motion-ex records are bounds-checked and skipped.
  */
 internal object BinaryTelemetryDecoder {
     private const val TAG_TELEMETRY = 1
@@ -21,20 +21,24 @@ internal object BinaryTelemetryDecoder {
 
     internal data class Result(
         val latest: HotTelemetry?,
+        val latestPositions: MapPositions?,
         val telemetryRows: Int,
+        val positionRows: Int,
         val malformed: Boolean,
     )
 
     fun decodeLatest(bytes: ByteArray): Result {
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         var latest: HotTelemetry? = null
+        var latestPositions: MapPositions? = null
         var telemetryRows = 0
+        var positionRows = 0
 
         while (buffer.hasRemaining()) {
             when (buffer.get().toInt() and 0xff) {
                 TAG_TELEMETRY -> {
                     if (buffer.remaining() < TELEMETRY_PAYLOAD_BYTES) {
-                        return Result(latest, telemetryRows, true)
+                        return Result(latest, latestPositions, telemetryRows, positionRows, true)
                     }
                     val sessionTime = buffer.float
                     val speedKph = buffer.short.toInt() and 0xffff
@@ -83,26 +87,36 @@ internal object BinaryTelemetryDecoder {
                 }
 
                 TAG_MOTION -> if (!buffer.skipChecked(MOTION_PAYLOAD_BYTES)) {
-                    return Result(latest, telemetryRows, true)
+                    return Result(latest, latestPositions, telemetryRows, positionRows, true)
                 }
 
                 TAG_MOTION_EX -> if (!buffer.skipChecked(MOTION_EX_PAYLOAD_BYTES)) {
-                    return Result(latest, telemetryRows, true)
+                    return Result(latest, latestPositions, telemetryRows, positionRows, true)
                 }
 
                 TAG_POSITIONS -> {
-                    if (buffer.remaining() < 2) return Result(latest, telemetryRows, true)
-                    buffer.get() // player index
-                    val carCount = buffer.get().toInt() and 0xff
-                    if (!buffer.skipChecked(carCount * 16)) {
-                        return Result(latest, telemetryRows, true)
+                    if (buffer.remaining() < 2) {
+                        return Result(latest, latestPositions, telemetryRows, positionRows, true)
                     }
+                    val playerIndex = buffer.get().toInt() and 0xff
+                    val carCount = buffer.get().toInt() and 0xff
+                    if (buffer.remaining() < carCount * 16) {
+                        return Result(latest, latestPositions, telemetryRows, positionRows, true)
+                    }
+                    val xByCar = DoubleArray(carCount)
+                    val zByCar = DoubleArray(carCount)
+                    repeat(carCount) { index ->
+                        xByCar[index] = buffer.double
+                        zByCar[index] = buffer.double
+                    }
+                    latestPositions = MapPositions(playerIndex, xByCar, zByCar)
+                    positionRows++
                 }
 
-                else -> return Result(latest, telemetryRows, true)
+                else -> return Result(latest, latestPositions, telemetryRows, positionRows, true)
             }
         }
-        return Result(latest, telemetryRows, false)
+        return Result(latest, latestPositions, telemetryRows, positionRows, false)
     }
 
     private fun ByteBuffer.skipChecked(byteCount: Int): Boolean {

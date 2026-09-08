@@ -23,6 +23,36 @@ internal data class HotTelemetry(
     val tyreInnerRr: Int = 0,
 )
 
+/**
+ * Immutable-by-convention position snapshot indexed by car id.
+ *
+ * Primitive arrays keep the per-packet hot path to two allocations instead of
+ * allocating a list plus one object for every car. A published snapshot is
+ * never mutated after it is placed in [TelemetryStore].
+ */
+internal class MapPositions(
+    val playerIndex: Int = -1,
+    private val xByCar: DoubleArray = EMPTY_COORDINATES,
+    private val zByCar: DoubleArray = EMPTY_COORDINATES,
+) {
+    init {
+        require(xByCar.size == zByCar.size) { "Position coordinate arrays must have equal lengths" }
+    }
+
+    val carCount: Int
+        get() = xByCar.size
+
+    fun xAt(index: Int): Double = xByCar[index]
+
+    fun zAt(index: Int): Double = zByCar[index]
+
+    fun hasPosition(index: Int): Boolean = index in xByCar.indices
+
+    private companion object {
+        val EMPTY_COORDINATES = DoubleArray(0)
+    }
+}
+
 internal data class TyreSetEntry(
     val index: Int,
     val actualCompound: Int,
@@ -57,6 +87,7 @@ internal data class DashboardColdState(
     val tyreWearRr: Float = 0f,
     val tyreWearAvailable: Boolean = false,
     val sessionType: Int? = null,
+    val trackId: Int = -1,
     val tyreSets: List<TyreSetEntry> = emptyList(),
     val aeroMode: String = "drs",
     val protocolYear: Int? = null,

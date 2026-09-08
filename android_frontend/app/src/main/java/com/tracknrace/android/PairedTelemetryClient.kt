@@ -22,6 +22,7 @@ private const val ROW_TIMING = 1 shl 7
 private const val ROW_PARTICIPANTS = 1 shl 8
 private const val ROW_ALL_STATUS = 1 shl 9
 private const val ROW_TYRE_SETS = 1 shl 10
+private const val ROW_POSITIONS = 1 shl 13
 
 /** Complete paired-stream requirement for one visible Android page. */
 internal enum class PairedTelemetryPage(
@@ -30,7 +31,8 @@ internal enum class PairedTelemetryPage(
 ) {
     DASHBOARD(
         "dashboard",
-        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION,
+        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION or
+            ROW_PARTICIPANTS or ROW_POSITIONS,
     ),
     TIMING(
         "timing",

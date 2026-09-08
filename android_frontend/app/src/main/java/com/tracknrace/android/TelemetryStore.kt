@@ -23,6 +23,7 @@ import kotlin.math.roundToInt
 internal class TelemetryStore {
     private val main = Handler(Looper.getMainLooper())
     private val hot = AtomicReference(HotTelemetry())
+    private val mapPositions = AtomicReference(MapPositions())
     private val hotRows = AtomicLong()
     private val malformedReported = AtomicBoolean()
     private val messageIds = AtomicLong()
@@ -44,11 +45,13 @@ internal class TelemetryStore {
     val discoveredDesktops = mutableStateListOf<DiscoveredDesktop>()
 
     fun latestHot(): HotTelemetry = hot.get()
+    fun latestMapPositions(): MapPositions = mapPositions.get()
     fun totalHotRows(): Long = hotRows.get()
 
     fun acceptBinary(bytes: ByteArray) {
         val result = BinaryTelemetryDecoder.decodeLatest(bytes)
         result.latest?.let(hot::lazySet)
+        result.latestPositions?.let(mapPositions::lazySet)
         if (result.telemetryRows > 0) hotRows.addAndGet(result.telemetryRows.toLong())
         if (result.malformed && malformedReported.compareAndSet(false, true)) {
             showMessage("A malformed native telemetry batch was discarded")
@@ -96,10 +99,44 @@ internal class TelemetryStore {
                 )
             }
 
+            // Indexed/legacy TNRD playback keeps Positions as JSON rather than
+            // placing it in the packed telemetry lanes. Live direct/paired
+            // positions still arrive through acceptBinary().
+            "positions" -> {
+                val cars = row.optJSONArray("cars")
+                val carCount = cars?.length() ?: 0
+                val xByCar = DoubleArray(carCount)
+                val zByCar = DoubleArray(carCount)
+                if (cars != null) {
+                    repeat(carCount) { arrayIndex ->
+                        val car = cars.optJSONObject(arrayIndex) ?: return@repeat
+                        val carIndex = car.optInt("idx", arrayIndex)
+                        if (carIndex in 0 until carCount) {
+                            xByCar[carIndex] = car.optDouble("x")
+                            zByCar[carIndex] = car.optDouble("z")
+                        }
+                    }
+                }
+                mapPositions.lazySet(
+                    MapPositions(
+                        playerIndex = row.optInt("player_idx", -1),
+                        xByCar = xByCar,
+                        zByCar = zByCar,
+                    ),
+                )
+            }
+
             "session" -> {
                 val sessionType = row.optionalInt("session_type")
                 val totalLaps = row.optInt("total_laps")
-                post { cold = cold.copy(totalLaps = totalLaps, sessionType = sessionType) }
+                val trackId = row.optInt("track_id", -1)
+                post {
+                    cold = cold.copy(
+                        totalLaps = totalLaps,
+                        sessionType = sessionType,
+                        trackId = trackId,
+                    )
+                }
             }
 
             "tyre_sets" -> {
@@ -203,6 +240,7 @@ internal class TelemetryStore {
             }
 
             "protocol_context" -> {
+                mapPositions.lazySet(MapPositions())
                 val year = row.optionalInt("protocol_year")
                 val formula = row.optionalInt("formula")
                 post {
@@ -211,6 +249,7 @@ internal class TelemetryStore {
                         formula = formula,
                         aeroMode = resolveAeroMode(year, formula, null),
                         labels = emptyMap(),
+                        trackId = -1,
                         sessionType = null,
                         tyreSets = emptyList(),
                         statusAvailable = false,
@@ -227,14 +266,17 @@ internal class TelemetryStore {
                 }
             }
 
-            "timeline_reset" -> post {
-                // A seek/reset may be delivered after its reconstructed
-                // Participants row. Keep that roster; a real game-session
-                // change has its own participants_reset signal.
-                timing = TimingTowerState(
-                    drivers = timing.drivers,
-                    hasParticipants = timing.hasParticipants,
-                )
+            "timeline_reset" -> {
+                mapPositions.lazySet(MapPositions())
+                post {
+                    // A seek/reset may be delivered after its reconstructed
+                    // Participants row. Keep that roster; a real game-session
+                    // change has its own participants_reset signal.
+                    timing = TimingTowerState(
+                        drivers = timing.drivers,
+                        hasParticipants = timing.hasParticipants,
+                    )
+                }
             }
 
             "participants_reset" -> post {

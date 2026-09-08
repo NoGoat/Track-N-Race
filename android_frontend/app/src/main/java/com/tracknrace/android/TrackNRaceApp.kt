@@ -196,7 +196,6 @@ internal fun TrackNRaceApp(telemetry: TelemetryController) {
                         AppScreen.DASHBOARD -> DashboardScreen(
                             store = store,
                             active = destinationActive,
-                            cold = rememberCurrentWhileActive(destinationActive) { store.cold },
                         )
                         AppScreen.TIMING -> TimingScreen(
                             state = rememberCurrentWhileActive(destinationActive) { store.timing },

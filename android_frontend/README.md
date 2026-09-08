@@ -7,9 +7,10 @@ TNRD V5 sessions through the shared engine.
 
 There is no WebView, JavaScript runtime, Capacitor bridge, React bundle, or
 per-packet Compose state update. Native and paired binary batches are decoded
-on their worker threads. Only the newest telemetry sample is atomically
-published, and the visible dashboard samples it once per display frame. Cold
-rows update Compose snapshot state on the main thread at their native cadence.
+on their worker threads. Only the newest telemetry and all-car position samples
+are atomically published, and the visible dashboard samples them once per
+display frame. Cold rows update Compose snapshot state on the main thread at
+their native cadence.
 
 Material 3 provides the UI components and dynamic Material You color is used
 on Android 12 and later, with light/dark fallback schemes on older devices.
