@@ -35,6 +35,7 @@ internal class TelemetryController(
     private var multicastLock: WifiManager.MulticastLock? = null
 
     init {
+        store.setLapDeltaRequester(pairedTelemetry::requestLapDelta)
         publishSettings()
     }
 
@@ -55,6 +56,7 @@ internal class TelemetryController(
     }
 
     fun destroy() {
+        store.setLapDeltaRequester(null)
         sourceRequested = false
         sourceGeneration++
         pairingPending = false
@@ -330,6 +332,7 @@ internal class TelemetryController(
         sourceExecutor.execute {
             directTelemetry.stop()
             pairedTelemetry.close()
+            store.resetLapComparison()
             if (!sourceRequested || generation != sourceGeneration) return@execute
             if (!isDirectSource() && PairedTelemetryClient.hasSavedDesktop(context)) {
                 store.updateSource("connecting", PairedTelemetryClient.savedDesktopName(context))

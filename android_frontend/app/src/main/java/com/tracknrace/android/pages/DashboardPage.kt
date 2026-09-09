@@ -22,7 +22,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -44,10 +43,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tracknrace.android.DashboardColdState
+import com.tracknrace.android.DashboardLapComparisonState
 import com.tracknrace.android.HotTelemetry
-import com.tracknrace.android.MapPositions
 import com.tracknrace.android.TelemetryStore
-import com.tracknrace.android.TimingDriver
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val DashboardBackground = Color(0xff07090c)
@@ -55,6 +54,7 @@ private val DashboardCard = Color(0xff10151b)
 private val DashboardDivider = Color(0xff26313b)
 private val DashboardPrimary = Color.White
 private val DashboardSecondary = Color(0xff8f9aa6)
+private val DashboardFastest = Color(0xffb877db)
 
 @Composable
 internal fun DashboardScreen(
@@ -106,11 +106,10 @@ internal fun DashboardScreen(
 /**
  * Stable holder whose fields are independent Compose states. The dashboard
  * passes this holder without reading it, so a telemetry tick invalidates only
- * the leaf composables that actually consume a changed field. Positions are
- * exposed as State and consumed by Canvas during draw, bypassing composition.
+ * the leaf composables that actually consume a changed field.
  */
 @Stable
-private class DashboardFrameState(initialHot: HotTelemetry, initialPositions: MapPositions) {
+private class DashboardFrameState(initialHot: HotTelemetry) {
     var speedKph by mutableIntStateOf(initialHot.speedKph)
         private set
     var rpm by mutableIntStateOf(initialHot.rpm)
@@ -140,25 +139,19 @@ private class DashboardFrameState(initialHot: HotTelemetry, initialPositions: Ma
     var tyreInnerRr by mutableIntStateOf(initialHot.tyreInnerRr)
         private set
 
-    private val mutablePositions = mutableStateOf(initialPositions)
-    val positions: State<MapPositions> = mutablePositions
     var cold by mutableStateOf(DashboardColdState())
         private set
-    var trackId by mutableIntStateOf(-1)
-        private set
-    var drivers by mutableStateOf<Map<Int, TimingDriver>>(emptyMap())
+    var lapComparison by mutableStateOf(DashboardLapComparisonState())
         private set
 
     private var lastHot = initialHot
-    private var lastPositions = initialPositions
     private var lastCold = cold
-    private var lastDrivers = drivers
+    private var lastLapComparison = lapComparison
 
     fun update(
         hot: HotTelemetry,
-        positions: MapPositions,
         latestCold: DashboardColdState,
-        latestDrivers: Map<Int, TimingDriver>,
+        latestLapComparison: DashboardLapComparisonState,
     ) {
         if (hot !== lastHot) {
             speedKph = hot.speedKph
@@ -177,18 +170,13 @@ private class DashboardFrameState(initialHot: HotTelemetry, initialPositions: Ma
             tyreInnerRr = hot.tyreInnerRr
             lastHot = hot
         }
-        if (positions !== lastPositions) {
-            mutablePositions.value = positions
-            lastPositions = positions
-        }
         if (latestCold !== lastCold) {
             cold = latestCold
-            trackId = latestCold.trackId
             lastCold = latestCold
         }
-        if (latestDrivers !== lastDrivers) {
-            drivers = latestDrivers
-            lastDrivers = latestDrivers
+        if (latestLapComparison !== lastLapComparison) {
+            lapComparison = latestLapComparison
+            lastLapComparison = latestLapComparison
         }
     }
 }
@@ -196,7 +184,7 @@ private class DashboardFrameState(initialHot: HotTelemetry, initialPositions: Ma
 @Composable
 private fun rememberDashboardFrameState(store: TelemetryStore, active: Boolean): DashboardFrameState {
     val displayed = remember(store) {
-        DashboardFrameState(store.latestHot(), store.latestMapPositions())
+        DashboardFrameState(store.latestHot())
     }
     LaunchedEffect(store, active) {
         if (!active) return@LaunchedEffect
@@ -204,9 +192,8 @@ private fun rememberDashboardFrameState(store: TelemetryStore, active: Boolean):
             withFrameNanos { }
             displayed.update(
                 store.latestHot(),
-                store.latestMapPositions(),
                 store.cold,
-                store.timing.drivers,
+                store.latestLapComparison(),
             )
         }
     }
@@ -255,10 +242,8 @@ private fun LandscapeDashboard(
         ) {
             LandscapeLapCell(frame, Modifier.weight(0.54f))
             HorizontalDashboardDivider()
-            DriverTrackMap(
-                frame.trackId,
-                frame.positions,
-                frame.drivers,
+            FastestLapComparisonCell(
+                frame.lapComparison,
                 Modifier.weight(0.96f).fillMaxWidth(),
             )
             HorizontalDashboardDivider()
@@ -315,10 +300,8 @@ private fun PortraitDashboard(
         PortraitStatusRow(frame, Modifier.fillMaxWidth().weight(0.38f))
         HorizontalDashboardDivider()
         Row(Modifier.fillMaxWidth().weight(0.54f)) {
-            DriverTrackMap(
-                frame.trackId,
-                frame.positions,
-                frame.drivers,
+            FastestLapComparisonCell(
+                frame.lapComparison,
                 Modifier.weight(1f).fillMaxHeight(),
             )
             VerticalDashboardDivider()
@@ -504,6 +487,87 @@ private fun EmptyDashboardCell(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun FastestLapComparisonCell(
+    comparison: DashboardLapComparisonState,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            ComparisonMetric(
+                label = "FASTEST LAP",
+                value = formatTime(comparison.fastestLapMs),
+                valueColor = if (comparison.fastestLapMs > 0) {
+                    DashboardFastest
+                } else {
+                    DashboardSecondary
+                },
+                modifier = Modifier.weight(1.25f),
+            )
+            VerticalDashboardDivider()
+            ComparisonMetric(
+                label = "DELTA",
+                value = formatDelta(comparison.lapDeltaSeconds),
+                valueColor = deltaColor(comparison.lapDeltaSeconds),
+                modifier = Modifier.weight(1f),
+            )
+        }
+        HorizontalDashboardDivider()
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            ComparisonMetric(
+                "S1",
+                formatDelta(comparison.sector1DeltaSeconds),
+                deltaColor(comparison.sector1DeltaSeconds),
+                Modifier.weight(1f),
+            )
+            VerticalDashboardDivider()
+            ComparisonMetric(
+                "S2",
+                formatDelta(comparison.sector2DeltaSeconds),
+                deltaColor(comparison.sector2DeltaSeconds),
+                Modifier.weight(1f),
+            )
+            VerticalDashboardDivider()
+            ComparisonMetric(
+                "S3",
+                formatDelta(comparison.sector3DeltaSeconds),
+                deltaColor(comparison.sector3DeltaSeconds),
+                Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComparisonMetric(
+    label: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            label,
+            color = DashboardSecondary,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        Text(
+            value,
+            color = valueColor,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun SideTyreBlock(
     frame: DashboardFrameState,
     leftSide: Boolean,
@@ -583,6 +647,20 @@ private fun formatTime(milliseconds: Int): String {
     val seconds = milliseconds / 1_000 % 60
     val millis = milliseconds % 1_000
     return "%d:%02d.%03d".format(minutes, seconds, millis)
+}
+
+private fun formatDelta(seconds: Double?): String {
+    if (seconds == null || !seconds.isFinite()) return "—.---"
+    val normalized = if (abs(seconds) < 0.0005) 0.0 else seconds
+    return if (normalized > 0) "+%.3f".format(normalized) else "%.3f".format(normalized)
+}
+
+private fun deltaColor(seconds: Double?): Color = when {
+    seconds == null || !seconds.isFinite() -> DashboardSecondary
+    abs(seconds) < 0.0005 -> DashboardSecondary
+    seconds > 0 -> Color(0xffc4162a)
+    seconds < 0 -> Color(0xff37872d)
+    else -> DashboardPrimary
 }
 
 private fun formatTemperature(value: Int): String = if (value > 0) "$value°" else "—"

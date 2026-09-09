@@ -95,6 +95,20 @@ internal data class DashboardColdState(
     val labels: Map<String, String> = emptyMap(),
 )
 
+internal data class DashboardLapComparisonState(
+    val fastestLapMs: Int = 0,
+    val lapDeltaSeconds: Double? = null,
+    val sector1DeltaSeconds: Double? = null,
+    val sector2DeltaSeconds: Double? = null,
+    val sector3DeltaSeconds: Double? = null,
+)
+
+internal data class PlaybackLapDeltaRequest(
+    val requestId: Long,
+    val currentLap: Int,
+    val comparisonLap: Int,
+)
+
 internal data class TimingCarEntry(
     val index: Int,
     val position: Int,

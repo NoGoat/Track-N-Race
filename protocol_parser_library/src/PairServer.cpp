@@ -89,6 +89,10 @@ struct PairIncomingMessage {
     std::string code;
     std::string rowType;
     uint32_t streamMask{};
+    uint64_t requestId{};
+    int currentLap{};
+    int comparisonLap{};
+    bool sectorDelta{};
 };
 
 struct PairRowsFrame {
@@ -123,7 +127,7 @@ struct PairWelcomeFrame {
     std::optional<int> protocolYear;
     std::optional<int> formula;
     std::vector<std::string> capabilities{
-        "subscribe", "latest-state", "playback-state"
+        "subscribe", "latest-state", "playback-state", "lap-delta"
     };
 };
 
@@ -463,7 +467,10 @@ uint8_t rowTypeOf(std::string_view json) {
 bool allowedControlRow(std::string_view json) {
     return json.starts_with("{\"type\":\"protocol_status\"") ||
         json.starts_with("{\"type\":\"playback_state\"") ||
-        json.starts_with("{\"type\":\"timeline_reset\"");
+        json.starts_with("{\"type\":\"timeline_reset\"") ||
+        json.starts_with("{\"type\":\"playback_loaded\"") ||
+        json.starts_with("{\"type\":\"playback_lap_blocks\"") ||
+        json.starts_with("{\"type\":\"playback_close\"");
 }
 
 std::string localAddress() {
@@ -527,6 +534,7 @@ struct PairServer::Impl {
     PairServerConfig config;
     StateCallback stateCallback;
     RequirementsCallback requirementsCallback;
+    LapDeltaCallback lapDeltaCallback;
     DiagnosticCallback diagnosticCallback;
     mutable std::mutex mutex;
     PairSocket listener{kInvalidPairSocket};
@@ -540,6 +548,7 @@ struct PairServer::Impl {
     int64_t pairingExpiresAt{};
     std::string lastError;
     std::string latestProtocolStatus;
+    std::string latestPlaybackLapBlocks;
     std::array<std::string, 16> latestRows;
     std::array<std::vector<uint8_t>, 16> latestBinary;
     uint64_t participantsRevision{};
@@ -695,6 +704,7 @@ struct PairServer::Impl {
         {
             std::lock_guard lock(mutex);
             if (!latestProtocolStatus.empty()) rows.push_back(latestProtocolStatus);
+            if (!latestPlaybackLapBlocks.empty()) rows.push_back(latestPlaybackLapBlocks);
             for (size_t type = 1; type < latestRows.size(); ++type) {
                 if ((client->streamMask & (1u << type)) == 0 || latestRows[type].empty())
                     continue;
@@ -841,6 +851,21 @@ struct PairServer::Impl {
         } else if (message.type == "request_latest" &&
                    message.rowType == "participants") {
             sendCachedParticipants(client, true);
+        } else if (message.type == "request_lap_delta") {
+            LapDeltaCallback callback;
+            {
+                std::lock_guard lock(mutex);
+                callback = lapDeltaCallback;
+            }
+            std::string data;
+            if (callback && message.currentLap > 0 && message.comparisonLap > 0) {
+                data = callback(message.currentLap, message.comparisonLap,
+                                message.sectorDelta);
+            }
+            std::string response = "{\"type\":\"lap_delta\",\"requestId\":" +
+                std::to_string(message.requestId) + ",\"data\":" +
+                (data.empty() ? "null" : data) + "}";
+            sendRows(client, {response});
         } else if (message.type == "ping") {
             sendText(client, writeJson(PairPongFrame{"pong", nowMs()}));
         } else {
@@ -1228,6 +1253,7 @@ PairServer::~PairServer() = default;
 
 void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
                            RequirementsCallback requirementsCallback,
+                           LapDeltaCallback lapDeltaCallback,
                            DiagnosticCallback diagnosticCallback) {
     bool startEnabled = config.enabled;
     {
@@ -1235,6 +1261,7 @@ void PairServer::configure(PairServerConfig config, StateCallback stateCallback,
         impl_->config = std::move(config);
         impl_->stateCallback = std::move(stateCallback);
         impl_->requirementsCallback = std::move(requirementsCallback);
+        impl_->lapDeltaCallback = std::move(lapDeltaCallback);
         impl_->diagnosticCallback = std::move(diagnosticCallback);
         PairPersistedState persisted;
         if (!impl_->config.persistedStateJson.empty() &&
@@ -1365,6 +1392,12 @@ void PairServer::publishRow(const std::string& json) {
         }
         if (json.starts_with("{\"type\":\"protocol_status\""))
             impl_->latestProtocolStatus = json;
+        if (json.starts_with("{\"type\":\"playback_loaded\"") ||
+            json.starts_with("{\"type\":\"playback_close\"")) {
+            impl_->latestPlaybackLapBlocks.clear();
+        } else if (json.starts_with("{\"type\":\"playback_lap_blocks\"")) {
+            impl_->latestPlaybackLapBlocks = json;
+        }
         if (type > 0 && type < impl_->latestRows.size()) {
             if (type == 8 && impl_->latestRows[type] != json) {
                 ++impl_->participantsRevision;

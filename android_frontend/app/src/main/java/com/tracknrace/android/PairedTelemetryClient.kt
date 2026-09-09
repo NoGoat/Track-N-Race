@@ -22,7 +22,6 @@ private const val ROW_TIMING = 1 shl 7
 private const val ROW_PARTICIPANTS = 1 shl 8
 private const val ROW_ALL_STATUS = 1 shl 9
 private const val ROW_TYRE_SETS = 1 shl 10
-private const val ROW_POSITIONS = 1 shl 13
 
 /** Complete paired-stream requirement for one visible Android page. */
 internal enum class PairedTelemetryPage(
@@ -31,8 +30,7 @@ internal enum class PairedTelemetryPage(
 ) {
     DASHBOARD(
         "dashboard",
-        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION or
-            ROW_PARTICIPANTS or ROW_POSITIONS,
+        ROW_TELEMETRY or ROW_STATUS or ROW_DAMAGE or ROW_LAP or ROW_SESSION,
     ),
     TIMING(
         "timing",
@@ -112,6 +110,7 @@ internal class PairedTelemetryClient(
     private val subscriptionIds = AtomicLong()
     private var subscribedSocket: WebSocket? = null
     private var activePage = PairedTelemetryPage.DASHBOARD
+    private var lapDeltaSupported = false
 
     fun setPage(page: PairedTelemetryPage) {
         synchronized(subscriptionLock) {
@@ -127,6 +126,21 @@ internal class PairedTelemetryClient(
             JSONObject()
                 .put("type", "request_latest")
                 .put("rowType", "participants")
+                .toString(),
+        )
+    }
+
+    fun requestLapDelta(request: PlaybackLapDeltaRequest): Boolean {
+        val active = synchronized(subscriptionLock) {
+            subscribedSocket?.takeIf { lapDeltaSupported }
+        } ?: return false
+        return active.send(
+            JSONObject()
+                .put("type", "request_lap_delta")
+                .put("requestId", request.requestId)
+                .put("currentLap", request.currentLap)
+                .put("comparisonLap", request.comparisonLap)
+                .put("sectorDelta", true)
                 .toString(),
         )
     }
@@ -268,6 +282,11 @@ internal class PairedTelemetryClient(
         synchronized(subscriptionLock) {
             if (socket !== webSocket) return
             subscribedSocket = webSocket
+            val capabilities = message.optJSONArray("capabilities")
+            lapDeltaSupported = capabilities != null &&
+                (0 until capabilities.length()).any {
+                    capabilities.optString(it) == "lap-delta"
+                }
             sendSubscription(webSocket, activePage)
         }
         listener.onState("connected", endpoint.name)
@@ -289,7 +308,10 @@ internal class PairedTelemetryClient(
 
     private fun clearSubscribedSocket(webSocket: WebSocket) {
         synchronized(subscriptionLock) {
-            if (subscribedSocket === webSocket) subscribedSocket = null
+            if (subscribedSocket === webSocket) {
+                subscribedSocket = null
+                lapDeltaSupported = false
+            }
         }
     }
 
@@ -311,6 +333,7 @@ internal class PairedTelemetryClient(
         socket = null
         synchronized(subscriptionLock) {
             subscribedSocket = null
+            lapDeltaSupported = false
         }
         active?.close(1000, "Android page closed")
     }

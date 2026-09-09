@@ -24,6 +24,9 @@ public:
     using StateCallback = std::function<void(const std::string& publicStateJson,
                                              const std::string& persistedStateJson)>;
     using RequirementsCallback = std::function<void(uint32_t streamMask)>;
+    using LapDeltaCallback = std::function<std::string(int currentLap,
+                                                       int comparisonLap,
+                                                       bool sectorDelta)>;
     using DiagnosticCallback = std::function<void(const std::string& message)>;
 
     PairServer();
@@ -33,6 +36,7 @@ public:
 
     void configure(PairServerConfig config, StateCallback stateCallback,
                    RequirementsCallback requirementsCallback,
+                   LapDeltaCallback lapDeltaCallback,
                    DiagnosticCallback diagnosticCallback = {});
 
     bool start(std::string* error = nullptr);

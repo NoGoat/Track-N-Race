@@ -1,5 +1,6 @@
 #include "tnrp/Engine.h"
 #include "tnrp/BinaryRows.h"
+#include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 
@@ -139,6 +140,28 @@ Engine::Engine(const Config& config, Sink* sink)
             if (sink_) sink_->onPairState(publicJson, persistedJson);
         },
         [this](uint32_t streamMask) { setPairDataRequirements(streamMask); },
+        [this](int currentLap, int comparisonLap, bool sectorDelta) {
+            AnalysisLapProgress current;
+            AnalysisLapProgress comparison;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!inPlayback_.load() ||
+                    !reader_.getAnalysisLapProgress(currentLap, current) ||
+                    !reader_.getAnalysisLapProgress(comparisonLap, comparison)) {
+                    return std::string{};
+                }
+            }
+            std::string response = writeJson(
+                calculateLapDelta(current, comparison, sectorDelta));
+            if (response.empty() || response.back() != '}') return std::string{};
+            response.pop_back();
+            response += ",\"currentStartSessionTime\":" +
+                std::to_string(current.startSessionTime) +
+                ",\"currentEndSessionTime\":" +
+                std::to_string(current.endSessionTime) +
+                ",\"currentProgress\":" + writeJson(current.points) + "}";
+            return response;
+        },
         [this](const std::string& message) {
             if (sink_) sink_->onPairDiagnostic(message);
         });
