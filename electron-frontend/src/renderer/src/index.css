@@ -555,6 +555,46 @@ body {
   pointer-events: auto;
 }
 
+/* Treat Graph, Split, and Map as sibling pages. A single compositor snapshot
+   hides their internal layout change without resizing the live chart per frame. */
+html[data-analysis-view-transition] .analysis-view-page-transition {
+  view-transition-name: analysis-view;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface {
+  transition: none;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface[data-analysis-active='true'] {
+  opacity: 1;
+}
+
+html[data-analysis-view-transition] .analysis-view-surface[data-analysis-active='false'] {
+  opacity: 0;
+}
+
+html[data-analysis-view-transition]::view-transition {
+  pointer-events: none;
+}
+
+html[data-analysis-view-transition]::view-transition-group(analysis-view) {
+  animation-duration: 250ms;
+}
+
+html[data-analysis-view-transition]::view-transition-old(analysis-view) {
+  animation: tyresViewFadeOut 140ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html[data-analysis-view-transition]::view-transition-new(analysis-view) {
+  animation: tyresViewFadeIn 180ms 70ms cubic-bezier(0.4, 1, 0.6, 1) both;
+}
+
+html[data-analysis-view-transition-phase='preparing']::view-transition-group(analysis-view),
+html[data-analysis-view-transition-phase='preparing']::view-transition-old(analysis-view),
+html[data-analysis-view-transition-phase='preparing']::view-transition-new(analysis-view) {
+  animation-play-state: paused;
+}
+
 .analysis-chart-mode-surface {
   opacity: 0;
   pointer-events: none;
@@ -720,6 +760,9 @@ html[data-reduce-animations='true']::view-transition-old(app-page),
 html[data-reduce-animations='true']::view-transition-new(app-page),
 html[data-reduce-animations='true']::view-transition-old(tyres-view),
 html[data-reduce-animations='true']::view-transition-new(tyres-view),
+html[data-reduce-animations='true']::view-transition-group(analysis-view),
+html[data-reduce-animations='true']::view-transition-old(analysis-view),
+html[data-reduce-animations='true']::view-transition-new(analysis-view),
 html[data-reduce-animations='true']::view-transition-group(session-map),
 html[data-reduce-animations='true']::view-transition-old(session-map),
 html[data-reduce-animations='true']::view-transition-new(session-map) {

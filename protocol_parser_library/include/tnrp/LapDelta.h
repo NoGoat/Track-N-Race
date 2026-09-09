@@ -12,6 +12,12 @@ struct AnalysisLapProgress {
     int lapNum{};
     float startSessionTime{};
     float endSessionTime{};
+    // Completed timing-line values are authoritative. Progress samples arrive
+    // at the configured Lap Data packet rate and normally miss the exact line.
+    int lapTimeMs{};
+    int sector1TimeMs{};
+    int sector2TimeMs{};
+    float trackLengthM{};
     float sector1EndDistanceM{};
     float sector2EndDistanceM{};
     std::vector<LapProgressPoint> points;

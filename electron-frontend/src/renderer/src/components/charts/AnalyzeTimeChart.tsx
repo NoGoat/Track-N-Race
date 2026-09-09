@@ -615,6 +615,23 @@ export default function AnalyzeTimeChart({
     let dragX = 0
     let dragDomain: [number, number] = [0, 1]
     let lastRightClick = { at: -Infinity, x: 0, y: 0 }
+    const inspectMapAtClientX = (clientX: number) => {
+      const inspectMap = onInspectMapRef.current
+      if (!inspectMap) return
+      const rect = interactionNode.getBoundingClientRect()
+      const contentX = Math.max(0, Math.min(rect.width, clientX - rect.left))
+      const chartX = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
+      const lap = currentRef.current
+      const elapsed = distanceModeRef.current
+        ? (() => {
+            const progress = buildLapProgressMap(lap)
+            return progress ? interpolateLapElapsed(progress, chartX) : NaN
+          })()
+        : chartX
+      if (!Number.isFinite(elapsed)) return
+      const duration = Math.max(0, lap.endSessionTime - lap.startSessionTime)
+      inspectMap(Math.max(0, Math.min(duration, elapsed)))
+    }
     const onWheel = (event: WheelEvent) => {
       if (!interactionEnabledRef.current || !zoomEnabledRef.current) return
       event.preventDefault()
@@ -631,7 +648,7 @@ export default function AnalyzeTimeChart({
       }
     }
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button === 2 && onInspectMapRef.current) {
+      if (event.button === 2) {
         event.preventDefault()
         const now = performance.now()
         const isDouble = now - lastRightClick.at <= 500 &&
@@ -641,20 +658,7 @@ export default function AnalyzeTimeChart({
           return
         }
         lastRightClick.at = -Infinity
-        const rect = interactionNode.getBoundingClientRect()
-        const contentX = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
-        const chartX = (chart.model.xScale as any).invert(contentX + chart.options.paddingLeft) as number
-        const lap = currentRef.current
-        const elapsed = distanceModeRef.current
-          ? (() => {
-              const progress = buildLapProgressMap(lap)
-              return progress ? interpolateLapElapsed(progress, chartX) : NaN
-            })()
-          : chartX
-        if (Number.isFinite(elapsed)) {
-          const duration = Math.max(0, lap.endSessionTime - lap.startSessionTime)
-          onInspectMapRef.current(Math.max(0, Math.min(duration, elapsed)))
-        }
+        resetZoom(true)
         return
       }
       if (!interactionEnabledRef.current || !zoomEnabledRef.current || event.button !== 0) return
@@ -677,10 +681,10 @@ export default function AnalyzeTimeChart({
       interactionNode.style.cursor = interactionEnabledRef.current && zoomEnabledRef.current ? 'grab' : ''
     }
     const preventContextMenu = (event: MouseEvent) => {
-      if (onInspectMapRef.current) event.preventDefault()
+      event.preventDefault()
     }
     const onDoubleClick = (event: MouseEvent) => {
-      if (event.button === 0) resetZoom(true)
+      if (event.button === 0) inspectMapAtClientX(event.clientX)
     }
     interactionNode.addEventListener('wheel', onWheel, { passive: false })
     interactionNode.addEventListener('pointerdown', onPointerDown)

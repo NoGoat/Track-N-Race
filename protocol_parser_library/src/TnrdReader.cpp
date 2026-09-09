@@ -1498,8 +1498,12 @@ bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) co
     result.lapNum = block.lapNum;
     result.startSessionTime = block.startSessionTime;
     result.endSessionTime = block.endSessionTime;
+    result.trackLengthM = static_cast<float>(trackLengthM_);
     result.sector1EndDistanceM = block.sector1EndDistanceM;
     result.sector2EndDistanceM = block.sector2EndDistanceM;
+    const auto completedLap = std::find_if(scannedLaps_.begin(), scannedLaps_.end(),
+        [lapNum](const ScanLap& lap) { return lap.lapNum == lapNum; });
+    if (completedLap != scannedLaps_.end()) result.lapTimeMs = completedLap->lapTimeMs;
 
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         std::vector<detail::V4TimedRow> rows;
@@ -1519,6 +1523,13 @@ bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) co
     }
 
     if (result.points.empty()) return false;
+    // Lap Data carries completed S1/S2 durations on every later point. Keep the
+    // last positive values so a synthetic finish point with zeroed split fields
+    // cannot erase them.
+    for (const auto& point : result.points) {
+        if (point.s1_ms > 0) result.sector1TimeMs = point.s1_ms;
+        if (point.s2_ms > 0) result.sector2TimeMs = point.s2_ms;
+    }
     out = std::move(result);
     return true;
 }

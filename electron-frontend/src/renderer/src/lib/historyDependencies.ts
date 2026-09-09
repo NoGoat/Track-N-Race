@@ -216,11 +216,12 @@ export function visibleChartSectionsForUi(
 }
 
 export function dataMaskForAnalyze(
-  view: 'graph' | 'charts' | 'map',
+  view: 'graph' | 'charts' | 'split' | 'map',
   series: readonly AnalyzeSeriesConfig[],
 ): number {
   if (view === 'map') return DATA_CONSUMERS.analyzeMap.history
-  let mask = DATA_CONSUMERS.analyzeLapCoordinates.history
+  let mask = DATA_CONSUMERS.analyzeLapCoordinates.history |
+    (view === 'split' ? DATA_CONSUMERS.analyzeMap.history : 0)
   for (const item of series) {
     if (!item.visible || item.metricId === 'delta') continue
     const source = ANALYZE_METRIC_BY_ID.get(item.metricId)?.source

@@ -30,7 +30,7 @@ export interface AnalyzeSeriesConfig {
 export interface AnalyzeConfig {
   version: 7
   collapsed: boolean
-  view: 'graph' | 'map'
+  view: 'graph' | 'split' | 'map'
   individualGraphs: boolean
   syncedTooltip: boolean
   sectorBoundaries: boolean
@@ -111,7 +111,7 @@ export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
 
 type StoredAnalyzeConfig = Partial<Omit<AnalyzeConfig, 'version' | 'view'>> & {
   version?: number
-  view?: 'graph' | 'charts' | 'map'
+  view?: 'graph' | 'charts' | 'split' | 'map'
 }
 
 export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefined): AnalyzeConfig {
@@ -144,7 +144,7 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
   return {
     version: 7,
     collapsed: value?.collapsed === true,
-    view: value?.view === 'map' ? 'map' : 'graph',
+    view: value?.view === 'map' || value?.view === 'split' ? value.view : 'graph',
     individualGraphs: typeof value?.individualGraphs === 'boolean'
       ? value.individualGraphs
       : value?.view === 'charts',

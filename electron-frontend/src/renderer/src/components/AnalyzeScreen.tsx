@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { type GroupBase, type SingleValue } from 'react-select'
 import Select from '../lib/AnimatedSelect'
 import { Chrome, ChromeInputType } from '@uiw/react-color'
-import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, Columns3, Eye, GitCompareArrows, GripVertical, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesCombined, ChevronLeft, ChevronRight, CircleHelp, Columns2, Columns3, Eye, ListChevronsUpDown, GripVertical, LineChart, Map as MapIcon, PanelLeftClose, PanelLeftOpen, RotateCcw, Rows3, Trash2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
@@ -17,8 +17,10 @@ import { useLabels } from '../lib/labels'
 import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { buildLapProgressMap, findSectorSplits, type LapProgressMap } from '../lib/lapDelta'
+import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
 import { useTelemetryStore } from '../stores/telemetryStore'
-import type { AnalyzeDeltaData, AnalyzeLapData } from '../types'
+import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
@@ -51,10 +53,6 @@ interface LapBlock {
   statusHistory: Array<{ tyre_compound: number; visual_compound: number }>
 }
 interface SelectOption { value: string; label: string }
-const ANALYSIS_VIEW_OPTIONS: SelectOption[] = [
-  { value: 'graph', label: 'Graphs' },
-  { value: 'map', label: 'Map' },
-]
 interface LapOption {
   value: number
   label: string
@@ -92,6 +90,221 @@ interface PendingCircuitMismatch {
   data: any
   trackId: number | null
   trackName: string
+}
+
+interface AnalysisViewTransition {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
+
+function AnalysisHelpItem({ icon, label, children }: {
+  icon: ReactNode
+  label: string
+  children: ReactNode
+}) {
+  return <div className="flex min-w-0 gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]/30 p-3">
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-[var(--border-focus)] text-white">
+      {icon}
+    </span>
+    <div className="min-w-0">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-primary)]">{label}</div>
+      <div className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{children}</div>
+    </div>
+  </div>
+}
+
+interface AnalyzeDeltaSummary {
+  sectors: [number | null, number | null, number | null]
+  lap: number | null
+}
+
+function resolvedSectorDistances(current: AnalyzeLapData | null, comparison: AnalyzeLapData | null): [number | null, number | null] {
+  const bySector = new Map(findSectorSplits(comparison).map(split => [split.afterSector, split.distance]))
+  for (const split of findSectorSplits(current)) bySector.set(split.afterSector, split.distance)
+  return [bySector.get(1) ?? null, bySector.get(2) ?? null]
+}
+
+function interpolateDeltaAtDistance(samples: readonly AnalyzeDeltaSample[], distance: number | null): number | null {
+  if (distance === null) return null
+  let before: AnalyzeDeltaSample | null = null
+  for (const sample of samples) {
+    if (!sample.valid || !Number.isFinite(sample.delta_seconds)) continue
+    if (sample.lap_distance_m < distance) {
+      before = sample
+      continue
+    }
+    if (sample.lap_distance_m === distance) return sample.delta_seconds
+    if (!before) return null
+    const span = sample.lap_distance_m - before.lap_distance_m
+    if (span <= 0) return sample.delta_seconds
+    const ratio = (distance - before.lap_distance_m) / span
+    return before.delta_seconds + (sample.delta_seconds - before.delta_seconds) * ratio
+  }
+  return before?.delta_seconds ?? null
+}
+
+function interpolateDistanceAtSessionTime(progress: LapProgressMap, sessionTime: number): number | null {
+  const points = progress.points
+  if (sessionTime < points[0].session_time || sessionTime > progress.maxSessionTime) return null
+  let lo = 1, hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (points[mid].session_time < sessionTime) lo = mid + 1
+    else hi = mid
+  }
+  if (lo >= points.length) return points[points.length - 1].lap_distance_m
+  const before = points[lo - 1], after = points[lo]
+  const span = after.session_time - before.session_time
+  const ratio = span > 0 ? (sessionTime - before.session_time) / span : 1
+  return before.lap_distance_m + (after.lap_distance_m - before.lap_distance_m) * ratio
+}
+
+function splitSectorDeltaSamples(samples: readonly AnalyzeDeltaSample[]): AnalyzeDeltaSample[][] {
+  const sectors: AnalyzeDeltaSample[][] = [[]]
+  for (const sample of samples) {
+    if (!sample.valid) {
+      if (sectors[sectors.length - 1].length > 0) sectors.push([])
+      continue
+    }
+    if (Number.isFinite(sample.delta_seconds)) sectors[sectors.length - 1].push(sample)
+  }
+  return sectors.filter(samplesForSector => samplesForSector.length > 0)
+}
+
+function summarizeAnalyzeDelta(
+  deltaData: AnalyzeDeltaData | null,
+  current: AnalyzeLapData | null,
+  comparison: AnalyzeLapData | null,
+  cursorDistance?: number | null,
+): AnalyzeDeltaSummary {
+  if (!deltaData || !current || !comparison ||
+      deltaData.currentLapNum !== current.lapNum || deltaData.comparisonLapNum !== comparison.lapNum ||
+      cursorDistance === null) {
+    return { sectors: [null, null, null], lap: null }
+  }
+
+  if (deltaData.sectorDelta) {
+    const samplesBySector = splitSectorDeltaSamples(deltaData.samples)
+    const fullDistance = samplesBySector.at(-1)?.at(-1)?.lap_distance_m ?? null
+    const visibleDistance = cursorDistance === undefined ? fullDistance : cursorDistance
+    if (visibleDistance === null) return { sectors: [null, null, null], lap: null }
+    const sectors = [0, 1, 2].map(index => {
+      const samples = samplesBySector[index]
+      if (!samples?.length || visibleDistance < samples[0].lap_distance_m) return null
+      return interpolateDeltaAtDistance(samples, Math.min(visibleDistance, samples[samples.length - 1].lap_distance_m))
+    }) as AnalyzeDeltaSummary['sectors']
+    const visibleSectors = sectors.filter((value): value is number => value !== null)
+    const lap = visibleSectors.length > 0
+      ? visibleSectors.reduce((total, value) => total + value, 0)
+      : null
+    return { sectors, lap }
+  }
+
+  const validSamples = deltaData.samples.filter(sample => sample.valid && Number.isFinite(sample.delta_seconds))
+  const fullDistance = validSamples.at(-1)?.lap_distance_m ?? null
+  const visibleDistance = cursorDistance === undefined ? fullDistance : cursorDistance
+  if (visibleDistance === null) return { sectors: [null, null, null], lap: null }
+  const [sector1End, sector2End] = resolvedSectorDistances(current, comparison)
+  const sectorEnds = [sector1End, sector2End, fullDistance]
+  const sectorStarts = [validSamples[0]?.lap_distance_m ?? 0, sector1End, sector2End]
+  const cumulativeBaselines = [
+    0,
+    interpolateDeltaAtDistance(validSamples, sector1End),
+    interpolateDeltaAtDistance(validSamples, sector2End),
+  ]
+  const sectors = sectorEnds.map((sectorEnd, index) => {
+    const sectorStart = sectorStarts[index]
+    if (sectorEnd === null || sectorStart === null || visibleDistance < sectorStart) return null
+    const cumulativeDelta = interpolateDeltaAtDistance(validSamples, Math.min(visibleDistance, sectorEnd))
+    const baseline = cumulativeBaselines[index]
+    return cumulativeDelta === null || baseline === null ? null : cumulativeDelta - baseline
+  }) as AnalyzeDeltaSummary['sectors']
+  return {
+    sectors,
+    lap: interpolateDeltaAtDistance(validSamples, Math.min(visibleDistance, fullDistance ?? visibleDistance)),
+  }
+}
+
+function formatDeltaValue(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—.---'
+  const normalized = Math.abs(value) < 0.0005 ? 0 : value
+  return `${normalized > 0 ? '+' : ''}${normalized.toFixed(3)}`
+}
+
+function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor }: {
+  deltaData: AnalyzeDeltaData | null
+  current: AnalyzeLapData | null
+  comparison: AnalyzeLapData | null
+  positiveColor: string
+  negativeColor: string
+  followPlaybackCursor: boolean
+}) {
+  const selectionRef = useRef({ current, comparison })
+  const retainedDeltaDataRef = useRef<AnalyzeDeltaData | null>(null)
+  const selectionChanged = selectionRef.current.current !== current ||
+    selectionRef.current.comparison !== comparison
+  if (selectionChanged) {
+    selectionRef.current = { current, comparison }
+    retainedDeltaDataRef.current = null
+  } else if (!retainedDeltaDataRef.current && deltaData && current && comparison &&
+             deltaData.currentLapNum === current.lapNum &&
+             deltaData.comparisonLapNum === comparison.lapNum) {
+    retainedDeltaDataRef.current = deltaData
+  }
+  const retainedDeltaData = retainedDeltaDataRef.current
+  const valueRefs = useRef<Array<HTMLSpanElement | null>>([])
+  const currentProgress = useMemo(() => buildLapProgressMap(current), [current])
+  const updateValues = useCallback(() => {
+    const cursorTime = followPlaybackCursor ? getPlaybackCursorTime() : null
+    const cursorDistance = followPlaybackCursor
+      ? currentProgress && cursorTime !== null
+        ? interpolateDistanceAtSessionTime(currentProgress, cursorTime)
+        : null
+      : undefined
+    const summary = summarizeAnalyzeDelta(retainedDeltaData, current, comparison, cursorDistance)
+    const values = [...summary.sectors, summary.lap]
+    for (let index = 0; index < values.length; index++) {
+      const node = valueRefs.current[index]
+      if (!node) continue
+      const value = values[index]
+      node.textContent = formatDeltaValue(value)
+      node.style.color = value === null || Math.abs(value) < 0.0005
+        ? 'var(--text-secondary)'
+        : value > 0 ? positiveColor : negativeColor
+    }
+  }, [comparison, current, currentProgress, followPlaybackCursor, negativeColor, positiveColor, retainedDeltaData])
+
+  useLayoutEffect(updateValues, [updateValues])
+  useEffect(() => {
+    if (!followPlaybackCursor) return
+    let animationFrame = 0
+    const scheduleUpdate = () => {
+      if (animationFrame) return
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = 0
+        updateValues()
+      })
+    }
+    const unsubscribe = subscribePlaybackCursor(scheduleUpdate)
+    scheduleUpdate()
+    return () => {
+      unsubscribe()
+      if (animationFrame) cancelAnimationFrame(animationFrame)
+    }
+  }, [followPlaybackCursor, updateValues])
+
+  return <div className="flex h-full items-center gap-3 font-mono tabular-nums">
+    {(['S1', 'S2', 'S3', 'Lap'] as const).map((label, index) => {
+      return <span key={label} className="flex h-full items-center gap-1.5">
+        <span className="text-[9px] font-bold uppercase leading-none tracking-wider text-[var(--text-secondary)]">{label}</span>
+        <span
+          ref={node => { valueRefs.current[index] = node }}
+          className="inline-block w-[3.5rem] text-left text-[11px] font-semibold leading-none text-[var(--text-secondary)]"
+        >—.---</span>
+      </span>
+    })}
+  </div>
 }
 
 const COMPOUND_COLORS: Record<number, string> = {
@@ -479,13 +692,19 @@ export default function AnalyzeScreen({
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
-  const primaryView = !playbackFilename && config.view === 'map' ? 'graph' : config.view
+  const primaryView = !playbackFilename && config.view !== 'graph' ? 'graph' : config.view
+  const splitView = primaryView === 'split'
+  const chartsVisible = primaryView !== 'map'
+  const mapVisible = primaryView !== 'graph'
   const analysisView = primaryView === 'map' ? 'map' : config.individualGraphs ? 'charts' : 'graph'
   const chartAnalysisView = config.individualGraphs ? 'charts' : 'graph'
-  const mapPresence = useModalPresence(analysisView === 'map', ANALYSIS_PRESENCE_DURATION, {
+  const mapPresence = useModalPresence(mapVisible, ANALYSIS_PRESENCE_DURATION, {
     animateInitialEnter: false,
   })
-  const dataMask = useMemo(() => dataMaskForAnalyze(analysisView, config.series), [analysisView, config.series])
+  const dataMask = useMemo(
+    () => dataMaskForAnalyze(splitView ? 'split' : analysisView, config.series),
+    [analysisView, config.series, splitView],
+  )
   useLayoutEffect(() => onDataMaskChange(dataMask), [dataMask, onDataMaskChange])
   const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
@@ -508,11 +727,14 @@ export default function AnalyzeScreen({
   const [deltaData, setDeltaData] = useState<AnalyzeDeltaData | null>(null)
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
+  const [controlsHelpOpen, setControlsHelpOpen] = useState(false)
+  const controlsHelpPresence = useModalPresence(controlsHelpOpen)
   const [pendingCircuitMismatch, setPendingCircuitMismatch] = useState<PendingCircuitMismatch | null>(null)
   const circuitMismatchPresence = useModalPresenceValue(pendingCircuitMismatch)
   const displayedCircuitMismatch = circuitMismatchPresence.value
   const [mapFocus, setMapFocus] = useState<AnalyzeMapFocus | null>(null)
   const mapFocusIdRef = useRef(0)
+  const activeAnalysisViewTransitionRef = useRef<AnalysisViewTransition | null>(null)
   const requestedRef = useRef(new Map<number, number>())
   const secondaryRequestedRef = useRef(new Map<number, number>())
   const graphControlsRef = useRef<AnalyzeChartControls | null>(null)
@@ -535,6 +757,54 @@ export default function AnalyzeScreen({
   }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
+  const setAnalysisView = useCallback((nextView: AnalyzeConfig['view']) => {
+    if (nextView === primaryView) {
+      if (nextView !== config.view) save({ ...config, view: nextView })
+      return
+    }
+
+    const transitionDocument = document as Document & {
+      startViewTransition?: (update: () => void) => AnalysisViewTransition
+    }
+    const root = document.documentElement
+
+    if (reduceAnimations || !transitionDocument.startViewTransition) {
+      activeAnalysisViewTransitionRef.current?.skipTransition?.()
+      activeAnalysisViewTransitionRef.current = null
+      delete root.dataset.analysisViewTransition
+      delete root.dataset.analysisViewTransitionPhase
+      save({ ...config, view: nextView })
+      return
+    }
+
+    activeAnalysisViewTransitionRef.current?.skipTransition?.()
+    root.dataset.analysisViewTransition = 'true'
+    root.dataset.analysisViewTransitionPhase = 'preparing'
+    try {
+      const transition = transitionDocument.startViewTransition(() => {
+        flushSync(() => save({ ...config, view: nextView }))
+      })
+      activeAnalysisViewTransitionRef.current = transition
+      void transition.ready.then(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activeAnalysisViewTransitionRef.current !== transition) return
+          root.dataset.analysisViewTransitionPhase = 'running'
+        }))
+      }, () => {})
+      const clearTransition = () => {
+        if (activeAnalysisViewTransitionRef.current !== transition) return
+        activeAnalysisViewTransitionRef.current = null
+        delete root.dataset.analysisViewTransition
+        delete root.dataset.analysisViewTransitionPhase
+      }
+      void transition.finished.then(clearTransition, clearTransition)
+    } catch {
+      activeAnalysisViewTransitionRef.current = null
+      delete root.dataset.analysisViewTransition
+      delete root.dataset.analysisViewTransitionPhase
+      save({ ...config, view: nextView })
+    }
+  }, [config, primaryView, reduceAnimations, save])
   const updateSeries = useCallback((series: AnalyzeSeriesConfig[]) => {
     if (!reduceAnimations) {
       seriesLayoutBeforeUpdateRef.current = new Map(
@@ -575,8 +845,8 @@ export default function AnalyzeScreen({
   const inspectMapAt = useCallback((elapsedSeconds: number) => {
     if (!playbackFilename) return
     setMapFocus({ id: ++mapFocusIdRef.current, elapsedSeconds })
-    save({ ...config, view: 'map' })
-  }, [config, playbackFilename, save])
+    if (config.view === 'graph') setAnalysisView('split')
+  }, [config.view, playbackFilename, setAnalysisView])
 
 
   const selectedIds = useMemo(() => new Set(config.series.map(item => item.metricId)), [config.series])
@@ -695,7 +965,7 @@ export default function AnalyzeScreen({
 
   useEffect(() => {
     let cancelled = false
-    if (!playbackFilename || analysisView === 'map' || !selectedDistanceMode ||
+    if (!playbackFilename || !selectedDistanceMode ||
         deltaCurrentLapNum === null || deltaComparisonLapNum === null) {
       setDeltaData(null)
       return () => { cancelled = true }
@@ -714,11 +984,15 @@ export default function AnalyzeScreen({
     })
     return () => { cancelled = true }
   }, [
-    analysisView,
     deltaComparisonLapNum, deltaComparisonSource, deltaCurrentLapNum,
     deltaCurrentSource, playbackFilename, secondaryFile,
     sectorDeltaEnabled, selectedDistanceMode,
   ])
+
+  const displayedDeltaData = deltaData?.sectorDelta === sectorDeltaEnabled ? deltaData : null
+  const deltaSeries = config.series.find(item => item.metricId === 'delta')
+  const deltaPositiveColor = deltaSeries?.color ?? DEFAULT_DELTA_POSITIVE_COLOR
+  const deltaNegativeColor = deltaSeries?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR
 
   const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
     const times: Record<number, number> = {}
@@ -907,40 +1181,45 @@ export default function AnalyzeScreen({
         className={`${config.collapsed ? 'border-r-0' : 'border-r'} shrink-0 border-[var(--border)] overflow-hidden bg-[var(--bg-panel)]`}
       >
           <div className={`w-[315px] h-full flex flex-col transition-[visibility] duration-0 ${config.collapsed ? 'invisible delay-200' : 'visible delay-0'}`}>
-            <div className="h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0">
+            <div className="h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0">
               <div className="text-[11px] font-bold uppercase tracking-widest text-[var(--text-primary)] shrink-0">Analysis</div>
+              <div className="flex-1 min-w-0">
+                <Select<SelectOption, false>
+                  inputId="analyze-add-metric" aria-label="Add a Metric" value={null} options={metricOptions}
+                  onChange={addMetric} placeholder="Add a Metric" styles={selectStyles}
+                  components={selectComponents} isSearchable menuPortalTarget={document.body}
+                />
+              </div>
             </div>
 
             <div className="p-3 border-b border-[var(--border)] space-y-3 shrink-0">
-              <div className="flex items-center gap-2">
-                <label htmlFor="analyze-add-metric" className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Add metric</label>
-                <div className="flex-1 min-w-0">
-                  <Select<SelectOption, false>
-                    inputId="analyze-add-metric" value={null} options={metricOptions} onChange={addMetric} placeholder="Choose a value…"
-                    styles={selectStyles} components={selectComponents} isSearchable menuPortalTarget={document.body}
-                  />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <label htmlFor="analyze-view" className="shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">View</label>
-                <div className="flex-1 min-w-0">
-                  <Select<SelectOption, false>
-                    inputId="analyze-view"
-                    value={ANALYSIS_VIEW_OPTIONS.find(option => option.value === primaryView) ?? ANALYSIS_VIEW_OPTIONS[0]}
-                    options={ANALYSIS_VIEW_OPTIONS}
-                    onChange={option => {
-                      if (!option || (option.value !== 'graph' && option.value !== 'map') ||
-                          (option.value === 'map' && mismatchedFiles)) return
-                      setMapFocus(null)
-                      save({ ...config, view: option.value })
-                    }}
-                    isOptionDisabled={option => option.value === 'map' && (!playbackFilename || mismatchedFiles)}
-                    styles={selectStyles}
-                    components={selectComponents}
-                    isSearchable={false}
-                    menuPortalTarget={document.body}
-                  />
-                </div>
+              <div className="flex gap-2">
+                <button
+                  type="button" aria-label="Graphs" aria-pressed={primaryView === 'graph'} title="Graphs"
+                  onClick={() => {
+                    setMapFocus(null)
+                    setAnalysisView('graph')
+                  }}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${primaryView === 'graph' ? 'analyze-toggle-button--active' : ''}`}
+                ><LineChart size={15} /></button>
+                <button
+                  type="button" aria-label="Split Mode" aria-pressed={primaryView === 'split'} title="Split Mode"
+                  disabled={!playbackFilename || mismatchedFiles}
+                  onClick={() => {
+                    setMapFocus(null)
+                    setAnalysisView('split')
+                  }}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${primaryView === 'split' ? 'analyze-toggle-button--active' : ''}`}
+                ><Columns2 size={15} /></button>
+                <button
+                  type="button" aria-label="Map" aria-pressed={primaryView === 'map'} title="Map"
+                  disabled={!playbackFilename || mismatchedFiles}
+                  onClick={() => {
+                    setMapFocus(null)
+                    setAnalysisView('map')
+                  }}
+                  className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${primaryView === 'map' ? 'analyze-toggle-button--active' : ''}`}
+                ><MapIcon size={15} /></button>
               </div>
               <div className="flex gap-2">
                 <button
@@ -963,11 +1242,12 @@ export default function AnalyzeScreen({
                   onClick={() => save({ ...config, sectorDelta: !config.sectorDelta })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${config.sectorDelta ? 'analyze-toggle-button--active' : ''}`}
                 ><ChartNoAxesCombined size={15} /></button>
-                {playbackFilename && blocks && <button
+                <button
                   type="button" aria-label="Comparison" aria-pressed={fixedLapMode.enabled} title="Comparison"
+                  disabled={!playbackFilename || !blocks}
                   onClick={() => onFixedLapModeChange({ ...fixedLapMode, enabled: !fixedLapMode.enabled })}
                   className={`${ANALYZE_TOGGLE_BUTTON_CLASS} ${fixedLapMode.enabled ? 'analyze-toggle-button--active' : ''}`}
-                ><GitCompareArrows size={15} /></button>}
+                ><ListChevronsUpDown size={15} /></button>
               </div>
               {playbackFilename && blocks && <div className="space-y-1">
                 <div className="h-8 flex items-center gap-1 min-w-0">
@@ -1004,7 +1284,7 @@ export default function AnalyzeScreen({
                       onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })
                     }}
                     styles={lapSelectStyles}
-                    showColorPicker={analysisView === 'map'}
+                    showColorPicker={mapVisible}
                     colorPicker={<AnalyzeColorPicker
                       label="Lap A"
                       color={config.mapCurrentColor}
@@ -1018,7 +1298,7 @@ export default function AnalyzeScreen({
                       onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })
                     }}
                     styles={lapSelectStyles}
-                    showColorPicker={analysisView === 'map'}
+                    showColorPicker={mapVisible}
                     colorPicker={<AnalyzeColorPicker
                       label="Lap B"
                       color={config.mapComparisonColor}
@@ -1034,7 +1314,7 @@ export default function AnalyzeScreen({
                   <AnalyzeComparisonSelector
                     id="analyze-current-lap" label="Current" placeholder="No current lap"
                     value={currentLapValue} options={[]} onChange={() => {}} styles={lapSelectStyles} displayOnly
-                    showColorPicker={analysisView === 'map'}
+                    showColorPicker={mapVisible}
                     colorPicker={<AnalyzeColorPicker
                       label="Current"
                       color={config.mapCurrentColor}
@@ -1057,7 +1337,7 @@ export default function AnalyzeScreen({
                       }
                     }}
                     styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
-                    showColorPicker={analysisView === 'map'}
+                    showColorPicker={mapVisible}
                     colorPicker={<AnalyzeColorPicker
                       label="Compare"
                       color={config.mapComparisonColor}
@@ -1153,7 +1433,7 @@ export default function AnalyzeScreen({
           </div>
       </aside>
 
-      <section className="flex-1 min-w-0 flex flex-col">
+      <section className="analysis-view-page-transition flex-1 min-w-0 flex flex-col">
         <div className="h-11 px-2 border-b border-[var(--border)] flex items-center gap-1 shrink-0">
           <button
             title={config.collapsed ? 'Open Analysis controls' : 'Collapse Analysis controls'}
@@ -1163,7 +1443,7 @@ export default function AnalyzeScreen({
           >
             {config.collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
           </button>
-          {analysisView !== 'map' ? <>
+          {analysisView !== 'map' && <>
             <span className="h-5 w-px mx-1 bg-[var(--border)]" />
             <span className="px-1 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Zoom</span>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Zoom out" onClick={() => activeChartControlsRef.current?.zoomOut()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ZoomOut size={14} /></button>
@@ -1173,20 +1453,38 @@ export default function AnalyzeScreen({
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan left" onClick={() => activeChartControlsRef.current?.panLeft()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowLeft size={14} /></button>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Pan right" onClick={() => activeChartControlsRef.current?.panRight()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><ArrowRight size={14} /></button>
             <button disabled={!fixedLapMode.enabled || !fixedPrimary} title="Reset zoom" onClick={() => activeChartControlsRef.current?.reset()} className="w-7 h-7 rounded flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-25 disabled:pointer-events-none"><RotateCcw size={13} /></button>
-            {fixedLapMode.enabled && fixedPrimary && <span className="ml-auto pr-1 text-[9px] text-[var(--text-secondary)] max-[1100px]:hidden">Ctrl+wheel to zoom · {analysisView === 'charts' ? 'Shift+wheel' : 'drag'} to pan · double-click to reset</span>}
-            {!fixedLapMode.enabled && <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">{selectedDistanceMode ? 'Lap distance' : 'Elapsed time'}</span>}
-          </> : <span className="ml-auto pr-1 text-[9px] uppercase tracking-wider text-[var(--text-secondary)]">Elapsed time comparison</span>}
+          </>}
+          <div className="ml-auto flex shrink-0 items-center gap-3 pr-1">
+            <AnalysisDeltaReadout
+              deltaData={displayedDeltaData}
+              current={current}
+              comparison={comparison}
+              positiveColor={deltaPositiveColor}
+              negativeColor={deltaNegativeColor}
+              followPlaybackCursor={!!playbackFilename && !fixedLapMode.enabled}
+            />
+            <button
+              type="button"
+              title="Analysis controls help"
+              aria-label="Open Analysis controls help"
+              onClick={() => setControlsHelpOpen(true)}
+              className="w-7 h-7 rounded flex items-center justify-center shrink-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+            >
+              <CircleHelp size={15} />
+            </button>
+          </div>
         </div>
-        <div className="flex-1 min-h-0 relative">
+        <div className="flex-1 min-h-0 relative flex">
           <div
-            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? '' : 'analysis-view-surface--visible'}`}
-            aria-hidden={mapPresence.visible}
-            inert={mapPresence.visible}
+            className={`analysis-view-surface ${splitView ? 'relative basis-1/2 min-w-0 overflow-hidden border-r border-[var(--border)]' : 'absolute inset-0'} ${chartsVisible ? 'analysis-view-surface--visible' : ''}`}
+            data-analysis-active={chartsVisible}
+            aria-hidden={!chartsVisible}
+            inert={!chartsVisible}
           >
             <AnalyzeChartSubscriber
               isDark={isDark} selected={config.series}
-              deltaPositiveColor={config.series.find(item => item.metricId === 'delta')?.color ?? DEFAULT_DELTA_POSITIVE_COLOR}
-              deltaNegativeColor={config.series.find(item => item.metricId === 'delta')?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR}
+              deltaPositiveColor={deltaPositiveColor}
+              deltaNegativeColor={deltaNegativeColor}
               currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
               comparison={comparison} comparisonSelected={comparisonSelected}
               fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
@@ -1202,7 +1500,8 @@ export default function AnalyzeScreen({
             />
           </div>
           {mapPresence.mounted && <div
-            className={`analysis-view-surface absolute inset-0 ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
+            className={`analysis-view-surface ${splitView ? 'relative basis-1/2 min-w-0 overflow-hidden' : 'absolute inset-0'} ${mapPresence.visible ? 'analysis-view-surface--visible' : ''}`}
+            data-analysis-active={mapVisible}
             aria-hidden={!mapPresence.visible}
             inert={!mapPresence.visible}
           >
@@ -1223,6 +1522,54 @@ export default function AnalyzeScreen({
           </div>}
         </div>
       </section>
+
+      {controlsHelpPresence.mounted && createPortal(<div
+        data-state={controlsHelpPresence.visible ? 'open' : 'closed'}
+        className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
+        role="dialog" aria-modal="true" aria-labelledby="analysis-controls-help-title"
+        onMouseDown={event => {
+          if (event.target === event.currentTarget) setControlsHelpOpen(false)
+        }}
+      >
+        <div className="modal-panel flex max-h-[calc(100vh-2rem)] w-[680px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-panel)] shadow-[0_0_60px_rgba(0,0,0,0.85)]">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-6 py-4">
+            <div>
+              <div id="analysis-controls-help-title" className="text-xs font-mono font-bold uppercase tracking-widest text-[var(--text-primary)]">Analysis Controls</div>
+              <div className="mt-1 text-[10px] font-mono uppercase tracking-wider text-[var(--text-secondary)]">Views, chart options, and interactions</div>
+            </div>
+            <button
+              type="button" onClick={() => setControlsHelpOpen(false)} aria-label="Close Analysis controls help"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-secondary)] transition-colors hover:text-[#e10600]"
+            ><X size={18} /></button>
+          </div>
+
+          <div className="min-h-0 overflow-y-auto p-5">
+            <div className="mb-2 text-[9px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">Sidebar controls</div>
+            <div className="grid grid-cols-2 gap-2">
+              <AnalysisHelpItem icon={<LineChart size={15} />} label="Graphs">Shows the data in Graphs.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Columns2 size={15} />} label="Split Mode">Map on left, Graph on right. What more do you want?</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<MapIcon size={15} />} label="Map">Shows a map of the laps.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Rows3 size={15} />} label="Individual Graphs">Instead of cramming all data into one graph, it splits them off into separate graphs.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<SyncedTooltipIcon size={15} />} label="Synced Tooltip">When hovering over the graph, the tooltip will show the data for all visible graphs at that point.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<Columns3 size={15} />} label="Sector Boundaries">Shows Sectors instead of Distance on the X Axis.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<ChartNoAxesCombined size={15} />} label="Sector Delta">Instead of whole lap delta, it splits the delta into sectors.</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<ListChevronsUpDown size={15} />} label="Comparison">Compare two laps.</AnalysisHelpItem>
+            </div>
+
+            <div className="mb-2 mt-5 text-[9px] font-bold uppercase tracking-widest text-[var(--text-secondary)]">Chart interactions</div>
+            <div className="grid grid-cols-2 gap-2">
+              <AnalysisHelpItem icon={<ZoomIn size={15} />} label="Zoom">Ctrl + Wheel to Zoom</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<ArrowLeft size={15} />} label="Pan">Click and Drag to Pan</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<RotateCcw size={15} />} label="Reset">Double Right Click to Reset</AnalysisHelpItem>
+              <AnalysisHelpItem icon={<MapIcon size={15} />} label="Map View">Double Left Click to Open in Map view</AnalysisHelpItem>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 justify-end border-t border-[var(--border)] bg-[var(--bg-card)]/10 px-6 py-4">
+            <button type="button" onClick={() => setControlsHelpOpen(false)} className={BUTTON_CLASS}>Close</button>
+          </div>
+        </div>
+      </div>, document.body)}
 
       {circuitMismatchPresence.mounted && displayedCircuitMismatch && <div
         data-state={circuitMismatchPresence.visible ? 'open' : 'closed'}

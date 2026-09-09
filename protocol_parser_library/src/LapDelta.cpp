@@ -87,6 +87,65 @@ void appendValid(LapDeltaResult& result, float distance, double delta) {
     result.maxAbsDeltaSeconds = std::max(result.maxAbsDeltaSeconds, std::abs(delta));
 }
 
+float resolvedDistance(float current, float comparison) {
+    return current > 0.0f ? current : comparison;
+}
+
+bool exactCumulativeElapsed(const AnalysisLapProgress& lap,
+                            int completedSectors,
+                            double& secondsOut) {
+    int milliseconds = 0;
+    if (completedSectors == 1 && lap.sector1TimeMs > 0) {
+        milliseconds = lap.sector1TimeMs;
+    } else if (completedSectors == 2 && lap.sector1TimeMs > 0 && lap.sector2TimeMs > 0) {
+        milliseconds = lap.sector1TimeMs + lap.sector2TimeMs;
+    } else if (completedSectors == 3 && lap.lapTimeMs > 0) {
+        milliseconds = lap.lapTimeMs;
+    } else {
+        return false;
+    }
+    secondsOut = static_cast<double>(milliseconds) / 1000.0;
+    return true;
+}
+
+bool exactCumulativeDelta(const AnalysisLapProgress& current,
+                          const AnalysisLapProgress& comparison,
+                          int completedSectors,
+                          double& deltaOut) {
+    double currentElapsed = 0.0;
+    double comparisonElapsed = 0.0;
+    if (!exactCumulativeElapsed(current, completedSectors, currentElapsed) ||
+        !exactCumulativeElapsed(comparison, completedSectors, comparisonElapsed)) return false;
+    deltaOut = currentElapsed - comparisonElapsed;
+    return true;
+}
+
+bool exactSectorDelta(const AnalysisLapProgress& current,
+                      const AnalysisLapProgress& comparison,
+                      int sectorIndex,
+                      double& deltaOut) {
+    int currentMs = 0;
+    int comparisonMs = 0;
+    if (sectorIndex == 0 && current.sector1TimeMs > 0 && comparison.sector1TimeMs > 0) {
+        currentMs = current.sector1TimeMs;
+        comparisonMs = comparison.sector1TimeMs;
+    } else if (sectorIndex == 1 && current.sector2TimeMs > 0 && comparison.sector2TimeMs > 0) {
+        currentMs = current.sector2TimeMs;
+        comparisonMs = comparison.sector2TimeMs;
+    } else if (sectorIndex == 2 &&
+               current.lapTimeMs > current.sector1TimeMs + current.sector2TimeMs &&
+               comparison.lapTimeMs > comparison.sector1TimeMs + comparison.sector2TimeMs &&
+               current.sector1TimeMs > 0 && current.sector2TimeMs > 0 &&
+               comparison.sector1TimeMs > 0 && comparison.sector2TimeMs > 0) {
+        currentMs = current.lapTimeMs - current.sector1TimeMs - current.sector2TimeMs;
+        comparisonMs = comparison.lapTimeMs - comparison.sector1TimeMs - comparison.sector2TimeMs;
+    } else {
+        return false;
+    }
+    deltaOut = static_cast<double>(currentMs - comparisonMs) / 1000.0;
+    return true;
+}
+
 } // namespace
 
 LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
@@ -102,32 +161,40 @@ LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
     if (currentMap.points.empty() || comparisonMap.points.empty()) return result;
 
     std::vector<float> sectorStarts;
-    if (sectorDelta) {
-        const float sector1 = current.sector1EndDistanceM > 0.0f
-            ? current.sector1EndDistanceM : comparison.sector1EndDistanceM;
-        const float sector2 = current.sector2EndDistanceM > 0.0f
-            ? current.sector2EndDistanceM : comparison.sector2EndDistanceM;
-        if (sector1 > 0.0f) sectorStarts.push_back(sector1);
-        if (sector2 > sector1 && sector2 > 0.0f) sectorStarts.push_back(sector2);
-    }
+    const float sector1 = resolvedDistance(
+        current.sector1EndDistanceM, comparison.sector1EndDistanceM);
+    const float sector2 = resolvedDistance(
+        current.sector2EndDistanceM, comparison.sector2EndDistanceM);
+    if (sector1 > 0.0f) sectorStarts.push_back(sector1);
+    if (sector1 > 0.0f && sector2 > sector1) sectorStarts.push_back(sector2);
 
-    const float maxDistance = std::min(currentMap.maxDistance, comparisonMap.maxDistance);
+    const float finishDistance = resolvedDistance(current.trackLengthM, comparison.trackLengthM);
+    double exactFinishDelta = 0.0;
+    const bool hasExactFinish = finishDistance > 0.0f &&
+        (sectorStarts.empty() || finishDistance > sectorStarts.back()) &&
+        exactCumulativeDelta(current, comparison, 3, exactFinishDelta);
+
+    float maxDistance = std::min(currentMap.maxDistance, comparisonMap.maxDistance);
+    if (hasExactFinish) maxDistance = std::min(maxDistance, finishDistance);
     float lastStoredDistance = -std::numeric_limits<float>::infinity();
+    size_t nextCumulativeAnchor = 0;
     for (const auto& point : currentMap.points) {
         const float distance = point.lap_distance_m;
         if (distance > maxDistance) break;
+        // Leave the exact timing-line value as the sole finish sample. Packet
+        // positions can straddle the line differently on otherwise equal laps.
+        if (hasExactFinish && distance >= finishDistance) break;
 
         double currentBase = 0.0;
         double comparisonBase = 0.0;
         if (sectorDelta) {
-            float sectorStart = 0.0f;
-            for (const float boundary : sectorStarts) {
+            for (size_t index = 0; index < sectorStarts.size(); ++index) {
+                const float boundary = sectorStarts[index];
                 if (boundary > distance) break;
-                sectorStart = boundary;
-            }
-            if (sectorStart > 0.0f) {
-                currentBase = interpolateElapsed(currentMap, sectorStart);
-                comparisonBase = interpolateElapsed(comparisonMap, sectorStart);
+                if (!exactCumulativeElapsed(current, static_cast<int>(index + 1), currentBase))
+                    currentBase = interpolateElapsed(currentMap, boundary);
+                if (!exactCumulativeElapsed(comparison, static_cast<int>(index + 1), comparisonBase))
+                    comparisonBase = interpolateElapsed(comparisonMap, boundary);
             }
         }
 
@@ -137,28 +204,90 @@ LapDeltaResult calculateLapDelta(const AnalysisLapProgress& current,
         if (!std::isfinite(delta)) continue;
 
         if (sectorDelta) {
-            for (const float boundary : sectorStarts) {
+            for (size_t index = 0; index < sectorStarts.size(); ++index) {
+                const float boundary = sectorStarts[index];
                 if (boundary <= lastStoredDistance || boundary > distance) continue;
                 float previousBoundary = 0.0f;
-                for (const float prior : sectorStarts) {
-                    if (prior >= boundary) break;
-                    previousBoundary = prior;
+                if (index > 0) previousBoundary = sectorStarts[index - 1];
+                double completedSectorDelta = 0.0;
+                if (!exactSectorDelta(current, comparison, static_cast<int>(index),
+                                      completedSectorDelta)) {
+                    const double previousCurrentBase = previousBoundary > 0.0f
+                        ? interpolateElapsed(currentMap, previousBoundary) : 0.0;
+                    const double previousComparisonBase = previousBoundary > 0.0f
+                        ? interpolateElapsed(comparisonMap, previousBoundary) : 0.0;
+                    completedSectorDelta =
+                        (interpolateElapsed(currentMap, boundary) - previousCurrentBase) -
+                        (interpolateElapsed(comparisonMap, boundary) - previousComparisonBase);
                 }
-                const double previousCurrentBase = previousBoundary > 0.0f
-                    ? interpolateElapsed(currentMap, previousBoundary) : 0.0;
-                const double previousComparisonBase = previousBoundary > 0.0f
-                    ? interpolateElapsed(comparisonMap, previousBoundary) : 0.0;
-                const double completedSectorDelta =
-                    (interpolateElapsed(currentMap, boundary) - previousCurrentBase) -
-                    (interpolateElapsed(comparisonMap, boundary) - previousComparisonBase);
                 appendValid(result, boundary, completedSectorDelta);
                 result.samples.push_back({boundary, 0.0, false});
                 result.samples.push_back({boundary, 0.0, true});
                 lastStoredDistance = boundary;
             }
+        } else {
+            while (nextCumulativeAnchor < sectorStarts.size() &&
+                   sectorStarts[nextCumulativeAnchor] <= distance) {
+                const float boundary = sectorStarts[nextCumulativeAnchor];
+                double exactDelta = 0.0;
+                if (boundary > lastStoredDistance &&
+                    exactCumulativeDelta(current, comparison,
+                                         static_cast<int>(nextCumulativeAnchor + 1), exactDelta)) {
+                    appendValid(result, boundary, exactDelta);
+                    lastStoredDistance = boundary;
+                }
+                ++nextCumulativeAnchor;
+            }
         }
+        if (distance <= lastStoredDistance) continue;
         appendValid(result, distance, delta);
         lastStoredDistance = distance;
+    }
+
+    // A completed lap can still have its final sampled point before a sector
+    // line. Preserve every remaining authoritative split before the finish.
+    if (hasExactFinish) {
+        while (nextCumulativeAnchor < sectorStarts.size()) {
+            const float boundary = sectorStarts[nextCumulativeAnchor];
+            if (boundary > lastStoredDistance) {
+                double exactDelta = 0.0;
+                if (sectorDelta) {
+                    if (exactSectorDelta(current, comparison,
+                                         static_cast<int>(nextCumulativeAnchor), exactDelta)) {
+                        appendValid(result, boundary, exactDelta);
+                        result.samples.push_back({boundary, 0.0, false});
+                        result.samples.push_back({boundary, 0.0, true});
+                        lastStoredDistance = boundary;
+                    }
+                } else if (exactCumulativeDelta(
+                               current, comparison,
+                               static_cast<int>(nextCumulativeAnchor + 1), exactDelta)) {
+                    appendValid(result, boundary, exactDelta);
+                    lastStoredDistance = boundary;
+                }
+            }
+            ++nextCumulativeAnchor;
+        }
+    }
+
+    // Completed laps have an authoritative timing-line endpoint even though
+    // their final menu-rate position samples generally land on opposite sides
+    // of that line. Anchor the curve there so its final value equals the lap-
+    // time difference rather than the last coincident packet position.
+    if (hasExactFinish && finishDistance > lastStoredDistance) {
+        if (sectorDelta) {
+            double finalSectorDelta = exactFinishDelta;
+            double completedSectorDelta = 0.0;
+            const bool haveCompletedSectorDelta = sectorStarts.empty() ||
+                exactCumulativeDelta(current, comparison,
+                                     static_cast<int>(sectorStarts.size()), completedSectorDelta);
+            if (haveCompletedSectorDelta) {
+                finalSectorDelta -= completedSectorDelta;
+                appendValid(result, finishDistance, finalSectorDelta);
+            }
+        } else {
+            appendValid(result, finishDistance, exactFinishDelta);
+        }
     }
     return result;
 }
