@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -40,6 +41,12 @@ static constexpr uint32_t kHistoricalRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) |
     (1u << 12);
 static constexpr size_t kMaxLiveHistoryRows = 750000;
+// Session/timing/all-car status packets can arrive at the game's frame rate,
+// but Strategy only needs a recent state sample plus every lap/event/set change
+// when reconstructing after a flashback. Retain these inputs in the engine's
+// existing history at 4 Hz instead of duplicating every full JSON row.
+static constexpr float kStrategyHistoryIntervalS = 0.25f;
+static constexpr std::chrono::milliseconds kStrategyPublishInterval{100};
 
 static uint8_t rowTypeOf(std::string_view json) {
     static constexpr std::pair<std::string_view, uint8_t> TYPES[] = {
@@ -131,6 +138,9 @@ Engine::Engine(const Config& config, Sink* sink)
     }
     strategy_.setMinimumStops(config_.strategyMinimumStops);
     reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
+    strategyThread_ = std::thread(&Engine::strategyLoop, this);
+    enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
+                             2025, config_.strategyMinimumStops, false, {}});
     writer_.setLogging(config.loggingEnabled, config.outputDirectory);
     TRACE("Engine ctor: writer_.setLogging done");
     pairServer_.configure({config.pairPort, config.pairName,
@@ -173,6 +183,7 @@ Engine::~Engine() {
     pairServer_.stop(false);
     stopPlaybackThread();
     udp_.stop();
+    stopStrategyThread();
     writer_.closeActiveStream();
 }
 
@@ -228,7 +239,16 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         config_.bindAddress = bindAddress;
         parser_.reset();
         strategy_.reset();
-        liveStrategyJournal_.clear();
+        ++liveStrategyGeneration_;
+        enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
+                                 2025, config_.strategyMinimumStops, false, {}});
+        liveLatestRows_ = {};
+        for (auto& history : livePackedHistory_) history = {};
+        for (auto& history : liveJsonHistory_) history.clear();
+        liveHistorySequence_ = 0;
+        liveSessionTime_ = 0.0f;
+        liveLapStart_ = 0.0f;
+        liveLapNum_ = 0;
         lastStrategyJson_.clear();
     }
     return udp_.start(port, bindAddress,
@@ -241,7 +261,7 @@ std::string Engine::udpLastError() const {
     return udp_.lastError();
 }
 
-void Engine::rewindLiveTimeline(float sessionTime) {
+void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
     for (auto& history : livePackedHistory_) {
         while (!history.index.empty() && history.index.back().sessionTime > sessionTime)
             history.index.pop_back();
@@ -253,30 +273,197 @@ void Engine::rewindLiveTimeline(float sessionTime) {
     for (auto& history : liveJsonHistory_)
         while (!history.empty() && history.back().sessionTime > sessionTime)
             history.pop_back();
-    while (!liveStrategyJournal_.empty() &&
-           liveStrategyJournal_.back().sessionTime > sessionTime)
-        liveStrategyJournal_.pop_back();
-    strategy_.reset();
-    for (const auto& entry : liveStrategyJournal_) ingestStrategyRow(entry.json);
+    StrategyWork rebuild;
+    rebuild.kind = StrategyWorkKind::Rebuild;
+    rebuild.generation = ++liveStrategyGeneration_;
+    rebuild.format = format;
+    rebuild.minimumStops = config_.strategyMinimumStops;
+    for (uint8_t type = 2; type <= 10; ++type) {
+        const auto& history = liveJsonHistory_[type];
+        // Display histories for status/damage/lap can be frame-rate dense. The
+        // reducer does not need that density, so take a time-spaced view of the
+        // existing buffer instead of copying it into another journal.
+        float lastSelected = -std::numeric_limits<float>::infinity();
+        uint64_t selectedSequence = 0;
+        for (const auto& row : history) {
+            if (type == 6 || row.sessionTime >=
+                lastSelected + kStrategyHistoryIntervalS) {
+                rebuild.rows.push_back(row);
+                lastSelected = row.sessionTime;
+                selectedSequence = row.sequence;
+            }
+        }
+        if (!history.empty() && history.back().sequence != selectedSequence)
+            rebuild.rows.push_back(history.back());
+    }
+    enqueueLiveStrategyWork(std::move(rebuild));
+    liveLatestRows_[kStrategyRowType].clear();
     lastStrategyJson_.clear();
 
     // State rows newer than the target must not leak back into a page restored
     // after the rewind. Historical families can be restored from their tails.
     for (uint8_t type = 1; type < liveLatestRows_.size(); ++type) {
-        if (!(kHistoricalRowMask & (1u << type))) continue;
+        if (!((kHistoricalRowMask | kStrategyDependencyMask) & (1u << type))) continue;
         liveLatestRows_[type] = liveJsonHistory_[type].empty()
-            ? std::string{} : liveJsonHistory_[type].back().json;
+            ? std::string{} : *liveJsonHistory_[type].back().json;
     }
     liveLapNum_ = 0;
     liveLapStart_ = sessionTime;
     if (!liveJsonHistory_[4].empty()) {
-        const std::string& lap = liveJsonHistory_[4].back().json;
+        const std::string& lap = *liveJsonHistory_[4].back().json;
         liveLapNum_ = static_cast<int>(scanJsonNumber(lap, "\"lap_num\":", 0));
         const double lapMs = scanJsonNumber(lap, "\"current_lap_ms\":", 0.0);
         liveLapStart_ = liveJsonHistory_[4].back().sessionTime -
             static_cast<float>(std::max(0.0, lapMs) / 1000.0);
     }
     liveSessionTime_ = sessionTime;
+}
+
+void Engine::enqueueLiveStrategyWork(StrategyWork work) {
+    {
+        std::lock_guard<std::mutex> lock(strategyWorkMutex_);
+        if (strategyStop_) return;
+        // A rebuild/reset supersedes all queued work from the old timeline.
+        if (work.kind == StrategyWorkKind::Rebuild ||
+            work.kind == StrategyWorkKind::Reset) {
+            strategyWorkQueue_.erase(
+                std::remove_if(strategyWorkQueue_.begin(), strategyWorkQueue_.end(),
+                    [&](const StrategyWork& queued) {
+                        return queued.generation < work.generation;
+                    }),
+                strategyWorkQueue_.end());
+        }
+        if (work.kind == StrategyWorkKind::Update &&
+            !strategyWorkQueue_.empty() &&
+            strategyWorkQueue_.back().kind == StrategyWorkKind::Update &&
+            strategyWorkQueue_.back().generation == work.generation) {
+            auto& pending = strategyWorkQueue_.back();
+            for (auto& incoming : work.rows) {
+                const uint8_t incomingType = incoming.json
+                    ? rowTypeOf(*incoming.json) : 0;
+                // Race events are edge-triggered and must never be coalesced.
+                if (incomingType != 6) {
+                    auto previous = std::find_if(pending.rows.rbegin(), pending.rows.rend(),
+                        [&](const LiveJsonHistoryRow& row) {
+                            return row.json && rowTypeOf(*row.json) == incomingType;
+                        });
+                    if (previous != pending.rows.rend()) {
+                        const bool crossedLap = incomingType == 4 &&
+                            scanJsonNumber(*previous->json, "\"lap_num\":", -1) !=
+                            scanJsonNumber(*incoming.json, "\"lap_num\":", -1);
+                        if (!crossedLap) {
+                            *previous = std::move(incoming);
+                            continue;
+                        }
+                    }
+                }
+                pending.rows.push_back(std::move(incoming));
+            }
+            pending.format = work.format;
+            pending.minimumStops = work.minimumStops;
+            pending.forceSnapshot = pending.forceSnapshot || work.forceSnapshot;
+            strategyWorkCv_.notify_one();
+            return;
+        }
+        strategyWorkQueue_.push_back(std::move(work));
+    }
+    strategyWorkCv_.notify_one();
+}
+
+void Engine::strategyLoop() {
+    StrategyProcessor liveStrategy;
+    uint64_t activeGeneration = 0;
+    auto lastPublished = std::chrono::steady_clock::time_point::min();
+
+    for (;;) {
+        std::deque<StrategyWork> work;
+        {
+            std::unique_lock<std::mutex> lock(strategyWorkMutex_);
+            strategyWorkCv_.wait(lock, [this] {
+                return strategyStop_ || !strategyWorkQueue_.empty();
+            });
+            if (strategyStop_ && strategyWorkQueue_.empty()) return;
+            work.swap(strategyWorkQueue_);
+        }
+
+        bool changed = false;
+        bool forceSnapshot = false;
+        for (auto& item : work) {
+            if (item.generation < activeGeneration) continue;
+            if (item.generation > activeGeneration ||
+                item.kind == StrategyWorkKind::Reset ||
+                item.kind == StrategyWorkKind::Rebuild) {
+                activeGeneration = item.generation;
+                liveStrategy.reset();
+                changed = changed || item.kind == StrategyWorkKind::Rebuild;
+            }
+            liveStrategy.setFormat(item.format);
+            liveStrategy.setMinimumStops(item.minimumStops);
+            if (item.kind == StrategyWorkKind::Rebuild) {
+                std::stable_sort(item.rows.begin(), item.rows.end(),
+                    [](const LiveJsonHistoryRow& a, const LiveJsonHistoryRow& b) {
+                        return a.sessionTime < b.sessionTime ||
+                            (a.sessionTime == b.sessionTime && a.sequence < b.sequence);
+                    });
+            } else if (item.rows.size() > 1) {
+                std::stable_sort(item.rows.begin(), item.rows.end(),
+                    [](const LiveJsonHistoryRow& a, const LiveJsonHistoryRow& b) {
+                        return a.sequence < b.sequence;
+                    });
+            }
+            for (const auto& row : item.rows) {
+                if (row.json) liveStrategy.ingestJson(*row.json);
+                changed = true;
+            }
+            forceSnapshot = forceSnapshot || item.forceSnapshot;
+            if (item.kind == StrategyWorkKind::Configure) changed = true;
+        }
+
+        bool visible = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            visible = !inPlayback_.load() &&
+                activeGeneration == liveStrategyGeneration_ &&
+                (consumerRowMask_ & kStrategyRowBit) != 0;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!changed || !visible) continue;
+        if (!forceSnapshot &&
+            lastPublished != std::chrono::steady_clock::time_point::min() &&
+            now - lastPublished < kStrategyPublishInterval) {
+            // This is the Strategy worker, never the UDP thread. Waiting here
+            // provides a true trailing-edge publish: the last update before a
+            // pause is not silently discarded merely because it arrived inside
+            // the display cadence window. New UDP work coalesces in the queue.
+            std::this_thread::sleep_until(lastPublished + kStrategyPublishInterval);
+        }
+
+        std::string json = liveStrategy.snapshotJson();
+        bool emit = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!inPlayback_.load() && activeGeneration == liveStrategyGeneration_ &&
+                (consumerRowMask_ & kStrategyRowBit)) {
+                liveLatestRows_[kStrategyRowType] = json;
+                if (forceSnapshot || json != lastStrategyJson_) {
+                    lastStrategyJson_ = json;
+                    emit = true;
+                }
+            }
+        }
+        if (emit) emitRow(json);
+        lastPublished = std::chrono::steady_clock::now();
+    }
+}
+
+void Engine::stopStrategyThread() {
+    {
+        std::lock_guard<std::mutex> lock(strategyWorkMutex_);
+        strategyStop_ = true;
+        strategyWorkQueue_.clear();
+    }
+    strategyWorkCv_.notify_all();
+    if (strategyThread_.joinable()) strategyThread_.join();
 }
 
 void Engine::ingestStrategyRow(const std::string& json) {
@@ -321,7 +508,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ | kStrategyDependencyMask |
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
-    strategy_.setFormat(r.format);
+    if (r.format != 0) liveStrategyFormat_ = r.format;
     if (r.format != 0) pairServer_.noteSession(r.sessionUid);
 
     for (const auto& c : r.control) emitRow(c);
@@ -335,33 +522,61 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         for (const auto& hj  : r.hotJson) writer_.record(hj, timelineTime);
     }
 
-    if (config_.binaryPlayback && std::isfinite(timelineTime) && timelineTime >= 0.0f) {
+    if (std::isfinite(timelineTime) && timelineTime >= 0.0f) {
         // Prefer FLBK's exact target. If the event is absent/lost, retain the
-        // existing session-time regression detector as the fallback.
-        if (r.rewindSessionTime || timelineTime < liveSessionTime_)
-            rewindLiveTimeline(timelineTime);
+        // session-time regression detector with a grace window for slightly
+        // stale packets delivered after a pause or scheduling stall.
+        if (r.rewindSessionTime || timelineTime < liveSessionTime_ - 0.2f)
+            rewindLiveTimeline(timelineTime, r.format);
         else
-            liveSessionTime_ = timelineTime;
+            liveSessionTime_ = std::max(liveSessionTime_, timelineTime);
     }
 
     // Keep one native latest-state row even while its page is hidden, then only
     // forward subscribed families. Recording above remains completely unmasked.
     bool strategyInput = false;
+    std::vector<LiveJsonHistoryRow> strategyRows;
     for (const auto& row : r.rows) {
-        ingestStrategyRow(row);
         const uint8_t type = rowTypeOf(row);
-        strategyInput = strategyInput || (kStrategyDependencyMask & (1u << type));
-        if ((kStrategyDependencyMask & (1u << type)) && r.sessionTime >= 0.0f) {
-            liveStrategyJournal_.push_back({r.sessionTime, row});
-            if (liveStrategyJournal_.size() > kMaxLiveHistoryRows)
-                liveStrategyJournal_.pop_front();
+        const bool isStrategyInput = (kStrategyDependencyMask & (1u << type)) != 0;
+        strategyInput = strategyInput || isStrategyInput;
+        std::shared_ptr<const std::string> retainedRow;
+        LiveJsonHistoryRow strategyRow;
+        const float rowTime = static_cast<float>(scanJsonNumber(
+            row, "\"session_time\":", r.sessionTime));
+        if (isStrategyInput && rowTime >= 0.0f) {
+            retainedRow = std::make_shared<const std::string>(row);
+            strategyRow = {rowTime, ++liveHistorySequence_, retainedRow};
+            strategyRows.push_back(strategyRow);
         }
         if (type < liveLatestRows_.size()) liveLatestRows_[type] = row;
-        if (config_.binaryPlayback && r.sessionTime >= 0.0f && type < liveJsonHistory_.size() &&
-            (kHistoricalRowMask & (1u << type))) {
+        if (rowTime >= 0.0f && type < liveJsonHistory_.size()) {
             auto& history = liveJsonHistory_[type];
-            history.push_back({r.sessionTime, row});
-            if (history.size() > kMaxLiveHistoryRows) history.pop_front();
+            // A packet inside the rewind grace window is merely late. Do not
+            // put it behind newer history: rewind tail-trimming relies on each
+            // family remaining time ordered.
+            const bool extendsTimeline = history.empty() ||
+                rowTime >= history.back().sessionTime;
+            const bool displayHistory = config_.binaryPlayback &&
+                (kHistoricalRowMask & (1u << type));
+            const bool strategyHistory = isStrategyInput &&
+                (type == 6 ||
+                 history.empty() ||
+                 rowTime >= history.back().sessionTime +
+                     kStrategyHistoryIntervalS ||
+                 (type == 4 && scanJsonNumber(
+                     *history.back().json, "\"lap_num\":", -1) !=
+                     scanJsonNumber(row, "\"lap_num\":", -1)));
+            if (extendsTimeline && (displayHistory || strategyHistory)) {
+                if (isStrategyInput) {
+                    history.push_back(strategyRow);
+                } else {
+                    retainedRow = std::make_shared<const std::string>(row);
+                    history.push_back(
+                        {rowTime, ++liveHistorySequence_, retainedRow});
+                }
+                if (history.size() > kMaxLiveHistoryRows) history.pop_front();
+            }
         }
         if (config_.binaryPlayback && type == 4) {
             liveLapNum_ = static_cast<int>(scanJsonNumber(
@@ -372,12 +587,18 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         }
         if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
     }
-    if (strategyInput && (consumerRowMask_ & kStrategyRowBit)) emitStrategy();
+    if (strategyInput) {
+        enqueueLiveStrategyWork({StrategyWorkKind::Update, liveStrategyGeneration_,
+                                 liveStrategyFormat_, config_.strategyMinimumStops, false,
+                                 std::move(strategyRows)});
+    }
     if (config_.binaryPlayback && r.sessionTime >= 0.0f && !r.binary.empty()) {
         (void)bin::forEachPackedRecord(r.binary.data(), r.binary.size(),
             [&](uint8_t type, const uint8_t* record, size_t recordLen) {
                 if (!(kHistoricalRowMask & (1u << type))) return;
                 auto& history = livePackedHistory_[type];
+                if (!history.index.empty() &&
+                    r.sessionTime < history.index.back().sessionTime) return;
                 const size_t offset = history.bytes.size();
                 history.bytes.insert(history.bytes.end(), record, record + recordLen);
                 history.index.push_back({r.sessionTime, offset, recordLen});
@@ -429,11 +650,15 @@ void Engine::setStrategyMinimumStops(int stops) {
         config_.strategyMinimumStops = std::clamp(stops, 0, 8);
         strategy_.setMinimumStops(config_.strategyMinimumStops);
         reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
-        if (!liveLatestRows_[kStrategyRowType].empty()) {
+        if (inPlayback_.load() && !liveLatestRows_[kStrategyRowType].empty()) {
             snapshot = strategy_.snapshotJson();
             liveLatestRows_[kStrategyRowType] = snapshot;
             lastStrategyJson_ = snapshot;
             shouldEmit = (consumerRowMask_ & kStrategyRowBit) != 0;
+        } else if (!inPlayback_.load()) {
+            enqueueLiveStrategyWork({StrategyWorkKind::Configure,
+                                     liveStrategyGeneration_, liveStrategyFormat_,
+                                     config_.strategyMinimumStops, true, {}});
         }
     }
     if (shouldEmit) emitRow(snapshot);
@@ -524,11 +749,15 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
             strategyRebuildPending_ = false;
             if (inPlayback_.load()) {
                 (void)reader_.strategySnapshotAt(currentTime_, &strategy_);
+                std::string row = strategy_.snapshotJson();
+                liveLatestRows_[kStrategyRowType] = row;
+                lastStrategyJson_ = row;
+                restore.push_back(std::move(row));
+            } else {
+                enqueueLiveStrategyWork({StrategyWorkKind::Configure,
+                                         liveStrategyGeneration_, liveStrategyFormat_,
+                                         config_.strategyMinimumStops, true, {}});
             }
-            std::string row = strategy_.snapshotJson();
-            liveLatestRows_[kStrategyRowType] = row;
-            lastStrategyJson_ = row;
-            restore.push_back(std::move(row));
         }
 
         // Historical families are restored by the indexed range request. Only
@@ -575,7 +804,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                 for (const auto& entry : liveJsonHistory_[type]) {
                     if (entry.sessionTime < fromTime ||
                         entry.sessionTime > liveSessionTime_) continue;
-                    liveBackfillJson += entry.json;
+                    liveBackfillJson += *entry.json;
                     liveBackfillJson.push_back('\n');
                 }
             }
@@ -636,6 +865,10 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         ok = reader_.load(path, header);
         if (!ok && errorOut) *errorOut = reader_.lastError();
         if (ok) {
+            ++liveStrategyGeneration_;
+            enqueueLiveStrategyWork({StrategyWorkKind::Reset,
+                                     liveStrategyGeneration_, liveStrategyFormat_,
+                                     config_.strategyMinimumStops, false, {}});
             strategy_.reset();
             strategy_.setFormat(header.protocol >= 2024 ? (uint16_t)header.protocol : 2025);
             lastStrategyJson_.clear();
@@ -652,6 +885,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             liveLatestRows_ = {};
             for (auto& history : livePackedHistory_) history = {};
             for (auto& history : liveJsonHistory_) history.clear();
+            liveHistorySequence_ = 0;
             liveSessionTime_ = 0.0f;
             liveLapStart_ = 0.0f;
             liveLapNum_ = 0;
@@ -914,6 +1148,10 @@ void Engine::playerClose() {
             liveStatus = parser_.statusRow();
         }
         strategy_.reset();
+        ++liveStrategyGeneration_;
+        enqueueLiveStrategyWork({StrategyWorkKind::Reset,
+                                 liveStrategyGeneration_, liveStrategyFormat_,
+                                 config_.strategyMinimumStops, false, {}});
         lastStrategyJson_.clear();
     }
     emitRow(writeJson(TypeOnlyRow{"playback_close"}));

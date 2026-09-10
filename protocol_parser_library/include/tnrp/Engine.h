@@ -3,8 +3,10 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -98,6 +100,9 @@ private:
     Sink*         sink_;
     Parser        parser_;
     TnrdWriter    writer_;
+    // Playback owns this reducer on the playback/load/seek workers. Live
+    // strategy has its own worker below so UDP receive never performs strategy
+    // parsing, calculation, or flashback reconstruction.
     StrategyProcessor strategy_;
     TnrdReader    reader_;
     UdpListener   udp_;
@@ -130,10 +135,14 @@ private:
         std::deque<LivePackedIndex> index;
         size_t discardedBytes = 0;
     };
-    struct LiveJsonHistoryRow { float sessionTime{}; std::string json; };
+    struct LiveJsonHistoryRow {
+        float sessionTime{};
+        uint64_t sequence{};
+        std::shared_ptr<const std::string> json;
+    };
     std::array<LivePackedHistory, 16> livePackedHistory_{};
     std::array<std::deque<LiveJsonHistoryRow>, 16> liveJsonHistory_{};
-    std::deque<LiveJsonHistoryRow> liveStrategyJournal_;
+    uint64_t          liveHistorySequence_ = 0;
     float             liveSessionTime_ = 0.0f;
     float             liveLapStart_ = 0.0f;
     int               liveLapNum_ = 0;
@@ -145,13 +154,33 @@ private:
     float             hostConsumerWindowSeconds_ = 0.0f;
     uint32_t          pairConsumerRowMask_ = 0;
 
+    enum class StrategyWorkKind { Update, Rebuild, Reset, Configure };
+    struct StrategyWork {
+        StrategyWorkKind kind{StrategyWorkKind::Update};
+        uint64_t generation{};
+        uint16_t format{2025};
+        int minimumStops{};
+        bool forceSnapshot{};
+        std::vector<LiveJsonHistoryRow> rows;
+    };
+    std::mutex strategyWorkMutex_;
+    std::condition_variable strategyWorkCv_;
+    std::deque<StrategyWork> strategyWorkQueue_;
+    std::thread strategyThread_;
+    bool strategyStop_ = false;
+    uint64_t liveStrategyGeneration_ = 1; // guarded by mutex_
+    uint16_t liveStrategyFormat_ = 2025;  // guarded by mutex_
+
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
-    void rewindLiveTimeline(float sessionTime);          // mutex_ held
+    void rewindLiveTimeline(float sessionTime, uint16_t format); // mutex_ held
     void emitRow(const std::string& json);               // forward to the sink
     void emitBinary(const uint8_t* data, size_t length);
     void setPairDataRequirements(uint32_t streamRowMask);
     void ingestStrategyRow(const std::string& json);
     void emitStrategy(bool force = false);
+    void enqueueLiveStrategyWork(StrategyWork work);
+    void strategyLoop();
+    void stopStrategyThread();
     // Rebuilds and commits the derived playback strategy while mutex_ is held.
     // The returned row is emitted only after the caller releases the lock.
     std::string rebuildPlaybackStrategyLocked(float target);

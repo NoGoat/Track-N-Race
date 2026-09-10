@@ -155,6 +155,11 @@ intent so the per-packet fast path can skip the whole recording pipeline
 - **Dedup**: state-row types are deduped against the last written value.
 - **Durability**: a codec flush every 300 rows (~5 s), so a crash leaves a
   stream decodable up to the last complete flushed row.
+- **Live Strategy**: the UDP thread only places normalized dependency rows on a
+  coalescing queue. A dedicated worker owns the live reducer, calculates at a
+  bounded cadence, and publishes only the latest display snapshot. Flashback
+  rebuilds use the engine's shared, cadence-limited cold-row histories with a
+  generation guard; there is no duplicate full-session Strategy JSON journal.
 
 ### 1.6 Playback (`TnrdReader` + `Engine::player*`)
 
@@ -259,7 +264,7 @@ overlay flows.
 
 | Context | Threads | Notes |
 |---|---|---|
-| libtnrp Engine | UDP receive, playback, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. The writer thread drains an event queue; the parse path never blocks on disk. |
+| libtnrp Engine | UDP receive, playback, Strategy worker, writer disk thread, callers' control threads | One `mutex_` guards engine state; `inPlayback_` atomic gates the UDP path. Strategy parsing/calculation and recording I/O have independent queues, so neither blocks UDP receive. |
 | node_addon | engine threads → 3 TSFNs → JS main thread | Flush state is `shared_ptr` so queued callbacks survive wrapper teardown. |
 | Electron main | single JS thread + libuv pool (XLSX export, player load) | No TS playback tick or hot-row pacing timer — the engine drives playback and addon-coalesced binary batches are forwarded directly. |
 | Electron renderer | store ingest outside React; rAF loops per chart | Zustand slices re-render only subscribed leaves; All Laps charts append directly from stable full-session arrays. |

@@ -153,6 +153,14 @@ per-rival observations, tyre-wear history, used compounds, neutralisation state,
 past stint targets, and rival-selection hysteresis. A snapshot is a complete UI
 model and is not recorded.
 
+Live ingestion does not run this reducer on the UDP receive thread. Normalized
+dependency rows are handed to one coalescing Strategy worker, which retains only
+the reducer state and latest display snapshot. Flashback reconstruction reads
+the engine's shared cold-row histories; high-rate Strategy-only families are
+retained there at a bounded cadence, and timeline generations prevent an old
+calculation from being published after a rewind. There is no separate
+full-session JSON journal owned by Strategy.
+
 ### 5.2 Existing strengths
 
 The current system already provides valuable foundations:
