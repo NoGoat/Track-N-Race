@@ -28,13 +28,17 @@ export interface AnalyzeSeriesConfig {
 }
 
 export interface AnalyzeConfig {
-  version: 7
+  version: 9
   collapsed: boolean
   view: 'graph' | 'split' | 'map'
   individualGraphs: boolean
   syncedTooltip: boolean
   sectorBoundaries: boolean
   sectorDelta: boolean
+  currentLabel: string
+  compareLabel: string
+  lapALabel: string
+  lapBLabel: string
   mapCurrentColor: string
   mapComparisonColor: string
   series: AnalyzeSeriesConfig[]
@@ -45,6 +49,11 @@ export const DEFAULT_MAP_COMPARISON_COLOR = '#C4162A'
 
 export const DEFAULT_DELTA_POSITIVE_COLOR = '#C4162A'
 export const DEFAULT_DELTA_NEGATIVE_COLOR = '#37872D'
+
+export const DEFAULT_CURRENT_LABEL = 'Current'
+export const DEFAULT_COMPARE_LABEL = 'Compare'
+export const DEFAULT_LAP_A_LABEL = 'Lap A'
+export const DEFAULT_LAP_B_LABEL = 'Lap B'
 
 const number = (digits = 0) => (value: number) => value.toFixed(digits)
 const withUnit = (unit: string, digits = 0) => (value: number) => `${value.toFixed(digits)}${unit}`
@@ -89,13 +98,17 @@ export const ANALYZE_METRICS = [...base, ...tyreMetrics]
 export const ANALYZE_METRIC_BY_ID = new Map(ANALYZE_METRICS.map(def => [def.id, def]))
 
 export const DEFAULT_ANALYZE_CONFIG: AnalyzeConfig = {
-  version: 7,
+  version: 9,
   collapsed: false,
   view: 'graph',
   individualGraphs: false,
   syncedTooltip: false,
   sectorBoundaries: false,
   sectorDelta: false,
+  currentLabel: '',
+  compareLabel: '',
+  lapALabel: '',
+  lapBLabel: '',
   mapCurrentColor: DEFAULT_MAP_CURRENT_COLOR,
   mapComparisonColor: DEFAULT_MAP_COMPARISON_COLOR,
   series: [
@@ -141,8 +154,10 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     negativeColor: DEFAULT_DELTA_NEGATIVE_COLOR, visible: true, showYAxis: true,
   })
   const sectorBoundaries = value?.sectorBoundaries === true
+  const label = (candidate: unknown, previousDefault: string) =>
+    typeof candidate === 'string' && candidate !== previousDefault ? candidate.slice(0, 40) : ''
   return {
-    version: 7,
+    version: 9,
     collapsed: value?.collapsed === true,
     view: value?.view === 'map' || value?.view === 'split' ? value.view : 'graph',
     individualGraphs: typeof value?.individualGraphs === 'boolean'
@@ -151,6 +166,10 @@ export function sanitizeAnalyzeConfig(value: StoredAnalyzeConfig | null | undefi
     syncedTooltip: value?.syncedTooltip === true,
     sectorBoundaries,
     sectorDelta: value?.sectorDelta === true,
+    currentLabel: label(value?.currentLabel, DEFAULT_CURRENT_LABEL),
+    compareLabel: label(value?.compareLabel, DEFAULT_COMPARE_LABEL),
+    lapALabel: label(value?.lapALabel, DEFAULT_LAP_A_LABEL),
+    lapBLabel: label(value?.lapBLabel, DEFAULT_LAP_B_LABEL),
     mapCurrentColor: /^#[0-9a-f]{6}$/i.test(value?.mapCurrentColor ?? '') ? value!.mapCurrentColor! : DEFAULT_MAP_CURRENT_COLOR,
     mapComparisonColor: /^#[0-9a-f]{6}$/i.test(value?.mapComparisonColor ?? '') ? value!.mapComparisonColor! : DEFAULT_MAP_COMPARISON_COLOR,
     series: hasSeries ? series : DEFAULT_ANALYZE_CONFIG.series.map(item => ({ ...item })),

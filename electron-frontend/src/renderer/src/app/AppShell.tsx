@@ -29,6 +29,9 @@ import {
 } from '../lib/chartWindowOverrides'
 import type { GraphSection } from '../lib/graphSections'
 
+const LIVE_LAP_FAMILY_MASK = DATA_ROW.telemetry | DATA_ROW.status |
+  DATA_ROW.damage | DATA_ROW.lap | DATA_ROW.motion | DATA_ROW.motionEx
+
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
@@ -239,7 +242,13 @@ export default function AppShell() {
     const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL' && value !== 'SL')
     const finiteWindows = visibleChartWindows.filter((value): value is number => typeof value === 'number')
     const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
-    const streamMask = stintLapsEnabled ? dataRequirements.streamMask | DATA_ROW.status : dataRequirements.streamMask
+    // Live Previous/Fastest selectors can be changed after a lap completes, so
+    // retain every chart family for the small uncompressed lap working set.
+    // Historical AL decompression remains restricted to historyMask below.
+    const liveLapMask = playback.state?.filename ? 0 : LIVE_LAP_FAMILY_MASK
+    const streamMask = (stintLapsEnabled
+      ? dataRequirements.streamMask | DATA_ROW.status
+      : dataRequirements.streamMask) | liveLapMask
     const historyMask = stintLapsEnabled ? dataRequirements.historyMask | DATA_ROW.status : dataRequirements.historyMask
     // A mixed lap/time page seeks the current lap first. The renderer then
     // requests the older finite prefix additively only when that prefix starts
@@ -266,7 +275,7 @@ export default function AppShell() {
       fullLapHistoryEnabled ? Infinity : maxFiniteWindow,
       !analysisLapScope && (finiteWindows.length > 0 || mixedLapAndTime),
     )
-  }, [dataRequirements, seconds, tab, visibleChartWindows])
+  }, [dataRequirements, seconds, tab, visibleChartWindows, playback.state?.filename])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we

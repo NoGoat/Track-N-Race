@@ -3,6 +3,7 @@
 #include "tnrp/LapDelta.h"
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
+#include "LiveHistoryStore.h"
 
 #include <algorithm>
 #include <chrono>
@@ -40,7 +41,6 @@ static constexpr uint32_t kRestoreRowMask =
 static constexpr uint32_t kHistoricalRowMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) |
     (1u << 12);
-static constexpr size_t kMaxLiveHistoryRows = 750000;
 // Session/timing/all-car status packets can arrive at the game's frame rate,
 // but Strategy only needs a recent state sample plus every lap/event/set change
 // when reconstructing after a flashback. Retain these inputs in the engine's
@@ -136,6 +136,9 @@ Engine::Engine(const Config& config, Sink* sink)
         consumerRowMask_ = 0;
         hostConsumerRowMask_ = 0;
     }
+    liveHistory_ = std::make_unique<detail::LiveHistoryStore>();
+    liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
+    liveHistoryLastLap_.fill(-1);
     strategy_.setMinimumStops(config_.strategyMinimumStops);
     reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
     strategyThread_ = std::thread(&Engine::strategyLoop, this);
@@ -184,6 +187,7 @@ Engine::~Engine() {
     stopPlaybackThread();
     udp_.stop();
     stopStrategyThread();
+    liveHistory_.reset();
     writer_.closeActiveStream();
 }
 
@@ -243,8 +247,9 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
                                  2025, config_.strategyMinimumStops, false, {}});
         liveLatestRows_ = {};
-        for (auto& history : livePackedHistory_) history = {};
-        for (auto& history : liveJsonHistory_) history.clear();
+        liveHistory_->reset();
+        liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
+        liveHistoryLastLap_.fill(-1);
         liveHistorySequence_ = 0;
         liveSessionTime_ = 0.0f;
         liveLapStart_ = 0.0f;
@@ -262,40 +267,13 @@ std::string Engine::udpLastError() const {
 }
 
 void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
-    for (auto& history : livePackedHistory_) {
-        while (!history.index.empty() && history.index.back().sessionTime > sessionTime)
-            history.index.pop_back();
-        const size_t keep = history.index.empty() ? 0 :
-            history.index.back().offset + history.index.back().length;
-        if (keep < history.bytes.size()) history.bytes.resize(keep);
-        history.discardedBytes = std::min(history.discardedBytes, keep);
-    }
-    for (auto& history : liveJsonHistory_)
-        while (!history.empty() && history.back().sessionTime > sessionTime)
-            history.pop_back();
+    liveHistory_->rewind(sessionTime);
     StrategyWork rebuild;
     rebuild.kind = StrategyWorkKind::Rebuild;
     rebuild.generation = ++liveStrategyGeneration_;
     rebuild.format = format;
     rebuild.minimumStops = config_.strategyMinimumStops;
-    for (uint8_t type = 2; type <= 10; ++type) {
-        const auto& history = liveJsonHistory_[type];
-        // Display histories for status/damage/lap can be frame-rate dense. The
-        // reducer does not need that density, so take a time-spaced view of the
-        // existing buffer instead of copying it into another journal.
-        float lastSelected = -std::numeric_limits<float>::infinity();
-        uint64_t selectedSequence = 0;
-        for (const auto& row : history) {
-            if (type == 6 || row.sessionTime >=
-                lastSelected + kStrategyHistoryIntervalS) {
-                rebuild.rows.push_back(row);
-                lastSelected = row.sessionTime;
-                selectedSequence = row.sequence;
-            }
-        }
-        if (!history.empty() && history.back().sequence != selectedSequence)
-            rebuild.rows.push_back(history.back());
-    }
+    rebuild.rebuildThrough = sessionTime;
     enqueueLiveStrategyWork(std::move(rebuild));
     liveLatestRows_[kStrategyRowType].clear();
     lastStrategyJson_.clear();
@@ -304,19 +282,13 @@ void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
     // after the rewind. Historical families can be restored from their tails.
     for (uint8_t type = 1; type < liveLatestRows_.size(); ++type) {
         if (!((kHistoricalRowMask | kStrategyDependencyMask) & (1u << type))) continue;
-        liveLatestRows_[type] = liveJsonHistory_[type].empty()
-            ? std::string{} : *liveJsonHistory_[type].back().json;
+        liveLatestRows_[type] = liveHistory_->latestJson(type, sessionTime);
     }
-    liveLapNum_ = 0;
-    liveLapStart_ = sessionTime;
-    if (!liveJsonHistory_[4].empty()) {
-        const std::string& lap = *liveJsonHistory_[4].back().json;
-        liveLapNum_ = static_cast<int>(scanJsonNumber(lap, "\"lap_num\":", 0));
-        const double lapMs = scanJsonNumber(lap, "\"current_lap_ms\":", 0.0);
-        liveLapStart_ = liveJsonHistory_[4].back().sessionTime -
-            static_cast<float>(std::max(0.0, lapMs) / 1000.0);
-    }
+    liveLapNum_ = liveHistory_->currentLap();
+    liveLapStart_ = liveHistory_->currentLapStart();
     liveSessionTime_ = sessionTime;
+    liveHistoryLastSample_.fill(sessionTime);
+    liveHistoryLastLap_.fill(liveLapNum_);
 }
 
 void Engine::enqueueLiveStrategyWork(StrategyWork work) {
@@ -400,6 +372,14 @@ void Engine::strategyLoop() {
             liveStrategy.setFormat(item.format);
             liveStrategy.setMinimumStops(item.minimumStops);
             if (item.kind == StrategyWorkKind::Rebuild) {
+                if (item.rows.empty()) {
+                    auto stored = liveHistory_->strategyRows(item.rebuildThrough);
+                    item.rows.reserve(stored.size());
+                    for (auto& row : stored) {
+                        item.rows.push_back({row.sessionTime, row.sequence,
+                                             std::move(row.json)});
+                    }
+                }
                 std::stable_sort(item.rows.begin(), item.rows.end(),
                     [](const LiveJsonHistoryRow& a, const LiveJsonHistoryRow& b) {
                         return a.sessionTime < b.sessionTime ||
@@ -544,46 +524,55 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         LiveJsonHistoryRow strategyRow;
         const float rowTime = static_cast<float>(scanJsonNumber(
             row, "\"session_time\":", r.sessionTime));
+        if (config_.binaryPlayback && type == 4) {
+            const int nextLap = static_cast<int>(scanJsonNumber(
+                row, "\"lap_num\":", liveLapNum_));
+            const double currentLapMs = scanJsonNumber(
+                row, "\"current_lap_ms\":", 0.0);
+            const float nextLapStart = rowTime >= 0.0f && currentLapMs >= 0.0
+                ? rowTime - static_cast<float>(currentLapMs / 1000.0)
+                : rowTime;
+            if (nextLap > 0 && nextLap != liveLapNum_) {
+                const int completedLapMs = nextLap > liveLapNum_
+                    ? static_cast<int>(scanJsonNumber(row, "\"last_lap_ms\":", 0.0))
+                    : 0;
+                liveHistory_->setLap(nextLap, nextLapStart, completedLapMs);
+                liveLapNum_ = nextLap;
+            }
+            if (nextLapStart >= 0.0f) liveLapStart_ = nextLapStart;
+        }
         if (isStrategyInput && rowTime >= 0.0f) {
             retainedRow = std::make_shared<const std::string>(row);
             strategyRow = {rowTime, ++liveHistorySequence_, retainedRow};
             strategyRows.push_back(strategyRow);
         }
         if (type < liveLatestRows_.size()) liveLatestRows_[type] = row;
-        if (rowTime >= 0.0f && type < liveJsonHistory_.size()) {
-            auto& history = liveJsonHistory_[type];
+        if (rowTime >= 0.0f && type < liveHistoryLastSample_.size()) {
             // A packet inside the rewind grace window is merely late. Do not
             // put it behind newer history: rewind tail-trimming relies on each
             // family remaining time ordered.
-            const bool extendsTimeline = history.empty() ||
-                rowTime >= history.back().sessionTime;
+            const bool extendsTimeline = rowTime >= liveHistoryLastSample_[type];
             const bool displayHistory = config_.binaryPlayback &&
                 (kHistoricalRowMask & (1u << type));
+            const int rowLap = type == 4
+                ? static_cast<int>(scanJsonNumber(row, "\"lap_num\":", -1))
+                : liveLapNum_;
             const bool strategyHistory = isStrategyInput &&
                 (type == 6 ||
-                 history.empty() ||
-                 rowTime >= history.back().sessionTime +
+                 !std::isfinite(liveHistoryLastSample_[type]) ||
+                 rowTime >= liveHistoryLastSample_[type] +
                      kStrategyHistoryIntervalS ||
-                 (type == 4 && scanJsonNumber(
-                     *history.back().json, "\"lap_num\":", -1) !=
-                     scanJsonNumber(row, "\"lap_num\":", -1)));
+                 (type == 4 && liveHistoryLastLap_[type] != rowLap));
             if (extendsTimeline && (displayHistory || strategyHistory)) {
-                if (isStrategyInput) {
-                    history.push_back(strategyRow);
-                } else {
+                if (!retainedRow) {
                     retainedRow = std::make_shared<const std::string>(row);
-                    history.push_back(
-                        {rowTime, ++liveHistorySequence_, retainedRow});
+                    strategyRow = {rowTime, ++liveHistorySequence_, retainedRow};
                 }
-                if (history.size() > kMaxLiveHistoryRows) history.pop_front();
+                liveHistory_->appendJson(type,
+                    {strategyRow.sessionTime, strategyRow.sequence, retainedRow});
+                liveHistoryLastSample_[type] = rowTime;
+                liveHistoryLastLap_[type] = rowLap;
             }
-        }
-        if (config_.binaryPlayback && type == 4) {
-            liveLapNum_ = static_cast<int>(scanJsonNumber(
-                row, "\"lap_num\":", liveLapNum_));
-            const double lapMs = scanJsonNumber(row, "\"current_lap_ms\":", 0.0);
-            if (r.sessionTime >= 0.0f && lapMs >= 0.0)
-                liveLapStart_ = r.sessionTime - static_cast<float>(lapMs / 1000.0);
         }
         if (r.rewindSessionTime || type == 0 || (consumerRowMask_ & (1u << type))) emitRow(row);
     }
@@ -596,25 +585,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
         (void)bin::forEachPackedRecord(r.binary.data(), r.binary.size(),
             [&](uint8_t type, const uint8_t* record, size_t recordLen) {
                 if (!(kHistoricalRowMask & (1u << type))) return;
-                auto& history = livePackedHistory_[type];
-                if (!history.index.empty() &&
-                    r.sessionTime < history.index.back().sessionTime) return;
-                const size_t offset = history.bytes.size();
-                history.bytes.insert(history.bytes.end(), record, record + recordLen);
-                history.index.push_back({r.sessionTime, offset, recordLen});
-                if (history.index.size() > kMaxLiveHistoryRows) {
-                    const auto& old = history.index.front();
-                    history.discardedBytes = old.offset + old.length;
-                    history.index.pop_front();
-                }
-                if (history.discardedBytes >= 8u * 1024u * 1024u &&
-                    history.discardedBytes * 2 >= history.bytes.size()) {
-                    const size_t discarded = history.discardedBytes;
-                    history.bytes.erase(history.bytes.begin(),
-                        history.bytes.begin() + static_cast<std::ptrdiff_t>(discarded));
-                    for (auto& entry : history.index) entry.offset -= discarded;
-                    history.discardedBytes = 0;
-                }
+                liveHistory_->appendPacked(type, r.sessionTime, record, recordLen);
             });
     }
     if (config_.hotRowsAsJson) {
@@ -713,10 +684,9 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                                  float windowSeconds,
                                  uint64_t requestId) {
     std::vector<std::string> restore;
-    std::shared_ptr<std::vector<uint8_t>> liveBackfillBinary;
-    std::string liveBackfillJson;
     float liveBackfillLapStart = 0.0f;
     float liveBackfillStart = 0.0f;
+    float liveBackfillThrough = 0.0f;
     int liveBackfillLapNum = 0;
     uint32_t liveBackfillMask = 0;
     {
@@ -779,9 +749,9 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
             }
         }
 
-        // Live mode keeps raw bounded history natively. Showing a previously
-        // hidden chart backfills packed/JSON rows without having processed them
-        // in Electron while the consumer was invisible.
+        // The live store owns session history in lap/family segments. A newly
+        // visible chart requests only its families; old compressed laps are
+        // decompressed by the history worker, never this control/UI thread.
         if (config_.binaryPlayback && !inPlayback_.load() && backfillMask != 0 &&
             liveSessionTime_ > 0.0f) {
             const float fromTime = consumerWindowSeconds_ < 0.0f
@@ -789,42 +759,32 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                 : consumerWindowSeconds_ == 0.0f
                     ? liveLapStart_
                     : std::max(0.0f, liveSessionTime_ - consumerWindowSeconds_);
-            liveBackfillBinary = std::make_shared<std::vector<uint8_t>>();
-            for (uint8_t type = 1; type < 16; ++type) {
-                if (!(backfillMask & (1u << type))) continue;
-                for (const auto& entry : livePackedHistory_[type].index) {
-                    if (entry.sessionTime < fromTime ||
-                        entry.sessionTime > liveSessionTime_) continue;
-                    const auto& bytes = livePackedHistory_[type].bytes;
-                    if (entry.offset + entry.length > bytes.size()) continue;
-                    liveBackfillBinary->insert(liveBackfillBinary->end(),
-                        bytes.begin() + static_cast<std::ptrdiff_t>(entry.offset),
-                        bytes.begin() + static_cast<std::ptrdiff_t>(entry.offset + entry.length));
-                }
-                for (const auto& entry : liveJsonHistory_[type]) {
-                    if (entry.sessionTime < fromTime ||
-                        entry.sessionTime > liveSessionTime_) continue;
-                    liveBackfillJson += *entry.json;
-                    liveBackfillJson.push_back('\n');
-                }
-            }
-            if (!liveBackfillJson.empty()) liveBackfillJson.pop_back();
             liveBackfillLapStart = liveLapStart_;
             liveBackfillStart = fromTime;
+            liveBackfillThrough = liveSessionTime_;
             liveBackfillLapNum = liveLapNum_;
             liveBackfillMask = backfillMask;
-            if (liveBackfillBinary->empty() && liveBackfillJson.empty())
-                liveBackfillBinary.reset();
         }
     }
     for (const auto& row : restore) emitRow(row);
-    if (sink_ && (liveBackfillBinary || !liveBackfillJson.empty())) {
-        const size_t binarySize = liveBackfillBinary
-            ? liveBackfillBinary->size() : 0;
-        sink_->onSeekFlush(liveBackfillBinary, 0, binarySize,
-                           std::move(liveBackfillJson), liveBackfillLapStart,
-                           liveBackfillLapNum, true, 0, false,
-                           liveBackfillMask, liveBackfillStart);
+    if (sink_ && liveBackfillMask != 0) {
+        Sink* const sink = sink_;
+        const uint64_t expectedRequestId = requestId;
+        liveHistory_->requestRange(
+            liveBackfillMask, liveBackfillStart, liveBackfillThrough,
+            [this, sink, expectedRequestId, liveBackfillLapStart,
+             liveBackfillLapNum, liveBackfillMask, liveBackfillStart]
+            (detail::LiveHistoryBackfill backfill) mutable {
+                if (expectedRequestId != 0 && expectedRequestId !=
+                    latestRequirementsRequestId_.load(std::memory_order_acquire)) return;
+                if (!backfill.binary && backfill.json.empty()) return;
+                const size_t binarySize = backfill.binary
+                    ? backfill.binary->size() : 0;
+                sink->onSeekFlush(std::move(backfill.binary), 0, binarySize,
+                                  std::move(backfill.json), liveBackfillLapStart,
+                                  liveBackfillLapNum, true, 0, false,
+                                  liveBackfillMask, liveBackfillStart);
+            });
     }
 }
 
@@ -883,8 +843,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             // a fresh stream on the next session packet.
             writer_.closeActiveStream();
             liveLatestRows_ = {};
-            for (auto& history : livePackedHistory_) history = {};
-            for (auto& history : liveJsonHistory_) history.clear();
+            liveHistory_->reset();
+            liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
+            liveHistoryLastLap_.fill(-1);
             liveHistorySequence_ = 0;
             liveSessionTime_ = 0.0f;
             liveLapStart_ = 0.0f;

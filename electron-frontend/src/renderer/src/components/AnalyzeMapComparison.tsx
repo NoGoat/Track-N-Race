@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PlaybackBar from '../app/components/PlaybackBar'
 import { getPlaybackCursorTime } from '../lib/playbackCursor'
+import { useModalPresence } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, PlayerPositionPoint } from '../types'
 import TrackMap, { type TrackMapMarker } from './TrackMap'
@@ -8,9 +9,11 @@ import TrackMap, { type TrackMapMarker } from './TrackMap'
 interface Props {
   comparison: AnalyzeLapData | null
   comparisonColor: string
+  comparisonLabel: string
   compatibleCircuit: boolean
   current: AnalyzeLapData | null
   currentColor: string
+  currentLabel: string
   fixedMode: boolean
   isDark: boolean
   mapDimmed: boolean
@@ -84,10 +87,11 @@ function writeMarkerAt(
 }
 
 export default function AnalyzeMapComparison({
-  comparison, comparisonColor, compatibleCircuit, current, currentColor,
+  comparison, comparisonColor, comparisonLabel, compatibleCircuit, current, currentColor, currentLabel,
   fixedMode, isDark, mapDimmed, reduceAnimations,
   sectorColors, trackId, focus,
 }: Props) {
+  const playbackBarPresence = useModalPresence(fixedMode, 180)
   const aeroMode = useTelemetryStore(state => state.protocolStatus?.aero_mode ?? 'drs')
   const total = Math.max(lapDuration(current), lapDuration(comparison))
   const initialCursor = Math.max(0, Math.min(total, focus?.elapsedSeconds ?? 0))
@@ -165,20 +169,20 @@ export default function AnalyzeMapComparison({
 
     if (current) {
       const marker = currentMarkerRef.current
-      marker.label = fixedMode ? 'Lap A' : 'Current'
+      marker.label = currentLabel
       marker.color = currentColor
       const target = current.startSessionTime + Math.max(0, Math.min(lapDuration(current), elapsed))
       if (writeMarkerAt(marker, current.playerPositions, target)) output.push(marker)
     }
     if (comparison) {
       const marker = comparisonMarkerRef.current
-      marker.label = fixedMode ? 'Lap B' : 'Compare'
+      marker.label = comparisonLabel
       marker.color = comparisonColor
       const target = comparison.startSessionTime + Math.max(0, Math.min(lapDuration(comparison), elapsed))
       if (writeMarkerAt(marker, comparison.playerPositions, target)) output.push(marker)
     }
     return output
-  }, [comparison, comparisonColor, current, currentColor, fixedMode, focus, total])
+  }, [comparison, comparisonColor, comparisonLabel, current, currentColor, currentLabel, fixedMode, focus, total])
 
   const togglePlay = useCallback(() => {
     const clock = clockRef.current
@@ -213,16 +217,24 @@ export default function AnalyzeMapComparison({
     <div className="flex-1 min-h-0 relative">
       {map}
     </div>
-    {fixedMode && <PlaybackBar
-      compact
-      onSeekProgress={progress => setClockTime(progress * clockRef.current.total)}
-      onSeekBackward={() => setClockTime(readClock(clockRef.current) - 5)}
-      onSeekForward={() => setClockTime(readClock(clockRef.current) + 5)}
-      onSpeedChange={setSpeed}
-      onTogglePlay={togglePlay}
-      showExport={false}
-      showLapSelect={false}
-      state={barState}
-    />}
+    {playbackBarPresence.mounted && <div
+      className={`analyze-map-playback-bar ${playbackBarPresence.visible ? 'analyze-map-playback-bar--visible' : ''}`}
+      aria-hidden={!playbackBarPresence.visible}
+      inert={!playbackBarPresence.visible}
+    >
+      <div className="analyze-map-playback-bar__inner">
+        <PlaybackBar
+          compact
+          onSeekProgress={progress => setClockTime(progress * clockRef.current.total)}
+          onSeekBackward={() => setClockTime(readClock(clockRef.current) - 5)}
+          onSeekForward={() => setClockTime(readClock(clockRef.current) + 5)}
+          onSpeedChange={setSpeed}
+          onTogglePlay={togglePlay}
+          showExport={false}
+          showLapSelect={false}
+          state={barState}
+        />
+      </div>
+    </div>}
   </div>
 }

@@ -7,6 +7,7 @@ import { AlertTriangle, ArrowDownUp, ArrowLeft, ArrowRight, Axis3d, ChartNoAxesC
 import { useAppConfig } from '../hooks/useAppConfig'
 import {
   ANALYZE_METRICS, ANALYZE_METRIC_BY_ID, DEFAULT_ANALYZE_CONFIG,
+  DEFAULT_COMPARE_LABEL, DEFAULT_CURRENT_LABEL, DEFAULT_LAP_A_LABEL, DEFAULT_LAP_B_LABEL,
   DEFAULT_DELTA_NEGATIVE_COLOR, DEFAULT_DELTA_POSITIVE_COLOR, sanitizeAnalyzeConfig,
   type AnalyzeConfig, type AnalyzeSeriesConfig,
 } from '../lib/analyzeMetrics'
@@ -232,6 +233,12 @@ function formatDeltaValue(value: number | null): string {
   return `${normalized > 0 ? '+' : ''}${normalized.toFixed(3)}`
 }
 
+function escapeTooltipText(value: string): string {
+  return value.replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]!)
+}
+
 function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor }: {
   deltaData: AnalyzeDeltaData | null
   current: AnalyzeLapData | null
@@ -371,7 +378,7 @@ function AnalyzeComparisonSelector({
   displayOnly?: boolean
 }) {
   return <div className="flex items-center">
-    <label htmlFor={id} className="mr-2 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+    <label htmlFor={id} title={label} className="mr-2 max-w-[100px] shrink-0 truncate text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
     <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
       <div className="analyze-map-color-slot__inner">{colorPicker}</div>
     </div>
@@ -383,6 +390,39 @@ function AnalyzeComparisonSelector({
         isSearchable={false} isClearable={!displayOnly} isDisabled={isDisabled || displayOnly}
         menuPortalTarget={document.body}
       />
+    </div>
+  </div>
+}
+
+function AnalyzeLabelInput({ id, label, value, onChange }: {
+  id: string
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return <div className="flex items-center">
+    <label htmlFor={id} className="mr-2 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+    <div className="relative min-w-0 flex-1">
+      <input
+        id={id}
+        type="text"
+        value={value}
+        maxLength={40}
+        autoComplete="off"
+        spellCheck={false}
+        aria-label={`${label} label`}
+        placeholder={label}
+        onChange={event => onChange(event.target.value)}
+        className="h-8 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2.5 pr-8 text-[11px] text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] placeholder:opacity-80 focus:border-[var(--border-focus)]"
+      />
+      {value && <button
+        type="button"
+        title={`Clear ${label} label`}
+        aria-label={`Clear ${label} label`}
+        onMouseDown={event => event.preventDefault()}
+        onClick={() => onChange('')}
+        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+      ><X size={12} /></button>}
     </div>
   </div>
 }
@@ -558,7 +598,7 @@ function DeltaColorPicker({
 
 const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   isDark, selected, deltaPositiveColor, deltaNegativeColor,
-  currentLapNum, comparison, comparisonSelected, fixedMode, primaryOverride, distanceMode,
+  currentLapNum, comparison, comparisonSelected, currentLabel, comparisonLabel, fixedMode, primaryOverride, distanceMode,
   analysisView, syncedTooltip, sectorBoundaries, sectorDelta,
   deltaData, graphControlsRef, stackedControlsRef, onInspectMap,
 }: {
@@ -569,6 +609,8 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
   currentLapNum: number | null
   comparison: AnalyzeLapData | null
   comparisonSelected: boolean
+  currentLabel: string
+  comparisonLabel: string
   fixedMode: boolean
   primaryOverride: AnalyzeLapData | null
   distanceMode: boolean
@@ -645,8 +687,8 @@ const AnalyzeChartSubscriber = memo(function AnalyzeChartSubscriber({
 
   const chartProps = {
     isDark, current, currentRevision, comparison, comparisonSelected, selected,
-    primaryLabel: fixedMode ? `LAP A · L${current.lapNum || '—'}` : undefined,
-    comparisonLabel: fixedMode && comparison ? `LAP B · L${comparison.lapNum}` : undefined,
+    primaryLabel: escapeTooltipText(`${currentLabel} · L${current.lapNum || '—'}`),
+    comparisonLabel: comparison ? escapeTooltipText(`${comparisonLabel} · L${comparison.lapNum}`) : undefined,
     distanceMode, trackLengthM, deltaPositiveColor, deltaNegativeColor,
     zoomEnabled: fixedMode && primaryOverride !== null,
     // The current playback lap remains cursor-clipped even during the brief
@@ -718,6 +760,12 @@ export default function AnalyzeScreen({
   const primaryTrackName = useTelemetryStore(s => s.playbackTrackName)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
+  const resolvedCurrentLabel = config.currentLabel.trim() || DEFAULT_CURRENT_LABEL
+  const resolvedCompareLabel = config.compareLabel.trim() || DEFAULT_COMPARE_LABEL
+  const resolvedLapALabel = config.lapALabel.trim() || DEFAULT_LAP_A_LABEL
+  const resolvedLapBLabel = config.lapBLabel.trim() || DEFAULT_LAP_B_LABEL
+  const primaryLabel = fixedLapMode.enabled ? resolvedLapALabel : resolvedCurrentLabel
+  const comparisonLabel = fixedLapMode.enabled ? resolvedLapBLabel : resolvedCompareLabel
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
   const [secondaryFile, setSecondaryFile] = useState<SecondaryFileData | null>(null)
   const [secondaryLapNum, setSecondaryLapNum] = useState<number | null>(null)
@@ -1346,6 +1394,36 @@ export default function AnalyzeScreen({
                   />
                 </div>
               </div>
+              <div className="analyze-lap-mode-switch">
+                <div
+                  className={`analyze-lap-mode-panel ${fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-left'}`}
+                  aria-hidden={!fixedLapMode.enabled}
+                  inert={!fixedLapMode.enabled}
+                >
+                  <AnalyzeLabelInput
+                    id="analyze-lap-a-label" label="Lap A" value={config.lapALabel}
+                    onChange={lapALabel => save({ ...config, lapALabel })}
+                  />
+                  <AnalyzeLabelInput
+                    id="analyze-lap-b-label" label="Lap B" value={config.lapBLabel}
+                    onChange={lapBLabel => save({ ...config, lapBLabel })}
+                  />
+                </div>
+                <div
+                  className={`analyze-lap-mode-panel ${!fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-right'}`}
+                  aria-hidden={fixedLapMode.enabled}
+                  inert={fixedLapMode.enabled}
+                >
+                  <AnalyzeLabelInput
+                    id="analyze-current-label" label="Current" value={config.currentLabel}
+                    onChange={currentLabel => save({ ...config, currentLabel })}
+                  />
+                  <AnalyzeLabelInput
+                    id="analyze-compare-label" label="Compare" value={config.compareLabel}
+                    onChange={compareLabel => save({ ...config, compareLabel })}
+                  />
+                </div>
+              </div>
               <button
                 type="button"
                 onClick={() => updateSeries(config.series.map(item => ({ ...item, showYAxis: !allAxesEnabled })))}
@@ -1487,6 +1565,7 @@ export default function AnalyzeScreen({
               deltaNegativeColor={deltaNegativeColor}
               currentLapNum={fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum}
               comparison={comparison} comparisonSelected={comparisonSelected}
+              currentLabel={primaryLabel} comparisonLabel={comparisonLabel}
               fixedMode={fixedLapMode.enabled} primaryOverride={fixedPrimary}
               distanceMode={selectedDistanceMode}
               analysisView={chartAnalysisView}
@@ -1509,7 +1588,9 @@ export default function AnalyzeScreen({
               current={current}
               comparison={comparison}
               currentColor={config.mapCurrentColor}
+              currentLabel={primaryLabel}
               comparisonColor={config.mapComparisonColor}
+              comparisonLabel={comparisonLabel}
               fixedMode={fixedLapMode.enabled}
               trackId={mapTrackId}
               compatibleCircuit={compatibleMapCircuit}

@@ -72,14 +72,20 @@ const MAP_PAD    = 24  // CSS-pixel padding outside every rendered map element
 // The fitted centerline needs enough additional room for an outward DRS/SLM
 // overlay and half its stroke, leaving MAP_PAD visible beyond the dashes.
 const MAP_FIT_PAD = MAP_PAD + DRS_OFFSET + DRS_PX / 2
-const LABEL_W    = 38
+const LABEL_MIN_W = 38
 const LABEL_H    = 16
 const LABEL_GAP  = 5
 const LABEL_R    = 3   // corner radius
 const ACCENT_W   = 3   // left livery-color bar width
+const LABEL_TEXT_PAD_X = 6
+const LABEL_FONT = 'bold 9px "Cascadia Code", ui-monospace, monospace'
 const LABEL_SPRITE_PAD = 8
 const LABEL_SPRITE_CACHE_MAX = 256
-const labelSpriteCache = new Map<string, HTMLCanvasElement>()
+interface LabelSprite {
+  canvas: HTMLCanvasElement
+  labelWidth: number
+}
+const labelSpriteCache = new Map<string, LabelSprite>()
 
 function abbrev(name: string): string {
   const parts = name.trim().split(/\s+/)
@@ -539,19 +545,22 @@ function drawLabel(
   centerOnDot?: boolean,
   isDark: boolean = true,
 ): void {
-  const bx = cx - LABEL_W / 2
-  const by = centerOnDot ? cy - LABEL_H / 2 : cy - DOT_R - LABEL_GAP - LABEL_H
   const dpr = Math.max(1, ctx.getTransform().a)
   const key = `${text}|${color}|${isDark ? 1 : 0}|${dpr}`
   let sprite = labelSpriteCache.get(key)
   if (!sprite) {
-    sprite = document.createElement('canvas')
-    const cssWidth = LABEL_W + LABEL_SPRITE_PAD * 2
-    const cssHeight = LABEL_H + LABEL_SPRITE_PAD * 2
-    sprite.width = Math.ceil(cssWidth * dpr)
-    sprite.height = Math.ceil(cssHeight * dpr)
-    const spriteCtx = sprite.getContext('2d')
+    const canvas = document.createElement('canvas')
+    const spriteCtx = canvas.getContext('2d')
     if (!spriteCtx) return
+    spriteCtx.font = LABEL_FONT
+    const labelWidth = Math.max(
+      LABEL_MIN_W,
+      Math.ceil(spriteCtx.measureText(text).width + ACCENT_W + LABEL_TEXT_PAD_X * 2),
+    )
+    const cssWidth = labelWidth + LABEL_SPRITE_PAD * 2
+    const cssHeight = LABEL_H + LABEL_SPRITE_PAD * 2
+    canvas.width = Math.ceil(cssWidth * dpr)
+    canvas.height = Math.ceil(cssHeight * dpr)
     spriteCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const x = LABEL_SPRITE_PAD
     const y = LABEL_SPRITE_PAD
@@ -560,7 +569,7 @@ function drawLabel(
     spriteCtx.shadowBlur = 6
     spriteCtx.shadowOffsetY = 2
     spriteCtx.beginPath()
-    spriteCtx.roundRect(x, y, LABEL_W, LABEL_H, LABEL_R)
+    spriteCtx.roundRect(x, y, labelWidth, LABEL_H, LABEL_R)
     spriteCtx.fillStyle = isDark ? 'rgba(10,15,30,0.92)' : 'rgba(241,240,236,0.97)'
     spriteCtx.fill()
     if (!isDark) {
@@ -576,27 +585,30 @@ function drawLabel(
     spriteCtx.roundRect(x, y, ACCENT_W, LABEL_H, [LABEL_R, 0, 0, LABEL_R])
     spriteCtx.fillStyle = color
     spriteCtx.fill()
-    spriteCtx.font = 'bold 9px "Cascadia Code", ui-monospace, monospace'
+    spriteCtx.font = LABEL_FONT
     spriteCtx.textAlign = 'center'
     spriteCtx.textBaseline = 'middle'
     spriteCtx.fillStyle = isDark ? '#ffffff' : '#111827'
-    spriteCtx.fillText(text, x + LABEL_W / 2 + ACCENT_W / 2, y + LABEL_H / 2)
+    spriteCtx.fillText(text, x + labelWidth / 2 + ACCENT_W / 2, y + LABEL_H / 2)
     if (labelSpriteCache.size >= LABEL_SPRITE_CACHE_MAX) {
       const oldest = labelSpriteCache.keys().next().value
       if (oldest !== undefined) labelSpriteCache.delete(oldest)
     }
+    sprite = { canvas, labelWidth }
     labelSpriteCache.set(key, sprite)
   }
 
-  const cssWidth = sprite.width / dpr
-  const cssHeight = sprite.height / dpr
+  const bx = cx - sprite.labelWidth / 2
+  const by = centerOnDot ? cy - LABEL_H / 2 : cy - DOT_R - LABEL_GAP - LABEL_H
+  const cssWidth = sprite.canvas.width / dpr
+  const cssHeight = sprite.canvas.height / dpr
   // Car positions can be subpixel, but translating a pre-rasterized text
   // sprite by a fractional backing-store pixel makes the compositor bilinearly
   // resample every glyph. Snap only the label bitmap; the Canvas 2D dot keeps
   // its full subpixel precision.
   const drawX = Math.round((bx - LABEL_SPRITE_PAD) * dpr) / dpr
   const drawY = Math.round((by - LABEL_SPRITE_PAD) * dpr) / dpr
-  ctx.drawImage(sprite, drawX, drawY, cssWidth, cssHeight)
+  ctx.drawImage(sprite.canvas, drawX, drawY, cssWidth, cssHeight)
 }
 
 function drawCarDots(

@@ -94,6 +94,7 @@ add_library(tnrp STATIC
     src/Labels.cpp
     src/CardColors.cpp
     src/LapDelta.cpp
+    src/LiveHistoryStore.cpp
     src/Strategy.cpp
     src/Parser.cpp
     src/AnyRow.cpp
@@ -177,4 +178,8 @@ if(TNRP_BUILD_TESTS)
     add_executable(strategy_processor tests/StrategyProcessor.cpp)
     target_link_libraries(strategy_processor PRIVATE tnrp)
     add_test(NAME strategy_processor COMMAND strategy_processor)
+    add_executable(live_history_store tests/LiveHistoryStore.cpp)
+    target_include_directories(live_history_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(live_history_store PRIVATE tnrp)
+    add_test(NAME live_history_store COMMAND live_history_store)
 endif()

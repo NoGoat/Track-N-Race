@@ -23,6 +23,8 @@
 
 namespace tnrp {
 
+namespace detail { class LiveHistoryStore; }
+
 // Orchestrates the whole telemetry pipeline and is the only class consumers
 // (the bridge, later the native app) construct directly. It wires:
 //
@@ -129,20 +131,15 @@ private:
     std::array<std::string, 16> dupCache_{};
     std::array<std::string, 16> liveLatestRows_{};
     std::string lastStrategyJson_;
-    struct LivePackedIndex { float sessionTime{}; size_t offset{}; size_t length{}; };
-    struct LivePackedHistory {
-        std::vector<uint8_t> bytes;
-        std::deque<LivePackedIndex> index;
-        size_t discardedBytes = 0;
-    };
     struct LiveJsonHistoryRow {
         float sessionTime{};
         uint64_t sequence{};
         std::shared_ptr<const std::string> json;
     };
-    std::array<LivePackedHistory, 16> livePackedHistory_{};
-    std::array<std::deque<LiveJsonHistoryRow>, 16> liveJsonHistory_{};
+    std::unique_ptr<detail::LiveHistoryStore> liveHistory_;
     uint64_t          liveHistorySequence_ = 0;
+    std::array<float, 16> liveHistoryLastSample_{};
+    std::array<int, 16> liveHistoryLastLap_{};
     float             liveSessionTime_ = 0.0f;
     float             liveLapStart_ = 0.0f;
     int               liveLapNum_ = 0;
@@ -162,6 +159,7 @@ private:
         int minimumStops{};
         bool forceSnapshot{};
         std::vector<LiveJsonHistoryRow> rows;
+        float rebuildThrough{};
     };
     std::mutex strategyWorkMutex_;
     std::condition_variable strategyWorkCv_;

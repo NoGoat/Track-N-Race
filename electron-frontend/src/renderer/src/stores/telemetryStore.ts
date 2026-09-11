@@ -47,10 +47,10 @@ function lowerBound<T extends { session_time: number }>(arr: T[], t: number, inc
   return l
 }
 
-// Append a row to a buffer in place — O(1) amortized. Source buffers retain the
-// complete session (up to MAX_ROWS) so AL can be selected at any point without
-// having already discarded earlier laps. Ordinary consumers still receive only
-// their selected time-window suffix. A session_time reversal rebuilds the buffer.
+// Append a row to a buffer in place — O(1) amortized. In ordinary live mode the
+// sources are trimmed at lap boundaries to Current + Previous + Previous-previous.
+// All Laps obtains older requested families from the native compressed store.
+// A session_time reversal rebuilds the buffer.
 function appendRow<T extends { session_time: number }>(ref: { current: T[] }, msg: T, maxRows: number): void {
   const buf = ref.current
   const last = buf[buf.length - 1]
@@ -370,6 +370,33 @@ function liveLapData(
   }
 }
 
+function trimBefore<T extends { session_time: number }>(
+  ref: { current: T[] }, cutoff: number, preservePredecessor = false,
+): void {
+  const rows = ref.current
+  let start = lowerBound(rows, cutoff, true)
+  if (preservePredecessor && start > 0) start--
+  if (start > 0) ref.current = rows.slice(start)
+}
+
+// Fastest and Previous are immutable lap snapshots in Zustand, so the mutable
+// ingest buffers only need the current lap and two completed predecessors. The
+// extra predecessor is the rewind cushion: after a short rewind crosses one lap
+// boundary it becomes Previous without decoding N-3.
+function trimLiveWorkingSet(): void {
+  if (isPlaybackFlag || allLapsMode || liveLapBoundaries.length < 3) return
+  const cutoff = liveLapBoundaries[liveLapBoundaries.length - 3].sessionTime
+  trimBefore(telBufRef, cutoff)
+  trimBefore(motBufRef, cutoff)
+  trimBefore(motExBufRef, cutoff)
+  trimBefore(lapProgressBufRef, cutoff)
+  // State histories need the immediately preceding value so a lap/window that
+  // starts between sparse packets can reconstruct its initial state.
+  trimBefore(stsBufRef, cutoff, true)
+  trimBefore(dmgBufRef, cutoff, true)
+  invalidateHistoryCoverage(historyRowMask)
+}
+
 function applyLiveRewind(target: number): void {
   if (isPlaybackFlag || !Number.isFinite(target) || target < 0) return
 
@@ -544,6 +571,7 @@ function onLap(lap: LapRow): void {
     }
   }
   lapStartTime = packetLapStart
+  trimLiveWorkingSet()
 }
 
 function handleMsg(msg: GatewayMsg): void {
@@ -570,7 +598,7 @@ function handleMsg(msg: GatewayMsg): void {
         // the revision that identifies a real timeline reset.
         applyLiveRewind(msg.session_time)
       }
-      if (historyRowMask & HISTORY_ROW.telemetry) appendRow(telBufRef, msg, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendRow(telBufRef, msg, MAX_ROWS)
       else telBufRef.current = [msg]
       break
     }
@@ -597,13 +625,13 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      if (historyRowMask & HISTORY_ROW.status) appendRow(stsBufRef, msg, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendRow(stsBufRef, msg, MAX_ROWS)
       else stsBufRef.current = [msg]
       break
     }
     case 'damage':
       set({ damage: msg })
-      if (historyRowMask & HISTORY_ROW.damage) appendRow(dmgBufRef, msg, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendRow(dmgBufRef, msg, MAX_ROWS)
       else dmgBufRef.current = [msg]
       break
     case 'lap':
@@ -1089,6 +1117,7 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     // Normal playback can evict the old prefix from bounded renderer buffers.
     // A later AL entry must therefore be allowed to request it again.
     requestedHistoryRowMask = 0
+    if (wasAllLapsMode) trimLiveWorkingSet()
   }
   set({ seconds: s })
   let requestHistory = false
