@@ -122,6 +122,10 @@ declarative data**, so both UIs render from one model:
   conditional rules (`on`/`op`/`value` → token, first match wins). Only
   semantic tokens (pos/neg/warn/…) are shipped; each app maps tokens to real
   colours with its own theme-aware palette. Format-independent.
+- **`TeamColors.h`** — per-protocol F1/F2 constructor ids, display names and
+  preset hex colours. Hosts may supply sparse per-team overrides; the parser
+  resolves override → preset → packet livery colour, and playback reapplies the
+  current overrides to recorded participant/strategy state.
 - **`AeroMode.h`** — `"drs"` (≤2025) vs `"slm"` (2026), shipped on
   `protocol_status`; selects the track-map overlay (DRS zones vs SLM dry/wet
   zones).

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone } from 'lucide-react'
+import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
@@ -15,6 +15,7 @@ import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
 import type { PageLayouts, Theme, TitlebarUpdateInterval } from '../app/appConfig'
 import { useModalPresence } from '../lib/useModalPresence'
+import ColorPicker from './ColorPicker'
 
 interface Props {
   isOpen: boolean
@@ -172,6 +173,10 @@ const Row = memo(function Row({ label, description, warning, children }: {
 
 type RestartStatus = 'idle' | 'applying' | 'ok' | 'error'
 type UdpForwardTarget = { address: string; port: number }
+type TeamColorFormat = '2024' | '2025' | '2026'
+type TeamColorPreset = { id: number; name: string; color: string; group: string }
+type TeamColorCatalog = Record<string, TeamColorPreset[]>
+type TeamColorOverrides = Record<string, Record<string, string>>
 
 function loadForwardTargets(): UdpForwardTarget[] {
   const value = window.electronStore.get('udp.forwardTargets', [])
@@ -228,7 +233,7 @@ const Settings = memo(function Settings({
   onChartYAxisChange,
 }: Props) {
   const modalPresence = useModalPresence(isOpen)
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'teamColors' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
@@ -316,10 +321,23 @@ const Settings = memo(function Settings({
   )
   const [pairing, setPairing] = useState<PairServiceState | null>(null)
   const [pairQr, setPairQr] = useState<string | null>(null)
+  const [teamColorFormat, setTeamColorFormat] = useState<TeamColorFormat>('2026')
+  const [teamColorCatalog, setTeamColorCatalog] = useState<TeamColorCatalog>({})
+  const [teamColorOverrides, setTeamColorOverrides] = useState<TeamColorOverrides>({})
 
   useEffect(() => {
     void window.pairingBridge.getState().then(setPairing)
     return window.pairingBridge.onState(setPairing)
+  }, [])
+
+  useEffect(() => {
+    let current = true
+    void window.protocolBridge.getTeamColors().then(config => {
+      if (!current) return
+      setTeamColorCatalog(config.catalog)
+      setTeamColorOverrides(config.overrides)
+    })
+    return () => { current = false }
   }, [])
 
   useEffect(() => {
@@ -372,6 +390,29 @@ const Settings = memo(function Settings({
     window.protocolBridge.setOverride(v)
   }
 
+  function commitTeamColorOverrides(next: TeamColorOverrides): void {
+    setTeamColorOverrides(next)
+    window.protocolBridge.setTeamColors(next)
+  }
+
+  function setTeamColor(format: TeamColorFormat, team: TeamColorPreset, color: string): void {
+    const normalized = color.toUpperCase()
+    const next = { ...teamColorOverrides, [format]: { ...(teamColorOverrides[format] ?? {}) } }
+    if (normalized === team.color.toUpperCase()) delete next[format][String(team.id)]
+    else next[format][String(team.id)] = normalized
+    if (Object.keys(next[format]).length === 0) delete next[format]
+    commitTeamColorOverrides(next)
+  }
+
+  function resetTeamColorGroup(format: TeamColorFormat, teams: TeamColorPreset[]): void {
+    const next = { ...teamColorOverrides }
+    const remaining = { ...(next[format] ?? {}) }
+    for (const team of teams) delete remaining[String(team.id)]
+    if (Object.keys(remaining).length === 0) delete next[format]
+    else next[format] = remaining
+    commitTeamColorOverrides(next)
+  }
+
   async function handleSelectDirectory() {
     const dir = await window.fsBridge.selectDirectory()
     if (dir) {
@@ -396,6 +437,7 @@ const Settings = memo(function Settings({
 
   const CATEGORIES = [
     { id: 'appearance' as const, label: 'Appearance', icon: <Sun size={14} />, color: '#f59e0b' },
+    { id: 'teamColors' as const, label: 'Team Colors', icon: <Palette size={14} />, color: '#ec4899' },
     { id: 'layout' as const, label: 'Layout', icon: <LayoutGrid size={14} />, color: '#f97316' },
     { id: 'graphs' as const, label: 'Graphs', icon: <LineChart size={14} />, color: '#0ea5e9' },
     { id: 'yAxis' as const, label: 'Y Axis Behavior', icon: <MoveVertical size={14} />, color: '#6366f1' },
@@ -808,6 +850,100 @@ const Settings = memo(function Settings({
     </div>
   )
 
+  const renderTeamColors = () => {
+    const teams = teamColorCatalog[teamColorFormat] ?? []
+    const overrides = teamColorOverrides[teamColorFormat] ?? {}
+    const groups = teams.reduce<Array<{ heading: string; teams: TeamColorPreset[] }>>((result, team) => {
+      const current = result[result.length - 1]
+      if (!current || current.heading !== team.group) {
+        result.push({ heading: team.group, teams: [team] })
+      } else {
+        current.teams.push(team)
+      }
+      return result
+    }, [])
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-4 px-4 pb-4">
+          <div>
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Team Colors</p>
+          </div>
+          <SegmentedControl<TeamColorFormat>
+            options={[
+              { value: '2024', label: '2024' },
+              { value: '2025', label: '2025' },
+              { value: '2026', label: '2026' },
+            ]}
+            value={teamColorFormat}
+            onChange={setTeamColorFormat}
+          />
+        </div>
+
+        {teams.length === 0 ? (
+          <p className="px-4 py-8 text-center text-xs text-[var(--text-muted)]">
+            Team color catalog unavailable.
+          </p>
+        ) : groups.map(group => {
+          const hasOverrides = group.teams.some(team => overrides[String(team.id)] !== undefined)
+          return (
+            <Fragment key={group.heading}>
+              <div className="flex items-center justify-between px-4 pt-4 pb-1">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                  {group.heading}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Reset ${group.heading} colors`}
+                  title={hasOverrides ? 'Reset section to presets' : 'Section is using preset colors'}
+                  disabled={!hasOverrides}
+                  onClick={() => resetTeamColorGroup(teamColorFormat, group.teams)}
+                  className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-20 transition-colors"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              </div>
+              <div className="mx-4 mb-3 overflow-hidden rounded-xl border border-[var(--border-muted)]">
+                {group.teams.map((team, index) => {
+                  const override = overrides[String(team.id)]
+                  const color = override ?? team.color
+                  return (
+                    <div key={team.id} className={`flex items-center gap-4 px-3 py-2.5 ${index > 0 ? 'border-t border-[var(--border-muted)]' : ''}`}>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-semibold text-[var(--text-primary)]">{team.name}</p>
+                        <p className="mt-0.5 text-[10px] font-mono text-[var(--text-muted)]">
+                          Preset {team.color}
+                        </p>
+                      </div>
+                      <ColorPicker
+                        label={team.name}
+                        color={color}
+                        onChange={value => setTeamColor(teamColorFormat, team, value)}
+                        triggerClassName="h-7 w-9 shrink-0 cursor-pointer rounded-md border border-[var(--border-muted)] shadow-inner"
+                      />
+                      <span className="w-[68px] text-[10px] font-mono tabular-nums text-[var(--text-secondary)]">
+                        {color}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Reset ${team.name} color`}
+                        title="Reset to preset"
+                        disabled={!override}
+                        onClick={() => setTeamColor(teamColorFormat, team, team.color)}
+                        className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-20 disabled:pointer-events-none transition-colors"
+                      >
+                        <RotateCcw size={13} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </Fragment>
+          )
+        })}
+      </div>
+    )
+  }
+
   const renderNetwork = () => (
     <div className="flex flex-col gap-1">
       <Row label="UDP Port" description="Port the game broadcasts telemetry to (2025 default: 20777)">
@@ -1184,6 +1320,8 @@ const Settings = memo(function Settings({
     switch (activeCategory) {
       case 'appearance':
         return renderAppearance()
+      case 'teamColors':
+        return renderTeamColors()
       case 'layout':
         return renderLayout()
       case 'graphs':
@@ -1213,7 +1351,7 @@ const Settings = memo(function Settings({
       className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
     >
       <div
-        className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[650px] max-h-[85vh] flex flex-col overflow-hidden"
+        className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[1080px] h-[100%] max-h-[85vh] flex flex-col overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">

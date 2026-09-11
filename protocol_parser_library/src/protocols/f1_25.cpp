@@ -60,7 +60,7 @@ static AllStatusCar ParseStatusF125(const uint8_t* data, int base) {
     return c;
 }
 
-std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot) {
+std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot, const TeamColorOverrides& teamColorOverrides) {
     std::vector<std::string> rows;
     std::string buf;
 
@@ -401,7 +401,8 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                 } else {
                     snprintf(hexColor, sizeof(hexColor), "#8e8e8e");
                 }
-                pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai, hexColor });
+                pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai,
+                    resolveTeamColor(2025, teamId, hexColor, teamColorOverrides) });
             }
             buf.clear();
             (void)glz::write_json(pr, buf);

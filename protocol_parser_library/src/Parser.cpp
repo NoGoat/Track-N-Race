@@ -40,10 +40,16 @@ static constexpr std::array<bool, PID_TABLE_SIZE> makeFrameSampled() {
 }
 static constexpr std::array<bool, PID_TABLE_SIZE> kFrameSampled = makeFrameSampled();
 
-Parser::Parser(Override ovr) : override_v_(ovr) {
+Parser::Parser(Override ovr, TeamColorOverrides teamColorOverrides)
+    : override_v_(ovr),
+      teamColorOverrides_(sanitizeTeamColorOverrides(teamColorOverrides)) {
     if (ovr == Override::F1_26) activeFormat_ = 2026;
     else if (ovr == Override::F1_25) activeFormat_ = 2025;
     else if (ovr == Override::F1_24) activeFormat_ = 2024;
+}
+
+void Parser::setTeamColorOverrides(TeamColorOverrides overrides) {
+    teamColorOverrides_ = sanitizeTeamColorOverrides(overrides);
 }
 
 void Parser::reset() {
@@ -263,9 +269,9 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     HotOut hot;
     hot.wantHotJson = wantHotJson;
     hot.outputRowMask = outputRowMask;
-    r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot)
-           : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot)
-                           : F1_25::ParsePacket(data, length, hdr, ts, hot);
+    r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
+           : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
+                           : F1_25::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_);
     r.hotJson = std::move(hot.hotJson);
     r.binary  = std::move(hot.binary);
     return r;

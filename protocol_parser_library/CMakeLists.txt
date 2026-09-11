@@ -93,6 +93,7 @@ add_library(tnrp STATIC
     src/DisplayNames.cpp
     src/Labels.cpp
     src/CardColors.cpp
+    src/TeamColors.cpp
     src/LapDelta.cpp
     src/LiveHistoryStore.cpp
     src/Strategy.cpp

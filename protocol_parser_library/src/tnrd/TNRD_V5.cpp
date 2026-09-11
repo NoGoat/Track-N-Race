@@ -524,7 +524,7 @@ bool TnrdV5Archive::rowsForLapRange(uint32_t lap,float from,float to,V5RowTypeMa
     std::vector<std::vector<V5TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;
 }
 bool TnrdV5Archive::rowsForRange(float from,float to,V5RowTypeMask mask,std::vector<V5TimedRow>& out,std::string* errorOut,const IndexedCancelCheck& cancelled){
-    if(std::isnan(from)||std::isnan(to)||to<from){fail(errorOut,"invalid V5 time range");return false;}std::vector<size_t> selected;for(uint8_t type=0;type<impl_->typeIndex.size();++type)if(mask&v5TypeBit(type))impl_->selectRange(impl_->typeIndex[type],from,to,selected);
+    if(std::isnan(from)||std::isnan(to)||to<from){fail(errorOut,"invalid V5 time range");return false;}std::vector<size_t> selected;for(size_t typeIndex=0;typeIndex<impl_->typeIndex.size();++typeIndex){const auto type=static_cast<uint8_t>(typeIndex);if(mask&v5TypeBit(type))impl_->selectRange(impl_->typeIndex[typeIndex],from,to,selected);}
     auto results=impl_->runChunkJobs(selected,[state=impl_.get(),from,to,cancelled](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error,{},true,from,to,false,cancelled))result.ok=false;return result;},cancelled);
     if(results.size()!=selected.size()){fail(errorOut,"indexed read cancelled");return false;}
     std::vector<std::vector<V5TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;

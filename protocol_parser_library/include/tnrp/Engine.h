@@ -50,6 +50,8 @@ public:
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
+    void setTeamColorOverrides(TeamColorOverrides overrides);
+    std::string teamColorCatalogJson() const;
     void setStrategyMinimumStops(int stops);
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
@@ -114,6 +116,8 @@ private:
 
     // Playback clock state.
     std::atomic<bool> inPlayback_{false};
+    std::atomic<uint16_t> emittedFormat_{0};
+    std::shared_ptr<const TeamColorOverrides> teamColorOverrides_;
     bool              playing_   = false;
     float             currentTime_ = 0.0f;  // absolute session_time cursor
     float             speed_     = 1.0f;

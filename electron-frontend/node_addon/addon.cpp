@@ -4,10 +4,12 @@
 #include <tnrp/CardColors.h>
 #include <tnrp/LapDelta.h>
 #include <tnrp/TnrdReader.h>
+#include <tnrp/TeamColors.h>
 #include <tnrp/XlsxExport.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -17,6 +19,32 @@
 using namespace Napi;
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
+
+static tnrp::TeamColorOverrides readTeamColorOverrides(const Napi::Value& value) {
+    tnrp::TeamColorOverrides result;
+    if (!value.IsObject()) return result;
+    Napi::Object formats = value.As<Napi::Object>();
+    for (const uint16_t format : {2024, 2025, 2026}) {
+        const std::string formatKey = std::to_string(format);
+        Napi::Value teamsValue = formats.Get(formatKey);
+        if (!teamsValue.IsObject()) continue;
+        Napi::Object teams = teamsValue.As<Napi::Object>();
+        Napi::Array ids = teams.GetPropertyNames();
+        for (uint32_t i = 0; i < ids.Length(); ++i) {
+            Napi::Value idValue = ids.Get(i);
+            if (!idValue.IsString()) continue;
+            const std::string idText = idValue.As<Napi::String>().Utf8Value();
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(idText.c_str(), &end, 10);
+            if (!end || *end != '\0' || parsed > 65535) continue;
+            Napi::Value color = teams.Get(idValue);
+            if (!color.IsString()) continue;
+            result[format][static_cast<uint16_t>(parsed)] =
+                color.As<Napi::String>().Utf8Value();
+        }
+    }
+    return tnrp::sanitizeTeamColorOverrides(result);
+}
 
 // Runs the (potentially several-second) XLSX export off the JS thread via
 // libuv's threadpool, resolving a Promise on completion. Progress (0..100)
@@ -293,6 +321,8 @@ public:
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
+            InstanceMethod("setTeamColorOverrides", &TNRPAddon::SetTeamColorOverrides),
+            InstanceMethod("teamColorCatalog", &TNRPAddon::TeamColorCatalog),
             InstanceMethod("setStrategyMinimumStops", &TNRPAddon::SetStrategyMinimumStops),
             InstanceMethod("setLogging", &TNRPAddon::SetLogging),
             InstanceMethod("setLoggingZstd", &TNRPAddon::SetLoggingZstd),
@@ -380,6 +410,10 @@ public:
         }
         if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
             config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
+        }
+        if (configObj.Has("teamColorOverrides")) {
+            config.teamColorOverrides = readTeamColorOverrides(
+                configObj.Get("teamColorOverrides"));
         }
         if (configObj.Has("pairEnabled") && configObj.Get("pairEnabled").IsBoolean()) {
             config.pairEnabled = configObj.Get("pairEnabled").As<Napi::Boolean>().Value();
@@ -715,6 +749,17 @@ private:
             else if (ovr == "f1_26") engine->setOverride(tnrp::Override::F1_26);
         }
         return info.Env().Undefined();
+    }
+
+    Napi::Value SetTeamColorOverrides(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1)
+            engine->setTeamColorOverrides(readTeamColorOverrides(info[0]));
+        return info.Env().Undefined();
+    }
+
+    Napi::Value TeamColorCatalog(const Napi::CallbackInfo& info) {
+        return Napi::String::New(info.Env(), engine
+            ? engine->teamColorCatalogJson() : "{}");
     }
 
     Napi::Value SetStrategyMinimumStops(const Napi::CallbackInfo& info) {

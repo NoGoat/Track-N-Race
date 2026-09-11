@@ -1272,10 +1272,16 @@ void TnrdReader::setStrategyMinimumStops(int stops) {
     strategyCheckpoints_.clear();
 }
 
+void TnrdReader::setTeamColorOverrides(TeamColorOverrides overrides) {
+    teamColorOverrides_ = sanitizeTeamColorOverrides(overrides);
+    strategyCheckpoints_.clear();
+}
+
 StrategySnapshotRow TnrdReader::strategySnapshotAt(float t, StrategyProcessor* restoredProcessor,
                                                      const std::function<bool()>& cancelled) {
     StrategyProcessor processor(strategyProtocol_);
     processor.setMinimumStops(strategyMinimumStops_);
+    processor.setTeamColorOverrides(teamColorOverrides_);
     if(cancelled&&cancelled())return processor.snapshot();
     t = std::clamp(t, startTime_, totalTime_);
     float cursor = startTime_;

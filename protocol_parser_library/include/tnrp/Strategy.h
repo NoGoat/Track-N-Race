@@ -12,6 +12,7 @@
 
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
+#include "tnrp/TeamColors.h"
 
 namespace tnrp {
 
@@ -217,6 +218,7 @@ class StrategyProcessor {
 public:
     explicit StrategyProcessor(uint16_t format = 2025);
     void setFormat(uint16_t format);
+    void setTeamColorOverrides(TeamColorOverrides overrides);
     void setMinimumStops(int stops);
     void reset();
     void ingest(const LapRow& row);
@@ -275,6 +277,7 @@ private:
     double rivalThreatScore(int idx, bool ahead) const;
 
     uint16_t format_{2025};
+    TeamColorOverrides teamColorOverrides_;
     int minimumStops_{};
     std::optional<LapRow> lap_;
     std::optional<SessionRow> session_;

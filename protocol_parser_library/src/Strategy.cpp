@@ -209,6 +209,12 @@ double robustWeightedPace(std::vector<std::pair<int,int>> laps, int currentLap) 
 
 StrategyProcessor::StrategyProcessor(uint16_t format):format_(format){}
 void StrategyProcessor::setFormat(uint16_t f){ if(f>=2024) format_=f; }
+void StrategyProcessor::setTeamColorOverrides(TeamColorOverrides overrides){
+    teamColorOverrides_=sanitizeTeamColorOverrides(overrides);
+    if(participants_)for(auto&driver:participants_->drivers)
+        driver.livery_color=resolveTeamColor(format_,static_cast<uint16_t>(driver.team_id),
+                                             driver.livery_color,teamColorOverrides_);
+}
 void StrategyProcessor::setMinimumStops(int stops){minimumStops_=std::clamp(stops,0,8);}
 void StrategyProcessor::reset(){
     lap_.reset();session_.reset();status_.reset();damage_.reset();timing_.reset();participants_.reset();tyreSets_.reset();allStatus_.reset();
@@ -248,7 +254,12 @@ void StrategyProcessor::ingest(const StatusRow&r){
     if(currentStintStart_<=0&&lap_)currentStintStart_=std::max(1,lap_->lap_num-r.tyre_age_laps);
 }
 void StrategyProcessor::ingest(const DamageRow&r){damage_=r;}
-void StrategyProcessor::ingest(const ParticipantsRow&r){participants_=r;}
+void StrategyProcessor::ingest(const ParticipantsRow&r){
+    participants_=r;
+    for(auto&driver:participants_->drivers)
+        driver.livery_color=resolveTeamColor(format_,static_cast<uint16_t>(driver.team_id),
+                                             driver.livery_color,teamColorOverrides_);
+}
 void StrategyProcessor::ingest(const TyreSetsRow&r){tyreSets_=r;}
 void StrategyProcessor::ingest(const AllStatusRow&r){
     allStatus_=r;

@@ -181,8 +181,8 @@ struct LiveHistoryStore::Impl {
             bool needsWork = false;
             {
                 std::lock_guard<std::mutex> lapLock(lap->mutex);
-                for (uint8_t type = 1; type < lap->families.size(); ++type) {
-                    auto& family = lap->families[type];
+                for (size_t familyIndex = 1; familyIndex < lap->families.size(); ++familyIndex) {
+                    auto& family = lap->families[familyIndex];
                     if ((!family.packed.empty() || !family.json.empty()) &&
                         family.compressed.empty() && !family.compressionQueued) {
                         family.compressionQueued = true;
@@ -196,8 +196,9 @@ struct LiveHistoryStore::Impl {
 
     static void compressLap(const std::shared_ptr<LapSegment>& lap) {
         std::lock_guard<std::mutex> lock(lap->mutex);
-        for (uint8_t type = 1; type < lap->families.size(); ++type) {
-            auto& family = lap->families[type];
+        for (size_t familyIndex = 1; familyIndex < lap->families.size(); ++familyIndex) {
+            const auto type = static_cast<uint8_t>(familyIndex);
+            auto& family = lap->families[familyIndex];
             if (!family.compressionQueued || !family.compressed.empty()) continue;
             auto plain = familyPlain(family, type);
             family.compressionQueued = false;
@@ -228,8 +229,9 @@ struct LiveHistoryStore::Impl {
 
     static void decompressLap(const std::shared_ptr<LapSegment>& lap) {
         std::lock_guard<std::mutex> lock(lap->mutex);
-        for (uint8_t type = 1; type < lap->families.size(); ++type) {
-            auto& family = lap->families[type];
+        for (size_t familyIndex = 1; familyIndex < lap->families.size(); ++familyIndex) {
+            const auto type = static_cast<uint8_t>(familyIndex);
+            auto& family = lap->families[familyIndex];
             family.compressionQueued = false;
             if (family.compressed.empty()) continue;
             std::vector<uint8_t> plain;

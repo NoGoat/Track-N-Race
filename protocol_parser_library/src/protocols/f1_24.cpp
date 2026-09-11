@@ -22,15 +22,6 @@ static const int PID_MOTION_EX        = 13;
 
 const char* F1_24::RecordingFilenamePrefix() { return "f1_24"; }
 
-static const std::unordered_map<int, std::string> F1_24_TEAM_COLORS = {
-    {0, "#27f4d2"}, {1, "#e80020"}, {2, "#3671c6"}, {3, "#64c4ff"},
-    {4, "#229971"}, {5, "#0093cc"}, {6, "#6692ff"}, {7, "#e6002b"},
-    {8, "#ff8000"}, {9, "#52e252"}, {41, "#8e8e8e"}, {104, "#8e8e8e"},
-    {143, "#ecebeb"}, {144, "#ff4646"}, {145, "#005aff"}, {146, "#1b2c56"},
-    {147, "#39ff14"}, {148, "#ff3c00"}, {149, "#ff7c00"}, {150, "#ff2828"},
-    {151, "#0028ff"}, {152, "#ffb400"}, {153, "#ffff00"}
-};
-
 static AllStatusCar ParseStatusF124(const uint8_t* data, int base) {
     AllStatusCar c;
     int o = base;
@@ -68,7 +59,7 @@ static AllStatusCar ParseStatusF124(const uint8_t* data, int base) {
     return c;
 }
 
-std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot) {
+std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, const PacketHeader& hdr, const std::string& timestamp, HotOut& hot, const TeamColorOverrides& teamColorOverrides) {
     std::vector<std::string> rows;
     std::string buf;
 
@@ -397,9 +388,8 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                 int nameStart = o;
                 std::string name = ReadString(data, nameStart, 48);
                 if (name.empty()) continue;
-                std::string liveryColor = "#8e8e8e";
-                auto it = F1_24_TEAM_COLORS.find(teamId);
-                if (it != F1_24_TEAM_COLORS.end()) liveryColor = it->second;
+                std::string liveryColor = resolveTeamColor(2024, teamId,
+                    "#8E8E8E", teamColorOverrides);
                 pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai, std::move(liveryColor) });
             }
             buf.clear();

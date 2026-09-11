@@ -20,9 +20,11 @@ namespace tnrp {
 // them. This keeps the parser a pure function of its inputs + override state.
 class Parser {
 public:
-    explicit Parser(Override ovr = Override::Auto);
+    explicit Parser(Override ovr = Override::Auto,
+                    TeamColorOverrides teamColorOverrides = {});
 
     void setOverride(Override ovr);
+    void setTeamColorOverrides(TeamColorOverrides overrides);
     Override override_() const { return override_v_; }
 
     // Format the parser is currently routing with (null == nothing detected yet,
@@ -66,6 +68,7 @@ public:
 
 private:
     Override  override_v_        = Override::Auto;
+    TeamColorOverrides teamColorOverrides_;
     uint16_t  detectedFormat_    = 0;
     uint16_t  activeFormat_      = 0;
     std::optional<int> formula_;

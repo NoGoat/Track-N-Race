@@ -118,7 +118,8 @@ static void emitLines(Sink* sink, const std::string& batch) {
 }
 
 Engine::Engine(const Config& config, Sink* sink)
-    : config_(config), sink_(sink), parser_(config.protocol),
+    : config_(config), sink_(sink),
+      parser_(config.protocol, config.teamColorOverrides),
       writer_([sink](const std::string& operation, const std::string& message,
                      const std::string& path) {
           if (!sink) return;
@@ -129,6 +130,9 @@ Engine::Engine(const Config& config, Sink* sink)
           sink->onRow(writeJson(row));
       }) {
     TRACE("Engine ctor: start");
+    config_.teamColorOverrides = sanitizeTeamColorOverrides(config.teamColorOverrides);
+    teamColorOverrides_ = std::make_shared<const TeamColorOverrides>(
+        config_.teamColorOverrides);
     // Electron declares its visible consumers immediately after renderer
     // mount. Start that host closed so no telemetry can slip through before
     // the first aggregate subscription; JSON-only/Qt hosts keep legacy-all.
@@ -141,6 +145,8 @@ Engine::Engine(const Config& config, Sink* sink)
     liveHistoryLastLap_.fill(-1);
     strategy_.setMinimumStops(config_.strategyMinimumStops);
     reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
+    strategy_.setTeamColorOverrides(config_.teamColorOverrides);
+    reader_.setTeamColorOverrides(config_.teamColorOverrides);
     strategyThread_ = std::thread(&Engine::strategyLoop, this);
     enqueueLiveStrategyWork({StrategyWorkKind::Reset, liveStrategyGeneration_,
                              2025, config_.strategyMinimumStops, false, {}});
@@ -192,6 +198,16 @@ Engine::~Engine() {
 }
 
 void Engine::emitRow(const std::string& json) {
+    const uint16_t format = emittedFormat_.load(std::memory_order_acquire);
+    if (format != 0 && rowTypeOf(json) == 8) {
+        const auto overrides = std::atomic_load_explicit(
+            &teamColorOverrides_, std::memory_order_acquire);
+        const std::string resolved = applyTeamColorsToParticipantsJson(
+            json, format, overrides ? *overrides : TeamColorOverrides{});
+        pairServer_.publishRow(resolved);
+        if (sink_) sink_->onRow(resolved);
+        return;
+    }
     pairServer_.publishRow(json);
     if (sink_) sink_->onRow(json);
 }
@@ -280,9 +296,10 @@ void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
 
     // State rows newer than the target must not leak back into a page restored
     // after the rewind. Historical families can be restored from their tails.
-    for (uint8_t type = 1; type < liveLatestRows_.size(); ++type) {
+    for (size_t typeIndex = 1; typeIndex < liveLatestRows_.size(); ++typeIndex) {
+        const auto type = static_cast<uint8_t>(typeIndex);
         if (!((kHistoricalRowMask | kStrategyDependencyMask) & (1u << type))) continue;
-        liveLatestRows_[type] = liveHistory_->latestJson(type, sessionTime);
+        liveLatestRows_[typeIndex] = liveHistory_->latestJson(type, sessionTime);
     }
     liveLapNum_ = liveHistory_->currentLap();
     liveLapStart_ = liveHistory_->currentLapStart();
@@ -370,6 +387,10 @@ void Engine::strategyLoop() {
                 changed = changed || item.kind == StrategyWorkKind::Rebuild;
             }
             liveStrategy.setFormat(item.format);
+            const auto teamColors = std::atomic_load_explicit(
+                &teamColorOverrides_, std::memory_order_acquire);
+            liveStrategy.setTeamColorOverrides(
+                teamColors ? *teamColors : TeamColorOverrides{});
             liveStrategy.setMinimumStops(item.minimumStops);
             if (item.kind == StrategyWorkKind::Rebuild) {
                 if (item.rows.empty()) {
@@ -488,6 +509,7 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ | kStrategyDependencyMask |
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
+    if (r.format != 0) emittedFormat_.store(r.format, std::memory_order_release);
     if (r.format != 0) liveStrategyFormat_ = r.format;
     if (r.format != 0) pairServer_.noteSession(r.sessionUid);
 
@@ -788,6 +810,44 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
     }
 }
 
+void Engine::setTeamColorOverrides(TeamColorOverrides overrides) {
+    TeamColorOverrides sanitized = sanitizeTeamColorOverrides(overrides);
+    auto snapshot = std::make_shared<const TeamColorOverrides>(sanitized);
+    std::atomic_store_explicit(&teamColorOverrides_, snapshot,
+                               std::memory_order_release);
+
+    std::string participants;
+    std::string strategy;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        config_.teamColorOverrides = std::move(sanitized);
+        parser_.setTeamColorOverrides(config_.teamColorOverrides);
+        strategy_.setTeamColorOverrides(config_.teamColorOverrides);
+        reader_.setTeamColorOverrides(config_.teamColorOverrides);
+        participants = inPlayback_.load() ? dupCache_[8] : liveLatestRows_[8];
+        if (inPlayback_.load() && !liveLatestRows_[kStrategyRowType].empty()) {
+            strategy = strategy_.snapshotJson();
+            liveLatestRows_[kStrategyRowType] = strategy;
+            lastStrategyJson_ = strategy;
+        } else if (!inPlayback_.load()) {
+            ++liveStrategyGeneration_;
+            enqueueLiveStrategyWork({StrategyWorkKind::Rebuild,
+                                     liveStrategyGeneration_, liveStrategyFormat_,
+                                     config_.strategyMinimumStops, true, {},
+                                     liveSessionTime_});
+        }
+    }
+    // Refresh the currently visible roster immediately, including while a
+    // recording is paused in playback. Future participant packets/rows use the
+    // same resolver automatically.
+    if (!participants.empty()) emitRow(participants);
+    if (!strategy.empty()) emitRow(strategy);
+}
+
+std::string Engine::teamColorCatalogJson() const {
+    return tnrp::teamColorCatalogJson();
+}
+
 void Engine::setPairDataRequirements(uint32_t streamRowMask) {
     uint32_t hostStreamMask = 0;
     uint32_t hostHistoryMask = 0;
@@ -831,6 +891,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
                                      config_.strategyMinimumStops, false, {}});
             strategy_.reset();
             strategy_.setFormat(header.protocol >= 2024 ? (uint16_t)header.protocol : 2025);
+            emittedFormat_.store(
+                header.protocol >= 2024 ? static_cast<uint16_t>(header.protocol) : 2025,
+                std::memory_order_release);
             lastStrategyJson_.clear();
             inPlayback_.store(true);
             playing_     = false;
@@ -1098,6 +1161,7 @@ void Engine::playerClose() {
         std::fprintf(stderr, "[close-trace] reader close returned\n");
         std::fflush(stderr);
         inPlayback_.store(false);
+        emittedFormat_.store(parser_.activeFormat(), std::memory_order_release);
         playing_ = false;
         appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
         strategyRebuildPending_ = false;

@@ -12,6 +12,25 @@ declare const __ENABLE_PAIR_DIAGNOSTICS__: boolean
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
+type TeamColorOverrides = Record<string, Record<string, string>>
+
+function storedTeamColorOverrides(): TeamColorOverrides {
+  const value = store.get('teamColorOverrides', {})
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const result: TeamColorOverrides = {}
+  for (const format of ['2024', '2025', '2026']) {
+    const teams = (value as Record<string, unknown>)[format]
+    if (!teams || typeof teams !== 'object' || Array.isArray(teams)) continue
+    for (const [id, color] of Object.entries(teams as Record<string, unknown>)) {
+      if (/^\d+$/.test(id) && typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) {
+        const formatOverrides = result[format] ?? {}
+        formatOverrides[id] = color.toUpperCase()
+        result[format] = formatOverrides
+      }
+    }
+  }
+  return result
+}
 
 function storedForwardTargets(): UdpForwardTarget[] {
   if (!(store.get('udp.forwardingEnabled', false) as boolean)) return []
@@ -363,6 +382,7 @@ export function startBridge(): string | null {
       bindAddress: store.get('udp.bindAddress', '0.0.0.0'),
       forwardTargets: storedForwardTargets(),
       strategyMinimumStops: 1,
+      teamColorOverrides: storedTeamColorOverrides(),
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true,
@@ -682,6 +702,37 @@ export function exportSessionXlsx(
 export function setOverride(value: ProtocolOverride): void {
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
+}
+
+export function getTeamColorConfig(): {
+  catalog: Record<string, Array<{ id: number; name: string; color: string; group: string }>>
+  overrides: TeamColorOverrides
+} {
+  let catalog = {}
+  if (engine) {
+    try { catalog = JSON.parse(engine.teamColorCatalog()) } catch {}
+  }
+  return { catalog, overrides: storedTeamColorOverrides() }
+}
+
+export function setTeamColorOverrides(value: unknown): void {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+  const normalized: TeamColorOverrides = {}
+  for (const format of ['2024', '2025', '2026']) {
+    const teams = source[format]
+    if (!teams || typeof teams !== 'object' || Array.isArray(teams)) continue
+    for (const [id, color] of Object.entries(teams as Record<string, unknown>)) {
+      if (/^\d+$/.test(id) && typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) {
+        const formatOverrides = normalized[format] ?? {}
+        formatOverrides[id] = color.toUpperCase()
+        normalized[format] = formatOverrides
+      }
+    }
+  }
+  store.set('teamColorOverrides', normalized)
+  if (engine) engine.setTeamColorOverrides(normalized)
 }
 
 export function setStrategyMinimumStops(value: number): void {

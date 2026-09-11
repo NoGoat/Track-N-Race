@@ -17,6 +17,8 @@ import { setFatalFlushHandler } from './diagnostics'
 import { checkForUpdateOnStartup, RELEASE_PAGE_URL, skipUpdateVersion, type AvailableUpdate } from './updateChecker'
 import {
   setOverride,
+  getTeamColorConfig,
+  setTeamColorOverrides,
   setStrategyMinimumStops,
   restartUdp,
   startBridge,
@@ -304,6 +306,14 @@ ipcMain.handle('protocol-get-config', () => {
 
 ipcMain.on('protocol-set-override', (_event, value: ProtocolOverride) => {
   setOverride(value)
+})
+
+ipcMain.handle('protocol-get-team-colors', () => {
+  return getTeamColorConfig()
+})
+
+ipcMain.on('protocol-set-team-colors', (_event, value: unknown) => {
+  setTeamColorOverrides(value)
 })
 
 ipcMain.on('protocol-request-status', () => {
