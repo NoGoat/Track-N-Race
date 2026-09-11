@@ -361,9 +361,8 @@ int main() {
 #endif
     reader.close();
 
-    // Incremental checkpoints must append only new delta chunks. Repeated
-    // checkpoints for the same (lap,type) are valid distinct segments, and
-    // finalization must remain a small metadata/tail operation.
+    // Checkpoints contain no row index. The reader must still work by scanning
+    // selected chunk payloads; clean finalization writes the complete index once.
     const fs::path incrementalPath = longDir / "incremental_append_only_writer.tnrd";
     tnrp::detail::TnrdV5Writer incremental;
     assert(incremental.open(incrementalPath.string(), header, &error));
@@ -389,13 +388,22 @@ int main() {
     const auto incrementalFsPath = incrementalPath;
 #endif
     const auto beforeFinish = fs::file_size(incrementalFsPath);
+    tnrp::detail::TnrdV5Archive checkpointRead;
+    assert(checkpointRead.open(incrementalPath.string(), loadedHeader, &error));
+    completeRows.clear();
+    assert(checkpointRead.rowsForRange(checkpointRead.startTime(),
+                                       checkpointRead.totalTime(),
+                                       0xFFFFFFFFu, completeRows, &error));
+    assert(completeRows.size() == expectedRows);
+    checkpointRead.close();
     assert(incremental.finish(&error));
-    const auto finishGrowth = fs::file_size(incrementalFsPath) - beforeFinish;
-    assert(finishGrowth < 64 * 1024); // directory/footer only; never a session rewrite
+    const auto afterFinish = fs::file_size(incrementalFsPath);
+    assert(afterFinish > beforeFinish);
+    assert(afterFinish - beforeFinish < 2 * 1024 * 1024); // one final index
     tnrp::detail::TnrdV5Archive incrementalRead;assert(incrementalRead.open(incrementalPath.string(),loadedHeader,&error));completeRows.clear();assert(incrementalRead.rowsForRange(incrementalRead.startTime(),incrementalRead.totalTime(),0xFFFFFFFFu,completeRows,&error));assert(completeRows.size()==expectedRows);assert(incrementalRead.peakConcurrentChunkLoads()>=2);assert(incrementalRead.peakConcurrentChunkLoads()<=8);incrementalRead.close();
 
-    // Formation-lap/session-scope rows remain addressable as logical lap 0,
-    // and a flashback behind committed data supersedes only affected chunks.
+    // Formation-lap/session-scope rows remain addressable as logical lap 0.
+    // A shorter, newer wall-clock branch hides the old branch's entire tail.
     const fs::path flashbackPath = longDir / "formation_lap_flashback.tnrd";
     tnrp::detail::TnrdV5Writer flashback;
     assert(flashback.open(flashbackPath.string(), header, &error));
@@ -403,12 +411,14 @@ int main() {
         {R"({"type":"session","session_time":0.5,"session_type":10})", 0.5f},
         {R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0,"lap_distance_m":0})", 1.0f},
         {R"({"type":"telemetry","session_time":40,"speed_kph":200})", 40.0f},
+        {R"({"type":"telemetry","session_time":50,"speed_kph":201})", 50.0f},
         {R"({"type":"lap","session_time":91,"lap_num":2,"current_lap_ms":0,"last_lap_ms":90000,"lap_distance_m":0})", 91.0f},
         {R"({"type":"telemetry","session_time":92,"speed_kph":220})", 92.0f},
     }, &error));
     assert(flashback.checkpoint(&error));
     assert(flashback.rewind(50.0f, &error));
     assert(flashback.append({
+        {R"({"type":"telemetry","session_time":50,"speed_kph":175})", 50.0f},
         {R"({"type":"lap","session_time":55,"lap_num":2,"current_lap_ms":0,"last_lap_ms":54000,"lap_distance_m":0})", 55.0f},
         {R"({"type":"telemetry","session_time":56,"speed_kph":180})", 56.0f},
     }, &error));
@@ -422,6 +432,12 @@ int main() {
     }));
     assert(std::any_of(completeRows.begin(), completeRows.end(), [](const auto& r) {
         return r.json.find("\"speed_kph\":180") != std::string::npos;
+    }));
+    assert(std::any_of(completeRows.begin(), completeRows.end(), [](const auto& r) {
+        return r.json.find("\"speed_kph\":175") != std::string::npos;
+    }));
+    assert(std::none_of(completeRows.begin(), completeRows.end(), [](const auto& r) {
+        return r.json.find("\"speed_kph\":201") != std::string::npos;
     }));
     assert(std::none_of(completeRows.begin(), completeRows.end(), [](const auto& r) {
         return r.json.find("\"speed_kph\":220") != std::string::npos;
@@ -439,7 +455,7 @@ int main() {
     reusedRead.close();
 
     // A torn fixed-header commit is recovered by scanning backward for the
-    // latest valid 40-byte checkpoint footer.
+    // latest valid 48-byte checkpoint footer.
     const fs::path recoveryPath = longDir / "recover_from_torn_header.tnrd";
 #ifdef _WIN32
     fs::copy_file(incrementalFsPath,
@@ -451,7 +467,7 @@ int main() {
     fs::copy_file(incrementalFsPath,recoveryPath,fs::copy_options::overwrite_existing);
     std::fstream recovery(recoveryPath,std::ios::in | std::ios::out | std::ios::binary);
 #endif
-    recovery.seekp(104);char damagedCrc[4]{1,2,3,4};recovery.write(damagedCrc,4);recovery.close();
+    recovery.seekp(120);char damagedCrc[4]{1,2,3,4};recovery.write(damagedCrc,4);recovery.close();
     tnrp::detail::TnrdV5Archive recovered;
     assert(recovered.open(recoveryPath.string(),loadedHeader,&error));
     assert(recovered.decompressedChunkCount()==0);

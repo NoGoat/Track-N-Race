@@ -24,8 +24,8 @@ namespace tnrp {
 // Records parsed rows to .tnrd files. TNRD V5/chunked Zstandard is the default;
 // TNRD V1/gzip remains available for legacy compatibility. Owns:
 //   - per-session file rotation (new track/session => new file),
-//   - a 30s rolling buffer so in-game flashbacks (<=30s) rewrite cleanly,
-//   - rewind/flashback timeline truncation,
+//   - a 30s rolling buffer so common short flashbacks avoid disk-side branching,
+//   - V5 wall-clock branch cuts for append-only rewind/flashback recording,
 //   - per-type dedup of state rows.
 //
 // Not thread-safe; the engine serializes all calls.
@@ -58,7 +58,7 @@ public:
     void notePacket(uint16_t format, uint8_t packetId, float sessionTime,
                     const uint8_t* data, int length);
 
-    // Apply an authoritative FLBK target before recording the event/new timeline.
+    // Apply an authoritative FLBK target before recording the event/new V5 branch.
     void rewind(float sessionTime);
 
     // Append one serialised JSON row to the rolling buffer (deduped, flushed lazily).
@@ -83,6 +83,7 @@ private:
         uint16_t              format;
         uint8_t               packetId;
         float                 sessionTime;
+        uint64_t              wallClockMs{};
         std::vector<uint8_t>  packetData;
         std::string           json;   // serialised JSON row
         std::shared_ptr<std::promise<void>> completion;
@@ -129,7 +130,7 @@ private:
     void flushToDiskOnWriterThread();
     void closeActiveStreamOnWriterThread();
     void flushOldBufferEntries();
-    void truncateTimeline(float newSessionTime);
+    void truncateTimeline(float newSessionTime, uint64_t wallClockMs);
     bool isDuplicate(const std::string& type, const std::string& json);
     void reportError(const std::string& operation, const std::string& message,
                      const std::string& path);

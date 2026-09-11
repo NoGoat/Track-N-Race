@@ -4,9 +4,8 @@
 
 namespace tnrp::detail {
 
-// V5 retains V4's indexed-container table shapes. The aliases keep the shared
-// query interface stable while the V5 reader/writer implementation remains
-// independent and validates only V5 identities.
+// The aliases keep the indexed archive query interface shared with V4 while
+// V5's branch-aware on-disk tables remain independent.
 using V5SourceRow = V4SourceRow;
 using V5LapInfo = V4LapInfo;
 using V5ChunkInfo = V4ChunkInfo;
@@ -84,7 +83,10 @@ public:
     bool open(const std::string& path, const HeaderRow& header, std::string* errorOut);
     bool append(const std::vector<V5SourceRow>& rows, std::string* errorOut);
     bool checkpoint(std::string* errorOut);
+    // Starts a newer wall-clock branch at sessionTime. Existing payload chunks
+    // remain in the file and are clipped logically by the reader.
     bool rewind(float sessionTime, std::string* errorOut);
+    bool rewind(float sessionTime, uint64_t wallClockMs, std::string* errorOut);
     bool finish(std::string* errorOut);
     bool isOpen() const;
 

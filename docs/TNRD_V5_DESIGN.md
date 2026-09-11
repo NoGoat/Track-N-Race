@@ -1,8 +1,8 @@
 # TNRD V5 — Read Metadata Design
 
 Status: implemented
-Scope: metadata additions that make the existing V5 chunks faster to select and read  
-Compatibility: existing pre-release V5 files do not need to remain readable
+Scope: indexed reads and append-only wall-clock rewind branches
+Compatibility: V5 is pre-release; no older V5 layout is supported
 
 ## 1. Purpose
 
@@ -25,6 +25,8 @@ The intended result is:
 - faster selection of chunks for a time range;
 - faster latest-at-time state lookup;
 - less JSONL scanning after a selected chunk is decompressed;
+- no cumulative row-index copy at every checkpoint;
+- no payload deletion or target-lap recompression during a rewind;
 - no change to telemetry values, row schemas, playback behavior or UI behavior.
 
 V5 is pre-release, so its current directory entry and checkpoint table may be
@@ -32,7 +34,7 @@ changed directly. V1–V4 remain untouched.
 
 ## 2. Explicit scope boundary
 
-This proposal does **not** introduce:
+This design does **not** introduce:
 
 - a new telemetry payload encoding;
 - packed binary telemetry stored on disk;
@@ -43,7 +45,8 @@ This proposal does **not** introduce:
 - chart-specific data;
 - decimation or dropped samples.
 
-The existing compressed JSONL chunks remain the source data.
+The existing compressed JSONL chunks remain the source data, including chunks
+from branches superseded by a later wall-clock rewind.
 
 ## 3. Avoidable reader work addressed by this design
 
@@ -83,14 +86,16 @@ position while building a chunk. V5 should persist those facts.
 
 ## 4. Design summary
 
-Add two serialized metadata structures to the existing V5 control plane and
+Add three serialized metadata structures to the existing V5 control plane and
 derive one small in-memory lookup while opening:
 
 1. expanded chunk directory entries containing time and optional distance
    bounds;
 2. a per-chunk row seek index containing row times and uncompressed JSONL byte
    offsets;
-3. an in-memory row-family directory built from the type-sorted chunk table.
+3. a wall-clock-ordered rewind-branch table, with each chunk stamped by the
+   wall-clock branch that wrote it;
+4. an in-memory row-family directory built from the type-sorted chunk table.
 
 The compressed chunk payload itself remains unchanged.
 
@@ -105,18 +110,21 @@ The compressed chunk payload itself remains unchanged.
 +-------------------------------+
 | Existing control summary      |
 +-------------------------------+
+| Wall-clock rewind branches    |
++-------------------------------+
 | Existing lap table            |
 +-------------------------------+
 | Expanded chunk directory      |
 +-------------------------------+
-| Row seek-index table          | new metadata
+| Optional row seek-index table | final snapshot only
 +-------------------------------+
 | Existing commit footer        |
 +-------------------------------+
 ```
 
-The header/footer receive the offsets and sizes necessary to locate the new
-table. Their existing checksum and recovery rules continue to apply.
+Checkpoint directory entries contain zero index offsets/counts. The final
+snapshot locates the one row-index table written at clean close. Existing
+header, footer, checksum and recovery rules continue to apply.
 
 ## 5. Expanded chunk directory entry
 
@@ -148,6 +156,7 @@ struct V5ChunkEntry {
     uint32_t rowIndexCount;        // new
     uint16_t rowIndexStride;       // new
     uint16_t rowIndexEntrySize;    // new
+    uint64_t branchWallClockMs;    // wall clock of the branch that wrote it
 };
 ```
 
@@ -162,9 +171,9 @@ Required semantics:
   interval binary search even when adjacent chunk bounds overlap slightly.
 - Distance bounds are present only for row families containing usable lap
   distance; otherwise both are NaN.
-- `rowIndexOffset` is a file offset into the uncompressed seek-index table, not
-  into the compressed payload.
-- `rowIndexCount == 0` means the chunk has no row-level index.
+- `rowIndexOffset == 0` and `rowIndexCount == 0` mean no index is available.
+- Otherwise `rowIndexOffset` points into the final snapshot's row-index table.
+- `branchWallClockMs` identifies the recording branch by its wall-clock start.
 
 The reader validates finite time bounds, `first <= last`, sizes, offsets and
 index counts before accepting the directory.
@@ -182,10 +191,12 @@ Persisted time bounds allow these operations without touching payload data:
 
 This removes the current lazy bound-discovery path.
 
-## 6. Row seek-index table
+## 6. Optional row seek-index table
 
 The row seek index stores information about rows, not another copy of row data.
-The JSON remains inside the existing compressed chunk.
+The writer retains it in memory and serializes it once at clean close. The JSON
+remains inside the compressed chunk. A recoverable checkpoint contains no row
+index; the reader scans a selected decompressed chunk when the index is absent.
 
 All entries use one fixed 24-byte representation. Sparse families encode one
 row per entry (`firstSessionTime == lastSessionTime`, `rowCount == 1`):
@@ -289,14 +300,28 @@ No second scan of the builder is required at checkpoint time.
 When the builder is compressed:
 
 1. write the existing chunk prefix and Zstandard JSONL payload;
-2. retain its collected bounds and row-index entries in writer memory;
-3. append those entries with the next checkpoint control tables;
-4. serialize the expanded directory entry with the seek-index locator;
-5. include the new tables in the existing checkpoint checksum.
+2. retain its collected row-index entries in writer memory;
+3. write checkpoint directory entries with zero index offsets/counts.
 
-Flashback handling follows the current V5 behavior. When a target-lap chunk is
-decompressed and filtered during rewind, its metadata and row index are rebuilt
-for the retained JSONL before the replacement chunk is committed.
+On clean finish, serialize all retained row-index entries once and write the
+final directory/footer with their locators. No file compaction or payload rewrite
+is performed.
+
+### 8.1 Wall-clock rewind branches
+
+The first branch uses the recording header's wall-clock `start_time`. Every
+committed rewind appends a branch entry containing a strictly newer wall-clock
+value and the authoritative rewind target in session time. Subsequent chunks
+carry that new branch wall clock.
+
+A branch is valid only before every newer branch's rewind target. Therefore a
+newer branch supersedes all older data from its target onward even when the new
+branch is shorter and never produces replacement rows for the old tail. Exact
+target-time collisions belong to the newer wall-clock branch.
+
+The writer flushes pending builders, appends the branch cut, resets logical lap
+and summary state, and commits a checkpoint. It does not delete, decompress,
+filter, or recompress old payload chunks.
 
 ## 9. Reader behavior
 
@@ -309,11 +334,15 @@ Opening V5 reads and validates:
 - lap table;
 - expanded chunk directory;
 - row-family lookup derived from the sorted directory;
-- row seek-index table;
+- the optional row seek-index table;
+- the wall-clock rewind-branch table;
 - footer/checksums.
 
-It immediately has time bounds for every chunk. Opening does not decompress a
-chunk merely to populate `chunkTimeBounds()`.
+It immediately derives the logical validity ceiling of every chunk from newer
+wall-clock branch cuts. Fully superseded chunks are excluded from the active
+directory; partially superseded chunks keep their payload but expose only rows
+before their logical ceiling. Opening does not decompress a chunk merely to
+populate `chunkTimeBounds()`.
 
 The existing full binary warm cache should no longer be required for metadata
 discovery. Payload data can be loaded for the requested initial view using the
@@ -328,8 +357,9 @@ For a request `[fromTime, toTime]` and row-type mask:
 3. walk entries until `firstSessionTime > toTime`;
 4. reject entries whose lap/distance bounds do not intersect when applicable;
 5. decompress only the remaining chunks;
-6. use the row seek index to locate the first and last relevant JSONL rows;
-7. parse or return only those rows.
+6. enforce the chunk's wall-clock-derived logical time ceiling;
+7. use the row seek index when present, otherwise scan the decompressed JSONL;
+8. parse or return the relevant rows.
 
 The unavoidable unit of decompression remains one existing V5 chunk. This
 proposal reduces incorrect chunk selection and post-decompression scanning; it
@@ -341,7 +371,7 @@ For every requested sparse row type:
 
 1. use its directory range and chunk bounds to find the last chunk that may
    contain a row at or before the target;
-2. binary-search that chunk's exact row index;
+2. binary-search that chunk's exact row index when present, otherwise scan it;
 3. if no indexed row qualifies, move to the previous chunk;
 4. group results that use the same chunk;
 5. decompress each unique selected chunk once;
@@ -356,7 +386,8 @@ The reader knows each chunk's first and last time before it is loaded. It can:
 - choose the correct initial chunk immediately;
 - prefetch the next required chunk using persisted bounds;
 - avoid decoding chunks entirely beyond the playhead;
-- jump near the first due row using the seek index after decompression.
+- jump near the first due row using the seek index after decompression, or scan
+  the chunk when reading a checkpoint without an index.
 
 ### 9.5 All Laps
 
@@ -381,6 +412,9 @@ Approximate initial costs:
 - 24-byte hot block index at 64 rows: about 0.375 bytes per hot row;
 - derived row-family lookup: negligible.
 
+Checkpoint growth is the current directory and summary, never the cumulative
+row index. A finished file adds the complete index exactly once.
+
 The writer should record actual metadata bytes in the control summary so tests
 can report index overhead as a percentage of total file size.
 
@@ -390,9 +424,9 @@ index is unreasonably large.
 
 ## 11. Recovery and validation
 
-The existing V5 checkpoint/footer recovery model remains in place. The new
-directory and seek-index table are part of the same committed
-control snapshot and checksum.
+The existing V5 checkpoint/footer recovery model remains in place. A checkpoint
+commits complete chunk payloads with no row index. The final snapshot includes
+the optional index table in the existing control checksum.
 
 Validation includes:
 
@@ -400,7 +434,7 @@ Validation includes:
 - overflow-safe table size calculations;
 - known row types and supported flags;
 - finite, ordered chunk bounds;
-- row-index offsets within the index table;
+- either zero row-index offset/count, or offsets within the final index table;
 - monotonic exact sparse index times and offsets at equal times;
 - valid hot block bounds, offsets, ordinals and row counts;
 - indexed JSON offsets within the chunk's uncompressed size;
@@ -408,10 +442,12 @@ Validation includes:
 - hot block indexes covering every physical row exactly once;
 - directory family ordering and derived family ranges agreeing;
 - no active payload/control range overlap.
+- strictly increasing branch wall clocks and finite rewind targets;
+- every chunk references the header branch or a known rewind branch;
 
-A missing or corrupt required V5 index is a corrupt V5 file. Because V5 is
-pre-release, the reader does not need a compatibility fallback that rescans an
-old V5 payload layout.
+A missing index is valid and selects the linear JSONL scan path. A present but
+invalid index is corrupt because its snapshot checksum or structural validation
+failed.
 
 ## 12. Expected improvement
 
@@ -438,13 +474,17 @@ Those are separate optimization topics and are not part of this metadata design.
 - `TnrdV5Archive::open()` performs zero chunk decompressions.
 - `chunkTimeBounds()` succeeds for every valid chunk immediately after open.
 - A range query never decompresses a chunk with disjoint stored time bounds.
-- A latest-at-time sparse lookup decompresses only the chunk containing the
-  selected row, except when validation requires checking a previous chunk.
+- A finalized, indexed latest-at-time lookup decompresses only the selected
+  candidate chunk; an index-free checkpoint scans the candidate chunks selected
+  from directory time bounds.
 - The row seek index preserves exact row ordering at equal timestamps.
 - All Laps returns every requested row without decimation.
 - Seek results match a full sequential scan at chunk and lap boundaries.
-- Flashback replacement chunks contain rebuilt, correct metadata.
-- Recovery rejects a checkpoint whose directory/index checksum is invalid.
+- A shorter new branch never exposes the superseded tail of an older branch.
+- Rewind commits do not rewrite old payload chunks.
+- Recovery rejects a snapshot whose control checksum is invalid.
+- Repeated checkpoints contain no row-index bytes.
+- Clean finish writes the complete row index exactly once.
 - Metadata overhead is measured on short, 30-minute and 113-minute recordings.
 - V1–V4 tests remain unchanged and passing.
 
@@ -453,7 +493,7 @@ Those are separate optimization topics and are not part of this metadata design.
 1. Expand the V5 chunk entry and header/footer table locators.
 2. Track time/distance bounds in each writer builder.
 3. Generate exact sparse and coarse hot-block seek entries during append.
-4. Write and validate the row-family and row-index tables at checkpoints.
+4. Write index-free checkpoints and the complete row index at finalization.
 5. Initialize all chunk bounds directly during `TnrdV5Archive::open()`.
 6. Change range selection to use directory binary searches.
 7. Change `latestRows()` to use exact sparse indexes.

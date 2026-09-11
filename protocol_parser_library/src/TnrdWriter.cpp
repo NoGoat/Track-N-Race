@@ -37,6 +37,11 @@ struct SessionTimeOnly { float session_time{}; };
 namespace {
 constexpr glz::opts kPartialReadW{ .null_terminated = false, .error_on_unknown_keys = false };
 
+uint64_t wallClockMilliseconds() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 std::unique_ptr<detail::TnrdOutputStream> openVersionWriter(
         TnrdFormat format, const std::string& path, bool append, std::string& error) {
     switch (format) {
@@ -188,6 +193,7 @@ void TnrdWriter::rewind(float sessionTime) {
     WriterEvent ev;
     ev.type = EventType::Rewind;
     ev.sessionTime = sessionTime;
+    ev.wallClockMs = wallClockMilliseconds();
     queue_.push(std::move(ev));
     cv_.notify_one();
 }
@@ -226,10 +232,10 @@ void TnrdWriter::writerLoop() {
                 closeActiveStreamOnWriterThread();
         } else if (ev.type == EventType::Rewind) {
             if (streamActive() && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
-                truncateTimeline(ev.sessionTime);
+                truncateTimeline(ev.sessionTime, ev.wallClockMs);
         } else if (ev.type == EventType::NotePacket) {
             if (streamActive() && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
-                truncateTimeline(ev.sessionTime);
+                truncateTimeline(ev.sessionTime, wallClockMilliseconds());
             else if (ev.sessionTime > lastSessionTime_)
                 lastSessionTime_ = ev.sessionTime;
 
@@ -446,18 +452,18 @@ bool TnrdWriter::isDuplicate(const std::string& type, const std::string& json) {
     return false;
 }
 
-void TnrdWriter::truncateTimeline(float newSessionTime) {
+void TnrdWriter::truncateTimeline(float newSessionTime, uint64_t wallClockMs) {
     float bufStart = rollingBuffer_.empty()
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
     if (v5Writer_) {
         rollingBuffer_.erase(
             std::remove_if(rollingBuffer_.begin(),rollingBuffer_.end(),
-                [newSessionTime](const BufferEntry& e){return e.sessionTime>newSessionTime;}),
+                [newSessionTime](const BufferEntry& e){return e.sessionTime>=newSessionTime;}),
             rollingBuffer_.end());
         if (newSessionTime < bufStart) {
             std::string err;
-            if (!v5Writer_->rewind(newSessionTime,&err))
+            if (!v5Writer_->rewind(newSessionTime,wallClockMs,&err))
                 reportError("flashback",err,activePath_);
         }
         dedupeCache_.clear();lastSessionTime_=newSessionTime;return;

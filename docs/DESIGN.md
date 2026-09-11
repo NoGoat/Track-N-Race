@@ -150,11 +150,19 @@ intent so the per-packet fast path can skip the whole recording pipeline
 - **Rotation**: `notePacket()` watches session packets; a new track/session id
   closes the active compressed stream and starts a new file.
 - **Flashback**: a 30 s rolling buffer absorbs in-game flashbacks — a
-  session_time reversal within the window truncates the timeline and rewrites
-  cleanly.
+  `FLBK` event supplies the authoritative target; only when that event is absent
+  does a session-time reversal larger than 200 ms trigger the fallback. V5 keeps
+  already-written payload chunks and commits a wall-clock-ordered branch cut;
+  playback excludes every older-branch row from that session-time target onward.
 - **Dedup**: state-row types are deduped against the last written value.
-- **Durability**: a codec flush every 300 rows (~5 s), so a crash leaves a
-  stream decodable up to the last complete flushed row.
+- **V5 durability/size**: row indexes stay in writer memory while recording.
+  Thirty-second append-only checkpoints contain the current directory with
+  optional index locators set to zero, so a crash can recover without repeatedly
+  copying the cumulative index. The reader linearly scans selected decompressed
+  chunks when an index is absent. Clean close writes the complete row index once
+  and commits a final directory/footer that references it. Discarded rewind
+  branches remain physically present; wall-clock branch metadata makes them
+  logically invisible without decompressing and rewriting the target lap.
 - **Live Strategy**: the UDP thread only places normalized dependency rows on a
   coalescing queue. A dedicated worker owns the live reducer, calculates at a
   bounded cadence, and publishes only the latest display snapshot. Flashback
@@ -284,7 +292,10 @@ overlay flows.
   data and V5 recordings; V1-V4 playback deliberately marks them unavailable so
   clients do not synthesize rev lights from RPM. V4/V5 use an uncompressed indexed
   control plane and independently checksummed `(lap,rowType,segment)` Zstandard
-  JSONL chunks. Electron Analyze distance alignment and delta are enabled for
+  JSONL chunks. V5 checkpoints omit row indexes, completed recordings write the
+  full index once, and the reader supports either indexed or index-free control
+  snapshots.
+  Electron Analyze distance alignment and delta are enabled for
   V3/V4/V5; V1/V2 recordings retain elapsed-time overlays.
 - **Row type ids** (assigned by `TnrdReader::scanType`, shared by the index,
   seek machinery and the engine's dup cache): 1 telemetry, 2 status, 3 damage,
