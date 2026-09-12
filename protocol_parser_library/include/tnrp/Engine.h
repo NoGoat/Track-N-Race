@@ -104,9 +104,10 @@ private:
     Sink*         sink_;
     Parser        parser_;
     TnrdWriter    writer_;
-    // Playback owns this reducer on the playback/load/seek workers. Live
-    // strategy has its own worker below so UDP receive never performs strategy
-    // parsing, calculation, or flashback reconstruction.
+    // Playback ticks own this reducer after an asynchronous strategy rebuild
+    // has committed. The strategy worker below reconstructs both live and
+    // playback snapshots so neither UDP ingest nor the playback clock performs
+    // a full historical replay.
     StrategyProcessor strategy_;
     TnrdReader    reader_;
     UdpListener   udp_;
@@ -124,7 +125,6 @@ private:
     std::atomic<uint64_t> latestSeekRequestId_{0};
     std::atomic<uint64_t> latestRequirementsRequestId_{0};
     uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_
-    bool              strategyRebuildPending_ = false;
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
 
@@ -155,7 +155,7 @@ private:
     float             hostConsumerWindowSeconds_ = 0.0f;
     uint32_t          pairConsumerRowMask_ = 0;
 
-    enum class StrategyWorkKind { Update, Rebuild, Reset, Configure };
+    enum class StrategyWorkKind { Update, Rebuild, Reset, Configure, PlaybackRebuild };
     struct StrategyWork {
         StrategyWorkKind kind{StrategyWorkKind::Update};
         uint64_t generation{};
@@ -164,6 +164,8 @@ private:
         bool forceSnapshot{};
         std::vector<LiveJsonHistoryRow> rows;
         float rebuildThrough{};
+        uint64_t seekRequestId{};
+        std::string playbackPath;
     };
     std::mutex strategyWorkMutex_;
     std::condition_variable strategyWorkCv_;
@@ -172,6 +174,11 @@ private:
     bool strategyStop_ = false;
     uint64_t liveStrategyGeneration_ = 1; // guarded by mutex_
     uint16_t liveStrategyFormat_ = 2025;  // guarded by mutex_
+    std::atomic<uint64_t> playbackStrategyGeneration_{0};
+    uint64_t playbackStrategyPendingGeneration_ = 0; // guarded by mutex_
+    bool playbackStrategyPending_ = false;           // guarded by mutex_
+    std::vector<std::string> playbackStrategyPendingRows_; // guarded by mutex_
+    std::string playbackPath_;                        // guarded by mutex_
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
     void rewindLiveTimeline(float sessionTime, uint16_t format); // mutex_ held
@@ -183,9 +190,11 @@ private:
     void enqueueLiveStrategyWork(StrategyWork work);
     void strategyLoop();
     void stopStrategyThread();
-    // Rebuilds and commits the derived playback strategy while mutex_ is held.
-    // The returned row is emitted only after the caller releases the lock.
-    std::string rebuildPlaybackStrategyLocked(float target);
+    // Starts a generation-controlled rebuild on strategyThread_. Call with
+    // mutex_ held. Playback continues while dependency rows are accumulated and
+    // folded into the rebuilt processor immediately before it commits.
+    bool preparePlaybackStrategyRebuildLocked(float target, StrategyWork& work);
+    void requestPlaybackStrategyRebuildLocked(float target);
     void playbackLoop();                                 // playback thread body
     void stopPlaybackThread();
     void emitPlaybackState();

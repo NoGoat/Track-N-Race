@@ -1347,6 +1347,7 @@ const Settings = memo(function Settings({
 
   return (
     <div
+      ref={modalPresence.transitionTargetRef}
       data-state={modalPresence.visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
     >

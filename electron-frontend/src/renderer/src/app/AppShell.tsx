@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
@@ -32,6 +32,12 @@ import type { GraphSection } from '../lib/graphSections'
 const LIVE_LAP_FAMILY_MASK = DATA_ROW.telemetry | DATA_ROW.status |
   DATA_ROW.damage | DATA_ROW.lap | DATA_ROW.motion | DATA_ROW.motionEx
 
+type AppPageTransition = {
+  ready: Promise<unknown>
+  finished: Promise<unknown>
+  skipTransition?: () => void
+}
+
 export default function AppShell() {
   const Header = window.platform === 'darwin' ? AppHeaderMacOS : AppHeader
   const {
@@ -57,6 +63,7 @@ export default function AppShell() {
   const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
   const [chartWindowOverrides, setChartWindowOverrides] = useState<ChartWindowOverrides>({})
   const [chartReferenceLapOverrides, setChartReferenceLapOverrides] = useState<ChartReferenceLapOverrides>({})
+  const activePageTransitionRef = useRef<AppPageTransition | null>(null)
   const handlePlaybackClosed = useCallback(() => setSelectedIdx(null), [])
   const playback = usePlayback(handlePlaybackClosed)
 
@@ -102,33 +109,55 @@ export default function AppShell() {
   const handleTabChange = useCallback((nextTab: Tab) => {
     if (nextTab === tab) return
     const transitionDocument = document as Document & {
-      startViewTransition?: (update: () => void) => { finished: Promise<unknown> }
+      startViewTransition?: (update: () => void) => AppPageTransition
     }
+    const root = document.documentElement
     const motionReduced = reduceAnimations
-      || document.documentElement.dataset.reduceAnimations === 'true'
+      || root.dataset.reduceAnimations === 'true'
 
     if (motionReduced || !transitionDocument.startViewTransition) {
+      activePageTransitionRef.current?.skipTransition?.()
+      activePageTransitionRef.current = null
+      delete root.dataset.pageTransition
+      delete root.dataset.pageTransitionDirection
+      delete root.dataset.pageTransitionPhase
       setTab(nextTab)
       return
     }
 
+    // First-time tab construction can monopolize the renderer while charts,
+    // fonts, and GPU resources warm up. Pause the compositor snapshots until
+    // that work has yielded, otherwise the animation expires unseen.
+    activePageTransitionRef.current?.skipTransition?.()
+    root.dataset.pageTransition = 'true'
+    root.dataset.pageTransitionPhase = 'preparing'
     try {
-      const root = document.documentElement
       const currentIndex = TAB_OPTIONS.findIndex(option => option.value === tab)
       const nextIndex = TAB_OPTIONS.findIndex(option => option.value === nextTab)
-      root.dataset.pageTransition = 'true'
       root.dataset.pageTransitionDirection = nextIndex > currentIndex ? 'right' : 'left'
       const transition = transitionDocument.startViewTransition(() => {
         flushSync(() => setTab(nextTab))
       })
+      activePageTransitionRef.current = transition
+      void transition.ready.then(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (activePageTransitionRef.current !== transition) return
+          root.dataset.pageTransitionPhase = 'running'
+        }))
+      }, () => {})
       const clearPageTransition = () => {
+        if (activePageTransitionRef.current !== transition) return
+        activePageTransitionRef.current = null
         delete root.dataset.pageTransition
         delete root.dataset.pageTransitionDirection
+        delete root.dataset.pageTransitionPhase
       }
       void transition.finished.then(clearPageTransition, clearPageTransition)
     } catch {
-      delete document.documentElement.dataset.pageTransition
-      delete document.documentElement.dataset.pageTransitionDirection
+      activePageTransitionRef.current = null
+      delete root.dataset.pageTransition
+      delete root.dataset.pageTransitionDirection
+      delete root.dataset.pageTransitionPhase
       setTab(nextTab)
     }
   }, [reduceAnimations, tab])

@@ -678,6 +678,10 @@ html[data-page-transition='true'] .session-map-transition {
   view-transition-name: app-page;
 }
 
+html[data-page-transition='true']::view-transition {
+  pointer-events: none;
+}
+
 .tyres-view-transition {
   view-transition-name: tyres-view;
 }
@@ -720,6 +724,12 @@ html[data-page-transition-direction='left']::view-transition-old(app-page) {
 
 html[data-page-transition-direction='left']::view-transition-new(app-page) {
   animation: appPageEnterLeft 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+html[data-page-transition-phase='preparing']::view-transition-group(app-page),
+html[data-page-transition-phase='preparing']::view-transition-old(app-page),
+html[data-page-transition-phase='preparing']::view-transition-new(app-page) {
+  animation-play-state: paused;
 }
 
 /* Allocation and Graphs are sibling states, so use a quiet fade-through rather

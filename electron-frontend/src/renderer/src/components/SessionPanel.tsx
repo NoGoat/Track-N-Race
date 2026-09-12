@@ -7,6 +7,7 @@ import { useColorFn } from '../lib/cards'
 import { useLabels } from '../lib/labels'
 import { TRACK_MAPS } from '../lib/trackMaps'
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../app/appConfig'
+import { safetyCarActionLabel, safetyCarTypeLabel } from '../app/bannerHelpers'
 import type { DensityMode } from '../lib/graphSections'
 
 // ─── Lookup tables ───────────────────────────────────────────────────────────
@@ -97,9 +98,10 @@ function formatEvent(
     case 'DTSV': return { label: `DT Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SGSV': return { label: `SG Served — ${name(ev.car_idx)}`, color: isDark ? '#a0a8b8' : '#565B70' }
     case 'SCAR': {
-      const T: Record<number, string> = { 1: 'Safety Car', 2: 'Virtual SC', 3: 'Formation Lap' }
-      const A: Record<number, string> = { 0: 'Deployed', 1: 'Returning', 2: 'Returned', 3: 'Resume Race' }
-      return { label: `${T[ev.safety_car_type ?? 0] ?? 'SC'} — ${A[ev.event_type ?? 0] ?? ''}`, color: isDark ? '#ffd700' : '#765900' }
+      const type = ev.safety_car_type ?? 0
+      const action = safetyCarActionLabel(type, ev.event_type ?? 0)
+      const label = safetyCarTypeLabel(type)
+      return { label: action ? `${label} — ${action}` : label, color: isDark ? '#ffd700' : '#765900' }
     }
     case 'PENA': {
       const pt = ev.penalty_type ?? 0

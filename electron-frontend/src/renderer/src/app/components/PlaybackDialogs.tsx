@@ -18,7 +18,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
   return (
     <>
       {confirmPresence.mounted && displayedFilePath && (
-        <div data-state={confirmPresence.visible ? 'open' : 'closed'} className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
+        <div ref={confirmPresence.transitionTargetRef} data-state={confirmPresence.visible ? 'open' : 'closed'} className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]">
           <div className="modal-panel bg-[var(--bg-panel)] border border-[var(--border)] rounded-xl shadow-[0_0_60px_rgba(0,0,0,0.85)] w-[480px] flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0 select-none">
@@ -83,6 +83,7 @@ export default function PlaybackDialogs({ confirmOpenFilePath, loadError: playba
 
       {errorPresence.mounted && displayedLoadError && (
         <div
+          ref={errorPresence.transitionTargetRef}
           data-state={errorPresence.visible ? 'open' : 'closed'}
           className="modal-backdrop fixed inset-0 z-[110] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
           role="dialog"

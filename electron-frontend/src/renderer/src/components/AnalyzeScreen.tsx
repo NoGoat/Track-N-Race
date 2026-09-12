@@ -1495,6 +1495,7 @@ export default function AnalyzeScreen({
       </section>
 
       {controlsHelpPresence.mounted && createPortal(<div
+        ref={controlsHelpPresence.transitionTargetRef}
         data-state={controlsHelpPresence.visible ? 'open' : 'closed'}
         className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-controls-help-title"
@@ -1543,6 +1544,7 @@ export default function AnalyzeScreen({
       </div>, document.body)}
 
       {circuitMismatchPresence.mounted && displayedCircuitMismatch && <div
+        ref={circuitMismatchPresence.transitionTargetRef}
         data-state={circuitMismatchPresence.visible ? 'open' : 'closed'}
         className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
         role="dialog" aria-modal="true" aria-labelledby="analysis-circuit-mismatch-title"

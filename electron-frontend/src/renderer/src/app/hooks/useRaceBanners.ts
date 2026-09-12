@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { subscribeRaceEvent, useTelemetryStore } from '../../stores/telemetryStore'
 import { useLabels } from '../../lib/labels'
-import { buildBanner, lastName, type BannerItem } from '../bannerHelpers'
+import { buildBanner, buildSafetyCarBanner, lastName, type BannerItem } from '../bannerHelpers'
 
 export function useRaceBanners(durationSeconds: number) {
   const { raw: labels } = useLabels()
   const participants = useTelemetryStore(state => state.participants)
-  const session = useTelemetryStore(state => state.session)
+  const safetyCarStatus = useTelemetryStore(state => state.session?.safety_car_status)
   const latestSafetyCarEvent = useTelemetryStore(state => {
     for (let i = state.raceEvents.length - 1; i >= 0; i--) {
       if (state.raceEvents[i].code === 'SCAR') return state.raceEvents[i]
@@ -14,7 +14,6 @@ export function useRaceBanners(durationSeconds: number) {
     return undefined
   })
   const protocolWarning = useTelemetryStore(state => state.protocolWarning)
-  const [safetyCarBanner, setSafetyCarBanner] = useState<BannerItem | null>(null)
   const [transientBanner, setTransientBanner] = useState<BannerItem | null>(null)
   const queueRef = useRef<BannerItem[]>([])
   const showingRef = useRef(false)
@@ -52,24 +51,22 @@ export function useRaceBanners(durationSeconds: number) {
     if (item) enqueue(item)
   }), [enqueue])
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
-  useEffect(() => {
-    if (!session) { setSafetyCarBanner(null); return }
+  const safetyCarBanner = useMemo<BannerItem | null>(() => {
+    if (safetyCarStatus === undefined) return null
 
     // Session packets can retain the formation-lap status after recording starts,
     // while the first recorded SCAR event is already its terminal Resume Race
     // transition. Prefer the latest event transition so the persistent title-bar
     // banner represents the current state, including after playback seeks.
     const action = latestSafetyCarEvent?.event_type
-    if (action === 2 || action === 3) { setSafetyCarBanner(null); return }
+    if (action === 2 || action === 3) return null
 
     const status = latestSafetyCarEvent && (action === 0 || action === 1)
-      ? latestSafetyCarEvent.safety_car_type ?? session.safety_car_status
-      : session.safety_car_status
-    if (status === 0) { setSafetyCarBanner(null); return }
-    const labels: Record<number, string> = { 1: 'SAFETY CAR', 2: 'VIRTUAL SAFETY CAR', 3: 'FORMATION LAP' }
-    const colors: Record<number, string> = { 1: '#ffd700', 2: '#ffb347', 3: '#ffd700' }
-    setSafetyCarBanner({ label: labels[status] ?? 'SAFETY CAR', color: colors[status] ?? '#ffd700' })
-  }, [session, latestSafetyCarEvent])
+      ? latestSafetyCarEvent.safety_car_type ?? safetyCarStatus
+      : safetyCarStatus
+    if (status === 0) return null
+    return buildSafetyCarBanner(status, action ?? 0)
+  }, [safetyCarStatus, latestSafetyCarEvent])
 
   const warningBanner = useMemo<BannerItem | null>(() => protocolWarning ? {
     label: 'PROTOCOL MISMATCH DETECTED',

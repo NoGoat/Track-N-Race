@@ -79,6 +79,12 @@ public:
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
     void setCursor(float t);
+    // Position the indexed playback lanes and start loading the V5 chunks that
+    // contain/follow the target. This is deliberately separate from
+    // primeCursor(): seek backfill extraction can run while these low-priority
+    // reads are in flight, and the archive's in-flight table deduplicates any
+    // chunk needed by both operations.
+    void beginCursorPrime(float t);
     // Prepare the indexed chunk frontier at the current cursor without
     // emitting rows. Engine seek calls this before releasing its seek gate.
     void primeCursor();

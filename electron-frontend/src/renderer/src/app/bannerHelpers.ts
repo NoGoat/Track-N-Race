@@ -2,6 +2,39 @@ import type { ParticipantsMsg, RaceEventMsg } from '../types'
 
 export interface BannerItem { label: string; sub?: string; color: string }
 
+const GREEN_EVENT_COLOR = '#37872D'
+
+export function safetyCarTypeLabel(type: number): string {
+  const labels: Record<number, string> = {
+    1: 'Safety Car',
+    2: 'Virtual Safety Car',
+    3: 'Formation Lap',
+  }
+  return labels[type] ?? 'Safety Car'
+}
+
+export function safetyCarActionLabel(type: number, action: number): string | null {
+  if ((type === 1 || type === 2) && action === 0) return null
+  if ((type === 1 || type === 2) && action === 1) return 'Ending'
+
+  const labels: Record<number, string> = {
+    0: 'Deployed',
+    1: 'Returning',
+    2: 'Returned',
+    3: 'Resume Race',
+  }
+  return labels[action] ?? null
+}
+
+export function buildSafetyCarBanner(type: number, action: number): BannerItem {
+  const colors: Record<number, string> = { 1: '#ffd700', 2: '#ffb347', 3: '#ffd700' }
+  return {
+    label: safetyCarTypeLabel(type),
+    sub: safetyCarActionLabel(type, action) ?? undefined,
+    color: colors[type] ?? '#ffd700',
+  }
+}
+
 export function lastName(participants: ParticipantsMsg | null, idx: number): string {
   const driver = participants?.drivers.find(item => item.idx === idx)
   if (!driver) return `Car ${idx}`
@@ -21,9 +54,13 @@ export function buildBanner(
   labels: Readonly<Record<string, string>>,
 ): BannerItem | null {
   switch (event.code) {
-    case 'SCAR': return null
+    case 'SCAR': {
+      const safetyCarType = event.safety_car_type ?? 0
+      const isRaceResuming = event.event_type === 3 && (safetyCarType === 1 || safetyCarType === 2)
+      return isRaceResuming ? { label: 'Resume Race', color: GREEN_EVENT_COLOR } : null
+    }
     case 'FTLP': return { label: 'Fastest Lap', sub: `${lastName(participants, event.car_idx ?? 0)}  ·  ${fmtLap(event.lap_time_s ?? 0)}`, color: '#BF5FFF' }
-    case 'DRSE': return { label: 'DRS Enabled', color: '#37872D' }
+    case 'DRSE': return { label: 'DRS Enabled', color: GREEN_EVENT_COLOR }
     case 'DRSD': return { label: 'DRS Disabled', color: '#8e8e8e' }
     case 'RDFL': return { label: 'Red Flag', color: '#e10600' }
     case 'PENA': {
@@ -43,7 +80,7 @@ export function buildBanner(
     case 'RTMT': return { label: 'Retired', sub: lastName(participants, event.car_idx ?? 0), color: '#a0a8b8' }
     case 'RCWN': return { label: 'Race Winner', sub: lastName(participants, event.car_idx ?? 0), color: '#FFD700' }
     case 'CHQF': return { label: 'Chequered Flag', color: '#7a7a7a' }
-    case 'LGOT': return { label: 'Lights Out', color: '#37872D' }
+    case 'LGOT': return { label: 'Lights Out', color: GREEN_EVENT_COLOR }
     case 'SSTA': return { label: 'Session Start', color: '#5794F2' }
     case 'SEND': return { label: 'Session End', color: '#5794F2' }
     default: return null

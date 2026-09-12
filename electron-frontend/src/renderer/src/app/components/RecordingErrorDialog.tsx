@@ -15,6 +15,7 @@ export default function RecordingErrorDialog({ error, onClose }: RecordingErrorD
 
   return (
     <div
+      ref={modalPresence.transitionTargetRef}
       data-state={modalPresence.visible ? 'open' : 'closed'}
       className="modal-backdrop fixed inset-0 z-[120] flex items-center justify-center bg-[var(--bg-modal)] backdrop-blur-[2px]"
       role="dialog"

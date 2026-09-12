@@ -313,12 +313,19 @@ void Engine::enqueueLiveStrategyWork(StrategyWork work) {
         std::lock_guard<std::mutex> lock(strategyWorkMutex_);
         if (strategyStop_) return;
         // A rebuild/reset supersedes all queued work from the old timeline.
+        // Playback rebuilds are also latest-only: a newer seek must not wait
+        // behind reconstruction for a cursor that can no longer be displayed.
         if (work.kind == StrategyWorkKind::Rebuild ||
-            work.kind == StrategyWorkKind::Reset) {
+            work.kind == StrategyWorkKind::Reset ||
+            work.kind == StrategyWorkKind::PlaybackRebuild) {
             strategyWorkQueue_.erase(
                 std::remove_if(strategyWorkQueue_.begin(), strategyWorkQueue_.end(),
                     [&](const StrategyWork& queued) {
-                        return queued.generation < work.generation;
+                        return work.kind == StrategyWorkKind::PlaybackRebuild
+                            ? queued.kind == StrategyWorkKind::PlaybackRebuild &&
+                                queued.generation < work.generation
+                            : queued.kind != StrategyWorkKind::PlaybackRebuild &&
+                                queued.generation < work.generation;
                     }),
                 strategyWorkQueue_.end());
         }
@@ -361,6 +368,8 @@ void Engine::enqueueLiveStrategyWork(StrategyWork work) {
 
 void Engine::strategyLoop() {
     StrategyProcessor liveStrategy;
+    TnrdReader playbackReader;
+    std::string playbackReaderPath;
     uint64_t activeGeneration = 0;
     auto lastPublished = std::chrono::steady_clock::time_point::min();
 
@@ -378,6 +387,69 @@ void Engine::strategyLoop() {
         bool changed = false;
         bool forceSnapshot = false;
         for (auto& item : work) {
+            if (item.kind == StrategyWorkKind::PlaybackRebuild) {
+                const auto cancelled = [this, generation = item.generation,
+                                        seekRequestId = item.seekRequestId] {
+                    return playbackStrategyGeneration_.load(std::memory_order_acquire) != generation ||
+                        (seekRequestId != 0 && latestSeekRequestId_.load(std::memory_order_acquire) != seekRequestId);
+                };
+                if (cancelled()) continue;
+
+                if (playbackReaderPath != item.playbackPath) {
+                    playbackReader.close();
+                    HeaderRow header;
+                    if (!playbackReader.load(item.playbackPath, header)) {
+                        playbackReaderPath.clear();
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (playbackStrategyPendingGeneration_ == item.generation) {
+                            playbackStrategyPending_ = false;
+                            playbackStrategyPendingRows_.clear();
+                        }
+                        continue;
+                    }
+                    playbackReaderPath = item.playbackPath;
+                }
+                playbackReader.setStrategyMinimumStops(item.minimumStops);
+                const auto teamColors = std::atomic_load_explicit(
+                    &teamColorOverrides_, std::memory_order_acquire);
+                playbackReader.setTeamColorOverrides(
+                    teamColors ? *teamColors : TeamColorOverrides{});
+
+                StrategyProcessor rebuilt;
+                (void)playbackReader.strategySnapshotAt(
+                    item.rebuildThrough, &rebuilt, cancelled);
+                if (cancelled()) continue;
+
+                std::string json;
+                bool emit = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (!inPlayback_.load() || !playbackStrategyPending_ ||
+                        playbackStrategyPendingGeneration_ != item.generation ||
+                        playbackStrategyGeneration_.load(std::memory_order_acquire) != item.generation ||
+                        (item.seekRequestId != 0 &&
+                         (latestSeekRequestId_.load(std::memory_order_acquire) != item.seekRequestId ||
+                          appliedSeekRequestId_ != item.seekRequestId))) {
+                        continue;
+                    }
+                    // Playback may already have advanced beyond the requested
+                    // cursor. Fold every dependency row delivered since the
+                    // rebuild was queued into the new processor before making
+                    // it authoritative, so the asynchronous result never
+                    // rewinds Strategy relative to the playhead.
+                    for (const auto& row : playbackStrategyPendingRows_)
+                        rebuilt.ingestJson(row);
+                    playbackStrategyPendingRows_.clear();
+                    strategy_ = std::move(rebuilt);
+                    json = strategy_.snapshotJson();
+                    liveLatestRows_[kStrategyRowType] = json;
+                    lastStrategyJson_ = json;
+                    playbackStrategyPending_ = false;
+                    emit = (consumerRowMask_ & kStrategyRowBit) != 0;
+                }
+                if (emit) emitRow(json);
+                continue;
+            }
             if (item.generation < activeGeneration) continue;
             if (item.generation > activeGeneration ||
                 item.kind == StrategyWorkKind::Reset ||
@@ -458,6 +530,7 @@ void Engine::strategyLoop() {
 }
 
 void Engine::stopStrategyThread() {
+    playbackStrategyGeneration_.fetch_add(1, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(strategyWorkMutex_);
         strategyStop_ = true;
@@ -482,12 +555,29 @@ void Engine::emitStrategy(bool force) {
     }
 }
 
-std::string Engine::rebuildPlaybackStrategyLocked(float target) {
-    StrategySnapshotRow snapshot = reader_.strategySnapshotAt(target, &strategy_);
-    std::string json = writeJson(snapshot);
-    liveLatestRows_[kStrategyRowType] = json;
-    lastStrategyJson_ = json;
-    return (consumerRowMask_ & kStrategyRowBit) ? json : std::string{};
+bool Engine::preparePlaybackStrategyRebuildLocked(float target, StrategyWork& work) {
+    const uint64_t generation = playbackStrategyGeneration_.fetch_add(
+        1, std::memory_order_acq_rel) + 1;
+    playbackStrategyPendingRows_.clear();
+    playbackStrategyPendingGeneration_ = generation;
+    playbackStrategyPending_ = inPlayback_.load() &&
+        !playbackPath_.empty() && (consumerRowMask_ & kStrategyRowBit) != 0;
+    if (!playbackStrategyPending_) return false;
+
+    work.kind = StrategyWorkKind::PlaybackRebuild;
+    work.generation = generation;
+    work.seekRequestId = appliedSeekRequestId_;
+    work.format = emittedFormat_.load(std::memory_order_acquire);
+    work.minimumStops = config_.strategyMinimumStops;
+    work.rebuildThrough = target;
+    work.playbackPath = playbackPath_;
+    return true;
+}
+
+void Engine::requestPlaybackStrategyRebuildLocked(float target) {
+    StrategyWork work;
+    if (!preparePlaybackStrategyRebuildLocked(target, work)) return;
+    enqueueLiveStrategyWork(std::move(work));
 }
 
 void Engine::onDatagram(const uint8_t* data, int length) {
@@ -643,11 +733,14 @@ void Engine::setStrategyMinimumStops(int stops) {
         config_.strategyMinimumStops = std::clamp(stops, 0, 8);
         strategy_.setMinimumStops(config_.strategyMinimumStops);
         reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
-        if (inPlayback_.load() && !liveLatestRows_[kStrategyRowType].empty()) {
-            snapshot = strategy_.snapshotJson();
-            liveLatestRows_[kStrategyRowType] = snapshot;
-            lastStrategyJson_ = snapshot;
-            shouldEmit = (consumerRowMask_ & kStrategyRowBit) != 0;
+        if (inPlayback_.load()) {
+            if (!liveLatestRows_[kStrategyRowType].empty()) {
+                snapshot = strategy_.snapshotJson();
+                liveLatestRows_[kStrategyRowType] = snapshot;
+                lastStrategyJson_ = snapshot;
+                shouldEmit = (consumerRowMask_ & kStrategyRowBit) != 0;
+            }
+            requestPlaybackStrategyRebuildLocked(currentTime_);
         } else if (!inPlayback_.load()) {
             enqueueLiveStrategyWork({StrategyWorkKind::Configure,
                                      liveStrategyGeneration_, liveStrategyFormat_,
@@ -738,13 +831,8 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         // derived row at subscription time so opening the tab never waits for the
         // next UDP packet (or playback tick).
         if (newlyEnabled & kStrategyRowBit) {
-            strategyRebuildPending_ = false;
             if (inPlayback_.load()) {
-                (void)reader_.strategySnapshotAt(currentTime_, &strategy_);
-                std::string row = strategy_.snapshotJson();
-                liveLatestRows_[kStrategyRowType] = row;
-                lastStrategyJson_ = row;
-                restore.push_back(std::move(row));
+                requestPlaybackStrategyRebuildLocked(currentTime_);
             } else {
                 enqueueLiveStrategyWork({StrategyWorkKind::Configure,
                                          liveStrategyGeneration_, liveStrategyFormat_,
@@ -825,10 +913,13 @@ void Engine::setTeamColorOverrides(TeamColorOverrides overrides) {
         strategy_.setTeamColorOverrides(config_.teamColorOverrides);
         reader_.setTeamColorOverrides(config_.teamColorOverrides);
         participants = inPlayback_.load() ? dupCache_[8] : liveLatestRows_[8];
-        if (inPlayback_.load() && !liveLatestRows_[kStrategyRowType].empty()) {
-            strategy = strategy_.snapshotJson();
-            liveLatestRows_[kStrategyRowType] = strategy;
-            lastStrategyJson_ = strategy;
+        if (inPlayback_.load()) {
+            if (!liveLatestRows_[kStrategyRowType].empty()) {
+                strategy = strategy_.snapshotJson();
+                liveLatestRows_[kStrategyRowType] = strategy;
+                lastStrategyJson_ = strategy;
+            }
+            requestPlaybackStrategyRebuildLocked(currentTime_);
         } else if (!inPlayback_.load()) {
             ++liveStrategyGeneration_;
             enqueueLiveStrategyWork({StrategyWorkKind::Rebuild,
@@ -866,15 +957,17 @@ void Engine::setPairDataRequirements(uint32_t streamRowMask) {
 // ── Playback ─────────────────────────────────────────────────────────────────
 
 bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
+    playbackStrategyGeneration_.fetch_add(1, std::memory_order_release);
     stopPlaybackThread();
 
     bool ok = false;
     HeaderRow header;
     std::string lapBlocksMsg;
     std::string statusMsg;
-    std::string strategyMsg;
     std::vector<std::string> initState;
     std::vector<std::pair<uint8_t, std::string>> initPanels;
+    StrategyWork strategyWork;
+    bool queueStrategyWork = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         // The selected file may be the recording currently being written.
@@ -900,7 +993,9 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             currentTime_ = reader_.startTime();
             speed_       = 1.0f;
             appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
-            strategyRebuildPending_ = false;
+            playbackPath_ = path;
+            playbackStrategyPending_ = false;
+            playbackStrategyPendingRows_.clear();
             // Playback suspends live ingest. Finalize the live recording on its
             // owner thread so it is complete and a later return to live starts
             // a fresh stream on the next session packet.
@@ -928,7 +1023,12 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             } else {
                 initState = reader_.stateSnapshot(reader_.startTime());
             }
-            strategyMsg = rebuildPlaybackStrategyLocked(reader_.startTime());
+            queueStrategyWork = preparePlaybackStrategyRebuildLocked(
+                reader_.startTime(), strategyWork);
+        } else {
+            playbackPath_.clear();
+            playbackStrategyPending_ = false;
+            playbackStrategyPendingRows_.clear();
         }
     }
 
@@ -941,7 +1041,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         emitRow(lapBlocksMsg);
         for (const auto& row : initState) emitRow(row);
         for (const auto& [tid, line] : initPanels) emitRow(line);
-        if (!strategyMsg.empty()) emitRow(strategyMsg);
+        if (queueStrategyWork) enqueueLiveStrategyWork(std::move(strategyWork));
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
         emitPlaybackState();
@@ -950,7 +1050,6 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
 }
 
 void Engine::playerPlay() {
-    std::string strategyMsg;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -958,12 +1057,12 @@ void Engine::playerPlay() {
             // Replay from the top: the cursor has to rewind with the clock, or
             // the drained index never yields another row.
             currentTime_ = reader_.startTime();
-            strategyMsg = rebuildPlaybackStrategyLocked(currentTime_);
-            reader_.setCursor(currentTime_);
+            reader_.beginCursorPrime(currentTime_);
+            reader_.primeCursor();
+            requestPlaybackStrategyRebuildLocked(currentTime_);
         }
         playing_ = true;
     }
-    if (!strategyMsg.empty()) emitRow(strategyMsg);
     emitPlaybackState();
 }
 
@@ -990,9 +1089,10 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
     int   lapNum   = 0;
     float target   = 0.0f;
     float historyStart = 0.0f;
-    std::string strategyMsg;
     TnrdReader::SeekFlush binFlush;
     std::vector<std::pair<uint8_t, std::string>> panels;
+    StrategyWork strategyWork;
+    bool queueStrategyWork = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         if (!inPlayback_.load()) return;
@@ -1010,6 +1110,10 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                 latestSeekRequestId_.load(std::memory_order_acquire);
         };
         if (config_.binaryPlayback) {
+            // Start the V5 target frontier before extracting the prefix. The
+            // archive executor can now decompress both sets concurrently, and
+            // its in-flight table shares target-containing chunks between them.
+            reader_.beginCursorPrime(target);
             binFlush = reader_.seekFlush(target, lapStart, allHistory, rowTypeMask,
                                          windowSeconds, false, cancelled);
             if (cancelled()) return;
@@ -1022,36 +1126,25 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
             if (cancelled()) return;
         }
 
-        const bool strategyVisible = (consumerRowMask_ & kStrategyRowBit) != 0;
-        StrategyProcessor rebuiltStrategy;
-        std::string rebuiltStrategyJson;
-        if (strategyVisible) {
-            StrategySnapshotRow rebuiltSnapshot =
-                reader_.strategySnapshotAt(target, &rebuiltStrategy, cancelled);
-            rebuiltStrategyJson = writeJson(rebuiltSnapshot);
-        }
-
         // A newer request may have arrived while this worker was extracting a
-        // large history or strategy prefix. An overtaken worker must not move
+        // large history prefix. An overtaken worker must not move
         // the cursor or seed playback rows from its obsolete target.
         if (requestId != 0 && requestId != latestSeekRequestId_.load(std::memory_order_acquire)) return;
-        if (strategyVisible) {
-            strategy_ = std::move(rebuiltStrategy);
-            liveLatestRows_[kStrategyRowType] = rebuiltStrategyJson;
-            lastStrategyJson_ = rebuiltStrategyJson;
-            strategyMsg = std::move(rebuiltStrategyJson);
-            strategyRebuildPending_ = false;
-        } else {
-            strategyRebuildPending_ = true;
-        }
         currentTime_ = target;
-        reader_.setCursor(target);
-        reader_.primeCursor();
+        if (config_.binaryPlayback) {
+            // beginCursorPrime() already positioned the lanes. This wait is
+            // normally a cache/in-flight join because it overlapped the
+            // backfill; future chunks remain background-prefetched.
+            reader_.primeCursor();
+        } else {
+            reader_.setCursor(target);
+        }
         if (config_.binaryPlayback) {
             dupCache_ = {};
             for (auto& [tid, line] : panels) dupCache_[tid] = line;
         }
         appliedSeekRequestId_ = requestId;
+        queueStrategyWork = preparePlaybackStrategyRebuildLocked(target, strategyWork);
     }
 
     if (config_.binaryPlayback) {
@@ -1075,7 +1168,10 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
         emitRow(writeJson(flush));
         for (const auto& s : state) emitRow(s);
     }
-    if (!strategyMsg.empty()) emitRow(strategyMsg);
+    // Queue only after the authoritative flush has crossed the Sink boundary.
+    // Electron will then buffer an early Strategy result behind its
+    // waiting-renderer barrier instead of discarding it as pre-seek state.
+    if (queueStrategyWork) enqueueLiveStrategyWork(std::move(strategyWork));
     emitPlaybackState();
 }
 
@@ -1149,6 +1245,10 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
 void Engine::playerClose() {
     std::fprintf(stderr, "[close-trace] Engine::playerClose entry; stopping playback thread\n");
     std::fflush(stderr);
+    // Cancel any off-thread reconstruction before invalidating the playback
+    // timeline. The strategy worker owns a separate reader, so cancellation is
+    // non-blocking and does not delay closing the main playback reader.
+    playbackStrategyGeneration_.fetch_add(1, std::memory_order_release);
     stopPlaybackThread();
     std::fprintf(stderr, "[close-trace] playback thread stopped; waiting for engine mutex\n");
     std::fflush(stderr);
@@ -1164,7 +1264,9 @@ void Engine::playerClose() {
         emittedFormat_.store(parser_.activeFormat(), std::memory_order_release);
         playing_ = false;
         appliedSeekRequestId_ = latestSeekRequestId_.load(std::memory_order_acquire);
-        strategyRebuildPending_ = false;
+        playbackStrategyPending_ = false;
+        playbackStrategyPendingRows_.clear();
+        playbackPath_.clear();
         if (config_.binaryPlayback) {
             dupCache_ = {};
             // Restore the live format's labels — playback may have switched
@@ -1235,11 +1337,6 @@ void Engine::playbackLoop() {
         bool finished = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            if (strategyRebuildPending_ &&
-                latestSeekRequestId_.load(std::memory_order_acquire) == appliedSeekRequestId_) {
-                strategyRebuildPending_ = false;
-                (void)rebuildPlaybackStrategyLocked(currentTime_);
-            }
             if (!playing_) continue;
             if (latestSeekRequestId_.load(std::memory_order_acquire) != appliedSeekRequestId_) continue;
             tickSeekRequestId = appliedSeekRequestId_;
@@ -1274,15 +1371,20 @@ void Engine::playbackLoop() {
                 batch = reader_.pullUntil(currentTime_);
             }
 
-            // Consume derived-state inputs before releasing the same lock used
-            // by seek reconstruction. A seek can then replace strategy_ only
-            // after every row from the preceding playback tick is accounted for.
-            bool strategyInput = false;
+            // While an asynchronous seek reconstruction is running, retain its
+            // subsequent dependency rows instead of applying them to the stale
+            // pre-seek reducer. The worker folds this catch-up tail into its
+            // result atomically before committing it.
+            bool strategyUpdated = false;
             for (const auto& row : batch) {
                 const uint8_t type = rowTypeOf(row);
                 if (kStrategyDependencyMask & (1u << type)) {
-                    ingestStrategyRow(row);
-                    strategyInput = true;
+                    if (playbackStrategyPending_)
+                        playbackStrategyPendingRows_.push_back(row);
+                    else {
+                        ingestStrategyRow(row);
+                        strategyUpdated = true;
+                    }
                 }
             }
             size_t strategyStart = 0;
@@ -1294,13 +1396,17 @@ void Engine::playbackLoop() {
                                          nl - strategyStart);
                     const uint8_t type = rowTypeOf(row);
                     if (kStrategyDependencyMask & (1u << type)) {
-                        strategy_.ingestJson(row);
-                        strategyInput = true;
+                        if (playbackStrategyPending_)
+                            playbackStrategyPendingRows_.emplace_back(row);
+                        else {
+                            strategy_.ingestJson(row);
+                            strategyUpdated = true;
+                        }
                     }
                 }
                 strategyStart = nl + 1;
             }
-            if (strategyInput) {
+            if (strategyUpdated) {
                 std::string row = strategy_.snapshotJson();
                 liveLatestRows_[kStrategyRowType] = row;
                 if ((consumerRowMask_ & kStrategyRowBit) && row != lastStrategyJson_)

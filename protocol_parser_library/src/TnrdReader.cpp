@@ -877,6 +877,19 @@ void TnrdReader::setCursor(float t) {
     damageCadenceCursor_ = t;
 }
 
+void TnrdReader::beginCursorPrime(float t) {
+    setCursor(t);
+    if (loadedFormat_ != TnrdFormat::ChunkedV5 || !indexedArchive_) return;
+
+    // V5's directory gives us the exact target lap and per-family chunk list.
+    // Queue the first playback frontier before the seek-prefix query starts so
+    // both operations share the archive executor and decompressed-chunk cache.
+    // prepareV4PlaybackLap() is retained as the common V4/V5 lane setup; only
+    // V5 has the exact metadata and multi-worker executor needed for overlap.
+    prepareV4PlaybackLap();
+    prefetchV4PlaybackChunk();
+}
+
 std::vector<std::string> TnrdReader::damageRowsAtCadence(
     float fromTime, float toTime, bool includeFrom,
     const std::function<bool()>& cancelled) const {
@@ -1273,7 +1286,9 @@ void TnrdReader::setStrategyMinimumStops(int stops) {
 }
 
 void TnrdReader::setTeamColorOverrides(TeamColorOverrides overrides) {
-    teamColorOverrides_ = sanitizeTeamColorOverrides(overrides);
+    TeamColorOverrides sanitized = sanitizeTeamColorOverrides(overrides);
+    if (teamColorOverrides_ == sanitized) return;
+    teamColorOverrides_ = std::move(sanitized);
     strategyCheckpoints_.clear();
 }
 
@@ -1542,6 +1557,7 @@ bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) co
 
 void TnrdReader::prepareV4PlaybackLap() {
     const float inf=std::numeric_limits<float>::infinity();
+    const bool exactV5=dynamic_cast<detail::TnrdV5Archive*>(indexedArchive_.get())!=nullptr;
     for(auto& lane:v4PlaybackLanes_){lane.chunks.clear();lane.nextChunk=0;lane.nextPrefetched=false;lane.rows.clear();lane.rowPos=0;lane.maxDecodedTime=-inf;lane.safeThrough=inf;}
     if(!indexedArchive_||!indexedArchive_->isOpen()||v4PlaybackLap_<0){v4PlaybackPrepared_=true;return;}
     const auto& chunks=indexedArchive_->chunks();std::vector<size_t> selected;indexedArchive_->chunkIndicesForLap((uint32_t)v4PlaybackLap_,playbackRowMask_,selected);
@@ -1557,13 +1573,22 @@ void TnrdReader::prepareV4PlaybackLap() {
             if(!indexedArchive_->chunkTimeBounds(lane.chunks[lane.nextChunk],first,last)||last>v4PlaybackCursor_)break;
             ++lane.nextChunk;
         }
-        if(lane.nextChunk<lane.chunks.size())lane.safeThrough=-inf;
+        if(lane.nextChunk<lane.chunks.size()){
+            float first=0.0f,last=0.0f;
+            // V5's exact directory bounds prove that this lane cannot produce
+            // anything before its next chunk. Do not synchronously decode a
+            // far-future family merely to establish that fact; load it when
+            // playback reaches the bound. V4 retains the conservative path.
+            lane.safeThrough=exactV5&&indexedArchive_->chunkTimeBounds(
+                lane.chunks[lane.nextChunk],first,last)?first:-inf;
+        }
     }
     v4PlaybackPrepared_=true;
 }
 
 bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
     struct PendingChunk{size_t lane;size_t index;uint64_t sequence;};
+    const bool exactV5=dynamic_cast<detail::TnrdV5Archive*>(indexedArchive_.get())!=nullptr;
     std::vector<PendingChunk> pending;const auto& chunks=indexedArchive_->chunks();float priority=std::numeric_limits<float>::infinity();
     for(const auto& lane:v4PlaybackLanes_)if(lane.nextChunk<lane.chunks.size()&&lane.safeThrough<=throughTime)priority=std::min(priority,lane.safeThrough);
     for(size_t i=0;i<v4PlaybackLanes_.size();++i){const auto& lane=v4PlaybackLanes_[i];if(lane.nextChunk<lane.chunks.size()&&lane.safeThrough==priority){const size_t index=lane.chunks[lane.nextChunk];pending.push_back({i,index,chunks[index].sequence});}}
@@ -1590,7 +1615,13 @@ bool TnrdReader::loadV4PlaybackFrontier(float throughTime) {
             else if(row.sessionTime>v4PlaybackCursor_)lane.rows.push_back({row.sessionTime,row.sequence,std::move(row.json)});
         }
         std::inplace_merge(lane.rows.begin(),lane.rows.begin()+(ptrdiff_t)retained,lane.rows.end(),before);
-        ++lane.nextChunk;lane.safeThrough=lane.nextChunk==lane.chunks.size()?inf:lane.maxDecodedTime-REORDER_WINDOW_S;
+        ++lane.nextChunk;
+        if(lane.nextChunk==lane.chunks.size())lane.safeThrough=inf;
+        else if(exactV5){
+            float first=0.0f,last=0.0f;
+            lane.safeThrough=indexedArchive_->chunkTimeBounds(
+                lane.chunks[lane.nextChunk],first,last)?first:lane.maxDecodedTime-REORDER_WINDOW_S;
+        }else lane.safeThrough=lane.maxDecodedTime-REORDER_WINDOW_S;
     }
     v4PlaybackPrefetchOutstanding_=std::any_of(v4PlaybackLanes_.begin(),v4PlaybackLanes_.end(),[](const auto& lane){return lane.nextPrefetched;});
     prefetchV4PlaybackChunk();

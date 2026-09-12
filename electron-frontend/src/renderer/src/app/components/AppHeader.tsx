@@ -1,4 +1,4 @@
-import { memo, type Dispatch, type SetStateAction } from 'react'
+import { memo, useMemo, type Dispatch, type SetStateAction } from 'react'
 import Select from '../../lib/AnimatedSelect'
 import { Columns3, Maximize, Pencil, PictureInPicture2, Settings2, Shrink, Upload, X } from 'lucide-react'
 import { useTelemetryStore } from '../../stores/telemetryStore'
@@ -74,10 +74,16 @@ export default memo(function AppHeader({
       : `${activeBanner.color}18`
     : 'var(--bg-panel)'
   const headerBorderColor = activeBanner ? `${activeBanner.color}50` : 'var(--border)'
-  const windowOptionGroups = getChartWindowOptionGroups(clAvailable, Boolean(filename))
-  const windowOptions = windowOptionGroups.flatMap(group => group.options)
+  const isSafetyCarEnding = activeBanner?.sub === 'Ending'
+    && (activeBanner.label === 'Safety Car' || activeBanner.label === 'Virtual Safety Car')
+  const recordingOpen = Boolean(filename)
+  const windowOptionGroups = useMemo(
+    () => getChartWindowOptionGroups(clAvailable, recordingOpen),
+    [clAvailable, recordingOpen],
+  )
+  const windowOptions = useMemo(() => windowOptionGroups.flatMap(group => group.options), [windowOptionGroups])
   const displayedWindow = typeof chartWindow !== 'number' && chartWindow !== 'AL' && chartWindow !== 'SL' && (!clAvailable || (chartWindow === 'RL' && !filename)) ? 30 : chartWindow
-  const selectedLapVisible = Boolean(filename) && chartWindow === 'RL'
+  const selectedLapVisible = recordingOpen && chartWindow === 'RL'
   return (
     <div
       className={isFullscreen ? `absolute top-0 left-0 right-0 z-50 ${headerVisible ? 'h-10' : 'h-px'}` : ''}
@@ -128,8 +134,10 @@ export default memo(function AppHeader({
         <div className="flex-1 min-w-0 overflow-hidden px-2 pointer-events-none">
           {activeBanner && (
             <div className="mx-auto flex max-w-full min-w-0 items-center justify-center gap-2 overflow-hidden">
-              <span className="max-w-full shrink-0 truncate text-xs font-black uppercase tracking-[0.2em]" style={{ color: `color-mix(in srgb, ${activeBanner.color} 72%, var(--text-primary))` }}>{activeBanner.label}</span>
-              {activeBanner.sub && <><span className="shrink-0 text-xs text-[var(--text-secondary)]">·</span><span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span></>}
+              <span className="max-w-full shrink-0 truncate text-xs font-black uppercase tracking-[0.2em]" style={{ color: `color-mix(in srgb, ${activeBanner.color} 72%, var(--text-primary))` }}>
+                {activeBanner.label}{isSafetyCarEnding && ` ${activeBanner.sub}`}
+              </span>
+              {activeBanner.sub && !isSafetyCarEnding && <><span className="shrink-0 text-xs text-[var(--text-secondary)]">·</span><span className="min-w-0 truncate text-xs text-[var(--text-secondary)]">{activeBanner.sub}</span></>}
             </div>
           )}
         </div>
