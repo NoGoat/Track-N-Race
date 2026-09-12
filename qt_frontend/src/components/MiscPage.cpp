@@ -10,7 +10,7 @@ MiscPage::MiscPage(SessionModel* model, QWidget* parent)
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
 
-    // G-force and ride-height are now panels of one ChartView (a single QCustomPlot
+    // G-force and ride-height are now panels of one ChartView (a single QRhi target
     // / OpenGL context / replot) — see MiscChartsWidget.
     charts_ = new MiscChartsWidget;
     charts_->setModel(model);

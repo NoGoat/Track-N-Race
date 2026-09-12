@@ -1,8 +1,8 @@
 #include "TrackMapWidget.h"
+#include "../PresentationScheduler.h"
 
 #include <QPainter>
 #include <QPainterPath>
-#include <QTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -19,6 +19,7 @@
 #include <cmath>
 #include <algorithm>
 #include <tuple>
+#include <utility>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -264,9 +265,6 @@ private:
 
 TrackMapWidget::TrackMapWidget(QWidget* parent) : QWidget(parent) {
     setMinimumSize(200, 200);
-    animTimer_ = new QTimer(this);
-    animTimer_->setInterval(16);   // ~60fps
-    connect(animTimer_, &QTimer::timeout, this, [this]{ update(); });
     snapTimer_.start();
     idleClock_.start();
 
@@ -740,11 +738,45 @@ void TrackMapWidget::setPositions(const PositionsRow& positions) {
 
     prevSnap_ = std::move(curSnap_);
     curSnap_  = std::move(snap);
-    update();
+    requestAnimationFrame();
+}
+
+void TrackMapWidget::requestAnimationFrame() {
+    if (!renderingActive_ || !isVisible()) return;
+    PresentationScheduler::instance().request(this, [this] {
+        if (!renderingActive_ || !isVisible()) return;
+        update();
+        // Continue only while a snapshot is actually being interpolated. A
+        // visible but stationary map no longer repaints forever at 60 Hz.
+        if (!prevSnap_.cars.empty() && snapTimer_.elapsed() < snapIntervalMs_)
+            requestAnimationFrame();
+    }, PresentationScheduler::Policy::Animation);
 }
 
 void TrackMapWidget::setParticipants(const tnrp::ParticipantsRow& participants) {
+    QString signature;
+    signature.reserve((int)participants.drivers.size() * 32);
+    for (const tnrp::Driver& driver : participants.drivers) {
+        signature += QString::number(driver.idx) + QLatin1Char('|')
+            + QString::number(driver.race_number) + QLatin1Char('|')
+            + QString::fromStdString(driver.name) + QLatin1Char('|')
+            + QString::fromStdString(driver.livery_color) + QLatin1Char(';');
+    }
+    if (signature == participantsSig_) return;
+    participantsSig_ = std::move(signature);
     participants_ = participants;
+    driverVisuals_.clear();
+    driverVisuals_.reserve(participants_.drivers.size());
+    for (const tnrp::Driver& driver : participants_.drivers) {
+        if (driver.idx < 0) continue;
+        const QString name = QString::fromStdString(driver.name);
+        DriverVisual visual;
+        visual.label = name.trimmed().isEmpty()
+            ? QString::number(driver.race_number) : abbrev(name);
+        visual.color = QColor(driver.livery_color.empty()
+            ? QStringLiteral("#8e8e8e") : QString::fromStdString(driver.livery_color));
+        driverVisuals_.emplace(driver.idx, std::move(visual));
+    }
     rebuildDriverCombo();
     update();
 }
@@ -874,22 +906,16 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
     struct LabelJob { QPointF c; QString text; QColor color; };
     std::vector<LabelJob> labels;
-
-    const auto findDriver = [&](int idx) -> const tnrp::Driver* {
-        for (const tnrp::Driver& d : participants_.drivers)
-            if (d.idx == idx) return &d;
-        return nullptr;
-    };
+    labels.reserve(curSnap_.cars.size());
 
     for (const Car& car : curSnap_.cars) {
         double cx, cz;
         if (!interpCar(car.idx, t, cx, cz)) continue;      // skips idle / (0,0)
-        const tnrp::Driver* d = findDriver(car.idx);
-        if (!d) continue;
+        const auto visual = driverVisuals_.find(car.idx);
+        if (visual == driverVisuals_.end()) continue;
 
         const QPointF pt = project(cx, cz, l);
-        const QColor livery(d->livery_color.empty()
-            ? QStringLiteral("#8e8e8e") : QString::fromStdString(d->livery_color));
+        const QColor& livery = visual->second.color;
 
         // Dot
         if (labelMode_ != LabelMode::LabelsOnly) {
@@ -900,11 +926,7 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
         // Label text: driver abbreviation, else race number
         if (labelMode_ != LabelMode::DotsOnly) {
-            QString name = QString::fromStdString(d->name);
-            QString text = name.trimmed().isEmpty()
-                ? QString::number(d->race_number)
-                : abbrev(name);
-            labels.push_back({ pt, text, livery });
+            labels.push_back({ pt, visual->second.label, livery });
         }
     }
 
@@ -917,12 +939,9 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
             : job.c.y() - DOT_R - LABEL_GAP - LABEL_H;
         const QRectF box(bx, by, LABEL_W, LABEL_H);
 
-        QPainterPath bg;
-        bg.addRoundedRect(box, LABEL_R, LABEL_R);
-        
         p.setPen(Qt::NoPen);
         p.setBrush(job.color);
-        p.drawPath(bg);
+        p.drawRoundedRect(box, LABEL_R, LABEL_R);
 
         // Text
         double luminance = (0.299 * job.color.red() + 0.587 * job.color.green() + 0.114 * job.color.blue());
@@ -937,19 +956,18 @@ void TrackMapWidget::resizeEvent(QResizeEvent*) {
 }
 
 void TrackMapWidget::showEvent(QShowEvent*) {
-    if (animTimer_ && renderingActive_) animTimer_->start();
+    requestAnimationFrame();
     positionControls();
 }
 
 void TrackMapWidget::hideEvent(QHideEvent*) {
-    if (animTimer_) animTimer_->stop();
+    PresentationScheduler::instance().cancel(this);
 }
 
 void TrackMapWidget::setRenderingActive(bool on) {
     renderingActive_ = on;
-    if (!animTimer_) return;
-    if (on) { if (isVisible()) animTimer_->start(); }
-    else    animTimer_->stop();
+    if (on) requestAnimationFrame();
+    else PresentationScheduler::instance().cancel(this);
 }
 
 // ── Follow-driver controls ──────────────────────────────────────────────────

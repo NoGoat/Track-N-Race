@@ -204,8 +204,8 @@ echo "[3/4] Bundling Qt into AppDir..."
 # linuxdeploy-plugin-qt deploys the wayland shell/decoration plugins but skips
 # wayland-graphics-integration-client, which holds the EGL client buffer
 # integration Qt needs to hand GPU buffers to the compositor. Without it the app
-# runs on Wayland but can't get an OpenGL context, so QCustomPlot falls back to
-# slow software rendering. Stage the EGL client plugin (the *-server plugins are
+# runs on Wayland but can't use the QRhi OpenGL fallback when Vulkan is absent.
+# Stage the EGL client plugin (the *-server plugins are
 # compositor-side, not needed by a client app) plus the wayland runtime libs it
 # pulls in, using the same $ORIGIN rpath layout linuxdeploy gives its plugins.
 # libEGL itself stays host-provided (blacklisted) — GPU drivers must come from

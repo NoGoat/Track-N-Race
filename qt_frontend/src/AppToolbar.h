@@ -2,6 +2,8 @@
 
 #include <QToolBar>
 #include <QStringList>
+#include <QVector>
+#include "ChartSettings.h"
 
 #include <vector>
 
@@ -36,10 +38,17 @@ public:
     // the expanding spacer so it never joins the overflow arithmetic.
     void updateSessionTimer(float sessionTime);
     void resetSessionTimer();
+    void setChartLapAvailability(const QVector<int>& laps, bool playback,
+                                 bool lapCoordinatesAvailable);
+    void setChartOptions(ChartWindow window, int referenceLap,
+                         bool sectorBoundaries, bool cursorSync);
 
 signals:
     void pageSelected(int index);
-    void chartWindowChanged(float seconds);
+    void chartWindowChanged(ChartWindow window);
+    void chartReferenceLapChanged(int lapNum);
+    void sectorBoundariesChanged(bool enabled);
+    void cursorSyncChanged(bool enabled);
     void openRecordingRequested();
     void editLayoutRequested();
     void settingsRequested();
@@ -66,6 +75,9 @@ private:
     QButtonGroup* pageGroup_    = nullptr;   // exclusive page tabs
     QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
+    QComboBox*    referenceLap_ = nullptr;
+    QToolButton*  sectorBtn_ = nullptr;
+    QToolButton*  syncBtn_ = nullptr;
     QAction*      analyzeAct_   = nullptr;   // Analyze-only zoom/pan controls
     QWidget*      analyzeControls_ = nullptr;
     QToolButton*  analyzeZoomIn_ = nullptr;
@@ -78,7 +90,8 @@ private:
     QMenu*        overflowMenu_ = nullptr;
     QWidget*      extButton_    = nullptr;   // Qt's native QToolBar extension — kept hidden
     std::vector<QToolButton*> pageButtons_;  // the page-tab buttons
-    int           windowIdx_    = 1;         // selected window-size option (default 30s)
+    int           windowIdx_    = 1;         // selected window option (default 30s)
+    bool          playback_ = false;
     int           currentPage_  = 0;         // active tab — kept inline during overflow
     bool          analyzeVisible_ = false;
 

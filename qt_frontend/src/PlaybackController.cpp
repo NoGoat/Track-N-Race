@@ -1,6 +1,7 @@
 #include "PlaybackController.h"
 #include "TnrdPlayer.h"
 #include "SessionModel.h"
+#include "EngineSink.h"
 #include "IconUtils.h"
 
 #include <QComboBox>
@@ -108,11 +109,10 @@ QString fmtTime(float s) {
 
 } // namespace
 
-PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
+PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine, QWidget* barParent)
     : QObject(barParent), model_(model)
 {
-    player_ = new TnrdPlayer(this);
-
+    player_ = new TnrdPlayer(engine, this);
     bar_ = new QWidget(barParent);
     bar_->setAutoFillBackground(true);
     {
@@ -199,24 +199,13 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
     sep_->hide();
 
     connect(player_, &TnrdPlayer::loadingStarted, this, &PlaybackController::loadingStarted);
-    connect(player_, &TnrdPlayer::loadFailed, this, &PlaybackController::loadFailed);
+    connect(player_, &TnrdPlayer::loadFailed, this, [this](const QString& reason) {
+        loadedPath_.clear();
+        emit loadFailed(reason);
+    });
 
     connect(player_, &TnrdPlayer::loaded, this, [this](const tnrp::HeaderRow& hdr) {
-        // Hand the chart the whole pre-scanned session; it now drives off currentTime.
-        if (model_) model_->load(player_->takeScannedData());
-
-        if (lapCombo_) {
-            lapCombo_->blockSignals(true);
-            lapCombo_->clear();
-            lapCombo_->addItem("Select Lap...", -1.0f);
-            if (model_) {
-                for (const auto& lap : model_->data().laps) {
-                    lapCombo_->addItem(QString("Lap %1").arg(lap.lapNum), lap.startSessionTime);
-                }
-            }
-            lapCombo_->setCurrentIndex(0);
-            lapCombo_->blockSignals(false);
-        }
+        if (model_) model_->clear();
         sep_->show();
         bar_->show();
         playBtn_->setIcon(playPauseIcon(false, bar_, bar_->palette().color(QPalette::Text)));
@@ -227,15 +216,58 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
         emit entered(hdr, player_->currentTime());
     });
 
-    connect(player_, &TnrdPlayer::packetReady, this, &PlaybackController::rowReady);
+    connect(player_, &TnrdPlayer::lapBlocksReady, this,
+            [this](const tnrp::PlaybackLapBlocksRow& blocks) {
+        if (model_) model_->setPlaybackCatalog(blocks);
+        if (lapCombo_) {
+            lapCombo_->blockSignals(true);
+            lapCombo_->clear();
+            lapCombo_->addItem("Select Lap...", -1.0f);
+            if (model_)
+                for (const LapBlock& lap : model_->data().laps)
+                    lapCombo_->addItem(QString("Lap %1").arg(lap.lapNum), lap.startSessionTime);
+            lapCombo_->setCurrentIndex(0);
+            lapCombo_->blockSignals(false);
+        }
+        lastActiveLapNum_ = -1;
+        emit lapCatalogInstalled();
+    });
+
+    connect(player_, &TnrdPlayer::historyDecoded, this,
+            [this](const std::shared_ptr<PlaybackHistoryBatch>& batch) {
+        if (!batch || !model_) return;
+        model_->installPlaybackHistory(std::move(batch->data), std::move(batch->progress),
+                                       std::move(batch->lapDetails),
+                                       batch->authoritativeSeek, batch->isolatedLapRequest,
+                                       batch->rowTypeMask,
+                                       batch->historyStart, batch->lapNum);
+        if (batch->authoritativeSeek) {
+            player_->completeSeek(batch->requestId);
+            emit historyInstalled(batch->requestId);
+        }
+    });
 
     connect(player_, &TnrdPlayer::seeked, this, &PlaybackController::seeked);
+    connect(player_, &TnrdPlayer::seekStarted, this, &PlaybackController::seekStarted);
 
     connect(player_, &TnrdPlayer::stateChanged, this,
             [this](bool playing, float cur, float total, float /*speed*/) {
-        // `cur` is session-relative (for the slider); the model is keyed on absolute
-        // session_time, so hand the pages the absolute playhead.
+        // Charts receive the full-rate imperative cursor. Transport cosmetics are
+        // deliberately limited to 10 Hz unless playback state changed.
         emit timeChanged(player_->currentTime());
+        int activeLapNum = -1;
+        if (model_) {
+            if (const LapBlock* lap = model_->data().lapAtTime(player_->currentTime()))
+                activeLapNum = lap->lapNum;
+        }
+        if (activeLapNum != lastActiveLapNum_) {
+            lastActiveLapNum_ = activeLapNum;
+            emit activeLapChanged(activeLapNum);
+        }
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool structural = playing != lastPlaying_ || cur <= 0.0f || cur >= total;
+        if (!structural && now - lastTransportUiMs_ < 100) return;
+        lastTransportUiMs_ = now;
         if (playing != lastPlaying_) {
             playBtn_->setIcon(playPauseIcon(playing, bar_, bar_->palette().color(QPalette::Text)));
             lastPlaying_ = playing;
@@ -274,6 +306,15 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
         lastPlaying_ = false;
     });
 
+    connect(player_, &TnrdPlayer::closed, this, [this] {
+        if (model_) model_->clear();
+        lastActiveLapNum_ = -1;
+        loadedPath_.clear();
+        sep_->hide();
+        bar_->hide();
+        emit exited();
+    });
+
     connect(seekBackBtn_, &QPushButton::clicked, this, [this] {
         player_->seekToTime(player_->currentTime() - 5.0f);
     });
@@ -293,10 +334,10 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
         // on every drag event, but the seek itself is heavy (per-row disk reads in
         // the reader snapshot + JSON parse of the big 20-car rows). Running it on
         // every mouse-move floods the UI thread and makes scrubbing lag, so cap it
-        // to ~10 Hz. The exact drop point is committed on sliderReleased. Mirrors
-        // the Electron scrub bar's 100 ms throttle + final seek on release.
+        // to Electron's 20 Hz cadence. The exact drop point is committed on
+        // sliderReleased.
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - lastSeekMs_ < 100) return;
+        if (now - lastSeekMs_ < 50) return;
         lastSeekMs_ = now;
         player_->seek(val / 1000.0f);
     });
@@ -327,13 +368,10 @@ PlaybackController::PlaybackController(SessionModel* model, QWidget* barParent)
 
     connect(closeRecBtn_, &QPushButton::clicked, this, [this] {
         player_->close();
-        if (model_) model_->clear();
-        loadedPath_.clear();
-        sep_->hide();
-        bar_->hide();
-        emit exited();
     });
 }
+
+PlaybackController::~PlaybackController() { shutdown(); }
 
 void PlaybackController::setShowLabels(bool on) {
     if (!closeRecBtn_) return;
@@ -364,4 +402,39 @@ void PlaybackController::load(const QString& path) {
 
 float PlaybackController::currentTime() const {
     return player_->currentTime();
+}
+
+bool PlaybackController::handleControlRow(const QByteArray& json) {
+    return player_ && player_->handleControlRow(json);
+}
+
+void PlaybackController::handleSeekFlush(const std::shared_ptr<EngineSeekFlush>& flush) {
+    if (player_) player_->handleSeekFlush(flush);
+}
+
+void PlaybackController::setDataRequirements(uint32_t streamMask,
+                                             uint32_t historyMask,
+                                             float windowSeconds) {
+    // Lap progress is a coordinate dependency of every retained chart family,
+    // but is unnecessary for state/table-only pages.
+    const uint32_t effectiveHistory = historyMask == 0
+        ? 0u : historyMask | (1u << 4);
+    if (model_) model_->retainPlaybackHistoryMask(effectiveHistory);
+    if (player_) player_->setDataRequirements(streamMask, effectiveHistory, windowSeconds);
+}
+
+void PlaybackController::requestLapData(int lapNum, uint32_t rowTypeMask) {
+    if (player_) player_->requestLapData(lapNum, rowTypeMask | (1u << 4));
+}
+
+void PlaybackController::setEngine(tnrp::Engine* engine) {
+    if (player_) player_->setEngine(engine);
+}
+
+void PlaybackController::quiesce() {
+    if (player_) player_->quiesce();
+}
+
+void PlaybackController::shutdown() {
+    if (player_) player_->shutdown();
 }

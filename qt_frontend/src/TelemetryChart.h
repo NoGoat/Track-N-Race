@@ -3,11 +3,11 @@
 #include "components/ChartView.h"
 
 #include <QPointer>
+#include <QString>
 #include <QVector>
 
 class SessionModel;
 struct LapBlock;
-class QTimer;
 
 // Viewing modes, mirroring the Electron Speed/RPM/ERS chart.
 enum class ChartMode { Default, CurrentLap, PreviousLap, FastestLap, Compare };
@@ -56,7 +56,6 @@ private:
     static constexpr float MAX_RPM   = 16000.0f;
 
     QPointer<SessionModel> model_;
-    QTimer*   refreshTimer_ = nullptr;
     bool      dirty_        = false;
 
     bool      playback_     = false;
@@ -67,6 +66,8 @@ private:
     float     prevEndTime_  = -1.0f;
     float     lastAddedTime_= -1.0f;
     float     lastAddedStsTime_= -1.0f;
+    QString   dataModeKey_;
+    QString   referenceModeKey_;
 
     int axXId_ = -1;
     int spId_  = -1, rpId_  = -1, erId_  = -1;   // current (full colour)

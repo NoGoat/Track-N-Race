@@ -11,7 +11,7 @@ InputPage::InputPage(SessionModel* model, QWidget* parent)
     vbox->setSpacing(0);
 
     // Gear / throttle-brake / steering are now panels of one ChartView (a single
-    // QCustomPlot / OpenGL context / replot) — see InputChartsWidget.
+    // QRhi render target / repaint) — see InputChartsWidget.
     charts_ = new InputChartsWidget;
     charts_->setModel(model);
     vbox->addWidget(charts_, 1);

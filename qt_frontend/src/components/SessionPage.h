@@ -9,6 +9,7 @@
 
 #include "SessionLayout.h"
 
+#include <cstddef>
 #include <vector>
 
 class QLabel;
@@ -99,6 +100,7 @@ private:
     QWidget*     sp_proxRow[3]    = {};
     QListWidget* sp_eventsList    = nullptr;
     std::vector<tnrp::RaceEventRow> eventLog_;
+    std::size_t renderedEventCount_ = 0; // append new rows; do not rebuild the whole log per event
 
     TrackMapWidget* trackMap_   = nullptr;
     int             mapTrackId_ = -1;   // last track loaded into the map widget

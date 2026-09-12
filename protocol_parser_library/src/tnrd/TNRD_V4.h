@@ -94,6 +94,10 @@ public:
         std::string*, const IndexedCancelCheck& = {}) = 0;
     virtual bool forEachChunk(V4RowTypeMask,
         const std::function<bool(const V4ChunkInfo&, std::string_view)>&, std::string*) = 0;
+    // Drop decompressed/parsed payloads and worker-thread scratch while keeping
+    // the validated control-plane index open for later on-demand reads.
+    // Call only while no archive query is in flight.
+    virtual void releaseTransientMemory() = 0;
     virtual void setCacheLimitBytes(size_t) = 0;
     virtual size_t cacheBytes() const = 0;
     virtual uint64_t decompressedChunkCount() const = 0;
@@ -142,6 +146,7 @@ public:
                       const std::function<bool(const V4ChunkInfo&, std::string_view)>& callback,
                       std::string* errorOut);
 
+    void releaseTransientMemory();
     void setCacheLimitBytes(size_t bytes);
     size_t cacheBytes() const;
     uint64_t decompressedChunkCount() const;

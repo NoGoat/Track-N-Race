@@ -4,6 +4,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QElapsedTimer>
+#include <QColor>
 #include <QString>
 #include <vector>
 #include <unordered_map>
@@ -11,7 +12,6 @@
 #include <tnrp/rows.h>
 #include <tnrp/control_rows.h>
 
-class QTimer;
 class QComboBox;
 class QToolButton;
 
@@ -136,6 +136,9 @@ private:
     QSize       staticLayerSize_;    // logical size the cache was built for
 
     tnrp::ParticipantsRow participants_;   // drivers: idx/name/livery_color/race_number
+    struct DriverVisual { QString label; QColor color; };
+    std::unordered_map<int, DriverVisual> driverVisuals_; // preformatted for paintEvent
+    QString     participantsSig_;          // skips repeated copies from positions refreshes
     bool        dark_ = true;
     bool        sectorColors_ = true;   // colored sectors vs plain white/black lines
     bool        aeroSlm_       = false; // false = DRS overlay, true = SLM overlay (2026)
@@ -153,8 +156,8 @@ private:
     Snapshot      prevSnap_, curSnap_;
     QElapsedTimer snapTimer_;        // time since curSnap_ arrived
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
-    QTimer*       animTimer_ = nullptr;     // ~60fps redraw while visible
     bool          renderingActive_ = true;  // false when the app window is hidden/minimized/occluded
+    void requestAnimationFrame();
 
     // ── Follow-driver camera + zoom + labels ──────────────────────────────
     QComboBox*   driverCombo_ = nullptr;   // "Follow driver…"

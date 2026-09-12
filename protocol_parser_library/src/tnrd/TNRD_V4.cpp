@@ -452,6 +452,15 @@ bool TnrdV4Archive::forEachChunk(V4RowTypeMask mask,const std::function<bool(con
     while(!pending.empty()){const size_t index=pending.front().first;auto prepared=pending.front().second.get();pending.pop_front();if(!prepared.ok){while(!pending.empty()){pending.front().second.wait();pending.pop_front();}fail(errorOut,prepared.error);return false;}if(!callback(impl_->chunks[index],*prepared.plain)){while(!pending.empty()){pending.front().second.wait();pending.pop_front();}return false;}if(next<selected.size())schedule(selected[next++]);}
     return true;
 }
+void TnrdV4Archive::releaseTransientMemory(){
+    // Stopping the pool destroys each worker's thread-local compressed input
+    // and Zstandard context. The next query starts a fresh pool lazily.
+    impl_->executor.stop();
+    std::lock_guard<std::mutex> lock(impl_->stateMutex);
+    impl_->cache.clear();
+    impl_->lru.clear();
+    impl_->cacheBytes=0;
+}
 void TnrdV4Archive::setCacheLimitBytes(size_t bytes){std::lock_guard<std::mutex> lock(impl_->stateMutex);impl_->cacheLimit=bytes;while(impl_->cacheBytes>bytes&&!impl_->lru.empty()){const size_t old=impl_->lru.back();impl_->lru.pop_back();auto it=impl_->cache.find(old);impl_->cacheBytes-=it->second.bytes;impl_->cache.erase(it);}}
 size_t TnrdV4Archive::cacheBytes()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->cacheBytes;}
 uint64_t TnrdV4Archive::decompressedChunkCount()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->decompressions;}

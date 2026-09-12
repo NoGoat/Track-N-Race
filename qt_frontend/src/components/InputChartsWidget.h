@@ -2,15 +2,15 @@
 
 #include <QWidget>
 #include <QPointer>
+#include <QString>
 
 class ChartView;
 class SessionModel;
-class QTimer;
 class QGridLayout;
 class GraphTable;
 
 // The Input page's three graphs — gear / throttle-brake / steering — rendered as
-// panels of ONE ChartView (a single QCustomPlot / OpenGL context / replot) rather
+// panels of ONE ChartView (a single QRhi render target / repaint) rather
 // than three separate widgets. Layout mirrors the old page: gear + throttle-brake
 // side by side on top, steering full-width below; any section can be hidden.
 class InputChartsWidget : public QWidget {
@@ -40,13 +40,13 @@ private:
     float currentTime() const;
 
     QPointer<SessionModel> model_;
-    QTimer*   refreshTimer_ = nullptr;
     bool      dirty_        = false;
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;    // toolbar default (tb_windowIdx_=1 = 30s)
     float     prevEndTime_  = -9999.0f;
     float     lastAddedTime_= -9999.0f;
+    QString   dataModeKey_;
 
     // The three sections are panels of one ChartView (indices match panel ids).
     enum Section { GEAR = 0, INPUTS = 1, STEERING = 2, SECTIONS = 3 };
@@ -62,4 +62,8 @@ private:
     int thId_   = -1;
     int brId_   = -1;
     int stId_   = -1;
+    int gearRefId_ = -1;
+    int thRefId_ = -1;
+    int brRefId_ = -1;
+    int stRefId_ = -1;
 };

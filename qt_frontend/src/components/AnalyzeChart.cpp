@@ -1,9 +1,9 @@
 #include "AnalyzeChart.h"
 #include "../SessionModel.h"
+#include "../PresentationScheduler.h"
 
 #include <QPalette>
 #include <QShowEvent>
-#include <QTimer>
 #include <algorithm>
 #include <cmath>
 
@@ -65,8 +65,6 @@ AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
         setSeriesVisible(handles_[i].comparison,false);setSeriesVisible(handles_[i].current,false);
     }
     setLegendVisible(false);setHoverReadout(true);
-    refreshTimer_=new QTimer(this);refreshTimer_->setSingleShot(true);refreshTimer_->setInterval(0);
-    connect(refreshTimer_,&QTimer::timeout,this,&AnalyzeChart::refresh);
 }
 
 void AnalyzeChart::setModel(SessionModel* m){if(model_)disconnect(model_,nullptr,this,nullptr);model_=m;if(m){connect(m,&SessionModel::telemetryAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::tyreAppended,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::lapsChanged,this,&AnalyzeChart::requestRefresh);connect(m,&SessionModel::wasReset,this,&AnalyzeChart::requestRefresh);}requestRefresh();}
@@ -76,13 +74,13 @@ void AnalyzeChart::setCurrentTime(float t){currentTime_=t;requestRefresh();}
 void AnalyzeChart::setComparisonLap(int n){compareLap_=n;requestRefresh();}
 void AnalyzeChart::setFixedLaps(bool e,int a,int b){fixed_=e;lapA_=a;lapB_=b;requestRefresh();}
 void AnalyzeChart::showEvent(QShowEvent* e){ChartView::showEvent(e);requestRefresh();}
-void AnalyzeChart::requestRefresh(){dirty_=true;if(isVisible()&&!refreshTimer_->isActive())refreshTimer_->start();}
+void AnalyzeChart::requestRefresh(){dirty_=true;if(!isVisible())return;PresentationScheduler::instance().request(this,[this]{refresh();},PresentationScheduler::Policy::Chart);}
 
 void AnalyzeChart::refresh(){
     if(!model_||!dirty_||!isVisible())return;dirty_=false;const SessionData&d=model_->data();
     const LapBlock* primary=nullptr;const LapBlock* compare=nullptr;float primaryEnd=0;
-    if(fixed_){primary=d.lapByNum(lapA_);compare=d.lapByNum(lapB_);if(primary)primaryEnd=lapEnd(*primary);}
-    else {const float now=playback_?currentTime_:d.latestTime;primary=playback_?d.lapAtTime(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=d.lapByNum(compareLap_);}
+    if(fixed_){primary=playback_?model_->playbackLapData(lapA_):d.lapByNum(lapA_);compare=playback_?model_->playbackLapData(lapB_):d.lapByNum(lapB_);if(primary)primaryEnd=lapEnd(*primary);}
+    else {const float now=playback_?currentTime_:d.latestTime;primary=playback_?model_->chartPrimaryLap(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=playback_?model_->playbackLapData(compareLap_):d.lapByNum(compareLap_);}
     const auto& defs=analyzeMetrics();QSet<QString> visibleScales;double fullMax=1;
     for(int i=0;i<defs.size();++i){const auto&m=defs[i];auto it=std::find_if(selected_.cbegin(),selected_.cend(),[&](const auto&s){return s.metricId==m.id;});const bool vis=it!=selected_.cend()&&it->visible;
         setSeriesName(handles_[i].current,(fixed_?QString("LAP A · L%1").arg(primary?primary->lapNum:0):QString("CURRENT · L%1").arg(primary?primary->lapNum:0))+" · "+m.label);
@@ -92,7 +90,7 @@ void AnalyzeChart::refresh(){
         if(vis)visibleScales.insert(m.scaleKey);
         auto fill=[&](const LapBlock* lap,float end,int sid){QVector<double>xs,ys;if(!lap){clear(sid);return;}const float a=lapStart(*lap),last=lapEnd(*lap),b=qMin(end,last);
             if(b<a){clear(sid);return;}
-            switch(m.source){case AnalyzeSource::Telemetry:collect(lap->tel,a,b,xs,ys,[&](const auto&s){return telValue(s,m.field);});break;case AnalyzeSource::Status:collect(lap->sts,a,b,xs,ys,[&](const auto&s){return statusValue(s,m.field);});break;case AnalyzeSource::Motion:collect(d.motionBuf,a,b,xs,ys,[&](const auto&s){return motionValue(s,m.field);});break;case AnalyzeSource::MotionEx:collect(d.motionExBuf,a,b,xs,ys,[&](const auto&s){return motionExValue(s,m.field);});break;case AnalyzeSource::Tyre:collect(d.tyreBuf,a,b,xs,ys,[&](const auto&s){return tyreValue(s,m.field);});break;case AnalyzeSource::Damage:collect(d.damageBuf,a,b,xs,ys,[&](const auto&s){return damageValue(s,m.field);});break;}setSeriesData(sid,xs,ys);if(!xs.isEmpty())fullMax=qMax(fullMax,xs.last());};
+            switch(m.source){case AnalyzeSource::Telemetry:collect(lap->tel,a,b,xs,ys,[&](const auto&s){return telValue(s,m.field);});break;case AnalyzeSource::Status:collect(lap->sts,a,b,xs,ys,[&](const auto&s){return statusValue(s,m.field);});break;case AnalyzeSource::Motion:collect(lap->motion,a,b,xs,ys,[&](const auto&s){return motionValue(s,m.field);});break;case AnalyzeSource::MotionEx:collect(lap->motionEx,a,b,xs,ys,[&](const auto&s){return motionExValue(s,m.field);});break;case AnalyzeSource::Tyre:collect(lap->tyre,a,b,xs,ys,[&](const auto&s){return tyreValue(s,m.field);});break;case AnalyzeSource::Damage:collect(lap->damage,a,b,xs,ys,[&](const auto&s){return damageValue(s,m.field);});break;}setSeriesData(sid,xs,ys);if(!xs.isEmpty())fullMax=qMax(fullMax,xs.last());};
         fill(primary,primaryEnd,handles_[i].current);fill(compare,compare?lapEnd(*compare):0,handles_[i].comparison);
     }
     QVector<int> order;for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].comparison;}}for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].current;}}setSeriesOrder(order);

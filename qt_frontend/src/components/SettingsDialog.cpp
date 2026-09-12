@@ -1,8 +1,10 @@
 #include "SettingsDialog.h"
+#include "../ChartGraphicsBackend.h"
 #include "../MainWindow.h"
 #include "../CompactSettings.h"
 #include "../GraphViewSettings.h"
 #include "../IconUtils.h"
+#include "../PresentationScheduler.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -27,6 +29,7 @@
 #include <QListWidget>
 #include <QPalette>
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QToolButton>
@@ -36,6 +39,8 @@
 #include <QFile>
 #include <QTextStream>
 #include <QFontDatabase>
+#include <QRegularExpression>
+#include <QTimer>
 #include <iterator>
 
 static QFrame* horizontalSeparator() {
@@ -89,6 +94,16 @@ static QLabel* subHeading(const QString& text) {
     return l;
 }
 
+static bool isIpv4Address(const QString& value) {
+    static const QRegularExpression octet(QStringLiteral("^[0-9]{1,3}$"));
+    const QStringList parts = value.trimmed().split('.', Qt::KeepEmptyParts);
+    if (parts.size() != 4) return false;
+    for (const QString& part : parts) {
+        if (!octet.match(part).hasMatch() || part.toInt() > 255) return false;
+    }
+    return true;
+}
+
 SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
     : QDialog(parent), mainWindow_(mainWindow)
 {
@@ -122,6 +137,7 @@ SettingsDialog::SettingsDialog(MainWindow* mainWindow, QWidget* parent)
         { "Appearance",    buildAppearancePage()    },
         { "Compact",       buildCompactPage()       },
         { "Graphs",        buildGraphsPage()        },
+        { "Y Axis Behavior", buildYAxisPage()       },
         { "Recording",     buildRecordingPage()     },
         { "Overview",      buildOverviewPage()      },
         { "Track Map",     buildTrackMapPage()      },
@@ -254,19 +270,27 @@ QWidget* SettingsDialog::buildProtocolPage() {
     });
     form->addRow("Protocol Version Override:", protocolCombo_);
 
+    protocolWarningLabel_ = new QLabel;
+    protocolWarningLabel_->setWordWrap(true);
+    protocolWarningLabel_->setContentsMargins(12, 10, 12, 10);
+    protocolWarningLabel_->setStyleSheet(
+        "background-color: rgba(225, 6, 0, 0.08); border: 1px solid rgba(225, 6, 0, 0.35);"
+        " border-radius: 6px; color: #e35b57;");
+    form->addRow(protocolWarningLabel_);
+    updateProtocolWarning(mainWindow_->detectedProtocolWarningFormat(),
+                          mainWindow_->forcedProtocolWarningFormat());
+    connect(mainWindow_, &MainWindow::protocolWarningChanged,
+            this, &SettingsDialog::updateProtocolWarning);
+
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Network"));
 
-    // Port + bind address rebind the live UDP socket on edit (see
-    // MainWindow::setUdpPort / setUdpBindAddress). editingFinished (focus-out or
-    // Enter), not valueChanged, so the socket isn't restarted on every keystroke.
+    // Network controls are a local draft. Nothing is persisted or restarted
+    // until Apply & Restart is pressed.
     udpPortSpin_ = new QSpinBox;
     udpPortSpin_->setRange(1, 65535);
     udpPortSpin_->setGroupSeparatorShown(false);   // a port is not a thousands-grouped number
     udpPortSpin_->setValue(mainWindow_->udpPort());
-    connect(udpPortSpin_, &QSpinBox::editingFinished, this, [this] {
-        mainWindow_->setUdpPort(udpPortSpin_->value());
-    });
     form->addRow("UDP Port:", udpPortSpin_);
 
     udpBindAddressEdit_ = new QLineEdit(mainWindow_->udpBindAddress());
@@ -274,14 +298,252 @@ QWidget* SettingsDialog::buildProtocolPage() {
     udpBindAddressEdit_->setToolTip(
         "Which local network interface to receive telemetry on. "
         "0.0.0.0 listens on all interfaces.");
-    connect(udpBindAddressEdit_, &QLineEdit::editingFinished, this, [this] {
-        const QString addr = udpBindAddressEdit_->text().trimmed();
-        udpBindAddressEdit_->setText(addr);
-        mainWindow_->setUdpBindAddress(addr.isEmpty() ? QStringLiteral("0.0.0.0") : addr);
-    });
     form->addRow("Bind Address:", udpBindAddressEdit_);
 
+    udpForwardingCheck_ = new QCheckBox("Forward every received packet unchanged");
+    udpForwardingCheck_->setChecked(mainWindow_->udpForwardingEnabled());
+    form->addRow("UDP Forward Mode:", udpForwardingCheck_);
+
+    udpForwardEditor_ = new QWidget;
+    auto* forwardLayout = new QVBoxLayout(udpForwardEditor_);
+    forwardLayout->setContentsMargins(0, 0, 0, 0);
+    forwardLayout->setSpacing(6);
+    auto* forwardHeader = new QHBoxLayout;
+    auto* forwardTitle = new QLabel("Forwarding channels (up to 15)");
+    QFont forwardTitleFont = forwardTitle->font();
+    forwardTitleFont.setBold(true);
+    forwardTitle->setFont(forwardTitleFont);
+    udpAddForwardTarget_ = new QPushButton("Add channel");
+    forwardHeader->addWidget(forwardTitle);
+    forwardHeader->addStretch(1);
+    forwardHeader->addWidget(udpAddForwardTarget_);
+    forwardLayout->addLayout(forwardHeader);
+
+    udpForwardTargets_ = new QTableWidget(0, 3);
+    udpForwardTargets_->setHorizontalHeaderLabels({"IPv4 destination", "Port", QString()});
+    udpForwardTargets_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    udpForwardTargets_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    udpForwardTargets_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    udpForwardTargets_->verticalHeader()->setVisible(false);
+    udpForwardTargets_->setSelectionMode(QAbstractItemView::NoSelection);
+    udpForwardTargets_->setFocusPolicy(Qt::NoFocus);
+    udpForwardTargets_->setFixedHeight(170);
+    forwardLayout->addWidget(udpForwardTargets_);
+
+    udpForwardValidation_ = new QLabel(
+        "Enter valid IPv4 destinations and ports. Forwarding back to this listener "
+        "would create a packet loop.");
+    udpForwardValidation_->setWordWrap(true);
+    udpForwardValidation_->setStyleSheet("color: #e35b57;");
+    forwardLayout->addWidget(udpForwardValidation_);
+    form->addRow(udpForwardEditor_);
+
+    for (const UdpForwardTargetSetting& target : mainWindow_->udpForwardTargets())
+        addForwardTargetRow(target.address, target.port);
+
+    QWidget* applyRow = new QWidget;
+    auto* applyLayout = new QHBoxLayout(applyRow);
+    applyLayout->setContentsMargins(0, 0, 0, 0);
+    udpApplyStatus_ = new QLabel;
+    udpApplyStatus_->setWordWrap(true);
+    udpApplyButton_ = new QPushButton("Apply & Restart");
+    applyLayout->addWidget(udpApplyStatus_, 1);
+    applyLayout->addWidget(udpApplyButton_);
+    form->addRow(applyRow);
+
+    udpStatusResetTimer_ = new QTimer(this);
+    udpStatusResetTimer_->setSingleShot(true);
+    udpStatusResetTimer_->setInterval(2500);
+    connect(udpStatusResetTimer_, &QTimer::timeout, this, [this] {
+        udpApplyState_ = UdpApplyState::Idle;
+        udpApplyError_.clear();
+        refreshNetworkDraftUi();
+    });
+    connect(udpPortSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { refreshNetworkDraftUi(); });
+    connect(udpBindAddressEdit_, &QLineEdit::textChanged, this,
+            [this](const QString&) { refreshNetworkDraftUi(); });
+    connect(udpForwardingCheck_, &QCheckBox::toggled, this,
+            [this](bool) { refreshNetworkDraftUi(); });
+    connect(udpAddForwardTarget_, &QPushButton::clicked, this,
+            [this] { addForwardTargetRow(); });
+    connect(udpApplyButton_, &QPushButton::clicked,
+            this, &SettingsDialog::applyNetworkDraft);
+    refreshNetworkDraftUi();
+
     return page;
+}
+
+void SettingsDialog::updateProtocolWarning(int detectedFormat, int forcedFormat) {
+    if (!protocolWarningLabel_) return;
+    const bool visible = detectedFormat > 0 && forcedFormat > 0;
+    protocolWarningLabel_->setVisible(visible);
+    if (visible) {
+        protocolWarningLabel_->setText(
+            QString("Protocol mismatch detected\nReceiving %1 packets — override is set to %2")
+                .arg(detectedFormat).arg(forcedFormat));
+    } else {
+        protocolWarningLabel_->clear();
+    }
+}
+
+void SettingsDialog::addForwardTargetRow(const QString& address, int port) {
+    if (!udpForwardTargets_ || udpForwardTargets_->rowCount() >= 15) return;
+
+    const int row = udpForwardTargets_->rowCount();
+    udpForwardTargets_->insertRow(row);
+    auto* addressEdit = new QLineEdit(address);
+    addressEdit->setPlaceholderText("192.168.1.100");
+    auto* portSpin = new QSpinBox;
+    portSpin->setRange(1, 65535);
+    portSpin->setGroupSeparatorShown(false);
+    portSpin->setValue(port);
+    auto* removeButton = new QToolButton;
+    removeButton->setText(QStringLiteral("×"));
+    removeButton->setToolTip(QString("Remove forwarding channel %1").arg(row + 1));
+    udpForwardTargets_->setCellWidget(row, 0, addressEdit);
+    udpForwardTargets_->setCellWidget(row, 1, portSpin);
+    udpForwardTargets_->setCellWidget(row, 2, removeButton);
+
+    connect(addressEdit, &QLineEdit::textChanged, this,
+            [this](const QString&) { refreshNetworkDraftUi(); });
+    connect(portSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { refreshNetworkDraftUi(); });
+    connect(removeButton, &QToolButton::clicked, this,
+            [this, addressEdit] { removeForwardTargetRow(addressEdit); });
+    refreshNetworkDraftUi();
+}
+
+void SettingsDialog::removeForwardTargetRow(QWidget* addressEditor) {
+    if (!udpForwardTargets_) return;
+    for (int row = 0; row < udpForwardTargets_->rowCount(); ++row) {
+        if (udpForwardTargets_->cellWidget(row, 0) == addressEditor) {
+            udpForwardTargets_->removeRow(row);
+            break;
+        }
+    }
+    refreshNetworkDraftUi();
+}
+
+QVector<UdpForwardTargetSetting> SettingsDialog::forwardTargetDraft() const {
+    QVector<UdpForwardTargetSetting> targets;
+    if (!udpForwardTargets_) return targets;
+    targets.reserve(udpForwardTargets_->rowCount());
+    for (int row = 0; row < udpForwardTargets_->rowCount(); ++row) {
+        const auto* address = qobject_cast<QLineEdit*>(udpForwardTargets_->cellWidget(row, 0));
+        const auto* port = qobject_cast<QSpinBox*>(udpForwardTargets_->cellWidget(row, 1));
+        if (address && port) targets.push_back({address->text(), port->value()});
+    }
+    return targets;
+}
+
+bool SettingsDialog::networkDraftValid() const {
+    if (!udpForwardingCheck_ || !udpForwardingCheck_->isChecked()) return true;
+    const QString listenerAddress = udpBindAddressEdit_->text().trimmed();
+    const int listenerPort = udpPortSpin_->value();
+    for (const UdpForwardTargetSetting& target : forwardTargetDraft()) {
+        const QString address = target.address.trimmed();
+        if (!isIpv4Address(address) || target.port < 1 || target.port > 65535 ||
+            (target.port == listenerPort &&
+             (address.startsWith("127.") || address == listenerAddress))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SettingsDialog::networkDraftDirty() const {
+    return udpPortSpin_->value() != mainWindow_->udpPort() ||
+           udpBindAddressEdit_->text() != mainWindow_->udpBindAddress() ||
+           udpForwardingCheck_->isChecked() != mainWindow_->udpForwardingEnabled() ||
+           forwardTargetDraft() != mainWindow_->udpForwardTargets();
+}
+
+void SettingsDialog::refreshNetworkDraftUi() {
+    if (!udpApplyButton_) return;
+    const bool forwarding = udpForwardingCheck_->isChecked();
+    udpForwardEditor_->setVisible(forwarding);
+    const bool valid = networkDraftValid();
+    udpForwardValidation_->setVisible(forwarding && !valid);
+    udpAddForwardTarget_->setEnabled(udpForwardTargets_->rowCount() < 15);
+    udpApplyButton_->setEnabled(valid && udpApplyState_ != UdpApplyState::Applying);
+
+    // Mark only invalid destination fields, while retaining the single shared
+    // explanation below the channel table.
+    const QString listenerAddress = udpBindAddressEdit_->text().trimmed();
+    const int listenerPort = udpPortSpin_->value();
+    for (int row = 0; row < udpForwardTargets_->rowCount(); ++row) {
+        auto* address = qobject_cast<QLineEdit*>(udpForwardTargets_->cellWidget(row, 0));
+        auto* port = qobject_cast<QSpinBox*>(udpForwardTargets_->cellWidget(row, 1));
+        if (!address || !port) continue;
+        const QString destination = address->text().trimmed();
+        const bool rowValid = isIpv4Address(destination) &&
+            !(port->value() == listenerPort &&
+              (destination.startsWith("127.") || destination == listenerAddress));
+        const QString invalidStyle = rowValid ? QString() : QStringLiteral("border: 1px solid #c62828;");
+        address->setStyleSheet(invalidStyle);
+        port->setStyleSheet(invalidStyle);
+    }
+
+    QString status;
+    QString color;
+    switch (udpApplyState_) {
+        case UdpApplyState::Applying:
+            status = QStringLiteral("Restarting…");
+            udpApplyButton_->setText(QStringLiteral("Restarting…"));
+            break;
+        case UdpApplyState::Ok:
+            status = QStringLiteral("Listener restarted successfully");
+            color = QStringLiteral("#4caf50");
+            udpApplyButton_->setText(QStringLiteral("Applied"));
+            break;
+        case UdpApplyState::Error:
+            status = udpApplyError_;
+            color = QStringLiteral("#e35b57");
+            udpApplyButton_->setText(QStringLiteral("Apply & Restart"));
+            break;
+        case UdpApplyState::Idle: {
+            const bool dirty = networkDraftDirty();
+            status = dirty
+                ? QStringLiteral("Unsaved changes")
+                : QStringLiteral("Restart the listener to apply changes");
+            if (dirty) color = QStringLiteral("#d49b2e");
+            udpApplyButton_->setText(QStringLiteral("Apply & Restart"));
+            break;
+        }
+    }
+    udpApplyStatus_->setText(status);
+    udpApplyStatus_->setStyleSheet(color.isEmpty() ? QString() : "color: " + color + ";");
+}
+
+void SettingsDialog::applyNetworkDraft() {
+    if (!networkDraftValid() || udpApplyState_ == UdpApplyState::Applying) return;
+    udpStatusResetTimer_->stop();
+    udpApplyState_ = UdpApplyState::Applying;
+    udpApplyError_.clear();
+    refreshNetworkDraftUi();
+
+    // Defer the synchronous stop/start by one event-loop turn so "Restarting…"
+    // can paint before the listener is recreated.
+    QTimer::singleShot(0, this, [this] {
+        QVector<UdpForwardTargetSetting> targets = forwardTargetDraft();
+        for (int row = 0; row < targets.size(); ++row) {
+            targets[row].address = targets[row].address.trimmed();
+            if (auto* address = qobject_cast<QLineEdit*>(udpForwardTargets_->cellWidget(row, 0)))
+                address->setText(targets[row].address);
+        }
+        const QString error = mainWindow_->applyUdpConfiguration(
+            udpPortSpin_->value(), udpBindAddressEdit_->text(),
+            udpForwardingCheck_->isChecked(), targets);
+        if (error.isEmpty()) {
+            udpApplyState_ = UdpApplyState::Ok;
+        } else {
+            udpApplyState_ = UdpApplyState::Error;
+            udpApplyError_ = error;
+        }
+        refreshNetworkDraftUi();
+        udpStatusResetTimer_->start();
+    });
 }
 
 QWidget* SettingsDialog::buildRecordingPage() {
@@ -368,12 +630,32 @@ QWidget* SettingsDialog::buildAppearancePage() {
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Graphs"));
 
-    // OpenGL multisampling (MSAA) for the charts: higher = smoother lines but more
-    // GPU fill cost. userData is the sample count passed to QCustomPlot::setOpenGl;
-    // "Off" (0) disables anti-aliasing entirely (fastest, aliased lines).
+    chartBackendCombo_ = new QComboBox;
+    chartBackendCombo_->addItem(
+        QString("Automatic (currently %1)").arg(tnr::graphics::activeBackendLabel()), "auto");
+    for (const tnr::graphics::BackendInfo& backend : tnr::graphics::supportedBackends())
+        chartBackendCombo_->addItem(backend.label, backend.key);
+    int backendIndex = chartBackendCombo_->findData(mainWindow_->chartGraphicsBackend());
+    chartBackendCombo_->setCurrentIndex(backendIndex >= 0 ? backendIndex : 0);
+    chartBackendCombo_->setToolTip(
+        "Graphics API used by the telemetry charts. A restart is required after changing it.");
+    connect(chartBackendCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartGraphicsBackend(chartBackendCombo_->currentData().toString());
+    });
+    QWidget* backendRow = new QWidget;
+    auto* backendLayout = new QHBoxLayout(backendRow);
+    backendLayout->setContentsMargins(0, 0, 0, 0);
+    backendLayout->setSpacing(10);
+    backendLayout->addWidget(chartBackendCombo_);
+    auto* restartNote = new QLabel("Restart required after changing the graphics API.");
+    backendLayout->addWidget(restartNote);
+    backendLayout->addStretch(1);
+    form->addRow("Graphics API:", backendRow);
+
+    // Portable QRhi multisampling: higher values smooth lines but increase fill cost.
     chartMsaaCombo_ = new QComboBox;
     chartMsaaCombo_->addItem("Off", 0);
-    for (int s : { 2, 4, 8, 16 })
+    for (int s : { 4, 8, 16 })
         chartMsaaCombo_->addItem(QString("%1x").arg(s), s);
     const int curMsaa = mainWindow_->chartMsaaSamples();
     const int msaaIdx = chartMsaaCombo_->findData(curMsaa);
@@ -383,6 +665,40 @@ QWidget* SettingsDialog::buildAppearancePage() {
         mainWindow_->setChartMsaaSamples(chartMsaaCombo_->currentData().toInt());
     });
     form->addRow("Anti-aliasing:", chartMsaaCombo_);
+
+    auto populateFrameRates = [](QComboBox* combo) {
+        combo->addItem("Pause", 0);
+        combo->addItem("1 FPS", 1);
+        combo->addItem("10 FPS", 10);
+        combo->addItem("30 FPS", 30);
+        combo->addItem("60 FPS", 60);
+        combo->addItem("120 FPS", 120);
+        combo->addItem("Match display", PresentationScheduler::MatchDisplay);
+    };
+
+    chartFpsInFocusCombo_ = new QComboBox;
+    populateFrameRates(chartFpsInFocusCombo_);
+    int fpsIdx = chartFpsInFocusCombo_->findData(mainWindow_->chartFpsInFocus());
+    chartFpsInFocusCombo_->setCurrentIndex(
+        fpsIdx >= 0 ? fpsIdx : chartFpsInFocusCombo_->findData(PresentationScheduler::MatchDisplay));
+    chartFpsInFocusCombo_->setToolTip(
+        "Maximum chart frame rate while the application window is focused.");
+    connect(chartFpsInFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartFpsInFocus(chartFpsInFocusCombo_->currentData().toInt());
+    });
+    form->addRow("FPS in focus:", chartFpsInFocusCombo_);
+
+    chartFpsOutOfFocusCombo_ = new QComboBox;
+    populateFrameRates(chartFpsOutOfFocusCombo_);
+    fpsIdx = chartFpsOutOfFocusCombo_->findData(mainWindow_->chartFpsOutOfFocus());
+    chartFpsOutOfFocusCombo_->setCurrentIndex(
+        fpsIdx >= 0 ? fpsIdx : chartFpsOutOfFocusCombo_->findData(30));
+    chartFpsOutOfFocusCombo_->setToolTip(
+        "Maximum chart frame rate while the application window is not focused.");
+    connect(chartFpsOutOfFocusCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        mainWindow_->setChartFpsOutOfFocus(chartFpsOutOfFocusCombo_->currentData().toInt());
+    });
+    form->addRow("FPS out of focus:", chartFpsOutOfFocusCombo_);
 
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Accessibility"));
@@ -749,6 +1065,21 @@ QWidget* SettingsDialog::buildGraphsPage() {
             gv->setSpacing(10);
             gv->addWidget(subHeading(r.group));
 
+            if (QString::fromLatin1(r.group) == "Overview") {
+                auto* vertical = new QCheckBox("Secondary Vertical Crosshair");
+                auto* horizontal = new QCheckBox("Secondary Horizontal Crosshair");
+                vertical->setChecked(mainWindow_->chartSecondaryVerticalCrosshair());
+                horizontal->setChecked(mainWindow_->chartSecondaryHorizontalCrosshair());
+                gv->addWidget(vertical);
+                gv->addWidget(horizontal);
+                connect(vertical, &QCheckBox::toggled, this, [this, horizontal](bool on) {
+                    mainWindow_->setChartSecondaryCrosshairs(on, horizontal->isChecked());
+                });
+                connect(horizontal, &QCheckBox::toggled, this, [this, vertical](bool on) {
+                    mainWindow_->setChartSecondaryCrosshairs(vertical->isChecked(), on);
+                });
+            }
+
             QWidget* colW = new QWidget;
             colLay = new QVBoxLayout(colW);
             colLay->setContentsMargins(0, 0, 0, 0);
@@ -816,6 +1147,142 @@ QWidget* SettingsDialog::buildGraphsPage() {
     h->addWidget(sideCol);
     h->addWidget(verticalSeparator());
     h->addWidget(stack, 1);
+    return page;
+}
+
+QWidget* SettingsDialog::buildYAxisPage() {
+    // Electron keeps Fixed/Dynamic behavior in its own category instead of
+    // nesting it underneath the Chart/Table choice. Mirror that separation so
+    // changing a graph's presentation never looks coupled to its axis policy.
+    QWidget* page = new QWidget;
+    auto* outer = new QHBoxLayout(page);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+
+    struct YCtl { tnr::GraphSection section; QButtonGroup* group; };
+    QList<YCtl> controls;
+
+    auto makeControl = [this, &controls](const char* label,
+                                         tnr::GraphSection section) -> QWidget* {
+        QWidget* row = new QWidget;
+        auto* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(12);
+        layout->addWidget(new QLabel(label));
+        layout->addStretch(1);
+
+        auto* group = new QButtonGroup(row);
+        group->setExclusive(true);
+        for (int i = 0; i < 2; ++i) {
+            auto* button = new SegmentButton;
+            button->setText(i == 0 ? "Fixed" : "Dynamic");
+            button->setCheckable(true);
+            button->setAutoRaise(true);
+            group->addButton(button, i);
+            layout->addWidget(button);
+        }
+        group->button(mainWindow_->chartDynamicYAxis(section) ? 1 : 0)->setChecked(true);
+        connect(group, &QButtonGroup::idClicked, this,
+                [this, section](int id) {
+                    mainWindow_->setChartDynamicYAxis(section, id == 1);
+                });
+        controls.push_back({ section, group });
+        return row;
+    };
+
+    struct Row { tnr::GraphSection section; const char* group; const char* label; };
+    static const Row rows[] = {
+        { tnr::GraphSection::OverviewTyreSurface, "Overview", "Tyre surface temp" },
+        { tnr::GraphSection::OverviewTyreInner,   "Overview", "Tyre inner temp" },
+        { tnr::GraphSection::OverviewTyreBrake,   "Overview", "Tyre brake temp" },
+        { tnr::GraphSection::OverviewTyreWear,    "Overview", "Tyre wear / life" },
+        { tnr::GraphSection::TyreSurface,         "Tyres",    "Surface temp" },
+        { tnr::GraphSection::TyreInner,           "Tyres",    "Inner temp" },
+        { tnr::GraphSection::TyreBrake,           "Tyres",    "Brake temp" },
+        { tnr::GraphSection::TyreWear,            "Tyres",    "Wear / life" },
+        { tnr::GraphSection::PowerHarvest,        "Power",    "ERS harvest" },
+    };
+
+    auto* sidebar = new QListWidget;
+    sidebar->setFrameShape(QFrame::NoFrame);
+    sidebar->setMinimumWidth(130);
+    sidebar->setMaximumWidth(160);
+    sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    const QString sidebarBg = QApplication::palette().color(QPalette::Button).name();
+    sidebar->setStyleSheet(QString(
+        "QListWidget { background: %1; border: none; outline: none; }"
+        "QListWidget::item { padding: 8px 14px; }"
+    ).arg(sidebarBg));
+
+    auto* stack = new QStackedWidget;
+    QString lastGroup;
+    QVBoxLayout* groupLayout = nullptr;
+    for (const Row& row : rows) {
+        if (row.group != lastGroup) {
+            sidebar->addItem(row.group);
+            QWidget* groupPage = new QWidget;
+            auto* pageLayout = new QVBoxLayout(groupPage);
+            pageLayout->setContentsMargins(16, 12, 16, 8);
+            pageLayout->setSpacing(10);
+            pageLayout->addWidget(subHeading(row.group));
+            QWidget* groupBody = new QWidget;
+            groupLayout = new QVBoxLayout(groupBody);
+            groupLayout->setContentsMargins(0, 0, 0, 0);
+            groupLayout->setSpacing(8);
+            pageLayout->addWidget(groupBody);
+            pageLayout->addStretch(1);
+            stack->addWidget(groupPage);
+            lastGroup = row.group;
+        }
+        groupLayout->addWidget(makeControl(row.label, row.section));
+    }
+
+    connect(sidebar, &QListWidget::currentRowChanged,
+            stack, &QStackedWidget::setCurrentIndex);
+    sidebar->setCurrentRow(0);
+
+    auto* setAllButton = new QToolButton;
+    setAllButton->setAutoRaise(true);
+    setAllButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    setAllButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto anyDynamic = [this, controls] {
+        for (const YCtl& control : controls)
+            if (mainWindow_->chartDynamicYAxis(control.section)) return true;
+        return false;
+    };
+    auto refreshLabel = [anyDynamic, setAllButton] {
+        setAllButton->setText(anyDynamic() ? "Set All Fixed" : "Set All Dynamic");
+    };
+    refreshLabel();
+    connect(setAllButton, &QToolButton::clicked, this,
+            [this, controls, anyDynamic, refreshLabel] {
+                const bool makeDynamic = !anyDynamic();
+                for (const YCtl& control : controls) {
+                    mainWindow_->setChartDynamicYAxis(control.section, makeDynamic);
+                    control.group->button(makeDynamic ? 1 : 0)->setChecked(true);
+                }
+                refreshLabel();
+            });
+    for (const YCtl& control : controls)
+        connect(control.group, &QButtonGroup::idClicked, this,
+                [refreshLabel](int) { refreshLabel(); });
+
+    QWidget* sideColumn = new QWidget;
+    sideColumn->setAutoFillBackground(true);
+    sideColumn->setBackgroundRole(QPalette::Button);
+    auto* sideLayout = new QVBoxLayout(sideColumn);
+    sideLayout->setContentsMargins(0, 0, 0, 0);
+    sideLayout->setSpacing(0);
+    sideLayout->addWidget(sidebar, 1);
+    QWidget* buttonWrap = new QWidget;
+    auto* buttonLayout = new QVBoxLayout(buttonWrap);
+    buttonLayout->setContentsMargins(8, 8, 8, 8);
+    buttonLayout->addWidget(setAllButton);
+    sideLayout->addWidget(buttonWrap);
+
+    outer->addWidget(sideColumn);
+    outer->addWidget(verticalSeparator());
+    outer->addWidget(stack, 1);
     return page;
 }
 
@@ -972,7 +1439,6 @@ QWidget* SettingsDialog::buildAboutPage() {
                  const char* url; const char* linkText; const char* resource; };
     const Lib libs[] = {
         { "Qt",            qVersion(), "LGPL v3", "© The Qt Company Ltd.",                       "https://www.qt.io",                "qt.io",           ":/licenses/LGPL-3.0.txt" },
-        { "QCustomPlot",   "2.1.1",    "GPL v3",  "© 2011–2022 Emanuel Eichhammer",         "https://www.qcustomplot.com",      "qcustomplot.com", ":/licenses/GPL-3.0.txt"  },
         { "glaze",         "7.8.3",    "MIT",     "© 2019–present Stephen Berry",           "https://github.com/stephenberry/glaze", "github.com", ":/licenses/MIT-glaze.txt" },
         // The toast notifications are a fork of niklashenning/qt-toast (see the
         // license text, which notes the fork and reproduces the upstream notice).
@@ -1048,7 +1514,7 @@ QWidget* SettingsDialog::buildAboutPage() {
         linkLbl->setContentsMargins(4, 0, 24, 0);
         // Rich-text labels report a sizeHint a hair too narrow, so ResizeToContents
         // sizes the column just short of the widest link and clips its last glyph
-        // ("qcustomplot.com" → "qcustomplot.con"). Pin a plain-text-measured minimum
+        // Some proportional fonts clip the last glyph. Pin a plain-text-measured minimum
         // width (+ margins + a little slack) so the text always fits.
         linkLbl->setMinimumWidth(
             linkLbl->fontMetrics().horizontalAdvance(lib.linkText) + 4 + 24 + 6);

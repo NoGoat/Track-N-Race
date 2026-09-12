@@ -3,18 +3,22 @@
 #include <QWidget>
 #include <QColor>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <memory>
 
+class SessionModel;
+struct LapBlock;
+namespace tnr { enum class GraphSection; }
+
 // Generic, backend-agnostic time-series chart widget.
 //
-// Wraps a charting backend (currently QCustomPlot) but exposes none of its
-// types — the backend lives entirely behind a pimpl in ChartView.cpp, so it can
-// be swapped without touching any caller. Charts are declared by config:
-// add some axes, add some series bound to those axes, then push data. Series use
-// adaptive sampling (per-pixel decimation) once the visible x-window is wide
-// enough (see setXRange), keeping paint cost flat even with tens of thousands of
-// retained points; narrow windows draw every point raw.
+// Wraps the purpose-built QRhi telemetry renderer but exposes none of its
+// types — the backend lives entirely behind a pimpl in ChartView.cpp. Charts
+// are declared by config:
+// add some axes, add some series bound to those axes, then push data. Like the
+// Electron TimeChart path, every visible retained point is submitted to the
+// renderer; ChartView does not perform per-pixel decimation.
 class ChartView : public QWidget {
     Q_OBJECT
 
@@ -33,9 +37,10 @@ public:
         double  max          = 1.0;
         QColor  labelColor   = QColor();   // invalid → inherit theme text color
         bool    visible      = true;
-        char    numberFormat = 'f';        // QCPAxis number format: 'f', 'g', 'e'
+        char    numberFormat = 'f';        // numeric format: 'f', 'g', or 'e'
         int     precision    = 0;          // tick label decimal precision
         bool    grid         = false;      // draw this axis's (faint) grid lines
+        int     tickSpacePx  = 80;         // minimum horizontal space per X tick
     };
 
     struct SeriesSpec {
@@ -62,15 +67,13 @@ public:
     explicit ChartView(QWidget* parent = nullptr);
     ~ChartView() override;
 
-    // GPU render settings — OpenGL multisampling (MSAA) and the fast-polyline
-    // plotting hint — are read from QSettings and shared by every chart. Each
-    // ChartView applies them on construction; call this after changing either
-    // setting to re-apply to all live charts and repaint, no restart needed.
+    // GPU render settings are read from QSettings and shared by every chart.
+    // MSAA can be reapplied live; switching the process-wide RHI backend takes
+    // effect on restart because Qt fixes one API per top-level window.
     static void reapplyRenderSettings();
 
-    // Release every live chart's QCustomPlot OpenGL context and offscreen surface
-    // before a live style change that repolishes the existing widget tree. Call
-    // reapplyRenderSettings on the next event-loop turn to recreate them.
+    // Kept for the existing live style-change call site. QRhiWidget resources do
+    // no longer needs a backend-specific pre-repolish teardown.
     static void suspendOpenGlForStyleChange();
 
     // Declare the chart. addAxis/addSeries return opaque ids used by the data
@@ -80,10 +83,10 @@ public:
     int  addSeries(const SeriesSpec& spec);
     void addBand(const BandSpec& spec);
 
-    // --- Multi-panel: several charts sharing one QCustomPlot (one GL context) ---
+    // --- Multi-panel: several charts sharing one QRhi render target ---
     // A ChartView is a single panel (id 0) by default, and every existing chart
     // uses only that. addPanel() adds another axis rect to the same backend, so
-    // N charts render in one GL context / FBO / replot instead of N widgets.
+    // N charts render in one QRhi render target / command pass instead of N widgets.
     // addAxis(spec, panelId) targets a panel; layoutPanels() arranges them in a
     // row-major grid; setPanelVisible() hides/shows one (reflowing the grid). The
     // per-panel title and colour-key legend live inside the plot.
@@ -100,6 +103,7 @@ public:
     void setPanelVisible(int panelId, bool on);
     void setPanelTitle(int panelId, const QString& title);
     void setPanelLegendVisible(int panelId, bool on);
+    void bindPanelChartSettings(int panelId, SessionModel* model, tnr::GraphSection section);
 
     // Data.
     void appendPoint(int seriesId, double x, double y);
@@ -111,16 +115,22 @@ public:
     // Hide a series (and its legend entry) — used to switch between single-lap
     // and two-lap overlay layouts without rebuilding the chart.
     void setSeriesVisible(int seriesId, bool visible);
+    bool seriesVisible(int seriesId) const;
     void setSeriesColor(int seriesId, const QColor& color);
     void setSeriesName(int seriesId, const QString& name);
     void setSeriesWidth(int seriesId, double width);
     void setSeriesOrder(const QVector<int>& bottomToTop);
+    void linkSeriesVisibility(int primarySeriesId, int linkedSeriesId);
     void setAxisVisible(int axisId, bool visible);
     void setAxisColor(int axisId, const QColor& color);
     void setAxisGridVisible(int axisId, bool visible);
 
-    // Format an axis's tick labels as time (QCPAxisTickerTime, e.g. "%m:%s").
+    // Format an axis's tick labels as time (for example m:ss.t).
     void setAxisTimeTicker(int axisId, const QString& format);
+    void setAxisDistanceMode(int axisId, bool distance);
+    void syncAxisSessionMap(int axisId, const LapBlock* lap, float currentTime);
+    void setAxisLabelMap(int axisId, const QVector<double>& ticks, const QStringList& labels,
+                         bool lapBoundaryLabels = false);
 
     // Format an axis's tick labels as value/scale + suffix, e.g. (1000,"k") turns
     // 16000 into "16k", or (1,"%") turns 80 into "80%". A positive fixedStep forces
@@ -133,12 +143,18 @@ public:
     // Enable a crosshair + value readout that tracks the cursor across the chart,
     // showing the nearest value of each visible series (and the x as m:ss.s).
     void setHoverReadout(bool on);
+    void setCursorSync(bool enabled, bool secondaryVertical, bool secondaryHorizontal);
+    void setCursorModeKey(const QString& key);
 
     // Current min/max x (key) of a series. Returns false if the series is empty.
     bool seriesKeyRange(int seriesId, double& lo, double& hi) const;
 
     // View. requestReplot() coalesces multiple updates in a frame into one paint.
     void setXRange(int axisId, double min, double max);
+    void setAxisRange(int axisId, double min, double max);
+    void fitAxisToVisibleSeries(int axisId, const QVector<int>& seriesIds,
+                                double fixedMin, double fixedMax, bool dynamic,
+                                bool expandFixedUpper = false);
     void setXNavigation(int axisId, bool enabled, double fullMin, double fullMax, double minSpan = 0.5);
     void zoomX(double factor);
     void panX(double fraction);
@@ -147,12 +163,19 @@ public:
 
 protected:
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
+    void resizeEvent(QResizeEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void applyPaletteText();
     void applyPanelLayout();      // (re)place visible panels into the plot's layout grid
     void ensurePanelHeader(int panelId);   // build a panel's title+legend header row
+    void refreshPanelChartSettings();
+    void positionPanelChartSettings();
+    QString showSyncedCursor(double sessionTime, double sourceAxisX,
+                             bool sourceDistanceAxis, double yRatio,
+                             ChartView* source, int sourcePanel);
+    void clearSyncedCursor();
 
     struct Impl;
     std::unique_ptr<Impl> d_;
