@@ -1,4 +1,4 @@
-import { app, crashReporter } from 'electron'
+import { app, crashReporter, ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { formatWithOptions } from 'util'
@@ -26,6 +26,15 @@ let ramUsageTimer: NodeJS.Timeout | null = null
 let ramUsageStartedAt = 0
 let writingRamUsage = false
 let fatalFlushHandler: (() => boolean) | null = null
+let telemetryRetentionProvider: (() => Record<string, unknown>) | null = null
+let latestRendererTelemetryRetention: Record<string, unknown> | null = null
+let telemetryRetentionCaptureInstalled = false
+
+export function setTelemetryRetentionProvider(
+  provider: (() => Record<string, unknown>) | null,
+): void {
+  telemetryRetentionProvider = provider
+}
 
 // Registered by application.ts after the native bridge module is available.
 // Kept as a callback so diagnostics can still initialize before bridgeManager
@@ -89,6 +98,27 @@ function installConsoleCapture(): void {
   }
 }
 
+function installTelemetryRetentionCapture(): void {
+  if (telemetryRetentionCaptureInstalled) return
+  telemetryRetentionCaptureInstalled = true
+  ipcMain.on('diagnostics:telemetry-retention', (_event, value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    try {
+      // Clone the small diagnostic document so the sampler never retains an
+      // Electron IPC wrapper or an unexpectedly large renderer-owned object.
+      const json = JSON.stringify(value)
+      if (json.length > 256 * 1024) return
+      latestRendererTelemetryRetention = JSON.parse(json) as Record<string, unknown>
+    } catch {
+      // Diagnostics input is best-effort and must never affect the application.
+    }
+  })
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 function writeRamUsageSample(): void {
   if (ramUsageLogFd === null || writingRamUsage) return
   writingRamUsage = true
@@ -107,6 +137,35 @@ function writeRamUsageSample(): void {
 
     const hasCompletePrivateMemory = processes.length > 0 &&
       processes.every(metric => metric.private_kb !== null)
+    let mainTelemetryRetention: Record<string, unknown> | null = null
+    try {
+      mainTelemetryRetention = telemetryRetentionProvider?.() ?? null
+    } catch (error) {
+      originalConsole.error('[diagnostics] unable to collect main telemetry retention:', error)
+    }
+    const rendererTelemetryRetention = latestRendererTelemetryRetention
+    const estimatedRetainedBytes =
+      finiteNumber(mainTelemetryRetention?.retained_bytes) +
+      finiteNumber(rendererTelemetryRetention?.estimated_retained_bytes)
+    const rendererSampledAt = typeof rendererTelemetryRetention?.sampled_at === 'string'
+      ? Date.parse(rendererTelemetryRetention.sampled_at)
+      : NaN
+    const telemetryData = {
+      type: 'TelemetryData',
+      name: 'Application-held telemetry',
+      mode: rendererTelemetryRetention?.mode ?? mainTelemetryRetention?.mode ?? 'unknown',
+      estimated_retained_bytes: estimatedRetainedBytes,
+      estimated_retained_kb: estimatedRetainedBytes / 1024,
+      already_included_in_process_totals: true,
+      attribution_scope: 'Electron telemetry stores, published views, chart CPU/GPU pages, ' +
+        'seek/resume buffers, and native transit queues; protocol-engine internal cache/container ' +
+        'overhead remains only in process totals',
+      renderer_sample_age_ms: Number.isFinite(rendererSampledAt)
+        ? Math.max(0, Date.now() - rendererSampledAt)
+        : null,
+      main: mainTelemetryRetention,
+      renderer: rendererTelemetryRetention,
+    }
     const sample = {
       timestamp: new Date().toISOString(),
       elapsed_ms: Date.now() - ramUsageStartedAt,
@@ -116,6 +175,12 @@ function writeRamUsageSample(): void {
         : null,
       process_count: processes.length,
       processes,
+      category_count: processes.length + 1,
+      categories: [
+        ...processes.map(processMetric => ({ category: 'process', ...processMetric })),
+        { category: 'telemetry_data', ...telemetryData },
+      ],
+      telemetry_data: telemetryData,
     }
 
     fs.writeSync(ramUsageLogFd, `${JSON.stringify(sample)}\n`)
@@ -224,6 +289,7 @@ export function initializeDiagnostics(appVersion: string): Diagnostics {
   logFd = fs.openSync(diagnostics.mainLogPath, 'w')
   installConsoleCapture()
   installProcessCapture()
+  installTelemetryRetentionCapture()
   startRamUsageProfiler(diagnostics.ramUsageLogPath)
 
   // Chromium/GPU/network-service diagnostics and local native crash dumps live

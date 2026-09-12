@@ -178,11 +178,13 @@ intent so the per-packet fast path can skip the whole recording pipeline
 `load()` detects the container signature. TNRD V1/gzip and V2/V3 monolithic
 Zstandard use the legacy temp-file path (`tmpdir/tracknrace_*.tmp`) and build a
 time/type index. V4/V5 first open their uncompressed metadata, lap table, chunk
-directory, control summary, and commit footer. Load then streams only the cold
-strategy dependencies to retain one processor checkpoint per completed lap;
-decoded chunks, parsed rows, and worker scratch are released when that pass
-finishes. Every consumer then decompresses requested playback chunks on demand
-through a bounded cache. Binary playback packs hot rows
+directory, control summary, and commit footer. V4 load then streams only the cold
+strategy dependencies to retain one processor checkpoint per completed lap and
+releases decoded chunks, parsed rows, and worker scratch when that pass finishes.
+V5 preserves its direct indexed path: apart from the sparse Lap Data scan used
+for sector metadata, payload and strategy rows remain lazy until requested.
+Every consumer decompresses requested playback chunks through a bounded cache.
+Binary playback packs hot rows
 only as they are requested and retains those packed records in a separate bounded
 seek cache. Raw decompressed JSON remains bounded by the archive LRU rather than
 being duplicated for the whole session.
@@ -237,9 +239,9 @@ an absolute session_time cursor scaled by speed:
   immutable packed store until one IPC-compatible V8 Buffer copy, and request ids
   discard superseded scrubs before renderer IPC/decode.
   For V4/V5, requested chunks are decompressed through the bounded archive LRU;
-  no whole-recording packed or JSON history is retained. V5 selects exact rows
-  from persisted time metadata, while V4 discovers missing chunk time bounds as
-  chunks are first touched.
+  no whole-recording packed or JSON history is retained. V5 selects the complete
+  requested range directly from persisted time metadata, while V4 processes long
+  ranges in short slices as it discovers missing chunk time bounds.
   A request generation is registered before its worker is queued: playback is
   gated until that generation commits, so an overtaken worker cannot move the
   cursor or leak stale future rows into the winning seek. Electron adds a

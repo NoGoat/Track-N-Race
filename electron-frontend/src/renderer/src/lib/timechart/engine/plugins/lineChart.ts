@@ -8,6 +8,10 @@ import {
 import { resolveColorRGBA, ResolvedCoreOptions, TimeChartSeriesOptions, LineType } from '../options';
 import { TimeChartPlugin } from '.';
 import { LinkedWebGLProgram, throwIfFalsy } from './webGLUtils';
+import {
+    releaseTelemetryGpuPage,
+    retainTelemetryGpuPage,
+} from '../../../../diagnostics/telemetryRetention';
 
 const TEXTURE_WIDTH = 256;
 const DATA_OFFSET = 0;
@@ -229,7 +233,11 @@ class SharedGpuPage {
     readonly xTexture: WebGLTexture;
     readonly yTexture: WebGLTexture;
 
+    private readonly retainedBytes: number;
+    private deleted = false;
+
     constructor(private gl: WebGL2RenderingContext, channelCount: number) {
+        this.retainedBytes = TEXTURE_WIDTH * TEXTURE_HEIGHT * 4 * (1 + channelCount);
         this.xTexture = throwIfFalsy(gl.createTexture());
         gl.bindTexture(gl.TEXTURE_2D, this.xTexture);
         gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, TEXTURE_WIDTH, TEXTURE_HEIGHT);
@@ -241,6 +249,7 @@ class SharedGpuPage {
         gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R32F, TEXTURE_WIDTH, TEXTURE_HEIGHT, channelCount);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        retainTelemetryGpuPage(this.retainedBytes);
     }
 
     bind() {
@@ -252,8 +261,11 @@ class SharedGpuPage {
     }
 
     delete() {
+        if (this.deleted) return;
+        this.deleted = true;
         this.gl.deleteTexture(this.xTexture);
         this.gl.deleteTexture(this.yTexture);
+        releaseTelemetryGpuPage(this.retainedBytes);
     }
 }
 

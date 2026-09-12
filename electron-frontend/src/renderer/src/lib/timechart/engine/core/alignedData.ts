@@ -1,3 +1,5 @@
+import { registerAlignedTelemetryBuffer } from '../../../../diagnostics/telemetryRetention';
+
 export const ALIGNED_PAGE_SIZE = 65_536;
 export const ALIGNED_MAX_POINTS = 750_000;
 
@@ -63,6 +65,7 @@ export class AlignedDataBuffer {
         }
         this.yPages = Array.from({ length: channelCount }, () => new Array(ALIGNED_PAGE_COUNT));
         this.series = Array.from({ length: channelCount }, (_, channel) => new AlignedSeriesData(this, channel));
+        registerAlignedTelemetryBuffer(this);
     }
 
     get length() { return this.size; }
@@ -71,6 +74,20 @@ export class AlignedDataBuffer {
     get resetPending() { return this.needsReset; }
     get firstX() { return this.size === 0 ? NaN : this.xAt(0); }
     get lastX() { return this.size === 0 ? NaN : this.xAt(this.size - 1); }
+
+    telemetryRetentionStats() {
+        let allocatedPages = 0;
+        for (const page of this.xPages) if (page) allocatedPages++;
+        return {
+            rows: this.size,
+            channels: this.channelCount,
+            allocatedPages,
+            // Each allocated page owns one Float64 X page and one Float32 page
+            // per Y channel. The small page-count directory is included too.
+            cpuBytes: allocatedPages * ALIGNED_PAGE_SIZE * (8 + this.channelCount * 4) +
+                this.pageCounts.byteLength,
+        };
+    }
 
     private physicalIndex(logicalIndex: number) {
         if (logicalIndex < 0 || logicalIndex >= this.size) {

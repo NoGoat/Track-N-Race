@@ -254,12 +254,14 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   const cursorSyncConfigRef = useRef(cursorSync)
   const rowsRef = useRef(rows)
   const comparisonRowsRef = useRef(comparisonRows)
+  const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
   const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
   const comparisonKeyRef = useRef('')
   cursorSyncContextRef.current = cursorSyncContext
   cursorSyncConfigRef.current = cursorSync
   rowsRef.current = rows
   comparisonRowsRef.current = comparisonRows
+  axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
   const comparisonLapNum = coordinates.lapData?.lapNum
   const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
   comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
@@ -442,12 +444,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
     }
     const syncManager = cursorSyncContextRef.current
     const syncConfig = cursorSyncConfigRef.current
-    const syncAxisKind = coordinates.distanceMode ? 'distance' : 'time'
     const unregisterSync = syncManager && syncConfig
       ? syncManager.register({
           id: syncConfig.id,
           order: syncConfig.order,
-          axisKind: syncAxisKind,
+          get axisKind() { return axisKindRef.current },
           resolveAxisX: axisX => {
             const currentRows = rowsRef.current
             const index = nearestRowIndexByX(currentRows, row => getXRef.current(row), axisX)
@@ -462,6 +463,7 @@ export default function TimeChartView<T extends { session_time: number }>(props:
           },
           formatAxisX: axisX => axisCfgRef.current.xTickFormat(axisX),
           syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
+            const syncAxisKind = axisKindRef.current
             const line = syncCrosshairRef.current
             const horizontalLine = syncHorizontalCrosshairRef.current
             const currentRows = rowsRef.current
@@ -479,8 +481,11 @@ export default function TimeChartView<T extends { session_time: number }>(props:
             const visibleRangeCovered = !xRange || xRange === 'auto'
               || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
             const axisDataCovered = axisXIsCovered(bridgeRef.current, cursorAxisX)
-            const sessionDataCovered = sourceAxisKind === syncAxisKind || syncAxisKind === 'time'
-              || valueIsCovered(sessionTime, currentRows[0].session_time, currentRows[currentRows.length - 1].session_time)
+            const sessionDataCovered = valueIsCovered(
+              sessionTime,
+              currentRows[0].session_time,
+              currentRows[currentRows.length - 1].session_time,
+            )
             // A shared distance/time axis can extend beyond the newest live
             // sample. Keep the cursor at the hovered X and use the source's
             // resolved endpoint session time for values. Mixed-axis charts
@@ -491,7 +496,17 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               && visibleRangeCovered
               && bridge.length > 0
               && cursorAxisX > bridge.xAt(bridge.length - 1) + AXIS_COVERAGE_EPSILON
-            if (!source && (!visibleRangeCovered || (!axisDataCovered && !forwardEndpointFallback) || !sessionDataCovered)) {
+            const mixedAxisEndpointFallback = sourceAxisKind !== syncAxisKind
+              && visibleRangeCovered
+              && sessionTime > currentRows[currentRows.length - 1].session_time + AXIS_COVERAGE_EPSILON
+            // Mixed axes synchronize through the authoritative row timestamp.
+            // The WebGL bridge can trail those rows by one cooperative task;
+            // using it as the content gate made peer tooltip sections flicker
+            // whenever the pointer was beyond a distance chart's newest point.
+            const peerDataCovered = sourceAxisKind === syncAxisKind
+              ? axisDataCovered || forwardEndpointFallback
+              : sessionDataCovered || mixedAxisEndpointFallback
+            if (!source && (!visibleRangeCovered || !peerDataCovered)) {
               clearSyncedCursor()
               return { current: '' }
             }
@@ -549,9 +564,15 @@ export default function TimeChartView<T extends { session_time: number }>(props:
               const cursorVisible = Number.isFinite(cursorPx) && cursorPx >= left && cursorPx <= right
               chart.options.series.forEach((chartSeries, seriesIndex) => {
                 const point = syncPointRefs.current[seriesIndex]
+                // The authoritative rows can be ahead of the cooperatively
+                // updated WebGL series. Hold its rendered endpoint while it
+                // catches up, including when the sync source uses another axis.
+                const renderedEndpointFallback = visibleRangeCovered
+                  && chartSeries.data.length > 0
+                  && cursorAxisX > chartSeries.data.xAt(chartSeries.data.length - 1) + AXIS_COVERAGE_EPSILON
                 const pointIndex = axisXIsCovered(chartSeries.data, cursorAxisX)
                   ? nearestIndex(chartSeries.data, cursorAxisX)
-                  : forwardEndpointFallback && chartSeries.data.length > 0
+                  : renderedEndpointFallback
                     ? chartSeries.data.length - 1
                     : -1
                 if (!point || !cursorVisible || !chartSeries.visible || pointIndex < 0) {
@@ -914,7 +935,9 @@ export default function TimeChartView<T extends { session_time: number }>(props:
   }, [rows, wake, coordinates.allLapsMode, coordinates.distanceMode, coordinates.historyRevision, coordinates.historyStartTime, coordinates.lapRevision, coordinates.progressRevision, coordinates.stintLapsMode, coordinates.trackLengthM])
 
   useEffect(() => {
-    if (!coordinates.allLapsMode) return
+    // The store publishes full-history arrays by mutating them in place whenever
+    // any visible chart needs AL/SL. Every chart must therefore listen for this
+    // signal, including finite/distance peers whose own local mode is not AL.
     return subscribeAllLapsData(allLapsDataMask, scheduleRowsSync)
   }, [allLapsDataMask, coordinates.allLapsMode])
 

@@ -11,6 +11,7 @@ import { scheduleCooperativeTask, yieldToMainThread } from '../lib/cooperativeTa
 import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
+import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -97,6 +98,7 @@ declare global {
       onBatch: (callback: (batch: string) => void) => (() => void)
       onBinary: (callback: (batch: Uint8Array) => void) => (() => void)
       onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void) => (() => void)
+      reportRetention: (snapshot: unknown) => void
     }
   }
 }
@@ -249,6 +251,16 @@ let historyRowMask = 0xFFFFFFFF
 let requestedHistoryRowMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
+let activeSeekDecodeRetention: {
+  binaryBytes: number
+  coldJsonChars: number
+  decodedTelemetryRows: number
+  decodedMotionRows: number
+  decodedMotionExRows: number
+  decodedStatusRows: number
+  decodedDamageRows: number
+  decodedLapRows: number
+} | null = null
 const historyCoverageStart = new Map<number, number>()
 const HISTORY_ROW_BITS = [
   HISTORY_ROW.telemetry,
@@ -258,6 +270,201 @@ const HISTORY_ROW_BITS = [
   HISTORY_ROW.motion,
   HISTORY_ROW.motionEx,
 ]
+
+interface RowRetentionEstimate {
+  rows: number
+  sampled_rows: number
+  estimated_serialized_bytes: number
+  estimated_array_reference_bytes: number
+}
+
+function estimateRows(rows: readonly unknown[]): RowRetentionEstimate {
+  if (rows.length === 0) {
+    return { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 }
+  }
+  const sampleIndices = [...new Set([0, Math.floor(rows.length / 2), rows.length - 1])]
+  let sampleBytes = 0
+  let sampledRows = 0
+  for (const index of sampleIndices) {
+    try {
+      sampleBytes += JSON.stringify(rows[index]).length
+      sampledRows++
+    } catch {
+      // A malformed diagnostic sample must never affect telemetry ingest.
+    }
+  }
+  return {
+    rows: rows.length,
+    sampled_rows: sampledRows,
+    estimated_serialized_bytes: sampledRows > 0
+      ? Math.round(sampleBytes / sampledRows * rows.length)
+      : 0,
+    // V8 may use pointer compression, so this is deliberately an estimate.
+    estimated_array_reference_bytes: rows.length * 8,
+  }
+}
+
+function sumRowEstimates(estimates: readonly RowRetentionEstimate[]): RowRetentionEstimate {
+  return estimates.reduce<RowRetentionEstimate>((total, estimate) => ({
+    rows: total.rows + estimate.rows,
+    sampled_rows: total.sampled_rows + estimate.sampled_rows,
+    estimated_serialized_bytes: total.estimated_serialized_bytes + estimate.estimated_serialized_bytes,
+    estimated_array_reference_bytes: total.estimated_array_reference_bytes + estimate.estimated_array_reference_bytes,
+  }), { rows: 0, sampled_rows: 0, estimated_serialized_bytes: 0, estimated_array_reference_bytes: 0 })
+}
+
+function estimateLapData(data: AnalyzeLapData): RowRetentionEstimate {
+  return sumRowEstimates([
+    estimateRows(data.telemetry),
+    estimateRows(data.motion),
+    estimateRows(data.motionEx),
+    estimateRows(data.statusHistory),
+    estimateRows(data.damageHistory),
+    estimateRows(data.lapProgress),
+    estimateRows(data.playerPositions),
+  ])
+}
+
+function lapDataRowCount(data: AnalyzeLapData): number {
+  return data.telemetry.length + data.motion.length + data.motionEx.length +
+    data.statusHistory.length + data.damageHistory.length +
+    data.lapProgress.length + data.playerPositions.length
+}
+
+function getRendererTelemetryRetentionDiagnostics(): Record<string, unknown> {
+  const state = useTelemetryStore.getState()
+  const workingCollections = {
+    telemetry: estimateRows(telBufRef.current),
+    motion: estimateRows(motBufRef.current),
+    motion_ex: estimateRows(motExBufRef.current),
+    status: estimateRows(stsBufRef.current),
+    damage: estimateRows(dmgBufRef.current),
+    lap_progress: estimateRows(lapProgressBufRef.current),
+  }
+  const working = sumRowEstimates(Object.values(workingCollections))
+
+  const poolArrays = Object.values(pools).flatMap(pool => [pool.a, pool.b])
+  const publishedViewReferences = poolArrays.reduce((total, rows) => total + rows.length, 0)
+
+  const playbackLapCollections = Object.values(state.playbackLapDataCache).map(estimateLapData)
+  const playbackLapCache = sumRowEstimates(playbackLapCollections)
+  const liveLapSnapshots = [...new Set(
+    [state.livePreviousLapData, state.liveFastestLapData].filter(
+      (value): value is AnalyzeLapData => value !== null,
+    ),
+  )]
+  const liveLapSnapshotReferences = liveLapSnapshots.reduce(
+    (total, data) => total + lapDataRowCount(data),
+    0,
+  )
+
+  const playbackBlocks = speedRpmBlocksVal ?? []
+  const blockRowEstimates = playbackBlocks.flatMap(block => [
+    estimateRows(Array.isArray(block?.telemetry) ? block.telemetry : []),
+    estimateRows(Array.isArray(block?.statusHistory) ? block.statusHistory : []),
+  ])
+  const playbackBlockRows = sumRowEstimates(blockRowEstimates)
+  const playbackBlockMetadata = estimateRows(playbackBlocks.map(block => ({
+    lapNum: block?.lapNum,
+    startSessionTime: block?.startSessionTime,
+    endSessionTime: block?.endSessionTime,
+    sector1EndDistanceM: block?.sector1EndDistanceM,
+    sector2EndDistanceM: block?.sector2EndDistanceM,
+  })))
+  const playbackBlockRetention = sumRowEstimates([playbackBlockRows, playbackBlockMetadata])
+  const raceEvents = estimateRows(isPlaybackFlag ? playbackEvents : raceEventsArr)
+  const lapBoundaries = estimateRows(liveLapBoundaries)
+  const currentStateValues = [
+    state.timing, state.participants, state.allStatus, state.session,
+    state.tyreSets, state.strategy,
+  ].filter(value => value !== null)
+  const currentState = estimateRows(currentStateValues)
+  const charts = getTelemetryChartRetentionDiagnostics()
+
+  const seekDecode = activeSeekDecodeRetention
+  const seekDecodedRows = seekDecode
+    ? seekDecode.decodedTelemetryRows + seekDecode.decodedMotionRows +
+      seekDecode.decodedMotionExRows + seekDecode.decodedStatusRows +
+      seekDecode.decodedDamageRows + seekDecode.decodedLapRows
+    : 0
+  const seekRawBytes = seekDecode
+    ? seekDecode.binaryBytes + seekDecode.coldJsonChars * 2
+    : 0
+  const averageWorkingRowBytes = working.rows > 0
+    ? working.estimated_serialized_bytes / working.rows
+    : 128
+  const seekDecodedBytes = Math.round(
+    seekDecodedRows * (averageWorkingRowBytes + 8),
+  )
+
+  const estimatedRetainedBytes =
+    working.estimated_serialized_bytes + working.estimated_array_reference_bytes +
+    playbackLapCache.estimated_serialized_bytes + playbackLapCache.estimated_array_reference_bytes +
+    playbackBlockRetention.estimated_serialized_bytes + playbackBlockRetention.estimated_array_reference_bytes +
+    raceEvents.estimated_serialized_bytes + raceEvents.estimated_array_reference_bytes +
+    lapBoundaries.estimated_serialized_bytes + lapBoundaries.estimated_array_reference_bytes +
+    currentState.estimated_serialized_bytes + currentState.estimated_array_reference_bytes +
+    (publishedViewReferences + liveLapSnapshotReferences) * 8 +
+    charts.cpuBytes + charts.gpuTextureBytes + seekRawBytes + seekDecodedBytes
+
+  return {
+    sampled_at: new Date().toISOString(),
+    mode: isPlaybackFlag ? 'playback' : 'realtime',
+    estimated_retained_bytes: estimatedRetainedBytes,
+    estimate_basis: 'sampled JSON size plus array references; typed-array and GPU allocations are exact',
+    working_source_buffers: {
+      ...working,
+      collections: workingCollections,
+    },
+    published_window_views: {
+      arrays: poolArrays.length,
+      row_references: publishedViewReferences,
+      estimated_reference_bytes: publishedViewReferences * 8,
+    },
+    playback_lap_cache: {
+      laps: playbackLapCollections.length,
+      ...playbackLapCache,
+    },
+    live_lap_snapshots: {
+      snapshots: liveLapSnapshots.length,
+      row_references: liveLapSnapshotReferences,
+      estimated_reference_bytes: liveLapSnapshotReferences * 8,
+    },
+    playback_lap_blocks: {
+      blocks: playbackBlocks.length,
+      estimated_serialized_bytes: playbackBlockRetention.estimated_serialized_bytes,
+      estimated_array_reference_bytes: playbackBlockRetention.estimated_array_reference_bytes,
+      telemetry_rows: playbackBlockRows.rows,
+      metadata: playbackBlockMetadata,
+    },
+    race_events: raceEvents,
+    lap_boundaries: lapBoundaries,
+    current_state: currentState,
+    chart_buffers: {
+      buffer_count: charts.bufferCount,
+      rows: charts.rows,
+      channels: charts.channels,
+      allocated_pages: charts.allocatedPages,
+      cpu_bytes: charts.cpuBytes,
+      gpu_pages: charts.gpuPageCount,
+      gpu_texture_bytes: charts.gpuTextureBytes,
+    },
+    seek_decode: seekDecode ? {
+      active: true,
+      binary_bytes: seekDecode.binaryBytes,
+      cold_json_chars: seekDecode.coldJsonChars,
+      estimated_raw_bytes: seekRawBytes,
+      estimated_decoded_bytes: seekDecodedBytes,
+      decoded_rows: seekDecodedRows,
+      telemetry_rows: seekDecode.decodedTelemetryRows,
+      motion_rows: seekDecode.decodedMotionRows,
+      motion_ex_rows: seekDecode.decodedMotionExRows,
+      status_rows: seekDecode.decodedStatusRows,
+      damage_rows: seekDecode.decodedDamageRows,
+      lap_rows: seekDecode.decodedLapRows,
+    } : { active: false },
+  }
+}
 
 function markHistoryCoverage(maskValue: unknown, startValue: unknown): void {
   const mask = Number(maskValue) >>> 0
@@ -290,6 +497,14 @@ function resetSession(): void {
   stsBufRef.current = []
   dmgBufRef.current = []
   lapProgressBufRef.current = []
+  for (const pool of Object.values(pools)) {
+    // These arrays may still be held by a chart until React publishes the new
+    // empty views below. Clear both sides so neither stale rows nor their object
+    // graphs survive the close transition.
+    pool.a.length = 0
+    pool.b.length = 0
+    pool.flip = false
+  }
   lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
   sessionHistoryBest.clear()
@@ -304,6 +519,12 @@ function resetSession(): void {
   requestedHistoryRowMask = 0
   fuelMaxReceived = -Infinity
   set({
+    // Clear every published hot/history view immediately. recompute() normally
+    // republishes these from the working buffers, but requirement masks can
+    // deliberately skip a family; relying on that pass leaves its last array
+    // visible after playback_close.
+    telemetry: [], motion: [], motionEx: [], latest: null,
+    statusHistory: [], damageHistory: [],
     status: null, damage: null, lap: null, timing: null, allStatus: null,
     participants: null, session: null, fastestLapCarIdx: null, tyreSets: null, strategy: null,
     fastestLapNum: null, speedRpmBlocks: null, raceEvents: [], fuelUpperLimit: null,
@@ -392,6 +613,38 @@ function trimLiveWorkingSet(): void {
   trimBefore(lapProgressBufRef, cutoff)
   // State histories need the immediately preceding value so a lap/window that
   // starts between sparse packets can reconstruct its initial state.
+  trimBefore(stsBufRef, cutoff, true)
+  trimBefore(dmgBufRef, cutoff, true)
+  invalidateHistoryCoverage(historyRowMask)
+}
+
+// Playback All Laps backfills install the complete requested prefix in the
+// renderer working buffers. Leaving the mode must release that prefix without
+// waiting for a seek: retain only the union required by the remaining finite
+// time-window and current/comparison-lap views.
+function trimPlaybackWorkingSet(): void {
+  if (!isPlaybackFlag || allLapsMode) return
+  const latestSessionTime = Math.max(
+    telBufRef.current[telBufRef.current.length - 1]?.session_time ?? -Infinity,
+    motBufRef.current[motBufRef.current.length - 1]?.session_time ?? -Infinity,
+    motExBufRef.current[motExBufRef.current.length - 1]?.session_time ?? -Infinity,
+    stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? -Infinity,
+    dmgBufRef.current[dmgBufRef.current.length - 1]?.session_time ?? -Infinity,
+    lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? -Infinity,
+  )
+  if (!Number.isFinite(latestSessionTime)) return
+
+  const finiteWindowStart = finiteWindowBackfillEnabled && Number.isFinite(secondsVal) && secondsVal > 0
+    ? latestSessionTime - secondsVal
+    : Infinity
+  const currentLapStart = analyzeLapEnabled && lapTrackingActive ? lapStartTime : Infinity
+  const cutoff = Math.min(finiteWindowStart, currentLapStart)
+  if (!Number.isFinite(cutoff)) return
+
+  trimBefore(telBufRef, cutoff)
+  trimBefore(motBufRef, cutoff)
+  trimBefore(motExBufRef, cutoff)
+  trimBefore(lapProgressBufRef, cutoff)
   trimBefore(stsBufRef, cutoff, true)
   trimBefore(dmgBufRef, cutoff, true)
   invalidateHistoryCoverage(historyRowMask)
@@ -939,8 +1192,20 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   const authoritative = payload.authoritativeSeek !== false
   const generation = authoritative ? ++seekTimelineGeneration : seekTimelineGeneration
   const cancelled = () => generation !== seekTimelineGeneration
+  const seekRetention = {
+    binaryBytes: Number(payload.binary?.byteLength ?? payload.binary?.length ?? 0),
+    coldJsonChars: typeof payload.coldJson === 'string' ? payload.coldJson.length : 0,
+    decodedTelemetryRows: 0,
+    decodedMotionRows: 0,
+    decodedMotionExRows: 0,
+    decodedStatusRows: 0,
+    decodedDamageRows: 0,
+    decodedLapRows: 0,
+  }
+  activeSeekDecodeRetention = seekRetention
 
-  playbackDebug('seek-flush-received', {
+  try {
+    playbackDebug('seek-flush-received', {
     lapNum: payload.lapNum,
     currentLapStart: payload.currentLapStart,
     binaryBytes: payload.binary?.byteLength ?? payload.binary?.length ?? null,
@@ -986,6 +1251,9 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
       else if (row.type === 'motion') mot.push(row)
       else if (row.type === 'motion_ex') motEx.push(row)
     }, binaryOffset, 4096)
+    seekRetention.decodedTelemetryRows = tel.length
+    seekRetention.decodedMotionRows = mot.length
+    seekRetention.decodedMotionExRows = motEx.length
     if (binaryOffset < binaryLength) {
       await yieldToMainThread()
       if (cancelled()) return
@@ -1013,10 +1281,16 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     start = end + 1
     if (++rowsSinceYield >= 512 && start < coldJson.length) {
       rowsSinceYield = 0
+      seekRetention.decodedStatusRows = sts.length
+      seekRetention.decodedDamageRows = dmg.length
+      seekRetention.decodedLapRows = lapProgress.length
       await yieldToMainThread()
       if (cancelled()) return
     }
   }
+  seekRetention.decodedStatusRows = sts.length
+  seekRetention.decodedDamageRows = dmg.length
+  seekRetention.decodedLapRows = lapProgress.length
   if (cancelled()) return
 
   // Rows streamed after the native seek committed accumulated while decoding.
@@ -1063,6 +1337,9 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   if (authoritative) seekRendererPending = false
   if (authoritative && Number.isFinite(Number(payload.requestId)) && Number(payload.requestId) > 0)
     window.playerBridge.seekInstalled(Number(payload.requestId))
+  } finally {
+    if (activeSeekDecodeRetention === seekRetention) activeSeekDecodeRetention = null
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -1117,7 +1394,10 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     // Normal playback can evict the old prefix from bounded renderer buffers.
     // A later AL entry must therefore be allowed to request it again.
     requestedHistoryRowMask = 0
-    if (wasAllLapsMode) trimLiveWorkingSet()
+    if (wasAllLapsMode) {
+      trimLiveWorkingSet()
+      trimPlaybackWorkingSet()
+    }
   }
   set({ seconds: s })
   let requestHistory = false
@@ -1355,7 +1635,17 @@ export function startTelemetryBridge(): void {
       set(current)
     }
     recompute(dirty)
-  })
+    })
+
+  const reportRetention = (): void => {
+    try {
+      window.telemetryBridge.reportRetention(getRendererTelemetryRetentionDiagnostics())
+    } catch {
+      // Diagnostics must remain invisible to the telemetry hot path.
+    }
+  }
+  reportRetention()
+  window.setInterval(reportRetention, 1000)
 }
 
 startTelemetryBridge()

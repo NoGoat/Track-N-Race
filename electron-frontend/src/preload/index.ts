@@ -28,6 +28,8 @@ const telemetryBridge = {
     ipcRenderer.on('telemetry-resume', listener)
     return () => ipcRenderer.removeListener('telemetry-resume', listener)
   },
+  reportRetention: (snapshot: unknown): void =>
+    ipcRenderer.send('diagnostics:telemetry-retention', snapshot),
 }
 
 const windowControls = {

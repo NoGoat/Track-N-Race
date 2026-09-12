@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { chartHistoryRecords } from './binaryRows'
 import { configStore as store } from './configStore'
+import { setTelemetryRetentionProvider } from './diagnostics'
 import {
   configurePairService,
   pairEngineConfig,
@@ -191,6 +192,96 @@ function bufferSeekBinary(batch: Uint8Array): void {
   seekBufferedBytes += retained.byteLength
   trimSeekForwardBuffer()
 }
+
+function timedBinaryRetention(entries: TimedBinary[], activeStart: number): {
+  entries: number
+  activeEntries: number
+  payloadBytes: number
+  activePayloadBytes: number
+} {
+  let payloadBytes = 0
+  let activePayloadBytes = 0
+  for (let index = 0; index < entries.length; index++) {
+    const bytes = entries[index].data.byteLength
+    payloadBytes += bytes
+    if (index >= activeStart) activePayloadBytes += bytes
+  }
+  return {
+    entries: entries.length,
+    activeEntries: Math.max(0, entries.length - activeStart),
+    payloadBytes,
+    activePayloadBytes,
+  }
+}
+
+function timedJsonRetention(entries: TimedJson[], activeStart: number): {
+  entries: number
+  activeEntries: number
+  payloadBytes: number
+  activePayloadBytes: number
+} {
+  let payloadBytes = 0
+  let activePayloadBytes = 0
+  for (let index = 0; index < entries.length; index++) {
+    const bytes = Buffer.byteLength(entries[index].data)
+    payloadBytes += bytes
+    if (index >= activeStart) activePayloadBytes += bytes
+  }
+  return {
+    entries: entries.length,
+    activeEntries: Math.max(0, entries.length - activeStart),
+    payloadBytes,
+    activePayloadBytes,
+  }
+}
+
+function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
+  const resumeBinary = timedBinaryRetention(hiddenBinary, hiddenBinaryStart)
+  const resumeJson = timedJsonRetention(hiddenJson, hiddenJsonStart)
+  const seekBinaryBytes = seekBufferedBinary.reduce((total, batch) => total + batch.byteLength, 0)
+  const seekJsonBytes = seekBufferedJson.reduce((total, batch) => total + Buffer.byteLength(batch), 0)
+  let nativeTransit: Record<string, unknown> | null = null
+  try {
+    const snapshot = engine?.telemetryRetention?.()
+    if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) nativeTransit = snapshot
+  } catch {
+    // Native diagnostics are best-effort and must not interfere with forwarding.
+  }
+  const nativeTransitBytes = typeof nativeTransit?.retained_bytes === 'number' &&
+    Number.isFinite(nativeTransit.retained_bytes)
+    ? nativeTransit.retained_bytes
+    : 0
+  const retainedBytes = resumeBinary.payloadBytes + resumeJson.payloadBytes +
+    seekBinaryBytes + seekJsonBytes + nativeTransitBytes
+
+  return {
+    sampled_at: new Date().toISOString(),
+    mode: activeFilePath ? 'playback' : 'realtime',
+    retained_bytes: retainedBytes,
+    byte_basis: 'exact retained Buffer/string payload bytes and reserved native transit payload bytes; container overhead excluded',
+    renderer_visible: rendererVisible,
+    resume_window_ms: resumeWindowMs,
+    hidden_resume: {
+      binary: resumeBinary,
+      json: resumeJson,
+      retained_bytes: resumeBinary.payloadBytes + resumeJson.payloadBytes,
+    },
+    seek_forward: {
+      phase: seekForwardPhase,
+      request_id: seekForwardRequestId,
+      binary_batches: seekBufferedBinary.length,
+      json_batches: seekBufferedJson.length,
+      binary_bytes: seekBinaryBytes,
+      json_bytes: seekJsonBytes,
+      retained_bytes: seekBinaryBytes + seekJsonBytes,
+      tracked_bytes: seekBufferedBytes,
+      limit_bytes: MAX_SEEK_FORWARD_BYTES,
+    },
+    native_transit: nativeTransit,
+  }
+}
+
+setTelemetryRetentionProvider(mainTelemetryRetentionDiagnostics)
 
 function releaseSeekForwarding(requestId: number): void {
   if (seekForwardPhase !== 'waiting-renderer' || requestId !== seekForwardRequestId) return

@@ -625,25 +625,30 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
             return false;
         }
 
-        // Walk only the cold row families needed by StrategyProcessor and
-        // retain one deep checkpoint per completed lap. The range walker is
-        // bounded to short time slices, so no complete decoded recording is
-        // resident at once. Once the final checkpoint exists, discard the
-        // archive LRU and worker-thread scratch; later playback reads restart
-        // the pool lazily and decode indexed chunks on demand.
-        lastError_.clear();
-        StrategyProcessor completeStrategy(strategyProtocol_);
-        (void)strategySnapshotAt(totalTime_, &completeStrategy);
-        if (!lastError_.empty()) {
-            std::fprintf(stderr, "[tnrd] load FAILED: strategy checkpoint scan failed for '%s': %s\n",
-                         path.c_str(), lastError_.c_str());
-            close();
-            return false;
+        size_t checkpointCount = 0;
+        if (detected == TnrdFormat::ChunkedV4) {
+            // V4 lacks V5's persisted exact row/time index. Walk only the cold
+            // strategy families and retain one processor checkpoint per lap,
+            // then release decoded payloads and worker scratch. V5 deliberately
+            // preserves its payload-lazy load path and builds these checkpoints
+            // only when strategy state is first requested.
+            lastError_.clear();
+            StrategyProcessor completeStrategy(strategyProtocol_);
+            (void)strategySnapshotAt(totalTime_, &completeStrategy);
+            if (!lastError_.empty()) {
+                std::fprintf(stderr, "[tnrd] load FAILED: strategy checkpoint scan failed for '%s': %s\n",
+                             path.c_str(), lastError_.c_str());
+                close();
+                return false;
+            }
+            checkpointCount = strategyCheckpoints_.size();
+            indexedArchive_->releaseTransientMemory();
         }
-        const size_t checkpointCount = strategyCheckpoints_.size();
-        indexedArchive_->releaseTransientMemory();
         setCursor(startTime_);
-        std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu strategyCheckpoints=%zu cacheBytes=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),checkpointCount,indexedArchive_->cacheBytes(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
+        if (detected == TnrdFormat::ChunkedV4)
+            std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu strategyCheckpoints=%zu cacheBytes=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),checkpointCount,indexedArchive_->cacheBytes(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
+        else
+            std::fprintf(stderr,"[tnrd] load OK: format=%s chunks=%zu laps=%zu start=%.2f total=%.2f track='%s' session='%s'\n",toString(loadedFormat_),indexedArchive_->chunks().size(),indexedArchive_->laps().size(),startTime_,totalTime_,outHeader.track_name.c_str(),outHeader.session_name.c_str());
         return true;
     }
     bool loadedOk = false;
@@ -1210,6 +1215,22 @@ bool TnrdReader::forEachStrategyRow(
     if(cancelled&&cancelled())return false;
     if (toTime < fromTime) return true;
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        if (loadedFormat_ == TnrdFormat::ChunkedV5) {
+            std::vector<detail::V4TimedRow> rows;
+            std::string error;
+            if (!indexedArchive_->rowsForRange(fromTime, toTime,
+                                               kStrategyDependencyMask,
+                                               rows, &error, cancelled)) {
+                if (!cancelled || !cancelled()) lastError_ = std::move(error);
+                return false;
+            }
+            for (const auto& row : rows) {
+                if (cancelled && cancelled()) return false;
+                if (!includeFrom && row.sessionTime <= fromTime) continue;
+                callback(row.sessionTime, row.json);
+            }
+            return true;
+        }
         return forEachIndexedRange(fromTime, toTime, kStrategyDependencyMask,
             [&](const detail::V4TimedRow& row) {
                 if (!includeFrom && row.sessionTime <= fromTime) return true;
@@ -1643,7 +1664,31 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
             return true;
         };
         bool loaded = true;
-        if (directMask && currentLapOnly) {
+        if (directMask && loadedFormat_ == TnrdFormat::ChunkedV5) {
+            // V5 persists exact chunk time bounds and row offsets, so preserve
+            // its direct single-query seek path. Unlike V4, it does not need
+            // the sliced walker to bound discovery of missing chunk metadata.
+            std::vector<detail::V4TimedRow> rows;
+            std::string error;
+            loaded = currentLapOnly
+                ? indexedArchive_->rowsForLapRange(
+                    (uint32_t)indexedArchive_->lapAt(target), windowStart,
+                    target, directMask, rows, &error, cancelled)
+                : indexedArchive_->rowsForRange(
+                    windowStart, target, directMask, rows, &error, cancelled);
+            if (!loaded) {
+                if (!cancelled || !cancelled()) lastError_ = std::move(error);
+            } else {
+                for (const auto& row : rows) {
+                    if (row.rowType == 1 || row.rowType == 11 || row.rowType == 12)
+                        (void)encodeV4HotRowCached(row, *binary);
+                    else {
+                        f.coldJson += row.json;
+                        f.coldJson.push_back('\n');
+                    }
+                }
+            }
+        } else if (directMask && currentLapOnly) {
             std::vector<detail::V4TimedRow> rows;
             std::string error;
             loaded = indexedArchive_->rowsForLapRange(

@@ -231,6 +231,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   const visibleSeriesRef = useRef(visibleSeries)
   const getXRef = useRef(coordinates.getX)
   const getComparisonXRef = useRef(coordinates.getComparisonX)
+  const axisKindRef = useRef<'time' | 'distance'>(coordinates.distanceMode ? 'distance' : 'time')
   const comparisonLabelRef = useRef(getChartComparisonLabel(coordinates.mode))
   const comparisonKeyRef = useRef('')
   cursorSyncContextRef.current = cursorSyncContext
@@ -242,6 +243,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   visibleSeriesRef.current = visibleSeries
   getXRef.current = coordinates.getX
   getComparisonXRef.current = coordinates.getComparisonX
+  axisKindRef.current = coordinates.distanceMode ? 'distance' : 'time'
   const comparisonLapNum = coordinates.lapData?.lapNum
   const baseComparisonLabel = getChartComparisonLabel(coordinates.mode)
   comparisonLabelRef.current = coordinates.mode === 'RL' && comparisonLapNum != null
@@ -349,11 +351,10 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       return parts.join('')
     }
     const syncManager = cursorSyncContextRef.current
-    const syncAxisKind = coordinates.distanceMode ? 'distance' : 'time'
     const unregisterSync = syncManager?.register({
       id: 'overviewTelemetry',
       order: 10,
-      axisKind: syncAxisKind,
+      get axisKind() { return axisKindRef.current },
       resolveAxisX: axisX => {
         const rows = telemetryRef.current
         const index = nearestTelemetryIndexByX(rows, getXRef.current, axisX)
@@ -365,6 +366,7 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
       },
       formatAxisX: axisX => axisCfgRef.current?.current.xTickFormat(axisX) ?? String(axisX),
       syncToSessionTime: (sessionTime, sourceAxisX, plotYRatio, sourceAxisKind, source, secondaryVerticalCrosshair) => {
+        const syncAxisKind = axisKindRef.current
         const rows = telemetryRef.current
         const index = nearestTelemetryIndexBySessionTime(rows, sessionTime)
         if (index < 0) {
@@ -381,13 +383,22 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
         const visibleRangeCovered = !xRange || xRange === 'auto'
           || valueIsCovered(cursorAxisX, Number(xRange.min), Number(xRange.max))
         const axisDataCovered = axisXIsCovered(buffer.series[0], cursorAxisX)
-        const sessionDataCovered = sourceAxisKind === syncAxisKind || syncAxisKind === 'time'
-          || valueIsCovered(sessionTime, rows[0].session_time, rows[rows.length - 1].session_time)
+        const sessionDataCovered = valueIsCovered(
+          sessionTime,
+          rows[0].session_time,
+          rows[rows.length - 1].session_time,
+        )
         const forwardEndpointFallback = sourceAxisKind === syncAxisKind
           && visibleRangeCovered
           && buffer.length > 0
           && cursorAxisX > buffer.lastX + AXIS_COVERAGE_EPSILON
-        if (!source && (!visibleRangeCovered || (!axisDataCovered && !forwardEndpointFallback) || !sessionDataCovered)) {
+        const mixedAxisEndpointFallback = sourceAxisKind !== syncAxisKind
+          && visibleRangeCovered
+          && sessionTime > rows[rows.length - 1].session_time + AXIS_COVERAGE_EPSILON
+        const peerDataCovered = sourceAxisKind === syncAxisKind
+          ? axisDataCovered || forwardEndpointFallback
+          : sessionDataCovered || mixedAxisEndpointFallback
+        if (!source && (!visibleRangeCovered || !peerDataCovered)) {
           clearSyncedCursor()
           return { current: '' }
         }
@@ -437,9 +448,15 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
           const cursorVisible = Number.isFinite(cursorPx) && cursorPx >= left && cursorPx <= right
           chart.options.series.forEach((series, seriesIndex) => {
             const point = syncPointRefs.current[seriesIndex]
+            // The authoritative rows can be ahead of the cooperatively
+            // updated WebGL series. Hold its rendered endpoint while it
+            // catches up, including when the sync source uses another axis.
+            const renderedEndpointFallback = visibleRangeCovered
+              && series.data.length > 0
+              && cursorAxisX > series.data.xAt(series.data.length - 1) + AXIS_COVERAGE_EPSILON
             const pointIndex = axisXIsCovered(series.data, cursorAxisX)
               ? nearestIndex(series.data, cursorAxisX)
-              : forwardEndpointFallback && series.data.length > 0
+              : renderedEndpointFallback
                 ? series.data.length - 1
                 : -1
             if (!point || !cursorVisible || !series.visible || pointIndex < 0) {
@@ -693,7 +710,8 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   }, [coordinates, telemetry, statuses, wake])
 
   useEffect(() => {
-    if (!coordinates.allLapsMode) return
+    // A different chart can put the shared store into in-place AL/SL
+    // publication while this chart remains finite or distance-based.
     return subscribeAllLapsData(HISTORY_ROW.telemetry | HISTORY_ROW.status, scheduleRowsSync)
   }, [coordinates.allLapsMode])
 

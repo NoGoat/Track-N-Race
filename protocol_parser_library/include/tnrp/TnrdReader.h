@@ -25,10 +25,11 @@ namespace detail { class TnrdIndexedArchive; struct V4TimedRow; }
 // Reads TNRD V1/gzip, V2/V3 monolithic Zstandard, and V4/V5 indexed chunked
 // Zstandard files. load() detects the container signature; the legacy JSON
 // header distinguishes V2 from V3.
-// Legacy formats decompress to a temp file and build a time/type index. V4/V5
-// stream their strategy row families once at load to retain one processor
-// checkpoint per completed lap, then release all decoded payloads and worker
-// scratch. Playback data remains lazy through the compact control-plane index.
+// Legacy formats decompress to a temp file and build a time/type index. V4
+// streams its strategy row families once at load to retain one processor
+// checkpoint per completed lap, then releases decoded payloads and worker
+// scratch. V5 keeps its indexed payloads lazy and builds strategy checkpoints
+// only when strategy state is first requested.
 //
 // The hot streaming path (pullUntil / drainRest / stateSnapshot / readRange)
 // returns raw JSONL strings — no re-parse needed. The load-time payload
@@ -50,8 +51,9 @@ public:
     const std::string& lastError() const { return lastError_; }
 
     // Enable packed binary delivery for hot playback rows and seek flushes.
-    // Indexed V4/V5 recordings remain metadata-only at load; requested chunks
-    // are decoded and packed on demand through bounded caches.
+    // Indexed playback decodes and packs requested chunks on demand. V5 keeps
+    // its existing lazy-load behavior; V4 also avoids a full-session hot-row
+    // mirror and retains only its load-time strategy checkpoints.
     void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
 
     // Include the small per-lap status summaries used for tyre labels without

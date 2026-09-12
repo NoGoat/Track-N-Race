@@ -349,6 +349,7 @@ public:
             InstanceMethod("pairCloseWindow", &TNRPAddon::PairCloseWindow),
             InstanceMethod("pairRemoveDevice", &TNRPAddon::PairRemoveDevice),
             InstanceMethod("pairGetState", &TNRPAddon::PairGetState),
+            InstanceMethod("telemetryRetention", &TNRPAddon::TelemetryRetention),
             InstanceMethod("destroy", &TNRPAddon::Destroy)
         });
         TRACE("Init: after DefineClass");
@@ -553,16 +554,29 @@ public:
         if (!hasBinCb_ || len == 0) return;
         auto fs = binFlush_;
         bool schedule = false;
+        uint64_t generation = 0;
         {
             std::lock_guard<std::mutex> lk(fs->mutex);
+            if (fs->discard) return;
             fs->pending.insert(fs->pending.end(), data, data + len);
-            if (!fs->scheduled) { fs->scheduled = true; schedule = true; }
+            generation = fs->generation;
+            if (!fs->scheduled) {
+                fs->scheduled = true;
+                fs->scheduledGeneration = generation;
+                schedule = true;
+            }
         }
         if (!schedule) return;
 
-        auto status = tsfnBin.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
+        auto status = tsfnBin.NonBlockingCall([fs, generation](Napi::Env env, Napi::Function cb) {
             {
                 std::lock_guard<std::mutex> lk(fs->mutex);
+                // playerClose() invalidates a queued playback batch before the
+                // JSON playback_close row is allowed to reach the renderer.
+                // A later live batch may already own this shared flush state,
+                // so the obsolete callback must leave it untouched.
+                if (fs->generation != generation ||
+                    fs->scheduledGeneration != generation) return;
                 fs->draining.swap(fs->pending);  // grab the batch; pending keeps storage
                 fs->scheduled = false;
             }
@@ -575,7 +589,7 @@ public:
 
         if (status != napi_ok) {
             std::lock_guard<std::mutex> lk(fs->mutex);
-            fs->scheduled = false;
+            if (fs->scheduledGeneration == generation) fs->scheduled = false;
         }
     }
 
@@ -593,6 +607,8 @@ public:
             size_t binBegin;
             size_t binEnd;
             std::string cold;
+            std::shared_ptr<std::atomic<size_t>> retainedCounter;
+            size_t retainedBytes;
             float lapStart;
             int lapNum;
             bool allHistory;
@@ -601,7 +617,11 @@ public:
             uint32_t rowTypeMask;
             float historyStart;
         };
+        const size_t binaryBytes = binStore && binEnd > binBegin ? binEnd - binBegin : 0;
+        const size_t retainedBytes = binaryBytes + coldJson.capacity();
+        seekFlushBytes_->fetch_add(retainedBytes, std::memory_order_relaxed);
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
+                                seekFlushBytes_, retainedBytes,
                                 currentLapStart, lapNum, allHistory, requestId,
                                 authoritativeSeek, rowTypeMask, historyStart };
         auto status = tsfnSeek.NonBlockingCall(
@@ -623,9 +643,13 @@ public:
                               Napi::Number::New(env, d->rowTypeMask),
                               Napi::Number::New(env, d->historyStart) });
                 }
+                d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
                 delete d;
             });
-        if (status != napi_ok) delete d;
+        if (status != napi_ok) {
+            d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
+            delete d;
+        }
     }
 
     void onPairState(const std::string& publicJson,
@@ -676,6 +700,9 @@ private:
         std::vector<uint8_t> pending;    // bytes awaiting delivery
         std::vector<uint8_t> draining;   // batch currently handed to JS (reused storage)
         bool                 scheduled = false;
+        bool                 discard = false;
+        uint64_t             generation = 0;
+        uint64_t             scheduledGeneration = 0;
     };
 
     std::shared_ptr<tnrp::Engine> engine;
@@ -691,6 +718,8 @@ private:
     bool hasPairDiagnosticCb_ = false;
     std::shared_ptr<FlushState>    flush_    = std::make_shared<FlushState>();
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
+    std::shared_ptr<std::atomic<size_t>> seekFlushBytes_ =
+        std::make_shared<std::atomic<size_t>>(0);
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<AnalysisReaderState> analysisReader_ = std::make_shared<AnalysisReaderState>();
 
@@ -749,6 +778,66 @@ private:
             else if (ovr == "f1_26") engine->setOverride(tnrp::Override::F1_26);
         }
         return info.Env().Undefined();
+    }
+
+    Napi::Value TelemetryRetention(const Napi::CallbackInfo& info) {
+        size_t jsonPendingBytes = 0;
+        size_t jsonDrainingBytes = 0;
+        size_t jsonPendingUsed = 0;
+        size_t jsonDrainingUsed = 0;
+        {
+            std::lock_guard<std::mutex> lock(flush_->mutex);
+            jsonPendingBytes = flush_->pending.capacity();
+            jsonDrainingBytes = flush_->draining.capacity();
+            jsonPendingUsed = flush_->pending.size();
+            jsonDrainingUsed = flush_->draining.size();
+        }
+
+        size_t binaryPendingBytes = 0;
+        size_t binaryDrainingBytes = 0;
+        size_t binaryPendingUsed = 0;
+        size_t binaryDrainingUsed = 0;
+        {
+            std::lock_guard<std::mutex> lock(binFlush_->mutex);
+            binaryPendingBytes = binFlush_->pending.capacity();
+            binaryDrainingBytes = binFlush_->draining.capacity();
+            binaryPendingUsed = binFlush_->pending.size();
+            binaryDrainingUsed = binFlush_->draining.size();
+        }
+
+        const size_t seekBytes = seekFlushBytes_->load(std::memory_order_relaxed);
+        const size_t retainedBytes = jsonPendingBytes + jsonDrainingBytes +
+            binaryPendingBytes + binaryDrainingBytes + seekBytes;
+        Napi::Object result = Napi::Object::New(info.Env());
+        result.Set("retained_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(retainedBytes)));
+        result.Set("byte_basis", Napi::String::New(info.Env(),
+            "exact reserved native flush payload plus in-flight seek payload bytes; container overhead excluded"));
+
+        Napi::Object json = Napi::Object::New(info.Env());
+        json.Set("pending_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(jsonPendingBytes)));
+        json.Set("pending_used_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(jsonPendingUsed)));
+        json.Set("draining_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(jsonDrainingBytes)));
+        json.Set("draining_used_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(jsonDrainingUsed)));
+        result.Set("json_flush", json);
+
+        Napi::Object binary = Napi::Object::New(info.Env());
+        binary.Set("pending_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(binaryPendingBytes)));
+        binary.Set("pending_used_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(binaryPendingUsed)));
+        binary.Set("draining_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(binaryDrainingBytes)));
+        binary.Set("draining_used_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(binaryDrainingUsed)));
+        result.Set("binary_flush", binary);
+        result.Set("seek_flush_in_flight_bytes", Napi::Number::New(info.Env(),
+            static_cast<double>(seekBytes)));
+        return result;
     }
 
     Napi::Value SetTeamColorOverrides(const Napi::CallbackInfo& info) {
@@ -995,7 +1084,27 @@ private:
     Napi::Value PlayerClose(const Napi::CallbackInfo& info) {
         std::fprintf(stderr, "[close-trace] addon PlayerClose entry\n");
         std::fflush(stderr);
+        // JSON control rows and binary hot rows use separate thread-safe
+        // callbacks. Invalidate the playback binary callback before stopping
+        // the engine so it cannot run after playback_close and repopulate the
+        // renderer with the final speed/RPM/temperature batch. While the close
+        // is in progress UDP is either rejected by the engine or discarded
+        // here; new live rows use the next generation after this call returns.
+        auto binaryFlush = binFlush_;
+        {
+            std::lock_guard<std::mutex> lock(binaryFlush->mutex);
+            binaryFlush->discard = true;
+            ++binaryFlush->generation;
+            binaryFlush->pending.clear();
+            binaryFlush->draining.clear();
+            binaryFlush->scheduled = false;
+            binaryFlush->scheduledGeneration = binaryFlush->generation;
+        }
         if (engine) engine->playerClose();
+        {
+            std::lock_guard<std::mutex> lock(binaryFlush->mutex);
+            binaryFlush->discard = false;
+        }
         std::fprintf(stderr, "[close-trace] addon PlayerClose returned\n");
         std::fflush(stderr);
         return info.Env().Undefined();
