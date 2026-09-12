@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { formatWithOptions } from 'util'
+import { configStore } from './configStore'
 
 export interface Diagnostics {
   directory: string
@@ -26,6 +27,11 @@ let ramUsageLogFd: number | null = null
 let ramUsageTimer: NodeJS.Timeout | null = null
 let ramUsageStartedAt = 0
 let writingRamUsage = false
+let memoryLogEnabled = false
+let ramUsageLogPath: string | null = null
+let ramUsageLogOpened = false
+let ramUsageReadyListener: (() => void) | null = null
+let memoryLogSubscriptionInstalled = false
 let fatalFlushHandler: (() => boolean) | null = null
 let telemetryRetentionProvider: (() => Record<string, unknown>) | null = null
 let latestRendererTelemetryRetention: Record<string, unknown> | null = null
@@ -103,6 +109,7 @@ function installTelemetryRetentionCapture(): void {
   if (telemetryRetentionCaptureInstalled) return
   telemetryRetentionCaptureInstalled = true
   ipcMain.on('diagnostics:telemetry-retention', (_event, value: unknown) => {
+    if (!memoryLogEnabled) return
     if (!value || typeof value !== 'object' || Array.isArray(value)) return
     try {
       // Clone the small diagnostic document so the sampler never retains an
@@ -193,9 +200,15 @@ function writeRamUsageSample(): void {
 }
 
 function startRamUsageProfiler(logPath: string): void {
-  ramUsageLogFd = fs.openSync(logPath, 'w')
+  ramUsageLogPath = logPath
+  if (ramUsageLogFd === null) {
+    ramUsageLogFd = fs.openSync(logPath, ramUsageLogOpened ? 'a' : 'w')
+    ramUsageLogOpened = true
+  }
 
   const startSampling = (): void => {
+    ramUsageReadyListener = null
+    if (!memoryLogEnabled) return
     if (ramUsageLogFd === null || ramUsageTimer !== null) return
     ramUsageStartedAt = Date.now()
     writeRamUsageSample()
@@ -204,10 +217,17 @@ function startRamUsageProfiler(logPath: string): void {
   }
 
   if (app.isReady()) startSampling()
-  else app.once('ready', startSampling)
+  else {
+    ramUsageReadyListener = startSampling
+    app.once('ready', startSampling)
+  }
 }
 
 function stopRamUsageProfiler(): void {
+  if (ramUsageReadyListener !== null) {
+    app.removeListener('ready', ramUsageReadyListener)
+    ramUsageReadyListener = null
+  }
   if (ramUsageTimer !== null) {
     clearInterval(ramUsageTimer)
     ramUsageTimer = null
@@ -219,6 +239,16 @@ function stopRamUsageProfiler(): void {
       // The process is already exiting; there is nowhere else to report this.
     }
     ramUsageLogFd = null
+  }
+  latestRendererTelemetryRetention = null
+}
+
+function configureMemoryLog(enabled: boolean): void {
+  memoryLogEnabled = enabled
+  if (enabled) {
+    if (ramUsageLogPath !== null) startRamUsageProfiler(ramUsageLogPath)
+  } else {
+    stopRamUsageProfiler()
   }
 }
 
@@ -304,7 +334,12 @@ export function initializeDiagnostics(appVersion: string): Diagnostics {
   installConsoleCapture()
   installProcessCapture()
   installTelemetryRetentionCapture()
-  startRamUsageProfiler(diagnostics.ramUsageLogPath)
+  ramUsageLogPath = diagnostics.ramUsageLogPath
+  configureMemoryLog(configStore.get('debug.memoryLog', false) === true)
+  if (!memoryLogSubscriptionInstalled) {
+    memoryLogSubscriptionInstalled = true
+    configStore.onDidChange('debug.memoryLog', value => configureMemoryLog(value === true))
+  }
 
   // Chromium/GPU/network-service diagnostics and local native crash dumps live
   // beside main.log and are swept with it at the beginning of the next launch.

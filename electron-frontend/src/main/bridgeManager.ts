@@ -10,8 +10,6 @@ import {
   receivePairServiceState,
 } from './pairHostAdapter'
 
-declare const __ENABLE_PAIR_DIAGNOSTICS__: boolean
-
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
 type TeamColorOverrides = Record<string, Record<string, string>>
@@ -68,6 +66,7 @@ let lastStatusRow: Record<string, unknown> | null = null
 // We pause forwarding the hot channels while hidden; the engine/recording keep
 // running unaffected.
 let rendererVisible = true
+let additionalLoggingEnabled = store.get('debug.additionalLogging', false) === true
 
 const DIAGNOSTIC_INTERVAL_MS = 10_000
 interface BridgeDiagnostics {
@@ -152,6 +151,7 @@ function windowDiagnostics(): Array<Record<string, unknown>> {
 }
 
 function logBridgeHealth(reason: string): void {
+  if (!additionalLoggingEnabled) return
   const now = Date.now()
   let native: Record<string, unknown> | null = null
   let nativeError: string | null = null
@@ -207,6 +207,7 @@ function logBridgeHealth(reason: string): void {
 
 function startDiagnosticTimer(): void {
   if (diagnosticTimer) clearInterval(diagnosticTimer)
+  if (!additionalLoggingEnabled) return
   bridgeDiagnostics = freshBridgeDiagnostics()
   warnedNoDatagrams = false
   warnedNoTelemetryOutput = false
@@ -220,6 +221,18 @@ function stopDiagnosticTimer(): void {
   if (!diagnosticTimer) return
   clearInterval(diagnosticTimer)
   diagnosticTimer = null
+}
+
+function configureAdditionalLogging(enabled: boolean): void {
+  if (additionalLoggingEnabled === enabled) return
+  additionalLoggingEnabled = enabled
+  engine?.setDiagnosticsEnabled?.(enabled)
+  if (enabled) {
+    startDiagnosticTimer()
+    if (engine) logBridgeHealth('additional-logging-enabled')
+  } else {
+    stopDiagnosticTimer()
+  }
 }
 
 interface TimedBinary { at: number; data: Buffer }
@@ -279,10 +292,12 @@ function sendResumeCache(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('telemetry-resume', { binary, coldJson })
-      bridgeDiagnostics.ipcSendTargets++
+      if (additionalLoggingEnabled) bridgeDiagnostics.ipcSendTargets++
     }
   }
-  console.info('[telemetry-diagnostics][main] sent renderer resume cache:', { binaryBytes: binary.length, coldJsonBytes: Buffer.byteLength(coldJson) })
+  if (additionalLoggingEnabled) {
+    console.info('[telemetry-diagnostics][main] sent renderer resume cache:', { binaryBytes: binary.length, coldJsonBytes: Buffer.byteLength(coldJson) })
+  }
 }
 
 let engine: any = null
@@ -486,21 +501,23 @@ function emitPlaybackState(state: Partial<PlaybackState>): void {
 // session_time values and no synthetic samples can cross lap boundaries.
 function forwardBinary(batch: Uint8Array): void {
   const buffer = Buffer.from(batch)
-  const inspection = inspectBinaryBatch(buffer)
-  bridgeDiagnostics.binaryCallbacks++
-  bridgeDiagnostics.binaryBytes += buffer.length
-  bridgeDiagnostics.binaryRecords += inspection.records
-  bridgeDiagnostics.lastBinaryAt = Date.now()
-  increment(bridgeDiagnostics.binaryTypes, 'telemetry', inspection.telemetry)
-  increment(bridgeDiagnostics.binaryTypes, 'motion', inspection.motion)
-  increment(bridgeDiagnostics.binaryTypes, 'positions', inspection.positions)
-  increment(bridgeDiagnostics.binaryTypes, 'motion_ex', inspection.motionEx)
-  if (!inspection.valid) {
-    bridgeDiagnostics.invalidBinaryBatches++
-    console.error('[telemetry-diagnostics][main] invalid packed binary batch:', inspection)
-  }
-  if (bridgeDiagnostics.binaryCallbacks === 1) {
-    console.info('[telemetry-diagnostics][main] first native binary callback:', inspection)
+  if (additionalLoggingEnabled) {
+    const inspection = inspectBinaryBatch(buffer)
+    bridgeDiagnostics.binaryCallbacks++
+    bridgeDiagnostics.binaryBytes += buffer.length
+    bridgeDiagnostics.binaryRecords += inspection.records
+    bridgeDiagnostics.lastBinaryAt = Date.now()
+    increment(bridgeDiagnostics.binaryTypes, 'telemetry', inspection.telemetry)
+    increment(bridgeDiagnostics.binaryTypes, 'motion', inspection.motion)
+    increment(bridgeDiagnostics.binaryTypes, 'positions', inspection.positions)
+    increment(bridgeDiagnostics.binaryTypes, 'motion_ex', inspection.motionEx)
+    if (!inspection.valid) {
+      bridgeDiagnostics.invalidBinaryBatches++
+      console.error('[telemetry-diagnostics][main] invalid packed binary batch:', inspection)
+    }
+    if (bridgeDiagnostics.binaryCallbacks === 1) {
+      console.info('[telemetry-diagnostics][main] first native binary callback:', inspection)
+    }
   }
   if (seekForwardPhase === 'waiting-flush') return
   if (seekForwardPhase === 'waiting-renderer') {
@@ -511,12 +528,12 @@ function forwardBinary(batch: Uint8Array): void {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.webContents.send('telemetry-binary', batch)
-        bridgeDiagnostics.ipcSendTargets++
+        if (additionalLoggingEnabled) bridgeDiagnostics.ipcSendTargets++
       }
     }
-    bridgeDiagnostics.binaryForwardedBatches++
+    if (additionalLoggingEnabled) bridgeDiagnostics.binaryForwardedBatches++
   } else {
-    bridgeDiagnostics.binaryHiddenBatches++
+    if (additionalLoggingEnabled) bridgeDiagnostics.binaryHiddenBatches++
     const history = chartHistoryRecords(buffer)
     if (history.length > 0) hiddenBinary.push({ at: performance.now(), data: history })
     trimResumeCache(performance.now())
@@ -527,7 +544,7 @@ function broadcast(row: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('telemetry', row)
-      bridgeDiagnostics.ipcSendTargets++
+      if (additionalLoggingEnabled) bridgeDiagnostics.ipcSendTargets++
     }
   }
 }
@@ -570,13 +587,15 @@ function handleRow(row: Record<string, unknown>): void {
       active: (row.active_format as number) ?? null,
     }
     lastStatusRow = row
-    console.info('[telemetry-diagnostics][main] protocol status:', {
-      override: lastStatus.override,
-      detected: lastStatus.detected,
-      active: lastStatus.active,
-      aeroMode: row.aero_mode ?? null,
-      gameYear: (row.capabilities as Record<string, unknown> | undefined)?.gameYear ?? null,
-    })
+    if (additionalLoggingEnabled) {
+      console.info('[telemetry-diagnostics][main] protocol status:', {
+        override: lastStatus.override,
+        detected: lastStatus.detected,
+        active: lastStatus.active,
+        aeroMode: row.aero_mode ?? null,
+        gameYear: (row.capabilities as Record<string, unknown> | undefined)?.gameYear ?? null,
+      })
+    }
     if (lastStatus.override === 'auto' && lastStatus.detected != null) {
       store.set('udp.lastDetectedProtocol', lastStatus.detected)
     }
@@ -639,17 +658,21 @@ function loadAddon(): any {
       'Simulated native telemetry addon load failure (TNR_SIMULATE_BRIDGE_FAILURE=1)'
     )
   }
-  let p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
-  let addonFile: Record<string, unknown> = { path: p, exists: false }
-  try {
-    const stat = fs.statSync(p)
-    addonFile = { path: p, exists: true, bytes: stat.size, modifiedAt: stat.mtime.toISOString() }
-  } catch (error) {
-    addonFile = { ...addonFile, statError: String(error) }
+  const p = path.join(app.getAppPath(), 'node_addon', 'build', 'Release', 'protocol_parser.node')
+  if (additionalLoggingEnabled) {
+    let addonFile: Record<string, unknown> = { path: p, exists: false }
+    try {
+      const stat = fs.statSync(p)
+      addonFile = { path: p, exists: true, bytes: stat.size, modifiedAt: stat.mtime.toISOString() }
+    } catch (error) {
+      addonFile = { ...addonFile, statError: String(error) }
+    }
+    console.info('[telemetry-diagnostics][main] loading native addon:', addonFile)
   }
-  console.info('[telemetry-diagnostics][main] loading native addon:', addonFile)
   addonModule = require(p)
-  console.info('[telemetry-diagnostics][main] native addon exports:', Object.keys(addonModule).sort())
+  if (additionalLoggingEnabled) {
+    console.info('[telemetry-diagnostics][main] native addon exports:', Object.keys(addonModule).sort())
+  }
   return addonModule
 }
 
@@ -657,13 +680,16 @@ function pushLogging(): void {
   if (engine) {
     const enabled = store.get('logging.enabled', false) as boolean
     const dir = store.get('logging.directory', '') as string
-    console.info('[telemetry-diagnostics][main] applying recording settings:', { enabled, directory: dir || '<default>' })
+    if (additionalLoggingEnabled) {
+      console.info('[telemetry-diagnostics][main] applying recording settings:', { enabled, directory: dir || '<default>' })
+    }
     engine.setLogging(enabled, dir)
   }
 }
 
 export function startBridge(): string | null {
   if (engine) return null
+  additionalLoggingEnabled = store.get('debug.additionalLogging', false) === true
 
   try {
     const addon = loadAddon()
@@ -687,21 +713,20 @@ export function startBridge(): string | null {
     }
 
     activeUdpConfig = { ...config }
-    console.info('[telemetry-diagnostics][main] constructing native engine:', {
-      config,
-      storedLastDetectedProtocol: store.get('udp.lastDetectedProtocol', null),
-      forwardingEnabled: store.get('udp.forwardingEnabled', false),
-    })
-    console.info(`[udp] Starting listener on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
+    if (additionalLoggingEnabled) {
+      console.info('[telemetry-diagnostics][main] constructing native engine:', {
+        config,
+        storedLastDetectedProtocol: store.get('udp.lastDetectedProtocol', null),
+        forwardingEnabled: store.get('udp.forwardingEnabled', false),
+      })
+      console.info(`[udp] Starting listener on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
+    }
 
-    const pairDiagnosticCallback = __ENABLE_PAIR_DIAGNOSTICS__
-      ? (message: string): void => {
-          // initializeDiagnostics() captures this in the per-launch main.log.
-          console.info('[pair-native]', message)
-        }
-      : undefined
+    const pairDiagnosticCallback = (message: string): void => {
+      if (additionalLoggingEnabled) console.info('[pair-native]', message)
+    }
     engine = new addon.Engine(config, (batch: string) => {
-      observeJsonBatch(batch)
+      if (additionalLoggingEnabled) observeJsonBatch(batch)
       // Skip forwarding to a hidden renderer; playback delivers its cold rows
       // through this channel too, so it's a high-volume path worth gating —
       // except one-shot playback control rows, which must never be dropped.
@@ -725,13 +750,15 @@ export function startBridge(): string | null {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) {
             win.webContents.send('telemetry-batch', batch)
-            targets++
+            if (additionalLoggingEnabled) targets++
           }
         }
-        bridgeDiagnostics.jsonForwardedBatches++
-        bridgeDiagnostics.ipcSendTargets += targets
+        if (additionalLoggingEnabled) {
+          bridgeDiagnostics.jsonForwardedBatches++
+          bridgeDiagnostics.ipcSendTargets += targets
+        }
       } else {
-        bridgeDiagnostics.jsonHiddenBatches++
+        if (additionalLoggingEnabled) bridgeDiagnostics.jsonHiddenBatches++
         cacheResumeJson(batch, performance.now())
       }
 
@@ -789,6 +816,7 @@ export function startBridge(): string | null {
       receivePairServiceState(publicJson, persistedJson)
     }, pairDiagnosticCallback)
 
+    engine.setDiagnosticsEnabled?.(additionalLoggingEnabled)
     if (!engine.startUdp()) {
       const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
       console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${error}`)
@@ -797,15 +825,18 @@ export function startBridge(): string | null {
       return error
     }
     configurePairService(engine)
-    console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
-    startDiagnosticTimer()
-    logBridgeHealth('listener-started')
+    if (additionalLoggingEnabled) {
+      console.info(`[udp] Listener bound on ${String(config.bindAddress || '0.0.0.0')}:${config.port}`)
+      startDiagnosticTimer()
+      logBridgeHealth('listener-started')
+    }
     pushLogging()
     
     // Listen for logging changes
     unsubLogging = [
       store.onDidChange('logging.enabled', () => pushLogging()),
       store.onDidChange('logging.directory', () => pushLogging()),
+      store.onDidChange('debug.additionalLogging', value => configureAdditionalLogging(value === true)),
     ]
 
     return null
@@ -819,7 +850,7 @@ export function startBridge(): string | null {
 }
 
 export function stopBridge(forceProcessExit = false): void {
-  if (engine) logBridgeHealth('bridge-stopping')
+  if (engine && additionalLoggingEnabled) logBridgeHealth('bridge-stopping')
   stopDiagnosticTimer()
   for (const unsub of unsubLogging) unsub()
   unsubLogging = []
@@ -904,7 +935,7 @@ export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFF
   seekBufferedBinary = []
   seekBufferedJson = []
   seekBufferedBytes = 0
-  if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
+  if (additionalLoggingEnabled) {
     console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
   }
   engine.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
@@ -934,15 +965,17 @@ export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask =
 
 function applyAggregateDataRequirements(): void {
   const requestId = ++nextDataRequirementsRequestId
-  console.info('[telemetry-diagnostics][main] renderer data requirements:', {
-    requestId,
-    streamMask: rendererStreamMask,
-    streamMaskHex: `0x${rendererStreamMask.toString(16).padStart(8, '0')}`,
-    historyMask: rendererHistoryMask,
-    historyMaskHex: `0x${rendererHistoryMask.toString(16).padStart(8, '0')}`,
-    windowSeconds: rendererHistoryWindow,
-    engineReady: Boolean(engine),
-  })
+  if (additionalLoggingEnabled) {
+    console.info('[telemetry-diagnostics][main] renderer data requirements:', {
+      requestId,
+      streamMask: rendererStreamMask,
+      streamMaskHex: `0x${rendererStreamMask.toString(16).padStart(8, '0')}`,
+      historyMask: rendererHistoryMask,
+      historyMaskHex: `0x${rendererHistoryMask.toString(16).padStart(8, '0')}`,
+      windowSeconds: rendererHistoryWindow,
+      engineReady: Boolean(engine),
+    })
+  }
   engine?.setDataRequirements(rendererStreamMask,
     rendererHistoryMask, rendererHistoryWindow, requestId)
 }
@@ -1028,7 +1061,9 @@ export function exportSessionXlsx(
 }
 
 export function setOverride(value: ProtocolOverride): void {
-  console.info('[telemetry-diagnostics][main] protocol override changed:', { previous: lastStatus.override, next: value, engineReady: Boolean(engine) })
+  if (additionalLoggingEnabled) {
+    console.info('[telemetry-diagnostics][main] protocol override changed:', { previous: lastStatus.override, next: value, engineReady: Boolean(engine) })
+  }
   store.set('udp.protocol', value)
   if (engine) engine.setOverride(value)
 }
@@ -1073,7 +1108,9 @@ export function setStrategyMinimumStops(value: number): void {
 // window that missed the one-shot emission (or fell back to default labels) can
 // recover the catalog. No-op until the engine has emitted at least one status.
 export function requestStatus(): void {
-  console.info('[telemetry-diagnostics][main] renderer requested protocol status:', { cached: Boolean(lastStatusRow), protocol: lastStatus })
+  if (additionalLoggingEnabled) {
+    console.info('[telemetry-diagnostics][main] renderer requested protocol status:', { cached: Boolean(lastStatusRow), protocol: lastStatus })
+  }
   if (lastStatusRow) broadcast(lastStatusRow)
 }
 
@@ -1082,7 +1119,7 @@ export function requestStatus(): void {
 // as a single resume payload on return, and refreshes the protocol catalog.
 export function setRendererVisible(visible: boolean): void {
   const wasVisible = rendererVisible
-  if (visible !== wasVisible) {
+  if (additionalLoggingEnabled && visible !== wasVisible) {
     console.info('[telemetry-diagnostics][main] renderer visibility changed:', { previous: wasVisible, next: visible })
   }
   if (!visible && wasVisible) {

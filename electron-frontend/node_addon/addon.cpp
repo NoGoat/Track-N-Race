@@ -321,6 +321,7 @@ public:
         Napi::Function func = DefineClass(env, "Engine", {
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
+            InstanceMethod("setDiagnosticsEnabled", &TNRPAddon::SetDiagnosticsEnabled),
             InstanceMethod("liveDiagnostics", &TNRPAddon::LiveDiagnostics),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setTeamColorOverrides", &TNRPAddon::SetTeamColorOverrides),
@@ -775,6 +776,11 @@ private:
 
     Napi::Value UdpLastError(const Napi::CallbackInfo& info) {
         return Napi::String::New(info.Env(), engine->udpLastError());
+    }
+
+    void SetDiagnosticsEnabled(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1)
+            engine->setDiagnosticsEnabled(info[0].ToBoolean().Value());
     }
 
     Napi::Value LiveDiagnostics(const Napi::CallbackInfo& info) {

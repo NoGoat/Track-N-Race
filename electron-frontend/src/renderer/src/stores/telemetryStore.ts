@@ -12,6 +12,7 @@ import { playbackDebug } from '../lib/playbackDebug'
 import { HISTORY_ROW } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { getTelemetryChartRetentionDiagnostics } from '../diagnostics/telemetryRetention'
+import { getDebugSettings, subscribeDebugSettings } from '../lib/debugSettings'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telemetry store.
@@ -510,16 +511,24 @@ interface RendererDiagnostics {
   lastTelemetryRpm: number | null
 }
 
-const rendererDiagnostics: RendererDiagnostics = {
-  startedAt: Date.now(),
-  jsonBatches: 0, jsonChars: 0, jsonRows: 0, jsonParseErrors: 0, singleRows: 0,
-  binaryBatches: 0, binaryBytes: 0, binaryRows: 0, binaryDecodeErrors: 0,
-  resumePayloads: 0, resumeBinaryBytes: 0, resumeJsonChars: 0, recomputes: 0,
-  rowTypes: {}, rowSources: {}, lastAnyRowAt: null, lastTelemetryAt: null,
-  lastTelemetrySessionTime: null, lastTelemetrySpeedKph: null, lastTelemetryRpm: null,
+function freshRendererDiagnostics(): RendererDiagnostics {
+  return {
+    startedAt: Date.now(),
+    jsonBatches: 0, jsonChars: 0, jsonRows: 0, jsonParseErrors: 0, singleRows: 0,
+    binaryBatches: 0, binaryBytes: 0, binaryRows: 0, binaryDecodeErrors: 0,
+    resumePayloads: 0, resumeBinaryBytes: 0, resumeJsonChars: 0, recomputes: 0,
+    rowTypes: {}, rowSources: {}, lastAnyRowAt: null, lastTelemetryAt: null,
+    lastTelemetrySessionTime: null, lastTelemetrySpeedKph: null, lastTelemetryRpm: null,
+  }
 }
+
+const rendererDiagnostics = freshRendererDiagnostics()
 const firstSeenRowTypes = new Set<string>()
 let warnedRendererNoTelemetry = false
+let additionalLoggingEnabled = false
+let memoryLogEnabled = false
+let rendererDiagnosticTimer: number | null = null
+let memoryLogTimer: number | null = null
 
 function incrementDiagnostic(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1
@@ -564,6 +573,7 @@ function binaryPreview(batch: Uint8Array, limit = 32): string {
 }
 
 function logRendererHealth(): void {
+  if (!additionalLoggingEnabled) return
   const now = Date.now()
   const state = useTelemetryStore.getState()
   const snapshot = {
@@ -626,6 +636,45 @@ function logRendererHealth(): void {
     warnedRendererNoTelemetry = true
     console.warn(`[telemetry-diagnostics][renderer] No telemetry row has reached the renderer after ${Math.round((now - rendererDiagnostics.startedAt) / 1000)} seconds. Compare preload delivery markers and main/native health snapshots to locate the stopped stage.`)
   }
+}
+
+function configureRendererDiagnostics(enabled: boolean): void {
+  additionalLoggingEnabled = enabled
+  if (rendererDiagnosticTimer !== null) {
+    window.clearInterval(rendererDiagnosticTimer)
+    rendererDiagnosticTimer = null
+  }
+  if (!enabled) return
+  Object.assign(rendererDiagnostics, freshRendererDiagnostics())
+  firstSeenRowTypes.clear()
+  warnedRendererNoTelemetry = false
+  console.info(`[telemetry-diagnostics][renderer] additional logging enabled: ${JSON.stringify({
+    telemetryBridge: Boolean(window.telemetryBridge),
+    playerBridge: Boolean(window.playerBridge),
+    readyState: document.readyState,
+    visibilityState: document.visibilityState,
+  })}`)
+  rendererDiagnosticTimer = window.setInterval(logRendererHealth, RENDERER_DIAGNOSTIC_INTERVAL_MS)
+}
+
+function reportRetention(): void {
+  if (!memoryLogEnabled) return
+  try {
+    window.telemetryBridge.reportRetention(getRendererTelemetryRetentionDiagnostics())
+  } catch {
+    // Diagnostics must remain invisible to the telemetry hot path.
+  }
+}
+
+function configureMemoryLog(enabled: boolean): void {
+  memoryLogEnabled = enabled
+  if (memoryLogTimer !== null) {
+    window.clearInterval(memoryLogTimer)
+    memoryLogTimer = null
+  }
+  if (!enabled) return
+  reportRetention()
+  memoryLogTimer = window.setInterval(reportRetention, 1000)
 }
 
 function resetSession(): void {
@@ -1665,13 +1714,13 @@ let started = false
 export function startTelemetryBridge(): void {
   if (started) return
   started = true
-  console.info(`[telemetry-diagnostics][renderer] starting telemetry subscriptions: ${JSON.stringify({
-    telemetryBridge: Boolean(window.telemetryBridge),
-    playerBridge: Boolean(window.playerBridge),
-    readyState: document.readyState,
-    visibilityState: document.visibilityState,
-  })}`)
-  window.setInterval(logRendererHealth, RENDERER_DIAGNOSTIC_INTERVAL_MS)
+  const initialDebugSettings = getDebugSettings()
+  configureRendererDiagnostics(initialDebugSettings.additionalLogging)
+  configureMemoryLog(initialDebugSettings.memoryLog)
+  subscribeDebugSettings(settings => {
+    configureRendererDiagnostics(settings.additionalLogging)
+    configureMemoryLog(settings.memoryLog)
+  })
 
   window.playerBridge.onSeekStart((allHistory) => {
     // Freeze the published timeline immediately, before the seek IPC can race
@@ -1692,8 +1741,10 @@ export function startTelemetryBridge(): void {
   })
 
   window.telemetryBridge.onBatch((batchStr: string) => {
-    rendererDiagnostics.jsonBatches++
-    rendererDiagnostics.jsonChars += batchStr.length
+    if (additionalLoggingEnabled) {
+      rendererDiagnostics.jsonBatches++
+      rendererDiagnostics.jsonChars += batchStr.length
+    }
     if (seekRendererPending &&
         !batchStr.includes('"type":"playback_close"') &&
         !batchStr.includes('"type":"playback_loaded"') &&
@@ -1708,84 +1759,104 @@ export function startTelemetryBridge(): void {
       if (end > start) {
         try {
           const msg = JSON.parse(batchStr.slice(start, end)) as GatewayMsg
-          rendererDiagnostics.jsonRows++
-          observeRendererRow(msg, 'telemetry-batch')
+          if (additionalLoggingEnabled) {
+            rendererDiagnostics.jsonRows++
+            observeRendererRow(msg, 'telemetry-batch')
+          }
           dirty |= dirtySliceFor(msg)
           handleMsg(msg)
         }
         catch (e) {
-          rendererDiagnostics.jsonParseErrors++
-          console.error('[telemetry-diagnostics][renderer] Failed to parse batch JSON:', {
-            error: String(e),
-            batchChars: batchStr.length,
-            rowOffset: start,
-            rowChars: end - start,
-            rowPreview: batchStr.slice(start, Math.min(end, start + 300)),
-          })
+          if (additionalLoggingEnabled) {
+            rendererDiagnostics.jsonParseErrors++
+            console.error('[telemetry-diagnostics][renderer] Failed to parse batch JSON:', {
+              error: String(e),
+              batchChars: batchStr.length,
+              rowOffset: start,
+              rowChars: end - start,
+              rowPreview: batchStr.slice(start, Math.min(end, start + 300)),
+            })
+          } else {
+            console.error('Failed to parse batch JSON:', e)
+          }
         }
       }
       start = end + 1
     }
     recompute(dirty)
-    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
+    if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.on((raw) => {
     const msg = raw as GatewayMsg
-    rendererDiagnostics.singleRows++
-    observeRendererRow(msg, 'telemetry')
+    if (additionalLoggingEnabled) {
+      rendererDiagnostics.singleRows++
+      observeRendererRow(msg, 'telemetry')
+    }
     handleMsg(msg)
     recompute(dirtySliceFor(msg))
-    rendererDiagnostics.recomputes++
+    if (additionalLoggingEnabled) rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.onBinary((batch) => {
-    rendererDiagnostics.binaryBatches++
-    rendererDiagnostics.binaryBytes += batch.byteLength
+    if (additionalLoggingEnabled) {
+      rendererDiagnostics.binaryBatches++
+      rendererDiagnostics.binaryBytes += batch.byteLength
+    }
     if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
       forEachDecodedBinaryRow(batch, row => {
-        rendererDiagnostics.binaryRows++
+        if (additionalLoggingEnabled) rendererDiagnostics.binaryRows++
         const msg = row as GatewayMsg
-        observeRendererRow(msg, 'telemetry-binary')
+        if (additionalLoggingEnabled) observeRendererRow(msg, 'telemetry-binary')
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
       })
     } catch (e) {
-      rendererDiagnostics.binaryDecodeErrors++
-      console.error('[telemetry-diagnostics][renderer] Failed to decode binary batch:', {
-        error: String(e),
-        bytes: batch.byteLength,
-        firstBytesHex: binaryPreview(batch),
-      })
+      if (additionalLoggingEnabled) {
+        rendererDiagnostics.binaryDecodeErrors++
+        console.error('[telemetry-diagnostics][renderer] Failed to decode binary batch:', {
+          error: String(e),
+          bytes: batch.byteLength,
+          firstBytesHex: binaryPreview(batch),
+        })
+      } else {
+        console.error('Failed to decode binary batch:', e)
+      }
     }
     recompute(dirty)
-    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
+    if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.onResume(({ binary, coldJson }) => {
-    rendererDiagnostics.resumePayloads++
-    rendererDiagnostics.resumeBinaryBytes += binary.byteLength
-    rendererDiagnostics.resumeJsonChars += coldJson.length
-    console.info(`[telemetry-diagnostics][renderer] applying resume payload: ${JSON.stringify({ binaryBytes: binary.byteLength, coldJsonChars: coldJson.length })}`)
+    if (additionalLoggingEnabled) {
+      rendererDiagnostics.resumePayloads++
+      rendererDiagnostics.resumeBinaryBytes += binary.byteLength
+      rendererDiagnostics.resumeJsonChars += coldJson.length
+      console.info(`[telemetry-diagnostics][renderer] applying resume payload: ${JSON.stringify({ binaryBytes: binary.byteLength, coldJsonChars: coldJson.length })}`)
+    }
     if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
       forEachDecodedBinaryRow(binary, row => {
-        rendererDiagnostics.binaryRows++
+        if (additionalLoggingEnabled) rendererDiagnostics.binaryRows++
         const msg = row as GatewayMsg
-        observeRendererRow(msg, 'telemetry-resume-binary')
+        if (additionalLoggingEnabled) observeRendererRow(msg, 'telemetry-resume-binary')
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
       })
     } catch (e) {
-      rendererDiagnostics.binaryDecodeErrors++
-      console.error('[telemetry-diagnostics][renderer] Failed to decode resume binary batch:', {
-        error: String(e),
-        bytes: binary.byteLength,
-        firstBytesHex: binaryPreview(binary),
-      })
+      if (additionalLoggingEnabled) {
+        rendererDiagnostics.binaryDecodeErrors++
+        console.error('[telemetry-diagnostics][renderer] Failed to decode resume binary batch:', {
+          error: String(e),
+          bytes: binary.byteLength,
+          firstBytesHex: binaryPreview(binary),
+        })
+      } else {
+        console.error('Failed to decode resume binary batch:', e)
+      }
     }
 
     let latestStatus: StatusRow | null = null
@@ -1797,8 +1868,10 @@ export function startTelemetryBridge(): void {
       if (end > start) {
         try {
           const msg = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow
-          rendererDiagnostics.jsonRows++
-          observeRendererRow(msg as GatewayMsg, 'telemetry-resume-json')
+          if (additionalLoggingEnabled) {
+            rendererDiagnostics.jsonRows++
+            observeRendererRow(msg as GatewayMsg, 'telemetry-resume-json')
+          }
           if (msg.type === 'status') {
             latestStatus = msg
             if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
@@ -1813,14 +1886,18 @@ export function startTelemetryBridge(): void {
           }
         }
         catch (e) {
-          rendererDiagnostics.jsonParseErrors++
-          console.error('[telemetry-diagnostics][renderer] Failed to parse resume JSON:', {
-            error: String(e),
-            payloadChars: coldJson.length,
-            rowOffset: start,
-            rowChars: end - start,
-            rowPreview: coldJson.slice(start, Math.min(end, start + 300)),
-          })
+          if (additionalLoggingEnabled) {
+            rendererDiagnostics.jsonParseErrors++
+            console.error('[telemetry-diagnostics][renderer] Failed to parse resume JSON:', {
+              error: String(e),
+              payloadChars: coldJson.length,
+              rowOffset: start,
+              rowChars: end - start,
+              rowPreview: coldJson.slice(start, Math.min(end, start + 300)),
+            })
+          } else {
+            console.error('Failed to parse resume JSON:', e)
+          }
         }
       }
       start = end + 1
@@ -1838,18 +1915,9 @@ export function startTelemetryBridge(): void {
       set(current)
     }
     recompute(dirty)
-    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
+    if (additionalLoggingEnabled && dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
-  const reportRetention = (): void => {
-    try {
-      window.telemetryBridge.reportRetention(getRendererTelemetryRetentionDiagnostics())
-    } catch {
-      // Diagnostics must remain invisible to the telemetry hot path.
-    }
-  }
-  reportRetention()
-  window.setInterval(reportRetention, 1000)
 }
 
 startTelemetryBridge()

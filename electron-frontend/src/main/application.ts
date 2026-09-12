@@ -181,6 +181,34 @@ ipcMain.on('store-set', (_event, key: string, value: unknown) => {
   if (key === 'theme') updateWindowsTitleBarSymbolColor(value)
 })
 
+interface DebugSettings {
+  additionalLogging: boolean
+  memoryLog: boolean
+}
+
+function debugSettings(): DebugSettings {
+  return {
+    additionalLogging: store.get('debug.additionalLogging', false) === true,
+    memoryLog: store.get('debug.memoryLog', false) === true,
+  }
+}
+
+function publishDebugSettings(): void {
+  const settings = debugSettings()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('debug-settings-changed', settings)
+  }
+}
+
+store.onDidChange('debug.additionalLogging', publishDebugSettings)
+store.onDidChange('debug.memoryLog', publishDebugSettings)
+
+ipcMain.handle('debug-settings-get', debugSettings)
+ipcMain.on('debug-settings-set', (_event, key: keyof DebugSettings, value: unknown) => {
+  if ((key !== 'additionalLogging' && key !== 'memoryLog') || typeof value !== 'boolean') return
+  store.set(`debug.${key}`, value)
+})
+
 ipcMain.handle('updates:check-on-startup', () => {
   startupUpdateCheck ??= checkForUpdateOnStartup(__APP_VERSION__)
   return startupUpdateCheck

@@ -592,26 +592,35 @@ Engine::LiveDiagnostics Engine::liveDiagnostics() const {
     return snapshot;
 }
 
+void Engine::setDiagnosticsEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (enabled && !liveDiagnosticsEnabled_) liveDiagnostics_ = {};
+    liveDiagnosticsEnabled_ = enabled;
+}
+
 void Engine::onDatagram(const uint8_t* data, int length) {
     if (inPlayback_.load()) return;
 
     std::lock_guard<std::mutex> lk(mutex_);
-    liveDiagnostics_.datagrams++;
-    if (length > 0) liveDiagnostics_.bytes += static_cast<uint64_t>(length);
-    liveDiagnostics_.lastDatagramLength = length;
-    if (length < 29) {
-        liveDiagnostics_.tooShort++;
-    } else {
-        const uint16_t incoming = static_cast<uint16_t>(data[0]) |
-            (static_cast<uint16_t>(data[1]) << 8);
-        const uint8_t packetId = data[6];
-        liveDiagnostics_.lastIncomingFormat = incoming;
-        liveDiagnostics_.lastPacketId = packetId;
-        liveDiagnostics_.packetIds[packetId <= 16 ? packetId : 17]++;
-        if (incoming == 2024) liveDiagnostics_.format2024++;
-        else if (incoming == 2025) liveDiagnostics_.format2025++;
-        else if (incoming == 2026) liveDiagnostics_.format2026++;
-        else liveDiagnostics_.unsupportedFormat++;
+    const bool collectDiagnostics = liveDiagnosticsEnabled_;
+    if (collectDiagnostics) {
+        liveDiagnostics_.datagrams++;
+        if (length > 0) liveDiagnostics_.bytes += static_cast<uint64_t>(length);
+        liveDiagnostics_.lastDatagramLength = length;
+        if (length < 29) {
+            liveDiagnostics_.tooShort++;
+        } else {
+            const uint16_t incoming = static_cast<uint16_t>(data[0]) |
+                (static_cast<uint16_t>(data[1]) << 8);
+            const uint8_t packetId = data[6];
+            liveDiagnostics_.lastIncomingFormat = incoming;
+            liveDiagnostics_.lastPacketId = packetId;
+            liveDiagnostics_.packetIds[packetId <= 16 ? packetId : 17]++;
+            if (incoming == 2024) liveDiagnostics_.format2024++;
+            else if (incoming == 2025) liveDiagnostics_.format2025++;
+            else if (incoming == 2026) liveDiagnostics_.format2026++;
+            else liveDiagnostics_.unsupportedFormat++;
+        }
     }
     std::string ts = isoTimestamp();
 
@@ -631,18 +640,22 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     if (r.format != 0) emittedFormat_.store(r.format, std::memory_order_release);
     if (r.format != 0) liveStrategyFormat_ = r.format;
     if (r.format != 0) pairServer_.noteSession(r.sessionUid);
-    liveDiagnostics_.lastSessionTime = r.sessionTime;
-    liveDiagnostics_.rowsProduced += static_cast<uint64_t>(r.rows.size());
-    liveDiagnostics_.binaryBytesProduced += static_cast<uint64_t>(r.binary.size());
+    if (collectDiagnostics) {
+        liveDiagnostics_.lastSessionTime = r.sessionTime;
+        liveDiagnostics_.rowsProduced += static_cast<uint64_t>(r.rows.size());
+        liveDiagnostics_.binaryBytesProduced += static_cast<uint64_t>(r.binary.size());
+    }
 
     for (const auto& c : r.control) emitRow(c);
     if (r.dropped) {
-        liveDiagnostics_.parserDropped++;
+        if (collectDiagnostics) liveDiagnostics_.parserDropped++;
         return;
     }
-    liveDiagnostics_.accepted++;
-    if (r.rows.empty() && r.binary.empty() && r.control.empty())
-        liveDiagnostics_.noOutput++;
+    if (collectDiagnostics) {
+        liveDiagnostics_.accepted++;
+        if (r.rows.empty() && r.binary.empty() && r.control.empty())
+            liveDiagnostics_.noOutput++;
+    }
 
     const float timelineTime = r.rewindSessionTime.value_or(r.sessionTime);
     if (recording) {

@@ -507,8 +507,6 @@ export interface PairServiceState {
 }
 
 declare global {
-  const __ENABLE_PERFORMANCE_DIAGNOSTICS__: boolean
-
   interface TimeChartStatsBridge {
     register(element: HTMLElement, canvas: HTMLCanvasElement): void
     unregister(element: HTMLElement): void
@@ -532,6 +530,12 @@ declare global {
       getStatus: () => Promise<{ ok: boolean; error?: string }>
       restart: () => Promise<{ ok: boolean; error?: string }>
       onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
+    }
+    debugBridge: {
+      get: () => Promise<{ additionalLogging: boolean; memoryLog: boolean }>
+      setAdditionalLogging: (enabled: boolean) => void
+      setMemoryLog: (enabled: boolean) => void
+      onChange: (cb: (settings: { additionalLogging: boolean; memoryLog: boolean }) => void) => () => void
     }
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>

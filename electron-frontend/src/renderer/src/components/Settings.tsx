@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
+import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
@@ -233,7 +233,7 @@ const Settings = memo(function Settings({
   onChartYAxisChange,
 }: Props) {
   const modalPresence = useModalPresence(isOpen)
-  const [activeCategory, setActiveCategory] = useState<'appearance' | 'teamColors' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage'>('appearance')
+  const [activeCategory, setActiveCategory] = useState<'appearance' | 'teamColors' | 'layout' | 'graphs' | 'yAxis' | 'compact' | 'notifications' | 'map' | 'network' | 'pairing' | 'protocol' | 'storage' | 'debug'>('appearance')
   const [view, setView] = useState<'category' | 'about' | 'attributions'>('category')
   const [expandedLicense, setExpandedLicense] = useState<string | null>(null)
   const settingsContentRef = useRef<HTMLDivElement>(null)
@@ -305,6 +305,12 @@ const Settings = memo(function Settings({
   }
   
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(() => window.electronStore.get('logging.enabled', false) as boolean)
+  const [additionalLoggingEnabled, setAdditionalLoggingEnabled] = useState<boolean>(
+    () => window.electronStore.get('debug.additionalLogging', false) === true,
+  )
+  const [memoryLogEnabled, setMemoryLogEnabled] = useState<boolean>(
+    () => window.electronStore.get('debug.memoryLog', false) === true,
+  )
   const [updateChecksEnabled, setUpdateChecksEnabled] = useState<boolean>(() => window.electronStore.get('updates.enabled', true) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
   
@@ -431,6 +437,16 @@ const Settings = memo(function Settings({
     window.electronStore.set('updates.enabled', value)
   }
 
+  function handleAdditionalLoggingToggle(value: boolean) {
+    setAdditionalLoggingEnabled(value)
+    window.debugBridge.setAdditionalLogging(value)
+  }
+
+  function handleMemoryLogToggle(value: boolean) {
+    setMemoryLogEnabled(value)
+    window.debugBridge.setMemoryLog(value)
+  }
+
 
 
   const inputCls = 'bg-[var(--bg-input)] border border-[var(--border-muted)] rounded-lg text-xs text-[var(--text-primary)] px-3 h-8 outline-none focus:border-[var(--border-focus)] transition-colors w-full tabular-nums'
@@ -448,6 +464,7 @@ const Settings = memo(function Settings({
     { id: 'pairing' as const, label: 'Paired Devices', icon: <Smartphone size={14} />, color: '#8b5cf6' },
     { id: 'protocol' as const, label: 'Protocol', icon: <Radio size={14} />, color: '#e879f9' },
     { id: 'storage' as const, label: 'Data Storage', icon: <HardDrive size={14} />, color: '#10b981' },
+    { id: 'debug' as const, label: 'Debug', icon: <Bug size={14} />, color: '#f43f5e' },
   ]
 
   const renderAppearance = () => (
@@ -1192,6 +1209,24 @@ const Settings = memo(function Settings({
     </div>
   )
 
+  const renderDebug = () => (
+    <div className="flex flex-col gap-1">
+      <Row
+        label="Additional logging"
+        description="Enable detailed telemetry pipeline, playback, pairing, preload, renderer, and performance diagnostics. Startup and fatal-error logging remain enabled."
+        warning="Development instrumentation is applied the next time the app starts."
+      >
+        <Toggle value={additionalLoggingEnabled} onChange={handleAdditionalLoggingToggle} />
+      </Row>
+      <Row
+        label="Memory log"
+        description="Sample Electron process memory and retained telemetry once per second into launch-diagnostics/ram_usage.log."
+      >
+        <Toggle value={memoryLogEnabled} onChange={handleMemoryLogToggle} />
+      </Row>
+    </div>
+  )
+
   const renderAbout = () => (
     <div className="flex flex-col items-center justify-center text-center py-12 w-full max-w-[640px] select-none mx-auto my-auto">
       {/* Logo */}
@@ -1342,6 +1377,8 @@ const Settings = memo(function Settings({
         return renderProtocol()
       case 'storage':
         return renderStorage()
+      case 'debug':
+        return renderDebug()
     }
   }
 

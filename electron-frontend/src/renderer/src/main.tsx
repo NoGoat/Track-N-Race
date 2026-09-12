@@ -1,4 +1,5 @@
 import './index.css'
+import { getDebugSettings } from './lib/debugSettings'
 
 // React 19's development build emits User Timing measures for component
 // renders. This 60–120 Hz UI can otherwise retain tens of thousands of
@@ -15,9 +16,10 @@ document.addEventListener('visibilitychange', () => {
 })
 
 async function bootstrap(): Promise<void> {
-  // React Scan is always available while developing. Production bundles only
-  // include it when the release-candidate build explicitly opts in.
-  if (__ENABLE_PERFORMANCE_DIAGNOSTICS__) {
+  // React Scan and WebGL stats are opt-in because they add instrumentation to
+  // the render path. They must install before React DOM loads, so this part of
+  // the Additional logging setting takes effect on the next application launch.
+  if (getDebugSettings().additionalLogging) {
     const [{ scan }, { installStatsGlDiagnostics }] = await Promise.all([
       import('react-scan'),
       import('./diagnostics/statsGlDiagnostics'),
@@ -25,7 +27,7 @@ async function bootstrap(): Promise<void> {
     scan({
       enabled: true,
       showToolbar: true,
-      dangerouslyForceRunInProduction: __ENABLE_PERFORMANCE_DIAGNOSTICS__,
+      dangerouslyForceRunInProduction: true,
     })
     installStatsGlDiagnostics()
   }

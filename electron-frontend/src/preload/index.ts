@@ -7,6 +7,16 @@ const storeAPI = {
     ipcRenderer.send('store-set', key, value),
 }
 
+interface DebugSettings {
+  additionalLogging: boolean
+  memoryLog: boolean
+}
+
+let additionalLoggingEnabled = storeAPI.get('debug.additionalLogging', false) === true
+ipcRenderer.on('debug-settings-changed', (_event, settings: DebugSettings) => {
+  additionalLoggingEnabled = settings.additionalLogging
+})
+
 function payloadBytes(value: unknown): number | null {
   if (typeof value === 'string') return new TextEncoder().encode(value).byteLength
   if (value instanceof Uint8Array) return value.byteLength
@@ -15,10 +25,12 @@ function payloadBytes(value: unknown): number | null {
 }
 
 function logSubscription(channel: string): void {
+  if (!additionalLoggingEnabled) return
   console.info(`[telemetry-diagnostics][preload] subscribed to ${channel}`)
 }
 
 function logFirstDelivery(channel: string, payload: unknown): void {
+  if (!additionalLoggingEnabled) return
   console.info(`[telemetry-diagnostics][preload] first ${channel} delivery`, {
     bytes: payloadBytes(payload),
     valueType: Object.prototype.toString.call(payload),
@@ -30,7 +42,7 @@ const telemetryBridge = {
     logSubscription('telemetry')
     let first = true
     const listener = (_event: Electron.IpcRendererEvent, row: unknown) => {
-      if (first) { first = false; logFirstDelivery('telemetry', row) }
+      if (first && additionalLoggingEnabled) { first = false; logFirstDelivery('telemetry', row) }
       callback(row)
     }
     ipcRenderer.on('telemetry', listener)
@@ -40,7 +52,7 @@ const telemetryBridge = {
     logSubscription('telemetry-batch')
     let first = true
     const listener = (_event: Electron.IpcRendererEvent, batch: string) => {
-      if (first) { first = false; logFirstDelivery('telemetry-batch', batch) }
+      if (first && additionalLoggingEnabled) { first = false; logFirstDelivery('telemetry-batch', batch) }
       callback(batch)
     }
     ipcRenderer.on('telemetry-batch', listener)
@@ -50,7 +62,7 @@ const telemetryBridge = {
     logSubscription('telemetry-binary')
     let first = true
     const listener = (_event: Electron.IpcRendererEvent, batch: Uint8Array) => {
-      if (first) { first = false; logFirstDelivery('telemetry-binary', batch) }
+      if (first && additionalLoggingEnabled) { first = false; logFirstDelivery('telemetry-binary', batch) }
       callback(batch)
     }
     ipcRenderer.on('telemetry-binary', listener)
@@ -60,7 +72,7 @@ const telemetryBridge = {
     logSubscription('telemetry-resume')
     let first = true
     const listener = (_event: Electron.IpcRendererEvent, payload: { binary: Uint8Array; coldJson: string }) => {
-      if (first) {
+      if (first && additionalLoggingEnabled) {
         first = false
         console.info('[telemetry-diagnostics][preload] first telemetry-resume delivery', {
           binaryBytes: payload.binary?.byteLength ?? null,
@@ -106,6 +118,19 @@ const udpBridge = {
     const listener = (_event: Electron.IpcRendererEvent, status: { ok: boolean; error?: string }) => callback(status)
     ipcRenderer.on('udp-status', listener)
     return () => ipcRenderer.removeListener('udp-status', listener)
+  },
+}
+
+const debugBridge = {
+  get: (): Promise<DebugSettings> => ipcRenderer.invoke('debug-settings-get'),
+  setAdditionalLogging: (enabled: boolean): void =>
+    ipcRenderer.send('debug-settings-set', 'additionalLogging', enabled),
+  setMemoryLog: (enabled: boolean): void =>
+    ipcRenderer.send('debug-settings-set', 'memoryLog', enabled),
+  onChange: (callback: (settings: DebugSettings) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, settings: DebugSettings) => callback(settings)
+    ipcRenderer.on('debug-settings-changed', listener)
+    return () => ipcRenderer.removeListener('debug-settings-changed', listener)
   },
 }
 
@@ -243,6 +268,7 @@ contextBridge.exposeInMainWorld('platform', process.platform)
 contextBridge.exposeInMainWorld('telemetryBridge', telemetryBridge)
 contextBridge.exposeInMainWorld('windowControls', windowControls)
 contextBridge.exposeInMainWorld('udpBridge', udpBridge)
+contextBridge.exposeInMainWorld('debugBridge', debugBridge)
 contextBridge.exposeInMainWorld('protocolBridge', protocolBridge)
 contextBridge.exposeInMainWorld('strategyBridge', strategyBridge)
 contextBridge.exposeInMainWorld('fsBridge', fsBridge)

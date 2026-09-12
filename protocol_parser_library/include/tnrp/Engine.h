@@ -73,6 +73,7 @@ public:
     bool startUdp();                       // bind + begin receiving
     bool restartUdp(uint16_t port, const std::string& bindAddress);
     std::string udpLastError() const;
+    void setDiagnosticsEnabled(bool enabled);
     LiveDiagnostics liveDiagnostics() const;
 
     // ── Live config ──────────────────────────────────────────────────────
@@ -206,6 +207,7 @@ private:
     bool playbackStrategyPending_ = false;           // guarded by mutex_
     std::vector<std::string> playbackStrategyPendingRows_; // guarded by mutex_
     std::string playbackPath_;                        // guarded by mutex_
+    bool              liveDiagnosticsEnabled_ = false;
     LiveDiagnostics   liveDiagnostics_{};
 
     void onDatagram(const uint8_t* data, int length);   // UDP receive thread
