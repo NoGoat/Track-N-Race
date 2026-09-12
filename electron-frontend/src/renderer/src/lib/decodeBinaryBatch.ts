@@ -153,7 +153,7 @@ export function decodeBinaryBatchRange(
       }
       default:
         // Unknown tag: record length is unknown, so we can't safely continue.
-        return len
+        throw new Error(`Unknown telemetry binary tag ${tag} at byte offset ${o - 1} of ${len}`)
     }
     decoded++
   }

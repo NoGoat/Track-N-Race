@@ -485,6 +485,149 @@ function invalidateHistoryCoverage(mask: number): void {
   }
 }
 
+const RENDERER_DIAGNOSTIC_INTERVAL_MS = 10_000
+interface RendererDiagnostics {
+  startedAt: number
+  jsonBatches: number
+  jsonChars: number
+  jsonRows: number
+  jsonParseErrors: number
+  singleRows: number
+  binaryBatches: number
+  binaryBytes: number
+  binaryRows: number
+  binaryDecodeErrors: number
+  resumePayloads: number
+  resumeBinaryBytes: number
+  resumeJsonChars: number
+  recomputes: number
+  rowTypes: Record<string, number>
+  rowSources: Record<string, number>
+  lastAnyRowAt: number | null
+  lastTelemetryAt: number | null
+  lastTelemetrySessionTime: number | null
+  lastTelemetrySpeedKph: number | null
+  lastTelemetryRpm: number | null
+}
+
+const rendererDiagnostics: RendererDiagnostics = {
+  startedAt: Date.now(),
+  jsonBatches: 0, jsonChars: 0, jsonRows: 0, jsonParseErrors: 0, singleRows: 0,
+  binaryBatches: 0, binaryBytes: 0, binaryRows: 0, binaryDecodeErrors: 0,
+  resumePayloads: 0, resumeBinaryBytes: 0, resumeJsonChars: 0, recomputes: 0,
+  rowTypes: {}, rowSources: {}, lastAnyRowAt: null, lastTelemetryAt: null,
+  lastTelemetrySessionTime: null, lastTelemetrySpeedKph: null, lastTelemetryRpm: null,
+}
+const firstSeenRowTypes = new Set<string>()
+let warnedRendererNoTelemetry = false
+
+function incrementDiagnostic(map: Record<string, number>, key: string): void {
+  map[key] = (map[key] ?? 0) + 1
+}
+
+function rowDiagnosticSummary(msg: GatewayMsg): Record<string, unknown> {
+  const row = msg as unknown as Record<string, unknown>
+  return {
+    type: msg.type,
+    sessionTime: typeof row.session_time === 'number' ? row.session_time : null,
+    speedKph: typeof row.speed_kph === 'number' ? row.speed_kph : null,
+    rpm: typeof row.rpm === 'number' ? row.rpm : null,
+    detectedFormat: row.detected_format ?? null,
+    activeFormat: row.active_format ?? null,
+    override: row.override ?? null,
+    playerIndex: row.player_idx ?? null,
+    carCount: Array.isArray(row.cars) ? row.cars.length : null,
+  }
+}
+
+function observeRendererRow(msg: GatewayMsg, source: string): void {
+  const now = Date.now()
+  rendererDiagnostics.lastAnyRowAt = now
+  incrementDiagnostic(rendererDiagnostics.rowTypes, msg.type || '<missing-type>')
+  incrementDiagnostic(rendererDiagnostics.rowSources, source)
+  if (msg.type === 'telemetry') {
+    const telemetry = msg as TelemetryRow
+    rendererDiagnostics.lastTelemetryAt = now
+    rendererDiagnostics.lastTelemetrySessionTime = telemetry.session_time
+    rendererDiagnostics.lastTelemetrySpeedKph = telemetry.speed_kph
+    rendererDiagnostics.lastTelemetryRpm = telemetry.rpm
+  }
+  if (!firstSeenRowTypes.has(msg.type)) {
+    firstSeenRowTypes.add(msg.type)
+    console.info(`[telemetry-diagnostics][renderer] first ${msg.type} row via ${source}: ${JSON.stringify(rowDiagnosticSummary(msg))}`)
+  }
+}
+
+function binaryPreview(batch: Uint8Array, limit = 32): string {
+  return Array.from(batch.subarray(0, Math.min(limit, batch.byteLength)))
+    .map(value => value.toString(16).padStart(2, '0')).join(' ')
+}
+
+function logRendererHealth(): void {
+  const now = Date.now()
+  const state = useTelemetryStore.getState()
+  const snapshot = {
+    elapsedMs: now - rendererDiagnostics.startedAt,
+    document: {
+      readyState: document.readyState,
+      visibilityState: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      online: navigator.onLine,
+      platform: window.platform,
+    },
+    bridgeAvailable: {
+      telemetry: Boolean(window.telemetryBridge),
+      player: Boolean(window.playerBridge),
+    },
+    counters: {
+      ...rendererDiagnostics,
+      lastAnyRowAgeMs: rendererDiagnostics.lastAnyRowAt == null ? null : now - rendererDiagnostics.lastAnyRowAt,
+      lastTelemetryAgeMs: rendererDiagnostics.lastTelemetryAt == null ? null : now - rendererDiagnostics.lastTelemetryAt,
+    },
+    workingBuffers: {
+      telemetry: telBufRef.current.length,
+      motion: motBufRef.current.length,
+      motionEx: motExBufRef.current.length,
+      status: stsBufRef.current.length,
+      damage: dmgBufRef.current.length,
+      lapProgress: lapProgressBufRef.current.length,
+    },
+    publishedStore: {
+      telemetry: state.telemetry.length,
+      motion: state.motion.length,
+      motionEx: state.motionEx.length,
+      statusHistory: state.statusHistory.length,
+      damageHistory: state.damageHistory.length,
+      hasLatest: state.latest !== null,
+      hasStatus: state.status !== null,
+      hasLap: state.lap !== null,
+      hasSession: state.session !== null,
+      connected: state.isConnected,
+      error: state.error,
+      protocol: state.protocolStatus ? {
+        override: state.protocolStatus.override,
+        detected: state.protocolStatus.detected_format,
+        active: state.protocolStatus.active_format,
+      } : null,
+    },
+    selection: {
+      seconds: secondsVal,
+      allLapsMode,
+      finiteWindowBackfillEnabled,
+      waitingForAllLapsHistory,
+      historyRowMask,
+      historyRowMaskHex: `0x${historyRowMask.toString(16).padStart(8, '0')}`,
+      requestedHistoryRowMask,
+      isPlayback: isPlaybackFlag,
+    },
+  }
+  console.info(`[telemetry-diagnostics][renderer] health: ${JSON.stringify(snapshot)}`)
+  if (!warnedRendererNoTelemetry && now - rendererDiagnostics.startedAt >= RENDERER_DIAGNOSTIC_INTERVAL_MS && rendererDiagnostics.lastTelemetryAt === null) {
+    warnedRendererNoTelemetry = true
+    console.warn(`[telemetry-diagnostics][renderer] No telemetry row has reached the renderer after ${Math.round((now - rendererDiagnostics.startedAt) / 1000)} seconds. Compare preload delivery markers and main/native health snapshots to locate the stopped stage.`)
+  }
+}
+
 function resetSession(): void {
   // Invalidate a seek payload that is still being cooperatively decoded.
   seekTimelineGeneration++
@@ -1522,6 +1665,13 @@ let started = false
 export function startTelemetryBridge(): void {
   if (started) return
   started = true
+  console.info(`[telemetry-diagnostics][renderer] starting telemetry subscriptions: ${JSON.stringify({
+    telemetryBridge: Boolean(window.telemetryBridge),
+    playerBridge: Boolean(window.playerBridge),
+    readyState: document.readyState,
+    visibilityState: document.visibilityState,
+  })}`)
+  window.setInterval(logRendererHealth, RENDERER_DIAGNOSTIC_INTERVAL_MS)
 
   window.playerBridge.onSeekStart((allHistory) => {
     // Freeze the published timeline immediately, before the seek IPC can race
@@ -1542,6 +1692,8 @@ export function startTelemetryBridge(): void {
   })
 
   window.telemetryBridge.onBatch((batchStr: string) => {
+    rendererDiagnostics.jsonBatches++
+    rendererDiagnostics.jsonChars += batchStr.length
     if (seekRendererPending &&
         !batchStr.includes('"type":"playback_close"') &&
         !batchStr.includes('"type":"playback_loaded"') &&
@@ -1556,45 +1708,85 @@ export function startTelemetryBridge(): void {
       if (end > start) {
         try {
           const msg = JSON.parse(batchStr.slice(start, end)) as GatewayMsg
+          rendererDiagnostics.jsonRows++
+          observeRendererRow(msg, 'telemetry-batch')
           dirty |= dirtySliceFor(msg)
           handleMsg(msg)
         }
-        catch (e) { console.error('Failed to parse batch JSON:', e) }
+        catch (e) {
+          rendererDiagnostics.jsonParseErrors++
+          console.error('[telemetry-diagnostics][renderer] Failed to parse batch JSON:', {
+            error: String(e),
+            batchChars: batchStr.length,
+            rowOffset: start,
+            rowChars: end - start,
+            rowPreview: batchStr.slice(start, Math.min(end, start + 300)),
+          })
+        }
       }
       start = end + 1
     }
     recompute(dirty)
+    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.on((raw) => {
     const msg = raw as GatewayMsg
+    rendererDiagnostics.singleRows++
+    observeRendererRow(msg, 'telemetry')
     handleMsg(msg)
     recompute(dirtySliceFor(msg))
+    rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.onBinary((batch) => {
+    rendererDiagnostics.binaryBatches++
+    rendererDiagnostics.binaryBytes += batch.byteLength
     if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
       forEachDecodedBinaryRow(batch, row => {
+        rendererDiagnostics.binaryRows++
         const msg = row as GatewayMsg
+        observeRendererRow(msg, 'telemetry-binary')
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
       })
-    } catch (e) { console.error('Failed to decode binary batch:', e) }
+    } catch (e) {
+      rendererDiagnostics.binaryDecodeErrors++
+      console.error('[telemetry-diagnostics][renderer] Failed to decode binary batch:', {
+        error: String(e),
+        bytes: batch.byteLength,
+        firstBytesHex: binaryPreview(batch),
+      })
+    }
     recompute(dirty)
+    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
   })
 
   window.telemetryBridge.onResume(({ binary, coldJson }) => {
+    rendererDiagnostics.resumePayloads++
+    rendererDiagnostics.resumeBinaryBytes += binary.byteLength
+    rendererDiagnostics.resumeJsonChars += coldJson.length
+    console.info(`[telemetry-diagnostics][renderer] applying resume payload: ${JSON.stringify({ binaryBytes: binary.byteLength, coldJsonChars: coldJson.length })}`)
     if (seekRendererPending) return
     let dirty = DirtySlice.None
     try {
       forEachDecodedBinaryRow(binary, row => {
+        rendererDiagnostics.binaryRows++
         const msg = row as GatewayMsg
+        observeRendererRow(msg, 'telemetry-resume-binary')
         dirty |= dirtySliceFor(msg)
         handleMsg(msg)
       })
-    } catch (e) { console.error('Failed to decode resume binary batch:', e) }
+    } catch (e) {
+      rendererDiagnostics.binaryDecodeErrors++
+      console.error('[telemetry-diagnostics][renderer] Failed to decode resume binary batch:', {
+        error: String(e),
+        bytes: binary.byteLength,
+        firstBytesHex: binaryPreview(binary),
+      })
+    }
 
     let latestStatus: StatusRow | null = null
     let latestDamage: DamageRow | null = null
@@ -1605,6 +1797,8 @@ export function startTelemetryBridge(): void {
       if (end > start) {
         try {
           const msg = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow
+          rendererDiagnostics.jsonRows++
+          observeRendererRow(msg as GatewayMsg, 'telemetry-resume-json')
           if (msg.type === 'status') {
             latestStatus = msg
             if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
@@ -1618,7 +1812,16 @@ export function startTelemetryBridge(): void {
             dirty |= DirtySlice.Damage
           }
         }
-        catch (e) { console.error('Failed to parse resume JSON:', e) }
+        catch (e) {
+          rendererDiagnostics.jsonParseErrors++
+          console.error('[telemetry-diagnostics][renderer] Failed to parse resume JSON:', {
+            error: String(e),
+            payloadChars: coldJson.length,
+            rowOffset: start,
+            rowChars: end - start,
+            rowPreview: coldJson.slice(start, Math.min(end, start + 300)),
+          })
+        }
       }
       start = end + 1
     }
@@ -1635,7 +1838,8 @@ export function startTelemetryBridge(): void {
       set(current)
     }
     recompute(dirty)
-    })
+    if (dirty !== DirtySlice.None) rendererDiagnostics.recomputes++
+  })
 
   const reportRetention = (): void => {
     try {

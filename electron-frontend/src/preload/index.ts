@@ -7,24 +7,68 @@ const storeAPI = {
     ipcRenderer.send('store-set', key, value),
 }
 
+function payloadBytes(value: unknown): number | null {
+  if (typeof value === 'string') return new TextEncoder().encode(value).byteLength
+  if (value instanceof Uint8Array) return value.byteLength
+  if (value instanceof ArrayBuffer) return value.byteLength
+  return null
+}
+
+function logSubscription(channel: string): void {
+  console.info(`[telemetry-diagnostics][preload] subscribed to ${channel}`)
+}
+
+function logFirstDelivery(channel: string, payload: unknown): void {
+  console.info(`[telemetry-diagnostics][preload] first ${channel} delivery`, {
+    bytes: payloadBytes(payload),
+    valueType: Object.prototype.toString.call(payload),
+  })
+}
+
 const telemetryBridge = {
   on: (callback: (row: unknown) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, row: unknown) => callback(row)
+    logSubscription('telemetry')
+    let first = true
+    const listener = (_event: Electron.IpcRendererEvent, row: unknown) => {
+      if (first) { first = false; logFirstDelivery('telemetry', row) }
+      callback(row)
+    }
     ipcRenderer.on('telemetry', listener)
     return () => ipcRenderer.removeListener('telemetry', listener)
   },
   onBatch: (callback: (batch: string) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, batch: string) => callback(batch)
+    logSubscription('telemetry-batch')
+    let first = true
+    const listener = (_event: Electron.IpcRendererEvent, batch: string) => {
+      if (first) { first = false; logFirstDelivery('telemetry-batch', batch) }
+      callback(batch)
+    }
     ipcRenderer.on('telemetry-batch', listener)
     return () => ipcRenderer.removeListener('telemetry-batch', listener)
   },
   onBinary: (callback: (batch: Uint8Array) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, batch: Uint8Array) => callback(batch)
+    logSubscription('telemetry-binary')
+    let first = true
+    const listener = (_event: Electron.IpcRendererEvent, batch: Uint8Array) => {
+      if (first) { first = false; logFirstDelivery('telemetry-binary', batch) }
+      callback(batch)
+    }
     ipcRenderer.on('telemetry-binary', listener)
     return () => ipcRenderer.removeListener('telemetry-binary', listener)
   },
   onResume: (callback: (payload: { binary: Uint8Array; coldJson: string }) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { binary: Uint8Array; coldJson: string }) => callback(payload)
+    logSubscription('telemetry-resume')
+    let first = true
+    const listener = (_event: Electron.IpcRendererEvent, payload: { binary: Uint8Array; coldJson: string }) => {
+      if (first) {
+        first = false
+        console.info('[telemetry-diagnostics][preload] first telemetry-resume delivery', {
+          binaryBytes: payload.binary?.byteLength ?? null,
+          coldJsonBytes: payloadBytes(payload.coldJson),
+        })
+      }
+      callback(payload)
+    }
     ipcRenderer.on('telemetry-resume', listener)
     return () => ipcRenderer.removeListener('telemetry-resume', listener)
   },
@@ -51,11 +95,18 @@ const windowControls = {
 }
 
 const udpBridge = {
+  getStatus: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('udp-get-status'),
   restart: (): Promise<{ ok: boolean; error?: string }> =>
     new Promise((resolve) => {
       ipcRenderer.once('udp-restart-result', (_event, result) => resolve(result))
       ipcRenderer.send('udp-restart')
     }),
+  onStatusChange: (callback: (status: { ok: boolean; error?: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: { ok: boolean; error?: string }) => callback(status)
+    ipcRenderer.on('udp-status', listener)
+    return () => ipcRenderer.removeListener('udp-status', listener)
+  },
 }
 
 const protocolBridge = {

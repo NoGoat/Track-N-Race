@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,16 +33,20 @@ public:
     void stop();
 
     bool isRunning() const { return running_.load(); }
-    std::string lastError() const { return lastError_; }
+    std::string lastError() const;
 
 private:
     std::atomic<bool> running_{false};
     std::thread       thread_;
+    mutable std::mutex errorMutex_;
     std::string       lastError_;
-    int               rawSock_{-1};
+    // Winsock SOCKET is pointer-sized. Keeping it in an int truncates the
+    // handle on 64-bit Windows and can leak the bound socket on restart.
+    std::uintptr_t    rawSock_{static_cast<std::uintptr_t>(-1)};
 
     void runLoop(uint16_t port, std::string bindAddress, Handler handler,
                  std::vector<UdpForwardTarget> forwardTargets);
+    void setLastError(std::string error);
 };
 
 } // namespace tnrp
