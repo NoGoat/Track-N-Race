@@ -45,6 +45,8 @@ float packedTime(const uint8_t* record, size_t length) {
 struct Family {
     std::vector<uint8_t> packed;
     std::vector<LiveHistoryJsonRow> json;
+    size_t jsonPayloadBytes{};
+    size_t jsonPayloadCapacityBytes{};
     // JSON is compressed as newline-delimited text. Preserve the ingest
     // sequence separately so a Strategy rebuild retains deterministic ordering
     // when multiple families share a session timestamp.
@@ -53,6 +55,16 @@ struct Family {
     size_t plainSize{};
     bool compressionQueued{};
 };
+
+void refreshJsonUsage(Family& family) {
+    family.jsonPayloadBytes = 0;
+    family.jsonPayloadCapacityBytes = 0;
+    for (const auto& row : family.json) {
+        if (!row.json) continue;
+        family.jsonPayloadBytes += row.json->size();
+        family.jsonPayloadCapacityBytes += row.json->capacity() + 1;
+    }
+}
 
 struct LapSegment {
     int lapNum{};
@@ -207,18 +219,25 @@ struct LiveHistoryStore::Impl {
             const size_t size = ZSTD_compress(compressed.data(), compressed.size(),
                                               plain.data(), plain.size(), 3);
             if (ZSTD_isError(size)) continue;
-            compressed.resize(size);
+            // resize() would only reduce the logical size: moving that vector
+            // into the lap would retain its compressBound-sized allocation.
+            // Copy the much smaller result into an exact-sized allocation so
+            // completing a lap actually releases its uncompressed footprint.
+            std::vector<uint8_t> stored(size);
+            std::memcpy(stored.data(), compressed.data(), size);
             if (!isPacked(type)) {
                 family.sequences.reserve(family.json.size());
                 for (const auto& row : family.json)
                     family.sequences.push_back(row.sequence);
             }
             family.plainSize = plain.size();
-            family.compressed = std::move(compressed);
+            family.compressed = std::move(stored);
             family.packed.clear();
             family.packed.shrink_to_fit();
             family.json.clear();
             family.json.shrink_to_fit();
+            family.jsonPayloadBytes = 0;
+            family.jsonPayloadCapacityBytes = 0;
         }
     }
 
@@ -244,6 +263,7 @@ struct LiveHistoryStore::Impl {
                                 -std::numeric_limits<float>::infinity(),
                                 std::numeric_limits<float>::infinity(), ignored,
                                 &family.json, &family.sequences);
+                refreshJsonUsage(family);
             }
             family.compressed.clear();
             family.compressed.shrink_to_fit();
@@ -431,7 +451,10 @@ void LiveHistoryStore::appendJson(uint8_t type, LiveHistoryJsonRow row) {
     }
     std::lock_guard<std::mutex> lock(lap->mutex);
     lap->end = std::max(lap->end, row.sessionTime);
-    lap->families[type].json.push_back(std::move(row));
+    auto& family = lap->families[type];
+    family.jsonPayloadBytes += row.json->size();
+    family.jsonPayloadCapacityBytes += row.json->capacity() + 1;
+    family.json.push_back(std::move(row));
 }
 
 void LiveHistoryStore::rewind(float sessionTime) {
@@ -464,6 +487,7 @@ void LiveHistoryStore::rewind(float sessionTime) {
                 family.json.erase(std::remove_if(family.json.begin(), family.json.end(),
                     [&](const auto& row) { return row.sessionTime > sessionTime; }),
                     family.json.end());
+                refreshJsonUsage(family);
             }
         }
     }
@@ -505,6 +529,54 @@ float LiveHistoryStore::currentLapStart() const {
     std::lock_guard<std::mutex> lock(impl_->stateMutex);
     const auto it = impl_->laps.find(impl_->current);
     return it == impl_->laps.end() ? 0.0f : it->second->start;
+}
+
+LiveHistoryMemoryStats LiveHistoryStore::memoryStats() const {
+    LiveHistoryMemoryStats stats;
+    std::vector<std::shared_ptr<LapSegment>> laps;
+    {
+        std::lock_guard<std::mutex> lock(impl_->stateMutex);
+        stats.lapCount = impl_->laps.size();
+        for (const auto& [lapNum, lap] : impl_->laps) {
+            if (impl_->pinned(lapNum)) ++stats.pinnedLapCount;
+            laps.push_back(lap);
+        }
+    }
+    for (const auto& lap : laps) {
+        // Memory logging runs on Electron's main thread. Never wait for a
+        // history compression/decompression job that currently owns this lap.
+        std::unique_lock<std::mutex> lapLock(lap->mutex, std::try_to_lock);
+        if (!lapLock.owns_lock()) {
+            ++stats.busyLapCount;
+            continue;
+        }
+        bool compressed = false;
+        for (const auto& family : lap->families) {
+            stats.packedBytes += family.packed.size();
+            stats.packedCapacityBytes += family.packed.capacity();
+            stats.jsonRows += family.json.size();
+            stats.jsonContainerCapacityBytes +=
+                family.json.capacity() * sizeof(LiveHistoryJsonRow);
+            stats.jsonPayloadBytes += family.jsonPayloadBytes;
+            stats.jsonPayloadCapacityBytes += family.jsonPayloadCapacityBytes;
+            stats.sequenceEntries += family.sequences.size();
+            stats.sequenceCapacityBytes +=
+                family.sequences.capacity() * sizeof(uint64_t);
+            stats.compressedPlainBytes += family.plainSize;
+            stats.compressedBytes += family.compressed.size();
+            stats.compressedCapacityBytes += family.compressed.capacity();
+            compressed = compressed || !family.compressed.empty();
+        }
+        if (compressed) ++stats.compressedLapCount;
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->workMutex);
+        stats.queuedJobs = impl_->jobs.size();
+    }
+    stats.retainedBytes = stats.packedCapacityBytes +
+        stats.jsonPayloadCapacityBytes + stats.jsonContainerCapacityBytes +
+        stats.sequenceCapacityBytes + stats.compressedCapacityBytes;
+    return stats;
 }
 
 std::string LiveHistoryStore::latestJson(uint8_t type,

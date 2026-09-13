@@ -69,6 +69,17 @@ int main() {
     assert(statuses.json.find("\"lap\":1") != std::string::npos);
     assert(statuses.json.find("\"lap\":5") != std::string::npos);
 
+    // Historical families must retain only their compressed payload, not the
+    // much larger ZSTD_compressBound workspace capacity.
+    const auto memory = store.memoryStats();
+    assert(memory.retainedBytes > 0);
+    assert(memory.lapCount == 5);
+    assert(memory.compressedLapCount == 1);
+    assert(memory.pinnedLapCount == 4);
+    assert(memory.compressedPlainBytes > memory.compressedBytes);
+    assert(memory.compressedBytes > 0);
+    assert(memory.compressedCapacityBytes == memory.compressedBytes);
+
     const auto telemetry = request(store, 1u << 1, 0.0f, 50.0f);
     assert(telemetry.json.empty());
     assert(telemetry.binary);

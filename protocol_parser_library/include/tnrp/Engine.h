@@ -66,6 +66,26 @@ public:
         float consumerWindowSeconds = 0.0f;
     };
 
+    struct LiveHistoryMemoryStats {
+        size_t retainedBytes{};
+        size_t lapCount{};
+        size_t pinnedLapCount{};
+        size_t compressedLapCount{};
+        size_t busyLapCount{};
+        size_t packedBytes{};
+        size_t packedCapacityBytes{};
+        size_t jsonRows{};
+        size_t jsonPayloadBytes{};
+        size_t jsonPayloadCapacityBytes{};
+        size_t jsonContainerCapacityBytes{};
+        size_t sequenceEntries{};
+        size_t sequenceCapacityBytes{};
+        size_t compressedPlainBytes{};
+        size_t compressedBytes{};
+        size_t compressedCapacityBytes{};
+        size_t queuedJobs{};
+    };
+
     Engine(const Config& config, Sink* sink);
     ~Engine();
 
@@ -75,6 +95,7 @@ public:
     std::string udpLastError() const;
     void setDiagnosticsEnabled(bool enabled);
     LiveDiagnostics liveDiagnostics() const;
+    LiveHistoryMemoryStats liveHistoryMemoryStats() const;
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);

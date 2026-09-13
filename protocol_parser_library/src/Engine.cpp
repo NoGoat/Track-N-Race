@@ -592,6 +592,29 @@ Engine::LiveDiagnostics Engine::liveDiagnostics() const {
     return snapshot;
 }
 
+Engine::LiveHistoryMemoryStats Engine::liveHistoryMemoryStats() const {
+    const auto source = liveHistory_->memoryStats();
+    LiveHistoryMemoryStats result;
+    result.retainedBytes = source.retainedBytes;
+    result.lapCount = source.lapCount;
+    result.pinnedLapCount = source.pinnedLapCount;
+    result.compressedLapCount = source.compressedLapCount;
+    result.busyLapCount = source.busyLapCount;
+    result.packedBytes = source.packedBytes;
+    result.packedCapacityBytes = source.packedCapacityBytes;
+    result.jsonRows = source.jsonRows;
+    result.jsonPayloadBytes = source.jsonPayloadBytes;
+    result.jsonPayloadCapacityBytes = source.jsonPayloadCapacityBytes;
+    result.jsonContainerCapacityBytes = source.jsonContainerCapacityBytes;
+    result.sequenceEntries = source.sequenceEntries;
+    result.sequenceCapacityBytes = source.sequenceCapacityBytes;
+    result.compressedPlainBytes = source.compressedPlainBytes;
+    result.compressedBytes = source.compressedBytes;
+    result.compressedCapacityBytes = source.compressedCapacityBytes;
+    result.queuedJobs = source.queuedJobs;
+    return result;
+}
+
 void Engine::setDiagnosticsEnabled(bool enabled) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (enabled && !liveDiagnosticsEnabled_) liveDiagnostics_ = {};

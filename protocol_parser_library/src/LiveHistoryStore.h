@@ -20,6 +20,26 @@ struct LiveHistoryBackfill {
     std::string json;
 };
 
+struct LiveHistoryMemoryStats {
+    size_t retainedBytes{};
+    size_t lapCount{};
+    size_t pinnedLapCount{};
+    size_t compressedLapCount{};
+    size_t busyLapCount{};
+    size_t packedBytes{};
+    size_t packedCapacityBytes{};
+    size_t jsonRows{};
+    size_t jsonPayloadBytes{};
+    size_t jsonPayloadCapacityBytes{};
+    size_t jsonContainerCapacityBytes{};
+    size_t sequenceEntries{};
+    size_t sequenceCapacityBytes{};
+    size_t compressedPlainBytes{};
+    size_t compressedBytes{};
+    size_t compressedCapacityBytes{};
+    size_t queuedJobs{};
+};
+
 // Canonical live-session history. Rows are grouped by lap and family. Current,
 // previous, previous-previous and fastest laps stay resident; older laps are
 // compressed by the store's worker. Range requests run on that same worker so
@@ -43,6 +63,7 @@ public:
     int currentLap() const;
     float currentLapStart() const;
     std::string latestJson(uint8_t type, float throughSessionTime) const;
+    LiveHistoryMemoryStats memoryStats() const;
 
     // Used only by the Strategy worker after a rewind.
     std::vector<LiveHistoryJsonRow> strategyRows(float throughSessionTime) const;

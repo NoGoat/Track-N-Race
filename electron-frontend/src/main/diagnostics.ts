@@ -166,8 +166,8 @@ function writeRamUsageSample(): void {
       estimated_retained_kb: estimatedRetainedBytes / 1024,
       already_included_in_process_totals: true,
       attribution_scope: 'Electron telemetry stores, published views, chart CPU/GPU pages, ' +
-        'seek/resume buffers, and native transit queues; protocol-engine internal cache/container ' +
-        'overhead remains only in process totals',
+        'seek/resume buffers, native transit queues, and native live-history allocation capacity; ' +
+        'remaining protocol-engine cache/container overhead remains only in process totals',
       renderer_sample_age_ms: Number.isFinite(rendererSampledAt)
         ? Math.max(0, Date.now() - rendererSampledAt)
         : null,

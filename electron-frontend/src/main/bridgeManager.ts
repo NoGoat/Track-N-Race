@@ -424,14 +424,25 @@ function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
     Number.isFinite(nativeTransit.retained_bytes)
     ? nativeTransit.retained_bytes
     : 0
+  const nativeLiveHistory = nativeTransit?.live_history &&
+    typeof nativeTransit.live_history === 'object' &&
+    !Array.isArray(nativeTransit.live_history)
+    ? nativeTransit.live_history as Record<string, unknown>
+    : null
+  const nativeLiveHistoryBytes = typeof nativeLiveHistory?.retained_bytes === 'number' &&
+    Number.isFinite(nativeLiveHistory.retained_bytes)
+    ? nativeLiveHistory.retained_bytes
+    : 0
+  const nativeTransitDetails = nativeTransit ? { ...nativeTransit } : null
+  if (nativeTransitDetails) delete nativeTransitDetails.live_history
   const retainedBytes = resumeBinary.payloadBytes + resumeJson.payloadBytes +
-    seekBinaryBytes + seekJsonBytes + nativeTransitBytes
+    seekBinaryBytes + seekJsonBytes + nativeTransitBytes + nativeLiveHistoryBytes
 
   return {
     sampled_at: new Date().toISOString(),
     mode: activeFilePath ? 'playback' : 'realtime',
     retained_bytes: retainedBytes,
-    byte_basis: 'exact retained Buffer/string payload bytes and reserved native transit payload bytes; container overhead excluded',
+    byte_basis: 'retained Buffer/string payload bytes, reserved native transit payload bytes, and estimated native live-history allocation capacity; stated container overhead excluded',
     renderer_visible: rendererVisible,
     resume_window_ms: resumeWindowMs,
     hidden_resume: {
@@ -450,7 +461,8 @@ function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
       tracked_bytes: seekBufferedBytes,
       limit_bytes: MAX_SEEK_FORWARD_BYTES,
     },
-    native_transit: nativeTransit,
+    native_transit: nativeTransitDetails,
+    native_live_history: nativeLiveHistory,
   }
 }
 

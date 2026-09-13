@@ -861,6 +861,9 @@ private:
         const size_t seekBytes = seekFlushBytes_->load(std::memory_order_relaxed);
         const size_t retainedBytes = jsonPendingBytes + jsonDrainingBytes +
             binaryPendingBytes + binaryDrainingBytes + seekBytes;
+        const auto history = engine
+            ? engine->liveHistoryMemoryStats()
+            : tnrp::Engine::LiveHistoryMemoryStats{};
         Napi::Object result = Napi::Object::New(info.Env());
         result.Set("retained_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(retainedBytes)));
@@ -890,6 +893,28 @@ private:
         result.Set("binary_flush", binary);
         result.Set("seek_flush_in_flight_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(seekBytes)));
+
+        Napi::Object liveHistory = Napi::Object::New(info.Env());
+        liveHistory.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.retainedBytes)));
+        liveHistory.Set("estimate_basis", Napi::String::New(info.Env(),
+            "allocated vector/string capacities; lap/map/shared_ptr and active worker scratch overhead excluded"));
+        liveHistory.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(history.lapCount)));
+        liveHistory.Set("pinned_laps", Napi::Number::New(info.Env(), static_cast<double>(history.pinnedLapCount)));
+        liveHistory.Set("compressed_laps", Napi::Number::New(info.Env(), static_cast<double>(history.compressedLapCount)));
+        liveHistory.Set("busy_laps", Napi::Number::New(info.Env(), static_cast<double>(history.busyLapCount)));
+        liveHistory.Set("packed_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.packedBytes)));
+        liveHistory.Set("packed_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.packedCapacityBytes)));
+        liveHistory.Set("json_rows", Napi::Number::New(info.Env(), static_cast<double>(history.jsonRows)));
+        liveHistory.Set("json_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonPayloadBytes)));
+        liveHistory.Set("json_payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonPayloadCapacityBytes)));
+        liveHistory.Set("json_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.jsonContainerCapacityBytes)));
+        liveHistory.Set("sequence_entries", Napi::Number::New(info.Env(), static_cast<double>(history.sequenceEntries)));
+        liveHistory.Set("sequence_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.sequenceCapacityBytes)));
+        liveHistory.Set("compressed_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedPlainBytes)));
+        liveHistory.Set("compressed_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedBytes)));
+        liveHistory.Set("compressed_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedCapacityBytes)));
+        liveHistory.Set("queued_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.queuedJobs)));
+        result.Set("live_history", liveHistory);
         return result;
     }
 
