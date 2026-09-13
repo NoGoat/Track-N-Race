@@ -3,7 +3,6 @@
 
 #include <QApplication>
 #include <QAction>
-#include <QButtonGroup>
 #include <QComboBox>
 #include <QEvent>
 #include <QFont>
@@ -15,9 +14,9 @@
 #include <QStyle>
 #include <QStyleOptionButton>
 #include <QStylePainter>
-#include <QStandardItemModel>
 #include <QTimer>
 #include <QToolButton>
+#include <cmath>
 // TEMP DIAGNOSTIC (icon blur investigation) — remove with the logging block below.
 #include <QFile>
 #include <QTextStream>
@@ -119,63 +118,29 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     // up as a second line stacked right under our accent underline. QToolBar also
     // reserves its own internal padding/margin around every item regardless of
     // a widget's own size policy — zeroing it here too, since that inset (not
-    // anything in the page buttons themselves) was the source of the remaining
-    // gap between the active-page underline and the toolbar's true bottom edge.
+    // anything in the child controls themselves) was the source of unwanted
+    // space between the toolbar contents and its true bottom edge.
     setFixedHeight(kToolbarHeight);
     // Sets the toolbar stylesheet (border/margins, + the palette Button shade
     // background — see the method).
     updateColorScheme();
 
-    // Page switcher: plain checkable QToolButtons in an exclusive group, same
-    // approach as the window-size segmented control below. QTabBar was tried
-    // first, but it has a hardcoded internal paint call (PE_FrameTabBarBase)
-    // for the base line under inactive tabs that's supposed to be suppressed by
-    // documentMode(true) and isn't, in this style/Qt-version combination — and
-    // that line isn't reachable through any stylesheet rule. Plain QToolButtons
-    // have no such native "tab base" painting path, so there's nothing for an
-    // unselected button to draw beyond what its own (empty) stylesheet says.
-    QWidget* pageTabsWidget = new QWidget;
-    pageTabsWidget->setFixedHeight(kToolbarHeight);
-    QHBoxLayout* pageTabsLay = new QHBoxLayout(pageTabsWidget);
-    pageTabsLay->setContentsMargins(0, 0, 0, 0);
-    pageTabsLay->setSpacing(4);
-    pageGroup_ = new QButtonGroup(this);
-    pageGroup_->setExclusive(true);
-    static constexpr int kUnderlineWidth = 2;
-    const QString accent = QApplication::palette().color(QPalette::Highlight).name();
-    // Every button — checked or not — reserves the same border-bottom width
-    // (transparent unless checked), so switching pages only changes its color,
-    // never shifts the text within the button's fixed height.
-    const QString pageBtnStyle = QString(
-        "QToolButton { padding: 0px 14px; border: none; background: transparent;"
-        " border-bottom: %1px solid transparent; }"
-        "QToolButton:checked { border-bottom: %1px solid %2; }"
-    ).arg(kUnderlineWidth).arg(accent);
-    for (int i = 0; i < pageNames.size(); ++i) {
-        QToolButton* b = new QToolButton;
-        b->setText(pageNames[i]);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        b->setFixedHeight(kToolbarHeight - 2);
-        b->setStyleSheet(pageBtnStyle);
-        // Pin each tab to its natural width so it can't compress: when space runs
-        // out the only way the strip shrinks is by *hiding* a whole tab (handled by
-        // relayout). Otherwise the buttons and the toolbar both try to shrink
-        // at once and the overflow measurement never settles — that was the flicker.
-        b->ensurePolished();
-        b->setFixedWidth(b->sizeHint().width());
-        pageGroup_->addButton(b, i);
-        pageTabsLay->addWidget(b);
-        pageButtons_.push_back(b);
-    }
-    static_cast<QToolButton*>(pageGroup_->button(0))->setChecked(true);   // default: first page
-    addWidget(pageTabsWidget);
-
-    connect(pageGroup_, &QButtonGroup::idClicked, this, [this](int i) {
-        currentPage_ = i;
-        relayout();      // the active tab is kept inline — re-evaluate overflow
-        emit pageSelected(i);
-    });
+    // Match Electron's header navigation: one non-searchable dropdown showing
+    // the active page. Item order remains identical to the owner's page stack,
+    // so the selected index can continue to drive QStackedWidget directly.
+    QWidget* pageControl = new QWidget;
+    auto* pageLayout = new QHBoxLayout(pageControl);
+    pageLayout->setContentsMargins(8, 0, 0, 0);
+    pageLayout->setSpacing(0);
+    pageBtn_ = new QComboBox(pageControl);
+    pageBtn_->setFrame(false);
+    pageBtn_->addItems(pageNames);
+    pageBtn_->setCurrentIndex(0);
+    pageBtn_->setToolTip("Page");
+    pageLayout->addWidget(pageBtn_);
+    pageAct_ = addWidget(pageControl);
+    connect(pageBtn_, QOverload<int>::of(&QComboBox::activated),
+            this, &AppToolbar::pageSelected);
 
     // Expanding spacer that pushes the right-hand group over. The session timer
     // rides at the right edge of this spacer (just left of the window segment) so
@@ -197,6 +162,14 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     timerLabel_->setToolTip("Session time");
     timerLabel_->hide();   // shown once the first session_time arrives
     spacerLay->addWidget(timerLabel_);
+    deltaLabel_ = new QLabel;
+    deltaLabel_->setObjectName("sessionDelta");
+    deltaLabel_->setContentsMargins(5, 0, 8, 0);
+    deltaLabel_->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+    deltaLabel_->setFont(timerFont);
+    deltaLabel_->setToolTip("Lap comparison delta");
+    deltaLabel_->hide();
+    spacerLay->addWidget(deltaLabel_);
     addWidget(spacer);
 
     // Analyze owns a lap-relative X axis, so its navigation controls replace the
@@ -231,10 +204,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     windowToolsLayout->setSpacing(2);
     windowBtn_ = new QComboBox(windowTools);
     windowBtn_->setFrame(false);
-    for (int i = 0; i < kWindowOptionCount; ++i) {
-        windowBtn_->addItem(kWindowOptions[i].label, chartWindowKey(kWindowOptions[i].window));
-    }
-    windowBtn_->setCurrentIndex(windowIdx_);                        // default 30s
+    rebuildChartWindowOptions();
     windowBtn_->setToolTip("Chart window");
     connect(windowBtn_, QOverload<int>::of(&QComboBox::activated),
             this, &AppToolbar::applyChartWindow);
@@ -275,7 +245,7 @@ AppToolbar::AppToolbar(const QStringList& pageNames, bool showLabels, QWidget* p
     connect(settingsAct_, &QAction::triggered, this, &AppToolbar::settingsRequested);
 
     // Custom overflow: the toolbar is built from composite custom widgets (page
-    // tabs, window-size segment), which Qt's native QToolBarExtension can't reparent
+    // and window dropdowns), which Qt's native QToolBarExtension can't reparent
     // into its popup. Instead we manage it ourselves — relayout() collapses
     // low-priority items into this "⋯" button's menu when the window is too narrow,
     // so the broken native extension never appears.
@@ -320,6 +290,13 @@ void AppToolbar::setEditLayoutEnabled(bool on) {
 
 void AppToolbar::setAnalyzeControlsVisible(bool on) {
     analyzeVisible_ = on;
+    relayout();
+}
+
+void AppToolbar::setAnalyzeContextWidget(QWidget* widget) {
+    if (!widget || analyzeContextAct_) return;
+    analyzeContextAct_ = insertWidget(analyzeAct_, widget);
+    analyzeContextAct_->setVisible(false);
     relayout();
 }
 
@@ -373,14 +350,44 @@ void AppToolbar::updateSessionTimer(float sessionTime) {
     if (w != timerW_) { timerW_ = w; relayout(); }
 }
 
+void AppToolbar::updateSessionDelta(double deltaSeconds) {
+    if (!deltaLabel_) return;
+    if (!std::isfinite(deltaSeconds)) {
+        if (deltaLabel_->isVisible()) {
+            deltaLabel_->hide();
+            deltaW_ = 0;
+            relayout();
+        }
+        return;
+    }
+
+    const QString sign = deltaSeconds >= 0.0 ? QStringLiteral("+")
+                                             : QString::fromUtf8("\xE2\x88\x92");
+    deltaLabel_->setText(sign + QString::number(std::abs(deltaSeconds), 'f', 3));
+    if (deltaSeconds > 0.0)
+        deltaLabel_->setStyleSheet(QStringLiteral("color: #C4162A;"));
+    else if (deltaSeconds < 0.0)
+        deltaLabel_->setStyleSheet(QStringLiteral("color: #37872D;"));
+    else
+        deltaLabel_->setStyleSheet(QString());
+    if (!deltaLabel_->isVisible()) deltaLabel_->show();
+    const int w = deltaLabel_->sizeHint().width();
+    if (w != deltaW_) { deltaW_ = w; relayout(); }
+}
+
 void AppToolbar::resetSessionTimer() {
     timerSec_ = -1;
     timerW_   = 0;
     if (timerLabel_) {
         timerLabel_->clear();
         timerLabel_->hide();
-        relayout();   // reclaim the freed width for the inline items
     }
+    deltaW_ = 0;
+    if (deltaLabel_) {
+        deltaLabel_->clear();
+        deltaLabel_->hide();
+    }
+    relayout();   // reclaim the freed timer/delta width for inline items
 }
 
 void AppToolbar::resizeEvent(QResizeEvent* e) {
@@ -418,9 +425,9 @@ void AppToolbar::refreshThemedIcons() {
 }
 
 void AppToolbar::applyChartWindow(int idx) {
-    if (idx < 0 || idx >= kWindowOptionCount) return;
-    windowIdx_ = idx;
-    const ChartWindow selected = kWindowOptions[idx].window;
+    if (!windowBtn_ || idx < 0 || idx >= windowBtn_->count()) return;
+    const ChartWindow selected = chartWindowFromKey(windowBtn_->itemData(idx).toString());
+    window_ = selected;
     emit chartWindowChanged(selected);
     // Reflect the choice on the combo box (the choice may have come from the
     // combo box itself or the overflow menu).
@@ -428,10 +435,30 @@ void AppToolbar::applyChartWindow(int idx) {
     if (referenceLap_) referenceLap_->setVisible(playback_ && selected == ChartWindow::SelectedLap);
 }
 
+void AppToolbar::rebuildChartWindowOptions() {
+    if (!windowBtn_) return;
+    windowBtn_->blockSignals(true);
+    windowBtn_->clear();
+    for (int i = 0; i < kWindowOptionCount; ++i) {
+        const ChartWindow candidate = kWindowOptions[i].window;
+        if (!chartWindowIsAvailable(candidate, lapCoordinatesAvailable_, playback_)) continue;
+        windowBtn_->addItem(kWindowOptions[i].label, chartWindowKey(candidate));
+    }
+    // Electron keeps the persisted value untouched when it is temporarily
+    // unavailable, but presents and renders the startup default in its place.
+    const ChartWindow displayed = chartWindowIsAvailable(
+        window_, lapCoordinatesAvailable_, playback_) ? window_ : ChartWindow::Seconds30;
+    const int idx = windowBtn_->findData(chartWindowKey(displayed));
+    windowBtn_->setCurrentIndex(idx >= 0 ? idx : 0);
+    windowBtn_->blockSignals(false);
+}
+
 void AppToolbar::setChartLapAvailability(const QVector<int>& laps, bool playback,
                                          bool lapCoordinatesAvailable)
 {
     playback_ = playback;
+    lapCoordinatesAvailable_ = lapCoordinatesAvailable;
+    rebuildChartWindowOptions();
     const int selected = referenceLap_ ? referenceLap_->currentData().toInt() : 0;
     if (referenceLap_) {
         referenceLap_->blockSignals(true);
@@ -443,27 +470,16 @@ void AppToolbar::setChartLapAvailability(const QVector<int>& laps, bool playback
             (referenceLap_->count() > 0 ? 0 : -1));
         referenceLap_->blockSignals(false);
         referenceLap_->setVisible(playback &&
-            kWindowOptions[windowIdx_].window == ChartWindow::SelectedLap);
+            window_ == ChartWindow::SelectedLap);
     }
-    if (windowBtn_) {
-        for (int i = 0; i < windowBtn_->count(); ++i) {
-            const ChartWindow w = chartWindowFromKey(windowBtn_->itemData(i).toString());
-            auto* standardModel = qobject_cast<QStandardItemModel*>(windowBtn_->model());
-            if (standardModel) if (auto* item = standardModel->item(i))
-                item->setEnabled(!chartWindowIsDistance(w) ||
-                    (lapCoordinatesAvailable && w != ChartWindow::SelectedLap) ||
-                    (lapCoordinatesAvailable && w == ChartWindow::SelectedLap && playback));
-        }
-        if (sectorBtn_) sectorBtn_->setVisible(lapCoordinatesAvailable);
-    }
+    if (sectorBtn_) sectorBtn_->setVisible(lapCoordinatesAvailable);
 }
 
 void AppToolbar::setChartOptions(ChartWindow window, int referenceLap,
                                  bool sectorBoundaries, bool cursorSync)
 {
-    for (int i = 0; i < kWindowOptionCount; ++i)
-        if (kWindowOptions[i].window == window) { windowIdx_ = i; break; }
-    if (windowBtn_) windowBtn_->setCurrentIndex(windowIdx_);
+    window_ = window;
+    rebuildChartWindowOptions();
     if (referenceLap_) {
         const int idx = referenceLap_->findData(referenceLap);
         if (idx >= 0) referenceLap_->setCurrentIndex(idx);
@@ -479,14 +495,14 @@ void AppToolbar::setChartOptions(ChartWindow window, int referenceLap,
 }
 
 // Collapse low-priority toolbar items into the "⋯" menu when the window is too
-// narrow to fit everything, expanding them back as it widens. Order of collapse:
-// icon actions → window-size segment → page tabs (right-to-left, active tab kept).
+// narrow to fit everything, expanding them back as it widens. The compact page
+// dropdown remains inline; icon actions and then the chart-window controls move
+// into overflow as needed.
 void AppToolbar::relayout() {
-    if (!overflowAct_ || pageButtons_.empty()) return;
+    if (!overflowAct_ || !pageAct_ || !pageBtn_) return;
     const int avail = width();
     if (avail <= 0) return;
     const int spacing = layout() ? layout()->spacing() : 4;
-    const int n = (int)pageButtons_.size();
     // Deliberate slack so we always collapse a little EARLY rather than ever let the
     // toolbar genuinely overflow. A real overflow makes Qt's (suppressed) extension
     // button fight our event filter — show/hide/show — which is the flicker. Showing
@@ -503,77 +519,67 @@ void AppToolbar::relayout() {
         if (settingsAct_)   settingsAct_->setVisible(v);
     };
 
-    // Pure arithmetic from stable sizeHints (tabs are fixed-width; the rest are
-    // content-sized and don't depend on the live layout), so the decision is
-    // deterministic — identical for a given width every call, no oscillation.
-    std::vector<int> tabW(n);
-    int sumTabs = 0;
-    for (int i = 0; i < n; ++i) { tabW[i] = pageButtons_[i]->sizeHint().width(); sumTabs += tabW[i]; }
-    const int wSeg   = analyzeVisible_ ? analyzeControls_->sizeHint().width()
-                                       : actW(windowAct_);
+    // Pure arithmetic from stable sizeHints, so the decision is deterministic —
+    // identical for a given width every call, with no overflow oscillation.
+    const int wPage  = actW(pageAct_);
+    const int wAnalyzeContext = actW(analyzeContextAct_);
+    const int wAnalyzeNav = actW(analyzeAct_);
+    const int wSeg = analyzeVisible_
+        ? wAnalyzeContext + wAnalyzeNav + (wAnalyzeContext && wAnalyzeNav ? spacing : 0)
+        : actW(windowAct_);
     const int wIcons = actW(openAct_) + actW(editLayoutAct_) + actW(settingsAct_);
     const int wOver  = overflowBtn_->sizeHint().width();
-    // The session timer lives inside the (otherwise collapsible) spacer, so the
-    // spacer can no longer shrink to 0 — it must always reserve the timer's width.
-    // The timer is persistent: it never collapses into the overflow menu, so this
-    // width stays in the inline budget throughout and is never subtracted off.
-    const int wTimer = (timerLabel_ && timerLabel_->isVisible())
-                           ? timerLabel_->sizeHint().width() : 0;
-    // Inter-item gaps: 6 toolbar items (tab strip, spacer, seg, 3 icons) → 5 gaps,
-    // plus the tab strip's own gaps between its n buttons. The timer adds no gap of
-    // its own (it rides inside the spacer).
-    const int needAll = sumTabs + wSeg + wIcons + wTimer + spacing * 5 + spacing * (n - 1);
+    // The session timer and comparison delta live inside the (otherwise
+    // collapsible) spacer, so reserve their visible width. Neither readout joins
+    // the overflow menu.
+    const int wTimer = ((timerLabel_ && timerLabel_->isVisible())
+                            ? timerLabel_->sizeHint().width() : 0)
+                     + ((deltaLabel_ && deltaLabel_->isVisible())
+                            ? deltaLabel_->sizeHint().width() : 0);
+    // Inter-item gaps: 6 toolbar items (page dropdown, spacer, segment, 3 icons)
+    // create 5 gaps. The timer adds no gap of its own (it rides in the spacer).
+    const int needAll = wPage + wSeg + wIcons + wTimer + spacing * 5;
 
     if (avail >= needAll + kSlack) {              // comfortably fits — everything inline
         if (windowAct_) windowAct_->setVisible(!analyzeVisible_);
+        if (analyzeContextAct_) analyzeContextAct_->setVisible(analyzeVisible_);
         if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_);
         setIconsVisible(true);
-        for (auto* b : pageButtons_) b->setVisible(true);
+        pageAct_->setVisible(true);
         overflowAct_->setVisible(false);
         return;
     }
 
-    // Need overflow. Collapse units (icons → window segment → tabs R→L, active tab
-    // kept) until inline content + ⋯ leaves at least kSlack of headroom.
+    // Need overflow. Collapse icon actions and then the window segment until the
+    // always-visible page dropdown plus inline content and ⋯ fit comfortably.
     overflowAct_->setVisible(true);
     const int budget = avail - wOver - spacing - kSlack;
     int inlineW = needAll;
-    bool segIn = true, iconsIn = true;
-    std::vector<bool> tabIn(n, true);
+    bool segIn = true, iconsIn = true, analyzeNavIn = true;
     if (inlineW > budget && iconsIn) { iconsIn = false; inlineW -= wIcons + spacing; }
-    if (inlineW > budget && segIn && !analyzeVisible_) { segIn = false; inlineW -= wSeg + spacing; }
-    for (int i = n - 1; i >= 0 && inlineW > budget; --i) {
-        if (i == currentPage_) continue;          // always keep the active tab inline
-        tabIn[i] = false;
-        inlineW -= tabW[i] + spacing;
+    if (inlineW > budget && analyzeVisible_ && analyzeNavIn) {
+        analyzeNavIn = false;
+        inlineW -= wAnalyzeNav + spacing;
     }
+    if (inlineW > budget && segIn && !analyzeVisible_) { segIn = false; inlineW -= wSeg + spacing; }
 
+    pageAct_->setVisible(true);
     if (windowAct_) windowAct_->setVisible(!analyzeVisible_ && segIn);
-    if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_);
+    if (analyzeContextAct_) analyzeContextAct_->setVisible(analyzeVisible_);
+    if (analyzeAct_) analyzeAct_->setVisible(analyzeVisible_ && analyzeNavIn);
     setIconsVisible(iconsIn);
-    for (int i = 0; i < n; ++i) pageButtons_[i]->setVisible(tabIn[i]);
 
     // Rebuild the overflow menu from whatever collapsed.
     overflowMenu_->clear();
-    for (int i = 0; i < n; ++i) {
-        if (tabIn[i]) continue;
-        // Tabs are navigation, not state — render as plain buttons (no checkbox).
-        QAction* a = overflowMenu_->addAction(pageButtons_[i]->text());
-        connect(a, &QAction::triggered, this, [this, i] {
-            if (pageGroup_) if (auto* b = pageGroup_->button(i)) b->click();
-        });
-    }
     if (!segIn && !analyzeVisible_) {
         overflowMenu_->addSection("Chart Window");
-        for (int i = 0; i < kWindowOptionCount; ++i) {
-            QAction* a = overflowMenu_->addAction(kWindowOptions[i].label);
+        for (int i = 0; i < windowBtn_->count(); ++i) {
+            QAction* a = overflowMenu_->addAction(windowBtn_->itemText(i));
             a->setCheckable(true);
-            a->setChecked(i == windowIdx_);
-            if (auto* items = qobject_cast<QStandardItemModel*>(windowBtn_->model()))
-                if (auto* item = items->item(i)) a->setEnabled(item->isEnabled());
+            a->setChecked(i == windowBtn_->currentIndex());
             connect(a, &QAction::triggered, this, [this, i] { applyChartWindow(i); });
         }
-        if (playback_ && kWindowOptions[windowIdx_].window == ChartWindow::SelectedLap && referenceLap_) {
+        if (playback_ && window_ == ChartWindow::SelectedLap && referenceLap_) {
             overflowMenu_->addSection("Reference Lap");
             for (int i = 0; i < referenceLap_->count(); ++i) {
                 QAction* lap = overflowMenu_->addAction(referenceLap_->itemText(i));
@@ -595,6 +601,19 @@ void AppToolbar::relayout() {
         sync->setCheckable(true);
         sync->setChecked(syncBtn_ && syncBtn_->isChecked());
         connect(sync, &QAction::toggled, syncBtn_, &QToolButton::setChecked);
+    }
+    if (analyzeVisible_ && !analyzeNavIn) {
+        overflowMenu_->addSection("Analyze navigation");
+        QAction* zoomOut = overflowMenu_->addAction("Zoom out");
+        connect(zoomOut, &QAction::triggered, this, &AppToolbar::analyzeZoomOutRequested);
+        QAction* zoomIn = overflowMenu_->addAction("Zoom in");
+        connect(zoomIn, &QAction::triggered, this, &AppToolbar::analyzeZoomInRequested);
+        QAction* panLeft = overflowMenu_->addAction("Pan left");
+        connect(panLeft, &QAction::triggered, this, &AppToolbar::analyzePanLeftRequested);
+        QAction* panRight = overflowMenu_->addAction("Pan right");
+        connect(panRight, &QAction::triggered, this, &AppToolbar::analyzePanRightRequested);
+        QAction* reset = overflowMenu_->addAction("Reset zoom");
+        connect(reset, &QAction::triggered, this, &AppToolbar::analyzeResetZoomRequested);
     }
     if (!iconsIn) {
         overflowMenu_->addSeparator();

@@ -23,6 +23,7 @@ class TrackMapWidget : public QWidget {
     Q_OBJECT
 public:
     enum class LabelMode { DotsAndLabels, DotsOnly, LabelsOnly };
+    struct Marker { double x = 0; double z = 0; QString label; QColor color; };
 
     explicit TrackMapWidget(QWidget* parent = nullptr);
 
@@ -38,6 +39,8 @@ public:
     void setSlmTrackStatus(int status);  // 0 = Full (dry), 1 = Partial (wet), -1 = n/a
     void setMapOpacity(double a);     // 0.0–1.0, track outline only
     void setIdleTimeout(int secs);    // 0 = disabled (never hide for inactivity)
+    void setControlledMarkers(const QVector<Marker>& markers);
+    void setControlledMode(bool on);
     bool hasTrack() const { return loaded_; }
     const QString& trackName() const { return trackName_; }
     const QString& circuitName() const { return circuitName_; }
@@ -167,6 +170,8 @@ private:
     int        selectedDriverIdx_ = -1;  // -1 = no follow
     double     zoomLevel_ = 4.0;
     LabelMode  labelMode_ = LabelMode::DotsAndLabels;
+    QVector<Marker> controlledMarkers_;
+    bool controlledMode_ = false;
     Layout     cam_{};                   // active follow camera (scale, ox, oy)
     bool       hasCam_ = false;          // camera animating or active
     QString    driverSig_;               // signature to detect participant changes

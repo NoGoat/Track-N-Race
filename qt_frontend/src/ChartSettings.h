@@ -75,6 +75,12 @@ inline bool chartWindowIsComparison(ChartWindow w) {
 inline bool chartWindowAccumulatesLaps(ChartWindow w) {
     return w == ChartWindow::StintLaps || w == ChartWindow::AllLaps;
 }
+inline bool chartWindowIsAvailable(ChartWindow w, bool lapCoordinatesAvailable,
+                                   bool recordingOpen) {
+    if (!chartWindowIsDistance(w)) return true;
+    if (!lapCoordinatesAvailable) return false;
+    return w != ChartWindow::SelectedLap || recordingOpen;
+}
 inline float chartWindowSeconds(ChartWindow w) {
     switch (w) {
         case ChartWindow::Seconds15: return 15.0f;

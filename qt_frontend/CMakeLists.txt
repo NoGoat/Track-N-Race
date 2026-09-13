@@ -73,6 +73,8 @@ set(SOURCES
     src/BreezePalette.h
     src/TnrdPlayer.cpp
     src/TnrdPlayer.h
+    src/AnalysisFileReader.cpp
+    src/AnalysisFileReader.h
     src/SessionModel.cpp
     src/ChartCoordinates.cpp
     src/SessionModel.h
@@ -108,6 +110,8 @@ set(SOURCES
     src/components/AnalyzeMetrics.cpp
     src/components/AnalyzeChart.h
     src/components/AnalyzeChart.cpp
+    src/components/AnalyzeMapComparison.h
+    src/components/AnalyzeMapComparison.cpp
     src/components/AnalyzePage.h
     src/components/AnalyzePage.cpp
     src/components/SettingsDialog.h

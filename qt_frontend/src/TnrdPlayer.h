@@ -79,6 +79,10 @@ public:
     bool isPlaying() const { return playing_; }
     bool isLoaded() const { return loaded_.load(std::memory_order_acquire); }
 
+    // Shared by the independent Analysis reader: both playback sources return
+    // the same playback_lap_data payload and should take the same decode path.
+    static std::shared_ptr<PlaybackHistoryBatch> decodeLapData(const QByteArray& json);
+
 signals:
     void loadingStarted();
     void loaded(const tnrp::HeaderRow& header);
@@ -103,8 +107,6 @@ private:
     static std::shared_ptr<PlaybackHistoryBatch>
         decodeHistory(const std::shared_ptr<EngineSeekFlush>& flush,
                       const QVector<PlaybackLapRange>& lapRanges);
-    static std::shared_ptr<PlaybackHistoryBatch> decodeLapData(const QByteArray& json);
-
     std::atomic<tnrp::Engine*> engine_{nullptr};
     std::mutex workMutex_;
     std::condition_variable workCv_;

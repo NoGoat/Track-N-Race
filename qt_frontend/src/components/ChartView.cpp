@@ -15,7 +15,6 @@
 #include <QPointer>
 #include <QResizeEvent>
 #include <QSettings>
-#include <QStandardItemModel>
 #include <QStyleOptionComboBox>
 #include <QStylePainter>
 #include <QVBoxLayout>
@@ -161,6 +160,7 @@ QString timeText(double sec) {
 }
 
 QString tickText(const Axis& a, double value) {
+    if (a.distance) return QString("%1 m").arg(qRound(value));
     if (a.time) return timeText(value);
     return QLocale().toString(value / (a.scale == 0 ? 1 : a.scale), a.format, a.precision) + a.suffix;
 }
@@ -278,16 +278,16 @@ protected:
             end = qBound(begin, end, qsizetype(s.data.size()));
             if (end <= begin) continue;
             updateUniform(g, s.spec.xAxisId, s.spec.yAxisId, s.spec.color, up, false);
-            if (s.spec.fill && g.fill) {
-                QColor c = s.spec.fillColor.isValid() ? s.spec.fillColor : s.spec.color;
-                if (c.alpha() == 255) c.setAlpha(40);
-                updateFillUniform(g, s.spec.xAxisId, s.spec.yAxisId, c, up);
-                fillDraws.push_back({g.fill.get(), g.fillSrb.get(), quint32(begin * 2),
-                                     quint32((end - begin) * 2), s.panel});
+            if (s.spec.fill && g.fill) {QColor c=s.spec.fillColor.isValid()?s.spec.fillColor:s.spec.color;if(c.alpha()==255)c.setAlpha(40);updateFillUniform(g,s.spec.xAxisId,s.spec.yAxisId,c,up);}
+            // NaN Y values are explicit strip breaks. Keep them in the CPU/GPU
+            // buffers so all series retain aligned X samples, but submit one draw
+            // per finite run. This matches Electron's gap semantics without
+            // manufacturing a zero line for an inactive split series.
+            for(qsizetype run=begin;run<end;){while(run<end&&!std::isfinite(s.data[size_t(run)].y))++run;const qsizetype runBegin=run;while(run<end&&std::isfinite(s.data[size_t(run)].y))++run;const qsizetype runEnd=run;if(runEnd<=runBegin)continue;
+                if(s.spec.fill&&g.fill)fillDraws.push_back({g.fill.get(),g.fillSrb.get(),quint32(runBegin*2),quint32((runEnd-runBegin)*2),s.panel});
+                qsizetype first=runBegin,last=runEnd;if(s.spec.step){const bool includeCorner=runBegin>s.first&&std::isfinite(s.data[size_t(runBegin-1)].y);first=runBegin?(includeCorner?runBegin*2-1:runBegin*2):0;last=runEnd*2-1;}
+                lineDraws.push_back({g.line.get(),g.lineSrb.get(),quint32(first),quint32(last-first),s.panel});
             }
-            qsizetype first = s.spec.step ? (begin ? begin * 2 - 1 : 0) : begin;
-            qsizetype last = s.spec.step ? end * 2 - 1 : end;
-            lineDraws.push_back({g.line.get(), g.lineSrb.get(), quint32(first), quint32(last - first), s.panel});
         }
 
         cb->beginPass(renderTarget(), palette().color(QPalette::Window), {1, 0}, up);
@@ -579,7 +579,7 @@ private:
 struct ChartView::Impl {
     RhiCanvas* canvas = nullptr; Overlay* overlay = nullptr; QLabel* tooltip = nullptr;
     QVector<Axis> axes; QVector<Series> series; QVector<Band> bands; QVector<Panel> panels{Panel{}};
-    QVector<int> order; QVector<QVector<int>> rows; int columns = 1;
+    QVector<int> order; QVector<QVector<int>> rows; QVector<int> linkedXAxes; int columns = 1;
     bool explicitRows = false, hover = false, sync = false, secondaryV = true, secondaryH = false;
     QString cursorMode; QPointer<SessionModel> model;
     int navAxis = -1; bool nav = false, dragging = false;
@@ -701,8 +701,9 @@ void ChartView::appendPoint(int id,double x,double y) {
 }
 void ChartView::setSeriesData(int id,const QVector<double>& xs,const QVector<double>& ys) {
     if(id<0||id>=d_->series.size()||xs.size()!=ys.size())return;Series&s=d_->series[id];qsizetype n=qMin<qsizetype>(kMaxPoints,xs.size()),from=xs.size()-n;
-    if(s.size()==n&&n&&s.data[size_t(s.first)].x==float(xs[from])&&s.data[size_t(s.first)].y==float(ys[from])&&s.data.back().x==float(xs.last())&&s.data.back().y==float(ys.last()))return;
-    s.data.clear();s.data.reserve(size_t(n));for(qsizetype i=from;i<xs.size();++i)if(std::isfinite(xs[i])&&std::isfinite(ys[i]))s.data.push_back({float(xs[i]),float(ys[i])});s.first=s.dirty=0;++s.revision;
+    auto same=[](float a,double b){return a==float(b)||(std::isnan(a)&&std::isnan(b));};
+    if(s.size()==n&&n&&s.data[size_t(s.first)].x==float(xs[from])&&same(s.data[size_t(s.first)].y,ys[from])&&s.data.back().x==float(xs.last())&&same(s.data.back().y,ys.last()))return;
+    s.data.clear();s.data.reserve(size_t(n));for(qsizetype i=from;i<xs.size();++i)if(std::isfinite(xs[i]))s.data.push_back({float(xs[i]),float(ys[i])});s.first=s.dirty=0;++s.revision;
 }
 void ChartView::trimBefore(int id,double x){if(id<0||id>=d_->series.size())return;Series&s=d_->series[id];s.first=lowerBound(s,x);compact(s);}
 void ChartView::clear(int id){if(id<0||id>=d_->series.size())return;Series&s=d_->series[id];s.data.clear();s.first=s.dirty=0;++s.revision;}
@@ -714,7 +715,7 @@ void ChartView::setSeriesName(int id,const QString&n){if(id>=0&&id<d_->series.si
 void ChartView::setSeriesWidth(int id,double w){if(id>=0&&id<d_->series.size())d_->series[id].spec.width=w;}
 void ChartView::setSeriesOrder(const QVector<int>& ids){QVector<int>o;for(int id:ids)if(id>=0&&id<d_->series.size()&&!o.contains(id))o.push_back(id);for(int id:d_->order)if(!o.contains(id))o.push_back(id);d_->order=o;}
 void ChartView::linkSeriesVisibility(int a,int b){if(a>=0&&a<d_->series.size())d_->series[a].linked=b;}
-void ChartView::setAxisVisible(int id,bool on){if(id>=0&&id<d_->axes.size()){d_->axes[id].visible=on;d_->geometry(rect());}}
+void ChartView::setAxisVisible(int id,bool on){if(id>=0&&id<d_->axes.size()&&d_->axes[id].visible!=on){d_->axes[id].visible=on;d_->geometry(rect());}}
 void ChartView::setAxisColor(int id,const QColor&c){if(id>=0&&id<d_->axes.size()){d_->axes[id].color=c;d_->axes[id].inherit=false;}}
 void ChartView::setAxisGridVisible(int id,bool on){if(id>=0&&id<d_->axes.size())d_->axes[id].grid=on;}
 void ChartView::setLegendVisible(bool on){if(!d_->panels.isEmpty())d_->panels[0].legend=on;}
@@ -742,16 +743,17 @@ void ChartView::syncAxisSessionMap(int id,const LapBlock*lap,float now){
 void ChartView::bindPanelChartSettings(int id,SessionModel*model,tnr::GraphSection section){
     if(id<0||id>=d_->panels.size()||!model)return;ensurePanelHeader(id);Panel&p=d_->panels[id];p.section=section;d_->model=model;
     if(!p.window){p.window=new InsetComboBox(this);p.window->setFrame(false);p.window->setFixedSize(106,kControlH);p.window->setToolTip("Chart window override");
-        const ChartWindow values[]={ChartWindow::Seconds15,ChartWindow::Seconds30,ChartWindow::Seconds60,ChartWindow::Seconds120,ChartWindow::Seconds300,ChartWindow::Seconds600,ChartWindow::CurrentLap,ChartWindow::PreviousLap,ChartWindow::FastestLap,ChartWindow::SelectedLap,ChartWindow::StintLaps,ChartWindow::AllLaps};
-        for(auto v:values)p.window->addItem(chartWindowLabel(v),chartWindowKey(v));connect(p.window,QOverload<int>::of(&QComboBox::activated),this,[this,id](int i){auto&p=d_->panels[id];if(d_->model)d_->model->setChartWindow(p.section,chartWindowFromKey(p.window->itemData(i).toString()));});
+        connect(p.window,QOverload<int>::of(&QComboBox::activated),this,[this,id](int i){auto&p=d_->panels[id];if(d_->model)d_->model->setChartWindow(p.section,chartWindowFromKey(p.window->itemData(i).toString()));});
         p.lap=new InsetComboBox(this);p.lap->setFrame(false);p.lap->setFixedSize(kLapControlW,kControlH);p.lap->setToolTip("Selected reference lap for this chart");connect(p.lap,QOverload<int>::of(&QComboBox::activated),this,[this,id](int i){auto&p=d_->panels[id];if(d_->model)d_->model->setReferenceLap(p.section,p.lap->itemData(i).toInt());});}
     connect(model,&SessionModel::chartConfigurationChanged,this,&ChartView::refreshPanelChartSettings,Qt::UniqueConnection);connect(model,&SessionModel::lapsChanged,this,&ChartView::refreshPanelChartSettings,Qt::UniqueConnection);refreshPanelChartSettings();
 }
 
 void ChartView::refreshPanelChartSettings(){
     if(!d_->model)return;bool coords=d_->model->lapCoordinatesAvailable();for(Panel&p:d_->panels){if(!p.window||p.section==tnr::GraphSection::Count_)continue;
-        p.window->blockSignals(true);int i=p.window->findData(chartWindowKey(d_->model->effectiveChartWindow(p.section)));p.window->setCurrentIndex(i>=0?i:0);
-        if(auto*m=qobject_cast<QStandardItemModel*>(p.window->model()))for(int n=0;n<p.window->count();++n){auto w=chartWindowFromKey(p.window->itemData(n).toString());m->item(n)->setEnabled(!chartWindowIsDistance(w)||(coords&&w!=ChartWindow::SelectedLap)||(coords&&w==ChartWindow::SelectedLap&&d_->model->playbackMode()));}p.window->blockSignals(false);
+        p.window->blockSignals(true);p.window->clear();
+        const ChartWindow values[]={ChartWindow::Seconds15,ChartWindow::Seconds30,ChartWindow::Seconds60,ChartWindow::Seconds120,ChartWindow::Seconds300,ChartWindow::Seconds600,ChartWindow::CurrentLap,ChartWindow::PreviousLap,ChartWindow::FastestLap,ChartWindow::SelectedLap,ChartWindow::StintLaps,ChartWindow::AllLaps};
+        for(auto w:values)if(chartWindowIsAvailable(w,coords,d_->model->playbackMode()))p.window->addItem(chartWindowLabel(w),chartWindowKey(w));
+        int i=p.window->findData(chartWindowKey(d_->model->effectiveChartWindow(p.section)));p.window->setCurrentIndex(i>=0?i:0);p.window->blockSignals(false);
         int wanted=d_->model->referenceLap(p.section);p.lap->blockSignals(true);p.lap->clear();for(const LapBlock&lap:d_->model->data().laps)if(!lap.progress.isEmpty()||d_->model->playbackCatalogHasLapDistance())p.lap->addItem(QString::number(lap.lapNum),lap.lapNum);i=p.lap->findData(wanted);p.lap->setCurrentIndex(i>=0?i:(p.lap->count()?0:-1));p.lap->blockSignals(false);}positionPanelChartSettings();
 }
 
@@ -767,15 +769,15 @@ QString ChartView::showSyncedCursor(double time,double sourceX,bool sourceDistan
     if(!d_->sync||!d_->hover)return{};if(source!=this&&d_->tooltip)d_->tooltip->hide();QString html;QLocale loc;
     for(int pid=0;pid<d_->panels.size();++pid){Panel&p=d_->panels[pid];int xid=-1;for(int i=0;i<d_->axes.size();++i)if(d_->axes[i].panel==pid&&d_->axes[i].side==Side::Bottom){xid=i;break;}if(xid<0)continue;const Axis&a=d_->axes[xid];bool target=a.distance;double key=sourceDistance==target?sourceX:target?interpolate(a.sessionTimes,a.sessionKeys,time):time;bool mapped=sourceDistance==target||!target||(!a.sessionTimes.isEmpty()&&time>=a.sessionTimes.first()&&time<=a.sessionTimes.last());
         if(!p.visible||!mapped||key<a.lo||key>a.hi){if(!(source==this&&pid==sourcePanel))p.cursorV=false;p.cursorH=false;continue;}if(!(source==this&&pid==sourcePanel)){p.cursorX=key;p.cursorV=d_->secondaryV;}p.cursorY=yRatio;p.cursorH=d_->secondaryH&&!(source==this&&pid==sourcePanel);bool any=false;
-        for(const Series&s:d_->series){if(s.panel!=pid||!s.visible||s.spec.name.isEmpty()||s.empty())continue;double lo=s.data[size_t(s.first)].x,hi=s.data.back().x;bool endpoint=sourceDistance==target&&key>hi;if(key<lo||(key>hi&&!endpoint))continue;qsizetype at=nearest(s,key);QString value=s.spec.tipGroupThousands?loc.toString(s.data[size_t(at)].y,'f',s.spec.tipPrecision):QString::number(s.data[size_t(at)].y,'f',s.spec.tipPrecision);if(!s.spec.unit.isEmpty())value+=(s.spec.unit=="%"?"":" ")+s.spec.unit;html+=QString("<div style='color:%1'><b>%2:</b> %3</div>").arg(s.spec.color.name(),s.spec.name,value);any=true;}if(!any&&!(source==this&&pid==sourcePanel)){p.cursorV=p.cursorH=false;}}
+        for(const Series&s:d_->series){if(s.panel!=pid||!s.visible||s.spec.name.isEmpty()||s.empty())continue;double lo=s.data[size_t(s.first)].x,hi=s.data.back().x;bool endpoint=sourceDistance==target&&key>hi;if(key<lo||(key>hi&&!endpoint))continue;qsizetype at=nearest(s,key);if(at<0||!std::isfinite(s.data[size_t(at)].y))continue;QString value=s.spec.tipGroupThousands?loc.toString(s.data[size_t(at)].y,'f',s.spec.tipPrecision):QString::number(s.data[size_t(at)].y,'f',s.spec.tipPrecision);if(!s.spec.unit.isEmpty())value+=(s.spec.unit=="%"?"":" ")+s.spec.unit;html+=QString("<div style='color:%1'><b>%2:</b> %3</div>").arg(s.spec.color.name(),s.spec.name,value);any=true;}if(!any&&!(source==this&&pid==sourcePanel)){p.cursorV=p.cursorH=false;}}
     requestReplot();return html;
 }
 void ChartView::clearSyncedCursor(){for(Panel&p:d_->panels)p.cursorV=p.cursorH=false;if(d_->tooltip)d_->tooltip->hide();if(d_->overlay)d_->overlay->update();}
 bool ChartView::seriesKeyRange(int id,double&lo,double&hi)const{if(id<0||id>=d_->series.size()||d_->series[id].empty())return false;const Series&s=d_->series[id];lo=s.data[size_t(s.first)].x;hi=s.data.back().x;return true;}
 void ChartView::setXRange(int id,double lo,double hi){
     if(id<0||id>=d_->axes.size()||hi<=lo)return;
-    Axis&a=d_->axes[id];const int oldWidth=a.labelWidth;a.lo=lo;a.hi=hi;
-    if(a.side!=Side::Bottom){QFont f=font();f.setPointSize(8);if(measuredYAxisLabelWidth(a,QFontMetrics(f))!=oldWidth)d_->geometry(rect());}
+    auto apply=[&](int axisId){if(axisId<0||axisId>=d_->axes.size())return;Axis&a=d_->axes[axisId];const int oldWidth=a.labelWidth;a.lo=lo;a.hi=hi;if(a.side!=Side::Bottom){QFont f=font();f.setPointSize(8);if(measuredYAxisLabelWidth(a,QFontMetrics(f))!=oldWidth)d_->geometry(rect());}};
+    apply(id);if(d_->linkedXAxes.contains(id))for(int linked:d_->linkedXAxes)if(linked!=id)apply(linked);
 }
 void ChartView::setAxisRange(int id,double lo,double hi){setXRange(id,lo,hi);}
 
@@ -786,7 +788,7 @@ void ChartView::fitAxisToVisibleSeries(int id,const QVector<int>&ids,double fixe
     if(!dynamic&&!expand){const bool changed=a.lo!=fixedLo||a.hi!=fixedHi;a.lo=fixedLo;a.hi=fixedHi;if(changed)updateGutter();return;}
     if(a.fitTimer.isValid()&&a.fitTimer.elapsed()<200)return;
     a.fitTimer.restart();bool found=false;double lo=0,hi=0;
-    for(int sid:ids){if(sid<0||sid>=d_->series.size())continue;const Series&s=d_->series[sid];if(!s.visible||s.empty()||s.spec.xAxisId<0||s.spec.xAxisId>=d_->axes.size())continue;const Axis&x=d_->axes[s.spec.xAxisId];qsizetype begin=lowerBound(s,x.lo),end=qMin(lowerBound(s,x.hi)+1,qsizetype(s.data.size()));for(qsizetype i=begin;i<end;++i){double v=s.data[size_t(i)].y;if(!found){lo=hi=v;found=true;}else{lo=qMin(lo,v);hi=qMax(hi,v);}}}
+    for(int sid:ids){if(sid<0||sid>=d_->series.size())continue;const Series&s=d_->series[sid];if(!s.visible||s.empty()||s.spec.xAxisId<0||s.spec.xAxisId>=d_->axes.size())continue;const Axis&x=d_->axes[s.spec.xAxisId];qsizetype begin=lowerBound(s,x.lo),end=qMin(lowerBound(s,x.hi)+1,qsizetype(s.data.size()));for(qsizetype i=begin;i<end;++i){double v=s.data[size_t(i)].y;if(!std::isfinite(v))continue;if(!found){lo=hi=v;found=true;}else{lo=qMin(lo,v);hi=qMax(hi,v);}}}
     if(!dynamic){a.lo=fixedLo;a.hi=expand&&found?qMax(fixedHi,hi):fixedHi;}
     else if(!found){a.lo=fixedLo;a.hi=fixedHi;}
     else{double span=qMax(1.,hi-lo);a.lo=lo-span*.08;a.hi=hi+span*.08;}
@@ -795,16 +797,19 @@ void ChartView::fitAxisToVisibleSeries(int id,const QVector<int>&ids,double fixe
 
 static std::pair<double,double> navRange(double min,double max,double minSpan,double lo,double hi){double full=qMax(0.,max-min),span=qBound(qMin(minSpan,full),hi-lo,full);if(span<=0)return{min,max};double lower=qBound(min,lo-(span-(hi-lo))*.5,max-span);return{lower,lower+span};}
 void ChartView::setXNavigation(int id,bool on,double min,double max,double span){d_->navAxis=id;d_->nav=on;d_->navMin=min;d_->navMax=qMax(min+.001,max);d_->navSpan=span;if(!on)resetX();}
+void ChartView::setLinkedXAxes(const QVector<int>&ids){d_->linkedXAxes=ids;}
 void ChartView::zoomX(double factor){if(!d_->nav||d_->navAxis<0||d_->navAxis>=d_->axes.size())return;const Axis&a=d_->axes[d_->navAxis];double c=(a.lo+a.hi)*.5;auto r=navRange(d_->navMin,d_->navMax,d_->navSpan,c+(a.lo-c)*factor,c+(a.hi-c)*factor);setXRange(d_->navAxis,r.first,r.second);requestReplot();}
 void ChartView::panX(double f){if(!d_->nav||d_->navAxis<0||d_->navAxis>=d_->axes.size())return;const Axis&a=d_->axes[d_->navAxis];double dx=(a.hi-a.lo)*f;auto r=navRange(d_->navMin,d_->navMax,d_->navSpan,a.lo+dx,a.hi+dx);setXRange(d_->navAxis,r.first,r.second);requestReplot();}
 void ChartView::resetX(){if(d_->navAxis>=0&&d_->navAxis<d_->axes.size()){setXRange(d_->navAxis,d_->navMin,d_->navMax);requestReplot();}}
 
 bool ChartView::eventFilter(QObject*w,QEvent*e){
     if(w!=d_->overlay)return QWidget::eventFilter(w,e);if(e->type()==QEvent::Leave)for(auto*c:liveCharts())c->clearSyncedCursor();
+    if(e->type()==QEvent::ContextMenu)return true;
+    if(e->type()==QEvent::MouseButtonDblClick){auto*m=static_cast<QMouseEvent*>(e);if(m->button()==Qt::RightButton){for(int pid=0;pid<d_->panels.size();++pid){const Panel&p=d_->panels[pid];if(!p.visible||!p.plot.contains(m->pos()))continue;for(int axisId=0;axisId<d_->axes.size();++axisId){const Axis&a=d_->axes[axisId];if(a.panel!=pid||a.side!=Side::Bottom)continue;const double x=a.lo+double(m->pos().x()-p.plot.left())/qMax(1,p.plot.width())*(a.hi-a.lo);emit inspectionRequested(x,a.distance);return true;}}}}
     if(e->type()==QEvent::MouseButtonRelease){auto*m=static_cast<QMouseEvent*>(e);if(!d_->dragging&&m->button()==Qt::LeftButton)for(Series&s:d_->series)if(s.legendHit.contains(m->pos())){s.visible=!s.visible;if(s.linked>=0&&s.linked<d_->series.size())d_->series[s.linked].visible=s.visible;requestReplot();return true;}d_->dragging=false;}
     if(e->type()==QEvent::MouseMove){auto*m=static_cast<QMouseEvent*>(e);if(d_->dragging&&d_->navAxis>=0&&d_->navAxis<d_->axes.size()){double dx=-double(m->pos().x()-d_->dragStart.x())*(d_->dragMax-d_->dragMin)/qMax(1,width());auto r=navRange(d_->navMin,d_->navMax,d_->navSpan,d_->dragMin+dx,d_->dragMax+dx);setXRange(d_->navAxis,r.first,r.second);requestReplot();return true;}
         if(d_->hover&&d_->tooltip){int pid=-1;for(int i=0;i<d_->panels.size();++i)if(d_->panels[i].visible&&d_->panels[i].plot.contains(m->pos())){pid=i;break;}for(Panel&p:d_->panels)p.cursorV=false;if(pid<0){d_->tooltip->hide();d_->overlay->update();return false;}Panel&p=d_->panels[pid];int xid=-1;for(int i=0;i<d_->axes.size();++i)if(d_->axes[i].panel==pid&&d_->axes[i].side==Side::Bottom){xid=i;break;}if(xid<0)return false;const Axis&a=d_->axes[xid];double key=a.lo+double(m->pos().x()-p.plot.left())/qMax(1,p.plot.width())*(a.hi-a.lo),sampled=key;bool covered=false;for(const Series&s:d_->series)if(s.panel==pid&&s.visible&&!s.spec.name.isEmpty()&&!s.empty()){qsizetype at=nearest(s,key);sampled=s.data[size_t(at)].x;covered=true;break;}p.cursorX=key;p.cursorV=true;double yr=qBound(0.,double(m->pos().y()-p.plot.top())/qMax(1,p.plot.height()),1.);QString html=QString("<div style='color:%1'>%2</div>").arg(palette().color(QPalette::ToolTipText).name(),a.distance?QString("%1 m").arg(qRound(sampled)):timeText(sampled));QLocale loc;
-            for(const Series&s:d_->series)if(s.panel==pid&&s.visible&&!s.spec.name.isEmpty()&&!s.empty()){qsizetype at=nearest(s,key);QString value=s.spec.tipGroupThousands?loc.toString(s.data[size_t(at)].y,'f',s.spec.tipPrecision):QString::number(s.data[size_t(at)].y,'f',s.spec.tipPrecision);if(!s.spec.unit.isEmpty())value+=(s.spec.unit=="%"?"":" ")+s.spec.unit;html+=QString("<div style='color:%1'><b>%2:</b> %3</div>").arg(s.spec.color.name(),s.spec.name,value);}if(d_->sync&&covered){double st=interpolate(a.sessionKeys,a.sessionTimes,sampled);for(auto*c:liveCharts())if(c->isVisible())html+=c->showSyncedCursor(st,key,a.distance,yr,this,pid);}d_->tooltip->setText(html);d_->tooltip->adjustSize();QPoint pos=m->pos()+QPoint(14,14);if(pos.x()+d_->tooltip->width()>width())pos.setX(m->pos().x()-14-d_->tooltip->width());if(pos.y()+d_->tooltip->height()>height())pos.setY(m->pos().y()-14-d_->tooltip->height());d_->tooltip->move(pos);d_->tooltip->show();d_->tooltip->raise();d_->overlay->update();}}
+            for(const Series&s:d_->series)if(s.panel==pid&&s.visible&&!s.spec.name.isEmpty()&&!s.empty()){qsizetype at=nearest(s,key);if(at<0||!std::isfinite(s.data[size_t(at)].y))continue;QString value=s.spec.tipGroupThousands?loc.toString(s.data[size_t(at)].y,'f',s.spec.tipPrecision):QString::number(s.data[size_t(at)].y,'f',s.spec.tipPrecision);if(!s.spec.unit.isEmpty())value+=(s.spec.unit=="%"?"":" ")+s.spec.unit;html+=QString("<div style='color:%1'><b>%2:</b> %3</div>").arg(s.spec.color.name(),s.spec.name,value);}if(d_->sync&&covered){double st=interpolate(a.sessionKeys,a.sessionTimes,sampled);for(auto*c:liveCharts())if(c->isVisible())html+=c->showSyncedCursor(st,key,a.distance,yr,this,pid);}d_->tooltip->setText(html);d_->tooltip->adjustSize();QPoint pos=m->pos()+QPoint(14,14);if(pos.x()+d_->tooltip->width()>width())pos.setX(m->pos().x()-14-d_->tooltip->width());if(pos.y()+d_->tooltip->height()>height())pos.setY(m->pos().y()-14-d_->tooltip->height());d_->tooltip->move(pos);d_->tooltip->show();d_->tooltip->raise();d_->overlay->update();}}
     if(d_->nav&&d_->navAxis>=0&&d_->navAxis<d_->axes.size()){if(e->type()==QEvent::Wheel){auto*x=static_cast<QWheelEvent*>(e);if(x->modifiers()&Qt::ControlModifier)zoomX(std::exp(-x->angleDelta().y()/1200.));else panX(-(x->angleDelta().x()+x->angleDelta().y())/1200.);return true;}if(e->type()==QEvent::MouseButtonDblClick){resetX();return true;}if(e->type()==QEvent::MouseButtonPress){auto*m=static_cast<QMouseEvent*>(e);if(m->button()==Qt::LeftButton){const Axis&a=d_->axes[d_->navAxis];d_->dragging=true;d_->dragStart=m->pos();d_->dragMin=a.lo;d_->dragMax=a.hi;return true;}}}return QWidget::eventFilter(w,e);
 }
 

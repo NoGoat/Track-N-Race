@@ -13,6 +13,7 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "Track N Race Qt"
 !define APP_EXE "Track-N-Race - Qt.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Track-N-Race-Qt"
+!define FILE_CLASS "TrackNRace.Qt.Recording"
 !define INSTALLER_ICON "${__FILEDIR__}\assets\icon_transparent.ico"
 
 Name "${PRODUCT_NAME}"
@@ -68,11 +69,22 @@ Section "Install ${PRODUCT_NAME}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Track N Race"
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
+
+    WriteRegStr HKCU "Software\Classes\.tnrd" "" "${FILE_CLASS}"
+    WriteRegStr HKCU "Software\Classes\${FILE_CLASS}" "" "Track N Race Recording"
+    WriteRegStr HKCU "Software\Classes\${FILE_CLASS}\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
+    WriteRegStr HKCU "Software\Classes\${FILE_CLASS}\shell\open\command" "" '$\"$INSTDIR\${APP_EXE}$\" $\"%1$\"'
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd
 
 Section "Uninstall"
+    ReadRegStr $0 HKCU "Software\Classes\.tnrd" ""
     Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
     RMDir /r "$SMPROGRAMS\${PRODUCT_NAME}"
     RMDir /r "$INSTDIR"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
+    DeleteRegKey HKCU "Software\Classes\${FILE_CLASS}"
+    StrCmp $0 "${FILE_CLASS}" 0 +2
+        DeleteRegKey HKCU "Software\Classes\.tnrd"
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

@@ -5,17 +5,14 @@
 #include <QVector>
 #include "ChartSettings.h"
 
-#include <vector>
-
 class QAction;
-class QButtonGroup;
 class QComboBox;
 class QLabel;
 class QMenu;
 class QToolButton;
 
-// The main window's top toolbar: page tabs, session timer, chart window-size
-// segmented control, the Open/Edit Layout/Settings actions, and the custom "⋯"
+// The main window's top toolbar: page dropdown, session timer, chart window-size
+// dropdown, the Open/Edit Layout/Settings actions, and the custom "⋯"
 // overflow that collapses low-priority items when the window is too narrow.
 // Self-contained: owns its widgets, overflow relayout, themed-icon refresh and
 // the session-timer label. The owner reacts to the signals below.
@@ -29,6 +26,7 @@ public:
     void setEditLayoutEnabled(bool on);
     void setAnalyzeControlsVisible(bool on);
     void setAnalyzeControlsEnabled(bool on);
+    void setAnalyzeContextWidget(QWidget* widget);
     void setShowLabels(bool on);        // icon-only ↔ text-beside-icon
     // Forces the toolbar to the palette's Button shade with a hairline bottom
     // border; recomputed on theme/style changes so it re-themes correctly.
@@ -37,6 +35,8 @@ public:
     // Session timer label (header session_time, formatted M:SS). Lives inside
     // the expanding spacer so it never joins the overflow arithmetic.
     void updateSessionTimer(float sessionTime);
+    // Lap-comparison delta in seconds. A non-finite value hides the readout.
+    void updateSessionDelta(double deltaSeconds);
     void resetSessionTimer();
     void setChartLapAvailability(const QVector<int>& laps, bool playback,
                                  bool lapCoordinatesAvailable);
@@ -70,15 +70,18 @@ protected:
 private:
     void relayout();                   // collapse/expand into the ⋯ menu
     void applyChartWindow(int idx);    // sync inline/menu state + emit chartWindowChanged
+    void rebuildChartWindowOptions();  // omit modes unavailable in the current session
     void refreshThemedIcons();
 
-    QButtonGroup* pageGroup_    = nullptr;   // exclusive page tabs
+    QComboBox*    pageBtn_      = nullptr;   // compact page-navigation dropdown
+    QAction*      pageAct_      = nullptr;   // kept inline during overflow
     QComboBox*    windowBtn_    = nullptr;   // window-size dropdown (frameless combo box)
     QAction*      windowAct_    = nullptr;   // its toolbar action (hide to free space)
     QComboBox*    referenceLap_ = nullptr;
     QToolButton*  sectorBtn_ = nullptr;
     QToolButton*  syncBtn_ = nullptr;
     QAction*      analyzeAct_   = nullptr;   // Analyze-only zoom/pan controls
+    QAction*      analyzeContextAct_ = nullptr;
     QWidget*      analyzeControls_ = nullptr;
     QToolButton*  analyzeZoomIn_ = nullptr;
     QToolButton*  analyzeZoomOut_ = nullptr;
@@ -89,10 +92,9 @@ private:
     QAction*      overflowAct_  = nullptr;   // its toolbar action (toggle visibility)
     QMenu*        overflowMenu_ = nullptr;
     QWidget*      extButton_    = nullptr;   // Qt's native QToolBar extension — kept hidden
-    std::vector<QToolButton*> pageButtons_;  // the page-tab buttons
-    int           windowIdx_    = 1;         // selected window option (default 30s)
+    ChartWindow   window_       = ChartWindow::Seconds30; // persisted choice; UI may fall back
     bool          playback_ = false;
-    int           currentPage_  = 0;         // active tab — kept inline during overflow
+    bool          lapCoordinatesAvailable_ = true;
     bool          analyzeVisible_ = false;
 
     QAction*  openAct_       = nullptr;
@@ -100,6 +102,8 @@ private:
     QAction*  settingsAct_   = nullptr;
 
     QLabel*   timerLabel_ = nullptr;
+    QLabel*   deltaLabel_ = nullptr;
     int       timerSec_   = -1;        // last shown whole second (skip redundant sets)
     int       timerW_     = 0;         // last reserved label width (re-layout on change)
+    int       deltaW_     = 0;
 };

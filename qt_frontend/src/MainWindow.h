@@ -59,6 +59,11 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    // Shared entry point for toolbar, command-line/file-association, and
+    // single-instance open requests. External activations deliberately use the
+    // same warning and load path as a file selected in the toolbar.
+    void offerRecordingFile(const QString& path);
+
     // Tyre view/graph settings used by the Settings dialog — one-line forwarders
     // to the Overview page, which owns the widgets and persistence.
     OverviewLayout::TyreView currentTyreView();

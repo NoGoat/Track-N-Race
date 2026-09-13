@@ -15,7 +15,10 @@ ChartDomain resolveChartDomain(const SessionData& data, ChartWindow window,
     if (chartWindowIsTime(window)) {
         const double seconds = chartWindowSeconds(window);
         out.lower = qMax(0.0, currentTime - seconds);
-        out.upper = qMax(out.lower + 1.0, double(currentTime));
+        // Match Electron's scrolling domain: until enough data exists to fill
+        // the configured window, keep the data at the left and reserve the
+        // remainder to the right. Once filled, the playhead rides the right edge.
+        out.upper = out.lower + seconds;
         return out;
     }
     if (window == ChartWindow::AllLaps || window == ChartWindow::StintLaps) {
@@ -40,7 +43,7 @@ ChartDomain resolveChartDomain(const SessionData& data, ChartWindow window,
         out.window = ChartWindow::Seconds30;
         out.distance = false;
         out.lower = qMax(0.0, currentTime - 30.0);
-        out.upper = qMax(out.lower + 1.0, double(currentTime));
+        out.upper = out.lower + 30.0;
         return out;
     }
     if (chartWindowIsComparison(window)) out.reference = referenceLap;

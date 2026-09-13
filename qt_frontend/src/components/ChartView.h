@@ -156,10 +156,14 @@ public:
                                 double fixedMin, double fixedMax, bool dynamic,
                                 bool expandFixedUpper = false);
     void setXNavigation(int axisId, bool enabled, double fullMin, double fullMax, double minSpan = 0.5);
+    void setLinkedXAxes(const QVector<int>& axisIds);
     void zoomX(double factor);
     void panX(double fraction);
     void resetX();
     void requestReplot();
+
+signals:
+    void inspectionRequested(double x, bool distanceCoordinate);
 
 protected:
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme

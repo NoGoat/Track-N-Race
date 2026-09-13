@@ -497,6 +497,14 @@ std::shared_ptr<PlaybackHistoryBatch> TnrdPlayer::decodeLapData(const QByteArray
             row.value("sector").toInt()
         });
     }
+    QVector<LapPositionSample> positions;
+    for (const QJsonValue& value : object.value("playerPositions").toArray()) {
+        const QJsonObject row = value.toObject();
+        positions.push_back({
+            static_cast<float>(row.value("session_time").toDouble()),
+            row.value("x").toDouble(), row.value("z").toDouble()
+        });
+    }
     sortAndCap(result->data.telBuf);
     sortAndCap(result->data.stsBuf);
     sortAndCap(result->data.motionBuf);
@@ -504,6 +512,7 @@ std::shared_ptr<PlaybackHistoryBatch> TnrdPlayer::decodeLapData(const QByteArray
     sortAndCap(result->data.tyreBuf);
     sortAndCap(result->data.damageBuf);
     sortAndCap(result->progress);
+    sortAndCap(positions);
     LapBlock detail;
     detail.lapNum = result->lapNum;
     detail.startSessionTime = result->currentLapStart;
@@ -515,6 +524,7 @@ std::shared_ptr<PlaybackHistoryBatch> TnrdPlayer::decodeLapData(const QByteArray
     detail.motion = result->data.motionBuf;
     detail.motionEx = result->data.motionExBuf;
     detail.progress = result->progress;
+    detail.positions = std::move(positions);
     result->lapDetails.push_back(std::move(detail));
     return result;
 }

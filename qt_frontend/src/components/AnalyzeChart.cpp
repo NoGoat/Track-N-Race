@@ -6,19 +6,20 @@
 #include <QShowEvent>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 QColor muted(const QColor& c, const QColor& bg) {
     return QColor(qRound(c.red()*0.35+bg.red()*0.65), qRound(c.green()*0.35+bg.green()*0.65), qRound(c.blue()*0.35+bg.blue()*0.65));
 }
 
-template<class V, class F>
-void collect(const V& values, float start, float end, QVector<double>& xs, QVector<double>& ys, F value) {
+template<class V, class F, class X>
+void collect(const V& values, float start, float end, QVector<double>& xs, QVector<double>& ys, F value, X coordinate) {
     auto first = std::lower_bound(values.cbegin(), values.cend(), start, [](const auto& s, float t){ return s.t < t; });
     for (auto it=first; it!=values.cend() && it->t<=end; ++it) {
-        const double y=value(*it); if (!std::isfinite(y)) continue;
-        if (!xs.isEmpty() && qFuzzyCompare(xs.last()+1.0, double(it->t-start)+1.0)) { ys.last()=y; continue; }
-        xs.push_back(it->t-start); ys.push_back(y);
+        const double x=coordinate(*it),y=value(*it); if (!std::isfinite(x)||!std::isfinite(y)) continue;
+        if (!xs.isEmpty() && qFuzzyCompare(xs.last()+1.0,x+1.0)) { ys.last()=y; continue; }
+        xs.push_back(x); ys.push_back(y);
     }
 }
 
@@ -41,6 +42,12 @@ double tyreValue(const TyreSample& s,const QString& f){
 double damageValue(const DamageSample& s,const QString& f){const float* p=&s.wearFl;const double w=p[corner(f)];return f.startsWith("life")?100.0-w:w;}
 float lapStart(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.first().t;if(!lap.sts.isEmpty())return lap.sts.first().t;return lap.startSessionTime;}
 float lapEnd(const LapBlock& lap){if(!lap.tel.isEmpty())return lap.tel.last().t;if(!lap.sts.isEmpty())return lap.sts.last().t;return lap.endSessionTime;}
+double elapsedAtDistance(const LapBlock*lap,double distance){if(!lap||lap->progress.isEmpty())return qQNaN();const auto&p=lap->progress;auto it=std::lower_bound(p.cbegin(),p.cend(),distance,[](const auto&s,double d){return s.distanceM<d;});if(it==p.cbegin())return distance>=it->distanceM?it->currentLapMs/1000.0:qQNaN();if(it==p.cend())return distance<=p.last().distanceM?p.last().currentLapMs/1000.0:qQNaN();const auto&a=*(it-1);const auto&b=*it;const double span=b.distanceM-a.distanceM,r=span>0?(distance-a.distanceM)/span:1;return (a.currentLapMs+(b.currentLapMs-a.currentLapMs)*r)/1000.0;}
+QVector<LapProgressSample> resolvedSectorSplits(const SessionData*primaryData,const LapBlock*primary,const SessionData*comparisonData,const LapBlock*comparison){
+    QVector<LapProgressSample> result(2);QVector<bool>found(2,false);
+    auto merge=[&](const SessionData*owner,const LapBlock*lap){if(!owner||!lap)return;for(const auto&split:owner->sectorSplits(lap)){const int index=split.sector-1;if(index>=0&&index<2){result[index]=split;found[index]=true;}}};
+    merge(comparisonData,comparison);merge(primaryData,primary);QVector<LapProgressSample> compact;for(int i=0;i<2;++i)if(found[i])compact<<result[i];return compact;
+}
 }
 
 AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
@@ -64,6 +71,13 @@ AnalyzeChart::AnalyzeChart(QWidget* parent):ChartView(parent) {
         handles_[i].current=addSeries({"CURRENT · "+m.label,m.defaultColor,1.75,xAxis_,ax,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});
         setSeriesVisible(handles_[i].comparison,false);setSeriesVisible(handles_[i].current,false);
     }
+    deltaAxis_=addAxis({Side::Right,-0.5,0.5,QColor("#C4162A"),false,'f',1,false});setAxisNumberSuffix(deltaAxis_,1.0,"s");
+    deltaHandles_.comparison=addSeries({"DELTA −",QColor("#37872D"),1.75,xAxis_,deltaAxis_,"s",3});
+    deltaHandles_.current=addSeries({"DELTA +",QColor("#C4162A"),1.75,xAxis_,deltaAxis_,"s",3});setSeriesVisible(deltaHandles_.comparison,false);setSeriesVisible(deltaHandles_.current,false);
+    stacked_.resize(metrics.size());
+    for(int i=0;i<metrics.size();++i){const auto&m=metrics[i];auto&h=stacked_[i];h.panel=addPanel();h.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false},h.panel);setAxisTimeTicker(h.xAxis,"%m:%s");h.yAxis=addAxis({Side::Left,m.min,m.max,m.defaultColor,true,'f',m.precision,true},h.panel);if(m.scaleKey=="rpm")setAxisNumberSuffix(h.yAxis,1000.0,"k");else if(m.unit=="%")setAxisNumberSuffix(h.yAxis,1.0,"%");else if(!m.unit.isEmpty())setAxisNumberSuffix(h.yAxis,1.0,m.unit=="°C"?"°":m.unit);h.comparison=addSeries({"COMPARE · "+m.label,muted(m.defaultColor,palette().color(QPalette::Window)),1.25,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});h.current=addSeries({"CURRENT · "+m.label,m.defaultColor,1.75,h.xAxis,h.yAxis,m.unit,m.precision,m.id=="rpm",false,QColor(),m.step});setPanelTitle(h.panel,m.label);setPanelLegendVisible(h.panel,false);}
+    stackedDelta_.panel=addPanel();stackedDelta_.xAxis=addAxis({Side::Bottom,0,1,QColor(),true,'f',1,false},stackedDelta_.panel);setAxisTimeTicker(stackedDelta_.xAxis,"%m:%s");stackedDelta_.yAxis=addAxis({Side::Left,-0.5,0.5,QColor("#C4162A"),true,'f',1,true},stackedDelta_.panel);setAxisNumberSuffix(stackedDelta_.yAxis,1.0,"s");stackedDelta_.comparison=addSeries({"DELTA −",QColor("#37872D"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});stackedDelta_.current=addSeries({"DELTA +",QColor("#C4162A"),1.75,stackedDelta_.xAxis,stackedDelta_.yAxis,"s",3});setPanelTitle(stackedDelta_.panel,"Delta");setPanelLegendVisible(stackedDelta_.panel,false);
+    layoutPanelsRows({{0}});setCursorModeKey("analysis");
     setLegendVisible(false);setHoverReadout(true);
 }
 
@@ -71,38 +85,58 @@ void AnalyzeChart::setModel(SessionModel* m){if(model_)disconnect(model_,nullptr
 void AnalyzeChart::setConfig(const QVector<AnalyzeSeriesSetting>& s,bool y){selected_=s;showYAxis_=y;requestRefresh();}
 void AnalyzeChart::setPlaybackMode(bool on){playback_=on;requestRefresh();}
 void AnalyzeChart::setCurrentTime(float t){currentTime_=t;requestRefresh();}
-void AnalyzeChart::setComparisonLap(int n){compareLap_=n;requestRefresh();}
-void AnalyzeChart::setFixedLaps(bool e,int a,int b){fixed_=e;lapA_=a;lapB_=b;requestRefresh();}
+void AnalyzeChart::setDistanceMode(bool on){if(distanceMode_==on)return;distanceMode_=on;setAxisDistanceMode(xAxis_,on);requestRefresh();}
+void AnalyzeChart::setIndividualGraphs(bool on,bool synced){individualGraphs_=on;syncedTooltip_=synced;setCursorSync(on&&synced,true,false);requestRefresh();}
+void AnalyzeChart::setSectorOptions(bool boundaries,bool delta){sectorBoundaries_=boundaries;sectorDelta_=boundaries&&delta;requestRefresh();}
+void AnalyzeChart::setSecondarySource(const SessionData* data,const QHash<int,LapBlock>* cache){secondaryData_=data;secondaryCache_=cache;requestRefresh();}
+void AnalyzeChart::setComparisonLap(int n,bool secondary){compareLap_=n;compareSecondary_=secondary;requestRefresh();}
+void AnalyzeChart::setFixedLaps(bool e,int a,bool aSecondary,int b,bool bSecondary){fixed_=e;lapA_=a;lapB_=b;lapASecondary_=aSecondary;lapBSecondary_=bSecondary;requestRefresh();}
 void AnalyzeChart::showEvent(QShowEvent* e){ChartView::showEvent(e);requestRefresh();}
 void AnalyzeChart::requestRefresh(){dirty_=true;if(!isVisible())return;PresentationScheduler::instance().request(this,[this]{refresh();},PresentationScheduler::Policy::Chart);}
 
 void AnalyzeChart::refresh(){
     if(!model_||!dirty_||!isVisible())return;dirty_=false;const SessionData&d=model_->data();
-    const LapBlock* primary=nullptr;const LapBlock* compare=nullptr;float primaryEnd=0;
-    if(fixed_){primary=playback_?model_->playbackLapData(lapA_):d.lapByNum(lapA_);compare=playback_?model_->playbackLapData(lapB_):d.lapByNum(lapB_);if(primary)primaryEnd=lapEnd(*primary);}
-    else {const float now=playback_?currentTime_:d.latestTime;primary=playback_?model_->chartPrimaryLap(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=playback_?model_->playbackLapData(compareLap_):d.lapByNum(compareLap_);}
-    const auto& defs=analyzeMetrics();QSet<QString> visibleScales;double fullMax=1;
-    for(int i=0;i<defs.size();++i){const auto&m=defs[i];auto it=std::find_if(selected_.cbegin(),selected_.cend(),[&](const auto&s){return s.metricId==m.id;});const bool vis=it!=selected_.cend()&&it->visible;
-        setSeriesName(handles_[i].current,(fixed_?QString("LAP A · L%1").arg(primary?primary->lapNum:0):QString("CURRENT · L%1").arg(primary?primary->lapNum:0))+" · "+m.label);
-        setSeriesName(handles_[i].comparison,(fixed_?QString("LAP B · L%1").arg(compare?compare->lapNum:0):QString("COMPARE · L%1").arg(compare?compare->lapNum:0))+" · "+m.label);
-        setSeriesVisible(handles_[i].current,vis&&primary);setSeriesVisible(handles_[i].comparison,vis&&compare);
-        const QColor color=it!=selected_.cend()?it->color:m.defaultColor;setSeriesColor(handles_[i].current,color);setSeriesColor(handles_[i].comparison,muted(color,palette().color(QPalette::Window)));
-        if(vis)visibleScales.insert(m.scaleKey);
-        auto fill=[&](const LapBlock* lap,float end,int sid){QVector<double>xs,ys;if(!lap){clear(sid);return;}const float a=lapStart(*lap),last=lapEnd(*lap),b=qMin(end,last);
-            if(b<a){clear(sid);return;}
-            switch(m.source){case AnalyzeSource::Telemetry:collect(lap->tel,a,b,xs,ys,[&](const auto&s){return telValue(s,m.field);});break;case AnalyzeSource::Status:collect(lap->sts,a,b,xs,ys,[&](const auto&s){return statusValue(s,m.field);});break;case AnalyzeSource::Motion:collect(lap->motion,a,b,xs,ys,[&](const auto&s){return motionValue(s,m.field);});break;case AnalyzeSource::MotionEx:collect(lap->motionEx,a,b,xs,ys,[&](const auto&s){return motionExValue(s,m.field);});break;case AnalyzeSource::Tyre:collect(lap->tyre,a,b,xs,ys,[&](const auto&s){return tyreValue(s,m.field);});break;case AnalyzeSource::Damage:collect(lap->damage,a,b,xs,ys,[&](const auto&s){return damageValue(s,m.field);});break;}setSeriesData(sid,xs,ys);if(!xs.isEmpty())fullMax=qMax(fullMax,xs.last());};
-        fill(primary,primaryEnd,handles_[i].current);fill(compare,compare?lapEnd(*compare):0,handles_[i].comparison);
+    const LapBlock*primary=nullptr,*compare=nullptr;const SessionData*primaryData=&d,*compareData=&d;float primaryEnd=0;
+    auto selectedLap=[&](int n,bool second,const SessionData*&owner)->const LapBlock*{if(second){owner=secondaryData_;if(!secondaryCache_)return nullptr;auto it=secondaryCache_->constFind(n);return it==secondaryCache_->cend()?nullptr:&it.value();}owner=&d;return playback_?model_->playbackLapData(n):d.lapByNum(n);};
+    if(fixed_){primary=selectedLap(lapA_,lapASecondary_,primaryData);compare=selectedLap(lapB_,lapBSecondary_,compareData);if(primary)primaryEnd=lapEnd(*primary);}else{const float now=playback_?currentTime_:d.latestTime;primary=playback_?model_->chartPrimaryLap(now):(d.curLapNum>=0?&d.curLap:d.lapAtTime(now));primaryEnd=now;compare=selectedLap(compareLap_,compareSecondary_,compareData);}
+    const auto&defs=analyzeMetrics();double fullMax=distanceMode_?qMax(1.0,double(d.trackLengthM)):1.0;if(distanceMode_){if(primary&&!primary->progress.isEmpty())fullMax=qMax(fullMax,double(primary->progress.last().distanceM));if(compare&&!compare->progress.isEmpty())fullMax=qMax(fullMax,double(compare->progress.last().distanceM));}else{if(primary)fullMax=qMax(fullMax,double(qMin(primaryEnd,lapEnd(*primary))-lapStart(*primary)));if(compare)fullMax=qMax(fullMax,double(lapEnd(*compare)-lapStart(*compare)));}
+    QSet<QString>shownScales;QString firstScale;QVector<int>order,activePanels,activeXAxes;
+    auto settingFor=[&](const QString&id)->const AnalyzeSeriesSetting*{auto it=std::find_if(selected_.cbegin(),selected_.cend(),[&](const auto&s){return s.metricId==id;});return it==selected_.cend()?nullptr:&*it;};
+    for(int i=0;i<defs.size();++i){const auto&m=defs[i];const auto*s=settingFor(m.id);const bool vis=s&&s->visible;const QColor color=s?s->color:m.defaultColor;const QString currentName=(fixed_?QString("LAP A · L%1").arg(primary?primary->lapNum:0):QString("CURRENT · L%1").arg(primary?primary->lapNum:0))+" · "+m.label;const QString compareName=(fixed_?QString("LAP B · L%1").arg(compare?compare->lapNum:0):QString("COMPARE · L%1").arg(compare?compare->lapNum:0))+" · "+m.label;
+        for(int id:{handles_[i].current,stacked_[i].current}){setSeriesName(id,currentName);setSeriesColor(id,color);}for(int id:{handles_[i].comparison,stacked_[i].comparison}){setSeriesName(id,compareName);setSeriesColor(id,muted(color,palette().color(QPalette::Window)));}
+        QVector<double>px,py,cx,cy;auto gather=[&](const LapBlock*lap,const SessionData*owner,float end,QVector<double>&xs,QVector<double>&ys){if(!lap||!owner)return;const float a=lapStart(*lap),b=qMin(end,lapEnd(*lap));if(b<a)return;auto coordinate=[&](const auto&row){if(!distanceMode_)return double(row.t-a);if(lap->progress.isEmpty()||row.t<lap->progress.first().t||row.t>lap->progress.last().t)return qQNaN();return owner->distanceAtTime(lap,row.t);};switch(m.source){case AnalyzeSource::Telemetry:collect(lap->tel,a,b,xs,ys,[&](const auto&r){return telValue(r,m.field);},coordinate);break;case AnalyzeSource::Status:collect(lap->sts,a,b,xs,ys,[&](const auto&r){return statusValue(r,m.field);},coordinate);break;case AnalyzeSource::Motion:collect(lap->motion,a,b,xs,ys,[&](const auto&r){return motionValue(r,m.field);},coordinate);break;case AnalyzeSource::MotionEx:collect(lap->motionEx,a,b,xs,ys,[&](const auto&r){return motionExValue(r,m.field);},coordinate);break;case AnalyzeSource::Tyre:collect(lap->tyre,a,b,xs,ys,[&](const auto&r){return tyreValue(r,m.field);},coordinate);break;case AnalyzeSource::Damage:collect(lap->damage,a,b,xs,ys,[&](const auto&r){return damageValue(r,m.field);},coordinate);break;}};gather(primary,primaryData,primaryEnd,px,py);gather(compare,compareData,compare?lapEnd(*compare):0,cx,cy);for(int id:{handles_[i].current,stacked_[i].current})setSeriesData(id,px,py);for(int id:{handles_[i].comparison,stacked_[i].comparison})setSeriesData(id,cx,cy);if(!px.isEmpty())fullMax=qMax(fullMax,px.last());if(!cx.isEmpty())fullMax=qMax(fullMax,cx.last());
+        setSeriesVisible(handles_[i].current,!individualGraphs_&&vis&&primary);setSeriesVisible(handles_[i].comparison,!individualGraphs_&&vis&&compare);setSeriesVisible(stacked_[i].current,individualGraphs_&&vis&&primary);setSeriesVisible(stacked_[i].comparison,individualGraphs_&&vis&&compare);setAxisVisible(stacked_[i].yAxis,individualGraphs_&&vis&&s->showYAxis);setAxisColor(stacked_[i].yAxis,color);if(vis&&individualGraphs_){activePanels<<stacked_[i].panel;activeXAxes<<stacked_[i].xAxis;}
     }
-    QVector<int> order;for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].comparison;}}for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(const auto*m=analyzeMetric(it->metricId)){const int idx=int(m-analyzeMetrics().constData());order<<handles_[idx].current;}}setSeriesOrder(order);
-    QString firstScale;
-    for(const auto&s:selected_)if(s.visible){if(const auto*m=analyzeMetric(s.metricId)){firstScale=m->scaleKey;break;}}
-    for(auto it=axes_.cbegin();it!=axes_.cend();++it){setAxisVisible(it.value(),showYAxis_&&visibleScales.contains(it.key()));setAxisGridVisible(it.value(),showYAxis_&&it.key()==firstScale);}
-    QSet<QString> styledScales;for(const auto&s:selected_)if(s.visible){if(const auto*m=analyzeMetric(s.metricId))if(axes_.contains(m->scaleKey)&&!styledScales.contains(m->scaleKey)){setAxisColor(axes_[m->scaleKey],s.color);styledScales.insert(m->scaleKey);}}
-    const bool fixedNavigation=fixed_&&primary;
-    setXNavigation(xAxis_,fixedNavigation,0,fullMax,0.5);
-    if(fixedNavigation){
-        const QString key=QString("%1:%2:%3:%4").arg(lapA_).arg(lapB_).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);
-        if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}
-    }else{fixedDomainKey_.clear();setXRange(xAxis_,0,fullMax);}
-    requestReplot();
+    QVector<double>dx,dp,dn;double deltaRange=.5;const auto*delta=settingFor("delta");const bool showDelta=delta&&delta->visible&&distanceMode_&&primary&&compare;
+    if(showDelta){
+        double currentMaxDistance=primary->progress.isEmpty()?0.0:double(primary->progress.last().distanceM);
+        if(playback_&&!fixed_){
+            const auto&progress=primary->progress;
+            const double cursorDistance=!progress.isEmpty()&&currentTime_>=progress.first().t&&currentTime_<=progress.last().t?primaryData->distanceAtTime(primary,currentTime_):qQNaN();
+            currentMaxDistance=std::isfinite(cursorDistance)?cursorDistance:0.0;
+        }
+        const double maxDistance=qMin(currentMaxDistance,compare->progress.isEmpty()?0.0:double(compare->progress.last().distanceM));
+        QVector<double>sectorStarts;if(sectorBoundaries_&&sectorDelta_)for(const auto&p:resolvedSectorSplits(primaryData,primary,compareData,compare))sectorStarts<<p.distanceM;
+        double previousX=0,previousValue=0;bool havePrevious=false;
+        auto appendDelta=[&](double x,double value){
+            if(!std::isfinite(value)){dx<<x;dp<<qQNaN();dn<<qQNaN();havePrevious=false;return;}
+            if(havePrevious&&std::signbit(previousValue)!=std::signbit(value)&&previousValue!=0&&value!=0){const double zeroX=previousX+(x-previousX)*std::abs(previousValue)/(std::abs(previousValue)+std::abs(value));dx<<zeroX;dp<<0.0;dn<<0.0;}
+            dx<<x;dp<<(value>=0?value:qQNaN());dn<<(value<=0?value:qQNaN());previousX=x;previousValue=value;havePrevious=true;deltaRange=qMax(deltaRange,std::ceil(std::abs(value)*10.0)/10.0);
+        };
+        double lastStoredX=-std::numeric_limits<double>::infinity();
+        for(const auto&p:primary->progress){
+            const double x=p.distanceM;if(x<0||x>maxDistance)continue;
+            if(!sectorStarts.isEmpty())for(double boundary:sectorStarts)if(boundary>lastStoredX&&boundary<=x){double priorStart=0;for(double prior:sectorStarts){if(prior>=boundary)break;priorStart=prior;}const double ca=elapsedAtDistance(primary,boundary),cb=elapsedAtDistance(compare,boundary),pa=priorStart>0?elapsedAtDistance(primary,priorStart):0,pb=priorStart>0?elapsedAtDistance(compare,priorStart):0;appendDelta(boundary,(ca-pa)-(cb-pb));appendDelta(boundary,qQNaN());appendDelta(boundary,0);lastStoredX=boundary;}
+            const double a=elapsedAtDistance(primary,x),b=elapsedAtDistance(compare,x);double ab=0,bb=0;if(!sectorStarts.isEmpty()){double start=0;for(double split:sectorStarts)if(split<=x)start=split;if(start>0){ab=elapsedAtDistance(primary,start);bb=elapsedAtDistance(compare,start);}}appendDelta(x,(a-ab)-(b-bb));lastStoredX=x;
+        }
+    }
+    const QColor positive=delta&&delta->color.isValid()?delta->color:QColor("#C4162A"),negative=delta&&delta->negativeColor.isValid()?delta->negativeColor:QColor("#37872D");for(int id:{deltaHandles_.current,stackedDelta_.current}){setSeriesData(id,dx,dp);setSeriesColor(id,positive);}for(int id:{deltaHandles_.comparison,stackedDelta_.comparison}){setSeriesData(id,dx,dn);setSeriesColor(id,negative);}for(int axis:{deltaAxis_,stackedDelta_.yAxis})setAxisRange(axis,-deltaRange,deltaRange);setAxisColor(deltaAxis_,positive);setAxisColor(stackedDelta_.yAxis,positive);setSeriesVisible(deltaHandles_.current,!individualGraphs_&&showDelta);setSeriesVisible(deltaHandles_.comparison,!individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.current,individualGraphs_&&showDelta);setSeriesVisible(stackedDelta_.comparison,individualGraphs_&&showDelta);setAxisVisible(stackedDelta_.yAxis,individualGraphs_&&showDelta&&delta->showYAxis);if(individualGraphs_&&showDelta){activePanels<<stackedDelta_.panel;activeXAxes<<stackedDelta_.xAxis;}
+    for(auto it=selected_.crbegin();it!=selected_.crend();++it)if(it->visible){if(it->metricId=="delta"&&showDelta){order<<deltaHandles_.comparison<<deltaHandles_.current;}else if(const auto*m=analyzeMetric(it->metricId)){const int i=int(m-defs.constData());order<<handles_[i].comparison<<handles_[i].current;}}setSeriesOrder(order);
+    for(const auto&s:selected_)if(s.visible&&s.showYAxis){if(s.metricId=="delta"){setAxisVisible(deltaAxis_,!individualGraphs_&&showDelta);continue;}if(const auto*m=analyzeMetric(s.metricId))if(!shownScales.contains(m->scaleKey)){shownScales.insert(m->scaleKey);if(firstScale.isEmpty())firstScale=m->scaleKey;setAxisColor(axes_[m->scaleKey],s.color);}}for(auto it=axes_.cbegin();it!=axes_.cend();++it){setAxisVisible(it.value(),!individualGraphs_&&shownScales.contains(it.key()));setAxisGridVisible(it.value(),!individualGraphs_&&it.key()==firstScale);}if(!shownScales.contains("delta"))setAxisVisible(deltaAxis_,!individualGraphs_&&showDelta&&delta&&delta->showYAxis);
+    QVector<double>ticks;QStringList labels;if(sectorBoundaries_&&primary){const QVector<LapProgressSample>splits=resolvedSectorSplits(primaryData,primary,compareData,compare);const double fullLapEnd=distanceMode_?qMax(double(primaryData->trackLengthM),compareData?double(compareData->trackLengthM):0.0):qMax(double(lapEnd(*primary)-lapStart(*primary)),compare?double(lapEnd(*compare)-lapStart(*compare)):0.0);ticks<<0;labels<<"";for(const auto&split:splits){const double value=distanceMode_?split.distanceM:split.currentLapMs/1000.0;if(value>0&&value<fullMax){ticks<<value;labels<<QString("S%1").arg(split.sector);}}ticks<<fullMax;labels<<(std::abs(fullLapEnd-fullMax)<1e-3?"S3":"");}
+    QVector<int>allX{xAxis_};for(const auto&h:stacked_)allX<<h.xAxis;allX<<stackedDelta_.xAxis;for(int axis:allX){setAxisDistanceMode(axis,distanceMode_);if(sectorBoundaries_&&primary)setAxisLabelMap(axis,ticks,labels);else{setAxisTimeTicker(axis,"%m:%s");setAxisDistanceMode(axis,distanceMode_);}}
+    activePanels.clear();activeXAxes.clear();if(individualGraphs_)for(const auto&s:selected_)if(s.visible){if(s.metricId=="delta"){if(showDelta){activePanels<<stackedDelta_.panel;activeXAxes<<stackedDelta_.xAxis;}}else if(const auto*m=analyzeMetric(s.metricId)){const int i=int(m-defs.constData());activePanels<<stacked_[i].panel;activeXAxes<<stacked_[i].xAxis;}}
+    setAxisVisible(xAxis_,!individualGraphs_);for(const auto&h:stacked_)setAxisVisible(h.xAxis,false);setAxisVisible(stackedDelta_.xAxis,false);if(individualGraphs_&&!activeXAxes.isEmpty())setAxisVisible(activeXAxes.last(),true);
+    QVector<QVector<int>>rows;if(individualGraphs_){for(int panel:activePanels)rows.push_back({panel});if(rows.isEmpty())rows.push_back({0});}else rows={{0}};QStringList panelKeys;for(int panel:activePanels)panelKeys<<QString::number(panel);const QString layoutKey=QString::number(individualGraphs_)+":"+panelKeys.join(',');if(layoutKey!=panelLayoutKey_){panelLayoutKey_=layoutKey;layoutPanelsRows(rows);}activeXAxes.prepend(xAxis_);setLinkedXAxes(individualGraphs_?activeXAxes:QVector<int>{xAxis_});
+    const int navAxis=individualGraphs_&&!activeXAxes.isEmpty()&&activeXAxes.size()>1?activeXAxes[1]:xAxis_;const bool fixedNavigation=fixed_&&primary;setXNavigation(navAxis,fixedNavigation,0,fullMax,distanceMode_?25.0:0.5);if(fixedNavigation){const QString key=QString("%1:%2:%3:%4:%5:%6").arg(distanceMode_).arg(individualGraphs_).arg(lapA_).arg(lapB_).arg(lapStart(*primary),0,'f',3).arg(lapEnd(*primary),0,'f',3);if(key!=fixedDomainKey_){fixedDomainKey_=key;resetX();}}else{fixedDomainKey_.clear();setXRange(navAxis,0,fullMax);}requestReplot();
 }

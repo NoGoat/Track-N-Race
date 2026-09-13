@@ -10,8 +10,17 @@
 #include <QFont>
 #include <QStandardPaths>
 #include <QDir>
+#include <QEvent>
+#include <QFileInfo>
+#include <QFileOpenEvent>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QStringList>
+#include <QTimer>
 #include <cstdio>
 #include <array>
+#include <functional>
+#include <utility>
 #include "MainWindow.h"
 #include "ChartGraphicsBackend.h"
 #include "BreezePalette.h"
@@ -84,6 +93,82 @@ static QIcon loadAppIcon(const QString& resource) {
     return icon;
 }
 
+static QString recordingPathFromArguments(const QStringList& arguments) {
+    for (const QString& argument : arguments) {
+        const QFileInfo file(argument);
+        const QString suffix = file.suffix().toLower();
+        if ((suffix == "tnrd" || suffix == "trnd") && file.exists() && file.isFile())
+            return file.absoluteFilePath();
+    }
+    return {};
+}
+
+// QApplication receives Finder file-open events on macOS. Keep early events
+// until MainWindow exists; later events are routed immediately.
+class TrackNRaceApplication final : public QApplication {
+public:
+    using QApplication::QApplication;
+
+    std::function<void(const QString&)> fileOpenHandler;
+    QStringList pendingFileOpens;
+
+protected:
+    bool event(QEvent* event) override {
+        if (event->type() == QEvent::FileOpen) {
+            const QString path = static_cast<QFileOpenEvent*>(event)->file();
+            if (fileOpenHandler) fileOpenHandler(path);
+            else pendingFileOpens.append(path);
+            return true;
+        }
+        return QApplication::event(event);
+    }
+};
+
+// The first process owns a per-user local endpoint. Later processes send one
+// optional recording path, then exit before constructing the telemetry engine.
+class SingleInstanceCoordinator final : public QObject {
+public:
+    explicit SingleInstanceCoordinator(QObject* parent = nullptr) : QObject(parent) {
+        server_.setSocketOptions(QLocalServer::UserAccessOption);
+        connect(&server_, &QLocalServer::newConnection, this, [this] {
+            while (QLocalSocket* socket = server_.nextPendingConnection()) {
+                connect(socket, &QLocalSocket::readyRead, socket, [this, socket] {
+                    socket->setProperty("request", socket->property("request").toByteArray() + socket->readAll());
+                });
+                connect(socket, &QLocalSocket::disconnected, socket, [this, socket] {
+                    socket->setProperty("request", socket->property("request").toByteArray() + socket->readAll());
+                    const QString path = QString::fromUtf8(socket->property("request").toByteArray());
+                    if (activationHandler) activationHandler(path);
+                    socket->deleteLater();
+                });
+            }
+        });
+    }
+
+    bool acquireOrNotify(const QString& path) {
+        if (server_.listen(QStringLiteral("TrackNRace.NativeRecorder"))) return true;
+
+        QLocalSocket socket;
+        socket.connectToServer(QStringLiteral("TrackNRace.NativeRecorder"), QIODevice::WriteOnly);
+        if (socket.waitForConnected(1000)) {
+            socket.write(path.toUtf8());
+            socket.waitForBytesWritten(1000);
+            socket.disconnectFromServer();
+            return false;
+        }
+
+        // A crashed Unix process can leave its socket name behind. Remove only
+        // after no live server accepted the connection, then claim it ourselves.
+        QLocalServer::removeServer(QStringLiteral("TrackNRace.NativeRecorder"));
+        return server_.listen(QStringLiteral("TrackNRace.NativeRecorder"));
+    }
+
+    std::function<void(const QString&)> activationHandler;
+
+private:
+    QLocalServer server_;
+};
+
 int main(int argc, char* argv[]) {
 #ifdef Q_OS_LINUX
     // On Linux the XDG desktop-portal plugin (bundled as platformthemes/libqxdgdesktopportal.so)
@@ -102,11 +187,15 @@ int main(int argc, char* argv[]) {
     // regardless of what's added to the search path afterwards.
     addHostQtPluginPath();
 #endif
-    QApplication app(argc, argv);
+    TrackNRaceApplication app(argc, argv);
     app.setApplicationName("Track N Race Background Recorder");
     app.setApplicationVersion(APP_VERSION);   // defined by CMake from PROJECT_VERSION
     app.setOrganizationName("TrackNRace");
     app.setWindowIcon(loadAppIcon(":/icon.ico"));
+
+    const QString startupRecording = recordingPathFromArguments(app.arguments().mid(1));
+    SingleInstanceCoordinator singleInstance;
+    if (!singleInstance.acquireOrNotify(startupRecording)) return 0;
 
     // Probe once before MainWindow creates the first QRhiWidget. The selected
     // backend is fixed for the top-level window for the lifetime of this process.
@@ -170,6 +259,20 @@ int main(int argc, char* argv[]) {
     tnrp::TnrdReader::sweepStaleTempFiles();
 
     MainWindow w;
+    const auto activate = [&w](const QString& path) {
+        if (w.isMinimized()) w.showNormal();
+        else w.show();
+        w.raise();
+        w.activateWindow();
+        if (!path.isEmpty()) w.offerRecordingFile(path);
+    };
+    singleInstance.activationHandler = activate;
+    app.fileOpenHandler = activate;
     w.show();
+    if (!startupRecording.isEmpty())
+        QTimer::singleShot(0, &w, [&w, startupRecording] { w.offerRecordingFile(startupRecording); });
+    for (const QString& path : std::as_const(app.pendingFileOpens))
+        QTimer::singleShot(0, &w, [&w, path] { w.offerRecordingFile(path); });
+    app.pendingFileOpens.clear();
     return app.exec();
 }

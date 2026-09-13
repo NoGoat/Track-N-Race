@@ -27,5 +27,7 @@ const AnalyzeMetric* analyzeMetric(const QString& id);
 struct AnalyzeSeriesSetting {
     QString metricId;
     QColor color;
+    QColor negativeColor;
     bool visible = true;
+    bool showYAxis = true;
 };

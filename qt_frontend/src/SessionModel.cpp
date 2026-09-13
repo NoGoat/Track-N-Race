@@ -347,6 +347,7 @@ SessionModel::SessionModel(QObject* parent) : QObject(parent) {
         referenceLaps_[i] = s.value(chartReferenceLapKey(section), 0).toInt();
         dynamicYAxes_[i] = s.value(chartYAxisKey(section), false).toBool();
     }
+    discardUnavailableChartOverrides();
 }
 
 // Emits telemetryAppended()/tyreAppended() at most once per event-loop pass. On the
@@ -522,7 +523,8 @@ ChartWindow SessionModel::effectiveChartWindow(tnr::GraphSection section) const 
     const int i = static_cast<int>(section);
     ChartWindow result = i >= 0 && i < windowOverrides_.size() && windowOverrides_[i] >= 0
         ? static_cast<ChartWindow>(windowOverrides_[i]) : globalWindow_;
-    if (result == ChartWindow::SelectedLap && !playbackMode_) return ChartWindow::Seconds30;
+    if (!chartWindowIsAvailable(result, lapCoordinatesAvailable(), playbackMode_))
+        return ChartWindow::Seconds30;
     return result;
 }
 
@@ -589,17 +591,46 @@ void SessionModel::setReferenceLap(tnr::GraphSection section, int lapNum) {
 void SessionModel::setPlaybackMode(bool on) {
     if (playbackMode_ == on) return;
     playbackMode_ = on;
+    discardUnavailableChartOverrides();
     emit chartConfigurationChanged();
 }
 
 bool SessionModel::lapCoordinatesAvailable() const {
     if (!playbackMode_) return true;
+    // Electron keeps lap modes present while a recording's capability metadata
+    // is still loading, then filters them only if the completed catalog is legacy.
+    if (!playbackCatalogReady_) return true;
     if (playbackLapDistanceAvailable_ && d_.trackLengthM > 0.0f) return true;
     if (d_.trackLengthM <= 0.0f) return false;
     for (const LapBlock& lap : d_.laps)
         if (!lap.progress.isEmpty() && lap.progress.last().distanceM > 0.0f) return true;
     return d_.curLapNum >= 0 && !d_.curLap.progress.isEmpty() &&
            d_.curLap.progress.last().distanceM > 0.0f;
+}
+
+bool SessionModel::discardUnavailableChartOverrides() {
+    bool changed = false;
+    QSettings settings("TrackNRace", "NativeRecorder");
+    const bool coordinates = lapCoordinatesAvailable();
+    for (int i = 0; i < windowOverrides_.size(); ++i) {
+        const auto section = static_cast<tnr::GraphSection>(i);
+        if (windowOverrides_[i] >= 0 && !chartWindowIsAvailable(
+                static_cast<ChartWindow>(windowOverrides_[i]), coordinates, playbackMode_)) {
+            windowOverrides_[i] = -1;
+            settings.remove(chartWindowOverrideKey(section));
+            changed = true;
+        }
+        const ChartWindow effective = windowOverrides_[i] >= 0
+            ? static_cast<ChartWindow>(windowOverrides_[i]) : globalWindow_;
+        if (referenceLaps_[i] > 0 &&
+            (effective != ChartWindow::SelectedLap ||
+             !chartWindowIsAvailable(effective, coordinates, playbackMode_))) {
+            referenceLaps_[i] = 0;
+            settings.remove(chartReferenceLapKey(section));
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 void SessionModel::setSectorBoundaries(bool on) {
@@ -664,6 +695,7 @@ void SessionModel::clear() {
     playbackHistoryMask_ = 0;
     playbackRequestedHistoryMask_ = 0;
     ++playbackDataRevision_;
+    playbackCatalogReady_ = false;
     playbackLapDistanceAvailable_ = false;
     emit wasReset();
     emit lapsChanged();
@@ -674,6 +706,7 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
     d_.trimBuffers = true;
     d_.fastestLapNum = catalog.fastestLapNum;
     d_.trackLengthM = static_cast<float>(catalog.trackLengthM);
+    playbackCatalogReady_ = true;
     playbackLapDistanceAvailable_ = catalog.lapDistanceAvailable;
 
     QHash<int, int> lapTimes;
@@ -737,6 +770,7 @@ void SessionModel::setPlaybackCatalog(const tnrp::PlaybackLapBlocksRow& catalog)
     ++playbackDataRevision_;
     telemetryDirty_ = false;
     tyreDirty_      = false;
+    if (discardUnavailableChartOverrides()) referenceChanged = true;
     emit lapsChanged();
     emit telemetryAppended();
     emit tyreAppended();
@@ -817,6 +851,7 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
                 for (const LapProgressSample& sample : cached.progress)
                     d_.trackLengthM = qMax(d_.trackLengthM, sample.distanceM);
             }
+            if (payloadMask & rowBit(13)) install(rowBit(13), cached.positions, detail.positions);
             touchPlaybackLap(detail.lapNum);
         }
         if (installedAny) ++playbackDataRevision_;
@@ -853,6 +888,7 @@ void SessionModel::installPlaybackHistory(SessionData&& incoming,
             for (const LapProgressSample& sample : lap->progress)
                 d_.trackLengthM = qMax(d_.trackLengthM, sample.distanceM);
         }
+        if (activeMask & rowBit(13)) install(rowBit(13), lap->positions, detail.positions);
     }
 
     if (authoritative) {

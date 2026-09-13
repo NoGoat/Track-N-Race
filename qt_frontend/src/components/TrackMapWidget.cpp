@@ -830,6 +830,22 @@ void TrackMapWidget::setIdleTimeout(int secs) {
     update();
 }
 
+void TrackMapWidget::setControlledMarkers(const QVector<Marker>& markers) {
+    controlledMarkers_ = markers;
+    update();
+}
+
+void TrackMapWidget::setControlledMode(bool on) {
+    if (controlledMode_ == on) return;
+    controlledMode_ = on;
+    driverCombo_->setVisible(!on);
+    zoomCombo_->setVisible(!on && selectedDriverIdx_ >= 0);
+    fsButton_->setVisible(!on);
+    selectedDriverIdx_ = -1;
+    hasCam_ = false;
+    update();
+}
+
 bool TrackMapWidget::interpCar(int idx, double t, double& outX, double& outZ) const {
     const Car* cur = nullptr;
     for (const Car& c : curSnap_.cars) if (c.idx == idx) { cur = &c; break; }
@@ -906,9 +922,16 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
     struct LabelJob { QPointF c; QString text; QColor color; };
     std::vector<LabelJob> labels;
-    labels.reserve(curSnap_.cars.size());
+    labels.reserve(controlledMode_ ? controlledMarkers_.size() : curSnap_.cars.size());
 
-    for (const Car& car : curSnap_.cars) {
+    if (controlledMode_) for (const Marker& marker : controlledMarkers_) {
+        if (!std::isfinite(marker.x) || !std::isfinite(marker.z)) continue;
+        const QPointF pt = project(marker.x, marker.z, l);
+        p.setPen(Qt::NoPen);p.setBrush(marker.color);p.drawEllipse(pt,DOT_R,DOT_R);
+        labels.push_back({pt,marker.label,marker.color});
+    }
+
+    if (!controlledMode_) for (const Car& car : curSnap_.cars) {
         double cx, cz;
         if (!interpCar(car.idx, t, cx, cz)) continue;      // skips idle / (0,0)
         const auto visual = driverVisuals_.find(car.idx);

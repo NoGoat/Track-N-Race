@@ -948,11 +948,11 @@ Qt gap:
 
 TODO:
 
-- [ ] Add single-instance activation and file-path transfer.
-- [ ] Handle startup arguments and macOS file-open events where supported.
-- [ ] Route external files through the same confirmation/load code as toolbar
+- [x] Add single-instance activation and file-path transfer.
+- [x] Handle startup arguments and macOS file-open events where supported.
+- [x] Route external files through the same confirmation/load code as toolbar
       Open.
-- [ ] Add `.tnrd` associations to the Qt Windows and macOS packages that this
+- [x] Add `.tnrd` associations to the Qt Windows and macOS packages that this
       repository ships. Do not claim a Linux association unless one is actually
       added and tested.
 

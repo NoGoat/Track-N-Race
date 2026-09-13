@@ -35,6 +35,7 @@ struct DamageSample { float t = 0; float wearFl=0, wearFr=0, wearRl=0, wearRr=0;
 struct MotionSample { float t = 0; float g_lat = 0; float g_long = 0; };
 struct MotionExSample { float t = 0; float front_aero = 0; float rear_aero = 0; };
 struct LapProgressSample { float t = 0; int currentLapMs = 0; float distanceM = 0; int sector = 0; };
+struct LapPositionSample { float t = 0; double x = 0; double z = 0; };
 
 // One lap's telemetry/status, plus its timing. Mirrors the Electron
 // SpeedRpmLapBlock used by the chart's per-lap and comparison modes.
@@ -51,6 +52,7 @@ struct LapBlock {
     QVector<MotionSample> motion;
     QVector<MotionExSample> motionEx;
     QVector<LapProgressSample> progress;
+    QVector<LapPositionSample> positions;
 };
 
 // Plain (non-QObject) core of the session: rolling buffers, per-lap blocks,
@@ -205,6 +207,7 @@ signals:
     void wasReset();
     void chartConfigurationChanged();
 private:
+    bool discardUnavailableChartOverrides();
     // Coalesces the several per-packet ingest setters into a single
     // telemetryAppended()/tyreAppended() emission per event-loop pass (once per
     // arriving packet — 20..60 Hz — with no fixed cap). See scheduleFlush().
@@ -235,6 +238,7 @@ private:
     int globalReferenceLap_ = 0;
     QVector<bool> dynamicYAxes_;
     bool playbackMode_ = false;
+    bool playbackCatalogReady_ = false;
     bool playbackLapDistanceAvailable_ = false;
     bool sectorBoundaries_ = false;
     bool cursorSync_ = false;

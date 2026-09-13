@@ -150,7 +150,7 @@ MainWindow::MainWindow(QWidget* parent)
     // chart configuration, so create it before wiring the toolbar.
     model_ = new SessionModel(this);
 
-    // Self-contained toolbar: page tabs, session timer, chart-window segment,
+    // Self-contained toolbar: page dropdown, session timer, chart-window dropdown,
     // Open/Edit Layout/Settings actions, ⋯ overflow. Page names must match the
     // Page enum and the stack->addWidget() order below.
     toolbar_ = new AppToolbar(
@@ -166,6 +166,44 @@ MainWindow::MainWindow(QWidget* parent)
     connect(toolbar_, &AppToolbar::chartReferenceLapChanged, model_, &SessionModel::setGlobalReferenceLap);
     connect(toolbar_, &AppToolbar::sectorBoundariesChanged, model_, &SessionModel::setSectorBoundaries);
     connect(toolbar_, &AppToolbar::cursorSyncChanged, model_, &SessionModel::setCursorSync);
+    const auto updateToolbarDelta = [this] {
+        const SessionData& data = model_->data();
+        const ChartWindow mode = model_->globalChartWindow();
+        const LapBlock* current = model_->chartPrimaryLap(data.latestTime);
+        const LapBlock* comparison = chartWindowIsComparison(mode)
+            ? model_->chartReferenceLap(mode, model_->globalReferenceLap(), data.latestTime)
+            : nullptr;
+        if (!current || !comparison || current->progress.size() < 2 ||
+            comparison->progress.size() < 2) {
+            toolbar_->updateSessionDelta(qQNaN());
+            return;
+        }
+        // Lap packets own the authoritative current_lap_ms/distance pair. Other
+        // packet families can advance latestTime between lap packets, so sample
+        // the latest progress point at the cursor instead of making the readout
+        // disappear until the next lap packet arrives.
+        auto progressIt = std::upper_bound(
+            current->progress.cbegin(), current->progress.cend(), data.latestTime,
+            [](float time, const LapProgressSample& point) { return time < point.t; });
+        if (progressIt == current->progress.cbegin()) {
+            toolbar_->updateSessionDelta(qQNaN());
+            return;
+        }
+        --progressIt;
+        const double distance = progressIt->distanceM;
+        if (!std::isfinite(distance) ||
+            distance < comparison->progress.first().distanceM ||
+            distance > comparison->progress.last().distanceM) {
+            toolbar_->updateSessionDelta(qQNaN());
+            return;
+        }
+        const double currentTime = data.timeAtDistance(current, distance);
+        const double comparisonTime = data.timeAtDistance(comparison, distance);
+        toolbar_->updateSessionDelta(
+            (currentTime - current->startSessionTime) -
+            (comparisonTime - comparison->startSessionTime));
+    };
+    connect(model_, &SessionModel::telemetryAppended, this, updateToolbarDelta);
     connect(model_, &SessionModel::chartConfigurationChanged, this, [this] {
         QVector<int> laps;
         for (const LapBlock& lap : model_->data().laps)
@@ -178,6 +216,7 @@ MainWindow::MainWindow(QWidget* parent)
                                   model_->sectorBoundaries(), model_->cursorSync());
         updatePlaybackDataRequirements();
     });
+    connect(model_, &SessionModel::chartConfigurationChanged, this, updateToolbarDelta);
     connect(model_, &SessionModel::lapsChanged, this, [this] {
         QVector<int> laps;
         for (const LapBlock& lap : model_->data().laps)
@@ -225,6 +264,7 @@ MainWindow::MainWindow(QWidget* parent)
     QStackedWidget* stack = new QStackedWidget(this);
     stack->addWidget(overviewPage_ = new OverviewPage(model_));   // Overview
     stack->addWidget(analyzePage_ = new AnalyzePage(model_));     // Analyze
+    toolbar_->setAnalyzeContextWidget(analyzePage_->toolbarControls());
     stack->addWidget(standingsPage_ = new StandingsPage);   // Standings
     // A row click changed the selection; re-feed the cached rows immediately
     // (same synchronous rebuild as the old in-page click handler).
@@ -334,22 +374,7 @@ MainWindow::MainWindow(QWidget* parent)
         QString path = QFileDialog::getOpenFileName(
             this, "Open File", outputDirectory,
             "TNRD Recordings (*.tnrd *.trnd)");
-        if (!path.isEmpty()) {
-            QMessageBox msgBox(this);
-            msgBox.setWindowTitle("Open Session File");
-            msgBox.setText("Are you sure you want to open this file?");
-            msgBox.setInformativeText("Opening it will stop the event bridge and if you have an session right now with the game, it will be closed.\n\nSelected file: " + QFileInfo(path).fileName());
-            msgBox.setIcon(QMessageBox::Warning);
-            msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-            msgBox.setDefaultButton(QMessageBox::No);
-            if (msgBox.exec() == QMessageBox::Yes) {
-                const QFileInfo fi(path);
-                qInfo("[open] recording requested: '%s' exists=%d readable=%d size=%lld bytes",
-                      qUtf8Printable(path), fi.exists(), fi.isReadable(),
-                      static_cast<long long>(fi.size()));
-                playback_->load(path);
-            }
-        }
+        offerRecordingFile(path);
     });
 
     connect(playback_, &PlaybackController::loadingStarted, this, [this] {
@@ -391,7 +416,11 @@ MainWindow::MainWindow(QWidget* parent)
         // Clear any frozen live value; the first replayed packet sets it afresh.
         if (toolbar_) toolbar_->resetSessionTimer();
         if (overviewPage_) overviewPage_->setPlaybackMode(true, currentTime);
-        if (analyzePage_) { analyzePage_->resetPlaybackSelections(); analyzePage_->setPlaybackMode(true, currentTime); }
+        if (analyzePage_) {
+            analyzePage_->setPrimaryRecording(hdr.track_id, QString::fromStdString(hdr.track_name));
+            analyzePage_->resetPlaybackSelections();
+            analyzePage_->setPlaybackMode(true, currentTime);
+        }
         if (tyresPage_) tyresPage_->setPlaybackMode(true, currentTime);
         if (inputPage_) inputPage_->setPlaybackMode(true, currentTime);
         if (powerPage_) powerPage_->setPlaybackMode(true, currentTime);
@@ -506,6 +535,29 @@ MainWindow::MainWindow(QWidget* parent)
     hotFillTimer_->setInterval(hotSmoother_.periodMs());
     connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
     hotFillTimer_->start();
+}
+
+void MainWindow::offerRecordingFile(const QString& path) {
+    if (path.isEmpty()) return;
+
+    const QFileInfo fi(path);
+    const QString suffix = fi.suffix().toLower();
+    if (!fi.exists() || !fi.isFile() || (suffix != "tnrd" && suffix != "trnd")) return;
+
+    const QString absolutePath = fi.absoluteFilePath();
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Open Session File");
+    msgBox.setText("Are you sure you want to open this file?");
+    msgBox.setInformativeText("Opening it will stop the event bridge and if you have an session right now with the game, it will be closed.\n\nSelected file: " + fi.fileName());
+    msgBox.setIcon(QMessageBox::Warning);
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    msgBox.setDefaultButton(QMessageBox::No);
+    if (msgBox.exec() != QMessageBox::Yes) return;
+
+    qInfo("[open] recording requested: '%s' exists=%d readable=%d size=%lld bytes",
+          qUtf8Printable(absolutePath), fi.exists(), fi.isReadable(),
+          static_cast<long long>(fi.size()));
+    playback_->load(absolutePath);
 }
 
 // Tyre view/graph settings used by the Settings dialog — the Overview page owns
@@ -981,12 +1033,14 @@ void MainWindow::setTrackMapSectorColors(bool on) {
     settings.setValue("ui/trackMapSectorColors", on);
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
         map->setSectorColors(on);
+    if (analyzePage_) analyzePage_->setMapAppearance(on, trackMapOpacity());
 }
 
 void MainWindow::setTrackMapOpacity(int pct) {
     settings.setValue("ui/trackMapOpacity", pct);
     if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
         map->setMapOpacity(pct / 100.0);
+    if (analyzePage_) analyzePage_->setMapAppearance(trackMapSectorColors(), pct);
 }
 
 void MainWindow::setTrackMapIdleTimeout(int secs) {
