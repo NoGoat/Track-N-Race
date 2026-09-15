@@ -41,6 +41,8 @@ namespace {
 // shrink as rows are dropped (Ultra Compact 1/2 are a single value row).
 int tyreCardsHeight(int level) {
     switch (level) {
+        case TyreCardsWidget::Spacious:      return 210;
+        case TyreCardsWidget::CompactColumn: return 130;
         case TyreCardsWidget::Compact:       return 44;
         case TyreCardsWidget::UltraCompact1: return 30;
         case TyreCardsWidget::UltraCompact2: return 24;
@@ -68,31 +70,33 @@ void clearLayout(QLayout* lay) {
 // Compact collapses the card to one line — [label] · value+unit (middle) · [sub]
 // (right) — trading vertical space for a shorter row.
 QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOut,
-                     bool compact, QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
+                     tnr::DensityMode density, QLabel** subOut = nullptr, QLabel** titleOut = nullptr) {
+    const bool compact = density == tnr::DensityMode::Compact;
+    const bool spacious = density == tnr::DensityMode::Spacious;
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     QLabel* lbl = new QLabel(label.toUpper());
-    QFont lf; lf.setPointSize(compact ? 8 : 7);
+    QFont lf; lf.setPointSize(compact ? 8 : spacious ? 10 : 7);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
     if (titleOut) *titleOut = lbl;   // expose the title so it can be re-labelled on format change
 
     valueOut = new QLabel("—");
-    QFont vf; vf.setPointSize(compact ? 12 : 15); vf.setBold(true);
+    QFont vf; vf.setPointSize(compact ? 12 : spacious ? 24 : 15); vf.setBold(true);
     valueOut->setFont(vf);
 
     QLabel* ulbl = nullptr;
     if (!unit.isEmpty()) {
         ulbl = new QLabel(unit);
-        QFont uf; uf.setPointSize(compact ? 8 : 7);
+        QFont uf; uf.setPointSize(compact ? 8 : spacious ? 10 : 7);
         ulbl->setFont(uf);
         ulbl->setForegroundRole(QPalette::PlaceholderText);
     }
     QLabel* sub = nullptr;
     if (subOut) {
         sub = new QLabel;
-        QFont sf; sf.setPointSize(compact ? 8 : 7); sf.setBold(true);
+        QFont sf; sf.setPointSize(compact ? 8 : spacious ? 10 : 7); sf.setBold(true);
         sub->setFont(sf);
         sub->setForegroundRole(QPalette::PlaceholderText);
         *subOut = sub;
@@ -117,8 +121,10 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     }
 
     QVBoxLayout* cv = new QVBoxLayout(card);
-    cv->setContentsMargins(8, 6, 8, 6);
-    cv->setSpacing(1);
+    cv->setContentsMargins(spacious ? 12 : 8, spacious ? 10 : 6,
+                           spacious ? 12 : 8, spacious ? 10 : 6);
+    cv->setSpacing(spacious ? 3 : 1);
+    if (spacious) card->setMinimumHeight(96);
 
     // Heading row: title on the left, optional sub-info pinned to the right.
     QWidget* hdrRow = new QWidget;
@@ -142,17 +148,19 @@ QFrame* makeStatCard(const QString& label, const QString& unit, QLabel*& valueOu
     return card;
 }
 
-QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, bool compact) {
+QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, tnr::DensityMode density) {
+    const bool compact = density == tnr::DensityMode::Compact;
+    const bool spacious = density == tnr::DensityMode::Spacious;
     QFrame* card = new QFrame;
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     QLabel* lbl = new QLabel(label.toUpper());
-    QFont lf; lf.setPointSize(compact ? 7 : 6);
+    QFont lf; lf.setPointSize(compact ? 7 : spacious ? 9 : 6);
     lbl->setFont(lf);
     lbl->setForegroundRole(QPalette::PlaceholderText);
 
     valueOut = new QLabel("—");
-    QFont vf; vf.setPointSize(compact ? 11 : 12); vf.setBold(true);
+    QFont vf; vf.setPointSize(compact ? 11 : spacious ? 18 : 12); vf.setBold(true);
     valueOut->setFont(vf);
 
     if (compact) {
@@ -167,8 +175,9 @@ QFrame* makeDmgCard(const QString& label, QLabel*& valueOut, bool compact) {
     }
 
     QVBoxLayout* cv = new QVBoxLayout(card);
-    cv->setContentsMargins(6, 4, 6, 4);
-    cv->setSpacing(0);
+    cv->setContentsMargins(spacious ? 10 : 6, spacious ? 8 : 4,
+                           spacious ? 10 : 6, spacious ? 8 : 4);
+    cv->setSpacing(spacious ? 2 : 0);
     cv->addWidget(lbl);
     cv->addWidget(valueOut);
     return card;
@@ -191,9 +200,12 @@ void setDmgValue(QLabel* lbl, int val) {
 OverviewPage::OverviewPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
-    statsCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewStats),  false).toBool();
-    damageCompact_ = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewDamage), false).toBool();
-    tyresLevel_    = settings_.value(tnr::compactKey(tnr::CompactSection::OverviewTyres),  0).toInt();
+    statsDensity_ = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::OverviewStats), "normal"));
+    damageDensity_ = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::OverviewDamage), "normal"));
+    tyresLevel_ = qBound(0, settings_.value(
+        tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(), 6);
 
     QVBoxLayout* vbox = new QVBoxLayout(this);
     // No outer padding so the separator lines reach every edge; the inset is
@@ -425,7 +437,10 @@ void OverviewPage::buildStatCards() {
     // Compact cards carry their own left margin, so the row's L/R inset would
     // over-indent the first card ("SPEED") relative to the rest — drop it in
     // compact mode; the full two-line layout keeps its original inset.
-    sh->setContentsMargins(statsCompact_ ? 0 : 8, 0, statsCompact_ ? 0 : 8, 0);
+    const bool compact = statsDensity_ == tnr::DensityMode::Compact;
+    const bool spacious = statsDensity_ == tnr::DensityMode::Spacious;
+    sh->setContentsMargins(compact ? 0 : spacious ? 12 : 8, 0,
+                           compact ? 0 : spacious ? 12 : 8, 0);
 
     // Key-driven stat cards. Each card is { key, label }: title from the i18n
     // catalog (ui.overview.<key>), value/colour from a per-key resolver over the
@@ -445,7 +460,7 @@ void OverviewPage::buildStatCards() {
         const QString key = OverviewLayout::statCardKey(d.idx);
         QLabel* val = nullptr; QLabel* sub = nullptr; QLabel* title = nullptr;
         QFrame* frame = makeStatCard(tnr::L("ui.overview." + key), d.unit,
-                                     val, statsCompact_, d.sub ? &sub : nullptr, &title);
+                                     val, statsDensity_, d.sub ? &sub : nullptr, &title);
         statCardFrame_[d.idx] = frame;
         cardValue_[key] = val;
         cardTitle_[key] = title;
@@ -470,13 +485,15 @@ void OverviewPage::buildDamageCards() {
         dmgCardSep_[i]   = nullptr;
     }
 
-    const int rowH = damageCompact_ ? 26 : 60;
+    const bool compact = damageDensity_ == tnr::DensityMode::Compact;
+    const bool spacious = damageDensity_ == tnr::DensityMode::Spacious;
+    const int rowH = compact ? 26 : spacious ? 82 : 60;
     dmgRowA_->setFixedHeight(rowH);
     dmgRowB_->setFixedHeight(rowH);
 
     // Drop the rows' L/R inset in compact mode so the first card ("WING FL") lines
     // up with the rest; the full two-line layout keeps its original inset.
-    const int dmgSide = damageCompact_ ? 0 : 8;
+    const int dmgSide = compact ? 0 : spacious ? 12 : 8;
 
     struct DmgDef { int idx; const char* label; QLabel** val; };
     const DmgDef rowA[] = {
@@ -499,7 +516,7 @@ void OverviewPage::buildDamageCards() {
         rl->setContentsMargins(dmgSide, 0, dmgSide, 0);
         for (int j = 0; j < n; ++j) {
             if (j > 0) rl->addWidget(dmgCardSep_[defs[j].idx] = tnrui::vline());
-            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, damageCompact_);
+            QFrame* card = makeDmgCard(defs[j].label, *defs[j].val, damageDensity_);
             dmgCardFrame_[defs[j].idx] = card;
             rl->addWidget(card, 1);
         }
@@ -512,16 +529,24 @@ void OverviewPage::buildDamageCards() {
 // the layout visibility (the rebuild recreated the frames applyLayout hides), then
 // repopulates from the cache so nothing shows a stale "—" while paused.
 void OverviewPage::setStatsCompact(bool on) {
-    if (statsCompact_ == on) return;
-    statsCompact_ = on;
+    setStatsDensity(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+
+void OverviewPage::setStatsDensity(tnr::DensityMode mode) {
+    if (statsDensity_ == mode) return;
+    statsDensity_ = mode;
     buildStatCards();
     applyLayout(loadLayout());
     refreshCards();
 }
 
 void OverviewPage::setDamageCompact(bool on) {
-    if (damageCompact_ == on) return;
-    damageCompact_ = on;
+    setDamageDensity(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+
+void OverviewPage::setDamageDensity(tnr::DensityMode mode) {
+    if (damageDensity_ == mode) return;
+    damageDensity_ = mode;
     buildDamageCards();
     applyLayout(loadLayout());
     if (lastDamage_) { const DamageRow d = *lastDamage_; onDamage(d); }

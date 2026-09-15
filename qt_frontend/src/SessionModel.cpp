@@ -183,15 +183,54 @@ void SessionData::truncateAfter(float newTime) {
     cutTail(tyreBuf);
     cutTail(damageBuf);
 
-    // Drop completed laps recorded at/after the rewind point.
-    while (!laps.isEmpty() && laps.last().startSessionTime >= newTime)
-        laps.removeLast();
+    // Electron rebuilds its current lap from the last surviving lap boundary.
+    // Keep the matching Qt lap as the in-progress lap too; throwing curLap away
+    // made every lap-relative chart empty until a whole new lap was completed.
+    int activeCompleted = -1;
+    for (int i = 0; i < laps.size(); ++i) {
+        const LapBlock& lap = laps[i];
+        if (lap.startSessionTime <= newTime && newTime <= lap.endSessionTime)
+            activeCompleted = i;
+    }
+    const bool activeIsCurrent = curLapNum >= 0 && curLap.startSessionTime <= newTime;
+    LapBlock activeLap;
+    bool haveActiveLap = false;
+    if (activeIsCurrent) {
+        activeLap = std::move(curLap);
+        haveActiveLap = true;
+        while (!laps.isEmpty() && laps.last().startSessionTime >= activeLap.startSessionTime)
+            laps.removeLast();
+    } else if (activeCompleted >= 0) {
+        activeLap = std::move(laps[activeCompleted]);
+        haveActiveLap = true;
+        laps.resize(activeCompleted);
+    } else {
+        // The target is outside a known lap (for example, before the first lap
+        // packet or while in the garage). Only completed laps wholly before it
+        // remain valid.
+        while (!laps.isEmpty() && laps.last().endSessionTime >= newTime)
+            laps.removeLast();
+    }
 
-    // Discard the in-progress lap; lap tracking re-initialises from the next lap
-    // packet (matches resetting lapNum/lapStart on a backward step in Electron).
-    curLap = LapBlock{};
-    curLapNum = -1;
-    lapStartTime = newTime;
+    if (haveActiveLap) {
+        cutTail(activeLap.tel);
+        cutTail(activeLap.sts);
+        cutTail(activeLap.motion);
+        cutTail(activeLap.motionEx);
+        cutTail(activeLap.tyre);
+        cutTail(activeLap.damage);
+        cutTail(activeLap.progress);
+        cutTail(activeLap.positions);
+        activeLap.endSessionTime = 0.0f;
+        activeLap.lapTimeMs = 0;
+        curLapNum = activeLap.lapNum;
+        lapStartTime = activeLap.startSessionTime;
+        curLap = std::move(activeLap);
+    } else {
+        curLap = LapBlock{};
+        curLapNum = -1;
+        lapStartTime = newTime;
+    }
 
     // Recompute the fastest lap over the laps that survived the rewind.
     fastestLapNum = -1;
@@ -200,9 +239,25 @@ void SessionData::truncateAfter(float newTime) {
         if (l.lapTimeMs > 0 && l.lapTimeMs < 300000 && l.lapTimeMs < fastestLapMs) {
             fastestLapMs  = l.lapTimeMs;
             fastestLapNum = l.lapNum;
+        }
+
+    // Recompute the stint origin from the retained status prefix just as the
+    // Electron store does after a rewind.
+    currentStintStartTime = stsBuf.isEmpty() ? 0.0f : stsBuf.first().t;
+    for (int i = 1; i < stsBuf.size(); ++i) {
+        const StsSample& previous = stsBuf[i - 1];
+        const StsSample& sample = stsBuf[i];
+        const bool compoundsValid = previous.tyre_compound > 0 && sample.tyre_compound > 0;
+        const bool compoundChanged = compoundsValid &&
+            (previous.tyre_compound != sample.tyre_compound ||
+             previous.visual_compound != sample.visual_compound);
+        const int ageDelta = sample.tyre_age_laps - previous.tyre_age_laps;
+        if (compoundChanged || ageDelta < 0 ||
+            (ageDelta > 1 && sample.t - previous.t < 30.0f))
+            currentStintStartTime = sample.t;
     }
 
-    latestTime = telBuf.isEmpty() ? newTime : telBuf.last().t;
+    latestTime = newTime;
 }
 
 void SessionData::clear() {

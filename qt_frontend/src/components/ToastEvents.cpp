@@ -36,6 +36,11 @@ QString enumLabel(const QString& group, int id) {
 
 } // namespace
 
+ToastSpec raceLeaderToast(int carIdx, const tnrp::ParticipantsRow* participants) {
+    return ToastSpec{QStringLiteral("New Race Leader"), lastName(participants, carIdx),
+                     QColor("#5794F2"), false, false};
+}
+
 std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
                                     const tnrp::ParticipantsRow* participants) {
     const std::string& code = event.code;

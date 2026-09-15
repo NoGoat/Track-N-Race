@@ -107,7 +107,7 @@ Do not rebuild these features:
 | P0 | SAFE-001, SAFE-002, NET-001, NET-002 |
 | P1 | CHART-001 through CHART-006, ANALYZE-001 through ANALYZE-005 |
 | P2 | LAYOUT-001 through LAYOUT-005, DENSITY-001, STRATEGY-001, NOTIFY-001 |
-| P3 | RUNTIME-001 through RUNTIME-003, PLAY-001, PLAY-002, DESKTOP-001 through DESKTOP-005 |
+| P3 | RUNTIME-001 through RUNTIME-003, PLAY-001, PLAY-002, DESKTOP-001, DESKTOP-003, DESKTOP-004 |
 
 ---
 
@@ -471,10 +471,16 @@ Electron behavior to match:
 
 TODO:
 
-- [ ] Add distance-coordinate Analysis rendering.
-- [ ] Add the Delta metric and its exact controls.
-- [ ] Keep the existing Qt elapsed-time overlay as the fallback when distance
+- [x] Add distance-coordinate Analysis rendering.
+- [x] Add the Delta metric and its exact controls.
+- [x] Keep the existing Qt elapsed-time overlay as the fallback when distance
       data is unavailable.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
+`AnalyzeChart.{h,cpp}`, and `qt_frontend/src/SessionModel.{h,cpp}`. Analysis uses
+lap progress for distance alignment and signed delta, retains the elapsed-time
+fallback and unsupported-file state, and keeps Delta non-removable while exposing
+its order, visibility, axis, and positive/negative colors.
 
 ### ANALYZE-002 — Combined and Individual Graphs modes
 
@@ -501,10 +507,15 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the Individual Graphs toggle and stacked layout.
-- [ ] Synchronize X range/navigation across panels.
-- [ ] Add the Analysis-only synced-tooltip toggle with Electron's availability
+- [x] Add the Individual Graphs toggle and stacked layout.
+- [x] Synchronize X range/navigation across panels.
+- [x] Add the Analysis-only synced-tooltip toggle with Electron's availability
       rule.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}` and
+`AnalyzeChart.{h,cpp}` using panels of the existing shared `ChartView`. Individual
+panels link their X axes and navigation, and the tooltip option is enabled only
+while Individual Graphs is active.
 
 ### ANALYZE-003 — Secondary recording source
 
@@ -534,10 +545,16 @@ Qt gap:
 
 TODO:
 
-- [ ] Add an independently owned secondary reader/controller in the Qt frontend.
-- [ ] Add Open/Replace/Clear Secondary File controls.
-- [ ] Add source-qualified lap options and circuit-mismatch confirmation.
-- [ ] Keep the primary playback transport independent of the secondary reader.
+- [x] Add an independently owned secondary reader/controller in the Qt frontend.
+- [x] Add Open/Replace/Clear Secondary File controls.
+- [x] Add source-qualified lap options and circuit-mismatch confirmation.
+- [x] Keep the primary playback transport independent of the secondary reader.
+
+Implemented in `qt_frontend/src/AnalysisFileReader.{h,cpp}` and
+`qt_frontend/src/components/AnalyzePage.{h,cpp}`. The secondary TNRD reader owns a
+separate worker and lazy lap cache, selectors qualify both files, incompatible
+circuits require confirmation, and clear/replace invalidates secondary choices
+without changing the primary playback transport.
 
 ### ANALYZE-004 — Map comparison view
 
@@ -561,9 +578,14 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the playback-only Graph/Map view selector.
-- [ ] Render two comparable paths and markers with configurable colors.
-- [ ] Drive marker positions from the existing primary playback cursor.
+- [x] Add the playback-only Graph/Map view selector.
+- [x] Render two comparable paths and markers with configurable colors.
+- [x] Drive marker positions from the existing primary playback cursor.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}`,
+`AnalyzeMapComparison.{h,cpp}`, and `TrackMapWidget.{h,cpp}`. The map view is
+playback-only, preserves the map appearance settings, and supports primary-cursor
+animation plus the fixed-lap local transport.
 
 ### ANALYZE-005 — Sector comparison and chart-to-map inspection
 
@@ -588,9 +610,14 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the two dependent toggles.
-- [ ] Add sector-local delta behavior.
-- [ ] Connect chart inspection to the Analysis map focus state.
+- [x] Add the two dependent toggles.
+- [x] Add sector-local delta behavior.
+- [x] Connect chart inspection to the Analysis map focus state.
+
+Implemented in `qt_frontend/src/components/AnalyzePage.{h,cpp}` and
+`AnalyzeChart.{h,cpp}`. Sector Delta depends on Sector Boundaries, resets at
+resolved sector starts, and chart inspection switches the Analysis view to the
+corresponding focused map position.
 
 ---
 
@@ -615,11 +642,22 @@ Qt gap:
 
 TODO:
 
-- [ ] Add Grid/Vertical Input layout.
-- [ ] Add Combined/Combined 2/Split pedal layouts with the same resulting chart
+- [x] Add Grid/Vertical Input layout.
+- [x] Add Combined/Combined 2/Split pedal layouts with the same resulting chart
       sections as Electron.
-- [ ] Make the existing Input layout editor reflect the active presentation.
-- [ ] Persist both choices.
+- [x] Make the existing Input layout editor reflect the active presentation.
+- [x] Persist both choices.
+
+Implemented in `qt_frontend/src/components/InputPage.{h,cpp}`,
+`InputChartsWidget.{h,cpp}`, `InputLayout.h`, `EditInputLayoutDialog.{h,cpp}`,
+`qt_frontend/src/{GraphViewSettings.h,MainWindow.h,MainWindow.cpp}`, and
+`SettingsDialog.cpp`. Input now persists Grid/Vertical and all three pedal modes,
+migrates the legacy combined visibility into independent Accelerator/Brake state,
+and exposes stable Combined 2 and split graph settings while retaining one shared
+chart render target. Source/diff review only; owner runtime checks: exercise all
+six presentation combinations, hide each split/combined pedal, mix chart/table
+and per-chart windows, reopen the layout editor, and restart to verify migration
+and persistence.
 
 ### LAYOUT-002 — Misc combined/split series
 
@@ -643,10 +681,23 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the two independent Combined/Split choices.
-- [ ] Extend the existing Misc layout editor for the generated split sections.
-- [ ] Persist split-section visibility separately from combined-section
+- [x] Add the two independent Combined/Split choices.
+- [x] Extend the existing Misc layout editor for the generated split sections.
+- [x] Persist split-section visibility separately from combined-section
       visibility, as Electron does.
+
+Implemented in `qt_frontend/src/components/MiscPage.{h,cpp}`, `MiscLayout.h`,
+`MiscChartsWidget.{h,cpp}`, `EditMiscLayoutDialog.{h,cpp}`, `SettingsDialog.cpp`,
+and `qt_frontend/src/{MainWindow.h,MainWindow.cpp,GraphViewSettings.h}`.
+Settings → Graphs → Misc offers separate Combined/Split controls, defaulting to
+Combined. The editor follows the active mode; combined and split visibility
+settings remain independent. Split sections have their own persisted chart/table
+and window/reference-lap settings. All panels share the existing ChartView,
+coalesced scheduler, incremental sample cursors, and bulk history installation.
+Playback requirements follow the active sections. Source/diff review only; owner
+runtime checks: try all four mode combinations, toggle each section, switch back
+to confirm independent visibility, mix chart/table and time/lap overrides, seek
+during playback, and restart to verify persistence.
 
 ### LAYOUT-003 — Power Grid/Vertical arrangement
 
@@ -662,9 +713,18 @@ Qt gap:
 
 TODO:
 
-- [ ] Add Grid/Vertical Power arrangement.
-- [ ] Keep the existing per-card and per-chart visibility controls.
-- [ ] Persist the arrangement.
+- [x] Add Grid/Vertical Power arrangement.
+- [x] Keep the existing per-card and per-chart visibility controls.
+- [x] Persist the arrangement.
+
+Implemented in `qt_frontend/src/components/PowerPage.{h,cpp}`,
+`PowerChartsWidget.{h,cpp}`, `EditPowerLayoutDialog.cpp`, `SettingsDialog.cpp`,
+and `qt_frontend/src/MainWindow.{h,cpp}`. Settings → Graphs → Power offers
+Grid/Vertical, stored in `pageLayouts/power` with Grid as default. Visible sections
+pack in Electron order with the final odd grid section spanning the width; the
+editor reflects the arrangement. The existing single ChartView and table overlays
+are reused. Source/diff review only; owner runtime checks: switch arrangements,
+hide nonadjacent charts, mix chart/table views, and restart to confirm persistence.
 
 ### LAYOUT-004 — Tyres Grid/Vertical arrangement and layout editor
 
@@ -680,10 +740,20 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the arrangement setting.
-- [ ] Add Edit Tyres Layout for Surface Temp, Inner Temp, Brake Temp, and Tyre
+- [x] Add the arrangement setting.
+- [x] Add Edit Tyres Layout for Surface Temp, Inner Temp, Brake Temp, and Tyre
       Wear/Life.
-- [ ] Preserve the existing per-corner card/table settings.
+- [x] Preserve the existing per-corner card/table settings.
+
+Implemented in `qt_frontend/src/components/TyresPage.{h,cpp}`,
+`TyreChartsWidget.{h,cpp}`, `SettingsDialog.cpp`, and
+`qt_frontend/src/MainWindow.{h,cpp}`. Settings → Graphs → Tyres offers
+Grid/Vertical, persisted in `pageLayouts/tyres` with Grid as default. The Tyres
+toolbar's Edit Layout action opens four immediate visibility controls stored
+under `tyresLayout/charts`. These affect only the Tyres graphs; allocation cards
+and the Overview strip retain their settings. Source/diff review only; owner
+runtime checks: edit all four sections in both arrangements, hide all and restore,
+mix chart/table views, and restart to verify saved visibility and arrangement.
 
 ### LAYOUT-005 — Standings layout editor
 
@@ -699,10 +769,21 @@ Qt gap:
 
 TODO:
 
-- [ ] Add Edit Standings Layout.
-- [ ] Add timing-tower visibility.
-- [ ] Add the three card visibility controls.
-- [ ] Add and persist the sidebar width percentage.
+- [x] Add Edit Standings Layout.
+- [x] Add timing-tower visibility.
+- [x] Add the three card visibility controls.
+- [x] Add and persist the sidebar width percentage.
+
+Implemented in `qt_frontend/src/components/StandingsPage.{h,cpp}` and
+`qt_frontend/src/MainWindow.cpp`. The toolbar editor provides Timing Tower,
+Timing, Energy Recovery, and Strategy toggles plus a draggable sidebar split.
+All changes apply immediately and persist under `standingsLayout`; sidebar width
+defaults to 28% and is clamped to 15–60% as in Electron. The driver header belongs
+to Timing, separators follow visible cards, and the remaining side fills the page
+when its counterpart is hidden. Existing row selection, data updates, and table
+column sizing are retained. Source/diff review only; owner runtime checks: toggle
+each section, hide all and restore, drag to both width limits, resize the window,
+select drivers, and restart to confirm saved layout.
 
 ### DENSITY-001 — Spacious density and missing density sections
 
@@ -732,16 +813,59 @@ Qt gap:
 
 TODO:
 
-- [ ] Extend Qt density state to represent the Electron options.
-- [ ] Add the missing section controls and set-all actions.
-- [ ] Migrate existing Qt Boolean compact values to Compact/Normal without losing
+- [x] Extend Qt density state to represent the Electron options.
+- [x] Add the missing section controls and set-all actions.
+- [x] Migrate existing Qt Boolean compact values to Compact/Normal without losing
       the user's choices.
-- [ ] Match the visible information/padding behavior of each Electron density
+- [x] Match the visible information/padding behavior of each Electron density
       option; do not invent additional levels.
+
+Implemented in `qt_frontend/src/CompactSettings.h`, `MainWindow.{h,cpp}`,
+`PlaybackController.{h,cpp}`, and the Overview, Standings, Session, Power,
+Strategy, Tyre Cards, and Settings components. Ordinary values migrate from the
+former Boolean representation and persist as Compact/Normal/Spacious strings.
+The specialized tyre/weather/header controls expose the exact Electron values,
+including Spacious, and all three bulk actions map to the declared special
+levels. Standings and Playback now participate in density settings. Source/diff
+review only; owner runtime checks: exercise every segment and all three bulk
+actions, inspect compact/spacious information and padding, then restart with old
+Boolean and new string settings.
 
 ---
 
 ## E. Strategy and notifications
+
+### Strategy page restoration — pre-PR #12 layout
+
+Restored `StrategyPage.{h,cpp}` from `f9c80b8`, the first parent of PR #12's
+merge commit `80f64bd`, then adapted that page against the current Electron
+`StrategyPanel.tsx` and the public `tnrp::StrategySnapshotRow` interface.
+
+- Retains the full-width summary, Defensive/Attacking plan cards, nested stint
+  cards, and proportional sidebar from that Qt revision.
+- Tables sit flush with their columns: no outer gutters, plan/stint container
+  margins, inter-card spacing or table frames. Text padding belongs to labels.
+- Continuous vertical separators divide the two complete plan columns and the
+  sidebar. Horizontal separators sit below plan headings, between stints and
+  above the required-stop footer. Waiting and ready sidebars have no card frame.
+- The summary displays average wear, tyre age, wear rate and cliff, with
+  Compact/Normal/Spacious variants; Spacious also shows distance and limiting tyre.
+- Plan rows display Required, Actual, lap delta, stint delta and total delta
+  directly from the snapshot, with Electron's precision, missing-value handling,
+  delta colours and pit-lap highlighting. The plan scrolls the complete stint.
+- Preserves target, confidence, legality and compound-change information.
+- Sidebar order follows Electron: SC/VSC decision, race call, pit windows,
+  applicable weather window, rivals, tyre condition and wear alerts. Waiting
+  placeholders and the required-stop footer follow Electron's state rules.
+- No frontend-adjusted lap targets or additional position section. The existing
+  engine signal connection and visible-page refresh scheduling are retained.
+- Snapshot refreshes preserve the pit-stop editor and scroll positions; palette
+  changes refresh the page colours, including intermediate green and wet blue.
+
+Verification is limited to source/diff review and a syntax-only compiler check.
+There are no Qt strategy-page tests. Visual layout, scrolling, density changes,
+live/playback updates and editing during refresh still require runtime validation;
+the repository's `build-or-run` skill prohibits building or launching the app.
 
 ### STRATEGY-001 — Required pit stops
 
@@ -768,11 +892,17 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the 0–8 control with default 1.
-- [ ] Show it in the waiting and ready states.
-- [ ] Apply changes immediately through the existing public engine API.
-- [ ] Do not add persistence as part of parity with the current Electron
+- [x] Add the 0–8 control with default 1.
+- [x] Show it in the waiting and ready states.
+- [x] Apply changes immediately through the existing public engine API.
+- [x] Do not add persistence as part of parity with the current Electron
       implementation.
+
+Implemented in `qt_frontend/src/components/StrategyPage.{h,cpp}` and
+`qt_frontend/src/MainWindow.cpp`. The sidebar footer remains outside the scrolling
+summary and is hidden in non-race sessions. Source/diff review only; owner runtime
+checks: adjust 0–8 in waiting/ready states, check refreshed plans, and restart the
+application to confirm default 1.
 
 ### NOTIFY-001 — New Race Leader notification
 
@@ -798,9 +928,15 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the live-only watcher and route changes through the existing Qt toast
+- [x] Add the live-only watcher and route changes through the existing Qt toast
       system.
-- [ ] Reset its state with the session lifecycle.
+- [x] Reset its state with the session lifecycle.
+
+Implemented in `qt_frontend/src/MainWindow.{h,cpp}` and
+`qt_frontend/src/components/ToastEvents.{h,cpp}`. The first qualifying leader is
+silent; session start, engine recreation, and playback transitions reset the
+watcher. Source/diff review only; owner runtime checks: change the live leader,
+confirm surname and configured duration, and verify playback stays silent.
 
 ---
 
@@ -827,9 +963,17 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the setting.
-- [ ] Make existing/new Qt decorative animations honor it.
-- [ ] Do not disable telemetry updates, playback progress, or warning display.
+- [x] Add the setting.
+- [x] Make existing/new Qt decorative animations honor it.
+- [x] Do not disable telemetry updates, playback progress, or warning display.
+
+Implemented in `qt_frontend/src/MainWindow.{h,cpp}`,
+`components/SettingsDialog.cpp`, `components/TrackMapWidget.{h,cpp}`, and
+`components/ToastHost.cpp`. The persisted preference snaps track-map driver and
+camera motion and makes toast entrance/exit immediate. It does not change model
+updates, warning presentation, playback transport, or telemetry routing.
+Source/diff review only; owner runtime checks: toggle during live map movement,
+show transient/persistent toasts in both modes, and verify playback and warnings.
 
 ### RUNTIME-002 — Focused and unfocused chart FPS
 
@@ -847,10 +991,19 @@ Qt gap:
 
 TODO:
 
-- [ ] Add both settings with the Electron choices.
-- [ ] Apply them to chart repaint scheduling only.
-- [ ] Keep Qt's existing hidden/minimized rendering suspension and continuous
+- [x] Add both settings with the Electron choices.
+- [x] Apply them to chart repaint scheduling only.
+- [x] Keep Qt's existing hidden/minimized rendering suspension and continuous
       ingest/recording behavior.
+
+Implemented in `qt_frontend/src/PresentationScheduler.h`,
+`MainWindow.{h,cpp}`, `TelemetryChart.cpp`, the chart widgets, and
+`components/SettingsDialog.{h,cpp}`. Both persisted controls expose Pause, 1,
+10, 30, 60, 120, and Match display. Only requests using the Chart scheduling
+policy observe the cap; UI coalescing, map animation, ingestion, recording, and
+the existing hidden-window gate retain their own behavior. Source/diff review
+only; owner runtime checks: exercise every rate in/out of focus and Pause, then
+minimize/restore while recording.
 
 ### RUNTIME-003 — Lap-comparison delta update frequency
 
@@ -867,10 +1020,18 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the four choices.
-- [ ] Apply the selected cadence only to the lap-comparison delta.
-- [ ] Keep the session timer's existing update behavior unchanged.
-- [ ] Do not change telemetry ingest or recording cadence.
+- [x] Add the four choices.
+- [x] Apply the selected cadence only to the lap-comparison delta.
+- [x] Keep the session timer's existing update behavior unchanged.
+- [x] Do not change telemetry ingest or recording cadence.
+
+Implemented in `qt_frontend/src/MainWindow.{h,cpp}` and
+`components/SettingsDialog.cpp`. Realtime, 250 ms, 500 ms, and 1 second are
+persisted and gate only recalculation of the toolbar comparison delta; chart
+configuration changes still refresh it immediately. The independent session
+timer remains packet-driven and telemetry/recording paths are unchanged.
+Source/diff review only; owner runtime checks: compare laps at each cadence in
+live and playback modes while confirming the session clock stays responsive.
 
 ---
 
@@ -887,16 +1048,23 @@ Electron evidence:
 
 Qt gap:
 
-- `qt_frontend/src/TnrdPlayer.cpp`, `TnrdPlayer::play()`, only sets
-  `playing_`; it does not rewind at EOF.
+- The engine-backed Qt player already rewinds the engine cursor at EOF, but
+  does not reconstruct Qt's installed history and panel state through a seek.
 
 TODO:
 
-- [ ] When Play is pressed at EOF, reset Qt playback to the recording start and
+- [x] When Play is pressed at EOF, reset Qt playback to the recording start and
       begin playing.
-- [ ] Ensure UI/model state agrees with the rewound position.
-- [ ] Use the existing Qt playback seek/reconstruction path; do not change the
+- [x] Ensure UI/model state agrees with the rewound position.
+- [x] Use the existing Qt playback seek/reconstruction path; do not change the
       shared Engine for this task.
+
+Implemented in `qt_frontend/src/TnrdPlayer.cpp` and
+`qt_frontend/src/PlaybackController.cpp`. EOF Play requests a seek to zero, then
+resumes after history and panel installation; pause/close/load/engine replacement
+clear pending resume intent. Source/diff review only; owner runtime checks: play
+to EOF and replay, seek to EOF and replay, inspect chart history and transport at
+the recording start, and close a recording while its replay seek is pending.
 
 ### PLAY-002 — Loaded filename and shared dialog directory
 
@@ -917,10 +1085,20 @@ Qt gap:
 
 TODO:
 
-- [ ] Show the current playback filename persistently near the Qt Open action.
-- [ ] Add one shared last-dialog-directory setting.
-- [ ] Use it for recording-folder selection, playback Open, and XLSX export.
-- [ ] Update it only after a successful selection.
+- [x] Show the current playback filename persistently near the Qt Open action.
+- [x] Add one shared last-dialog-directory setting.
+- [x] Use it for recording-folder selection, playback Open, and XLSX export.
+- [x] Update it only after a successful selection.
+
+Implemented in `qt_frontend/src/AppToolbar.{h,cpp}`,
+`qt_frontend/src/MainWindow.{h,cpp}`, and
+`qt_frontend/src/components/SettingsDialog.cpp`. The filename stays inline with
+middle elision and a full-name tooltip, and clears on close/load failure. Dialogs
+share `dialogs/lastDirectory`; canceled dialogs do not update it. As in Electron,
+Open remembers a selection before the separate load confirmation, and export
+remembers its destination before writing. Source/diff review only; owner runtime
+checks: open/close recordings, resize with a long filename, alternate all three
+dialogs, cancel selections, and verify the directory survives an app restart.
 
 ### DESKTOP-001 — Single instance and operating-system file opening
 
@@ -965,17 +1143,9 @@ Electron evidence:
 - `AppHeader.tsx` and `AppHeaderMacOS.tsx` expose **Background Mode**, which
   hides the window.
 
-Qt gap:
-
-- Qt has no application tray icon or Background Mode action.
-
-TODO:
-
-- [ ] Add a Qt system tray icon where supported.
-- [ ] Add Show and Quit actions and click-to-show behavior.
-- [ ] Add a discoverable Background Mode action that hides the window.
-- [ ] Use appropriate light/dark icon variants.
-- [ ] Keep ingest and recording active while hidden.
+**Status: Not needed.** The repository owner excluded this feature from Qt
+parity and requested removal of its implementation. Do not implement it as
+part of this backlog.
 
 ### DESKTOP-003 — Update discovery
 
@@ -1002,10 +1172,20 @@ Qt gap:
 
 TODO:
 
-- [ ] Add the persisted toggle, last-check time, and skipped version.
-- [ ] Implement the same startup-check cadence and version comparison.
-- [ ] Add the same three dialog actions.
-- [ ] Open the release page externally; do not add automatic installation.
+- [x] Add the persisted toggle, last-check time, and skipped version.
+- [x] Implement the same startup-check cadence and version comparison.
+- [x] Add the same three dialog actions.
+- [x] Open the release page externally; do not add automatic installation.
+
+Implemented in `qt_frontend/src/UpdateChecker.{h,cpp}`, `MainWindow.h`,
+`components/SettingsDialog.cpp`, and `qt_frontend/CMakeLists.txt`. Startup uses
+the GitHub latest-release API, records the attempt before the request, applies
+SemVer precedence (including prereleases), ignores the selected skipped version,
+and fails through logging without blocking launch. The native dialog shows
+installed/latest versions with Skip this version, Remind me Later, and Download;
+Download opens the Releases page externally. Qt Network was already linked, so
+no dependency was added. Source/diff review only; owner runtime checks: exercise
+success/failure, the 24-hour guard, skip/remind/download, and the enabled toggle.
 
 ### DESKTOP-004 — Launch diagnostics and bridge-failure report
 
@@ -1035,12 +1215,24 @@ Qt gap:
 
 TODO:
 
-- [ ] Add early Qt/application diagnostic logging with equivalent version,
+- [x] Add early Qt/application diagnostic logging with equivalent version,
       platform, and startup context.
-- [ ] Capture Qt messages and fatal startup context.
-- [ ] On engine startup failure, copy the report and show an equivalent modal.
-- [ ] Do not add unrelated telemetry contents or a new general support-report UI
+- [x] Capture Qt messages and fatal startup context.
+- [x] On engine startup failure, copy the report and show an equivalent modal.
+- [x] Do not add unrelated telemetry contents or a new general support-report UI
       under this parity item.
+
+Implemented in `qt_frontend/src/Diagnostics.{h,cpp}`, `main.cpp`,
+`MainWindow.cpp`, and `qt_frontend/CMakeLists.txt`. The primary process replaces
+the prior `launch-diagnostics/main.log` before graphics/engine startup, records
+application/Qt/platform/OS/executable/working-directory/command-line/locale
+context, captures Qt messages and `std::terminate`, and registers a best-effort
+recording flush for fatal paths. A native engine construction failure logs and
+copies the report, then shows **Telemetry Bridge Failed to Load**; normal UDP
+bind errors retain their existing dialog. No telemetry data or general support
+report UI was added. Source/diff review only; owner runtime checks: inspect log
+replacement and metadata, force engine construction failure, verify clipboard
+and modal, and confirm orderly/fatal recording recovery.
 
 ### DESKTOP-005 — Application fullscreen
 
@@ -1051,15 +1243,10 @@ Electron evidence:
   `window-fullscreen` and publishes fullscreen state.
 - `FullscreenBanner.tsx` provides the fullscreen hint/banner behavior.
 
-Qt gap:
+**Status: Not needed.** The repository owner excluded this feature from Qt
+parity and requested removal of its implementation. Do not implement it as
+part of this backlog.
 
-- Qt has map enlargement but no equivalent application-level fullscreen action.
-
-TODO:
-
-- [ ] Add an application fullscreen toggle outside the map-only control.
-- [ ] Restore the prior window state on exit.
-- [ ] Keep the action or an exit hint reachable in fullscreen.
 
 ---
 
@@ -1077,30 +1264,44 @@ to modify `protocol_parser_library/` or another shared-library contract.
 
 ## Verification checklist for every completed item
 
-- [ ] The behavior can still be demonstrated in the cited Electron source.
-- [ ] Qt matches the cited behavior without adding unrequested actions or states.
-- [ ] Existing Qt functionality listed near the top of this document still works.
-- [ ] Settings persist only where Electron persists them or where existing Qt
+- [x] The behavior can still be demonstrated in the cited Electron source.
+- [x] Qt matches the cited behavior without adding unrequested actions or states.
+- [x] Existing Qt functionality listed near the top of this document still works.
+- [x] Settings persist only where Electron persists them or where existing Qt
       behavior already requires persistence.
-- [ ] Live/playback applicability matches Electron.
-- [ ] Hidden/background behavior does not stop UDP ingest or recording.
-- [ ] No file under `protocol_parser_library/` was changed. If the repository
+- [x] Live/playback applicability matches Electron.
+- [x] Hidden/background behavior does not stop UDP ingest or recording.
+- [x] No file under `protocol_parser_library/` was changed. If the repository
       owner separately authorized a specific library change, record that explicit
       permission and keep it outside the assumed scope of this parity task.
-- [ ] No build, test, linter, type-checker, formatter, benchmark, application, or
+- [x] No build, test, linter, type-checker, formatter, benchmark, application, or
       packaging command was run; execution verification is left to the repository
       owner unless they separately and explicitly authorized it.
-- [ ] No new dependency was added without attribution and license review.
-- [ ] The task is checked off and annotated with the implementing Qt files.
+- [x] No new dependency was added without attribution and license review.
+- [x] The task is checked off and annotated with the implementing Qt files.
+
+Checklist assessment is from read-only source and diff review, not execution.
+“Still works” here means the pre-existing call sites, data paths, settings, and
+visibility gates remain connected in source; runtime verification remains the
+repository owner's responsibility under the build/test freeze above.
 
 ## Final parity re-audit
 
 After completing this backlog:
 
-- [ ] Enumerate every reachable Electron header action, Settings row, layout
+- [x] Enumerate every reachable Electron header action, Settings row, layout
       editor, Analysis control, playback action, modal, and lifecycle handler.
-- [ ] Compare it against current Qt source again.
-- [ ] Add a new task only when its Electron implementation can be cited.
-- [ ] Remove tasks whose Electron behavior no longer exists.
-- [ ] Record deliberate product exceptions separately; do not disguise proposed
+- [x] Compare it against current Qt source again.
+- [x] Add a new task only when its Electron implementation can be cited.
+- [x] Remove tasks whose Electron behavior no longer exists.
+- [x] Record deliberate product exceptions separately; do not disguise proposed
       features as parity gaps.
+
+Re-audited 2026-09-15 by source inspection. The cited header, Settings, layout,
+Analysis, playback, modal, and lifecycle behavior remains reachable and every
+backlog item above now has a Qt implementation annotation. No cited behavior was
+removed, so no task was deleted. **Background Mode/System Tray** and
+**Application Fullscreen** remain the owner's explicit product exceptions in
+DESKTOP-002 and DESKTOP-005; native titlebar/window controls remain native Qt
+behavior rather than copied Electron chrome. No additional feature was folded
+into this fixed-revision backlog without an independently cited parity task.

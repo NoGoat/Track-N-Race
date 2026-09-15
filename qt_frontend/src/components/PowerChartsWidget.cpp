@@ -175,21 +175,22 @@ void PowerChartsWidget::ensureTable(int section) {
     table_[section]->setVisible(false);
 }
 
+void PowerChartsWidget::setVerticalLayout(bool vertical) {
+    if (vertical_ == vertical) return;
+    vertical_ = vertical;
+    rebuildLayout();
+}
+
 void PowerChartsWidget::rebuildLayout() {
     if (!chart_ || !outer_) return;
-    // 2×2: split + harvest on top, store + fuel below; hidden panels drop out and
-    // the survivors reflow (a lone section in a row spans the full width). Both
-    // chart- and table-mode sections keep these positions; a table just replaces
-    // its chart in place (see tnr::layoutSectionGrid).
-    QVector<int> top, bottom;
-    if (visible_[SPLIT])   top.append(SPLIT);
-    if (visible_[HARVEST]) top.append(HARVEST);
-    if (visible_[STORE])   bottom.append(STORE);
-    if (visible_[FUEL])    bottom.append(FUEL);
-
+    // Pack surviving sections in Electron order, one or two per row. A final
+    // unpaired section spans the grid width, including in mixed chart/table mode.
+    QVector<int> visible;
+    for (int s = 0; s < SECTIONS; ++s) if (visible_[s]) visible.append(s);
+    const int perRow = vertical_ ? 1 : 2;
     QVector<QVector<int>> rows;
-    if (!top.isEmpty())    rows.append(top);
-    if (!bottom.isEmpty()) rows.append(bottom);
+    for (int i = 0; i < visible.size(); i += perRow)
+        rows.append(visible.mid(i, perRow));
 
     tnr::layoutSectionGrid(outer_, chart_, rows, SECTIONS, tableMode_, table_,
                            [this](int s) { ensureTable(s); });

@@ -42,6 +42,9 @@ enum class GraphSection {
 
     InputGear,
     InputThrottleBrake,
+    InputThrottleBrakeOverlay,
+    InputAccelerator,
+    InputBrake,
     InputSteering,
 
     PowerSplit,
@@ -51,6 +54,10 @@ enum class GraphSection {
 
     MiscGForce,
     MiscRideHeight,
+    MiscGLateral,
+    MiscGLongitudinal,
+    MiscRideFront,
+    MiscRideRear,
 
     Count_
 };
@@ -76,6 +83,9 @@ inline const char* graphViewKey(GraphSection s) {
         case GraphSection::TyreCardRR:         return "ui/graphView/tyreCardRR";
         case GraphSection::InputGear:          return "ui/graphView/inputGear";
         case GraphSection::InputThrottleBrake: return "ui/graphView/inputThrottleBrake";
+        case GraphSection::InputThrottleBrakeOverlay: return "ui/graphView/inputThrottleBrakeOverlay";
+        case GraphSection::InputAccelerator:   return "ui/graphView/inputAccelerator";
+        case GraphSection::InputBrake:         return "ui/graphView/inputBrake";
         case GraphSection::InputSteering:      return "ui/graphView/inputSteering";
         case GraphSection::PowerSplit:         return "ui/graphView/powerSplit";
         case GraphSection::PowerHarvest:       return "ui/graphView/powerHarvest";
@@ -83,6 +93,10 @@ inline const char* graphViewKey(GraphSection s) {
         case GraphSection::PowerFuel:          return "ui/graphView/powerFuel";
         case GraphSection::MiscGForce:         return "ui/graphView/miscGForce";
         case GraphSection::MiscRideHeight:     return "ui/graphView/miscRideHeight";
+        case GraphSection::MiscGLateral:       return "ui/graphView/miscGLateral";
+        case GraphSection::MiscGLongitudinal:  return "ui/graphView/miscGLongitudinal";
+        case GraphSection::MiscRideFront:      return "ui/graphView/miscRideFront";
+        case GraphSection::MiscRideRear:       return "ui/graphView/miscRideRear";
         default:                               return "";
     }
 }

@@ -28,16 +28,18 @@ namespace {
     // compact collapses the card to one line — label left, value+unit centred —
     // instead of the two-line label-over-value block.
     QWidget* makeStatCard(const QString& labelTxt, QLabel** valPtr, const QString& unitTxt,
-                          const QColor& color, bool compact) {
+                          const QColor& color, tnr::DensityMode density) {
         QWidget* w = new QWidget;
+        const bool compact = density == tnr::DensityMode::Compact;
+        const bool spacious = density == tnr::DensityMode::Spacious;
 
         QLabel* label = new QLabel(labelTxt);
-        QFont f; f.setPointSize(8); f.setBold(true);
+        QFont f; f.setPointSize(spacious ? 10 : 8); f.setBold(true);
         label->setFont(f);
         label->setForegroundRole(QPalette::PlaceholderText);
 
         *valPtr = new QLabel("—");
-        QFont vf; vf.setPointSize(compact ? 13 : 18); vf.setBold(true);
+        QFont vf; vf.setPointSize(compact ? 13 : spacious ? 24 : 18); vf.setBold(true);
         (*valPtr)->setFont(vf);
         if (color.isValid()) {
             QPalette p = (*valPtr)->palette();
@@ -46,7 +48,7 @@ namespace {
         }
 
         QLabel* unit = new QLabel(unitTxt);
-        QFont uf; uf.setPointSize(compact ? 8 : 9);
+        QFont uf; uf.setPointSize(compact ? 8 : spacious ? 11 : 9);
         unit->setFont(uf);
         unit->setForegroundRole(QPalette::PlaceholderText);
 
@@ -63,8 +65,10 @@ namespace {
         }
 
         QVBoxLayout* l = new QVBoxLayout(w);
-        l->setContentsMargins(12, 8, 12, 8);
-        l->setSpacing(2);
+        l->setContentsMargins(spacious ? 16 : 12, spacious ? 12 : 8,
+                              spacious ? 16 : 12, spacious ? 12 : 8);
+        l->setSpacing(spacious ? 4 : 2);
+        if (spacious) w->setMinimumHeight(96);
 
         QWidget* valRow = new QWidget;
         QHBoxLayout* hl = new QHBoxLayout(valRow);
@@ -84,7 +88,8 @@ namespace {
 PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     : QWidget(parent)
 {
-    compact_ = settings_.value(tnr::compactKey(tnr::CompactSection::PowerCards), false).toBool();
+    density_ = tnr::densityFromValue(
+        settings_.value(tnr::compactKey(tnr::CompactSection::PowerCards), "normal"));
 
     QVBoxLayout* vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);
@@ -105,6 +110,7 @@ PowerPage::PowerPage(SessionModel* model, QWidget* parent)
     // Split / harvest / store / fuel are now panels of one ChartView (a single
     // QRhi render target / repaint), laid out 2×2 — see PowerChartsWidget.
     charts_ = new PowerChartsWidget;
+    charts_->setVerticalLayout(verticalLayout());
     charts_->setModel(model);
     vbox->addWidget(charts_, 1);
 
@@ -133,7 +139,7 @@ void PowerPage::buildCards() {
     const int n = (int)(sizeof(defs) / sizeof(defs[0]));
     for (int i = 0; i < n; ++i) {
         QLabel* val = nullptr;
-        topLay->addWidget(cardFrames_[i] = makeStatCard(defs[i].label, &val, defs[i].unit, QColor(), compact_), 1);
+        topLay->addWidget(cardFrames_[i] = makeStatCard(defs[i].label, &val, defs[i].unit, QColor(), density_), 1);
         cardValue_[defs[i].key] = val;
         if (i < n - 1) {
             cardDivs_[i] = tnrui::vline();
@@ -146,10 +152,23 @@ void PowerPage::buildCards() {
 // the layout visibility; MainWindow re-feeds the latest status row so the fresh
 // labels repaint (see MainWindow::setCompactMode).
 void PowerPage::setCompactMode(bool on) {
-    if (compact_ == on) return;
-    compact_ = on;
+    setDensityMode(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+
+void PowerPage::setDensityMode(tnr::DensityMode mode) {
+    if (density_ == mode) return;
+    density_ = mode;
     buildCards();
     applyLayout(loadLayout());
+}
+
+bool PowerPage::verticalLayout() const {
+    return settings_.value("pageLayouts/power", "grid").toString() == "vertical";
+}
+
+void PowerPage::setVerticalLayout(bool vertical) {
+    settings_.setValue("pageLayouts/power", vertical ? "vertical" : "grid");
+    charts_->setVerticalLayout(vertical);
 }
 
 PowerLayout PowerPage::loadLayout()

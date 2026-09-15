@@ -7,6 +7,7 @@
 #include <tnrp/rows.h>
 
 #include "PowerLayout.h"
+#include "../CompactSettings.h"
 
 class QFrame;
 class QLabel;
@@ -33,6 +34,8 @@ public:
     // "Edit Layout" dialog reads/writes through these (immediate-apply).
     PowerLayout loadLayout();
     void applyAndSaveLayout(const PowerLayout& layout);
+    void setVerticalLayout(bool vertical);
+    bool verticalLayout() const;
 
     // Playback plumbing — forwarded to the charts.
     void setPlaybackMode(bool on, float currentTime = 0.0f);
@@ -45,13 +48,14 @@ public:
     // Collapse the info cards to a single line (label · value · unit). Rebuilds the
     // card row in place; MainWindow re-feeds the latest status row to repaint it.
     void setCompactMode(bool on);
+    void setDensityMode(tnr::DensityMode mode);
 
 private:
     void buildCards();   // (re)populate the card row at the current density
     void saveLayout(const PowerLayout& layout);
     void applyLayout(const PowerLayout& layout);
 
-    bool compact_ = false;   // one-line cards when true (ui/compact/powerCards)
+    tnr::DensityMode density_ = tnr::DensityMode::Normal;
     QHash<QString, QLabel*> cardValue_;
     QWidget* topBar_      = nullptr;
     QWidget* cardFrames_[PowerLayout::CardCount] = {};

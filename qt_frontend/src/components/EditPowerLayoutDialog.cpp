@@ -4,6 +4,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
+#include <QGridLayout>
 #include <QPushButton>
 #include <QStyleOptionButton>
 
@@ -48,31 +49,32 @@ EditPowerLayoutDialog::EditPowerLayoutDialog(PowerPage* page, QWidget* parent)
     main->addWidget(statsBox);
 
     QGroupBox* chartBox = new QGroupBox("Charts");
-    QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
+    QGridLayout* chartLay = new QGridLayout(chartBox);
+    const int columns = page_->verticalLayout() ? 1 : 2;
     
     splitBtn_ = new ToggleButton("Power");
     splitBtn_->setCheckable(true);
     splitBtn_->setChecked(layout_.showSplit);
     connect(splitBtn_, &QPushButton::toggled, this, &EditPowerLayoutDialog::toggleSplit);
-    chartLay->addWidget(splitBtn_);
+    chartLay->addWidget(splitBtn_, 0, 0);
 
     harvestBtn_ = new ToggleButton("Energy Harvest");
     harvestBtn_->setCheckable(true);
     harvestBtn_->setChecked(layout_.showHarvest);
     connect(harvestBtn_, &QPushButton::toggled, this, &EditPowerLayoutDialog::toggleHarvest);
-    chartLay->addWidget(harvestBtn_);
+    chartLay->addWidget(harvestBtn_, 1 / columns, 1 % columns);
 
     storeBtn_ = new ToggleButton("Energy Store");
     storeBtn_->setCheckable(true);
     storeBtn_->setChecked(layout_.showStore);
     connect(storeBtn_, &QPushButton::toggled, this, &EditPowerLayoutDialog::toggleStore);
-    chartLay->addWidget(storeBtn_);
+    chartLay->addWidget(storeBtn_, 2 / columns, 2 % columns);
 
     fuelBtn_ = new ToggleButton("Fuel Usage");
     fuelBtn_->setCheckable(true);
     fuelBtn_->setChecked(layout_.showFuel);
     connect(fuelBtn_, &QPushButton::toggled, this, &EditPowerLayoutDialog::toggleFuel);
-    chartLay->addWidget(fuelBtn_);
+    chartLay->addWidget(fuelBtn_, 3 / columns, 3 % columns);
 
     main->addWidget(chartBox);
 

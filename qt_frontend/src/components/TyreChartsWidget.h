@@ -20,6 +20,7 @@ public:
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
     void setChartSectionVisible(int i, bool on);
+    void setVerticalLayout(bool vertical);
     // Swap a section between its chart and a raw-values table; reflows the layout.
     void setSectionViewMode(int section, bool table);
     // Tyre wear graph mode: true = remaining life (100 - wear), false = accumulated
@@ -40,6 +41,7 @@ private:
 
     QPointer<SessionModel> model_;
     bool      grid_         = false;    // 2×2 layout vs 1×4 row
+    bool      vertical_     = false;    // Tyres page stack; Overview stays a row
     bool      dirty_        = false;
     bool      playback_     = false;
     bool      lifeMode_     = true;     // default to remaining-life, matching Electron

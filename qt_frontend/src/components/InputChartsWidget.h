@@ -4,6 +4,8 @@
 #include <QPointer>
 #include <QString>
 
+#include "InputLayout.h"
+
 class ChartView;
 class SessionModel;
 class QGridLayout;
@@ -21,10 +23,14 @@ public:
     void setModel(SessionModel* m);
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
-    // Show/hide a section (gear=0, inputs=1, steering=2); reflows the layout.
+    // Sections: gear, signed combined, steering, overlaid combined, accelerator,
+    // brake. All are panels of the same render target.
     void setSectionVisible(int section, bool on);
     // Swap a section between its chart and a raw-values table; reflows the layout.
     void setSectionViewMode(int section, bool table);
+    void setPageLayout(InputPageLayout layout);
+    void setPedalLayout(InputPedalLayout layout);
+    void setPedalVisibility(bool accelerator, bool brake);
 
 public slots:
     void setCurrentTime(float t);
@@ -44,26 +50,22 @@ private:
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;    // toolbar default (tb_windowIdx_=1 = 30s)
-    float     prevEndTime_  = -9999.0f;
-    float     lastAddedTime_= -9999.0f;
-    QString   dataModeKey_;
+    InputPageLayout pageLayout_ = InputPageLayout::Grid;
+    InputPedalLayout pedalLayout_ = InputPedalLayout::Combined;
+    bool showAccelerator_ = true;
+    bool showBrake_ = true;
 
-    // The three sections are panels of one ChartView (indices match panel ids).
-    enum Section { GEAR = 0, INPUTS = 1, STEERING = 2, SECTIONS = 3 };
+    enum Section { GEAR = 0, COMBINED = 1, STEERING = 2, COMBINED2 = 3,
+                   ACCELERATOR = 4, BRAKE = 5, SECTIONS = 6 };
     ChartView* chart_ = nullptr;
     QGridLayout* outer_ = nullptr;   // grid holding chart_ + any table-mode tables
     int  xId_[SECTIONS]   = {};      // bottom (time) axis id per panel
-    bool visible_[SECTIONS] = { true, true, true };
-    bool tableMode_[SECTIONS] = { false, false, false };   // false = chart, true = table
-    GraphTable* table_[SECTIONS] = { nullptr, nullptr, nullptr };
-
-    // Series ids.
-    int gearId_ = -1;
-    int thId_   = -1;
-    int brId_   = -1;
-    int stId_   = -1;
-    int gearRefId_ = -1;
-    int thRefId_ = -1;
-    int brRefId_ = -1;
-    int stRefId_ = -1;
+    bool visible_[SECTIONS] = { true, true, true, false, false, false };
+    bool tableMode_[SECTIONS] = {};
+    GraphTable* table_[SECTIONS] = {};
+    int primaryIds_[SECTIONS][2] = {};
+    int referenceIds_[SECTIONS][2] = {};
+    float lastAddedTime_[SECTIONS] = {};
+    float previousTime_[SECTIONS] = {};
+    QString dataModeKey_[SECTIONS];
 };

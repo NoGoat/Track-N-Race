@@ -72,14 +72,15 @@ void TyreCardsWidget::buildCards() {
     if (level_ == UltraCompact3)  { buildOneLine(outer, /*abbrev*/ true,  /*showLabels*/ true);  return; }
 
     auto makeRow = [&](const QString& label, QLabel*& valueOut) {
+        const bool spacious = level_ == Spacious;
         QWidget* row = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
         QLabel* lbl = new QLabel(label);
-        QFont lf; lf.setPointSize(8); lbl->setFont(lf);
+        QFont lf; lf.setPointSize(spacious ? 10 : 8); lbl->setFont(lf);
         lbl->setForegroundRole(QPalette::PlaceholderText);
         valueOut = new QLabel("—");
-        QFont vf; vf.setPointSize(8); vf.setBold(true);
+        QFont vf; vf.setPointSize(spacious ? 11 : 8); vf.setBold(true);
         valueOut->setFont(vf);
         valueOut->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         h->addWidget(lbl);
@@ -129,11 +130,16 @@ void TyreCardsWidget::buildCards() {
         // The title lives here so the Table view stays title-less and edge to edge.
         QWidget* body = new QWidget;
         QVBoxLayout* bl = new QVBoxLayout(body);
-        bl->setContentsMargins(10, 8, 10, 8);
-        bl->setSpacing(2);
+        const bool spacious = level_ == Spacious;
+        const bool compactColumn = level_ == CompactColumn;
+        bl->setContentsMargins(spacious ? 16 : compactColumn ? 8 : 10,
+                               spacious ? 14 : compactColumn ? 5 : 8,
+                               spacious ? 16 : compactColumn ? 8 : 10,
+                               spacious ? 14 : compactColumn ? 5 : 8);
+        bl->setSpacing(spacious ? 5 : compactColumn ? 1 : 2);
 
         QLabel* title = new QLabel(kCornerNames[i]);
-        QFont tf; tf.setPointSize(7); tf.setBold(true);
+        QFont tf; tf.setPointSize(spacious ? 10 : compactColumn ? 7 : 7); tf.setBold(true);
         title->setFont(tf);
         title->setForegroundRole(QPalette::PlaceholderText);
         bl->addWidget(title);

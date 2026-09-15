@@ -44,6 +44,10 @@ void ToastHost::show(const ToastSpec& spec) {
     // Parented to the central content widget so the toast renders inline (a child
     // overlay), not as its own window — required for correct positioning on Wayland.
     Toast* t = new Toast(container_);
+    if (settings_.value("ui/reduceAnimations", false).toBool()) {
+        t->setFadeInDuration(0);
+        t->setFadeOutDuration(0);
+    }
     t->setShowIcon(false);
     t->setShowIconSeparator(false);
     t->setShowCloseButton(spec.persistent); // persistent toasts need manual dismissal

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "CompactSettings.h"
+
 class QComboBox;
 class QFrame;
 class QLabel;
@@ -52,6 +54,7 @@ public:
     // Follows the toolbar's "Show button labels" option: icon-only vs a labelled
     // "Close File" button (kept in sync from MainWindow::setToolbarLabels).
     void setShowLabels(bool on);
+    void setDensityMode(tnr::DensityMode mode);
 
 signals:
     void loadingStarted();                         // show the loading overlay
@@ -91,4 +94,5 @@ private:
     QComboBox*   lapCombo_    = nullptr;
     QPushButton* exportBtn_   = nullptr;
     QPushButton* closeRecBtn_ = nullptr;
+    tnr::DensityMode density_ = tnr::DensityMode::Normal;
 };

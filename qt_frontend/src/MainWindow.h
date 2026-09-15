@@ -75,6 +75,8 @@ public:
     // immediately; network controls are the exception and remain a local draft
     // until Apply & Restart is pressed.
     QString currentOutputDirectory() const { return outputDirectory; }
+    QString lastDialogDirectory() const;
+    void    rememberDialogDirectory(const QString& path, bool isDirectory = false);
     void    setOutputDirectory(const QString& dir);
     bool    autoRecordEnabled() const { return wantRecord; }
     void    setAutoRecord(bool checked);
@@ -84,15 +86,22 @@ public:
     void    setStyleName(const QString& name);
     bool    toolbarLabelsEnabled() const { return settings.value("ui/toolbarShowLabels", false).toBool(); }
     void    setToolbarLabels(bool checked);
-    bool    compactSection(tnr::CompactSection s) const { return settings.value(tnr::compactKey(s), false).toBool(); }
+    bool    verticalChartLayout(Page page) const;
+    void    setVerticalChartLayout(Page page, bool vertical);
+    QString inputPedalLayout() const;
+    void    setInputPedalLayout(const QString& layout);
+    bool    miscSplitLayout(bool gForce) const;
+    void    setMiscSplitLayout(bool gForce, bool split);
+    tnr::DensityMode densitySection(tnr::CompactSection s) const;
+    void    setDensitySection(tnr::CompactSection s, tnr::DensityMode mode);
+    bool    compactSection(tnr::CompactSection s) const { return densitySection(s) == tnr::DensityMode::Compact; }
     void    setCompactSection(tnr::CompactSection s, bool on);
     int     weatherCompactLevel() const;
     void    setWeatherCompactLevel(int level);
     int     headerCompactLevel() const;
     void    setHeaderCompactLevel(int level);
-    // Overview tyre cards have four density levels (0 Full … 3 Ultra Compact 2),
-    // so they use an int level rather than the on/off compactSection() path.
-    int     tyresCompactLevel() const { return settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(); }
+    // Overview tyre cards use Electron's specialised 0–6 level control.
+    int     tyresCompactLevel() const { return qBound(0, settings.value(tnr::compactKey(tnr::CompactSection::OverviewTyres), 0).toInt(), 6); }
     void    setTyresCompactLevel(int level);
     // Per-graph view mode: false = chart (default), true = raw-values table.
     bool    graphView(tnr::GraphSection s) const { return settings.value(tnr::graphViewKey(s), false).toBool(); }
@@ -112,6 +121,10 @@ public:
     int     chartFpsOutOfFocus() const { return settings.value("ui/chartFpsOutOfFocus", 30).toInt(); }
     void    setChartFpsInFocus(int fps);
     void    setChartFpsOutOfFocus(int fps);
+    int     deltaUpdateInterval() const { return settings.value("ui/deltaUpdateInterval", 0).toInt(); }
+    void    setDeltaUpdateInterval(int ms);
+    bool    reduceAnimations() const { return settings.value("ui/reduceAnimations", false).toBool(); }
+    void    setReduceAnimations(bool on);
     int     trackMapLabelMode() const { return settings.value("ui/trackMapLabelMode", 0).toInt(); }
     void    setTrackMapLabelMode(int mode);
     bool    trackMapSectorColors() const { return settings.value("ui/trackMapSectorColors", true).toBool(); }
@@ -124,6 +137,8 @@ public:
     void    setToastsEnabled(bool on) { settings.setValue("ui/toastsEnabled", on); }
     int     toastDurationSecs() const { return settings.value("ui/bannerDuration", 3).toInt(); }
     void    setToastDurationSecs(int s) { settings.setValue("ui/bannerDuration", s); }
+    bool    updateChecksEnabled() const { return settings.value("updates/enabled", true).toBool(); }
+    void    setUpdateChecksEnabled(bool on) { settings.setValue("updates/enabled", on); }
     QString currentProtocolOverride() const { return settings.value("protocolOverride", "auto").toString(); }
     void    setProtocolOverride(const QString& ovr);
     int     lastDetectedProtocolFormat() const { return lastDetectedProtocolFormat_; }
@@ -308,6 +323,7 @@ private:
     bool dirtyTrackMapPositions_    = false;
     bool dirtyPower_     = false;
     bool uiRefreshPending_ = false;
+    qint64 lastToolbarDeltaUpdateMs_ = -1;
     void scheduleUiRefresh();
     void flushUiRefresh();
 
@@ -339,6 +355,7 @@ private:
     // the session packet's SC state so changes can be toasted (routing decision).
     ToastHost* toasts_ = nullptr;
     int    lastSafetyCarStatus_ = 0;
+    std::optional<int> lastRaceLeader_;
     // Set when the player seeks: the safety-car snapshot that follows resyncs
     // lastSafetyCarStatus_ without toasting (a jump isn't a live SC change).
     bool scSuppressOnce_ = false;

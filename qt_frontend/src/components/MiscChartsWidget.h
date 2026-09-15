@@ -9,10 +9,8 @@ class SessionModel;
 class QGridLayout;
 class GraphTable;
 
-// The Misc page's two graphs — G-force / ride-height — rendered as panels of ONE
-// ChartView (a single QRhi render target / repaint) rather than two
-// separate widgets. Stacked full-width (G-force over ride height); either can be
-// hidden. G-force reads motionBuf, ride height reads motionExBuf.
+// Combined or split Misc graphs share one ChartView and incremental data paths.
+// G-force reads motionBuf, ride height reads motionExBuf.
 class MiscChartsWidget : public QWidget {
     Q_OBJECT
 public:
@@ -21,7 +19,7 @@ public:
     void setModel(SessionModel* m);
     void setPlaybackMode(bool on);
     void setWindowSeconds(float seconds);
-    // Show/hide a section (gforce=0, ride height=1); reflows the layout.
+    // Sections: combined G/ride=0/1, lateral/longitudinal/front/rear=2..5.
     void setSectionVisible(int section, bool on);
     // Swap a section between its chart and a raw-values table; reflows the layout.
     void setSectionViewMode(int section, bool table);
@@ -44,26 +42,17 @@ private:
     bool      playback_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;
-    float     prevEndTime_  = -9999.0f;
-    // Separate cursors: G-force and ride-height come from different buffers.
-    float     lastMotionT_   = -1.0f;
-    float     lastMotionExT_ = -1.0f;
-    QString   dataModeKey_;
-
-    enum Section { GFORCE = 0, RIDEHEIGHT = 1, SECTIONS = 2 };
+    enum Section { GFORCE = 0, RIDEHEIGHT = 1, LATERAL = 2, LONGITUDINAL = 3,
+                   FRONT = 4, REAR = 5, SECTIONS = 6 };
     ChartView* chart_ = nullptr;
     QGridLayout* outer_ = nullptr;   // holds chart_ + any table-mode section tables
     int  xId_[SECTIONS]     = {};
-    bool visible_[SECTIONS] = { true, true };
-    bool tableMode_[SECTIONS] = { false, false };   // false = chart, true = raw table
-    GraphTable* table_[SECTIONS] = { nullptr, nullptr };
-
-    int latId_   = -1;
-    int longId_  = -1;
-    int frontId_ = -1;
-    int rearId_  = -1;
-    int latRefId_ = -1;
-    int longRefId_ = -1;
-    int frontRefId_ = -1;
-    int rearRefId_ = -1;
+    bool visible_[SECTIONS] = { true, true, false, false, false, false };
+    bool tableMode_[SECTIONS] = {};
+    GraphTable* table_[SECTIONS] = {};
+    int primaryIds_[SECTIONS][2] = {};
+    int referenceIds_[SECTIONS][2] = {};
+    float lastAddedTime_[SECTIONS] = {};
+    float previousTime_[SECTIONS] = {};
+    QString dataModeKey_[SECTIONS];
 };

@@ -573,8 +573,9 @@ QWidget* SettingsDialog::buildRecordingPage() {
     });
     connect(browseBtn, &QPushButton::clicked, this, [this] {
         const QString dir = QFileDialog::getExistingDirectory(
-            this, "Select Output Directory", mainWindow_->currentOutputDirectory());
+            this, "Select Output Directory", mainWindow_->lastDialogDirectory());
         if (!dir.isEmpty()) {
+            mainWindow_->rememberDialogDirectory(dir, true);
             mainWindow_->setOutputDirectory(dir);
             dirLabel_->setText(dir);
         }
@@ -626,6 +627,27 @@ QWidget* SettingsDialog::buildAppearancePage() {
     toolbarLabelsCheck_ = new QCheckBox("Show button labels in toolbar");
     toolbarLabelsCheck_->setChecked(mainWindow_->toolbarLabelsEnabled());
     form->addRow("Toolbar:", toolbarLabelsCheck_);
+
+    auto* deltaUpdates = new QComboBox;
+    deltaUpdates->addItem("Realtime", 0);
+    deltaUpdates->addItem("250 ms", 250);
+    deltaUpdates->addItem("500 ms", 500);
+    deltaUpdates->addItem("1 second", 1000);
+    int deltaIndex = deltaUpdates->findData(mainWindow_->deltaUpdateInterval());
+    deltaUpdates->setCurrentIndex(deltaIndex >= 0 ? deltaIndex : 0);
+    deltaUpdates->setToolTip("How often the toolbar lap-comparison delta refreshes.");
+    connect(deltaUpdates, &QComboBox::currentIndexChanged, this,
+            [this, deltaUpdates] { mainWindow_->setDeltaUpdateInterval(
+                deltaUpdates->currentData().toInt()); });
+    form->addRow("Delta Updates:", deltaUpdates);
+
+    auto* reduceAnimations = new QCheckBox("Disable decorative motion effects");
+    reduceAnimations->setChecked(mainWindow_->reduceAnimations());
+    reduceAnimations->setToolTip(
+        "Disables toast fades and track-map interpolation without pausing live data.");
+    connect(reduceAnimations, &QCheckBox::toggled,
+            mainWindow_, &MainWindow::setReduceAnimations);
+    form->addRow("Reduce Animations:", reduceAnimations);
 
     form->addRow(horizontalSeparator());
     form->addRow(subHeading("Graphs"));
@@ -743,17 +765,16 @@ QWidget* SettingsDialog::buildCompactPage() {
     h->setContentsMargins(0, 0, 0, 0);
     h->setSpacing(0);
 
-    // Registry of every section's segmented group, so the "Toggle all" button
-    // below the sidebar can both flip the setting and re-check the right segment.
+    // Registry of every section's segmented group so the three set-all actions
+    // can update both persisted state and the visible control.
     struct Ctl { tnr::CompactSection s; QButtonGroup* group; };
     QList<Ctl> controls;
 
     // One control = a label on the left and a density segmented control on the
     // right, exactly like the toolbar's window-size row: an exclusive
     // edge-to-edge row of checkable buttons, the active one wearing the native
-    // default-button outline. Most sections are a 2-way Normal/Compact; the
-    // Overview tyre cards add three extra levels, so that one is 5-way. Weather
-    // has Normal plus two compact layouts.
+    // default-button outline. Ordinary sections expose Compact/Normal/Spacious;
+    // the three Electron integer controls retain their exact specialised levels.
     auto makeControl = [this, &controls](const char* label, tnr::CompactSection s) -> QWidget* {
         QWidget* w = new QWidget;
         QHBoxLayout* cv = new QHBoxLayout(w);
@@ -768,36 +789,44 @@ QWidget* SettingsDialog::buildCompactPage() {
         QButtonGroup* group = new QButtonGroup(w);
         group->setExclusive(true);
         int idc = 0;
-        auto addSeg = [&](const char* text) {
+        auto addSeg = [&](const char* text, int explicitId = -1) {
             SegmentButton* b = new SegmentButton;
             b->setText(text);
             b->setCheckable(true);
             b->setAutoRaise(true);
-            group->addButton(b, idc++);
+            const int id = explicitId >= 0 ? explicitId : idc;
+            group->addButton(b, id);
+            idc = qMax(idc, id + 1);
             segLay->addWidget(b);
         };
 
         if (s == tnr::CompactSection::OverviewTyres) {
-            addSeg("Normal"); addSeg("Compact 1");
-            addSeg("Compact 2"); addSeg("Compact 3"); addSeg("Compact 4");
+            addSeg("Spacious", 6); addSeg("Normal", 0); addSeg("Compact 1", 1);
+            addSeg("Compact 2", 2); addSeg("Compact 3", 3);
+            addSeg("Compact 4", 4); addSeg("Compact 5", 5);
             group->button(mainWindow_->tyresCompactLevel())->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setTyresCompactLevel(idx); });
         } else if (s == tnr::CompactSection::SessionWeather) {
-            addSeg("Normal"); addSeg("Compact 1"); addSeg("Compact 2"); addSeg("Compact 3");
+            addSeg("Spacious", 4); addSeg("Normal", 0); addSeg("Compact 1", 1);
+            addSeg("Compact 2", 2); addSeg("Compact 3", 3);
             group->button(mainWindow_->weatherCompactLevel())->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setWeatherCompactLevel(idx); });
         } else if (s == tnr::CompactSection::SessionHeader) {
-            addSeg("Normal"); addSeg("Compact 1"); addSeg("Compact 2");
+            addSeg("Spacious", 3); addSeg("Normal", 0);
+            addSeg("Compact 1", 1); addSeg("Compact 2", 2);
             group->button(mainWindow_->headerCompactLevel())->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
                     [this](int idx) { mainWindow_->setHeaderCompactLevel(idx); });
         } else {
-            addSeg("Normal"); addSeg("Compact");
-            group->button(mainWindow_->compactSection(s) ? 1 : 0)->setChecked(true);
+            addSeg("Compact", static_cast<int>(tnr::DensityMode::Compact));
+            addSeg("Normal", static_cast<int>(tnr::DensityMode::Normal));
+            addSeg("Spacious", static_cast<int>(tnr::DensityMode::Spacious));
+            group->button(static_cast<int>(mainWindow_->densitySection(s)))->setChecked(true);
             connect(group, &QButtonGroup::idClicked, this,
-                    [this, s](int idx) { mainWindow_->setCompactSection(s, idx == 1); });
+                    [this, s](int idx) { mainWindow_->setDensitySection(
+                        s, static_cast<tnr::DensityMode>(idx)); });
         }
         controls.push_back({ s, group });
 
@@ -812,13 +841,18 @@ QWidget* SettingsDialog::buildCompactPage() {
         { tnr::CompactSection::OverviewStats,   "Overview", "Stats row" },
         { tnr::CompactSection::OverviewDamage,  "Overview", "Damage cards" },
         { tnr::CompactSection::OverviewTyres,   "Overview", "Tyre cards" },
+        { tnr::CompactSection::StandingsTable,  "Standings", "Timing Tower" },
+        { tnr::CompactSection::StandingsTiming, "Standings", "Timing Card" },
+        { tnr::CompactSection::StandingsErs,    "Standings", "Energy Recovery Card" },
+        { tnr::CompactSection::StandingsStrategy, "Standings", "Strategy Card" },
         { tnr::CompactSection::SessionCards,    "Session",  "Info cards" },
         { tnr::CompactSection::SessionProximity, "Session", "Proximity" },
         { tnr::CompactSection::SessionEvents,   "Session",  "Events" },
         { tnr::CompactSection::SessionWeather,  "Session",  "Weather strip" },
         { tnr::CompactSection::SessionHeader,   "Session",  "Header" },
-        { tnr::CompactSection::PowerCards,      "Power",    "Cards" },
-        { tnr::CompactSection::StrategySummary, "Strategy", "Summary" },
+        { tnr::CompactSection::PowerCards,      "Power",    "Power Cards" },
+        { tnr::CompactSection::StrategySummary, "Strategy", "Summary Header" },
+        { tnr::CompactSection::PlaybackBar,     "Playback", "Playback Bar" },
     };
 
     // Left nav column listing the groups. Tinted a shade lighter than the
@@ -869,61 +903,31 @@ QWidget* SettingsDialog::buildCompactPage() {
             stack, &QStackedWidget::setCurrentIndex);
     sidebar->setCurrentRow(0);
 
-    // Pinned to the bottom of the sidebar column. If any section is already
-    // compact the click resets everything to Normal; otherwise it makes
-    // everything compact (the tyre-cards level goes to Compact 1). The label
-    // shows the action the next click will perform. Programmatic setChecked()
-    // doesn't emit idClicked, so re-checking the segments here doesn't re-fire
-    // the per-control handlers — we push each setting directly.
-    QToolButton* toggleAllBtn = new QToolButton;
-    toggleAllBtn->setAutoRaise(true);
-    toggleAllBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    toggleAllBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-    auto anyCompact = [this, controls]() {
-        for (const Ctl& c : controls) {
-            const bool compact = c.s == tnr::CompactSection::OverviewTyres
-                ? mainWindow_->tyresCompactLevel() != 0
-                : c.s == tnr::CompactSection::SessionWeather
-                    ? mainWindow_->weatherCompactLevel() != 0
-                    : c.s == tnr::CompactSection::SessionHeader
-                        ? mainWindow_->headerCompactLevel() != 0
-                        : mainWindow_->compactSection(c.s);
-            if (compact) return true;
-        }
-        return false;
-    };
-    auto refreshLabel = [anyCompact, toggleAllBtn]() {
-        toggleAllBtn->setText(anyCompact() ? "Set Normal" : "Set Compact");
-    };
-    refreshLabel();
-
-    connect(toggleAllBtn, &QToolButton::clicked, this,
-            [this, controls, anyCompact, refreshLabel]() {
-        const bool makeCompact = !anyCompact();   // all Normal → compact; else → Normal
+    // Pinned to the bottom of the sidebar, matching Electron's three explicit
+    // bulk actions. Special controls map each broad mode to their declared level.
+    auto setAll = [this, controls](tnr::DensityMode mode) {
         for (const Ctl& c : controls) {
             if (c.s == tnr::CompactSection::OverviewTyres) {
-                const int lvl = makeCompact ? 1 : 0;   // 1 == "Compact 1"
+                const int lvl = mode == tnr::DensityMode::Spacious ? 6
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
                 mainWindow_->setTyresCompactLevel(lvl);
                 c.group->button(lvl)->setChecked(true);
             } else if (c.s == tnr::CompactSection::SessionWeather) {
-                const int lvl = makeCompact ? 1 : 0;
+                const int lvl = mode == tnr::DensityMode::Spacious ? 4
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
                 mainWindow_->setWeatherCompactLevel(lvl);
                 c.group->button(lvl)->setChecked(true);
             } else if (c.s == tnr::CompactSection::SessionHeader) {
-                const int lvl = makeCompact ? 1 : 0;
+                const int lvl = mode == tnr::DensityMode::Spacious ? 3
+                    : mode == tnr::DensityMode::Compact ? 1 : 0;
                 mainWindow_->setHeaderCompactLevel(lvl);
                 c.group->button(lvl)->setChecked(true);
             } else {
-                mainWindow_->setCompactSection(c.s, makeCompact);
-                c.group->button(makeCompact ? 1 : 0)->setChecked(true);
+                mainWindow_->setDensitySection(c.s, mode);
+                c.group->button(static_cast<int>(mode))->setChecked(true);
             }
         }
-        refreshLabel();
-    });
-    // Keep the label current when individual sections are changed directly.
-    for (const Ctl& c : controls)
-        connect(c.group, &QButtonGroup::idClicked, this, [refreshLabel](int) { refreshLabel(); });
+    };
 
     QWidget* sideCol = new QWidget;
     sideCol->setAutoFillBackground(true);
@@ -935,7 +939,21 @@ QWidget* SettingsDialog::buildCompactPage() {
     QWidget* btnWrap = new QWidget;
     QVBoxLayout* btnWrapLay = new QVBoxLayout(btnWrap);
     btnWrapLay->setContentsMargins(8, 8, 8, 8);
-    btnWrapLay->addWidget(toggleAllBtn);
+    const struct { const char* label; tnr::DensityMode mode; } bulk[] = {
+        {"Set All Compact", tnr::DensityMode::Compact},
+        {"Set All Normal", tnr::DensityMode::Normal},
+        {"Set All Spacious", tnr::DensityMode::Spacious},
+    };
+    for (const auto& action : bulk) {
+        auto* button = new QToolButton;
+        button->setText(action.label);
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(button, &QToolButton::clicked, this,
+                [setAll, mode = action.mode] { setAll(mode); });
+        btnWrapLay->addWidget(button);
+    }
     sideColLay->addWidget(btnWrap);
 
     h->addWidget(sideCol);
@@ -1025,13 +1043,20 @@ QWidget* SettingsDialog::buildGraphsPage() {
         { tnr::GraphSection::TyreCardRR,         "Tyres",    "Rear-right card" },
         { tnr::GraphSection::InputGear,          "Input",    "Gear" },
         { tnr::GraphSection::InputThrottleBrake, "Input",    "Throttle / brake" },
+        { tnr::GraphSection::InputThrottleBrakeOverlay, "Input", "Accelerator / brake (Combined 2)" },
+        { tnr::GraphSection::InputAccelerator,   "Input",    "Accelerator (Split)" },
+        { tnr::GraphSection::InputBrake,         "Input",    "Brake (Split)" },
         { tnr::GraphSection::InputSteering,      "Input",    "Steering" },
         { tnr::GraphSection::PowerSplit,         "Power",    "Power" },
         { tnr::GraphSection::PowerHarvest,       "Power",    "ERS harvest" },
         { tnr::GraphSection::PowerStore,         "Power",    "ERS store" },
         { tnr::GraphSection::PowerFuel,          "Power",    "Fuel" },
         { tnr::GraphSection::MiscGForce,         "Misc",     "G-force" },
+        { tnr::GraphSection::MiscGLateral,       "Misc",     "G-force — Lateral (Split)" },
+        { tnr::GraphSection::MiscGLongitudinal,  "Misc",     "G-force — Longitudinal (Split)" },
         { tnr::GraphSection::MiscRideHeight,     "Misc",     "Ride height" },
+        { tnr::GraphSection::MiscRideFront,      "Misc",     "Ride height — Front (Split)" },
+        { tnr::GraphSection::MiscRideRear,       "Misc",     "Ride height — Rear (Split)" },
     };
 
     // Left nav column listing the groups. Tinted a shade lighter than the
@@ -1077,6 +1102,60 @@ QWidget* SettingsDialog::buildGraphsPage() {
                 });
                 connect(horizontal, &QCheckBox::toggled, this, [this, vertical](bool on) {
                     mainWindow_->setChartSecondaryCrosshairs(vertical->isChecked(), on);
+                });
+            }
+
+            const QString group = QString::fromLatin1(r.group);
+            if (group == "Input") {
+                auto* form = new QFormLayout;
+                auto* arrangement = new QComboBox;
+                arrangement->addItem("Grid", false);
+                arrangement->addItem("Vertical", true);
+                arrangement->setCurrentIndex(mainWindow_->verticalChartLayout(MainWindow::Input) ? 1 : 0);
+                form->addRow("Chart Layout:", arrangement);
+                auto* pedals = new QComboBox;
+                pedals->addItem("Combined", "combined");
+                pedals->addItem("Combined 2", "combined2");
+                pedals->addItem("Split", "split");
+                pedals->setCurrentIndex(qMax(0, pedals->findData(mainWindow_->inputPedalLayout())));
+                form->addRow("Pedal Charts:", pedals);
+                gv->addLayout(form);
+                connect(arrangement, &QComboBox::currentIndexChanged, this,
+                        [this, arrangement](int) {
+                    mainWindow_->setVerticalChartLayout(MainWindow::Input,
+                                                        arrangement->currentData().toBool());
+                });
+                connect(pedals, &QComboBox::currentIndexChanged, this,
+                        [this, pedals](int) {
+                    mainWindow_->setInputPedalLayout(pedals->currentData().toString());
+                });
+            }
+            if (group == "Misc") {
+                auto* form = new QFormLayout;
+                for (bool gForce : {true, false}) {
+                    auto* mode = new QComboBox;
+                    mode->addItem("Combined", false);
+                    mode->addItem("Split", true);
+                    mode->setCurrentIndex(mainWindow_->miscSplitLayout(gForce) ? 1 : 0);
+                    form->addRow(gForce ? "G-Force Charts:" : "Ride Height Charts:", mode);
+                    connect(mode, &QComboBox::currentIndexChanged, this, [this, gForce, mode](int) {
+                        mainWindow_->setMiscSplitLayout(gForce, mode->currentData().toBool());
+                    });
+                }
+                gv->addLayout(form);
+            }
+            if (group == "Power" || group == "Tyres") {
+                const auto target = group == "Power" ? MainWindow::Power : MainWindow::Tyres;
+                auto* arrangement = new QComboBox;
+                arrangement->addItem("Grid", false);
+                arrangement->addItem("Vertical", true);
+                arrangement->setCurrentIndex(mainWindow_->verticalChartLayout(target) ? 1 : 0);
+                auto* layoutRow = new QFormLayout;
+                layoutRow->addRow("Chart Layout:", arrangement);
+                gv->addLayout(layoutRow);
+                connect(arrangement, &QComboBox::currentIndexChanged, this,
+                        [this, target, arrangement](int) {
+                    mainWindow_->setVerticalChartLayout(target, arrangement->currentData().toBool());
                 });
             }
 
@@ -1309,6 +1388,14 @@ QWidget* SettingsDialog::buildNotificationsPage() {
     connect(toastDurationCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         mainWindow_->setToastDurationSecs(toastDurationCombo_->currentData().toInt());
     });
+
+    form->addRow(horizontalSeparator());
+    auto* updates = new QCheckBox("Check GitHub for updates at startup");
+    updates->setChecked(mainWindow_->updateChecksEnabled());
+    updates->setToolTip("Checks for a newer release at most once every 24 hours.");
+    connect(updates, &QCheckBox::toggled,
+            mainWindow_, &MainWindow::setUpdateChecksEnabled);
+    form->addRow("Check for Updates:", updates);
     return page;
 }
 

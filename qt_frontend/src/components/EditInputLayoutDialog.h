@@ -14,12 +14,15 @@ public:
 
 private:
     void toggleGear(bool on);
-    void toggleInputs(bool on);
+    void toggleAccelerator(bool on);
+    void toggleBrake(bool on);
+    void toggleCombined(bool on);
     void toggleSteering(bool on);
 
     InputPage*     page_;
     InputLayout    layout_;
     QPushButton*   gearBtn_ = nullptr;
-    QPushButton*   inputsBtn_ = nullptr;
+    QPushButton*   acceleratorBtn_ = nullptr;
+    QPushButton*   brakeBtn_ = nullptr;
     QPushButton*   steeringBtn_ = nullptr;
 };

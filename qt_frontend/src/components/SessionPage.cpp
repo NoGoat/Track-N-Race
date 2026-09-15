@@ -190,7 +190,10 @@ QString enumLabel(const QString& group, int id) {
 SessionPage::SessionPage(QWidget* parent)
     : QWidget(parent)
 {
-    cardsCompact_   = settings_.value(tnr::compactKey(tnr::CompactSection::SessionCards),   false).toBool();
+    const auto cardsDensity = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::SessionCards), "normal"));
+    cardsCompact_ = cardsDensity == tnr::DensityMode::Compact;
+    cardsSpacious_ = cardsDensity == tnr::DensityMode::Spacious;
     const QVariant weatherDensity = settings_.value(
         tnr::compactKey(tnr::CompactSection::SessionWeather), 0);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -201,7 +204,7 @@ SessionPage::SessionPage(QWidget* parent)
     // Preserve the former boolean Compact appearance as the new Compact 2.
     weatherCompactLevel_ = legacyWeatherBool
         ? (weatherDensity.toBool() ? 2 : 0)
-        : qBound(0, weatherDensity.toInt(), 3);
+        : qBound(0, weatherDensity.toInt(), 4);
     const QVariant headerDensity = settings_.value(tnr::compactKey(tnr::CompactSection::SessionHeader), 0);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     const bool legacyHeaderBool = headerDensity.metaType().id() == QMetaType::Bool;
@@ -210,9 +213,15 @@ SessionPage::SessionPage(QWidget* parent)
 #endif
     headerCompactLevel_ = legacyHeaderBool
         ? (headerDensity.toBool() ? 1 : 0)
-        : qBound(0, headerDensity.toInt(), 2);
-    eventsCompact_  = settings_.value(tnr::compactKey(tnr::CompactSection::SessionEvents),  false).toBool();
-    proximityCompact_ = settings_.value(tnr::compactKey(tnr::CompactSection::SessionProximity), false).toBool();
+        : qBound(0, headerDensity.toInt(), 3);
+    const auto eventsDensity = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::SessionEvents), "normal"));
+    eventsCompact_ = eventsDensity == tnr::DensityMode::Compact;
+    eventsSpacious_ = eventsDensity == tnr::DensityMode::Spacious;
+    const auto proximityDensity = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::SessionProximity), "normal"));
+    proximityCompact_ = proximityDensity == tnr::DensityMode::Compact;
+    proximitySpacious_ = proximityDensity == tnr::DensityMode::Spacious;
 
     QVBoxLayout* root = new QVBoxLayout(this);
     // No left/top padding here so the full-width separator lines reach the left edge
@@ -274,6 +283,7 @@ SessionPage::SessionPage(QWidget* parent)
     trackMap_->setSectorColors(settings_.value("ui/trackMapSectorColors", true).toBool());
     trackMap_->setMapOpacity(settings_.value("ui/trackMapOpacity", 100).toInt() / 100.0);
     trackMap_->setIdleTimeout(settings_.value("ui/trackMapIdleTimeout", 0).toInt());
+    trackMap_->setReduceAnimations(settings_.value("ui/reduceAnimations", false).toBool());
 
     // Weather strip pinned to bottom
     sp_weatherSep_ = tnrui::hline();
@@ -316,30 +326,36 @@ SessionPage::SessionPage(QWidget* parent)
         sp_proxHeader->setFixedHeight(32);
         sp_proxHeader->setContentsMargins(14, 0, 14, 0);
     } else {
-        sp_proxHeader = tnrui::makeSectionLabel("PROXIMITY", 14, 10);
+        sp_proxHeader = tnrui::makeSectionLabel("PROXIMITY",
+            proximitySpacious_ ? 18 : 14, proximitySpacious_ ? 16 : 10);
+        if (proximitySpacious_) {
+            QFont f = sp_proxHeader->font(); f.setPointSize(10); sp_proxHeader->setFont(f);
+        }
     }
     rv->addWidget(sp_proxHeader);
 
     for (int i = 0; i < 3; ++i) {
         QWidget* row = new QWidget;
         sp_proxRow[i] = row;
-        if (proximityCompact_) {
-            row->setFixedHeight(32);
-        }
+        if (proximityCompact_) row->setFixedHeight(32);
+        else if (proximitySpacious_) row->setMinimumHeight(46);
         QHBoxLayout* ph = new QHBoxLayout(row);
-        ph->setContentsMargins(14, proximityCompact_ ? 0 : 4, 14, proximityCompact_ ? 0 : 4);
+        ph->setContentsMargins(proximitySpacious_ ? 18 : 14,
+            proximityCompact_ ? 0 : proximitySpacious_ ? 8 : 4,
+            proximitySpacious_ ? 18 : 14,
+            proximityCompact_ ? 0 : proximitySpacious_ ? 8 : 4);
         ph->setSpacing(6);
 
         sp_proxPos[i] = new QLabel("—");
-        QFont pf; pf.setPointSize(8); pf.setBold(true); sp_proxPos[i]->setFont(pf);
+        QFont pf; pf.setPointSize(proximitySpacious_ ? 10 : 8); pf.setBold(true); sp_proxPos[i]->setFont(pf);
         sp_proxPos[i]->setFixedWidth(28);
         sp_proxPos[i]->setForegroundRole(QPalette::PlaceholderText);
 
         sp_proxName[i] = new QLabel("—");
-        QFont nmf; nmf.setPointSize(proximityCompact_ ? 9 : 10); nmf.setBold(true); sp_proxName[i]->setFont(nmf);
+        QFont nmf; nmf.setPointSize(proximityCompact_ ? 9 : proximitySpacious_ ? 12 : 10); nmf.setBold(true); sp_proxName[i]->setFont(nmf);
 
         sp_proxGap[i] = new QLabel("—");
-        QFont gf; gf.setPointSize(8); sp_proxGap[i]->setFont(gf);
+        QFont gf; gf.setPointSize(proximitySpacious_ ? 10 : 8); sp_proxGap[i]->setFont(gf);
         sp_proxGap[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sp_proxGap[i]->setForegroundRole(QPalette::PlaceholderText);
 
@@ -362,7 +378,11 @@ SessionPage::SessionPage(QWidget* parent)
         sp_eventsHeader->setFixedHeight(32);
         sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
     } else {
-        sp_eventsHeader = tnrui::makeSectionLabel("EVENTS", 14, 0);
+        sp_eventsHeader = tnrui::makeSectionLabel("EVENTS", eventsSpacious_ ? 18 : 14,
+                                                   eventsSpacious_ ? 12 : 0);
+        if (eventsSpacious_) {
+            QFont f = sp_eventsHeader->font(); f.setPointSize(10); sp_eventsHeader->setFont(f);
+        }
     }
     rv->addWidget(sp_eventsHeader);
     sp_eventsList = new QListWidget;
@@ -398,6 +418,19 @@ void SessionPage::addEvent(const tnrp::RaceEventRow& eventRow) {
     eventLog_.push_back(eventRow);
 }
 
+void SessionPage::truncateEventsAfter(float sessionTime) {
+    const auto firstFuture = std::remove_if(eventLog_.begin(), eventLog_.end(),
+        [sessionTime](const tnrp::RaceEventRow& event) {
+            return event.session_time > sessionTime;
+        });
+    if (firstFuture == eventLog_.end()) return;
+    eventLog_.erase(firstFuture, eventLog_.end());
+    // Rebuild from the retained prefix so list items and the backing log cannot
+    // diverge after Electron-style live rewind truncation.
+    renderedEventCount_ = 0;
+    if (sp_eventsList) sp_eventsList->clear();
+}
+
 void SessionPage::clearEvents() {
     eventLog_.clear();
     renderedEventCount_ = 0;
@@ -420,10 +453,11 @@ void SessionPage::buildHeader() {
     sp_tmBlock_ = nullptr;
     sp_headerDiv1_ = nullptr;
     sp_headerDiv2_ = nullptr;
-    const bool compact = headerCompactLevel_ > 0;
+    const bool spacious = headerCompactLevel_ == 3;
+    const bool compact = headerCompactLevel_ > 0 && !spacious;
     const bool compact2 = headerCompactLevel_ == 2;
-    sp_header_->setFixedHeight(compact ? 32 : 58);
-    hh->setSpacing(compact ? 12 : 16);
+    sp_header_->setFixedHeight(compact ? 32 : spacious ? 78 : 58);
+    hh->setSpacing(compact ? 12 : spacious ? 22 : 16);
 
     // GP block — name always; the circuit name only in the full layout.
     QWidget* gpBlock = new QWidget;
@@ -433,14 +467,14 @@ void SessionPage::buildHeader() {
     gpv->setSpacing(3);
     gpv->setAlignment(Qt::AlignVCenter);
     sp_gpName = new QLabel("—");
-    QFont gnf; gnf.setPointSize(compact ? 11 : 13); gnf.setBold(true);
+    QFont gnf; gnf.setPointSize(compact ? 11 : spacious ? 17 : 13); gnf.setBold(true);
     sp_gpName->setFont(gnf);
     gpv->addWidget(sp_gpName);
     if (compact) {
         sp_circuitName = nullptr;   // dropped in compact; updateSession guards on it
     } else {
         sp_circuitName = new QLabel("—");
-        QFont cnf; cnf.setPointSize(9);
+        QFont cnf; cnf.setPointSize(spacious ? 11 : 9);
         sp_circuitName->setFont(cnf);
         sp_circuitName->setForegroundRole(QPalette::PlaceholderText);
         gpv->addWidget(sp_circuitName);
@@ -502,7 +536,7 @@ void SessionPage::buildHeader() {
     tmv->setSpacing(0);
     tmv->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     sp_timeLeft = new QLabel("—:——");
-    QFont tlf; tlf.setPointSize(compact ? 15 : 22); tlf.setBold(true);
+    QFont tlf; tlf.setPointSize(compact ? 15 : spacious ? 28 : 22); tlf.setBold(true);
     sp_timeLeft->setFont(tlf);
     sp_timeLeft->setAlignment(Qt::AlignRight);
     tmv->addWidget(sp_timeLeft);
@@ -521,11 +555,11 @@ void SessionPage::buildSessionCards() {
     spCardValue_.clear();
     for (int i = 0; i < SessionLayout::StatCardCount; ++i) sp_statCardFrames_[i] = nullptr;
     for (int i = 0; i < SessionLayout::StatCardCount - 1; ++i) sp_statCardDivs_[i] = nullptr;
-    spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : 58);
+    spStatsRow_->setFixedHeight(cardsCompact_ ? 34 : cardsSpacious_ ? 82 : 58);
     // Compact cards carry their own 12px left margin, so the row's extra left inset
     // would over-indent the first card ("TOTAL LAPS") relative to the rest — drop it
     // in compact mode; the full two-line layout keeps its original inset.
-    sh->setContentsMargins(cardsCompact_ ? 0 : 10, 0, 0, 0);
+    sh->setContentsMargins(cardsCompact_ ? 0 : cardsSpacious_ ? 14 : 10, 0, 0, 0);
 
     const bool compact = cardsCompact_;
     // Key-driven cards: registered into spCardValue_ by key. Unconditional colours
@@ -536,10 +570,10 @@ void SessionPage::buildSessionCards() {
                             const QString& colorSpec = "") -> QWidget* {
         QWidget* card = new QWidget;
         QLabel* capLbl = new QLabel(cap);
-        QFont capf; capf.setPointSize(compact ? 8 : 7); capLbl->setFont(capf);
+        QFont capf; capf.setPointSize(compact ? 8 : cardsSpacious_ ? 10 : 7); capLbl->setFont(capf);
         capLbl->setForegroundRole(QPalette::PlaceholderText);
         out = new QLabel("—");
-        QFont valf; valf.setPointSize(compact ? 13 : 16); valf.setBold(true); out->setFont(valf);
+        QFont valf; valf.setPointSize(compact ? 13 : cardsSpacious_ ? 22 : 16); valf.setBold(true); out->setFont(valf);
         if (!colorSpec.isEmpty()) {
             const QColor c = tnr::cardColor(colorSpec.toStdString());
             if (c.isValid()) out->setStyleSheet("color:" + c.name() + ";");
@@ -598,14 +632,15 @@ void SessionPage::buildWeatherStrip() {
     sp_weatherNowIcon = nullptr;
     for (int i = 0; i < 5; ++i) sp_fcIcon[i] = nullptr;
 
-    const bool compact = weatherCompactLevel_ > 0;
+    const bool spacious = weatherCompactLevel_ == 4;
+    const bool compact = weatherCompactLevel_ > 0 && !spacious;
     const bool compact2 = weatherCompactLevel_ == 2;
     const bool compact3 = weatherCompactLevel_ == 3;
-    sp_weatherStrip_->setFixedHeight(compact2 || compact3 ? 32 : compact ? 58 : 92);
-    const int padX   = compact ? 8 : 12;
-    const int padY   = (compact2 || compact3) ? 3 : compact ? 6 : 12;
-    const int gap    = compact ? 7 : 10;
-    const int iconSz = compact3 ? 18 : compact ? 30 : 44;
+    sp_weatherStrip_->setFixedHeight(compact2 || compact3 ? 32 : compact ? 58 : spacious ? 118 : 92);
+    const int padX   = compact ? 8 : spacious ? 16 : 12;
+    const int padY   = (compact2 || compact3) ? 3 : compact ? 6 : spacious ? 16 : 12;
+    const int gap    = compact ? 7 : spacious ? 14 : 10;
+    const int iconSz = compact3 ? 18 : compact ? 30 : spacious ? 54 : 44;
 
     // NOW card — current reading, so no forecast rain %.
     QWidget* nowCard = new QWidget;
@@ -746,29 +781,42 @@ void SessionPage::buildWeatherStrip() {
 // Live per-section compact toggles. Each rebuilds only its part; MainWindow re-feeds
 // the latest session row so the fresh labels repaint (see MainWindow::setCompactSection).
 void SessionPage::setCardsCompact(bool on) {
-    if (cardsCompact_ == on) return;
-    cardsCompact_ = on;
+    setCardsDensity(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+void SessionPage::setCardsDensity(tnr::DensityMode mode) {
+    const bool compact = mode == tnr::DensityMode::Compact;
+    const bool spacious = mode == tnr::DensityMode::Spacious;
+    if (cardsCompact_ == compact && cardsSpacious_ == spacious) return;
+    cardsCompact_ = compact; cardsSpacious_ = spacious;
     buildSessionCards();
 }
 
 void SessionPage::setWeatherCompactLevel(int level) {
-    level = qBound(0, level, 3);
+    level = qBound(0, level, 4);
     if (weatherCompactLevel_ == level) return;
     weatherCompactLevel_ = level;
     buildWeatherStrip();
 }
 
 void SessionPage::setHeaderCompactLevel(int level) {
-    level = qBound(0, level, 2);
+    level = qBound(0, level, 3);
     if (headerCompactLevel_ == level) return;
     headerCompactLevel_ = level;
     buildHeader();
 }
 
 void SessionPage::setEventsCompact(bool on) {
-    if (eventsCompact_ == on) return;
-    eventsCompact_ = on;
+    setEventsDensity(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+void SessionPage::setEventsDensity(tnr::DensityMode mode) {
+    const bool on = mode == tnr::DensityMode::Compact;
+    const bool spacious = mode == tnr::DensityMode::Spacious;
+    if (eventsCompact_ == on && eventsSpacious_ == spacious) return;
+    eventsCompact_ = on; eventsSpacious_ = spacious;
     if (sp_eventsHeader) {
+        QFont f = sp_eventsHeader->font();
+        f.setPointSize(on ? 8 : spacious ? 10 : 9);
+        sp_eventsHeader->setFont(f);
         if (on) {
             sp_eventsHeader->setFixedHeight(32);
             sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
@@ -776,7 +824,8 @@ void SessionPage::setEventsCompact(bool on) {
         } else {
             sp_eventsHeader->setMinimumHeight(0);
             sp_eventsHeader->setMaximumHeight(QWIDGETSIZE_MAX);
-            sp_eventsHeader->setContentsMargins(14, 0, 14, 0);
+            sp_eventsHeader->setContentsMargins(spacious ? 18 : 14, spacious ? 12 : 0,
+                                                spacious ? 18 : 14, 0);
             sp_eventsHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         }
     }
@@ -786,9 +835,17 @@ void SessionPage::setEventsCompact(bool on) {
 }
 
 void SessionPage::setProximityCompact(bool on) {
-    if (proximityCompact_ == on) return;
-    proximityCompact_ = on;
+    setProximityDensity(on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+void SessionPage::setProximityDensity(tnr::DensityMode mode) {
+    const bool on = mode == tnr::DensityMode::Compact;
+    const bool spacious = mode == tnr::DensityMode::Spacious;
+    if (proximityCompact_ == on && proximitySpacious_ == spacious) return;
+    proximityCompact_ = on; proximitySpacious_ = spacious;
     if (sp_proxHeader) {
+        QFont f = sp_proxHeader->font();
+        f.setPointSize(on ? 8 : spacious ? 10 : 9);
+        sp_proxHeader->setFont(f);
         if (on) {
             sp_proxHeader->setFixedHeight(32);
             sp_proxHeader->setContentsMargins(14, 0, 14, 0);
@@ -796,7 +853,8 @@ void SessionPage::setProximityCompact(bool on) {
         } else {
             sp_proxHeader->setMinimumHeight(0);
             sp_proxHeader->setMaximumHeight(QWIDGETSIZE_MAX);
-            sp_proxHeader->setContentsMargins(14, 10, 14, 0);
+            sp_proxHeader->setContentsMargins(spacious ? 18 : 14, spacious ? 16 : 10,
+                                              spacious ? 18 : 14, 0);
             sp_proxHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
         }
     }
@@ -808,17 +866,20 @@ void SessionPage::setProximityCompact(bool on) {
             } else {
                 sp_proxRow[i]->setMinimumHeight(0);
                 sp_proxRow[i]->setMaximumHeight(QWIDGETSIZE_MAX);
-                if (auto* ph = sp_proxRow[i]->layout()) ph->setContentsMargins(14, 4, 14, 4);
+                if (spacious) sp_proxRow[i]->setMinimumHeight(46);
+                if (auto* ph = sp_proxRow[i]->layout())
+                    ph->setContentsMargins(spacious ? 18 : 14, spacious ? 8 : 4,
+                                           spacious ? 18 : 14, spacious ? 8 : 4);
             }
         }
         if (sp_proxPos[i]) {
-            QFont pf = sp_proxPos[i]->font(); pf.setPointSize(8); sp_proxPos[i]->setFont(pf);
+            QFont pf = sp_proxPos[i]->font(); pf.setPointSize(spacious ? 10 : 8); sp_proxPos[i]->setFont(pf);
         }
         if (sp_proxName[i]) {
-            QFont nmf = sp_proxName[i]->font(); nmf.setPointSize(on ? 9 : 10); sp_proxName[i]->setFont(nmf);
+            QFont nmf = sp_proxName[i]->font(); nmf.setPointSize(on ? 9 : spacious ? 12 : 10); sp_proxName[i]->setFont(nmf);
         }
         if (sp_proxGap[i]) {
-            QFont gf = sp_proxGap[i]->font(); gf.setPointSize(8); sp_proxGap[i]->setFont(gf);
+            QFont gf = sp_proxGap[i]->font(); gf.setPointSize(spacious ? 10 : 8); sp_proxGap[i]->setFont(gf);
         }
     }
 }
@@ -1087,7 +1148,9 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
             item->setSizeHint(QSize(avail, rowH));
             installRow(item, rowW);
         } else {
-            const int hPad = 8, vPad = 6, gap = 2;
+            const int hPad = eventsSpacious_ ? 12 : 8;
+            const int vPad = eventsSpacious_ ? 10 : 6;
+            const int gap = eventsSpacious_ ? 4 : 2;
             QWidget* rowW = new QWidget;
             rowW->setObjectName("eventRow");
             rowW->setStyleSheet(QString(
@@ -1104,13 +1167,13 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
             topH->setContentsMargins(0, 0, 0, 0);
 
             QLabel* timeLbl = new QLabel(timeStr);
-            QFont tf; tf.setPointSize(7); tf.setBold(true);
+            QFont tf; tf.setPointSize(eventsSpacious_ ? 9 : 7); tf.setBold(true);
             tf.setStyleHint(QFont::Monospace); tf.setFamily("monospace");
             timeLbl->setFont(tf);
             timeLbl->setStyleSheet("color: #a0a8b8;");
 
             QLabel* typeLbl = new QLabel(eventType);
-            QFont typeF; typeF.setPointSize(7); typeF.setBold(true);
+            QFont typeF; typeF.setPointSize(eventsSpacious_ ? 9 : 7); typeF.setBold(true);
             typeLbl->setFont(typeF);
             typeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             typeLbl->setStyleSheet("color: " + c.name() + ";");
@@ -1124,7 +1187,7 @@ void SessionPage::updateEvents(const tnrp::ParticipantsRow* participants) {
 
             if (!text.isEmpty()) {
                 QLabel* textLbl = new QLabel(text);
-                QFont lf; lf.setPointSize(9); lf.setWeight(QFont::DemiBold);
+                QFont lf; lf.setPointSize(eventsSpacious_ ? 11 : 9); lf.setWeight(QFont::DemiBold);
                 textLbl->setFont(lf);
                 textLbl->setWordWrap(true);
                 textLbl->setStyleSheet("color: #E5E7EB; background: transparent;");
@@ -1378,4 +1441,3 @@ void SessionPage::applyAndSaveLayout(const SessionLayout& L) {
     applyLayout(L);
     saveLayout(L);
 }
-

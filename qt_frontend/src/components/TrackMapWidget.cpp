@@ -748,9 +748,16 @@ void TrackMapWidget::requestAnimationFrame() {
         update();
         // Continue only while a snapshot is actually being interpolated. A
         // visible but stationary map no longer repaints forever at 60 Hz.
-        if (!prevSnap_.cars.empty() && snapTimer_.elapsed() < snapIntervalMs_)
+        if (!reduceAnimations_ && !prevSnap_.cars.empty() && snapTimer_.elapsed() < snapIntervalMs_)
             requestAnimationFrame();
     }, PresentationScheduler::Policy::Animation);
+}
+
+void TrackMapWidget::setReduceAnimations(bool on) {
+    if (reduceAnimations_ == on) return;
+    reduceAnimations_ = on;
+    if (on) PresentationScheduler::instance().cancel(this);
+    update();
 }
 
 void TrackMapWidget::setParticipants(const tnrp::ParticipantsRow& participants) {
@@ -877,7 +884,7 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
 
     // Interpolation factor between prev and cur snapshot.
     double t = 1.0;
-    if (!prevSnap_.cars.empty())
+    if (!reduceAnimations_ && !prevSnap_.cars.empty())
         t = std::clamp(snapTimer_.elapsed() / snapIntervalMs_, 0.0, 1.0);
 
     // ── Camera: follow selected driver with smooth zoom, else full map ────
@@ -888,14 +895,20 @@ void TrackMapWidget::paintEvent(QPaintEvent*) {
         const QPointF r = projectViewBox(fx, fz);
         const double followScale = base.scale * zoomLevel_;
         if (!hasCam_) { cam_ = { base.scale, 0.0, 0.0 }; hasCam_ = true; }
-        cam_.scale += (followScale - cam_.scale) * 0.12;        // ease zoom
+        cam_.scale = reduceAnimations_ ? followScale
+                                       : cam_.scale + (followScale - cam_.scale) * 0.12;
         cam_.ox = width()  / 2.0 - r.x() * cam_.scale;          // snap-pan to centre driver
         cam_.oy = height() / 2.0 - r.y() * cam_.scale;
         layout = cam_;
     } else if (selectedDriverIdx_ < 0 && hasCam_) {
-        cam_.scale += (base.scale - cam_.scale) * 0.12;          // ease back to full map
-        cam_.ox    += (base.ox    - cam_.ox)    * 0.12;
-        cam_.oy    += (base.oy    - cam_.oy)    * 0.12;
+        if (reduceAnimations_) {
+            cam_ = base;
+            hasCam_ = false;
+        } else {
+            cam_.scale += (base.scale - cam_.scale) * 0.12;
+            cam_.ox    += (base.ox    - cam_.ox)    * 0.12;
+            cam_.oy    += (base.oy    - cam_.oy)    * 0.12;
+        }
         const double diff = std::abs(cam_.scale - base.scale)
                           + std::abs(cam_.ox - base.ox) + std::abs(cam_.oy - base.oy);
         if (diff < 0.5) hasCam_ = false;

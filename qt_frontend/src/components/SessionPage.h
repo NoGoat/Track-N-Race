@@ -8,6 +8,7 @@
 #include <tnrp/control_rows.h>
 
 #include "SessionLayout.h"
+#include "../CompactSettings.h"
 
 #include <cstddef>
 #include <vector>
@@ -41,6 +42,7 @@ public:
 
     // Event log maintenance, fed from the race_event row stream.
     void addEvent(const tnrp::RaceEventRow& eventRow);
+    void truncateEventsAfter(float sessionTime);   // live flashback → discard future events
     void clearEvents();   // SSTA / new session
 
     // Rendering gate pass-through for the map's 60fps animation timer.
@@ -52,11 +54,14 @@ public:
     // Per-section compact density (each rebuilds its part in place; MainWindow
     // re-feeds the latest session row to repaint). Driven independently by Settings.
     void setCardsCompact(bool on);
+    void setCardsDensity(tnr::DensityMode mode);
     void setWeatherCompactLevel(int level);
     void setHeaderCompact(bool on) { setHeaderCompactLevel(on ? 1 : 0); }
     void setHeaderCompactLevel(int level);
     void setEventsCompact(bool on);
+    void setEventsDensity(tnr::DensityMode mode);
     void setProximityCompact(bool on);
+    void setProximityDensity(tnr::DensityMode mode);
 
 private:
     void buildHeader();         // (re)populate the top header at the current density
@@ -72,11 +77,14 @@ private:
     QWidget*     spStatsRow_      = nullptr;   // stat-card row container, repopulated on compact toggle
     QWidget*     sp_weatherStrip_ = nullptr;   // weather strip container, repopulated on compact toggle
     bool         cardsCompact_    = false;     // per-section compact density (ui/compact/session*)
-    int          weatherCompactLevel_ = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2, 3 Compact 3
-    int          headerCompactLevel_  = 0;      // 0 Normal, 1 Compact 1, 2 Compact 2
+    bool         cardsSpacious_   = false;
+    int          weatherCompactLevel_ = 0;      // 4 Spacious, 0 Normal, 1..3 Compact
+    int          headerCompactLevel_  = 0;      // 3 Spacious, 0 Normal, 1..2 Compact
     bool         eventsCompact_   = false;
+    bool         eventsSpacious_  = false;
     QLabel*      sp_eventsHeader  = nullptr;
     bool         proximityCompact_ = false;
+    bool         proximitySpacious_ = false;
     QLabel*      sp_proxHeader    = nullptr;
     QHash<QString, QLabel*> spCardValue_;
     QLabel*      sp_statTotalLaps = nullptr;

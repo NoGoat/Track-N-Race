@@ -22,6 +22,7 @@
 #include <functional>
 #include <utility>
 #include "MainWindow.h"
+#include "Diagnostics.h"
 #include "ChartGraphicsBackend.h"
 #include "BreezePalette.h"
 #include "IconUtils.h"
@@ -197,6 +198,10 @@ int main(int argc, char* argv[]) {
     SingleInstanceCoordinator singleInstance;
     if (!singleInstance.acquireOrNotify(startupRecording)) return 0;
 
+    // Start the per-launch log as soon as application identity and the
+    // single-instance decision are known, before graphics or telemetry startup.
+    tnr::diagnostics::initialize();
+
     // Probe once before MainWindow creates the first QRhiWidget. The selected
     // backend is fixed for the top-level window for the lifetime of this process.
     tnr::graphics::initialize();
@@ -258,6 +263,8 @@ int main(int argc, char* argv[]) {
     // app) that exited abnormally — before this session creates its own.
     tnrp::TnrdReader::sweepStaleTempFiles();
 
+    int result = 0;
+    {
     MainWindow w;
     const auto activate = [&w](const QString& path) {
         if (w.isMinimized()) w.showNormal();
@@ -274,5 +281,10 @@ int main(int argc, char* argv[]) {
     for (const QString& path : std::as_const(app.pendingFileOpens))
         QTimer::singleShot(0, &w, [&w, path] { w.offerRecordingFile(path); });
     app.pendingFileOpens.clear();
-    return app.exec();
+    result = app.exec();
+    singleInstance.activationHandler = {};
+    app.fileOpenHandler = {};
+    }
+    tnr::diagnostics::shutdown();
+    return result;
 }

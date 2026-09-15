@@ -22,6 +22,12 @@
 #include <QPainter>
 #include <QEvent>
 #include <QVariant>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QPushButton>
+#include <QSplitter>
+#include <QResizeEvent>
+#include <QTimer>
 
 #include <algorithm>
 #include <limits>
@@ -185,6 +191,17 @@ private:
 StandingsPage::StandingsPage(QWidget* parent)
     : QWidget(parent)
 {
+    tableDensity_ = tnr::densityFromValue(settings_.value(
+        tnr::compactKey(tnr::CompactSection::StandingsTable), "normal"));
+    const tnr::CompactSection cardSections[] = {
+        tnr::CompactSection::StandingsTiming,
+        tnr::CompactSection::StandingsErs,
+        tnr::CompactSection::StandingsStrategy
+    };
+    for (int i = 0; i < 3; ++i)
+        cardDensity_[i] = tnr::densityFromValue(settings_.value(
+            tnr::compactKey(cardSections[i]), "normal"));
+
     QHBoxLayout* hbox = new QHBoxLayout(this);
     hbox->setContentsMargins(0, 0, 0, 0);
     hbox->setSpacing(0);
@@ -219,8 +236,12 @@ StandingsPage::StandingsPage(QWidget* parent)
         sizer->apply();
     }
 
-    QFont hf; hf.setPointSize(7);
+    QFont hf; hf.setPointSize(tableDensity_ == tnr::DensityMode::Compact ? 7
+                                : tableDensity_ == tnr::DensityMode::Spacious ? 9 : 8);
     timingTable_->horizontalHeader()->setFont(hf);
+    timingTable_->horizontalHeader()->setFixedHeight(
+        tableDensity_ == tnr::DensityMode::Compact ? 22
+        : tableDensity_ == tnr::DensityMode::Spacious ? 34 : 28);
 
     timingTable_->setItemDelegateForColumn(2, new DriverDelegate(timingTable_));
 
@@ -233,34 +254,154 @@ StandingsPage::StandingsPage(QWidget* parent)
 
     hbox->addWidget(timingTable_, 1);
 
-    hbox->addWidget(tnrui::vline());
-
-    hbox->addWidget(buildRacePanel());
+    hbox->addWidget(sidebarDivider_ = tnrui::vline());
+    hbox->addWidget(sidebar_ = buildRacePanel());
+    showTimingTower_ = settings_.value("standingsLayout/showTimingTower", true).toBool();
+    sidebarPct_ = std::clamp(settings_.value("standingsLayout/sidebarPct", 28).toInt(), 15, 60);
+    const char* keys[] = {"timing", "energyRecovery", "strategy"};
+    for (int i = 0; i < 3; ++i)
+        showCards_[i] = settings_.value(QStringLiteral("standingsLayout/cards/") + keys[i], true).toBool();
+    applyLayout();
 }
 
 // ── Race panel builder ────────────────────────────────────────────────────
 
+void StandingsPage::updateSidebarWidth() {
+    if (!sidebar_) return;
+    const bool anyCard = showCards_[0] || showCards_[1] || showCards_[2];
+    if (showTimingTower_ && anyCard) {
+        sidebar_->setFixedWidth(qRound(contentsRect().width() * sidebarPct_ / 100.0));
+    } else {
+        sidebar_->setMinimumWidth(0);
+        sidebar_->setMaximumWidth(QWIDGETSIZE_MAX);
+    }
+}
+
+void StandingsPage::applyLayout() {
+    const bool anyCard = showCards_[0] || showCards_[1] || showCards_[2];
+    timingTable_->setVisible(showTimingTower_);
+    sidebar_->setVisible(anyCard);
+    sidebarDivider_->setVisible(showTimingTower_ && anyCard);
+    for (int i = 0; i < 3; ++i) cards_[i]->setVisible(showCards_[i]);
+    cardDividers_[0]->setVisible(showCards_[0] && showCards_[1]);
+    cardDividers_[1]->setVisible(showCards_[2] && (showCards_[0] || showCards_[1]));
+    updateSidebarWidth();
+}
+
+void StandingsPage::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    updateSidebarWidth();
+}
+
+void StandingsPage::showLayoutEditor() {
+    auto* dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("Edit Standings Layout"));
+    dialog->setWindowModality(Qt::ApplicationModal);
+    auto* root = new QVBoxLayout(dialog);
+    root->addWidget(new QLabel(QStringLiteral("Drag the divider to resize the sidebar (15–60%).")));
+    auto* preview = new QSplitter(Qt::Horizontal);
+    preview->setChildrenCollapsible(false);
+    preview->setMinimumHeight(256);
+    preview->setHandleWidth(8);
+    auto* tower = new QPushButton(QStringLiteral("Timing Tower"));
+    tower->setCheckable(true);
+    tower->setChecked(showTimingTower_);
+    tower->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    preview->addWidget(tower);
+    auto* cardColumn = new QWidget;
+    auto* cardLayout = new QVBoxLayout(cardColumn);
+    cardLayout->setContentsMargins(0, 0, 0, 0);
+    const QStringList labels{QStringLiteral("Timing"), QStringLiteral("Energy Recovery"),
+                             QStringLiteral("Strategy")};
+    const char* keys[] = {"timing", "energyRecovery", "strategy"};
+    for (int i = 0; i < 3; ++i) {
+        auto* card = new QPushButton(labels[i]);
+        card->setCheckable(true);
+        card->setChecked(showCards_[i]);
+        card->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+        cardLayout->addWidget(card, 1);
+        const QString key = QStringLiteral("standingsLayout/cards/") + keys[i];
+        connect(card, &QPushButton::toggled, this, [this, i, key](bool on) {
+            showCards_[i] = on;
+            settings_.setValue(key, on);
+            applyLayout();
+        });
+    }
+    preview->addWidget(cardColumn);
+    root->addWidget(preview, 1);
+    auto* widthLabel = new QLabel(QStringLiteral("Sidebar: %1%").arg(sidebarPct_));
+    root->addWidget(widthLabel);
+    connect(tower, &QPushButton::toggled, this, [this](bool on) {
+        showTimingTower_ = on;
+        settings_.setValue("standingsLayout/showTimingTower", on);
+        applyLayout();
+    });
+    connect(preview, &QSplitter::splitterMoved, dialog, [this, preview, widthLabel](int, int) {
+        const QList<int> sizes = preview->sizes();
+        const int total = sizes[0] + sizes[1];
+        if (total <= 0) return;
+        sidebarPct_ = std::clamp(qRound(sizes[1] * 100.0 / total), 15, 60);
+        const int right = qRound(total * sidebarPct_ / 100.0);
+        preview->setSizes({total - right, right});
+        settings_.setValue("standingsLayout/sidebarPct", sidebarPct_);
+        widthLabel->setText(QStringLiteral("Sidebar: %1%").arg(sidebarPct_));
+        updateSidebarWidth();
+    });
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    root->addWidget(buttons);
+    connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
+    dialog->resize(680, 350);
+    dialog->show();
+    QTimer::singleShot(0, dialog, [this, preview] {
+        const int total = preview->width() - preview->handleWidth();
+        const int right = qRound(total * sidebarPct_ / 100.0);
+        preview->setSizes({total - right, right});
+    });
+}
+
 QWidget* StandingsPage::buildRacePanel() {
     QScrollArea* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
-    scroll->setFixedWidth(240);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     QWidget* w = new QWidget;
     QVBoxLayout* vbox = new QVBoxLayout(w);
     vbox->setContentsMargins(0, 14, 0, 14);
     vbox->setSpacing(6);
+    QVBoxLayout* sections = vbox;
+    int currentCard = 0;
+    auto beginCard = [&](int index) {
+        currentCard = index;
+        cards_[index] = new QWidget;
+        sections->addWidget(cards_[index]);
+        vbox = new QVBoxLayout(cards_[index]);
+        const auto density = cardDensity_[index];
+        vbox->setContentsMargins(0,
+            density == tnr::DensityMode::Compact ? 0
+            : density == tnr::DensityMode::Spacious ? 8 : 0,
+            0,
+            density == tnr::DensityMode::Compact ? 0
+            : density == tnr::DensityMode::Spacious ? 8 : 0);
+        vbox->setSpacing(density == tnr::DensityMode::Compact ? 2
+                         : density == tnr::DensityMode::Spacious ? 10 : 6);
+    };
+    beginCard(0);
 
     // Helper: key / value row
     auto makeRow = [&](const QString& label, QLabel*& valueOut) -> QWidget* {
+        const auto density = cardDensity_[currentCard];
+        const bool compact = density == tnr::DensityMode::Compact;
+        const bool spacious = density == tnr::DensityMode::Spacious;
         QWidget* row = new QWidget;
         QHBoxLayout* h = new QHBoxLayout(row);
-        h->setContentsMargins(14, 4, 14, 4);
+        h->setContentsMargins(spacious ? 18 : 14, compact ? 1 : spacious ? 7 : 4,
+                             spacious ? 18 : 14, compact ? 1 : spacious ? 7 : 4);
         QLabel* lbl = new QLabel(label);
-        QFont lf; lf.setPointSize(9); lbl->setFont(lf);
+        QFont lf; lf.setPointSize(compact ? 8 : spacious ? 11 : 9); lbl->setFont(lf);
         lbl->setForegroundRole(QPalette::PlaceholderText);
         valueOut = new QLabel("—");
-        QFont vf; vf.setPointSize(9); vf.setBold(true); valueOut->setFont(vf);
+        QFont vf; vf.setPointSize(compact ? 8 : spacious ? 11 : 9); vf.setBold(true); valueOut->setFont(vf);
         h->addWidget(lbl);
         h->addStretch();
         h->addWidget(valueOut);
@@ -278,7 +419,8 @@ QWidget* StandingsPage::buildRacePanel() {
 
     // ── Driver header ────────────────────────────────────────────
     rp_driverName = new QLabel("—");
-    QFont dnF; dnF.setPointSize(12); dnF.setBold(true);
+    QFont dnF; dnF.setPointSize(cardDensity_[0] == tnr::DensityMode::Compact ? 10
+                                : cardDensity_[0] == tnr::DensityMode::Spacious ? 15 : 12); dnF.setBold(true);
     rp_driverName->setFont(dnF);
     rp_driverName->setAlignment(Qt::AlignCenter);
     rp_driverName->setContentsMargins(14, 0, 14, 0);
@@ -297,15 +439,18 @@ QWidget* StandingsPage::buildRacePanel() {
     // S1 / S2 side by side
     QWidget* sectRow = new QWidget;
     QHBoxLayout* sh = new QHBoxLayout(sectRow);
-    sh->setContentsMargins(14, 4, 14, 0);
-    sh->setSpacing(8);
+    const bool timingCompact = cardDensity_[0] == tnr::DensityMode::Compact;
+    const bool timingSpacious = cardDensity_[0] == tnr::DensityMode::Spacious;
+    sh->setContentsMargins(timingSpacious ? 18 : 14, timingCompact ? 1 : 4,
+                           timingSpacious ? 18 : 14, 0);
+    sh->setSpacing(timingSpacious ? 12 : 8);
     auto makeSect = [&](const QString& lbl, QLabel*& out) {
         QWidget* sc = new QWidget;
         QVBoxLayout* sv = new QVBoxLayout(sc);
         sv->setContentsMargins(0, 0, 0, 0); sv->setSpacing(1);
-        QLabel* l = new QLabel(lbl); QFont lf; lf.setPointSize(7); l->setFont(lf);
+        QLabel* l = new QLabel(lbl); QFont lf; lf.setPointSize(timingCompact ? 7 : timingSpacious ? 9 : 7); l->setFont(lf);
         l->setForegroundRole(QPalette::PlaceholderText); l->setAlignment(Qt::AlignCenter);
-        out = new QLabel("—"); QFont vf; vf.setPointSize(8); vf.setBold(true);
+        out = new QLabel("—"); QFont vf; vf.setPointSize(timingCompact ? 8 : timingSpacious ? 11 : 8); vf.setBold(true);
         out->setFont(vf); out->setAlignment(Qt::AlignCenter);
         sv->addWidget(l); sv->addWidget(out);
         return sc;
@@ -314,13 +459,15 @@ QWidget* StandingsPage::buildRacePanel() {
     sh->addWidget(makeSect("S2", rp_s2));
     vbox->addWidget(sectRow);
 
-    addDivider();
+    sections->addWidget(cardDividers_[0] = tnrui::hline());
 
     // ── ENERGY ───────────────────────────────────────────────────
+    beginCard(1);
     makeSection("ENERGY");
 
     rp_ersPct = new QLabel("—");
-    QFont bigF; bigF.setPointSize(18); bigF.setBold(true);
+    QFont bigF; bigF.setPointSize(cardDensity_[1] == tnr::DensityMode::Compact ? 14
+                                 : cardDensity_[1] == tnr::DensityMode::Spacious ? 24 : 18); bigF.setBold(true);
     rp_ersPct->setFont(bigF);
     rp_ersPct->setAlignment(Qt::AlignCenter);
     rp_ersPct->setContentsMargins(14, 0, 14, 0);
@@ -342,9 +489,10 @@ QWidget* StandingsPage::buildRacePanel() {
     vbox->addWidget(makeRow("Mode", rp_ersMode));
     vbox->addWidget(makeRow("DRS",  rp_drs));
 
-    addDivider();
+    sections->addWidget(cardDividers_[1] = tnrui::hline());
 
     // ── STRATEGY ─────────────────────────────────────────────────
+    beginCard(2);
     makeSection("STRATEGY");
     vbox->addWidget(makeRow("Fuel",       rp_fuelKg));
     vbox->addWidget(makeRow("Fuel Laps",  rp_fuelLaps));
@@ -353,7 +501,7 @@ QWidget* StandingsPage::buildRacePanel() {
     vbox->addWidget(makeRow("Tyre Age",   rp_tyreAge));
     vbox->addWidget(makeRow("Brake Bias", rp_brakeBias));
 
-    vbox->addStretch();
+    sections->addStretch();
     scroll->setWidget(w);
     return scroll;
 }
@@ -733,8 +881,44 @@ void StandingsPage::updateTimingTable(const TimingRow* timing,
         updateItem(row, 11, statusText, {}, {},
                    hasCustomBg ? bgBrush : QBrush());
 
-        if (timingTable_->rowHeight(row) != 22) timingTable_->setRowHeight(row, 22);
+        const int rowHeight = tableDensity_ == tnr::DensityMode::Compact ? 22
+            : tableDensity_ == tnr::DensityMode::Spacious ? 34 : 28;
+        if (timingTable_->rowHeight(row) != rowHeight)
+            timingTable_->setRowHeight(row, rowHeight);
     }
     timingTable_->setUpdatesEnabled(true);
     timingTable_->viewport()->update();
+}
+
+void StandingsPage::setTableDensity(tnr::DensityMode mode) {
+    if (tableDensity_ == mode) return;
+    tableDensity_ = mode;
+    QFont font = timingTable_->horizontalHeader()->font();
+    font.setPointSize(mode == tnr::DensityMode::Compact ? 7
+                      : mode == tnr::DensityMode::Spacious ? 9 : 8);
+    timingTable_->horizontalHeader()->setFont(font);
+    timingTable_->horizontalHeader()->setFixedHeight(
+        mode == tnr::DensityMode::Compact ? 22
+        : mode == tnr::DensityMode::Spacious ? 34 : 28);
+    const int rowHeight = mode == tnr::DensityMode::Compact ? 22
+        : mode == tnr::DensityMode::Spacious ? 34 : 28;
+    for (int row = 0; row < timingTable_->rowCount(); ++row)
+        timingTable_->setRowHeight(row, rowHeight);
+}
+
+void StandingsPage::setCardDensity(int card, tnr::DensityMode mode) {
+    if (card < 0 || card >= 3 || cardDensity_[card] == mode) return;
+    cardDensity_[card] = mode;
+    rebuildRacePanel();
+}
+
+void StandingsPage::rebuildRacePanel() {
+    if (!sidebar_) return;
+    auto* layout = qobject_cast<QHBoxLayout*>(this->layout());
+    if (!layout) return;
+    layout->removeWidget(sidebar_);
+    sidebar_->deleteLater();
+    sidebar_ = buildRacePanel();
+    layout->addWidget(sidebar_);
+    applyLayout();
 }

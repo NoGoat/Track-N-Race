@@ -39,6 +39,7 @@ public:
     void setSlmTrackStatus(int status);  // 0 = Full (dry), 1 = Partial (wet), -1 = n/a
     void setMapOpacity(double a);     // 0.0–1.0, track outline only
     void setIdleTimeout(int secs);    // 0 = disabled (never hide for inactivity)
+    void setReduceAnimations(bool on);
     void setControlledMarkers(const QVector<Marker>& markers);
     void setControlledMode(bool on);
     bool hasTrack() const { return loaded_; }
@@ -160,6 +161,7 @@ private:
     QElapsedTimer snapTimer_;        // time since curSnap_ arrived
     double        snapIntervalMs_ = 50.0;   // measured gap between snapshots
     bool          renderingActive_ = true;  // false when the app window is hidden/minimized/occluded
+    bool          reduceAnimations_ = false;
     void requestAnimationFrame();
 
     // ── Follow-driver camera + zoom + labels ──────────────────────────────

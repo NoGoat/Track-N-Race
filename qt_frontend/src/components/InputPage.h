@@ -2,8 +2,10 @@
 
 #include <QWidget>
 #include <QSettings>
+#include <QVector>
 
 #include "InputLayout.h"
+#include "../GraphViewSettings.h"
 
 class InputChartsWidget;
 class SessionModel;
@@ -20,6 +22,11 @@ public:
     // "Edit Layout" dialog reads/writes through these (immediate-apply).
     InputLayout loadLayout();
     void applyAndSaveLayout(const InputLayout& layout);
+    InputPageLayout pageLayout() const;
+    InputPedalLayout pedalLayout() const;
+    void setPageLayout(InputPageLayout layout);
+    void setPedalLayout(InputPedalLayout layout);
+    QVector<tnr::GraphSection> chartSections();
 
     // Playback plumbing — forwarded to the charts.
     void setPlaybackMode(bool on, float currentTime = 0.0f);
@@ -28,6 +35,9 @@ public:
 
     // Per-graph Chart/Table toggle (section: gear=0, inputs=1, steering=2).
     void setGraphSectionTable(int section, bool table);
+
+signals:
+    void layoutChanged();
 
 private:
     void saveLayout(const InputLayout& layout);

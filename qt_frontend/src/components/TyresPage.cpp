@@ -20,9 +20,18 @@
 #include <QToolButton>
 #include <QStyle>
 #include <QSettings>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QCheckBox>
+#include <QGridLayout>
+#include <QStringList>
 
 #include <algorithm>
 #include <vector>
+
+namespace {
+constexpr const char* kChartKeys[] = {"surfaceTemp", "innerTemp", "brakeTemp", "tyreLife"};
+}
 
 // ── Tyres page builder ────────────────────────────────────────────────────
 
@@ -129,6 +138,10 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
     {
         QSettings s{ "TrackNRace", "NativeRecorder" };
         tyreCharts_->setTyreLifeMode(s.value("ui/tyreWearMode", "life").toString() != "wear");
+        tyreCharts_->setVerticalLayout(s.value("pageLayouts/tyres", "grid").toString() == "vertical");
+        for (int i = 0; i < 4; ++i)
+            tyreCharts_->setChartSectionVisible(i,
+                s.value(QStringLiteral("tyresLayout/charts/") + kChartKeys[i], true).toBool());
     }
     QWidget* graphsView = new QWidget;
     QVBoxLayout* gv = new QVBoxLayout(graphsView);
@@ -163,6 +176,43 @@ TyresPage::TyresPage(SessionModel* model, QWidget* parent)
     root->addWidget(stack_, 1);
 
     setGraphsShown(false);   // start on allocation
+}
+
+void TyresPage::setVerticalLayout(bool vertical) {
+    QSettings settings("TrackNRace", "NativeRecorder");
+    settings.setValue("pageLayouts/tyres", vertical ? "vertical" : "grid");
+    tyreCharts_->setVerticalLayout(vertical);
+}
+
+void TyresPage::showLayoutEditor() {
+    auto* dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("Edit Tyres Layout"));
+    dialog->setWindowModality(Qt::ApplicationModal);
+    auto* root = new QVBoxLayout(dialog);
+    root->setSizeConstraint(QLayout::SetFixedSize);
+    auto* grid = new QGridLayout;
+    QSettings settings("TrackNRace", "NativeRecorder");
+    const bool vertical = settings.value("pageLayouts/tyres", "grid").toString() == "vertical";
+    const bool life = settings.value("ui/tyreWearMode", "life").toString() != "wear";
+    const QStringList labels{QStringLiteral("Surface Temp"), QStringLiteral("Inner Temp"),
+        QStringLiteral("Brake Temp"), life ? QStringLiteral("Tyre Life") : QStringLiteral("Tyre Wear")};
+    for (int i = 0; i < 4; ++i) {
+        const QString key = QStringLiteral("tyresLayout/charts/") + kChartKeys[i];
+        auto* toggle = new QCheckBox(labels[i]);
+        toggle->setChecked(settings.value(key, true).toBool());
+        connect(toggle, &QCheckBox::toggled, this, [this, i, key](bool on) {
+            QSettings settings("TrackNRace", "NativeRecorder");
+            settings.setValue(key, on);
+            tyreCharts_->setChartSectionVisible(i, on);
+        });
+        grid->addWidget(toggle, vertical ? i : i / 2, vertical ? 0 : i % 2);
+    }
+    root->addLayout(grid);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    root->addWidget(buttons);
+    connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
+    dialog->show();
 }
 
 void TyresPage::setGraphsShown(bool on) {

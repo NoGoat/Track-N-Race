@@ -35,19 +35,25 @@ EditMiscLayoutDialog::EditMiscLayoutDialog(MiscPage* page, QWidget* parent)
     main->setSizeConstraint(QLayout::SetFixedSize);
 
     QGroupBox* chartBox = new QGroupBox("Charts");
-    QHBoxLayout* chartLay = new QHBoxLayout(chartBox);
-    
-    gforceBtn_ = new ToggleButton("G-Force");
-    gforceBtn_->setCheckable(true);
-    gforceBtn_->setChecked(layout_.showGForce);
-    connect(gforceBtn_, &QPushButton::toggled, this, &EditMiscLayoutDialog::toggleGForce);
-    chartLay->addWidget(gforceBtn_);
-
-    rideHeightBtn_ = new ToggleButton("Ride Height");
-    rideHeightBtn_->setCheckable(true);
-    rideHeightBtn_->setChecked(layout_.showRideHeight);
-    connect(rideHeightBtn_, &QPushButton::toggled, this, &EditMiscLayoutDialog::toggleRideHeight);
-    chartLay->addWidget(rideHeightBtn_);
+    auto* chartLay = new QVBoxLayout(chartBox);
+    auto addToggle = [&](const QString& label, bool MiscLayout::* field) {
+        auto* button = new ToggleButton(label);
+        button->setCheckable(true);
+        button->setChecked(layout_.*field);
+        connect(button, &QPushButton::toggled, this, [this, field](bool on) {
+            layout_.*field = on;
+            page_->applyAndSaveLayout(layout_);
+        });
+        chartLay->addWidget(button);
+    };
+    if (page_->splitLayout(true)) {
+        addToggle("Lateral G-Force", &MiscLayout::showGLateral);
+        addToggle("Longitudinal G-Force", &MiscLayout::showGLongitudinal);
+    } else addToggle("G-Force", &MiscLayout::showGForce);
+    if (page_->splitLayout(false)) {
+        addToggle("Front Ride Height", &MiscLayout::showRideFront);
+        addToggle("Rear Ride Height", &MiscLayout::showRideRear);
+    } else addToggle("Ride Height", &MiscLayout::showRideHeight);
 
     main->addWidget(chartBox);
 
@@ -58,14 +64,4 @@ EditMiscLayoutDialog::EditMiscLayoutDialog(MiscPage* page, QWidget* parent)
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(closeBtn);
     main->addLayout(bottom);
-}
-
-void EditMiscLayoutDialog::toggleGForce(bool on) {
-    layout_.showGForce = on;
-    page_->applyAndSaveLayout(layout_);
-}
-
-void EditMiscLayoutDialog::toggleRideHeight(bool on) {
-    layout_.showRideHeight = on;
-    page_->applyAndSaveLayout(layout_);
 }

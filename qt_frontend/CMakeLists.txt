@@ -67,6 +67,10 @@ set(SOURCES
     src/EngineSink.h
     src/HotRowSmoother.h
     src/PresentationScheduler.h
+    src/Diagnostics.cpp
+    src/Diagnostics.h
+    src/UpdateChecker.cpp
+    src/UpdateChecker.h
     src/CompactSettings.h
     src/GraphViewSettings.h
     src/BreezePalette.cpp

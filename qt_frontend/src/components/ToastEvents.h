@@ -30,3 +30,5 @@ std::optional<ToastSpec> buildToast(const tnrp::RaceEventRow& event,
 // safety_car_status (0=clear, 1=SC, 2=VSC, 3=formation). Returns nullopt when the
 // transition shouldn't notify (e.g. first sight of "clear").
 std::optional<ToastSpec> safetyCarToast(int oldStatus, int newStatus);
+
+ToastSpec raceLeaderToast(int carIdx, const tnrp::ParticipantsRow* participants);

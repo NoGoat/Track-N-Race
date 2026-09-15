@@ -46,7 +46,8 @@ public:
     //   UltraCompact1  — Compact without the corner-name heading row
     //   UltraCompact2  — one line per corner: name + the four bare values
     //   UltraCompact3  — one line per corner: short name + labelled values
-    enum Level { Full = 0, Compact = 1, UltraCompact1 = 2, UltraCompact2 = 3, UltraCompact3 = 4 };
+    enum Level { Full = 0, Compact = 1, UltraCompact1 = 2, UltraCompact2 = 3,
+                 UltraCompact3 = 4, CompactColumn = 5, Spacious = 6 };
 
     // Live density switch (Overview page only). Rebuilds the cards at the new level;
     // the Overview page re-applies corner visibility and re-feeds update().

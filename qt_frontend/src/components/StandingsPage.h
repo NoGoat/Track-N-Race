@@ -5,6 +5,7 @@
 #include <QSettings>
 
 #include <tnrp/rows.h>
+#include "../CompactSettings.h"
 #include <tnrp/control_rows.h>
 
 #include <unordered_map>
@@ -41,6 +42,12 @@ public:
     void noteFastestLap(int carIdx);
     bool noteSessionHistoryFastest(int carIdx, int bestMs);
     void resetForNewSession();
+    void showLayoutEditor();
+    void setTableDensity(tnr::DensityMode mode);
+    void setCardDensity(int card, tnr::DensityMode mode);
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
 
 signals:
     // A row click changed the selection; the owner re-feeds the cached rows
@@ -50,6 +57,20 @@ signals:
 private:
     float contrastThreshold() const { return settings_.value("ui/contrastThreshold", 1.75f).toFloat(); }
     QWidget* buildRacePanel();
+    void rebuildRacePanel();
+    void applyLayout();
+    void updateSidebarWidth();
+
+    bool showTimingTower_ = true;
+    bool showCards_[3] = {true, true, true};
+    tnr::DensityMode tableDensity_ = tnr::DensityMode::Normal;
+    tnr::DensityMode cardDensity_[3] = {tnr::DensityMode::Normal,
+        tnr::DensityMode::Normal, tnr::DensityMode::Normal};
+    int sidebarPct_ = 28;
+    QWidget* sidebar_ = nullptr;
+    QWidget* sidebarDivider_ = nullptr;
+    QWidget* cards_[3] = {};
+    QWidget* cardDividers_[2] = {};
 
     QTableWidget*    timingTable_    = nullptr;
     int              selectedCarIdx_ = -1;   // -1 = no selection (show player)

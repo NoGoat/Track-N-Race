@@ -10,6 +10,7 @@
 #include <tnrp/rows.h>
 
 #include "OverviewLayout.h"
+#include "../CompactSettings.h"
 
 class QComboBox;
 class QFrame;
@@ -73,6 +74,8 @@ public:
     // Settings dialog drives these independently via MainWindow.
     void setStatsCompact(bool on);
     void setDamageCompact(bool on);
+    void setStatsDensity(tnr::DensityMode mode);
+    void setDamageDensity(tnr::DensityMode mode);
     // Tyre cards have four density levels (see TyreCardsWidget::Level): 0 Full,
     // 1 Compact, 2 Ultra Compact 1, 3 Ultra Compact 2.
     void setTyresLevel(int level);
@@ -108,8 +111,8 @@ private:
     std::optional<DamageRow> lastDamage_;   // last damage row, replayed after a compact rebuild
     bool cardsDirty_ = true;
     bool damageDirty_ = false;
-    bool statsCompact_  = false;  // per-section compact density (ui/compact/overview*)
-    bool damageCompact_ = false;
+    tnr::DensityMode statsDensity_ = tnr::DensityMode::Normal;
+    tnr::DensityMode damageDensity_ = tnr::DensityMode::Normal;
     int  tyresLevel_    = 0;       // TyreCardsWidget::Level (0 Full … 3 Ultra Compact 2)
 
     TelemetryChart* chart_       = nullptr;

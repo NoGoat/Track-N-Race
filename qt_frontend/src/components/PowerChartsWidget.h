@@ -12,8 +12,8 @@ class GraphTable;
 
 // The Power page's four graphs — power split / ERS harvest / ERS store / fuel —
 // rendered as panels of ONE ChartView (a single QRhi render target /
-// replot) rather than four separate widgets. Laid out 2×2 (split + harvest over
-// store + fuel); any section can be hidden. All four read stsBuf.
+// replot) rather than four separate widgets. Arranged in a grid or vertical
+// stack; hidden sections drop out in split/harvest/store/fuel order. All read stsBuf.
 class PowerChartsWidget : public QWidget {
     Q_OBJECT
 public:
@@ -24,6 +24,7 @@ public:
     void setWindowSeconds(float seconds);
     // Show/hide a section (split=0, harvest=1, store=2, fuel=3); reflows the layout.
     void setSectionVisible(int section, bool on);
+    void setVerticalLayout(bool vertical);
     // Swap a section between its chart and a raw-values table; reflows the layout.
     void setSectionViewMode(int section, bool table);
     // 4 MJ → 8 MJ harvest Y-axis cap in 2026 (no-op for the other panels).
@@ -47,6 +48,7 @@ private:
     QPointer<SessionModel> model_;
     bool      dirty_        = false;
     bool      playback_     = false;
+    bool      vertical_     = false;
     float     currentTime_  = 0.0f;
     float     windowS_      = 30.0f;
     float     prevEndTime_  = -9999.0f;

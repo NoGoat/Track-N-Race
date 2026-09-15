@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QEvent>
 #include <QFont>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>

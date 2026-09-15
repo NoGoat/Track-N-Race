@@ -40,6 +40,8 @@ public:
     // Per-corner tyre-card Card/Table toggle (corner: FL=0, FR=1, RL=2, RR=3),
     // driven from the Settings "Graphs" tab like every other graph section.
     void setCardTable(int corner, bool table);
+    void setVerticalLayout(bool vertical);
+    void showLayoutEditor();
 
 private:
     void setGraphsShown(bool on);   // swap allocation ⇄ graphs views

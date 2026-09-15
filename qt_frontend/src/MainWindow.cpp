@@ -30,9 +30,12 @@
 #include "BreezePalette.h"
 #include "IconUtils.h"   // setApplicationStyle (style swap in setStyleName)
 #include "PresentationScheduler.h"
+#include "UpdateChecker.h"
+#include "Diagnostics.h"
 #include <tnrp/Capabilities.h>
 
 #include <QApplication>
+#include <QClipboard>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -47,6 +50,7 @@
 #include <QSizePolicy>
 #include <QStyleHints>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QTimer>
 #include <QMetaType>
 #include <QVariant>
@@ -65,6 +69,7 @@
 #include <QJsonObject>
 
 #include <algorithm>
+#include <exception>
 #include <map>
 
 #include <tnrp/Engine.h>
@@ -166,7 +171,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(toolbar_, &AppToolbar::chartReferenceLapChanged, model_, &SessionModel::setGlobalReferenceLap);
     connect(toolbar_, &AppToolbar::sectorBoundariesChanged, model_, &SessionModel::setSectorBoundaries);
     connect(toolbar_, &AppToolbar::cursorSyncChanged, model_, &SessionModel::setCursorSync);
-    const auto updateToolbarDelta = [this] {
+    const auto computeToolbarDelta = [this] {
         const SessionData& data = model_->data();
         const ChartWindow mode = model_->globalChartWindow();
         const LapBlock* current = model_->chartPrimaryLap(data.latestTime);
@@ -203,6 +208,15 @@ MainWindow::MainWindow(QWidget* parent)
             (currentTime - current->startSessionTime) -
             (comparisonTime - comparison->startSessionTime));
     };
+    const auto updateToolbarDelta = [this, computeToolbarDelta] {
+        const int interval = qBound(0, deltaUpdateInterval(), 1000);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (interval > 0 && lastToolbarDeltaUpdateMs_ >= 0 &&
+            now - lastToolbarDeltaUpdateMs_ < interval)
+            return;
+        lastToolbarDeltaUpdateMs_ = now;
+        computeToolbarDelta();
+    };
     connect(model_, &SessionModel::telemetryAppended, this, updateToolbarDelta);
     connect(model_, &SessionModel::chartConfigurationChanged, this, [this] {
         QVector<int> laps;
@@ -216,7 +230,7 @@ MainWindow::MainWindow(QWidget* parent)
                                   model_->sectorBoundaries(), model_->cursorSync());
         updatePlaybackDataRequirements();
     });
-    connect(model_, &SessionModel::chartConfigurationChanged, this, updateToolbarDelta);
+    connect(model_, &SessionModel::chartConfigurationChanged, this, computeToolbarDelta);
     connect(model_, &SessionModel::lapsChanged, this, [this] {
         QVector<int> laps;
         for (const LapBlock& lap : model_->data().laps)
@@ -244,6 +258,10 @@ MainWindow::MainWindow(QWidget* parent)
             EditPowerLayoutDialog* dlg = new EditPowerLayoutDialog(powerPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
             dlg->show();
+        } else if (currentPage_ == Tyres) {
+            tyresPage_->showLayoutEditor();
+        } else if (currentPage_ == Standings) {
+            standingsPage_->showLayoutEditor();
         } else if (currentPage_ == Misc) {
             EditMiscLayoutDialog* dlg = new EditMiscLayoutDialog(miscPage_, this);
             connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
@@ -279,8 +297,12 @@ MainWindow::MainWindow(QWidget* parent)
     stack->addWidget(tyresPage_ = new TyresPage(model_));   // Tyres
     stack->addWidget(buildStrategyPage());  // Strategy
     stack->addWidget(inputPage_ = new InputPage(model_));   // Input
+    connect(inputPage_, &InputPage::layoutChanged,
+            this, &MainWindow::schedulePlaybackDataRequirements);
     stack->addWidget(powerPage_ = new PowerPage(model_));   // Power
     stack->addWidget(miscPage_ = new MiscPage(model_));   // Misc
+    connect(miscPage_, &MiscPage::layoutChanged,
+            this, &MainWindow::schedulePlaybackDataRequirements);
 
     // Apply persisted per-graph Chart/Table choices now that every page exists.
     applyGraphViews();
@@ -290,6 +312,7 @@ MainWindow::MainWindow(QWidget* parent)
     // attached after recreateEngine() below.
     playback_ = new PlaybackController(model_, nullptr, this);
     playback_->setShowLabels(toolbarLabelsEnabled());   // match the toolbar labels option
+    playback_->setDensityMode(densitySection(tnr::CompactSection::PlaybackBar));
 
     // Stack + separator + playback bar stacked vertically as the central widget
     container_ = new QWidget(this);
@@ -361,7 +384,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (currentPage_ == Overview || currentPage_ == Tyres) dirtyTyres_ = true;
         toolbar_->setEditLayoutEnabled(currentPage_ == Overview || currentPage_ == Input ||
                                        currentPage_ == Power || currentPage_ == Misc ||
-                                       currentPage_ == Session);
+                                       currentPage_ == Session || currentPage_ == Tyres ||
+                                       currentPage_ == Standings);
         toolbar_->setAnalyzeControlsVisible(currentPage_ == Analyze);
         // Return from the click handler before pruning/requesting history or
         // rebuilding the newly visible page.  This lets the tab selection paint
@@ -372,8 +396,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(toolbar_, &AppToolbar::openRecordingRequested, this, [this] {
         QString path = QFileDialog::getOpenFileName(
-            this, "Open File", outputDirectory,
+            this, "Open File", lastDialogDirectory(),
             "TNRD Recordings (*.tnrd *.trnd)");
+        rememberDialogDirectory(path);
         offerRecordingFile(path);
     });
 
@@ -428,6 +453,7 @@ MainWindow::MainWindow(QWidget* parent)
         model_->setPlaybackMode(true);
         updatePlaybackDataRequirements();
         hotSmoother_.reset();   // entering playback: drop live fill state
+        lastRaceLeader_.reset();
         applyEngineLogging();   // inPlayback_ is set → stops live recording while reviewing
         const QString trackName = hdr.track_name.empty()
             ? QStringLiteral("Unknown") : QString::fromStdString(hdr.track_name);
@@ -495,6 +521,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(playback_, &PlaybackController::exited, this, [this] {
         inPlayback_ = false;
+        lastRaceLeader_.reset();
         hotSmoother_.reset();   // back to live: start the fill state fresh
         applyEngineLogging();   // back to live: resume recording if it was enabled
         // Drop the playback timer value; live packets (if any) repopulate it.
@@ -525,8 +552,22 @@ MainWindow::MainWindow(QWidget* parent)
     });
 
     const QString udpError = recreateEngine();
-    if (!udpError.isEmpty())
+    if (udpError.startsWith("engine-startup:")) {
+        const QString detail = udpError.mid(QStringLiteral("engine-startup:").size());
+        const QString report = tnr::diagnostics::failureReport(
+            "Track N Race native telemetry engine startup failure", detail);
+        QApplication::clipboard()->setText(report);
+        QMessageBox::critical(this, "Telemetry Bridge Failed to Load",
+            "Track N Race will continue without the native telemetry engine. However, "
+            "pretty much nothing will work.\n\nThe full diagnostic report has been copied "
+            "to your clipboard. Paste it into a message to the developer.\n\n" + report);
+    } else if (!udpError.isEmpty()) {
         QMessageBox::critical(this, "UDP Error", udpError);
+    }
+
+    tnr::diagnostics::setFatalFlushHandler([this] {
+        if (engine_) engine_->flushRecording();
+    });
 
     // Forward-fill timer: re-emits the last hot row during dropped/late frames so
     // the live charts stay smooth on a lossy link (see HotRowSmoother). Runs at the
@@ -535,6 +576,11 @@ MainWindow::MainWindow(QWidget* parent)
     hotFillTimer_->setInterval(hotSmoother_.periodMs());
     connect(hotFillTimer_, &QTimer::timeout, this, &MainWindow::onHotFillTick);
     hotFillTimer_->start();
+
+    // Discovery is deliberately deferred until the main window is fully built;
+    // the checker itself enforces the persisted enable flag and 24-hour cadence.
+    auto* updateChecker = new UpdateChecker(this);
+    QTimer::singleShot(0, updateChecker, &UpdateChecker::checkOnStartup);
 }
 
 void MainWindow::offerRecordingFile(const QString& path) {
@@ -560,6 +606,17 @@ void MainWindow::offerRecordingFile(const QString& path) {
     playback_->load(absolutePath);
 }
 
+QString MainWindow::lastDialogDirectory() const {
+    const QString directory = settings.value("dialogs/lastDirectory").toString();
+    return !directory.isEmpty() && QFileInfo::exists(directory) ? directory : QString();
+}
+
+void MainWindow::rememberDialogDirectory(const QString& path, bool isDirectory) {
+    if (path.isEmpty()) return;
+    settings.setValue("dialogs/lastDirectory",
+                      isDirectory ? path : QFileInfo(path).absolutePath());
+}
+
 // Tyre view/graph settings used by the Settings dialog — the Overview page owns
 // the widgets and persistence.
 OverviewLayout::TyreView MainWindow::currentTyreView() {
@@ -579,6 +636,7 @@ void MainWindow::setTyreGraphLifeMode(bool life) {
 }
 
 MainWindow::~MainWindow() {
+    tnr::diagnostics::setFatalFlushHandler({});
     if (playback_) playback_->shutdown();
     // The engine's destructor stops the UDP thread and flushes/closes any active
     // .tnrd stream. Reset explicitly so it tears down before the sink it points at.
@@ -599,10 +657,13 @@ void MainWindow::onExportXlsxRequested() {
     }
 
     const QFileInfo srcInfo(src);
-    const QString defaultPath = srcInfo.dir().filePath(srcInfo.completeBaseName() + ".xlsx");
+    const QString lastDirectory = lastDialogDirectory();
+    const QDir exportDirectory(lastDirectory.isEmpty() ? srcInfo.absolutePath() : lastDirectory);
+    const QString defaultPath = exportDirectory.filePath(srcInfo.completeBaseName() + ".xlsx");
     const QString dest = QFileDialog::getSaveFileName(
         this, "Export to Excel", defaultPath, "Excel Workbook (*.xlsx)");
     if (dest.isEmpty()) return;   // cancelled
+    rememberDialogDirectory(dest);
 
     exporting_ = true;
     exportStageLabel_->setText("Preparing export…");
@@ -729,15 +790,34 @@ void MainWindow::updateRenderingState() {
 
 void MainWindow::setRenderingActive(bool on) {
     renderingActive_ = on;
-    updatePlaybackDataRequirements();
     if (on) {
-        // Resume after the engine has restored the selected bounded history.
+        // Electron keeps the renderer's current publication intact while it is
+        // hidden and catches presentation up on return.  Qt has no IPC boundary,
+        // so keep ingesting into the same bounded model while presentation is
+        // suspended, then publish the accumulated state once on resume.
+        updatePlaybackDataRequirements();
         if (model_)    model_->setLiveFlushActive(true);
         if (sessionPage_) sessionPage_->setRenderingActive(true);
+        // Playback state keeps advancing while presentation is suspended. Wake
+        // the visible page at the latest cursor immediately instead of waiting
+        // for another state packet (which may never arrive while paused).
+        if (inPlayback_ && playback_) {
+            const float t = playback_->currentTime();
+            switch (currentPage_) {
+                case Overview: if (overviewPage_) overviewPage_->setCurrentTime(t); break;
+                case Analyze: if (analyzePage_) analyzePage_->setCurrentTime(t); break;
+                case Tyres: if (tyresPage_) tyresPage_->setCurrentTime(t); break;
+                case Input: if (inputPage_) inputPage_->setCurrentTime(t); break;
+                case Power: if (powerPage_) powerPage_->setCurrentTime(t); break;
+                case Misc: if (miscPage_) miscPage_->setCurrentTime(t); break;
+                default: break;
+            }
+        }
         flushUiRefresh();
     } else {
-        // Pause presentation and unsubscribe the host. UDP parsing/recording and
-        // the native playback clock remain independent of this UI gate.
+        // Pause presentation only. Do not zero the engine requirements: doing so
+        // pruned the published playback history and made refocus look like a
+        // rewind to an empty session.
         PresentationScheduler::instance().cancel(this);
         uiRefreshPending_ = false;
         if (model_)    model_->setLiveFlushActive(false);
@@ -772,6 +852,41 @@ void MainWindow::changeEvent(QEvent* e) {
 }
 
 // ── Slots ──────────────────────────────────────────────────────────────────
+
+bool MainWindow::verticalChartLayout(Page page) const {
+    const char* key = page == Input ? "pageLayouts/input"
+        : page == Power ? "pageLayouts/power"
+        : page == Tyres ? "pageLayouts/tyres" : nullptr;
+    return key && settings.value(key, "grid").toString() == "vertical";
+}
+
+void MainWindow::setVerticalChartLayout(Page page, bool vertical) {
+    if (page == Input && inputPage_)
+        inputPage_->setPageLayout(vertical ? InputPageLayout::Vertical : InputPageLayout::Grid);
+    if (page == Power && powerPage_) powerPage_->setVerticalLayout(vertical);
+    if (page == Tyres && tyresPage_) tyresPage_->setVerticalLayout(vertical);
+}
+
+QString MainWindow::inputPedalLayout() const {
+    const QString value = settings.value("pageLayouts/inputPedals", "combined").toString();
+    return value == "split" || value == "combined2" ? value : "combined";
+}
+
+void MainWindow::setInputPedalLayout(const QString& layout) {
+    if (!inputPage_) return;
+    inputPage_->setPedalLayout(layout == "split" ? InputPedalLayout::Split
+        : layout == "combined2" ? InputPedalLayout::Combined2
+        : InputPedalLayout::Combined);
+    schedulePlaybackDataRequirements();
+}
+
+bool MainWindow::miscSplitLayout(bool gForce) const {
+    return miscPage_ && miscPage_->splitLayout(gForce);
+}
+
+void MainWindow::setMiscSplitLayout(bool gForce, bool split) {
+    if (miscPage_) miscPage_->setSplitLayout(gForce, split);
+}
 
 void MainWindow::setOutputDirectory(const QString& dir) {
     outputDirectory = dir;
@@ -880,11 +995,11 @@ int MainWindow::weatherCompactLevel() const {
 #endif
     // The former boolean Compact layout is now named Compact 2.
     if (legacyBool) return value.toBool() ? 2 : 0;
-    return qBound(0, value.toInt(), 3);
+    return qBound(0, value.toInt(), 4);
 }
 
 void MainWindow::setWeatherCompactLevel(int level) {
-    level = qBound(0, level, 3);
+    level = qBound(0, level, 4);
     settings.setValue(tnr::compactKey(tnr::CompactSection::SessionWeather), level);
     if (sessionPage_) sessionPage_->setWeatherCompactLevel(level);
     dirtySession_ = true;
@@ -900,11 +1015,11 @@ int MainWindow::headerCompactLevel() const {
     const bool legacyBool = value.type() == QVariant::Bool;
 #endif
     if (legacyBool) return value.toBool() ? 1 : 0;
-    return qBound(0, value.toInt(), 2);
+    return qBound(0, value.toInt(), 3);
 }
 
 void MainWindow::setHeaderCompactLevel(int level) {
-    level = qBound(0, level, 2);
+    level = qBound(0, level, 3);
     settings.setValue(tnr::compactKey(tnr::CompactSection::SessionHeader), level);
     if (sessionPage_) sessionPage_->setHeaderCompactLevel(level);
     dirtySession_ = true;
@@ -912,37 +1027,58 @@ void MainWindow::setHeaderCompactLevel(int level) {
 }
 
 void MainWindow::setCompactSection(tnr::CompactSection s, bool on) {
+    setDensitySection(s, on ? tnr::DensityMode::Compact : tnr::DensityMode::Normal);
+}
+
+tnr::DensityMode MainWindow::densitySection(tnr::CompactSection s) const {
+    return tnr::densityFromValue(settings.value(tnr::compactKey(s), "normal"));
+}
+
+void MainWindow::setDensitySection(tnr::CompactSection s, tnr::DensityMode mode) {
     if (s == tnr::CompactSection::SessionWeather) {
-        setWeatherCompactLevel(on ? 1 : 0);
+        setWeatherCompactLevel(mode == tnr::DensityMode::Compact ? 1
+                               : mode == tnr::DensityMode::Spacious ? 4 : 0);
         return;
     }
     if (s == tnr::CompactSection::SessionHeader) {
-        setHeaderCompactLevel(on ? 1 : 0);
+        setHeaderCompactLevel(mode == tnr::DensityMode::Compact ? 1
+                              : mode == tnr::DensityMode::Spacious ? 3 : 0);
         return;
     }
-    settings.setValue(tnr::compactKey(s), on);
+    if (s == tnr::CompactSection::OverviewTyres) {
+        setTyresCompactLevel(mode == tnr::DensityMode::Compact ? 1
+                              : mode == tnr::DensityMode::Spacious ? 6 : 0);
+        return;
+    }
+    settings.setValue(tnr::compactKey(s), tnr::densityValue(mode));
     // Rebuild only the affected section, then repaint. Overview stats/damage repaint
     // themselves in their setters (their cards refresh per-packet, not on the dirty
     // tick); the rest are repopulated via the coalesced refresh below (only the
     // visible page runs now, the others refresh when next shown).
     using CS = tnr::CompactSection;
     switch (s) {
-        case CS::OverviewStats:   if (overviewPage_) overviewPage_->setStatsCompact(on);  break;
-        case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageCompact(on); break;
-        case CS::OverviewTyres:   setTyresCompactLevel(on ? 1 : 0); return;   // tyres use the int-level path
-        case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsCompact(on);   dirtySession_  = true; break;
-        case CS::SessionProximity: if (sessionPage_) sessionPage_->setProximityCompact(on); dirtySession_ = true; break;
-        case CS::SessionEvents:   if (sessionPage_)  sessionPage_->setEventsCompact(on);  dirtyEvents_   = true; break;
+        case CS::OverviewStats:   if (overviewPage_) overviewPage_->setStatsDensity(mode);  break;
+        case CS::OverviewDamage:  if (overviewPage_) overviewPage_->setDamageDensity(mode); break;
+        case CS::OverviewTyres:   break;
+        case CS::StandingsTable:  if (standingsPage_) standingsPage_->setTableDensity(mode); dirtyTiming_ = true; break;
+        case CS::StandingsTiming: if (standingsPage_) standingsPage_->setCardDensity(0, mode); dirtyRacePanel_ = true; break;
+        case CS::StandingsErs: if (standingsPage_) standingsPage_->setCardDensity(1, mode); dirtyRacePanel_ = true; break;
+        case CS::StandingsStrategy: if (standingsPage_) standingsPage_->setCardDensity(2, mode); dirtyRacePanel_ = true; break;
+        case CS::SessionCards:    if (sessionPage_)  sessionPage_->setCardsDensity(mode);   dirtySession_  = true; break;
+        case CS::SessionProximity: if (sessionPage_) sessionPage_->setProximityDensity(mode); dirtySession_ = true; break;
+        case CS::SessionEvents:   if (sessionPage_)  sessionPage_->setEventsDensity(mode);  dirtyEvents_   = true; break;
         case CS::SessionWeather:  break; // handled by the integer-level path above
         case CS::SessionHeader:   break; // handled by the integer-level path above
-        case CS::PowerCards:      if (powerPage_)    powerPage_->setCompactMode(on);      dirtyPower_    = true; break;
-        case CS::StrategySummary: if (strategyPage_) strategyPage_->setCompactMode(on);   dirtyStrategy_ = true; break;
+        case CS::PowerCards:      if (powerPage_)    powerPage_->setDensityMode(mode);      dirtyPower_    = true; break;
+        case CS::StrategySummary: if (strategyPage_) strategyPage_->setDensityMode(mode);   dirtyStrategy_ = true; break;
+        case CS::PlaybackBar:     if (playback_) playback_->setDensityMode(mode); break;
         default: break;
     }
     scheduleUiRefresh();
 }
 
 void MainWindow::setTyresCompactLevel(int level) {
+    level = qBound(0, level, 6);
     settings.setValue(tnr::compactKey(tnr::CompactSection::OverviewTyres), level);
     if (overviewPage_) overviewPage_->setTyresLevel(level);
     dirtyTyres_ = true;
@@ -972,6 +1108,9 @@ void MainWindow::dispatchGraphView(tnr::GraphSection s, bool table) {
         case GS::TyreCardRR:         if (tyresPage_) tyresPage_->setCardTable(3, table); break;
         case GS::InputGear:          if (inputPage_) inputPage_->setGraphSectionTable(0, table); break;
         case GS::InputThrottleBrake: if (inputPage_) inputPage_->setGraphSectionTable(1, table); break;
+        case GS::InputThrottleBrakeOverlay: if (inputPage_) inputPage_->setGraphSectionTable(3, table); break;
+        case GS::InputAccelerator:   if (inputPage_) inputPage_->setGraphSectionTable(4, table); break;
+        case GS::InputBrake:         if (inputPage_) inputPage_->setGraphSectionTable(5, table); break;
         case GS::InputSteering:      if (inputPage_) inputPage_->setGraphSectionTable(2, table); break;
         case GS::PowerSplit:         if (powerPage_) powerPage_->setGraphSectionTable(0, table); break;
         case GS::PowerHarvest:       if (powerPage_) powerPage_->setGraphSectionTable(1, table); break;
@@ -979,6 +1118,10 @@ void MainWindow::dispatchGraphView(tnr::GraphSection s, bool table) {
         case GS::PowerFuel:          if (powerPage_) powerPage_->setGraphSectionTable(3, table); break;
         case GS::MiscGForce:         if (miscPage_) miscPage_->setGraphSectionTable(0, table); break;
         case GS::MiscRideHeight:     if (miscPage_) miscPage_->setGraphSectionTable(1, table); break;
+        case GS::MiscGLateral:       if (miscPage_) miscPage_->setGraphSectionTable(2, table); break;
+        case GS::MiscGLongitudinal:  if (miscPage_) miscPage_->setGraphSectionTable(3, table); break;
+        case GS::MiscRideFront:      if (miscPage_) miscPage_->setGraphSectionTable(4, table); break;
+        case GS::MiscRideRear:       if (miscPage_) miscPage_->setGraphSectionTable(5, table); break;
         default: break;
     }
 }
@@ -1020,6 +1163,18 @@ void MainWindow::setChartFpsOutOfFocus(int fps) {
     settings.setValue("ui/chartFpsOutOfFocus", fps);
     PresentationScheduler::instance().configureChartFrameRates(
         chartFpsInFocus(), chartFpsOutOfFocus());
+}
+
+void MainWindow::setDeltaUpdateInterval(int ms) {
+    if (ms != 0 && ms != 250 && ms != 500 && ms != 1000) ms = 0;
+    settings.setValue("ui/deltaUpdateInterval", ms);
+    lastToolbarDeltaUpdateMs_ = -1;
+}
+
+void MainWindow::setReduceAnimations(bool on) {
+    settings.setValue("ui/reduceAnimations", on);
+    if (TrackMapWidget* map = sessionPage_ ? sessionPage_->trackMap() : nullptr)
+        map->setReduceAnimations(on);
 }
 
 void MainWindow::setTrackMapLabelMode(int mode) {
@@ -1118,6 +1273,7 @@ QString MainWindow::applyUdpConfiguration(
 }
 
 QString MainWindow::recreateEngine() {
+    lastRaceLeader_.reset();
     // Config owns forwarding targets, so applying a changed target list requires
     // the same stop/create/start lifecycle used by Electron's bridge manager.
     // This is host adaptation only: the shared library and its public API remain
@@ -1144,10 +1300,20 @@ QString MainWindow::recreateEngine() {
         }
     }
 
-    engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
-    if (playback_) playback_->setEngine(engine_.get());
-    updatePlaybackDataRequirements();
-    if (engine_->startUdp()) return {};
+    try {
+        engine_ = std::make_unique<tnrp::Engine>(cfg, engineSink_);
+        if (playback_) playback_->setEngine(engine_.get());
+        updatePlaybackDataRequirements();
+        if (engine_->startUdp()) return {};
+    } catch (const std::exception& error) {
+        if (playback_) playback_->setEngine(nullptr);
+        engine_.reset();
+        return QStringLiteral("engine-startup:") + QString::fromUtf8(error.what());
+    } catch (...) {
+        if (playback_) playback_->setEngine(nullptr);
+        engine_.reset();
+        return QStringLiteral("engine-startup:Unknown native engine exception");
+    }
 
     const QString nativeError = QString::fromStdString(engine_->udpLastError());
     if (playback_) playback_->setEngine(nullptr);
@@ -1401,7 +1567,14 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
             if (standingsPage_) standingsPage_->resetForNewSession();
             if (strategyPage_) strategyPage_->resetForNewSession();
             lastSafetyCarStatus_ = 0;
+            lastRaceLeader_.reset();
         }
+        // Electron truncates the old event timeline before publishing the FLBK
+        // event itself, so the flashback remains visible but later events do not.
+        if (!inPlayback_ && ev->code == "FLBK" && ev->flashback_session_time &&
+            std::isfinite(*ev->flashback_session_time) &&
+            *ev->flashback_session_time >= 0.0f && sessionPage_)
+            sessionPage_->truncateEventsAfter(*ev->flashback_session_time);
         if (sessionPage_) sessionPage_->addEvent(*ev);
         // Transient notification for the event, both live and during playback.
         // race_events are never replayed on seek, so scrubbing won't re-fire them.
@@ -1409,6 +1582,15 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
         dirtyEvents_ = true; scheduleUiRefresh();
     } else if (const auto* timing = std::get_if<TimingRow>(&row)) {
         lastTimingData = *timing;
+        if (!inPlayback_) {
+            const auto leader = std::find_if(timing->cars.begin(), timing->cars.end(),
+                [](const auto& car) { return car.position == 1 && car.result_status == 2; });
+            if (leader != timing->cars.end()) {
+                if (lastRaceLeader_ && *lastRaceLeader_ != leader->idx && toasts_)
+                    toasts_->show(raceLeaderToast(leader->idx, optPtr(lastParticipantsData)));
+                lastRaceLeader_ = leader->idx;
+            }
+        }
         dirtyTiming_ = true; dirtyProximity_ = true; scheduleUiRefresh();
     } else if (const auto* part = std::get_if<tnrp::ParticipantsRow>(&row)) {
         lastParticipantsData = *part;
@@ -1432,6 +1614,9 @@ void MainWindow::emitLiveData(const tnrp::AnyRow& row) {
 
 QWidget* MainWindow::buildStrategyPage() {
     strategyPage_ = new StrategyPage(this);
+    connect(strategyPage_, &StrategyPage::minimumStopsChanged, this, [this](int stops) {
+        if (engine_) engine_->setStrategyMinimumStops(stops);
+    });
     return strategyPage_;
 }
 
@@ -1519,8 +1704,11 @@ void MainWindow::ingestForModel(const tnrp::AnyRow& row) {
         // samples newer than the rewind point and keep the rest (NOT a full reset — that
         // wiped all live data). A genuine restart rewinds to ~0, which truncates to empty
         // anyway. Same 0.2s guard as the recording-side truncate above.
-        if (!inPlayback_ && t->session_time < model_->data().latestTime - 0.2f)
+        if (!inPlayback_ && t->session_time < model_->data().latestTime - 0.2f) {
+            if (sessionPage_) sessionPage_->truncateEventsAfter(t->session_time);
+            dirtyEvents_ = true;
             model_->truncateAfter(t->session_time);
+        }
         model_->onTelemetry(t->session_time, (float)t->speed_kph, t->rpm, t->gear,
                             t->throttle, t->brake, (float)t->steering);
         // Combine live tyre temps with last-seen wear from the damage packet.
@@ -1574,10 +1762,10 @@ void MainWindow::schedulePlaybackDataRequirements() {
 void MainWindow::updatePlaybackDataRequirements() {
     if (!playback_ || !model_) return;
     constexpr auto bit = [](uint8_t type) { return 1u << type; };
-    if (!renderingActive_) {
-        playback_->setDataRequirements(0, 0, 0.0f);
-        return;
-    }
+    // Preserve the last visible subscription while hidden. This matches
+    // Electron's visibility gate, which pauses presentation/forwarding without
+    // clearing the renderer's current history publication.
+    if (!renderingActive_) return;
 
     // Global clock/session banners plus the active page. These are logical TNRD
     // row-family bits, not UDP packet ids. History is narrower than streaming:
@@ -1617,9 +1805,7 @@ void MainWindow::updatePlaybackDataRequirements() {
             break;
         case Input:
             stream |= bit(1); history |= bit(1);
-            sections = {tnr::GraphSection::InputGear,
-                        tnr::GraphSection::InputThrottleBrake,
-                        tnr::GraphSection::InputSteering};
+            if (inputPage_) sections = inputPage_->chartSections();
             break;
         case Power:
             stream |= bit(2); history |= bit(2);
@@ -1630,8 +1816,7 @@ void MainWindow::updatePlaybackDataRequirements() {
             break;
         case Misc:
             stream |= bit(11) | bit(12); history |= bit(11) | bit(12);
-            sections = {tnr::GraphSection::MiscGForce,
-                        tnr::GraphSection::MiscRideHeight};
+            if (miscPage_) sections = miscPage_->chartSections();
             break;
         default:
             break;

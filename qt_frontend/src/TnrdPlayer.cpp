@@ -117,6 +117,7 @@ TnrdPlayer::~TnrdPlayer() { shutdown(); }
 
 void TnrdPlayer::setEngine(tnrp::Engine* engine) {
     quiesce();
+    resumeAfterSeek_ = false;
     latestSeekRequest_.fetch_add(1, std::memory_order_acq_rel);
     latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel);
     engine_.store(engine, std::memory_order_release);
@@ -193,6 +194,7 @@ void TnrdPlayer::workerLoop() {
 
 void TnrdPlayer::load(const QString& path) {
     if (loading_) return;
+    resumeAfterSeek_ = false;
     loading_ = true;
     emit loadingStarted();
     const std::string source = path.toStdString();
@@ -214,16 +216,26 @@ void TnrdPlayer::load(const QString& path) {
 }
 
 void TnrdPlayer::play() {
-    if (auto* engine = engine_.load(std::memory_order_acquire); engine && loaded_)
-        engine->playerPlay();
+    auto* engine = engine_.load(std::memory_order_acquire);
+    if (!engine || !loaded_) return;
+    if (totalTime_ > startTime_ && currentTime_ >= totalTime_) {
+        // The engine can rewind its cursor alone, but Qt must also replace the
+        // installed history and panel snapshot before replay starts again.
+        resumeAfterSeek_ = true;
+        seek(0.0f);
+        return;
+    }
+    engine->playerPlay();
 }
 
 void TnrdPlayer::pause() {
+    resumeAfterSeek_ = false;
     if (auto* engine = engine_.load(std::memory_order_acquire); engine && loaded_)
         engine->playerPause();
 }
 
 void TnrdPlayer::close() {
+    resumeAfterSeek_ = false;
     latestSeekRequest_.fetch_add(1, std::memory_order_acq_rel);
     latestRequirementsRequest_.fetch_add(1, std::memory_order_acq_rel);
     playing_ = false;
@@ -408,7 +420,10 @@ void TnrdPlayer::completeSeek(uint64_t requestId) {
     if (requestId != latestSeekRequest_.load(std::memory_order_acquire)) return;
     if (resumeAfterSeek_) {
         resumeAfterSeek_ = false;
-        play();
+        // The seek worker has positioned the engine; its state row may still
+        // be queued on the GUI thread. Do not recheck the old EOF timestamp.
+        if (auto* engine = engine_.load(std::memory_order_acquire); engine && loaded_)
+            engine->playerPlay();
     }
 }
 

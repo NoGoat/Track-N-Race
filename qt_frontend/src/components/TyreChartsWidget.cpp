@@ -145,17 +145,23 @@ void TyreChartsWidget::ensureTable(int section)
     table_[section]->setVisible(false);
 }
 
+void TyreChartsWidget::setVerticalLayout(bool vertical) {
+    if (vertical_ == vertical) return;
+    vertical_ = vertical;
+    rebuildLayout();
+}
+
 void TyreChartsWidget::rebuildLayout()
 {
     if (!chart_ || !outer_) return;
-    // 2×2 grid (fullscreen) packs visible sections two-per-row; 1×4 (Overview strip)
-    // is a single row. Hidden sections drop out and the rest reflow. Both chart- and
+    // Tyres packs visible sections into a grid or vertical stack; the Overview
+    // strip stays a single row. Hidden sections drop out and reflow. Both chart- and
     // table-mode sections keep these positions; a table replaces its chart in place
     // (see tnr::layoutSectionGrid).
     QVector<int> vis;
     for (int s = 0; s < SECTIONS; ++s) if (visible_[s]) vis.append(s);
 
-    const int perRow = grid_ ? 2 : 4;
+    const int perRow = vertical_ ? 1 : grid_ ? 2 : 4;
     QVector<QVector<int>> rows;
     for (int i = 0; i < vis.size(); i += perRow)
         rows.append(vis.mid(i, perRow));

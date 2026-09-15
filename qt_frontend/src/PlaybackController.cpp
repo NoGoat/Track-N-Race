@@ -15,6 +15,7 @@
 #include <QSlider>
 #include <QStyle>
 #include <QWheelEvent>
+#include <QFont>
 
 namespace {
 
@@ -242,8 +243,8 @@ PlaybackController::PlaybackController(SessionModel* model, tnrp::Engine* engine
                                        batch->rowTypeMask,
                                        batch->historyStart, batch->lapNum);
         if (batch->authoritativeSeek) {
-            player_->completeSeek(batch->requestId);
             emit historyInstalled(batch->requestId);
+            player_->completeSeek(batch->requestId);
         }
     });
 
@@ -393,6 +394,39 @@ void PlaybackController::setShowLabels(bool on) {
     } else {
         exportBtn_->setFixedSize(34, 34);
     }
+}
+
+void PlaybackController::setDensityMode(tnr::DensityMode mode) {
+    density_ = mode;
+    const bool compact = mode == tnr::DensityMode::Compact;
+    const bool spacious = mode == tnr::DensityMode::Spacious;
+    bar_->setFixedHeight(compact ? 38 : spacious ? 62 : 48);
+    if (auto* layout = qobject_cast<QHBoxLayout*>(bar_->layout())) {
+        layout->setContentsMargins(spacious ? 16 : compact ? 8 : 12, 0,
+                                   spacious ? 16 : compact ? 8 : 12, 0);
+        layout->setSpacing(compact ? 6 : spacious ? 14 : 10);
+    }
+    const int button = compact ? 28 : spacious ? 42 : 34;
+    const int icon = compact ? 16 : spacious ? 24 : 20;
+    for (QPushButton* control : {seekBackBtn_, playBtn_, seekFwdBtn_}) {
+        control->setFixedSize(button, button);
+        control->setIconSize(QSize(icon, icon));
+    }
+    exportBtn_->setIconSize(QSize(icon, icon));
+    closeRecBtn_->setIconSize(QSize(icon, icon));
+    const bool labels = !closeRecBtn_->text().isEmpty();
+    if (!labels) {
+        exportBtn_->setFixedSize(button, button);
+        closeRecBtn_->setFixedSize(button, button);
+    } else {
+        exportBtn_->setMinimumHeight(button);
+        closeRecBtn_->setMinimumHeight(button);
+    }
+    QFont font = timeLabel_->font();
+    font.setPointSize(compact ? 8 : spacious ? 11 : 9);
+    timeLabel_->setFont(font);
+    lapCombo_->setMinimumHeight(compact ? 26 : spacious ? 38 : 32);
+    speedCombo_->setMinimumHeight(compact ? 26 : spacious ? 38 : 32);
 }
 
 void PlaybackController::load(const QString& path) {

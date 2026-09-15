@@ -4,6 +4,8 @@
 #include <QSettings>
 
 #include "MiscLayout.h"
+#include "../GraphViewSettings.h"
+#include <QVector>
 
 class MiscChartsWidget;
 class SessionModel;
@@ -20,14 +22,20 @@ public:
     // "Edit Layout" dialog reads/writes through these (immediate-apply).
     MiscLayout loadLayout();
     void applyAndSaveLayout(const MiscLayout& layout);
+    bool splitLayout(bool gForce) const;
+    void setSplitLayout(bool gForce, bool split);
+    QVector<tnr::GraphSection> chartSections();
 
     // Playback plumbing — forwarded to the charts.
     void setPlaybackMode(bool on, float currentTime = 0.0f);
     void setCurrentTime(float t);
     void setWindowSeconds(float secs);
 
-    // Per-graph Chart/Table toggle (section: gforce=0, ride height=1).
+    // Combined G/ride=0/1, lateral/longitudinal/front/rear=2..5.
     void setGraphSectionTable(int section, bool table);
+
+signals:
+    void layoutChanged();
 
 private:
     void saveLayout(const MiscLayout& layout);
