@@ -4,6 +4,7 @@
 #include "tnrp/TimeUtils.h"
 #include "tnrp/control_rows.h"
 #include "LiveHistoryStore.h"
+#include "StrategyRollback.h"
 
 #include <algorithm>
 #include <chrono>
@@ -47,6 +48,18 @@ static constexpr uint32_t kHistoricalRowMask =
 // existing history at 4 Hz instead of duplicating every full JSON row.
 static constexpr float kStrategyHistoryIntervalS = 0.25f;
 static constexpr std::chrono::milliseconds kStrategyPublishInterval{100};
+
+static uint64_t steadyClockMilliseconds() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+template <typename T>
+static void updateAtomicMaximum(std::atomic<T>& target, T value) {
+    T current = target.load(std::memory_order_relaxed);
+    while (current < value && !target.compare_exchange_weak(
+        current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
 
 static uint8_t rowTypeOf(std::string_view json) {
     static constexpr std::pair<std::string_view, uint8_t> TYPES[] = {
@@ -284,13 +297,13 @@ std::string Engine::udpLastError() const {
 
 void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
     liveHistory_->rewind(sessionTime);
-    StrategyWork rebuild;
-    rebuild.kind = StrategyWorkKind::Rebuild;
-    rebuild.generation = ++liveStrategyGeneration_;
-    rebuild.format = format;
-    rebuild.minimumStops = config_.strategyMinimumStops;
-    rebuild.rebuildThrough = sessionTime;
-    enqueueLiveStrategyWork(std::move(rebuild));
+    StrategyWork rollback;
+    rollback.kind = StrategyWorkKind::Rollback;
+    rollback.generation = ++liveStrategyGeneration_;
+    rollback.format = format;
+    rollback.minimumStops = config_.strategyMinimumStops;
+    rollback.rebuildThrough = sessionTime;
+    enqueueLiveStrategyWork(std::move(rollback));
     liveLatestRows_[kStrategyRowType].clear();
     lastStrategyJson_.clear();
 
@@ -309,14 +322,34 @@ void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
 }
 
 void Engine::enqueueLiveStrategyWork(StrategyWork work) {
+    work.queuedAtMs = steadyClockMilliseconds();
+    size_t incomingJsonBytes = 0;
+    for (const auto& row : work.rows)
+        if (row.json) incomingJsonBytes += row.json->size();
+    strategyInputRowsEnqueued_.fetch_add(work.rows.size(), std::memory_order_relaxed);
+    strategyInputJsonBytesEnqueued_.fetch_add(incomingJsonBytes, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(strategyWorkMutex_);
         if (strategyStop_) return;
-        // A rebuild/reset supersedes all queued work from the old timeline.
+        const auto updateQueuePeaks = [this] {
+            size_t rows = 0;
+            size_t retainedBytes = 0;
+            for (const auto& queued : strategyWorkQueue_) {
+                rows += queued.rows.size();
+                retainedBytes += queued.rows.capacity() * sizeof(LiveJsonHistoryRow) +
+                    queued.playbackPath.capacity() + 1;
+                for (const auto& row : queued.rows)
+                    if (row.json) retainedBytes += row.json->capacity() + 1;
+            }
+            updateAtomicMaximum(strategyPeakQueuedRows_, rows);
+            updateAtomicMaximum(strategyPeakQueuedRetainedBytes_, retainedBytes);
+        };
+        // Rollback needs the preceding inputs and checkpoints, even when the
+        // worker is behind UDP. Preserve that prefix and process it in order.
+        // Only a reset supersedes all queued work from the old live session.
         // Playback rebuilds are also latest-only: a newer seek must not wait
         // behind reconstruction for a cursor that can no longer be displayed.
-        if (work.kind == StrategyWorkKind::Rebuild ||
-            work.kind == StrategyWorkKind::Reset ||
+        if (work.kind == StrategyWorkKind::Reset ||
             work.kind == StrategyWorkKind::PlaybackRebuild) {
             strategyWorkQueue_.erase(
                 std::remove_if(strategyWorkQueue_.begin(), strategyWorkQueue_.end(),
@@ -358,16 +391,27 @@ void Engine::enqueueLiveStrategyWork(StrategyWork work) {
             pending.format = work.format;
             pending.minimumStops = work.minimumStops;
             pending.forceSnapshot = pending.forceSnapshot || work.forceSnapshot;
+            updateQueuePeaks();
             strategyWorkCv_.notify_one();
             return;
         }
         strategyWorkQueue_.push_back(std::move(work));
+        updateQueuePeaks();
     }
     strategyWorkCv_.notify_one();
 }
 
 void Engine::strategyLoop() {
-    StrategyProcessor liveStrategy;
+    detail::StrategyRollback liveRollback;
+    auto& liveStrategy = liveRollback.processor();
+    const auto publishMemoryStats = [&] {
+        const auto rollback = liveRollback.memoryStats();
+        std::lock_guard<std::mutex> lock(strategyMemoryStatsMutex_);
+        publishedLiveStrategyMemoryStats_ = liveStrategy.memoryStats();
+        publishedStrategyRollbackMemoryStats_ = {
+            rollback.retainedBytes, rollback.checkpoints, rollback.rows,
+            rollback.rollbacks, rollback.replayedRows, rollback.fallbacks};
+    };
     TnrdReader playbackReader;
     std::string playbackReaderPath;
     uint64_t activeGeneration = 0;
@@ -384,9 +428,32 @@ void Engine::strategyLoop() {
             work.swap(strategyWorkQueue_);
         }
 
+        size_t activeRows = 0;
+        size_t activeJsonBytes = 0;
+        size_t activeRetainedBytes = 0;
+        for (const auto& item : work) {
+            activeRows += item.rows.size();
+            activeRetainedBytes += item.rows.capacity() * sizeof(LiveJsonHistoryRow) +
+                item.playbackPath.capacity() + 1;
+            for (const auto& row : item.rows) {
+                if (!row.json) continue;
+                activeJsonBytes += row.json->size();
+                activeRetainedBytes += row.json->capacity() + 1;
+            }
+        }
+        strategyActiveWorkItems_.store(work.size(), std::memory_order_relaxed);
+        strategyActiveRows_.store(activeRows, std::memory_order_relaxed);
+        strategyActiveJsonBytes_.store(activeJsonBytes, std::memory_order_relaxed);
+        strategyActiveRetainedBytes_.store(activeRetainedBytes, std::memory_order_relaxed);
+
         bool changed = false;
         bool forceSnapshot = false;
         for (auto& item : work) {
+            size_t processedJsonBytes = 0;
+            for (const auto& row : item.rows)
+                if (row.json) processedJsonBytes += row.json->size();
+            strategyRowsProcessed_.fetch_add(item.rows.size(), std::memory_order_relaxed);
+            strategyJsonBytesProcessed_.fetch_add(processedJsonBytes, std::memory_order_relaxed);
             if (item.kind == StrategyWorkKind::PlaybackRebuild) {
                 const auto cancelled = [this, generation = item.generation,
                                         seekRequestId = item.seekRequestId] {
@@ -442,55 +509,84 @@ void Engine::strategyLoop() {
                     playbackStrategyPendingRows_.clear();
                     strategy_ = std::move(rebuilt);
                     json = strategy_.snapshotJson();
+                    strategySnapshotsGenerated_.fetch_add(1, std::memory_order_relaxed);
+                    strategySnapshotJsonBytesGenerated_.fetch_add(json.size(), std::memory_order_relaxed);
+                    strategyLastSnapshotJsonBytes_.store(json.size(), std::memory_order_relaxed);
+                    strategyLastSnapshotJsonCapacityBytes_.store(json.capacity() + 1, std::memory_order_relaxed);
+                    updateAtomicMaximum(strategyPeakSnapshotJsonBytes_, json.size());
                     liveLatestRows_[kStrategyRowType] = json;
                     lastStrategyJson_ = json;
                     playbackStrategyPending_ = false;
                     emit = (consumerRowMask_ & kStrategyRowBit) != 0;
                 }
-                if (emit) emitRow(json);
+                if (emit) {
+                    strategySnapshotsEmitted_.fetch_add(1, std::memory_order_relaxed);
+                    emitRow(json);
+                }
                 continue;
             }
             if (item.generation < activeGeneration) continue;
-            if (item.generation > activeGeneration ||
-                item.kind == StrategyWorkKind::Reset ||
-                item.kind == StrategyWorkKind::Rebuild) {
-                activeGeneration = item.generation;
-                liveStrategy.reset();
-                changed = changed || item.kind == StrategyWorkKind::Rebuild;
+            if (item.kind == StrategyWorkKind::Reset ||
+                (item.generation > activeGeneration &&
+                 item.kind != StrategyWorkKind::Rollback)) {
+                liveRollback.reset();
             }
-            liveStrategy.setFormat(item.format);
+            activeGeneration = item.generation;
             const auto teamColors = std::atomic_load_explicit(
                 &teamColorOverrides_, std::memory_order_acquire);
-            liveStrategy.setTeamColorOverrides(
-                teamColors ? *teamColors : TeamColorOverrides{});
-            liveStrategy.setMinimumStops(item.minimumStops);
-            if (item.kind == StrategyWorkKind::Rebuild) {
-                if (item.rows.empty()) {
-                    auto stored = liveHistory_->strategyRows(item.rebuildThrough);
-                    item.rows.reserve(stored.size());
-                    for (auto& row : stored) {
-                        item.rows.push_back({row.sessionTime, row.sequence,
-                                             std::move(row.json)});
-                    }
+            const auto configure = [&] {
+                liveStrategy.setFormat(item.format);
+                liveStrategy.setTeamColorOverrides(
+                    teamColors ? *teamColors : TeamColorOverrides{});
+                liveStrategy.setMinimumStops(item.minimumStops);
+            };
+            configure();
+            if (item.kind == StrategyWorkKind::Rollback) {
+                if (!liveRollback.rollback(item.rebuildThrough)) {
+                    // Exceptional deep rewinds stream one lap at a time. Never
+                    // materialize the full race's expanded JSON in a work item.
+                    liveRollback.reset();
+                    configure();
+                    liveHistory_->forEachStrategyRow(item.rebuildThrough,
+                        [&](const detail::LiveHistoryJsonRow& row) {
+                            liveRollback.ingest(row.sessionTime, row.json);
+                            strategyRowsProcessed_.fetch_add(1, std::memory_order_relaxed);
+                            if (row.json) strategyJsonBytesProcessed_.fetch_add(
+                                row.json->size(), std::memory_order_relaxed);
+                        },
+                        [&](size_t rows, size_t jsonBytes, size_t retainedBytes) {
+                            strategyActiveRows_.store(activeRows + rows, std::memory_order_relaxed);
+                            strategyActiveJsonBytes_.store(activeJsonBytes + jsonBytes, std::memory_order_relaxed);
+                            strategyActiveRetainedBytes_.store(activeRetainedBytes + retainedBytes,
+                                                              std::memory_order_relaxed);
+                        });
                 }
-                std::stable_sort(item.rows.begin(), item.rows.end(),
-                    [](const LiveJsonHistoryRow& a, const LiveJsonHistoryRow& b) {
-                        return a.sessionTime < b.sessionTime ||
-                            (a.sessionTime == b.sessionTime && a.sequence < b.sequence);
-                    });
-            } else if (item.rows.size() > 1) {
+                // A checkpoint may have been saved before a settings change.
+                configure();
+                liveRollback.configurationChanged();
+                changed = true;
+                forceSnapshot = true;
+            }
+            if (item.kind == StrategyWorkKind::Configure)
+                liveRollback.configurationChanged();
+            if (item.rows.size() > 1) {
                 std::stable_sort(item.rows.begin(), item.rows.end(),
                     [](const LiveJsonHistoryRow& a, const LiveJsonHistoryRow& b) {
                         return a.sequence < b.sequence;
                     });
             }
             for (const auto& row : item.rows) {
-                if (row.json) liveStrategy.ingestJson(*row.json);
+                liveRollback.ingest(row.sessionTime, row.json);
                 changed = true;
             }
             forceSnapshot = forceSnapshot || item.forceSnapshot;
             if (item.kind == StrategyWorkKind::Configure) changed = true;
         }
+        publishMemoryStats();
+        strategyActiveWorkItems_.store(0, std::memory_order_relaxed);
+        strategyActiveRows_.store(0, std::memory_order_relaxed);
+        strategyActiveJsonBytes_.store(0, std::memory_order_relaxed);
+        strategyActiveRetainedBytes_.store(0, std::memory_order_relaxed);
 
         bool visible = false;
         {
@@ -511,7 +607,13 @@ void Engine::strategyLoop() {
             std::this_thread::sleep_until(lastPublished + kStrategyPublishInterval);
         }
 
-        std::string json = liveStrategy.snapshotJson();
+        std::string json = liveRollback.snapshotJson();
+        publishMemoryStats();
+        strategySnapshotsGenerated_.fetch_add(1, std::memory_order_relaxed);
+        strategySnapshotJsonBytesGenerated_.fetch_add(json.size(), std::memory_order_relaxed);
+        strategyLastSnapshotJsonBytes_.store(json.size(), std::memory_order_relaxed);
+        strategyLastSnapshotJsonCapacityBytes_.store(json.capacity() + 1, std::memory_order_relaxed);
+        updateAtomicMaximum(strategyPeakSnapshotJsonBytes_, json.size());
         bool emit = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -524,7 +626,10 @@ void Engine::strategyLoop() {
                 }
             }
         }
-        if (emit) emitRow(json);
+        if (emit) {
+            strategySnapshotsEmitted_.fetch_add(1, std::memory_order_relaxed);
+            emitRow(json);
+        }
         lastPublished = std::chrono::steady_clock::now();
     }
 }
@@ -612,7 +717,128 @@ Engine::LiveHistoryMemoryStats Engine::liveHistoryMemoryStats() const {
     result.compressedBytes = source.compressedBytes;
     result.compressedCapacityBytes = source.compressedCapacityBytes;
     result.queuedJobs = source.queuedJobs;
+    result.activeJobKind = source.activeJobKind;
+    result.compressionJobs = source.compressionJobs;
+    result.compressedFamilies = source.compressedFamilies;
+    result.compressionPlainBytesProcessed = source.compressionPlainBytesProcessed;
+    result.compressionPlainBufferBytesAllocated =
+        source.compressionPlainBufferBytesAllocated;
+    result.compressionBufferBytesAllocated = source.compressionBufferBytesAllocated;
+    result.compressedOutputBytesAllocated = source.compressedOutputBytesAllocated;
+    result.lastCompressionPlainBytes = source.lastCompressionPlainBytes;
+    result.lastCompressionBufferBytes = source.lastCompressionBufferBytes;
+    result.lastCompressionScratchBytes = source.lastCompressionScratchBytes;
+    result.peakCompressionPlainBytes = source.peakCompressionPlainBytes;
+    result.peakCompressionBufferBytes = source.peakCompressionBufferBytes;
+    result.peakCompressionScratchBytes = source.peakCompressionScratchBytes;
+    result.decompressionJobs = source.decompressionJobs;
+    result.decompressionBufferBytesAllocated = source.decompressionBufferBytesAllocated;
+    result.lastDecompressionBufferBytes = source.lastDecompressionBufferBytes;
+    result.peakDecompressionBufferBytes = source.peakDecompressionBufferBytes;
+    result.rangeJobs = source.rangeJobs;
     return result;
+}
+
+Engine::StrategyMemoryStats Engine::strategyMemoryStats() const {
+    StrategyMemoryStats stats;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stats.subscribed = (consumerRowMask_ & kStrategyRowBit) != 0;
+        stats.cacheCapacityBytes = lastStrategyJson_.capacity() + 1 +
+            liveLatestRows_[kStrategyRowType].capacity() + 1 +
+            playbackStrategyPendingRows_.capacity() * sizeof(std::string);
+        for (const auto& row : playbackStrategyPendingRows_)
+            stats.cacheCapacityBytes += row.capacity() + 1;
+        if (inPlayback_.load()) stats.processor = strategy_.memoryStats();
+    }
+    {
+        std::lock_guard<std::mutex> lock(strategyMemoryStatsMutex_);
+        if (!inPlayback_.load()) stats.processor = publishedLiveStrategyMemoryStats_;
+        stats.rollback = publishedStrategyRollbackMemoryStats_;
+    }
+    {
+        std::lock_guard<std::mutex> lock(strategyWorkMutex_);
+        const uint64_t now = steadyClockMilliseconds();
+        uint64_t oldest = 0;
+        stats.queuedWorkItems = strategyWorkQueue_.size();
+        for (const auto& work : strategyWorkQueue_) {
+            stats.queuedRows += work.rows.size();
+            stats.queuedRetainedBytes +=
+                work.rows.capacity() * sizeof(LiveJsonHistoryRow) +
+                work.playbackPath.capacity() + 1;
+            for (const auto& row : work.rows) {
+                if (!row.json) continue;
+                stats.queuedJsonBytes += row.json->size();
+                stats.queuedRetainedBytes += row.json->capacity() + 1;
+            }
+            if (work.queuedAtMs != 0 && (oldest == 0 || work.queuedAtMs < oldest))
+                oldest = work.queuedAtMs;
+        }
+        if (oldest != 0 && now >= oldest) stats.oldestQueuedWorkAgeMs = now - oldest;
+    }
+    stats.peakQueuedRows = strategyPeakQueuedRows_.load(std::memory_order_relaxed);
+    stats.peakQueuedRetainedBytes =
+        strategyPeakQueuedRetainedBytes_.load(std::memory_order_relaxed);
+    stats.activeWorkItems = strategyActiveWorkItems_.load(std::memory_order_relaxed);
+    stats.activeRows = strategyActiveRows_.load(std::memory_order_relaxed);
+    stats.activeJsonBytes = strategyActiveJsonBytes_.load(std::memory_order_relaxed);
+    stats.activeRetainedBytes = strategyActiveRetainedBytes_.load(std::memory_order_relaxed);
+    stats.inputRowsEnqueued = strategyInputRowsEnqueued_.load(std::memory_order_relaxed);
+    stats.inputJsonBytesEnqueued =
+        strategyInputJsonBytesEnqueued_.load(std::memory_order_relaxed);
+    stats.rowsProcessed = strategyRowsProcessed_.load(std::memory_order_relaxed);
+    stats.jsonBytesProcessed = strategyJsonBytesProcessed_.load(std::memory_order_relaxed);
+    stats.snapshotsGenerated = strategySnapshotsGenerated_.load(std::memory_order_relaxed);
+    stats.snapshotsEmitted = strategySnapshotsEmitted_.load(std::memory_order_relaxed);
+    stats.snapshotJsonBytesGenerated =
+        strategySnapshotJsonBytesGenerated_.load(std::memory_order_relaxed);
+    stats.lastSnapshotJsonBytes =
+        strategyLastSnapshotJsonBytes_.load(std::memory_order_relaxed);
+    stats.lastSnapshotJsonCapacityBytes =
+        strategyLastSnapshotJsonCapacityBytes_.load(std::memory_order_relaxed);
+    stats.peakSnapshotJsonBytes =
+        strategyPeakSnapshotJsonBytes_.load(std::memory_order_relaxed);
+    stats.retainedBytes = stats.cacheCapacityBytes + stats.queuedRetainedBytes +
+        stats.activeRetainedBytes + stats.processor.retainedBytes + stats.rollback.retainedBytes;
+    return stats;
+}
+
+Engine::RuntimeMemoryStats Engine::runtimeMemoryStats() const {
+    RuntimeMemoryStats stats;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& row : dupCache_) {
+        stats.duplicateCacheUsedBytes += row.size();
+        stats.duplicateCacheCapacityBytes += row.capacity() + 1;
+    }
+    for (size_t type = 0; type < liveLatestRows_.size(); ++type) {
+        // Strategy's latest row is already included in StrategyMemoryStats.
+        if (type == kStrategyRowType) continue;
+        stats.latestRowCacheUsedBytes += liveLatestRows_[type].size();
+        stats.latestRowCacheCapacityBytes += liveLatestRows_[type].capacity() + 1;
+    }
+    stats.playbackPathCapacityBytes = playbackPath_.capacity() + 1;
+    stats.datagramsProcessed = runtimeDatagramsProcessed_;
+    stats.datagramBytesProcessed = runtimeDatagramBytesProcessed_;
+    stats.parserRowsProduced = runtimeParserRowsProduced_;
+    stats.parserControlRowsProduced = runtimeParserControlRowsProduced_;
+    stats.parserHotJsonRowsProduced = runtimeParserHotJsonRowsProduced_;
+    stats.parserJsonBytesProduced = runtimeParserJsonBytesProduced_;
+    stats.parserBinaryBytesProduced = runtimeParserBinaryBytesProduced_;
+    stats.parserResultCapacityBytesAllocated = runtimeParserResultCapacityAllocated_;
+    stats.lastParserResultCapacityBytes = runtimeLastParserResultCapacity_;
+    stats.peakParserResultCapacityBytes = runtimePeakParserResultCapacity_;
+    stats.filteredBinaryBatches = runtimeFilteredBinaryBatches_;
+    stats.filteredBinaryBytesProduced = runtimeFilteredBinaryBytesProduced_;
+    stats.filteredBinaryCapacityBytesAllocated = runtimeFilteredBinaryCapacityAllocated_;
+    stats.lastFilteredBinaryCapacityBytes = runtimeLastFilteredBinaryCapacity_;
+    stats.peakFilteredBinaryCapacityBytes = runtimePeakFilteredBinaryCapacity_;
+    stats.retainedBytes = stats.duplicateCacheCapacityBytes +
+        stats.latestRowCacheCapacityBytes + stats.playbackPathCapacityBytes;
+    return stats;
+}
+
+TnrdWriter::MemoryStats Engine::writerMemoryStats() const {
+    return writer_.memoryStats();
 }
 
 void Engine::setDiagnosticsEnabled(bool enabled) {
@@ -660,6 +886,32 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     const uint32_t parserMask = recording ? 0xFFFFFFFFu : consumerRowMask_ | kStrategyDependencyMask |
         (config_.binaryPlayback ? kHistoricalRowMask : 0u);
     Parser::Result r = parser_.feed(data, length, ts, wantHotJson, parserMask);
+    size_t parserJsonBytes = 0;
+    size_t parserResultCapacity =
+        r.rows.capacity() * sizeof(std::string) +
+        r.control.capacity() * sizeof(std::string) +
+        r.hotJson.capacity() * sizeof(std::string) +
+        r.binary.capacity();
+    const auto countParserStrings = [&](const std::vector<std::string>& rows) {
+        for (const auto& row : rows) {
+            parserJsonBytes += row.size();
+            parserResultCapacity += row.capacity() + 1;
+        }
+    };
+    countParserStrings(r.rows);
+    countParserStrings(r.control);
+    countParserStrings(r.hotJson);
+    ++runtimeDatagramsProcessed_;
+    if (length > 0) runtimeDatagramBytesProcessed_ += static_cast<uint64_t>(length);
+    runtimeParserRowsProduced_ += r.rows.size();
+    runtimeParserControlRowsProduced_ += r.control.size();
+    runtimeParserHotJsonRowsProduced_ += r.hotJson.size();
+    runtimeParserJsonBytesProduced_ += parserJsonBytes;
+    runtimeParserBinaryBytesProduced_ += r.binary.size();
+    runtimeParserResultCapacityAllocated_ += parserResultCapacity;
+    runtimeLastParserResultCapacity_ = parserResultCapacity;
+    runtimePeakParserResultCapacity_ = std::max(
+        runtimePeakParserResultCapacity_, parserResultCapacity);
     if (r.format != 0) emittedFormat_.store(r.format, std::memory_order_release);
     if (r.format != 0) liveStrategyFormat_ = r.format;
     if (r.format != 0) pairServer_.noteSession(r.sessionUid);
@@ -782,8 +1034,15 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     } else if (!r.binary.empty()) {
         std::vector<uint8_t> selected;
         selected.reserve(r.binary.size());
-        if (bin::appendFilteredBatch(selected, r.binary.data(), r.binary.size(),
-                                     consumerRowMask_) && !selected.empty())
+        const bool filtered = bin::appendFilteredBatch(
+            selected, r.binary.data(), r.binary.size(), consumerRowMask_);
+        ++runtimeFilteredBinaryBatches_;
+        runtimeFilteredBinaryBytesProduced_ += selected.size();
+        runtimeFilteredBinaryCapacityAllocated_ += selected.capacity();
+        runtimeLastFilteredBinaryCapacity_ = selected.capacity();
+        runtimePeakFilteredBinaryCapacity_ = std::max(
+            runtimePeakFilteredBinaryCapacity_, selected.capacity());
+        if (filtered && !selected.empty())
             emitBinary(selected.data(), selected.size());
     }
 }
@@ -995,8 +1254,7 @@ void Engine::setTeamColorOverrides(TeamColorOverrides overrides) {
             }
             requestPlaybackStrategyRebuildLocked(currentTime_);
         } else if (!inPlayback_.load()) {
-            ++liveStrategyGeneration_;
-            enqueueLiveStrategyWork({StrategyWorkKind::Rebuild,
+            enqueueLiveStrategyWork({StrategyWorkKind::Configure,
                                      liveStrategyGeneration_, liveStrategyFormat_,
                                      config_.strategyMinimumStops, true, {},
                                      liveSessionTime_});
@@ -1255,6 +1513,32 @@ void Engine::playerSetSpeed(float mult) {
         speed_ = mult;
     }
     emitPlaybackState();
+}
+
+void Engine::liveGetFastestLap(uint64_t requestId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (inPlayback_.load()) return;
+    liveHistory_->requestFastestLap(
+        [this, requestId](int lap, int ms, float start, float end,
+                          detail::LiveHistoryBackfill data) {
+            std::string msg = "{\"type\":\"live_fastest_lap_data\",\"requestId\":" +
+                std::to_string(requestId) + ",\"lapNum\":" + std::to_string(lap) +
+                ",\"lapTimeMs\":" + std::to_string(ms) +
+                ",\"startSessionTime\":" + std::to_string(start) +
+                ",\"endSessionTime\":" + std::to_string(end) + ",\"binary\":[";
+            if (data.binary) {
+                for (size_t i = 0; i < data.binary->size(); ++i) {
+                    if (i) msg += ',';
+                    msg += std::to_string((*data.binary)[i]);
+                }
+            }
+            msg += "],\"rows\":[";
+            // Stored JSON is newline-delimited, with no trailing newline.
+            std::replace(data.json.begin(), data.json.end(), '\n', ',');
+            msg += data.json;
+            msg += "]}";
+            emitRow(msg);
+        });
 }
 
 void Engine::playerGetLapData(int lapNum, uint32_t rowTypeMask) {

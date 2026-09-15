@@ -35,6 +35,7 @@ import {
   playerSeekInstalled,
   playerSetSpeed,
   playerGetLapData,
+  liveGetFastestLap,
   playerGetAllLapsData,
   playerGetWindowData,
   playerSetDataRequirements,
@@ -282,6 +283,9 @@ ipcMain.on('player:seek-installed', (_event, requestId: number) =>
   playerSeekInstalled(requestId))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
 ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
+ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
+  if (Number.isSafeInteger(requestId) && requestId > 0) liveGetFastestLap(requestId)
+})
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
 ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number) =>

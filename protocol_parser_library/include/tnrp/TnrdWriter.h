@@ -1,7 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,6 +38,81 @@ public:
     using ErrorHandler = std::function<void(const std::string& operation,
                                             const std::string& message,
                                             const std::string& path)>;
+
+    struct MemoryStats {
+        bool streamActive{};
+        size_t retainedBytes{};
+        size_t queuedEvents{};
+        size_t queuedRetainedBytes{};
+        size_t queuedRecordEvents{};
+        size_t queuedNotePacketEvents{};
+        size_t queuedControlEvents{};
+        size_t queuedJsonBytes{};
+        size_t queuedPacketBytes{};
+        uint64_t oldestQueuedEventAgeMs{};
+        size_t rollingEntries{};
+        size_t rollingPayloadBytes{};
+        size_t rollingPayloadCapacityBytes{};
+        size_t rollingContainerCapacityBytes{};
+        uint64_t rollingFlushBatches{};
+        uint64_t rollingFlushEntriesProcessed{};
+        uint64_t rollingFlushPayloadBytesProcessed{};
+        size_t lastRollingFlushEntries{};
+        size_t lastRollingFlushPayloadBytes{};
+        size_t lastRollingFlushCopyCapacityBytes{};
+        size_t peakRollingFlushEntries{};
+        size_t peakRollingFlushPayloadBytes{};
+        size_t peakRollingFlushCopyCapacityBytes{};
+        uint64_t v5AppendBatches{};
+        uint64_t v5AppendRowsProcessed{};
+        uint64_t v5AppendPayloadBytesProcessed{};
+        size_t lastV5AppendRows{};
+        size_t lastV5AppendPayloadBytes{};
+        size_t lastV5SourceRowCapacityBytes{};
+        size_t peakV5AppendRows{};
+        size_t peakV5AppendPayloadBytes{};
+        size_t peakV5SourceRowCapacityBytes{};
+        size_t dedupeEntries{};
+        size_t dedupePayloadBytes{};
+        size_t dedupePayloadCapacityBytes{};
+        size_t v5RetainedBytes{};
+        size_t v5BuilderCount{};
+        size_t v5BuilderPlainBytes{};
+        size_t v5BuilderPlainCapacityBytes{};
+        size_t v5BuilderRowIndexEntries{};
+        size_t v5BuilderRowIndexCapacityBytes{};
+        size_t v5ChunkCount{};
+        size_t v5ChunkContainerCapacityBytes{};
+        size_t v5ChunkRowIndexEntries{};
+        size_t v5ChunkRowIndexCapacityBytes{};
+        size_t v5BranchCount{};
+        size_t v5BranchCapacityBytes{};
+        size_t v5LapCount{};
+        size_t v5StatusLapCount{};
+        size_t v5EventCount{};
+        size_t v5EventPayloadBytes{};
+        size_t v5EventPayloadCapacityBytes{};
+        size_t v5EventContainerCapacityBytes{};
+        size_t v5LapStatusCapacityBytes{};
+        uint64_t v5ChunkWrites{};
+        uint64_t v5ChunkPlainBytesProcessed{};
+        uint64_t v5ChunkCompressedBytesWritten{};
+        uint64_t v5CompressionBufferBytesAllocated{};
+        size_t v5CompressionScratchCapacityBytes{};
+        size_t v5CompressionContextBytes{};
+        size_t v5LastChunkPlainBytes{};
+        size_t v5LastChunkCompressedBytes{};
+        size_t v5LastCompressionBufferCapacityBytes{};
+        size_t v5PeakCompressionBufferCapacityBytes{};
+        uint64_t v5CheckpointWrites{};
+        uint64_t v5CheckpointScratchBytesAllocated{};
+        size_t v5LastCheckpointScratchBytes{};
+        size_t v5PeakCheckpointScratchBytes{};
+        size_t v5LastCheckpointDirectoryBytes{};
+        size_t v5PeakCheckpointDirectoryBytes{};
+        size_t v5LastCheckpointRowIndexBytes{};
+        size_t v5PeakCheckpointRowIndexBytes{};
+    };
 
     explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
@@ -69,6 +148,7 @@ public:
     // finalizes it. Both are safe to call from Engine control/shutdown threads.
     void flushToDisk();
     void closeActiveStream();
+    MemoryStats memoryStats() const;
 
 private:
     struct BufferEntry { std::string line; float sessionTime; };
@@ -84,18 +164,26 @@ private:
         uint8_t               packetId;
         float                 sessionTime;
         uint64_t              wallClockMs{};
+        uint64_t              queuedAtMs{};
         std::vector<uint8_t>  packetData;
         std::string           json;   // serialised JSON row
         std::shared_ptr<std::promise<void>> completion;
     };
 
     static constexpr float BUFFER_WINDOW_S = 30.0f;
+    static constexpr uint64_t ROLLING_DRAIN_INTERVAL_MS = 250;
+    static constexpr size_t ROLLING_DRAIN_ROW_THRESHOLD = 512;
 
     void writerLoop();
 
-    std::mutex              mu_;
+    mutable std::mutex      mu_;
     std::condition_variable cv_;
     std::queue<WriterEvent> queue_;
+    size_t                  queuedRetainedBytes_{}; // guarded by mu_
+    size_t                  queuedRecordEvents_{};  // guarded by mu_
+    size_t                  queuedNotePacketEvents_{}; // guarded by mu_
+    size_t                  queuedJsonBytes_{};     // guarded by mu_
+    size_t                  queuedPacketBytes_{};   // guarded by mu_
     std::thread             diskThread_;
     std::atomic<bool>       stop_{false};
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
@@ -117,16 +205,60 @@ private:
     static constexpr int FLUSH_EVERY_ROWS = 300;  // ~5 s at buffered cadence
     static constexpr float V4_CHECKPOINT_INTERVAL_S = 30.0f;
 
-    std::vector<BufferEntry>                     rollingBuffer_;
+    std::deque<BufferEntry>                      rollingBuffer_;
+    std::vector<std::pair<std::string_view, float>> v5SourceRowViews_;
+    uint64_t                                      lastRollingDrainMs_{};
     std::unordered_map<std::string, std::string> dedupeCache_;
     ErrorHandler                                  errorHandler_;
     std::string                                   lastReportedError_;
+    mutable std::mutex                            memoryStatsMutex_;
+    MemoryStats                                   publishedMemoryStats_;
+    uint64_t                                      lastMemoryStatsPublishMs_{};
+    uint64_t                                      rollingFlushBatches_{};
+    uint64_t                                      rollingFlushEntriesProcessed_{};
+    uint64_t                                      rollingFlushPayloadBytesProcessed_{};
+    size_t                                        lastRollingFlushEntries_{};
+    size_t                                        lastRollingFlushPayloadBytes_{};
+    size_t                                        lastRollingFlushCopyCapacityBytes_{};
+    size_t                                        peakRollingFlushEntries_{};
+    size_t                                        peakRollingFlushPayloadBytes_{};
+    size_t                                        peakRollingFlushCopyCapacityBytes_{};
+    uint64_t                                      v5AppendBatches_{};
+    uint64_t                                      v5AppendRowsProcessed_{};
+    uint64_t                                      v5AppendPayloadBytesProcessed_{};
+    size_t                                        lastV5AppendRows_{};
+    size_t                                        lastV5AppendPayloadBytes_{};
+    size_t                                        lastV5SourceRowCapacityBytes_{};
+    size_t                                        peakV5AppendRows_{};
+    size_t                                        peakV5AppendPayloadBytes_{};
+    size_t                                        peakV5SourceRowCapacityBytes_{};
+    struct V5ActivityTotals {
+        uint64_t chunkWrites{};
+        uint64_t chunkPlainBytesProcessed{};
+        uint64_t chunkCompressedBytesWritten{};
+        uint64_t compressionBufferBytesAllocated{};
+        size_t lastChunkPlainBytes{};
+        size_t lastChunkCompressedBytes{};
+        size_t lastCompressionBufferCapacityBytes{};
+        size_t peakCompressionBufferCapacityBytes{};
+        uint64_t checkpointWrites{};
+        uint64_t checkpointScratchBytesAllocated{};
+        size_t lastCheckpointScratchBytes{};
+        size_t peakCheckpointScratchBytes{};
+        size_t lastCheckpointDirectoryBytes{};
+        size_t peakCheckpointDirectoryBytes{};
+        size_t lastCheckpointRowIndexBytes{};
+        size_t peakCheckpointRowIndexBytes{};
+    } closedV5Activity_;
 
     static const std::unordered_set<std::string>& dedupeTypes();
+    static size_t eventRetainedBytes(const WriterEvent& event);
+    void pushEventLocked(WriterEvent event);
+    void publishMemoryStatsOnWriterThread(bool force = false);
 
     void startNewStream(int trackId, int trackLengthM, int formula, int sessionType, int format);
-    bool flushBufferToDisk(const std::vector<BufferEntry>& entries,
-                           bool allowV4Checkpoint = true);
+    bool flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint = true);
+    void discardRollingPrefix(size_t entryCount);
     void flushToDiskOnWriterThread();
     void closeActiveStreamOnWriterThread();
     void flushOldBufferEntries();

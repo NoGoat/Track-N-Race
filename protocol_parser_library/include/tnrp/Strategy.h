@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -216,6 +217,22 @@ struct StrategySnapshotRow {
 // contains the complete renderer model; no strategy arithmetic belongs in a UI.
 class StrategyProcessor {
 public:
+    struct MemoryStats {
+        size_t retainedBytes{};
+        size_t cachedInputCapacityBytes{};
+        size_t containerCapacityBytes{};
+        size_t stringCapacityBytes{};
+        size_t lapTimeEntries{};
+        size_t rivalEntries{};
+        size_t rivalRecentLapEntries{};
+        size_t wearHistoryEntries{};
+        size_t frozenNeutralCarEntries{};
+        size_t decisionHistoryEntries{};
+        size_t conservativePastEntries{};
+        size_t aggressivePastEntries{};
+        size_t requiredLapEntries{};
+    };
+
     explicit StrategyProcessor(uint16_t format = 2025);
     void setFormat(uint16_t format);
     void setTeamColorOverrides(TeamColorOverrides overrides);
@@ -233,6 +250,7 @@ public:
     void ingestJson(std::string_view json);
     StrategySnapshotRow snapshot();
     std::string snapshotJson();
+    MemoryStats memoryStats() const;
 
 private:
     struct RivalLapSample {

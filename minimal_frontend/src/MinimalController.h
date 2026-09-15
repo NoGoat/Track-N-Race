@@ -29,7 +29,8 @@ public:
 
     bool setOutputFolder(const std::string& folder, std::string& error);
     void setProtocol(tnrp::Override protocol);
-    bool applyNetwork(const std::string& bindAddress, uint16_t port, std::string& error);
+    bool applyNetwork(const std::string& bindAddress, uint16_t port,
+                      const std::string& forwardTargets, std::string& error);
 
     const AppSettings& settings() const noexcept { return settings_; }
 
@@ -37,6 +38,9 @@ public:
     static bool validateIpv4(const std::string& address);
 
 private:
+    static bool parseForwardTargets(const std::string& text, const std::string& bindAddress, uint16_t port,
+                                   std::vector<tnrp::UdpForwardTarget>& targets,
+                                   std::string& error);
     void onRow(const std::string& json) override;
     void beginRecordingWatch();
     void checkRecordingFile();

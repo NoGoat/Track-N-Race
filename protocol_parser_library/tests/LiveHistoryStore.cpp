@@ -2,6 +2,7 @@
 
 #include "tnrp/BinaryRows.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -45,6 +46,32 @@ void appendLap(tnrp::detail::LiveHistoryStore& store, int lap, float time,
         "{\"type\":\"status\",\"session_time\":" +
         std::to_string(time) + ",\"lap\":" + std::to_string(lap) + "}");
     store.appendJson(2, {time, sequence, json});
+}
+
+void expectFastest(tnrp::detail::LiveHistoryStore& store, int expectedLap,
+                   int expectedMs) {
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool done = false;
+    store.requestFastestLap([&](int lap, int ms, float start, float end,
+                               tnrp::detail::LiveHistoryBackfill data) {
+        assert(lap == expectedLap);
+        assert(ms == expectedMs);
+        assert(end > start);
+        assert(data.binary && !data.binary->empty());
+        assert(data.json.find("\"lap\":" + std::to_string(expectedLap)) != std::string::npos);
+        size_t count = 0;
+        assert(tnrp::bin::forEachPackedRecord(data.binary->data(), data.binary->size(),
+            [&](uint8_t, const uint8_t*, size_t) { ++count; }));
+        assert(count == 1); // Only the chosen lap, not surrounding history.
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            done = true;
+        }
+        ready.notify_one();
+    });
+    std::unique_lock<std::mutex> lock(mutex);
+    assert(ready.wait_for(lock, std::chrono::seconds(5), [&] { return done; }));
 }
 
 } // namespace
@@ -92,10 +119,21 @@ int main() {
         }));
     assert(telemetryRows == 5);
 
-    const auto strategyRows = store.strategyRows(50.0f);
-    assert(strategyRows.size() == 5);
-    for (size_t i = 0; i < strategyRows.size(); ++i)
-        assert(strategyRows[i].sequence == i + 1);
+    size_t strategyRows = 0, peakStrategyRows = 0;
+    store.forEachStrategyRow(50.0f, [&](const auto& row) {
+        assert(row.sequence == ++strategyRows);
+    }, [&](size_t rows, size_t, size_t) {
+        peakStrategyRows = std::max(peakStrategyRows, rows);
+    });
+    assert(strategyRows == 5);
+    assert(peakStrategyRows == 1); // Never expand all laps together.
+    strategyRows = 0;
+    store.forEachStrategyRow(25.0f, [&](const auto& row) {
+        ++strategyRows;
+        assert(row.sessionTime <= 25.0f);
+        assert(row.sequence == strategyRows);
+    });
+    assert(strategyRows == 3); // Includes compressed lap 2, excludes the future.
 
     // A one-boundary rewind promotes lap 4 to Current and lap 3 to Previous.
     // Previous-previous is deliberately left empty; no N-3 decode is needed.
@@ -111,4 +149,25 @@ int main() {
         rewound.binary->data(), rewound.binary->size(),
         [&](uint8_t, const uint8_t*, size_t) { ++rewoundTelemetryRows; }));
     assert(rewoundTelemetryRows == 4);
+    expectFastest(store, 1, 9000);
+
+    // A newer fastest makes the old best eligible for compression. Rewinding
+    // into that newer lap must recover the older completed best, not the
+    // invalidated time or the current lap's partial data.
+    store.reset();
+    store.setLap(1, 0.0f);
+    appendLap(store, 1, 1.0f, 1);
+    store.setLap(2, 10.0f, 9000);
+    appendLap(store, 2, 11.0f, 2);
+    store.setLap(3, 20.0f, 10000);
+    appendLap(store, 3, 21.0f, 3);
+    store.setLap(4, 30.0f, 11000);
+    appendLap(store, 4, 31.0f, 4);
+    store.setLap(5, 40.0f, 8000);
+    appendLap(store, 5, 41.0f, 5);
+    request(store, 1u << 2, 0.0f, 50.0f); // Drain compression work.
+    assert(store.memoryStats().compressedLapCount > 0);
+    expectFastest(store, 4, 8000);
+    store.rewind(35.0f);
+    expectFastest(store, 1, 9000);
 }

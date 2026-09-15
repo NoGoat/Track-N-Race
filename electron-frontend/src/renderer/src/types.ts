@@ -373,6 +373,17 @@ export interface PlaybackLapDataMsg {
   rowTypeMask?: number
 }
 
+export interface LiveFastestLapDataMsg {
+  type: 'live_fastest_lap_data'
+  requestId: number
+  lapNum: number
+  lapTimeMs: number
+  startSessionTime: number
+  endSessionTime: number
+  binary: number[]
+  rows: Array<StatusRow | DamageRow | LapRow>
+}
+
 export interface PlaybackLapBlock {
   lapNum: number
   startSessionTime: number
@@ -441,6 +452,7 @@ export type GatewayMsg =
   | PlaybackSeekFlushMsg
   | PlaybackLoadedMsg
   | PlaybackLapDataMsg
+  | LiveFastestLapDataMsg
   | PlaybackControlMsg
 
 export interface ProtocolCapabilities {
@@ -582,6 +594,7 @@ declare global {
       seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void
       getLapData: (lapNum: number, rowTypeMask?: number) => void
+      getLiveFastestLap: (requestId: number) => void
       getAllLapsData: (rowTypeMask?: number) => void
       getWindowData: (windowSeconds: number, rowTypeMask?: number) => void
       close: () => void

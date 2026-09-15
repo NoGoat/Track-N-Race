@@ -13,7 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 int main() {
@@ -100,6 +102,46 @@ int main() {
     archive.setCacheLimitBytes(1);
     assert(archive.cacheBytes() <= 1);
     archive.close();
+
+    // The live recorder borrows rolling-buffer strings synchronously. Verify
+    // that the view path writes the same V5 rows, injects a supplied timestamp
+    // when needed, and reuses its compression scratch allocation.
+    const fs::path borrowedPath = longDir / "borrowed_row_writer.tnrd";
+    tnrp::detail::TnrdV5Writer borrowedWriter;
+    assert(borrowedWriter.open(borrowedPath.string(), header, &error));
+    const std::string borrowedLap =
+        R"({"type":"lap","session_time":1,"lap_num":1,"current_lap_ms":0,"last_lap_ms":0})";
+    const std::string borrowedTelemetry =
+        R"({"type":"telemetry","speed_kph":123,"rpm":9876})";
+    std::vector<std::pair<std::string_view, float>> borrowedRows = {
+        {borrowedLap, 1.0f},
+        {borrowedTelemetry, 1.1f},
+    };
+    assert(borrowedWriter.appendViews(borrowedRows, &error));
+    assert(borrowedWriter.checkpoint(&error));
+    const auto firstBorrowedStats = borrowedWriter.memoryStats();
+    assert(firstBorrowedStats.compressionScratchCapacityBytes > 0);
+    assert(firstBorrowedStats.retainedBytes >=
+        firstBorrowedStats.compressionScratchCapacityBytes);
+    borrowedRows = {{borrowedTelemetry, 1.2f}};
+    assert(borrowedWriter.appendViews(borrowedRows, &error));
+    assert(borrowedWriter.checkpoint(&error));
+    const auto secondBorrowedStats = borrowedWriter.memoryStats();
+    assert(secondBorrowedStats.compressionScratchCapacityBytes ==
+        firstBorrowedStats.compressionScratchCapacityBytes);
+    assert(secondBorrowedStats.compressionBufferBytesAllocated ==
+        firstBorrowedStats.compressionBufferBytesAllocated);
+    assert(borrowedWriter.finish(&error));
+    tnrp::detail::TnrdV5Archive borrowedArchive;
+    assert(borrowedArchive.open(borrowedPath.string(), archiveHeader, &error));
+    std::vector<tnrp::detail::V5TimedRow> borrowedResult;
+    assert(borrowedArchive.rowsForLap(
+        1, tnrp::detail::v5TypeBit(1), borrowedResult, &error));
+    assert(borrowedResult.size() == 2);
+    assert(borrowedResult[0].sessionTime == 1.1f);
+    assert(borrowedResult[1].sessionTime == 1.2f);
+    assert(borrowedResult[0].json.find("\"session_time\":1.1") != std::string::npos);
+    borrowedArchive.close();
 
     // Hot families use 64-row block metadata. A boundary query must inspect
     // only the matching block after the containing chunk is decompressed.

@@ -47,6 +47,7 @@ enum ControlId : int {
     RecordingValue,
     ErrorValue,
     AttributionButton,
+    ForwardTargetsEdit,
 };
 
 std::string utf8(std::wstring_view value) {
@@ -127,6 +128,7 @@ AppSettings loadSettings() {
     settings.bindAddress = utf8(readRegistryString(L"BindAddress", L"0.0.0.0"));
     const DWORD port = readRegistryDword(L"Port", 20777);
     settings.port = port >= 1 && port <= 65535 ? static_cast<uint16_t>(port) : 20777;
+    settings.forwardTargets = utf8(readRegistryString(L"ForwardTargets", L""));
     settings.protocol = tnrp::overrideFromString(
         utf8(readRegistryString(L"Protocol", L"auto")));
     return settings;
@@ -166,6 +168,7 @@ struct AppState {
     HWND protocol{};
     HWND address{};
     HWND port{};
+    HWND forwardTargets{};
     HWND circuit{};
     HWND session{};
     HWND recording{};
@@ -786,6 +789,8 @@ void layout(AppState& state) {
     move(state.port, valueX, rows[3], fieldWidth - buttonWidth - gap, rowHeight);
     move(GetDlgItem(state.window, ApplyButton), right - buttonWidth, rows[3],
          buttonWidth, rowHeight);
+    move(GetDlgItem(state.window, 208), margin, margin + 4 * (rowHeight + rowGap), labelWidth - gap, rowHeight);
+    move(state.forwardTargets, valueX, margin + 4 * (rowHeight + rowGap), fieldWidth, rowHeight);
     move(state.circuit, valueX, rows[4], fieldWidth, rowHeight);
     move(state.session, valueX, rows[5], fieldWidth - buttonWidth - gap, rowHeight);
     move(GetDlgItem(state.window, AttributionButton), right - buttonWidth, rows[5],
@@ -846,7 +851,8 @@ void applyNetwork(AppState& state) {
 
     const std::wstring address = windowText(state.address);
     std::string error;
-    if (!state.controller.applyNetwork(utf8(address), static_cast<uint16_t>(parsedPort), error)) {
+    if (!state.controller.applyNetwork(utf8(address), static_cast<uint16_t>(parsedPort),
+                                       utf8(windowText(state.forwardTargets)), error)) {
         showError(state.window, error);
         const AppSettings& settings = state.controller.settings();
         SetWindowTextW(state.address, wide(settings.bindAddress).c_str());
@@ -855,6 +861,7 @@ void applyNetwork(AppState& state) {
     }
     writeRegistryString(L"BindAddress", address);
     writeRegistryDword(L"Port", static_cast<DWORD>(parsedPort));
+    writeRegistryString(L"ForwardTargets", windowText(state.forwardTargets));
 }
 
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -898,6 +905,11 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                                           WS_TABSTOP | BS_OWNERDRAW, ApplyButton);
             SetWindowSubclass(applyButton, buttonSubclassProc, ApplyButton,
                               reinterpret_cast<DWORD_PTR>(state));
+            addControl(*state, L"STATIC", L"UDP forwarding", SS_CENTERIMAGE, 208);
+            state->forwardTargets = addControl(*state, L"EDIT", L"",
+                WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, ForwardTargetsEdit);
+            SendMessageW(state->forwardTargets, EM_SETCUEBANNER, TRUE,
+                reinterpret_cast<LPARAM>(L"IPv4:port, IPv4:port (empty disables)"));
             state->circuit = addControl(*state, L"STATIC", L"Unavailable", SS_CENTERIMAGE, CircuitValue);
             state->session = addControl(*state, L"STATIC", L"Unavailable", SS_CENTERIMAGE, SessionValue);
             state->recording = addControl(*state, L"STATIC", L"Not recording",
@@ -920,6 +932,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetWindowTextW(state->folder, wide(settings.outputFolder).c_str());
             SetWindowTextW(state->address, wide(settings.bindAddress).c_str());
             SetWindowTextW(state->port, std::to_wstring(settings.port).c_str());
+            SetWindowTextW(state->forwardTargets, wide(settings.forwardTargets).c_str());
             SendMessageW(state->protocol, CB_SETCURSEL, protocolIndex(settings.protocol), 0);
             state->initializing = false;
             layout(*state);

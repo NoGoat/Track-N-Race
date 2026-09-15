@@ -442,7 +442,7 @@ function mainTelemetryRetentionDiagnostics(): Record<string, unknown> {
     sampled_at: new Date().toISOString(),
     mode: activeFilePath ? 'playback' : 'realtime',
     retained_bytes: retainedBytes,
-    byte_basis: 'retained Buffer/string payload bytes, reserved native transit payload bytes, and estimated native live-history allocation capacity; stated container overhead excluded',
+    byte_basis: 'retained Buffer/string payload bytes, reserved native transit payload bytes, estimated native engine-cache/writer/Strategy allocation capacity, and estimated native live-history allocation capacity; transient allocation activity is reported separately',
     renderer_visible: rendererVisible,
     resume_window_ms: resumeWindowMs,
     hidden_resume: {
@@ -750,6 +750,7 @@ export function startBridge(): string | null {
         // sector metadata never recover. They are immutable and safe to send
         // while hidden, just like the load metadata above.
         batch.includes('"type":"playback_lap_data"') ||
+        batch.includes('"type":"live_fastest_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
       if (seekForwardPhase === 'waiting-flush') {
@@ -990,6 +991,10 @@ function applyAggregateDataRequirements(): void {
   }
   engine?.setDataRequirements(rendererStreamMask,
     rendererHistoryMask, rendererHistoryWindow, requestId)
+}
+
+export function liveGetFastestLap(requestId: number): void {
+  engine?.liveGetFastestLap(requestId)
 }
 export function playerClose(): void {
   console.log(`[close-trace] ${new Date().toISOString()} bridge playerClose entry`)

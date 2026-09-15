@@ -38,6 +38,24 @@ struct LiveHistoryMemoryStats {
     size_t compressedBytes{};
     size_t compressedCapacityBytes{};
     size_t queuedJobs{};
+    int activeJobKind{}; // 0 idle, 1 compress, 2 decompress, 3 range
+    uint64_t compressionJobs{};
+    uint64_t compressedFamilies{};
+    uint64_t compressionPlainBytesProcessed{};
+    uint64_t compressionPlainBufferBytesAllocated{};
+    uint64_t compressionBufferBytesAllocated{};
+    uint64_t compressedOutputBytesAllocated{};
+    size_t lastCompressionPlainBytes{};
+    size_t lastCompressionBufferBytes{};
+    size_t lastCompressionScratchBytes{};
+    size_t peakCompressionPlainBytes{};
+    size_t peakCompressionBufferBytes{};
+    size_t peakCompressionScratchBytes{};
+    uint64_t decompressionJobs{};
+    uint64_t decompressionBufferBytesAllocated{};
+    size_t lastDecompressionBufferBytes{};
+    size_t peakDecompressionBufferBytes{};
+    uint64_t rangeJobs{};
 };
 
 // Canonical live-session history. Rows are grouped by lap and family. Current,
@@ -65,12 +83,17 @@ public:
     std::string latestJson(uint8_t type, float throughSessionTime) const;
     LiveHistoryMemoryStats memoryStats() const;
 
-    // Used only by the Strategy worker after a rewind.
-    std::vector<LiveHistoryJsonRow> strategyRows(float throughSessionTime) const;
+    // Exceptional deep Strategy rollback: expand and release one lap at a time.
+    // The memory callback must not acquire Engine locks (it can run under a
+    // lap lock); arguments are temporary rows, JSON bytes and retained bytes.
+    void forEachStrategyRow(float throughSessionTime,
+        const std::function<void(const LiveHistoryJsonRow&)>& visitor,
+        const std::function<void(size_t, size_t, size_t)>& memory = {}) const;
 
     // Callback runs on the history worker.
     void requestRange(uint32_t familyMask, float fromSessionTime,
                       float throughSessionTime, BackfillCallback callback);
+    void requestFastestLap(std::function<void(int, int, float, float, LiveHistoryBackfill)> callback);
 
 private:
     struct Impl;

@@ -16,6 +16,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
@@ -105,6 +106,10 @@ float scanTime(std::string_view s){auto p=s.find("\"session_time\":");if(p==s.np
 int scanInt(std::string_view s,std::string_view key,int fallback=0){auto p=s.find(key);if(p==s.npos)return fallback;p+=key.size();return (int)std::strtol(s.data()+p,nullptr,10);}
 double scanDouble(std::string_view s,std::string_view key,double fallback=0){auto p=s.find(key);if(p==s.npos)return fallback;p+=key.size();return std::strtod(s.data()+p,nullptr);}
 std::string withSessionTime(std::string_view source,float time){std::string stored(source);if(time<0||scanTime(stored)>=0)return stored;const size_t objectStart=stored.find('{');if(objectStart==std::string::npos)return stored;char number[32];std::snprintf(number,sizeof(number),"%.9g",(double)time);stored.insert(objectStart+1,std::string("\"session_time\":")+number+",");return stored;}
+std::string_view sourceLine(const V5SourceRow& row){return row.line;}
+float sourceSessionTime(const V5SourceRow& row){return row.sessionTime;}
+std::string_view sourceLine(const std::pair<std::string_view,float>& row){return row.first;}
+float sourceSessionTime(const std::pair<std::string_view,float>& row){return row.second;}
 
 struct Lap { uint32_t num{};float start{},end{};uint32_t timeMs{},flags{}; };
 struct RowSeek { float firstTime{},lastTime{};uint32_t offset{},length{},ordinal{};uint16_t count{},reserved{}; };
@@ -152,11 +157,56 @@ void mergeRowGroups(std::vector<std::vector<V5TimedRow>>& groups,std::vector<V5T
 
 struct TnrdV5Writer::Impl {
     struct Builder{std::string plain;std::vector<RowSeek> rowIndex;float firstTime{std::numeric_limits<float>::infinity()},lastTime{-std::numeric_limits<float>::infinity()},minDistance{std::numeric_limits<float>::infinity()},maxDistance{-std::numeric_limits<float>::infinity()};uint32_t rows{};uint16_t stride{1};bool dirty{};};
+    static constexpr size_t MAX_REUSABLE_BUILDER_BYTES=64u*1024u*1024u;
+    static constexpr size_t MAX_REUSABLE_BUILDER_POOL_BYTES=64u*1024u*1024u;
+    static constexpr size_t MAX_REUSABLE_COMPRESSION_BYTES=64u*1024u*1024u;
     std::FILE* file{};uint64_t metadataOffset{HEADER_SIZE+METADATA_PREFIX_SIZE},metadataSize{};uint32_t currentLap{},highestLap{};float lastTime{};bool haveTime{},timedSession{},timedLapActive{};
     std::map<uint32_t,Lap> laps;std::map<std::pair<uint32_t,uint16_t>,Builder> builders;std::vector<Chunk> chunks;std::vector<BranchCut> branches;
+    std::array<Builder,16> builderPool;
     V5ControlSummary summary;std::map<uint32_t,V5LapStatusSummary> statusByLap;uint64_t nextSequence{1},currentBranchWallClockMs{},lastBranchWallClockMs{};
+    ZSTD_CCtx* compressionContext{};std::vector<uint8_t> compressionScratch;
+    uint64_t chunkWrites{},chunkPlainBytesProcessed{},chunkCompressedBytesWritten{},compressionBufferBytesAllocated{};
+    size_t lastChunkPlainBytes{},lastChunkCompressedBytes{},lastCompressionBufferCapacityBytes{},peakCompressionBufferCapacityBytes{};
+    uint64_t checkpointWrites{},checkpointScratchBytesAllocated{};
+    size_t lastCheckpointScratchBytes{},peakCheckpointScratchBytes{},lastCheckpointDirectoryBytes{},peakCheckpointDirectoryBytes{},lastCheckpointRowIndexBytes{},peakCheckpointRowIndexBytes{};
+
+    ~Impl(){if(compressionContext)ZSTD_freeCCtx(compressionContext);}
 
     static bool hotType(uint16_t type){return type==1||type==11||type==12||type==13;}
+    Builder& builderFor(const std::pair<uint32_t,uint16_t>& key){
+        auto [it,inserted]=builders.try_emplace(key);
+        if(inserted&&key.second<builderPool.size()){
+            it->second.plain.swap(builderPool[key.second].plain);
+            it->second.rowIndex.swap(builderPool[key.second].rowIndex);
+        }
+        return it->second;
+    }
+    size_t builderPoolCapacityBytes()const{
+        size_t bytes=0;
+        for(const auto&builder:builderPool)
+            bytes+=builder.plain.capacity()+1+builder.rowIndex.capacity()*sizeof(RowSeek);
+        return bytes;
+    }
+    void recycleBuilder(uint16_t type,Builder& builder){
+        if(type>=builderPool.size())return;
+        auto& pooled=builderPool[type];
+        builder.plain.clear();builder.rowIndex.clear();
+        size_t poolBytes=builderPoolCapacityBytes();
+        const size_t oldPlainBytes=pooled.plain.capacity()+1;
+        const size_t newPlainBytes=builder.plain.capacity()+1;
+        if(builder.plain.capacity()<=MAX_REUSABLE_BUILDER_BYTES&&
+           builder.plain.capacity()>pooled.plain.capacity()&&
+           poolBytes-oldPlainBytes+newPlainBytes<=MAX_REUSABLE_BUILDER_POOL_BYTES){
+            builder.plain.swap(pooled.plain);
+            poolBytes=poolBytes-oldPlainBytes+newPlainBytes;
+        }
+        const size_t oldIndexBytes=pooled.rowIndex.capacity()*sizeof(RowSeek);
+        const size_t newIndexBytes=builder.rowIndex.capacity()*sizeof(RowSeek);
+        if(builder.rowIndex.capacity()*sizeof(RowSeek)<=MAX_REUSABLE_BUILDER_BYTES&&
+           builder.rowIndex.capacity()>pooled.rowIndex.capacity()&&
+           poolBytes-oldIndexBytes+newIndexBytes<=MAX_REUSABLE_BUILDER_POOL_BYTES)
+            builder.rowIndex.swap(pooled.rowIndex);
+    }
     static std::vector<uint8_t> serializeRowIndex(const Chunk& chunk){
         std::vector<RowSeek> sortedRows;
         if(chunk.rowIndexStride==1){sortedRows=chunk.rowIndex;std::stable_sort(sortedRows.begin(),sortedRows.end(),[](const RowSeek& a,const RowSeek& b){return a.firstTime<b.firstTime||(a.firstTime==b.firstTime&&a.offset<b.offset);});}
@@ -164,16 +214,36 @@ struct TnrdV5Writer::Impl {
         for(const auto& row:storedRows){putFloat(bytes,row.firstTime);putFloat(bytes,row.lastTime);put32(bytes,row.offset);put32(bytes,row.length);put32(bytes,row.ordinal);put16(bytes,row.count);put16(bytes,row.reserved);}
         return bytes;
     }
-    bool writeChunk(const std::pair<uint32_t,uint16_t>& key,const Builder& builder,std::string* errorOut){
+    bool writeChunk(const std::pair<uint32_t,uint16_t>& key,Builder& builder,std::string* errorOut){
         const std::string& plain=builder.plain;
         if(plain.empty())return true;if(plain.size()>MAX_CHUNK_PLAIN){fail(errorOut,"V5 chunk exceeds safety limit");return false;}if(chunks.size()>=MAX_CHUNKS){fail(errorOut,"V5 chunk count exceeds safety limit");return false;}
-        std::vector<uint8_t> compressed(ZSTD_compressBound(plain.size()));ZSTD_CCtx* ctx=ZSTD_createCCtx();
-        if(!ctx){fail(errorOut,"could not allocate V5 compression context");return false;}ZSTD_CCtx_setParameter(ctx,ZSTD_c_compressionLevel,3);ZSTD_CCtx_setParameter(ctx,ZSTD_c_checksumFlag,1);
-        const size_t n=ZSTD_compress2(ctx,compressed.data(),compressed.size(),plain.data(),plain.size());ZSTD_freeCCtx(ctx);
-        if(ZSTD_isError(n)){fail(errorOut,ZSTD_getErrorName(n));return false;}if(!seekEnd(file)){fail(errorOut,"could not seek to append V5 chunk");return false;}
-        Chunk c;c.lap=key.first;c.type=key.second;c.offset=tell(file)+CHUNK_PREFIX_SIZE;c.compressed=n;c.plain=plain.size();c.rows=builder.rows;c.crc=(uint32_t)::crc32(0,(const Bytef*)plain.data(),(uInt)plain.size());c.sequence=nextSequence++;c.firstTime=builder.firstTime;c.lastTime=builder.lastTime;c.minDistance=std::isfinite(builder.minDistance)?builder.minDistance:std::numeric_limits<float>::quiet_NaN();c.maxDistance=std::isfinite(builder.maxDistance)?builder.maxDistance:std::numeric_limits<float>::quiet_NaN();c.rowIndex=builder.rowIndex;c.rowIndexStride=builder.stride;c.branchWallClockMs=currentBranchWallClockMs;
+        const size_t compressionBound=ZSTD_compressBound(plain.size());
+        std::vector<uint8_t> oversizedScratch;
+        std::unique_ptr<ZSTD_CCtx,decltype(&ZSTD_freeCCtx)> oversizedContext(nullptr,&ZSTD_freeCCtx);
+        uint8_t* compressedData=nullptr;size_t compressedCapacity=0;ZSTD_CCtx* context=nullptr;
+        if(compressionBound<=MAX_REUSABLE_COMPRESSION_BYTES){
+            if(compressionScratch.size()<compressionBound){const size_t previousCapacity=compressionScratch.capacity();compressionScratch.resize(compressionBound);if(compressionScratch.capacity()!=previousCapacity)compressionBufferBytesAllocated+=compressionScratch.capacity();}
+            if(!compressionContext)compressionContext=ZSTD_createCCtx();
+            compressedData=compressionScratch.data();compressedCapacity=compressionScratch.size();context=compressionContext;
+        }else{
+            oversizedScratch.resize(compressionBound);compressionBufferBytesAllocated+=oversizedScratch.capacity();
+            oversizedContext.reset(ZSTD_createCCtx());
+            compressedData=oversizedScratch.data();compressedCapacity=oversizedScratch.size();context=oversizedContext.get();
+        }
+        lastChunkPlainBytes=plain.size();lastCompressionBufferCapacityBytes=compressedCapacity;peakCompressionBufferCapacityBytes=std::max(peakCompressionBufferCapacityBytes,lastCompressionBufferCapacityBytes);
+        if(!context){fail(errorOut,"could not allocate V5 compression context");return false;}
+        const size_t resetResult=ZSTD_CCtx_reset(context,ZSTD_reset_session_only);
+        if(ZSTD_isError(resetResult)){fail(errorOut,ZSTD_getErrorName(resetResult));return false;}
+        const size_t levelResult=ZSTD_CCtx_setParameter(context,ZSTD_c_compressionLevel,3);
+        if(ZSTD_isError(levelResult)){fail(errorOut,ZSTD_getErrorName(levelResult));return false;}
+        const size_t checksumResult=ZSTD_CCtx_setParameter(context,ZSTD_c_checksumFlag,1);
+        if(ZSTD_isError(checksumResult)){fail(errorOut,ZSTD_getErrorName(checksumResult));return false;}
+        const size_t n=ZSTD_compress2(context,compressedData,compressedCapacity,plain.data(),plain.size());
+        lastChunkCompressedBytes=ZSTD_isError(n)?0:n;
+        if(ZSTD_isError(n)){fail(errorOut,ZSTD_getErrorName(n));return false;}++chunkWrites;chunkPlainBytesProcessed+=plain.size();chunkCompressedBytesWritten+=lastChunkCompressedBytes;if(!seekEnd(file)){fail(errorOut,"could not seek to append V5 chunk");return false;}
+        Chunk c;c.lap=key.first;c.type=key.second;c.offset=tell(file)+CHUNK_PREFIX_SIZE;c.compressed=n;c.plain=plain.size();c.rows=builder.rows;c.crc=(uint32_t)::crc32(0,(const Bytef*)plain.data(),(uInt)plain.size());c.sequence=nextSequence++;c.firstTime=builder.firstTime;c.lastTime=builder.lastTime;c.minDistance=std::isfinite(builder.minDistance)?builder.minDistance:std::numeric_limits<float>::quiet_NaN();c.maxDistance=std::isfinite(builder.maxDistance)?builder.maxDistance:std::numeric_limits<float>::quiet_NaN();c.rowIndexStride=builder.stride;c.branchWallClockMs=currentBranchWallClockMs;
         std::vector<uint8_t> prefix;put32(prefix,CHUNK_MAGIC);put32(prefix,c.lap);put16(prefix,c.type);put16(prefix,0);put64(prefix,c.compressed);put64(prefix,c.plain);put32(prefix,c.rows);
-        if(!writeAll(file,prefix.data(),prefix.size())||!writeAll(file,compressed.data(),n)){fail(errorOut,"failed while appending V5 chunk");return false;}chunks.push_back(std::move(c));return true;
+        if(!writeAll(file,prefix.data(),prefix.size())||!writeAll(file,compressedData,n)){fail(errorOut,"failed while appending V5 chunk");return false;}c.rowIndex=std::move(builder.rowIndex);chunks.push_back(std::move(c));return true;
     }
 
     bool writeSnapshot(bool includeRowIndex,std::string* errorOut){
@@ -240,6 +310,7 @@ struct TnrdV5Writer::Impl {
         put32(footer,(uint32_t)summaryJson.size());
         if(!writeAll(file,footer.data(),footer.size())||std::fflush(file)!=0){fail(errorOut,"failed to commit V5 checkpoint footer");return false;}
         const auto header=makeHeader(metadataOffset,metadataSize,lapOffset,(uint32_t)laps.size(),chunkOffset,(uint32_t)chunks.size(),footerOffset,summaryOffset,summaryJson.size(),rowIndexOffset,rowIndexBytes.size(),branchOffset,(uint32_t)branches.size());
+        lastCheckpointDirectoryBytes=dir.size();peakCheckpointDirectoryBytes=std::max(peakCheckpointDirectoryBytes,lastCheckpointDirectoryBytes);lastCheckpointRowIndexBytes=rowIndexBytes.size();peakCheckpointRowIndexBytes=std::max(peakCheckpointRowIndexBytes,lastCheckpointRowIndexBytes);lastCheckpointScratchBytes=summaryJson.capacity()+1+branchBytes.capacity()+lapBytes.capacity()+dir.capacity()+rowIndexBytes.capacity()+order.capacity()*sizeof(size_t)+footer.capacity()+header.capacity();peakCheckpointScratchBytes=std::max(peakCheckpointScratchBytes,lastCheckpointScratchBytes);checkpointScratchBytesAllocated+=lastCheckpointScratchBytes;++checkpointWrites;
         if(!seek(file,0)||!writeAll(file,header.data(),header.size())||std::fflush(file)!=0){fail(errorOut,"failed to commit V5 checkpoint header");return false;}
         return seekEnd(file);
     }
@@ -250,6 +321,47 @@ TnrdV5Writer::TnrdV5Writer():impl_(std::make_unique<Impl>()){}
 TnrdV5Writer::~TnrdV5Writer(){if(impl_&&impl_->file){std::string ignored;(void)finish(&ignored);}}
 bool TnrdV5Writer::isOpen()const{return impl_&&impl_->file;}
 
+TnrdV5WriterMemoryStats TnrdV5Writer::memoryStats()const{
+    TnrdV5WriterMemoryStats stats;stats.open=isOpen();if(!impl_)return stats;
+    stats.builderCount=impl_->builders.size();
+    for(const auto&[_,builder]:impl_->builders){
+        stats.builderPlainBytes+=builder.plain.size();
+        stats.builderPlainCapacityBytes+=builder.plain.capacity()+1;
+        stats.builderRowIndexEntries+=builder.rowIndex.size();
+        stats.builderRowIndexCapacityBytes+=builder.rowIndex.capacity()*sizeof(RowSeek);
+    }
+    // Checkpointed builders donate bounded storage to a per-row-family pool.
+    // It is retained by the writer and must remain visible in memory reports.
+    for(const auto&builder:impl_->builderPool){
+        stats.builderPlainCapacityBytes+=builder.plain.capacity()+1;
+        stats.builderRowIndexCapacityBytes+=builder.rowIndex.capacity()*sizeof(RowSeek);
+    }
+    stats.chunkCount=impl_->chunks.size();
+    stats.chunkContainerCapacityBytes=impl_->chunks.capacity()*sizeof(Chunk);
+    for(const auto&chunk:impl_->chunks){
+        stats.chunkRowIndexEntries+=chunk.rowIndex.size();
+        stats.chunkRowIndexCapacityBytes+=chunk.rowIndex.capacity()*sizeof(RowSeek);
+    }
+    stats.branchCount=impl_->branches.size();
+    stats.branchCapacityBytes=impl_->branches.capacity()*sizeof(BranchCut);
+    stats.lapCount=impl_->laps.size();stats.statusLapCount=impl_->statusByLap.size();
+    stats.eventCount=impl_->summary.events.size();
+    stats.eventContainerCapacityBytes=impl_->summary.events.capacity()*sizeof(std::string);
+    for(const auto&event:impl_->summary.events){
+        stats.eventPayloadBytes+=event.size();
+        stats.eventPayloadCapacityBytes+=event.capacity()+1;
+    }
+    stats.lapStatusCapacityBytes=impl_->summary.lapStatus.capacity()*sizeof(V5LapStatusSummary);
+    stats.chunkWrites=impl_->chunkWrites;stats.chunkPlainBytesProcessed=impl_->chunkPlainBytesProcessed;stats.chunkCompressedBytesWritten=impl_->chunkCompressedBytesWritten;stats.compressionBufferBytesAllocated=impl_->compressionBufferBytesAllocated;stats.compressionScratchCapacityBytes=impl_->compressionScratch.capacity();stats.compressionContextBytes=impl_->compressionContext?ZSTD_sizeof_CCtx(impl_->compressionContext):0;stats.lastChunkPlainBytes=impl_->lastChunkPlainBytes;stats.lastChunkCompressedBytes=impl_->lastChunkCompressedBytes;stats.lastCompressionBufferCapacityBytes=impl_->lastCompressionBufferCapacityBytes;stats.peakCompressionBufferCapacityBytes=impl_->peakCompressionBufferCapacityBytes;
+    stats.checkpointWrites=impl_->checkpointWrites;stats.checkpointScratchBytesAllocated=impl_->checkpointScratchBytesAllocated;stats.lastCheckpointScratchBytes=impl_->lastCheckpointScratchBytes;stats.peakCheckpointScratchBytes=impl_->peakCheckpointScratchBytes;stats.lastCheckpointDirectoryBytes=impl_->lastCheckpointDirectoryBytes;stats.peakCheckpointDirectoryBytes=impl_->peakCheckpointDirectoryBytes;stats.lastCheckpointRowIndexBytes=impl_->lastCheckpointRowIndexBytes;stats.peakCheckpointRowIndexBytes=impl_->peakCheckpointRowIndexBytes;
+    stats.retainedBytes=stats.builderPlainCapacityBytes+stats.builderRowIndexCapacityBytes+
+        stats.chunkContainerCapacityBytes+stats.chunkRowIndexCapacityBytes+
+        stats.branchCapacityBytes+stats.eventPayloadCapacityBytes+
+        stats.eventContainerCapacityBytes+stats.lapStatusCapacityBytes+
+        stats.compressionScratchCapacityBytes+stats.compressionContextBytes;
+    return stats;
+}
+
 bool TnrdV5Writer::open(const std::string& path,const HeaderRow& sourceHeader,std::string* errorOut){
     if(isOpen()){fail(errorOut,"V5 writer is already open");return false;}
     // A writer object may be reused after finish(). Do not carry directory,
@@ -259,20 +371,32 @@ bool TnrdV5Writer::open(const std::string& path,const HeaderRow& sourceHeader,st
     if(!writeAll(impl_->file,zero.data(),zero.size())||!writeAll(impl_->file,prefix.data(),prefix.size())||!writeAll(impl_->file,metadata.data(),metadata.size())||!impl_->writeSnapshot(false,errorOut)){std::fclose(impl_->file);impl_->file=nullptr;return false;}return true;
 }
 
-bool TnrdV5Writer::append(const std::vector<V5SourceRow>& rows,std::string* errorOut){
+template <typename Rows>
+bool TnrdV5Writer::appendRows(const Rows& rows,std::string* errorOut){
     if(!isOpen()){fail(errorOut,"V5 writer is not open");return false;}
-    for(const auto&r:rows){std::string_view source=r.line;while(!source.empty()&&(source.back()=='\n'||source.back()=='\r'))source.remove_suffix(1);if(source.empty())continue;const float t=r.sessionTime>=0?r.sessionTime:scanTime(source);const std::string stored=withSessionTime(source,t);const std::string_view line=stored;const uint8_t type=rowType(line);if(t>=0){impl_->lastTime=std::max(impl_->lastTime,t);if(!impl_->haveTime){impl_->summary.startSessionTime=t;impl_->haveTime=true;}impl_->summary.totalSessionTime=std::max(impl_->summary.totalSessionTime,t);}
+    for(const auto&r:rows){std::string_view source=sourceLine(r);while(!source.empty()&&(source.back()=='\n'||source.back()=='\r'))source.remove_suffix(1);if(source.empty())continue;const float suppliedTime=sourceSessionTime(r);const float t=suppliedTime>=0?suppliedTime:scanTime(source);std::string normalized;std::string_view line=source;if(t>=0&&scanTime(line)<0){normalized=withSessionTime(line,t);line=normalized;}const uint8_t type=rowType(line);if(t>=0){impl_->lastTime=std::max(impl_->lastTime,t);if(!impl_->haveTime){impl_->summary.startSessionTime=t;impl_->haveTime=true;}impl_->summary.totalSessionTime=std::max(impl_->summary.totalSessionTime,t);}
         if(type==4){const int n=scanInt(line,"\"lap_num\":",(int)impl_->currentLap),driver=scanInt(line,"\"driver_status\":",-1);const bool garageAware=impl_->timedSession&&driver>=0;if(garageAware&&driver!=1){if(impl_->currentLap)impl_->laps[impl_->currentLap].end=std::max(impl_->laps[impl_->currentLap].end,t);impl_->currentLap=0;impl_->timedLapActive=false;}else if(n>0){const uint32_t next=(uint32_t)n;const bool mayAdvance=next>impl_->highestLap;const bool mayStartTimed=garageAware&&!impl_->timedLapActive&&next>=impl_->highestLap;if((mayAdvance||mayStartTimed)&&(next!=impl_->currentLap||!impl_->timedLapActive)){float start=t;const int curMs=scanInt(line,"\"current_lap_ms\":",0);if(curMs>0)start=t-curMs/1000.0f;if(impl_->currentLap&&next>impl_->currentLap)impl_->laps[impl_->currentLap].end=start;impl_->currentLap=next;impl_->highestLap=std::max(impl_->highestLap,next);impl_->timedLapActive=garageAware;auto& lap=impl_->laps[next];lap.num=next;lap.start=start;lap.end=t;lap.timeMs=0;lap.flags=0;const int lastMs=scanInt(line,"\"last_lap_ms\":",0);auto prev=impl_->laps.find(next-1);if(prev!=impl_->laps.end()&&lastMs>0){prev->second.timeMs=(uint32_t)lastMs;prev->second.flags|=1;}}}}
         if(type==2){auto& s=impl_->statusByLap[impl_->currentLap];s.lapNumber=impl_->currentLap;s.sessionTime=t;s.ersPct=scanDouble(line,"\"ers_pct\":",s.ersPct);s.tyreCompound=scanInt(line,"\"tyre_compound\":",s.tyreCompound);s.visualCompound=scanInt(line,"\"visual_compound\":",s.visualCompound);if(impl_->summary.initialFuelKg<0)impl_->summary.initialFuelKg=scanDouble(line,"\"fuel_kg\":",-1);}
         if(type==14){const int lapNum=scanInt(line,"\"latest_lap_num\":",0),lapMs=scanInt(line,"\"latest_lap_time_ms\":",0);auto lap=impl_->laps.find((uint32_t)std::max(lapNum,0));if(lap!=impl_->laps.end()&&lapMs>0){lap->second.timeMs=(uint32_t)lapMs;lap->second.flags|=1;}}
         if(type==6)impl_->summary.events.emplace_back(line);
-        auto& b=impl_->builders[{impl_->currentLap,(uint16_t)type}];if(!b.rows)b.stride=Impl::hotType(type)?HOT_ROW_INDEX_STRIDE:1;const float storedTime=scanTime(line);const uint32_t rowOffset=(uint32_t)b.plain.size();if(b.rows%b.stride==0)b.rowIndex.push_back({storedTime,storedTime,rowOffset,0,b.rows,0,0});b.plain.append(line);const uint32_t rowLength=(uint32_t)b.plain.size()-rowOffset;if(b.plain.empty()||b.plain.back()!='\n')b.plain.push_back('\n');auto& indexEntry=b.rowIndex.back();indexEntry.firstTime=std::min(indexEntry.firstTime,storedTime);indexEntry.lastTime=std::max(indexEntry.lastTime,storedTime);indexEntry.length=b.stride==1?rowLength:(uint32_t)b.plain.size()-indexEntry.offset;++indexEntry.count;++b.rows;if(std::isfinite(storedTime)){b.firstTime=std::min(b.firstTime,storedTime);b.lastTime=std::max(b.lastTime,storedTime);}const float distance=(float)scanDouble(line,"\"lap_distance_m\":",std::numeric_limits<double>::quiet_NaN());if(std::isfinite(distance)){b.minDistance=std::min(b.minDistance,distance);b.maxDistance=std::max(b.maxDistance,distance);}b.dirty=true;if(impl_->currentLap)impl_->laps[impl_->currentLap].end=std::max(impl_->laps[impl_->currentLap].end,t);
+        auto& b=impl_->builderFor({impl_->currentLap,(uint16_t)type});
+        if(!b.rows)b.stride=Impl::hotType(type)?HOT_ROW_INDEX_STRIDE:1;const float storedTime=scanTime(line);const uint32_t rowOffset=(uint32_t)b.plain.size();if(b.rows%b.stride==0)b.rowIndex.push_back({storedTime,storedTime,rowOffset,0,b.rows,0,0});b.plain.append(line);const uint32_t rowLength=(uint32_t)b.plain.size()-rowOffset;if(b.plain.empty()||b.plain.back()!='\n')b.plain.push_back('\n');auto& indexEntry=b.rowIndex.back();indexEntry.firstTime=std::min(indexEntry.firstTime,storedTime);indexEntry.lastTime=std::max(indexEntry.lastTime,storedTime);indexEntry.length=b.stride==1?rowLength:(uint32_t)b.plain.size()-indexEntry.offset;++indexEntry.count;++b.rows;if(std::isfinite(storedTime)){b.firstTime=std::min(b.firstTime,storedTime);b.lastTime=std::max(b.lastTime,storedTime);}const float distance=(float)scanDouble(line,"\"lap_distance_m\":",std::numeric_limits<double>::quiet_NaN());if(std::isfinite(distance)){b.minDistance=std::min(b.minDistance,distance);b.maxDistance=std::max(b.maxDistance,distance);}b.dirty=true;if(impl_->currentLap)impl_->laps[impl_->currentLap].end=std::max(impl_->laps[impl_->currentLap].end,t);
     }return true;
+}
+
+bool TnrdV5Writer::append(const std::vector<V5SourceRow>& rows,std::string* errorOut){
+    return appendRows(rows,errorOut);
+}
+
+bool TnrdV5Writer::appendViews(
+        const std::vector<std::pair<std::string_view,float>>& rows,
+        std::string* errorOut){
+    return appendRows(rows,errorOut);
 }
 
 bool TnrdV5Writer::checkpoint(std::string* errorOut){
     if(!isOpen()){fail(errorOut,"V5 writer is not open");return false;}
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;it=impl_->builders.erase(it);}return impl_->writeSnapshot(false,errorOut);
+    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}return impl_->writeSnapshot(false,errorOut);
 }
 
 bool TnrdV5Writer::rewind(float sessionTime,std::string* errorOut){
@@ -281,7 +405,7 @@ bool TnrdV5Writer::rewind(float sessionTime,std::string* errorOut){
 
 bool TnrdV5Writer::rewind(float sessionTime,uint64_t wallClockMs,std::string* errorOut){
     if(!isOpen()){fail(errorOut,"V5 writer is not open");return false;}uint32_t targetLap=0;for(const auto&[n,l]:impl_->laps)if(l.start<=sessionTime)targetLap=n;
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;it=impl_->builders.erase(it);}
+    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}
     impl_->currentBranchWallClockMs=std::max(wallClockMs,impl_->lastBranchWallClockMs+1);impl_->lastBranchWallClockMs=impl_->currentBranchWallClockMs;impl_->branches.push_back({impl_->currentBranchWallClockMs,sessionTime});
     for(auto it=impl_->laps.upper_bound(targetLap);it!=impl_->laps.end();)it=impl_->laps.erase(it);for(auto it=impl_->statusByLap.upper_bound(targetLap);it!=impl_->statusByLap.end();)it=impl_->statusByLap.erase(it);
     impl_->statusByLap.erase(targetLap);
@@ -291,7 +415,7 @@ bool TnrdV5Writer::rewind(float sessionTime,uint64_t wallClockMs,std::string* er
 bool TnrdV5Writer::finish(std::string* errorOut){
     if(!isOpen())return true;
     bool ok=true;
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut)){ok=false;break;}it=impl_->builders.erase(it);}
+    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut)){ok=false;break;}impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}
     if(ok)ok=impl_->writeSnapshot(true,errorOut);
     if(impl_->file){const bool closeOk=std::fclose(impl_->file)==0;impl_->file=nullptr;if(!closeOk&&ok){fail(errorOut,"failed to close V5 file");ok=false;}}
     return ok;

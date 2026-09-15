@@ -2,6 +2,9 @@
 
 #include "TNRD_V4.h"
 
+#include <string_view>
+#include <utility>
+
 namespace tnrp::detail {
 
 // The aliases keep the indexed archive query interface shared with V4 while
@@ -14,6 +17,47 @@ using V5ControlSummary = V4ControlSummary;
 using V5TimedRow = V4TimedRow;
 using V5RowTypeMask = V4RowTypeMask;
 constexpr V5RowTypeMask v5TypeBit(uint8_t type) { return v4TypeBit(type); }
+
+struct TnrdV5WriterMemoryStats {
+    bool open{};
+    size_t retainedBytes{};
+    size_t builderCount{};
+    size_t builderPlainBytes{};
+    size_t builderPlainCapacityBytes{};
+    size_t builderRowIndexEntries{};
+    size_t builderRowIndexCapacityBytes{};
+    size_t chunkCount{};
+    size_t chunkContainerCapacityBytes{};
+    size_t chunkRowIndexEntries{};
+    size_t chunkRowIndexCapacityBytes{};
+    size_t branchCount{};
+    size_t branchCapacityBytes{};
+    size_t lapCount{};
+    size_t statusLapCount{};
+    size_t eventCount{};
+    size_t eventPayloadBytes{};
+    size_t eventPayloadCapacityBytes{};
+    size_t eventContainerCapacityBytes{};
+    size_t lapStatusCapacityBytes{};
+    uint64_t chunkWrites{};
+    uint64_t chunkPlainBytesProcessed{};
+    uint64_t chunkCompressedBytesWritten{};
+    uint64_t compressionBufferBytesAllocated{};
+    size_t compressionScratchCapacityBytes{};
+    size_t compressionContextBytes{};
+    size_t lastChunkPlainBytes{};
+    size_t lastChunkCompressedBytes{};
+    size_t lastCompressionBufferCapacityBytes{};
+    size_t peakCompressionBufferCapacityBytes{};
+    uint64_t checkpointWrites{};
+    uint64_t checkpointScratchBytesAllocated{};
+    size_t lastCheckpointScratchBytes{};
+    size_t peakCheckpointScratchBytes{};
+    size_t lastCheckpointDirectoryBytes{};
+    size_t peakCheckpointDirectoryBytes{};
+    size_t lastCheckpointRowIndexBytes{};
+    size_t peakCheckpointRowIndexBytes{};
+};
 
 class TnrdV5Archive final : public TnrdIndexedArchive {
 public:
@@ -82,6 +126,10 @@ public:
 
     bool open(const std::string& path, const HeaderRow& header, std::string* errorOut);
     bool append(const std::vector<V5SourceRow>& rows, std::string* errorOut);
+    // Synchronous borrowed-row path used by the live recorder. The views only
+    // need to remain valid until this call returns.
+    bool appendViews(const std::vector<std::pair<std::string_view, float>>& rows,
+                     std::string* errorOut);
     bool checkpoint(std::string* errorOut);
     // Starts a newer wall-clock branch at sessionTime. Existing payload chunks
     // remain in the file and are clipped logically by the reader.
@@ -89,8 +137,14 @@ public:
     bool rewind(float sessionTime, uint64_t wallClockMs, std::string* errorOut);
     bool finish(std::string* errorOut);
     bool isOpen() const;
+    // Called by TnrdWriter on the disk thread. Retained bytes include the
+    // reusable compression scratch buffer; allocation activity and transient
+    // checkpoint scratch remain separately reported.
+    TnrdV5WriterMemoryStats memoryStats() const;
 
 private:
+    template <typename Rows>
+    bool appendRows(const Rows& rows, std::string* errorOut);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

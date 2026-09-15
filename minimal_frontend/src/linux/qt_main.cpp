@@ -80,6 +80,7 @@ AppSettings loadSettings(QSettings& settings) {
     result.bindAddress = settings.value("bind-address", "0.0.0.0").toString().toStdString();
     const uint port = settings.value("port", 20777).toUInt();
     result.port = port >= 1 && port <= 65535 ? static_cast<uint16_t>(port) : 20777;
+    result.forwardTargets = settings.value("forward-targets").toString().toStdString();
     result.protocol = tnrp::overrideFromString(
         settings.value("protocol", "auto").toString().toStdString());
     return result;
@@ -278,7 +279,7 @@ public:
         // Qt sizes top-level widgets in device-independent pixels. At 125%
         // display scaling this produces an approximately 777x525 decorated
         // window in physical pixels (the target size used for this frontend).
-        setFixedSize(620, 390);
+        setFixedSize(620, 450);
 
         auto* grid = new QGridLayout(this);
         grid->setContentsMargins(20, 20, 20, 20);
@@ -302,24 +303,30 @@ public:
         auto* apply = new QPushButton("Apply network");
         addRow(grid, 3, "UDP port", port_, apply);
 
+        forwardTargets_ = new QLineEdit;
+        forwardTargets_->setPlaceholderText("127.0.0.1:20778, 192.168.1.20:20779");
+        forwardTargets_->setToolTip("Up to 15 IPv4:port destinations; empty disables forwarding. Use a different receiving port on this computer.");
+        addRow(grid, 4, "UDP forwarding", forwardTargets_);
+
         auto* separator = new QFrame;
         separator->setFrameShape(QFrame::HLine);
-        grid->addWidget(separator, 4, 0, 1, 3);
+        grid->addWidget(separator, 5, 0, 1, 3);
 
         circuit_ = new QLabel("Unavailable");
-        addRow(grid, 5, "Circuit name", circuit_);
+        addRow(grid, 6, "Circuit name", circuit_);
         session_ = new QLabel("Unavailable");
         auto* attributions = new QPushButton("Attributions...");
-        addRow(grid, 6, "Session", session_, attributions);
+        addRow(grid, 7, "Session", session_, attributions);
         recording_ = new QLabel("Not recording");
-        addRow(grid, 7, "Recording status", recording_);
+        addRow(grid, 8, "Recording status", recording_);
         error_ = new QLabel("None");
-        addRow(grid, 8, "Error", error_);
+        addRow(grid, 9, "Error", error_);
 
         const AppSettings& current = controller_->settings();
         folderEntry_->setText(QString::fromStdString(current.outputFolder));
         addressEntry_->setText(QString::fromStdString(current.bindAddress));
         port_->setValue(current.port);
+        forwardTargets_->setText(QString::fromStdString(current.forwardTargets));
         protocol_->setCurrentIndex(current.protocol == tnrp::Override::F1_24 ? 1
                                  : current.protocol == tnrp::Override::F1_25 ? 2
                                  : current.protocol == tnrp::Override::F1_26 ? 3 : 0);
@@ -390,7 +397,8 @@ private:
     void applyNetwork() {
         std::string error;
         if (!controller_->applyNetwork(addressEntry_->text().toStdString(),
-                                       static_cast<uint16_t>(port_->value()), error)) {
+                                       static_cast<uint16_t>(port_->value()),
+                                       forwardTargets_->text().toStdString(), error)) {
             showError(error);
             const AppSettings& current = controller_->settings();
             addressEntry_->setText(QString::fromStdString(current.bindAddress));
@@ -399,6 +407,7 @@ private:
         }
         settings_.setValue("bind-address", addressEntry_->text());
         settings_.setValue("port", port_->value());
+        settings_.setValue("forward-targets", forwardTargets_->text());
     }
 
     QSettings& settings_;
@@ -407,6 +416,7 @@ private:
     QComboBox* protocol_{};
     QLineEdit* addressEntry_{};
     QSpinBox* port_{};
+    QLineEdit* forwardTargets_{};
     QLabel* circuit_{};
     QLabel* session_{};
     QLabel* recording_{};

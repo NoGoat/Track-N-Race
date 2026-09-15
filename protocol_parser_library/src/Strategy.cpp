@@ -934,4 +934,100 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
 
 std::string StrategyProcessor::snapshotJson(){return writeJson(snapshot());}
 
+StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
+    MemoryStats stats;
+    const auto stringCapacity = [](const std::string& value) {
+        return value.capacity() + 1;
+    };
+    const auto mapCapacity = [](const auto& values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        // std::map does not expose node allocation size. Include the stored
+        // value plus a conservative three-pointer tree-node estimate.
+        return values.size() * (sizeof(Value) + 3 * sizeof(void*));
+    };
+    const auto setCapacity = [](const auto& values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        return values.size() * (sizeof(Value) + 3 * sizeof(void*));
+    };
+
+    const auto addBaseStrings = [&](const auto& row) {
+        stats.stringCapacityBytes += stringCapacity(row.type);
+        if constexpr (requires { row.ts; })
+            stats.stringCapacityBytes += stringCapacity(row.ts);
+    };
+    if (lap_) addBaseStrings(*lap_);
+    if (status_) addBaseStrings(*status_);
+    if (damage_) addBaseStrings(*damage_);
+    if (timing_) {
+        addBaseStrings(*timing_);
+        stats.cachedInputCapacityBytes += timing_->cars.capacity() * sizeof(TimingCar);
+    }
+    if (session_) {
+        addBaseStrings(*session_);
+        stats.cachedInputCapacityBytes +=
+            session_->marshal_zones.capacity() * sizeof(MarshalZone) +
+            session_->weather_forecast_samples.capacity() * sizeof(WeatherSample);
+    }
+    if (participants_) {
+        stats.stringCapacityBytes += stringCapacity(participants_->type);
+        stats.cachedInputCapacityBytes += participants_->drivers.capacity() * sizeof(Driver);
+        for (const auto& driver : participants_->drivers)
+            stats.stringCapacityBytes += stringCapacity(driver.name) +
+                stringCapacity(driver.livery_color);
+    }
+    if (tyreSets_) {
+        addBaseStrings(*tyreSets_);
+        stats.cachedInputCapacityBytes += tyreSets_->sets.capacity() * sizeof(TyreSet);
+    }
+    if (allStatus_) {
+        addBaseStrings(*allStatus_);
+        stats.cachedInputCapacityBytes += allStatus_->cars.capacity() * sizeof(AllStatusCar);
+    }
+
+    stats.lapTimeEntries = lapTimes_.size();
+    stats.rivalEntries = rivalExperience_.size();
+    stats.wearHistoryEntries = wearHistory_.size();
+    stats.frozenNeutralCarEntries = frozenNeutralCars_.size();
+    stats.decisionHistoryEntries = decisionHistory_.size();
+    stats.conservativePastEntries = conservativePast_.size();
+    stats.aggressivePastEntries = aggressivePast_.size();
+    stats.requiredLapEntries = conservativeRequired_.size() + aggressiveRequired_.size();
+
+    stats.containerCapacityBytes += mapCapacity(lapTimes_) +
+        mapCapacity(rivalExperience_) + setCapacity(retiredCars_) +
+        setCapacity(usedDryVisualCompounds_) + mapCapacity(conservativeRequired_) +
+        mapCapacity(aggressiveRequired_) +
+        wearHistory_.capacity() * sizeof(WearSample) +
+        frozenNeutralCars_.capacity() * sizeof(NeutralCarState) +
+        decisionHistory_.capacity() * sizeof(StrategyDecisionRecord) +
+        conservativePast_.capacity() * sizeof(PastStintState) +
+        aggressivePast_.capacity() * sizeof(PastStintState);
+    for (const auto& [_, experience] : rivalExperience_) {
+        stats.rivalRecentLapEntries += experience.recent_laps.size();
+        stats.containerCapacityBytes +=
+            experience.recent_laps.capacity() * sizeof(RivalLapSample);
+    }
+    for (const auto& record : decisionHistory_)
+        stats.stringCapacityBytes += stringCapacity(record.event) +
+            stringCapacity(record.recommendation) + stringCapacity(record.reason) +
+            stringCapacity(record.target_name);
+    for (const auto& stint : conservativePast_)
+        stats.stringCapacityBytes += stringCapacity(stint.compound_name);
+    for (const auto& stint : aggressivePast_)
+        stats.stringCapacityBytes += stringCapacity(stint.compound_name);
+    stats.stringCapacityBytes += stringCapacity(neutralisationRecommendation_);
+    for (const auto& [_, byTeam] : teamColorOverrides_) {
+        stats.containerCapacityBytes += mapCapacity(byTeam);
+        for (const auto& [teamId, color] : byTeam) {
+            (void)teamId;
+            stats.stringCapacityBytes += stringCapacity(color);
+        }
+    }
+    stats.containerCapacityBytes += mapCapacity(teamColorOverrides_);
+
+    stats.retainedBytes = stats.cachedInputCapacityBytes +
+        stats.containerCapacityBytes + stats.stringCapacityBytes;
+    return stats;
+}
+
 } // namespace tnrp

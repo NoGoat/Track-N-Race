@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { formatWithOptions } from 'util'
+import { getHeapCodeStatistics, getHeapSpaceStatistics, getHeapStatistics } from 'v8'
 import { configStore } from './configStore'
 
 export interface Diagnostics {
@@ -134,17 +135,73 @@ function writeRamUsageSample(): void {
   try {
     const metrics = app.getAppMetrics()
     const processes = metrics
-      .map(metric => ({
-        pid: metric.pid,
-        type: metric.type,
-        name: metric.name ?? metric.serviceName ?? null,
-        working_set_kb: metric.memory.workingSetSize,
-        private_kb: metric.memory.privateBytes ?? null,
-      }))
+      .map(metric => {
+        const serviceName = metric.name ?? metric.serviceName ?? null
+        return {
+          pid: metric.pid,
+          type: metric.type === 'Utility' && serviceName ? serviceName : metric.type,
+          process_type: metric.type,
+          name: serviceName,
+          working_set_kb: metric.memory.workingSetSize,
+          private_kb: metric.memory.privateBytes ?? null,
+        }
+      })
       .sort((left, right) => right.working_set_kb - left.working_set_kb)
 
     const hasCompletePrivateMemory = processes.length > 0 &&
       processes.every(metric => metric.private_kb !== null)
+    const nodeMemory = process.memoryUsage()
+    const v8Heap = getHeapStatistics()
+    const v8HeapCode = getHeapCodeStatistics()
+    const v8HeapSpaces = getHeapSpaceStatistics().map(space => ({
+      name: space.space_name,
+      size_bytes: space.space_size,
+      used_bytes: space.space_used_size,
+      available_bytes: space.space_available_size,
+      physical_bytes: space.physical_space_size,
+    }))
+    const mainProcessMetric = processes.find(metric => metric.pid === process.pid) ?? null
+    const mainPrivateBytes = mainProcessMetric?.private_kb === null || mainProcessMetric?.private_kb === undefined
+      ? null
+      : mainProcessMetric.private_kb * 1024
+    const mainRuntimeMemory = {
+      type: 'MainRuntimeMemory',
+      name: 'Electron main Node/V8 runtime',
+      pid: process.pid,
+      already_included_in_process_totals: true,
+      node: {
+        rss_bytes: nodeMemory.rss,
+        heap_total_bytes: nodeMemory.heapTotal,
+        heap_used_bytes: nodeMemory.heapUsed,
+        external_bytes: nodeMemory.external,
+        array_buffers_bytes: nodeMemory.arrayBuffers,
+      },
+      v8: {
+        total_heap_size_bytes: v8Heap.total_heap_size,
+        total_heap_size_executable_bytes: v8Heap.total_heap_size_executable,
+        total_physical_size_bytes: v8Heap.total_physical_size,
+        total_available_size_bytes: v8Heap.total_available_size,
+        used_heap_size_bytes: v8Heap.used_heap_size,
+        heap_size_limit_bytes: v8Heap.heap_size_limit,
+        malloced_memory_bytes: v8Heap.malloced_memory,
+        peak_malloced_memory_bytes: v8Heap.peak_malloced_memory,
+        external_memory_bytes: v8Heap.external_memory,
+        code_and_metadata_bytes: v8HeapCode.code_and_metadata_size,
+        bytecode_and_metadata_bytes: v8HeapCode.bytecode_and_metadata_size,
+        external_script_source_bytes: v8HeapCode.external_script_source_size,
+        spaces: v8HeapSpaces,
+      },
+      browser_metric: {
+        working_set_bytes: mainProcessMetric ? mainProcessMetric.working_set_kb * 1024 : null,
+        private_bytes: mainPrivateBytes,
+        // Diagnostic remainder only: Chromium and the native addon share this
+        // process, while V8/external accounting is not a partition of private
+        // bytes. Trends are useful even though this is not an ownership total.
+        private_minus_v8_heap_and_external_bytes: mainPrivateBytes === null
+          ? null
+          : Math.max(0, mainPrivateBytes - nodeMemory.heapTotal - nodeMemory.external),
+      },
+    }
     let mainTelemetryRetention: Record<string, unknown> | null = null
     try {
       mainTelemetryRetention = telemetryRetentionProvider?.() ?? null
@@ -166,8 +223,8 @@ function writeRamUsageSample(): void {
       estimated_retained_kb: estimatedRetainedBytes / 1024,
       already_included_in_process_totals: true,
       attribution_scope: 'Electron telemetry stores, published views, chart CPU/GPU pages, ' +
-        'seek/resume buffers, native transit queues, and native live-history allocation capacity; ' +
-        'remaining protocol-engine cache/container overhead remains only in process totals',
+        'seek/resume buffers, native transit queues, native engine-cache/recording-writer/Strategy allocation capacity, and native live-history allocation capacity; ' +
+        'parser/transit/writer/Strategy allocation churn and Node/V8 heap counters are reported separately from retained totals',
       renderer_sample_age_ms: Number.isFinite(rendererSampledAt)
         ? Math.max(0, Date.now() - rendererSampledAt)
         : null,
@@ -183,12 +240,14 @@ function writeRamUsageSample(): void {
         : null,
       process_count: processes.length,
       processes,
-      category_count: processes.length + 1,
+      category_count: processes.length + 2,
       categories: [
         ...processes.map(processMetric => ({ category: 'process', ...processMetric })),
         { category: 'telemetry_data', ...telemetryData },
+        { category: 'main_runtime_memory', ...mainRuntimeMemory },
       ],
       telemetry_data: telemetryData,
+      main_runtime_memory: mainRuntimeMemory,
     }
 
     fs.writeSync(ramUsageLogFd, `${JSON.stringify(sample)}\n`)
@@ -320,8 +379,12 @@ function logStartupMetadata(diagnostics: Diagnostics, appVersion: string): void 
  */
 export function initializeDiagnostics(appVersion: string): Diagnostics {
   const directory = path.join(app.getPath('userData'), 'launch-diagnostics')
-  fs.rmSync(directory, { recursive: true, force: true })
-  fs.mkdirSync(directory, { recursive: true })
+  if (fs.existsSync(directory)) {
+    for (const entry of fs.readdirSync(directory))
+      fs.rmSync(path.join(directory, entry), { recursive: true, force: true })
+  } else {
+    fs.mkdirSync(directory, { recursive: true })
+  }
 
   const diagnostics: Diagnostics = {
     directory,

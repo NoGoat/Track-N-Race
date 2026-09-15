@@ -23,6 +23,7 @@ typedef void (^TNRRecordingUpdateHandler)(NSString* status, NSString* error);
 @property(nonatomic, copy, readonly) NSString* outputFolder;
 @property(nonatomic, copy, readonly) NSString* bindAddress;
 @property(nonatomic, readonly) NSInteger port;
+@property(nonatomic, copy, readonly) NSString* forwardTargets;
 @property(nonatomic, readonly) NSInteger protocolIndex;
 @property(nonatomic, copy, nullable) TNRSessionUpdateHandler sessionUpdateHandler;
 @property(nonatomic, copy, nullable) TNRRecordingUpdateHandler recordingUpdateHandler;
@@ -33,7 +34,7 @@ typedef void (^TNRRecordingUpdateHandler)(NSString* status, NSString* error);
 /// Returns nil on success or a user-facing error message on failure.
 - (nullable NSString*)start;
 - (nullable NSString*)selectOutputFolder:(NSString*)folder;
-- (nullable NSString*)applyNetworkAddress:(NSString*)address port:(NSInteger)port;
+- (nullable NSString*)applyNetworkAddress:(NSString*)address port:(NSInteger)port forwardTargets:(NSString*)forwardTargets;
 - (void)setProtocolIndex:(NSInteger)index;
 - (NSArray<TNRAttribution*>*)attributions;
 

@@ -82,6 +82,7 @@ NSInteger indexFromProtocol(tnrp::Override protocol) {
 @property(nonatomic, copy, readwrite) NSString* outputFolder;
 @property(nonatomic, copy, readwrite) NSString* bindAddress;
 @property(nonatomic, readwrite) NSInteger port;
+@property(nonatomic, copy, readwrite) NSString* forwardTargets;
 @property(nonatomic, readwrite) NSInteger protocolIndex;
 
 @end
@@ -109,6 +110,8 @@ NSInteger indexFromProtocol(tnrp::Override protocol) {
     settings.outputFolder = cppString(_outputFolder);
     settings.bindAddress = cppString(_bindAddress);
     settings.port = static_cast<uint16_t>(_port);
+    _forwardTargets = [defaults stringForKey:@"forward-targets"] ?: @"";
+    settings.forwardTargets = cppString(_forwardTargets);
     settings.protocol = protocol;
     _controller = std::make_unique<MinimalController>(std::move(settings));
 
@@ -158,18 +161,20 @@ NSInteger indexFromProtocol(tnrp::Override protocol) {
     return nil;
 }
 
-- (nullable NSString*)applyNetworkAddress:(NSString*)address port:(NSInteger)port {
+- (nullable NSString*)applyNetworkAddress:(NSString*)address port:(NSInteger)port forwardTargets:(NSString*)forwardTargets {
     if (port < 1 || port > 65535) {
         return @"The UDP port must be between 1 and 65535.";
     }
 
     std::string error;
-    if (!_controller->applyNetwork(cppString(address), static_cast<uint16_t>(port), error)) {
+    if (!_controller->applyNetwork(cppString(address), static_cast<uint16_t>(port), cppString(forwardTargets), error)) {
         return nsString(error);
     }
 
     self.bindAddress = address;
     self.port = port;
+    self.forwardTargets = forwardTargets;
+    [_defaults setObject:forwardTargets forKey:@"forward-targets"];
     [_defaults setObject:address forKey:@"bind-address"];
     [_defaults setInteger:port forKey:@"port"];
     return nil;

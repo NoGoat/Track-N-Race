@@ -5,6 +5,7 @@ node_modules/
 dist/
 /release/
 reference_docs/
+launch-diagnostics-heapdumps/
 
 .agents
 tools

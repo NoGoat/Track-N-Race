@@ -226,6 +226,32 @@ let lapNum: number | null = null
 let lapStartTime = 0
 let lapTrackingActive = false
 let fastestLapTime = Infinity
+let fastestRecoveryTimer: ReturnType<typeof setTimeout> | null = null
+let fastestRecoveryGeneration = 0
+let fastestRecoveryPending = false
+let fastestRecoveryDeadline: number | null = null
+
+function cancelFastestRecovery(): void {
+  if (fastestRecoveryTimer !== null) clearTimeout(fastestRecoveryTimer)
+  fastestRecoveryTimer = null
+  fastestRecoveryPending = false
+  fastestRecoveryDeadline = null
+  fastestRecoveryGeneration++
+}
+
+function scheduleFastestRecovery(): void {
+  const deadline = fastestRecoveryDeadline ?? Date.now() + 30_000
+  cancelFastestRecovery()
+  fastestRecoveryPending = true
+  fastestRecoveryDeadline = deadline
+  const requestId = fastestRecoveryGeneration
+  fastestRecoveryTimer = setTimeout(() => {
+    fastestRecoveryTimer = null
+    if (!isPlaybackFlag && !useTelemetryStore.getState().liveFastestLapData) {
+      window.playerBridge.getLiveFastestLap(requestId)
+    }
+  }, Math.max(0, deadline - Date.now()))
+}
 let fastestLapSet = false
 const sessionHistoryBest = new Map<number, number>()
 let isPlaybackFlag = false
@@ -699,6 +725,7 @@ function resetSession(): void {
   }
   lapState = null; lapNum = null; lapStartTime = 0; lapTrackingActive = false
   fastestLapTime = Infinity; fastestLapSet = false
+  cancelFastestRecovery()
   sessionHistoryBest.clear()
   raceEventsArr = []
   speedRpmBlocksVal = null; playbackFastestLapNum = 0
@@ -844,6 +871,9 @@ function trimPlaybackWorkingSet(): void {
 
 function applyLiveRewind(target: number): void {
   if (isPlaybackFlag || !Number.isFinite(target) || target < 0) return
+  const before = useTelemetryStore.getState()
+  const previousLapNum = liveLapBoundaries[liveLapBoundaries.length - 2]?.lapNum
+  const oldCurrentLapNum = lapNum
 
   truncateAt(telBufRef, target)
   truncateAt(motBufRef, target)
@@ -873,19 +903,15 @@ function applyLiveRewind(target: number): void {
     if (liveLapTimes[n] != null) survivingTimes[n] = liveLapTimes[n]
   }
   liveLapTimes = survivingTimes
-  let fastestNum: number | null = null
-  fastestLapTime = Infinity
-  for (const [n, ms] of Object.entries(liveLapTimes)) {
-    if (ms > 0 && ms < fastestLapTime) { fastestLapTime = ms; fastestNum = Number(n) }
-  }
+  // A flashback only invalidates Fastest when it was Previous and we crossed
+  // back into that lap. Older fastest snapshots must survive buffer trimming.
+  const invalidatesFastest = before.liveFastestLapData !== null &&
+    before.liveFastestLapData.lapNum === previousLapNum &&
+    oldCurrentLapNum !== null && currentBoundary !== undefined &&
+    currentBoundary.lapNum < oldCurrentLapNum
+  if (invalidatesFastest) fastestLapTime = Infinity
 
   const previousData = liveLapData(previousBoundary, currentBoundary?.sessionTime ?? target)
-  const fastestIndex = fastestNum == null
-    ? -1 : liveLapBoundaries.findIndex(boundary => boundary.lapNum === fastestNum)
-  const fastestBoundary = fastestIndex >= 0 ? liveLapBoundaries[fastestIndex] : undefined
-  const fastestEnd = fastestIndex >= 0 && fastestIndex + 1 < liveLapBoundaries.length
-    ? liveLapBoundaries[fastestIndex + 1].sessionTime : target
-  const fastestData = fastestNum == null ? null : liveLapData(fastestBoundary, fastestEnd)
   currentStintStartTime = findCurrentStintStart(stsBufRef.current)
   analyzeLapRevisionVal++
   pendingAnalyzeLapReset = false
@@ -896,13 +922,16 @@ function applyLiveRewind(target: number): void {
     damage: dmgBufRef.current[dmgBufRef.current.length - 1] ?? null,
     lapBoundaries: liveLapBoundaries,
     livePreviousLapData: previousData,
-    liveFastestLapData: fastestData,
-    fastestLapNum: fastestNum,
+    ...(invalidatesFastest ? { liveFastestLapData: null, fastestLapNum: null } : {}),
     lapTimesByNum: liveLapTimes,
     raceEvents: raceEventsArr,
     currentStintStartTime,
     analyzeLapRevision: analyzeLapRevisionVal,
   })
+  // Supersede an in-flight native result after any further flashback.
+  if (invalidatesFastest || fastestRecoveryPending) {
+    scheduleFastestRecovery()
+  }
 }
 
 // The old useEffect([lap]): on a lap-number change, snapshot the completed lap
@@ -1010,8 +1039,10 @@ function onLap(lap: LapRow): void {
     if (lapTimeMs > 0 && lapTimeMs < 300_000) {
       if (liveLapTimes[prevLapNum] !== lapTimeMs) liveLapTimes = { ...liveLapTimes, [prevLapNum]: lapTimeMs }
     }
-    if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime) {
+    if (lapTimeMs > 0 && lapTimeMs < 300_000 && lapTimeMs < fastestLapTime &&
+        completedLapData.telemetry.length > 0 && completedLapData.lapProgress.length > 0) {
       fastestLapTime = lapTimeMs
+      cancelFastestRecovery()
       set({ fastestLapNum: prevLapNum, liveFastestLapData: completedLapData })
     }
   }
@@ -1129,6 +1160,30 @@ function handleMsg(msg: GatewayMsg): void {
       set({ protocolWarning: (pw.detected_format === null || pw.detected_format === undefined) ? null : pw })
       break
     }
+    case 'live_fastest_lap_data': {
+      if (isPlaybackFlag || msg.requestId !== fastestRecoveryGeneration ||
+          useTelemetryStore.getState().liveFastestLapData) break
+      const data: AnalyzeLapData = {
+        lapNum: msg.lapNum, startSessionTime: msg.startSessionTime,
+        endSessionTime: msg.endSessionTime, telemetry: [], motion: [], motionEx: [],
+        statusHistory: [], damageHistory: [], lapProgress: [], playerPositions: [],
+      }
+      forEachDecodedBinaryRow(Uint8Array.from(msg.binary), row => {
+        if (row.type === 'telemetry') data.telemetry.push(row)
+        else if (row.type === 'motion') data.motion.push(row)
+        else if (row.type === 'motion_ex') data.motionEx.push(row)
+      })
+      for (const row of msg.rows) {
+        if (row.type === 'status') data.statusHistory.push(row)
+        else if (row.type === 'damage') data.damageHistory.push(row)
+        else if (row.type === 'lap') data.lapProgress.push(row)
+      }
+      if (!data.telemetry.length || !data.lapProgress.length) break
+      fastestLapTime = msg.lapTimeMs
+      cancelFastestRecovery()
+      set({ liveFastestLapData: data, fastestLapNum: data.lapNum })
+      break
+    }
     case 'playback_lap_data': {
       const payload = msg as PlaybackLapDataMsg
       const lapData: AnalyzeLapData = {
@@ -1177,6 +1232,7 @@ function handleMsg(msg: GatewayMsg): void {
       requestedHistoryRowMask = 0
       break
     case 'playback_lap_blocks': {
+      cancelFastestRecovery()
       isPlaybackFlag = true
       analyzeLapRevisionVal++
       const data = msg as any

@@ -80,6 +80,159 @@ const std::unordered_set<std::string>& TnrdWriter::dedupeTypes() {
     return kTypes;
 }
 
+size_t TnrdWriter::eventRetainedBytes(const WriterEvent& event) {
+    return sizeof(WriterEvent) + event.outputDir.capacity() + 1 +
+        event.packetData.capacity() + event.json.capacity() + 1;
+}
+
+void TnrdWriter::pushEventLocked(WriterEvent event) {
+    event.queuedAtMs = wallClockMilliseconds();
+    queuedRetainedBytes_ += eventRetainedBytes(event);
+    queuedJsonBytes_ += event.json.size();
+    queuedPacketBytes_ += event.packetData.size();
+    if (event.type == EventType::Record) ++queuedRecordEvents_;
+    if (event.type == EventType::NotePacket) ++queuedNotePacketEvents_;
+    queue_.push(std::move(event));
+}
+
+TnrdWriter::MemoryStats TnrdWriter::memoryStats() const {
+    MemoryStats stats;
+    {
+        std::lock_guard<std::mutex> lock(memoryStatsMutex_);
+        stats = publishedMemoryStats_;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        stats.queuedEvents = queue_.size();
+        stats.queuedRetainedBytes = queuedRetainedBytes_;
+        stats.queuedRecordEvents = queuedRecordEvents_;
+        stats.queuedNotePacketEvents = queuedNotePacketEvents_;
+        stats.queuedControlEvents = stats.queuedEvents >=
+                stats.queuedRecordEvents + stats.queuedNotePacketEvents
+            ? stats.queuedEvents - stats.queuedRecordEvents - stats.queuedNotePacketEvents
+            : 0;
+        stats.queuedJsonBytes = queuedJsonBytes_;
+        stats.queuedPacketBytes = queuedPacketBytes_;
+        if (!queue_.empty() && queue_.front().queuedAtMs != 0) {
+            const uint64_t now = wallClockMilliseconds();
+            stats.oldestQueuedEventAgeMs = now >= queue_.front().queuedAtMs
+                ? now - queue_.front().queuedAtMs : 0;
+        }
+    }
+    stats.retainedBytes += stats.queuedRetainedBytes;
+    return stats;
+}
+
+void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
+    const uint64_t now = wallClockMilliseconds();
+    if (!force && lastMemoryStatsPublishMs_ != 0 &&
+        now - lastMemoryStatsPublishMs_ < 900) return;
+
+    MemoryStats stats;
+    stats.streamActive = streamActive();
+    stats.rollingEntries = rollingBuffer_.size();
+    // std::deque does not expose block capacity. Count live entry storage plus
+    // the reusable non-owning V5 staging array; payload capacities are below.
+    stats.rollingContainerCapacityBytes = rollingBuffer_.size() * sizeof(BufferEntry) +
+        v5SourceRowViews_.capacity() * sizeof(std::pair<std::string_view, float>);
+    for (const auto& entry : rollingBuffer_) {
+        stats.rollingPayloadBytes += entry.line.size();
+        stats.rollingPayloadCapacityBytes += entry.line.capacity() + 1;
+    }
+    stats.rollingFlushBatches = rollingFlushBatches_;
+    stats.rollingFlushEntriesProcessed = rollingFlushEntriesProcessed_;
+    stats.rollingFlushPayloadBytesProcessed = rollingFlushPayloadBytesProcessed_;
+    stats.lastRollingFlushEntries = lastRollingFlushEntries_;
+    stats.lastRollingFlushPayloadBytes = lastRollingFlushPayloadBytes_;
+    stats.lastRollingFlushCopyCapacityBytes = lastRollingFlushCopyCapacityBytes_;
+    stats.peakRollingFlushEntries = peakRollingFlushEntries_;
+    stats.peakRollingFlushPayloadBytes = peakRollingFlushPayloadBytes_;
+    stats.peakRollingFlushCopyCapacityBytes = peakRollingFlushCopyCapacityBytes_;
+    stats.v5AppendBatches = v5AppendBatches_;
+    stats.v5AppendRowsProcessed = v5AppendRowsProcessed_;
+    stats.v5AppendPayloadBytesProcessed = v5AppendPayloadBytesProcessed_;
+    stats.lastV5AppendRows = lastV5AppendRows_;
+    stats.lastV5AppendPayloadBytes = lastV5AppendPayloadBytes_;
+    stats.lastV5SourceRowCapacityBytes = lastV5SourceRowCapacityBytes_;
+    stats.peakV5AppendRows = peakV5AppendRows_;
+    stats.peakV5AppendPayloadBytes = peakV5AppendPayloadBytes_;
+    stats.peakV5SourceRowCapacityBytes = peakV5SourceRowCapacityBytes_;
+    stats.dedupeEntries = dedupeCache_.size();
+    for (const auto& [type, json] : dedupeCache_) {
+        stats.dedupePayloadBytes += type.size() + json.size();
+        stats.dedupePayloadCapacityBytes += type.capacity() + 1 + json.capacity() + 1;
+    }
+    stats.v5ChunkWrites = closedV5Activity_.chunkWrites;
+    stats.v5ChunkPlainBytesProcessed = closedV5Activity_.chunkPlainBytesProcessed;
+    stats.v5ChunkCompressedBytesWritten = closedV5Activity_.chunkCompressedBytesWritten;
+    stats.v5CompressionBufferBytesAllocated = closedV5Activity_.compressionBufferBytesAllocated;
+    stats.v5LastChunkPlainBytes = closedV5Activity_.lastChunkPlainBytes;
+    stats.v5LastChunkCompressedBytes = closedV5Activity_.lastChunkCompressedBytes;
+    stats.v5LastCompressionBufferCapacityBytes = closedV5Activity_.lastCompressionBufferCapacityBytes;
+    stats.v5PeakCompressionBufferCapacityBytes = closedV5Activity_.peakCompressionBufferCapacityBytes;
+    stats.v5CheckpointWrites = closedV5Activity_.checkpointWrites;
+    stats.v5CheckpointScratchBytesAllocated = closedV5Activity_.checkpointScratchBytesAllocated;
+    stats.v5LastCheckpointScratchBytes = closedV5Activity_.lastCheckpointScratchBytes;
+    stats.v5PeakCheckpointScratchBytes = closedV5Activity_.peakCheckpointScratchBytes;
+    stats.v5LastCheckpointDirectoryBytes = closedV5Activity_.lastCheckpointDirectoryBytes;
+    stats.v5PeakCheckpointDirectoryBytes = closedV5Activity_.peakCheckpointDirectoryBytes;
+    stats.v5LastCheckpointRowIndexBytes = closedV5Activity_.lastCheckpointRowIndexBytes;
+    stats.v5PeakCheckpointRowIndexBytes = closedV5Activity_.peakCheckpointRowIndexBytes;
+    if (v5Writer_) {
+        const auto v5 = v5Writer_->memoryStats();
+        stats.v5RetainedBytes = v5.retainedBytes;
+        stats.v5BuilderCount = v5.builderCount;
+        stats.v5BuilderPlainBytes = v5.builderPlainBytes;
+        stats.v5BuilderPlainCapacityBytes = v5.builderPlainCapacityBytes;
+        stats.v5BuilderRowIndexEntries = v5.builderRowIndexEntries;
+        stats.v5BuilderRowIndexCapacityBytes = v5.builderRowIndexCapacityBytes;
+        stats.v5ChunkCount = v5.chunkCount;
+        stats.v5ChunkContainerCapacityBytes = v5.chunkContainerCapacityBytes;
+        stats.v5ChunkRowIndexEntries = v5.chunkRowIndexEntries;
+        stats.v5ChunkRowIndexCapacityBytes = v5.chunkRowIndexCapacityBytes;
+        stats.v5BranchCount = v5.branchCount;
+        stats.v5BranchCapacityBytes = v5.branchCapacityBytes;
+        stats.v5LapCount = v5.lapCount;
+        stats.v5StatusLapCount = v5.statusLapCount;
+        stats.v5EventCount = v5.eventCount;
+        stats.v5EventPayloadBytes = v5.eventPayloadBytes;
+        stats.v5EventPayloadCapacityBytes = v5.eventPayloadCapacityBytes;
+        stats.v5EventContainerCapacityBytes = v5.eventContainerCapacityBytes;
+        stats.v5LapStatusCapacityBytes = v5.lapStatusCapacityBytes;
+        stats.v5ChunkWrites += v5.chunkWrites;
+        stats.v5ChunkPlainBytesProcessed += v5.chunkPlainBytesProcessed;
+        stats.v5ChunkCompressedBytesWritten += v5.chunkCompressedBytesWritten;
+        stats.v5CompressionBufferBytesAllocated += v5.compressionBufferBytesAllocated;
+        stats.v5CompressionScratchCapacityBytes = v5.compressionScratchCapacityBytes;
+        stats.v5CompressionContextBytes = v5.compressionContextBytes;
+        stats.v5LastChunkPlainBytes = v5.lastChunkPlainBytes;
+        stats.v5LastChunkCompressedBytes = v5.lastChunkCompressedBytes;
+        stats.v5LastCompressionBufferCapacityBytes = v5.lastCompressionBufferCapacityBytes;
+        stats.v5PeakCompressionBufferCapacityBytes = std::max(
+            stats.v5PeakCompressionBufferCapacityBytes,
+            v5.peakCompressionBufferCapacityBytes);
+        stats.v5CheckpointWrites += v5.checkpointWrites;
+        stats.v5CheckpointScratchBytesAllocated += v5.checkpointScratchBytesAllocated;
+        stats.v5LastCheckpointScratchBytes = v5.lastCheckpointScratchBytes;
+        stats.v5PeakCheckpointScratchBytes = std::max(
+            stats.v5PeakCheckpointScratchBytes, v5.peakCheckpointScratchBytes);
+        stats.v5LastCheckpointDirectoryBytes = v5.lastCheckpointDirectoryBytes;
+        stats.v5PeakCheckpointDirectoryBytes = std::max(
+            stats.v5PeakCheckpointDirectoryBytes, v5.peakCheckpointDirectoryBytes);
+        stats.v5LastCheckpointRowIndexBytes = v5.lastCheckpointRowIndexBytes;
+        stats.v5PeakCheckpointRowIndexBytes = std::max(
+            stats.v5PeakCheckpointRowIndexBytes, v5.peakCheckpointRowIndexBytes);
+    }
+    stats.retainedBytes = stats.rollingPayloadCapacityBytes +
+        stats.rollingContainerCapacityBytes + stats.dedupePayloadCapacityBytes +
+        stats.v5RetainedBytes;
+    {
+        std::lock_guard<std::mutex> lock(memoryStatsMutex_);
+        publishedMemoryStats_ = stats;
+    }
+    lastMemoryStatsPublishMs_ = now;
+}
+
 TnrdWriter::TnrdWriter(ErrorHandler errorHandler)
     : errorHandler_(std::move(errorHandler)) {
     diskThread_ = std::thread(&TnrdWriter::writerLoop, this);
@@ -110,7 +263,7 @@ TnrdWriter::~TnrdWriter() {
         std::unique_lock<std::mutex> lk(mu_);
         WriterEvent ev;
         ev.type = EventType::Close;
-        queue_.push(std::move(ev));
+        pushEventLocked(std::move(ev));
         stop_.store(true);
     }
     cv_.notify_all();
@@ -125,7 +278,7 @@ void TnrdWriter::flushToDisk() {
         WriterEvent ev;
         ev.type = EventType::Flush;
         ev.completion = std::move(completion);
-        queue_.push(std::move(ev));
+        pushEventLocked(std::move(ev));
     }
     cv_.notify_one();
     done.wait();
@@ -139,7 +292,7 @@ void TnrdWriter::closeActiveStream() {
         WriterEvent ev;
         ev.type = EventType::Close;
         ev.completion = std::move(completion);
-        queue_.push(std::move(ev));
+        pushEventLocked(std::move(ev));
     }
     cv_.notify_one();
     done.wait();
@@ -166,7 +319,7 @@ void TnrdWriter::setLoggingForFormat(bool enabled, const std::string& outputDir,
     ev.enabled = enabled;
     ev.outputDir = outputDir;
     ev.tnrdFormat = format;
-    queue_.push(std::move(ev));
+    pushEventLocked(std::move(ev));
     cv_.notify_one();
 }
 
@@ -183,7 +336,7 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     // copying every other packet's ~1.3 KB into the queue is pure waste.
     if (packetId == PID_SESSION)
         ev.packetData.assign(data, data + length);
-    queue_.push(std::move(ev));
+    pushEventLocked(std::move(ev));
     cv_.notify_one();
 }
 
@@ -194,7 +347,7 @@ void TnrdWriter::rewind(float sessionTime) {
     ev.type = EventType::Rewind;
     ev.sessionTime = sessionTime;
     ev.wallClockMs = wallClockMilliseconds();
-    queue_.push(std::move(ev));
+    pushEventLocked(std::move(ev));
     cv_.notify_one();
 }
 
@@ -204,7 +357,7 @@ void TnrdWriter::record(const std::string& json, float sessionTime) {
     ev.type = EventType::Record;
     ev.json = json;
     ev.sessionTime = sessionTime;
-    queue_.push(std::move(ev));
+    pushEventLocked(std::move(ev));
     cv_.notify_one();
 }
 
@@ -214,8 +367,22 @@ void TnrdWriter::writerLoop() {
         {
             std::unique_lock<std::mutex> lk(mu_);
             cv_.wait(lk, [this] { return !queue_.empty(); });
+            const size_t retainedBytes = eventRetainedBytes(queue_.front());
+            const size_t jsonBytes = queue_.front().json.size();
+            const size_t packetBytes = queue_.front().packetData.size();
+            const EventType eventType = queue_.front().type;
             ev = std::move(queue_.front());
             queue_.pop();
+            queuedRetainedBytes_ = retainedBytes <= queuedRetainedBytes_
+                ? queuedRetainedBytes_ - retainedBytes : 0;
+            queuedJsonBytes_ = jsonBytes <= queuedJsonBytes_
+                ? queuedJsonBytes_ - jsonBytes : 0;
+            queuedPacketBytes_ = packetBytes <= queuedPacketBytes_
+                ? queuedPacketBytes_ - packetBytes : 0;
+            if (eventType == EventType::Record && queuedRecordEvents_ > 0)
+                --queuedRecordEvents_;
+            if (eventType == EventType::NotePacket && queuedNotePacketEvents_ > 0)
+                --queuedNotePacketEvents_;
         }
 
         if (ev.type == EventType::SetLogging) {
@@ -252,11 +419,16 @@ void TnrdWriter::writerLoop() {
             if (!streamActive()) continue;
             std::string type = extractType(ev.json);
             if (isDuplicate(type, ev.json)) continue;
-            std::string line = ev.json + "\n";
+            const bool sessionEnd = type == "race_event" &&
+                ev.json.find("\"code\":\"SEND\"") != std::string::npos;
+            std::string line = std::move(ev.json);
+            line.push_back('\n');
             float entryTime  = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
-            rollingBuffer_.push_back({line, entryTime});
-            if (type == "race_event" && ev.json.find("\"code\":\"SEND\"") != std::string::npos) {
-                closeActiveStreamOnWriterThread(); continue;
+            rollingBuffer_.push_back({std::move(line), entryTime});
+            if (sessionEnd) {
+                closeActiveStreamOnWriterThread();
+                publishMemoryStatsOnWriterThread(true);
+                continue;
             }
             flushOldBufferEntries();
         } else if (ev.type == EventType::Flush) {
@@ -267,20 +439,23 @@ void TnrdWriter::writerLoop() {
             if (ev.completion) ev.completion->set_value();
             if (stop_.load() && queue_.empty()) break;
         }
+        publishMemoryStatsOnWriterThread(ev.type == EventType::SetLogging ||
+                                         ev.type == EventType::Flush ||
+                                         ev.type == EventType::Close);
     }
 }
 
 void TnrdWriter::flushToDiskOnWriterThread() {
     if (!streamActive()) return;
     if (v5Writer_) {
-        if (flushBufferToDisk(rollingBuffer_, false)) rollingBuffer_.clear();
+        if (flushBufferToDisk(rollingBuffer_.size(), false)) rollingBuffer_.clear();
         std::string err;
         if (!v5Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
         else v4LastCheckpointTime_ = lastSessionTime_;
         rowsSinceFlush_ = 0;
         return;
     }
-    if (flushBufferToDisk(rollingBuffer_)) rollingBuffer_.clear();
+    if (flushBufferToDisk(rollingBuffer_.size())) rollingBuffer_.clear();
     if (!activeStream_->flushRecoverable())
         reportError("flush", activeStream_->error(), activePath_);
     rowsSinceFlush_ = 0;
@@ -288,24 +463,58 @@ void TnrdWriter::flushToDiskOnWriterThread() {
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
     if (v5Writer_) {
-        (void)flushBufferToDisk(rollingBuffer_, false);
+        (void)flushBufferToDisk(rollingBuffer_.size(), false);
         std::string err;
         if (!v5Writer_->finish(&err)) reportError("close", err, activePath_);
+        const auto v5 = v5Writer_->memoryStats();
+        closedV5Activity_.chunkWrites += v5.chunkWrites;
+        closedV5Activity_.chunkPlainBytesProcessed += v5.chunkPlainBytesProcessed;
+        closedV5Activity_.chunkCompressedBytesWritten += v5.chunkCompressedBytesWritten;
+        closedV5Activity_.compressionBufferBytesAllocated += v5.compressionBufferBytesAllocated;
+        closedV5Activity_.lastChunkPlainBytes = v5.lastChunkPlainBytes;
+        closedV5Activity_.lastChunkCompressedBytes = v5.lastChunkCompressedBytes;
+        closedV5Activity_.lastCompressionBufferCapacityBytes =
+            v5.lastCompressionBufferCapacityBytes;
+        closedV5Activity_.peakCompressionBufferCapacityBytes = std::max(
+            closedV5Activity_.peakCompressionBufferCapacityBytes,
+            v5.peakCompressionBufferCapacityBytes);
+        closedV5Activity_.checkpointWrites += v5.checkpointWrites;
+        closedV5Activity_.checkpointScratchBytesAllocated +=
+            v5.checkpointScratchBytesAllocated;
+        closedV5Activity_.lastCheckpointScratchBytes = v5.lastCheckpointScratchBytes;
+        closedV5Activity_.peakCheckpointScratchBytes = std::max(
+            closedV5Activity_.peakCheckpointScratchBytes,
+            v5.peakCheckpointScratchBytes);
+        closedV5Activity_.lastCheckpointDirectoryBytes =
+            v5.lastCheckpointDirectoryBytes;
+        closedV5Activity_.peakCheckpointDirectoryBytes = std::max(
+            closedV5Activity_.peakCheckpointDirectoryBytes,
+            v5.peakCheckpointDirectoryBytes);
+        closedV5Activity_.lastCheckpointRowIndexBytes =
+            v5.lastCheckpointRowIndexBytes;
+        closedV5Activity_.peakCheckpointRowIndexBytes = std::max(
+            closedV5Activity_.peakCheckpointRowIndexBytes,
+            v5.peakCheckpointRowIndexBytes);
         v5Writer_.reset();
     }
     if (activeStream_) {
-        (void)flushBufferToDisk(rollingBuffer_);
+        (void)flushBufferToDisk(rollingBuffer_.size());
         if (!activeStream_->finish())
             reportError("close", activeStream_->error(), activePath_);
         activeStream_.reset();
     }
-    rollingBuffer_.clear();
+    // A session can end with the entire 30-second rewind window still queued.
+    // Release its deque blocks and borrowed-view capacity at rotation/close so
+    // the recorder itself does not pin that session's high-water allocation.
+    std::deque<BufferEntry>().swap(rollingBuffer_);
+    std::vector<std::pair<std::string_view, float>>().swap(v5SourceRowViews_);
     currentTrackId_     = -1;
     currentSessionType_ = -1;
     activePath_.clear();
     lastSessionTime_    = -1.0f;
     rowsSinceFlush_     = 0;
     v4LastCheckpointTime_ = -1.0f;
+    lastRollingDrainMs_ = 0;
     dedupeCache_.clear();
 }
 
@@ -373,33 +582,54 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     }
 }
 
-bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries,
-                                   bool allowV4Checkpoint) {
+bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
+    entryCount = std::min(entryCount, rollingBuffer_.size());
     if (v5Writer_) {
-        if (entries.empty()) return true;
-        std::vector<detail::V5SourceRow> rows; rows.reserve(entries.size());
-        for (const auto& e : entries) rows.push_back({e.line, e.sessionTime});
+        if (entryCount == 0) return true;
+        v5SourceRowViews_.clear();
+        v5SourceRowViews_.reserve(entryCount);
+        size_t payloadBytes = 0;
+        for (size_t index = 0; index < entryCount; ++index) {
+            const auto& e = rollingBuffer_[index];
+            v5SourceRowViews_.emplace_back(e.line, e.sessionTime);
+            payloadBytes += e.line.size();
+        }
+        ++v5AppendBatches_;
+        v5AppendRowsProcessed_ += entryCount;
+        v5AppendPayloadBytesProcessed_ += payloadBytes;
+        lastV5AppendRows_ = entryCount;
+        lastV5AppendPayloadBytes_ = payloadBytes;
+        lastV5SourceRowCapacityBytes_ = v5SourceRowViews_.capacity() *
+            sizeof(std::pair<std::string_view, float>);
+        peakV5AppendRows_ = std::max(peakV5AppendRows_, lastV5AppendRows_);
+        peakV5AppendPayloadBytes_ = std::max(
+            peakV5AppendPayloadBytes_, lastV5AppendPayloadBytes_);
+        peakV5SourceRowCapacityBytes_ = std::max(
+            peakV5SourceRowCapacityBytes_, lastV5SourceRowCapacityBytes_);
         std::string err;
-        if (!v5Writer_->append(rows, &err)) {
+        if (!v5Writer_->appendViews(v5SourceRowViews_, &err)) {
+            v5SourceRowViews_.clear();
             reportError("data write", err, activePath_);
             return false;
         }
-        const float newestTime = entries.back().sessionTime;
+        v5SourceRowViews_.clear();
+        const float newestTime = rollingBuffer_[entryCount - 1].sessionTime;
         if (allowV4Checkpoint && (v4LastCheckpointTime_ < 0.0f ||
             newestTime - v4LastCheckpointTime_ >= V4_CHECKPOINT_INTERVAL_S)) {
             if (!v5Writer_->checkpoint(&err)) {
                 reportError("checkpoint", err, activePath_);
-                // append() already transferred ownership of these rows to the
-                // V4 backend. Keep recording without duplicating them in the
-                // rolling buffer; the next checkpoint retries pending state.
+                // appendViews() already copied these rows into V5 builders.
+                // Keep recording without duplicating them in the rolling
+                // buffer; the next checkpoint retries pending state.
                 return true;
             }
             v4LastCheckpointTime_ = newestTime;
         }
         return true;
     }
-    if (!activeStream_ || entries.empty()) return true;
-    for (const auto& e : entries) {
+    if (!activeStream_ || entryCount == 0) return true;
+    for (size_t index = 0; index < entryCount; ++index) {
+        const auto& e = rollingBuffer_[index];
         if (!activeStream_->write(e.line)) {
             reportError("data write", activeStream_->error(), activePath_);
             return false;
@@ -409,13 +639,18 @@ bool TnrdWriter::flushBufferToDisk(const std::vector<BufferEntry>& entries,
     // Periodically emit a codec-specific recoverability point. Both zlib's sync
     // flush and Zstandard's stream flush make all complete rows supplied so far
     // immediately decodable without ending the active member/frame.
-    rowsSinceFlush_ += (int)entries.size();
+    rowsSinceFlush_ += static_cast<int>(entryCount);
     if (rowsSinceFlush_ >= FLUSH_EVERY_ROWS) {
         if (!activeStream_->flushRecoverable())
             reportError("flush", activeStream_->error(), activePath_);
         rowsSinceFlush_ = 0;
     }
     return true;
+}
+
+void TnrdWriter::discardRollingPrefix(size_t entryCount) {
+    entryCount = std::min(entryCount, rollingBuffer_.size());
+    while (entryCount-- > 0) rollingBuffer_.pop_front();
 }
 
 void TnrdWriter::flushOldBufferEntries() {
@@ -425,10 +660,28 @@ void TnrdWriter::flushOldBufferEntries() {
     while (flush < rollingBuffer_.size() && rollingBuffer_[flush].sessionTime < cutoff)
         flush++;
     if (flush > 0) {
-        if (flushBufferToDisk(
-                {rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush})) {
-            rollingBuffer_.erase(
-                rollingBuffer_.begin(), rollingBuffer_.begin() + (ptrdiff_t)flush);
+        const uint64_t now = wallClockMilliseconds();
+        const bool intervalElapsed = lastRollingDrainMs_ == 0 || now < lastRollingDrainMs_ ||
+            now - lastRollingDrainMs_ >= ROLLING_DRAIN_INTERVAL_MS;
+        if (flush < ROLLING_DRAIN_ROW_THRESHOLD && !intervalElapsed) return;
+        size_t payloadBytes = 0;
+        for (size_t index = 0; index < flush; ++index) {
+            const auto& entry = rollingBuffer_[index];
+            payloadBytes += entry.line.size();
+        }
+        ++rollingFlushBatches_;
+        rollingFlushEntriesProcessed_ += flush;
+        rollingFlushPayloadBytesProcessed_ += payloadBytes;
+        lastRollingFlushEntries_ = flush;
+        lastRollingFlushPayloadBytes_ = payloadBytes;
+        // Rows are now borrowed in place; no payload-copy allocation occurs.
+        lastRollingFlushCopyCapacityBytes_ = 0;
+        peakRollingFlushEntries_ = std::max(peakRollingFlushEntries_, flush);
+        peakRollingFlushPayloadBytes_ = std::max(
+            peakRollingFlushPayloadBytes_, payloadBytes);
+        if (flushBufferToDisk(flush)) {
+            discardRollingPrefix(flush);
+            lastRollingDrainMs_ = now;
         }
     }
 }

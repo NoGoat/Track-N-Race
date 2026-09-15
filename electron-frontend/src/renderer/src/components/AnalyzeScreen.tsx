@@ -254,9 +254,12 @@ function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, n
   if (selectionChanged) {
     selectionRef.current = { current, comparison }
     retainedDeltaDataRef.current = null
-  } else if (!retainedDeltaDataRef.current && deltaData && current && comparison &&
-             deltaData.currentLapNum === current.lapNum &&
-             deltaData.comparisonLapNum === comparison.lapNum) {
+  }
+  // Lap payloads and delta results arrive independently. Accept an already
+  // available match in this render, including when the lap payload arrived last.
+  if (!retainedDeltaDataRef.current && deltaData && current && comparison &&
+      deltaData.currentLapNum === current.lapNum &&
+      deltaData.comparisonLapNum === comparison.lapNum) {
     retainedDeltaDataRef.current = deltaData
   }
   const retainedDeltaData = retainedDeltaDataRef.current

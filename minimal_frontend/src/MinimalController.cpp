@@ -4,6 +4,8 @@
 #include <tnrp/DisplayNames.h>
 
 #include <chrono>
+#include <charconv>
+#include <sstream>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -61,6 +63,11 @@ bool MinimalController::start(std::string& error) {
     tnrp::Config config;
     config.port = settings_.port;
     config.bindAddress = settings_.bindAddress;
+    if (!parseForwardTargets(settings_.forwardTargets, settings_.bindAddress, settings_.port,
+                             config.udpForwardTargets, error)) {
+        publishError(error);
+        return false;
+    }
     config.protocol = settings_.protocol;
     config.loggingEnabled = true;
     config.outputDirectory = settings_.outputFolder;
@@ -105,6 +112,7 @@ void MinimalController::setProtocol(tnrp::Override protocol) {
 }
 
 bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t port,
+                                     const std::string& forwardTargets,
                                      std::string& error) {
     if (!validateIpv4(bindAddress)) {
         error = "Enter a valid IPv4 address, for example 0.0.0.0 or 127.0.0.1.";
@@ -117,14 +125,40 @@ bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t po
         return false;
     }
 
+    std::vector<tnrp::UdpForwardTarget> targets;
+    if (!parseForwardTargets(forwardTargets, bindAddress, port, targets, error)) {
+        publishError(error);
+        return false;
+    }
+    const std::string previousTargets = settings_.forwardTargets;
+    if (engine_ && forwardTargets != previousTargets) {
+        // Forwarding is constructor configuration in the existing engine API.
+        // Recreate the Minimal-owned engine to apply it without extending libtnrp.
+        const AppSettings previous = settings_;
+        engine_.reset();
+        settings_.bindAddress = bindAddress;
+        settings_.port = port;
+        settings_.forwardTargets = forwardTargets;
+        if (start(error)) return true;
+
+        settings_ = previous;
+        std::string restoreError;
+        if (!start(restoreError)) {
+            error += " The previous UDP endpoint could not be restored: " + restoreError;
+        }
+        publishError(error);
+        return false;
+    }
     if (!engine_) {
         const std::string previousAddress = settings_.bindAddress;
         const uint16_t previousPort = settings_.port;
         settings_.bindAddress = bindAddress;
         settings_.port = port;
+        settings_.forwardTargets = forwardTargets;
         if (start(error)) return true;
         settings_.bindAddress = previousAddress;
         settings_.port = previousPort;
+        settings_.forwardTargets = previousTargets;
         return false;
     }
 
@@ -142,7 +176,40 @@ bool MinimalController::applyNetwork(const std::string& bindAddress, uint16_t po
 
     settings_.bindAddress = bindAddress;
     settings_.port = port;
+    settings_.forwardTargets = forwardTargets;
     publishError({});
+    return true;
+}
+
+bool MinimalController::parseForwardTargets(const std::string& text, const std::string& bindAddress, uint16_t port,
+                                            std::vector<tnrp::UdpForwardTarget>& targets,
+                                            std::string& error) {
+    std::string separated = text;
+    for (char& c : separated) if (c == ',' || c == ';') c = ' ';
+    std::istringstream input(separated);
+    std::string item;
+    while (input >> item) {
+        const size_t colon = item.find(':');
+        unsigned destinationPort = 0;
+        const std::string address = item.substr(0, colon);
+        const char* begin = item.data() + (colon == std::string::npos ? item.size() : colon + 1);
+        const char* end = item.data() + item.size();
+        const auto parsed = std::from_chars(begin, end, destinationPort);
+        if (colon == std::string::npos || !validateIpv4(address) ||
+            address == "0.0.0.0" || parsed.ec != std::errc{} || parsed.ptr != end ||
+            destinationPort == 0 || destinationPort > 65535 ||
+            (destinationPort == port && (address == bindAddress || address.rfind("127.", 0) == 0)) ||
+            targets.size() >= tnrp::kMaxUdpForwardTargets) {
+            error = "Enter up to 15 IPv4:port destinations separated by commas. "
+                    "Use ports from 1 to 65535 and do not forward back to this listener. "
+                    "Leave empty to disable forwarding.";
+            return false;
+        }
+        bool duplicate = false;
+        for (const auto& target : targets)
+            if (target.address == address && target.port == destinationPort) duplicate = true;
+        if (!duplicate) targets.push_back({address, static_cast<uint16_t>(destinationPort)});
+    }
     return true;
 }
 

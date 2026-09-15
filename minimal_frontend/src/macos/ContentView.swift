@@ -21,7 +21,7 @@ struct ContentView: View {
             }
         }
         .padding(16)
-        .frame(width: 620, height: 286, alignment: .topLeading)
+        .frame(width: 620, height: 326, alignment: .topLeading)
         .sheet(isPresented: $model.showsAttributions) {
             AttributionsView(attributions: model.attributions)
         }
@@ -64,6 +64,14 @@ struct ContentView: View {
                 TextField("0.0.0.0", text: $model.bindAddress)
                     .textFieldStyle(.roundedBorder)
                 Color.clear.frame(width: 1, height: 1)
+            }
+
+            GridRow {
+                fieldLabel("UDP forwarding")
+                TextField("IPv4:port, IPv4:port (empty disables)", text: $model.forwardTargets)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Up to 15 destinations. Use a different receiving port on this computer. Apply network to save.")
+                    .gridCellColumns(2)
             }
 
             GridRow {

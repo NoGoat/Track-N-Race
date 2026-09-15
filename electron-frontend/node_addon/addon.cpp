@@ -21,6 +21,13 @@ using namespace Napi;
 
 #define TRACE(msg) do { fprintf(stderr, "[native] " msg "\n"); fflush(stderr); } while (0)
 
+template <typename T>
+static void updateAtomicMaximum(std::atomic<T>& target, T value) {
+    T current = target.load(std::memory_order_relaxed);
+    while (current < value && !target.compare_exchange_weak(
+        current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
+
 static tnrp::TeamColorOverrides readTeamColorOverrides(const Napi::Value& value) {
     tnrp::TeamColorOverrides result;
     if (!value.IsObject()) return result;
@@ -338,6 +345,7 @@ public:
             InstanceMethod("playerSeek", &TNRPAddon::PlayerSeek),
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
+            InstanceMethod("liveGetFastestLap", &TNRPAddon::LiveGetFastestLap),
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
             InstanceMethod("playerGetWindowData", &TNRPAddon::PlayerGetWindowData),
             InstanceMethod("playerClose", &TNRPAddon::PlayerClose),
@@ -533,7 +541,16 @@ public:
             std::lock_guard<std::mutex> lk(fs->mutex);
             fs->pending += json;
             fs->pending += '\n';
-            if (!fs->scheduled) { fs->scheduled = true; schedule = true; }
+            ++fs->rowsEnqueued;
+            fs->payloadBytesEnqueued += json.size() + 1;
+            fs->peakPendingUsedBytes = std::max(fs->peakPendingUsedBytes, fs->pending.size());
+            fs->peakPendingCapacityBytes = std::max(
+                fs->peakPendingCapacityBytes, fs->pending.capacity());
+            if (!fs->scheduled) {
+                fs->scheduled = true;
+                ++fs->scheduleAttempts;
+                schedule = true;
+            }
         }
         if (!schedule) return;
 
@@ -542,11 +559,17 @@ public:
                 std::lock_guard<std::mutex> lk(fs->mutex);
                 fs->draining.swap(fs->pending);  // grab the batch; pending keeps reusable storage
                 fs->scheduled = false;
+                fs->peakDrainingUsedBytes = std::max(
+                    fs->peakDrainingUsedBytes, fs->draining.size());
+                fs->peakDrainingCapacityBytes = std::max(
+                    fs->peakDrainingCapacityBytes, fs->draining.capacity());
             }
             if (env != nullptr && cb != nullptr) {
                 cb.Call({ Napi::String::New(env, fs->draining) });
             }
             std::lock_guard<std::mutex> lk(fs->mutex);
+            ++fs->deliveredBatches;
+            fs->deliveredPayloadBytes += fs->draining.size();
             fs->draining.clear();                // retain capacity for the next swap
         });
 
@@ -568,10 +591,16 @@ public:
             std::lock_guard<std::mutex> lk(fs->mutex);
             if (fs->discard) return;
             fs->pending.insert(fs->pending.end(), data, data + len);
+            ++fs->writesEnqueued;
+            fs->payloadBytesEnqueued += len;
+            fs->peakPendingUsedBytes = std::max(fs->peakPendingUsedBytes, fs->pending.size());
+            fs->peakPendingCapacityBytes = std::max(
+                fs->peakPendingCapacityBytes, fs->pending.capacity());
             generation = fs->generation;
             if (!fs->scheduled) {
                 fs->scheduled = true;
                 fs->scheduledGeneration = generation;
+                ++fs->scheduleAttempts;
                 schedule = true;
             }
         }
@@ -588,11 +617,17 @@ public:
                     fs->scheduledGeneration != generation) return;
                 fs->draining.swap(fs->pending);  // grab the batch; pending keeps storage
                 fs->scheduled = false;
+                fs->peakDrainingUsedBytes = std::max(
+                    fs->peakDrainingUsedBytes, fs->draining.size());
+                fs->peakDrainingCapacityBytes = std::max(
+                    fs->peakDrainingCapacityBytes, fs->draining.capacity());
             }
             if (env != nullptr && cb != nullptr) {
                 cb.Call({ Napi::Buffer<uint8_t>::Copy(env, fs->draining.data(), fs->draining.size()) });
             }
             std::lock_guard<std::mutex> lk(fs->mutex);
+            ++fs->deliveredBatches;
+            fs->deliveredPayloadBytes += fs->draining.size();
             fs->draining.clear();                // retain capacity for the next swap
         });
 
@@ -629,6 +664,9 @@ public:
         const size_t binaryBytes = binStore && binEnd > binBegin ? binEnd - binBegin : 0;
         const size_t retainedBytes = binaryBytes + coldJson.capacity();
         seekFlushBytes_->fetch_add(retainedBytes, std::memory_order_relaxed);
+        seekFlushCalls_->fetch_add(1, std::memory_order_relaxed);
+        seekFlushPayloadBytes_->fetch_add(retainedBytes, std::memory_order_relaxed);
+        updateAtomicMaximum(*seekFlushPeakBytes_, seekFlushBytes_->load(std::memory_order_relaxed));
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
                                 seekFlushBytes_, retainedBytes,
                                 currentLapStart, lapNum, allHistory, requestId,
@@ -701,6 +739,15 @@ private:
         std::string pending;    // newline-delimited JSON awaiting delivery
         std::string draining;   // batch currently being handed to JS (reused storage)
         bool        scheduled = false;
+        uint64_t    rowsEnqueued{};
+        uint64_t    payloadBytesEnqueued{};
+        uint64_t    scheduleAttempts{};
+        uint64_t    deliveredBatches{};
+        uint64_t    deliveredPayloadBytes{};
+        size_t      peakPendingUsedBytes{};
+        size_t      peakPendingCapacityBytes{};
+        size_t      peakDrainingUsedBytes{};
+        size_t      peakDrainingCapacityBytes{};
     };
 
     // Shared so queued binary flush callbacks remain valid past teardown.
@@ -712,6 +759,15 @@ private:
         bool                 discard = false;
         uint64_t             generation = 0;
         uint64_t             scheduledGeneration = 0;
+        uint64_t             writesEnqueued{};
+        uint64_t             payloadBytesEnqueued{};
+        uint64_t             scheduleAttempts{};
+        uint64_t             deliveredBatches{};
+        uint64_t             deliveredPayloadBytes{};
+        size_t               peakPendingUsedBytes{};
+        size_t               peakPendingCapacityBytes{};
+        size_t               peakDrainingUsedBytes{};
+        size_t               peakDrainingCapacityBytes{};
     };
 
     std::shared_ptr<tnrp::Engine> engine;
@@ -729,6 +785,12 @@ private:
     std::shared_ptr<BinFlushState> binFlush_ = std::make_shared<BinFlushState>();
     std::shared_ptr<std::atomic<size_t>> seekFlushBytes_ =
         std::make_shared<std::atomic<size_t>>(0);
+    std::shared_ptr<std::atomic<size_t>> seekFlushPeakBytes_ =
+        std::make_shared<std::atomic<size_t>>(0);
+    std::shared_ptr<std::atomic<uint64_t>> seekFlushCalls_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
+    std::shared_ptr<std::atomic<uint64_t>> seekFlushPayloadBytes_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<AnalysisReaderState> analysisReader_ = std::make_shared<AnalysisReaderState>();
 
@@ -838,37 +900,83 @@ private:
         size_t jsonDrainingBytes = 0;
         size_t jsonPendingUsed = 0;
         size_t jsonDrainingUsed = 0;
+        uint64_t jsonRowsEnqueued = 0;
+        uint64_t jsonPayloadBytesEnqueued = 0;
+        uint64_t jsonScheduleAttempts = 0;
+        uint64_t jsonDeliveredBatches = 0;
+        uint64_t jsonDeliveredPayloadBytes = 0;
+        size_t jsonPeakPendingUsedBytes = 0;
+        size_t jsonPeakPendingCapacityBytes = 0;
+        size_t jsonPeakDrainingUsedBytes = 0;
+        size_t jsonPeakDrainingCapacityBytes = 0;
         {
             std::lock_guard<std::mutex> lock(flush_->mutex);
             jsonPendingBytes = flush_->pending.capacity();
             jsonDrainingBytes = flush_->draining.capacity();
             jsonPendingUsed = flush_->pending.size();
             jsonDrainingUsed = flush_->draining.size();
+            jsonRowsEnqueued = flush_->rowsEnqueued;
+            jsonPayloadBytesEnqueued = flush_->payloadBytesEnqueued;
+            jsonScheduleAttempts = flush_->scheduleAttempts;
+            jsonDeliveredBatches = flush_->deliveredBatches;
+            jsonDeliveredPayloadBytes = flush_->deliveredPayloadBytes;
+            jsonPeakPendingUsedBytes = flush_->peakPendingUsedBytes;
+            jsonPeakPendingCapacityBytes = flush_->peakPendingCapacityBytes;
+            jsonPeakDrainingUsedBytes = flush_->peakDrainingUsedBytes;
+            jsonPeakDrainingCapacityBytes = flush_->peakDrainingCapacityBytes;
         }
 
         size_t binaryPendingBytes = 0;
         size_t binaryDrainingBytes = 0;
         size_t binaryPendingUsed = 0;
         size_t binaryDrainingUsed = 0;
+        uint64_t binaryWritesEnqueued = 0;
+        uint64_t binaryPayloadBytesEnqueued = 0;
+        uint64_t binaryScheduleAttempts = 0;
+        uint64_t binaryDeliveredBatches = 0;
+        uint64_t binaryDeliveredPayloadBytes = 0;
+        size_t binaryPeakPendingUsedBytes = 0;
+        size_t binaryPeakPendingCapacityBytes = 0;
+        size_t binaryPeakDrainingUsedBytes = 0;
+        size_t binaryPeakDrainingCapacityBytes = 0;
         {
             std::lock_guard<std::mutex> lock(binFlush_->mutex);
             binaryPendingBytes = binFlush_->pending.capacity();
             binaryDrainingBytes = binFlush_->draining.capacity();
             binaryPendingUsed = binFlush_->pending.size();
             binaryDrainingUsed = binFlush_->draining.size();
+            binaryWritesEnqueued = binFlush_->writesEnqueued;
+            binaryPayloadBytesEnqueued = binFlush_->payloadBytesEnqueued;
+            binaryScheduleAttempts = binFlush_->scheduleAttempts;
+            binaryDeliveredBatches = binFlush_->deliveredBatches;
+            binaryDeliveredPayloadBytes = binFlush_->deliveredPayloadBytes;
+            binaryPeakPendingUsedBytes = binFlush_->peakPendingUsedBytes;
+            binaryPeakPendingCapacityBytes = binFlush_->peakPendingCapacityBytes;
+            binaryPeakDrainingUsedBytes = binFlush_->peakDrainingUsedBytes;
+            binaryPeakDrainingCapacityBytes = binFlush_->peakDrainingCapacityBytes;
         }
 
         const size_t seekBytes = seekFlushBytes_->load(std::memory_order_relaxed);
-        const size_t retainedBytes = jsonPendingBytes + jsonDrainingBytes +
-            binaryPendingBytes + binaryDrainingBytes + seekBytes;
         const auto history = engine
             ? engine->liveHistoryMemoryStats()
             : tnrp::Engine::LiveHistoryMemoryStats{};
+        const auto writer = engine
+            ? engine->writerMemoryStats()
+            : tnrp::TnrdWriter::MemoryStats{};
+        const auto strategy = engine
+            ? engine->strategyMemoryStats()
+            : tnrp::Engine::StrategyMemoryStats{};
+        const auto runtime = engine
+            ? engine->runtimeMemoryStats()
+            : tnrp::Engine::RuntimeMemoryStats{};
+        const size_t retainedBytes = jsonPendingBytes + jsonDrainingBytes +
+            binaryPendingBytes + binaryDrainingBytes + seekBytes + writer.retainedBytes +
+            strategy.retainedBytes + runtime.retainedBytes;
         Napi::Object result = Napi::Object::New(info.Env());
         result.Set("retained_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(retainedBytes)));
         result.Set("byte_basis", Napi::String::New(info.Env(),
-            "exact reserved native flush payload plus in-flight seek payload bytes; container overhead excluded"));
+            "reserved native flush/seek payload plus estimated engine-cache, writer, and Strategy retained allocation capacity; allocator overhead and transient allocations are reported separately, not added to retained_bytes"));
 
         Napi::Object json = Napi::Object::New(info.Env());
         json.Set("pending_bytes", Napi::Number::New(info.Env(),
@@ -879,6 +987,17 @@ private:
             static_cast<double>(jsonDrainingBytes)));
         json.Set("draining_used_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(jsonDrainingUsed)));
+        Napi::Object jsonActivity = Napi::Object::New(info.Env());
+        jsonActivity.Set("rows_enqueued", Napi::Number::New(info.Env(), static_cast<double>(jsonRowsEnqueued)));
+        jsonActivity.Set("payload_bytes_enqueued", Napi::Number::New(info.Env(), static_cast<double>(jsonPayloadBytesEnqueued)));
+        jsonActivity.Set("schedule_attempts", Napi::Number::New(info.Env(), static_cast<double>(jsonScheduleAttempts)));
+        jsonActivity.Set("delivered_batches", Napi::Number::New(info.Env(), static_cast<double>(jsonDeliveredBatches)));
+        jsonActivity.Set("delivered_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(jsonDeliveredPayloadBytes)));
+        jsonActivity.Set("peak_pending_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(jsonPeakPendingUsedBytes)));
+        jsonActivity.Set("peak_pending_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(jsonPeakPendingCapacityBytes)));
+        jsonActivity.Set("peak_draining_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(jsonPeakDrainingUsedBytes)));
+        jsonActivity.Set("peak_draining_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(jsonPeakDrainingCapacityBytes)));
+        json.Set("activity", jsonActivity);
         result.Set("json_flush", json);
 
         Napi::Object binary = Napi::Object::New(info.Env());
@@ -890,14 +1009,120 @@ private:
             static_cast<double>(binaryDrainingBytes)));
         binary.Set("draining_used_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(binaryDrainingUsed)));
+        Napi::Object binaryActivity = Napi::Object::New(info.Env());
+        binaryActivity.Set("writes_enqueued", Napi::Number::New(info.Env(), static_cast<double>(binaryWritesEnqueued)));
+        binaryActivity.Set("payload_bytes_enqueued", Napi::Number::New(info.Env(), static_cast<double>(binaryPayloadBytesEnqueued)));
+        binaryActivity.Set("schedule_attempts", Napi::Number::New(info.Env(), static_cast<double>(binaryScheduleAttempts)));
+        binaryActivity.Set("delivered_batches", Napi::Number::New(info.Env(), static_cast<double>(binaryDeliveredBatches)));
+        binaryActivity.Set("delivered_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(binaryDeliveredPayloadBytes)));
+        binaryActivity.Set("peak_pending_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(binaryPeakPendingUsedBytes)));
+        binaryActivity.Set("peak_pending_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(binaryPeakPendingCapacityBytes)));
+        binaryActivity.Set("peak_draining_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(binaryPeakDrainingUsedBytes)));
+        binaryActivity.Set("peak_draining_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(binaryPeakDrainingCapacityBytes)));
+        binary.Set("activity", binaryActivity);
         result.Set("binary_flush", binary);
         result.Set("seek_flush_in_flight_bytes", Napi::Number::New(info.Env(),
             static_cast<double>(seekBytes)));
+        Napi::Object seekActivity = Napi::Object::New(info.Env());
+        seekActivity.Set("calls", Napi::Number::New(info.Env(), static_cast<double>(seekFlushCalls_->load(std::memory_order_relaxed))));
+        seekActivity.Set("payload_bytes_created", Napi::Number::New(info.Env(), static_cast<double>(seekFlushPayloadBytes_->load(std::memory_order_relaxed))));
+        seekActivity.Set("peak_in_flight_bytes", Napi::Number::New(info.Env(), static_cast<double>(seekFlushPeakBytes_->load(std::memory_order_relaxed))));
+        result.Set("seek_flush_activity", seekActivity);
+
+        Napi::Object runtimeStats = Napi::Object::New(info.Env());
+        runtimeStats.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.retainedBytes)));
+        runtimeStats.Set("estimate_basis", Napi::String::New(info.Env(),
+            "duplicate/latest-row/playback-path string capacities; transient parser-result and filtered-binary allocation activity is reported separately"));
+        Napi::Object engineCaches = Napi::Object::New(info.Env());
+        engineCaches.Set("duplicate_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.duplicateCacheUsedBytes)));
+        engineCaches.Set("duplicate_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.duplicateCacheCapacityBytes)));
+        engineCaches.Set("latest_row_used_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.latestRowCacheUsedBytes)));
+        engineCaches.Set("latest_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.latestRowCacheCapacityBytes)));
+        engineCaches.Set("playback_path_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.playbackPathCapacityBytes)));
+        runtimeStats.Set("caches", engineCaches);
+        Napi::Object parserActivity = Napi::Object::New(info.Env());
+        parserActivity.Set("datagrams_processed", Napi::Number::New(info.Env(), static_cast<double>(runtime.datagramsProcessed)));
+        parserActivity.Set("datagram_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(runtime.datagramBytesProcessed)));
+        parserActivity.Set("rows_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserRowsProduced)));
+        parserActivity.Set("control_rows_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserControlRowsProduced)));
+        parserActivity.Set("hot_json_rows_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserHotJsonRowsProduced)));
+        parserActivity.Set("json_bytes_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserJsonBytesProduced)));
+        parserActivity.Set("binary_bytes_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserBinaryBytesProduced)));
+        parserActivity.Set("result_capacity_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(runtime.parserResultCapacityBytesAllocated)));
+        parserActivity.Set("last_result_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.lastParserResultCapacityBytes)));
+        parserActivity.Set("peak_result_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.peakParserResultCapacityBytes)));
+        runtimeStats.Set("parser_activity", parserActivity);
+        Napi::Object filteredBinaryActivity = Napi::Object::New(info.Env());
+        filteredBinaryActivity.Set("batches", Napi::Number::New(info.Env(), static_cast<double>(runtime.filteredBinaryBatches)));
+        filteredBinaryActivity.Set("bytes_produced", Napi::Number::New(info.Env(), static_cast<double>(runtime.filteredBinaryBytesProduced)));
+        filteredBinaryActivity.Set("capacity_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(runtime.filteredBinaryCapacityBytesAllocated)));
+        filteredBinaryActivity.Set("last_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.lastFilteredBinaryCapacityBytes)));
+        filteredBinaryActivity.Set("peak_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(runtime.peakFilteredBinaryCapacityBytes)));
+        runtimeStats.Set("filtered_binary_activity", filteredBinaryActivity);
+        result.Set("engine_runtime", runtimeStats);
+
+        Napi::Object strategyStats = Napi::Object::New(info.Env());
+        strategyStats.Set("subscribed", Napi::Boolean::New(info.Env(), strategy.subscribed));
+        strategyStats.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.retainedBytes)));
+        strategyStats.Set("estimate_basis", Napi::String::New(info.Env(),
+            "Strategy processor, rollback checkpoints/journal, queued/active work payload capacities, and cached snapshots; shared JSON may overlap live-history and work attribution"));
+        strategyStats.Set("cache_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.cacheCapacityBytes)));
+        Napi::Object strategyQueue = Napi::Object::New(info.Env());
+        strategyQueue.Set("work_items", Napi::Number::New(info.Env(), static_cast<double>(strategy.queuedWorkItems)));
+        strategyQueue.Set("rows", Napi::Number::New(info.Env(), static_cast<double>(strategy.queuedRows)));
+        strategyQueue.Set("json_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.queuedJsonBytes)));
+        strategyQueue.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.queuedRetainedBytes)));
+        strategyQueue.Set("oldest_work_age_ms", Napi::Number::New(info.Env(), static_cast<double>(strategy.oldestQueuedWorkAgeMs)));
+        strategyQueue.Set("peak_rows", Napi::Number::New(info.Env(), static_cast<double>(strategy.peakQueuedRows)));
+        strategyQueue.Set("peak_retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.peakQueuedRetainedBytes)));
+        strategyStats.Set("work_queue", strategyQueue);
+        Napi::Object strategyActive = Napi::Object::New(info.Env());
+        strategyActive.Set("work_items", Napi::Number::New(info.Env(), static_cast<double>(strategy.activeWorkItems)));
+        strategyActive.Set("rows", Napi::Number::New(info.Env(), static_cast<double>(strategy.activeRows)));
+        strategyActive.Set("json_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.activeJsonBytes)));
+        strategyActive.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.activeRetainedBytes)));
+        strategyStats.Set("active_work", strategyActive);
+        Napi::Object strategyRollback = Napi::Object::New(info.Env());
+        strategyRollback.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.retainedBytes)));
+        strategyRollback.Set("checkpoints", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.checkpoints)));
+        strategyRollback.Set("journal_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.rows)));
+        strategyRollback.Set("rollbacks", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.rollbacks)));
+        strategyRollback.Set("replayed_rows", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.replayedRows)));
+        strategyRollback.Set("fallbacks", Napi::Number::New(info.Env(), static_cast<double>(strategy.rollback.fallbacks)));
+        strategyStats.Set("rollback", strategyRollback);
+        Napi::Object strategyActivity = Napi::Object::New(info.Env());
+        strategyActivity.Set("input_rows_enqueued", Napi::Number::New(info.Env(), static_cast<double>(strategy.inputRowsEnqueued)));
+        strategyActivity.Set("input_json_bytes_enqueued", Napi::Number::New(info.Env(), static_cast<double>(strategy.inputJsonBytesEnqueued)));
+        strategyActivity.Set("rows_processed", Napi::Number::New(info.Env(), static_cast<double>(strategy.rowsProcessed)));
+        strategyActivity.Set("json_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(strategy.jsonBytesProcessed)));
+        strategyActivity.Set("snapshots_generated", Napi::Number::New(info.Env(), static_cast<double>(strategy.snapshotsGenerated)));
+        strategyActivity.Set("snapshots_emitted", Napi::Number::New(info.Env(), static_cast<double>(strategy.snapshotsEmitted)));
+        strategyActivity.Set("snapshot_json_bytes_generated", Napi::Number::New(info.Env(), static_cast<double>(strategy.snapshotJsonBytesGenerated)));
+        strategyActivity.Set("last_snapshot_json_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.lastSnapshotJsonBytes)));
+        strategyActivity.Set("last_snapshot_json_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.lastSnapshotJsonCapacityBytes)));
+        strategyActivity.Set("peak_snapshot_json_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.peakSnapshotJsonBytes)));
+        strategyStats.Set("activity", strategyActivity);
+        Napi::Object strategyProcessor = Napi::Object::New(info.Env());
+        strategyProcessor.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.retainedBytes)));
+        strategyProcessor.Set("cached_input_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.cachedInputCapacityBytes)));
+        strategyProcessor.Set("container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.containerCapacityBytes)));
+        strategyProcessor.Set("string_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.stringCapacityBytes)));
+        strategyProcessor.Set("lap_time_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.lapTimeEntries)));
+        strategyProcessor.Set("rival_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.rivalEntries)));
+        strategyProcessor.Set("rival_recent_lap_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.rivalRecentLapEntries)));
+        strategyProcessor.Set("wear_history_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.wearHistoryEntries)));
+        strategyProcessor.Set("frozen_neutral_car_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.frozenNeutralCarEntries)));
+        strategyProcessor.Set("decision_history_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.decisionHistoryEntries)));
+        strategyProcessor.Set("conservative_past_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.conservativePastEntries)));
+        strategyProcessor.Set("aggressive_past_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.aggressivePastEntries)));
+        strategyProcessor.Set("required_lap_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.requiredLapEntries)));
+        strategyStats.Set("processor", strategyProcessor);
+        result.Set("strategy", strategyStats);
 
         Napi::Object liveHistory = Napi::Object::New(info.Env());
         liveHistory.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.retainedBytes)));
         liveHistory.Set("estimate_basis", Napi::String::New(info.Env(),
-            "allocated vector/string capacities; lap/map/shared_ptr and active worker scratch overhead excluded"));
+            "allocated vector/string capacities; transient compression/decompression activity is reported separately; lap/map/shared_ptr overhead excluded"));
         liveHistory.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(history.lapCount)));
         liveHistory.Set("pinned_laps", Napi::Number::New(info.Env(), static_cast<double>(history.pinnedLapCount)));
         liveHistory.Set("compressed_laps", Napi::Number::New(info.Env(), static_cast<double>(history.compressedLapCount)));
@@ -914,7 +1139,124 @@ private:
         liveHistory.Set("compressed_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedBytes)));
         liveHistory.Set("compressed_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.compressedCapacityBytes)));
         liveHistory.Set("queued_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.queuedJobs)));
+        liveHistory.Set("active_job_kind", Napi::Number::New(info.Env(), history.activeJobKind));
+        Napi::Object historyCompressionActivity = Napi::Object::New(info.Env());
+        historyCompressionActivity.Set("jobs", Napi::Number::New(info.Env(), static_cast<double>(history.compressionJobs)));
+        historyCompressionActivity.Set("families", Napi::Number::New(info.Env(), static_cast<double>(history.compressedFamilies)));
+        historyCompressionActivity.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(history.compressionPlainBytesProcessed)));
+        historyCompressionActivity.Set("plain_buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressionPlainBufferBytesAllocated)));
+        historyCompressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressionBufferBytesAllocated)));
+        historyCompressionActivity.Set("output_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.compressedOutputBytesAllocated)));
+        historyCompressionActivity.Set("last_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionPlainBytes)));
+        historyCompressionActivity.Set("last_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionBufferBytes)));
+        historyCompressionActivity.Set("last_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastCompressionScratchBytes)));
+        historyCompressionActivity.Set("peak_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionPlainBytes)));
+        historyCompressionActivity.Set("peak_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionBufferBytes)));
+        historyCompressionActivity.Set("peak_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakCompressionScratchBytes)));
+        liveHistory.Set("compression_activity", historyCompressionActivity);
+        Napi::Object historyDecompressionActivity = Napi::Object::New(info.Env());
+        historyDecompressionActivity.Set("jobs", Napi::Number::New(info.Env(), static_cast<double>(history.decompressionJobs)));
+        historyDecompressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(history.decompressionBufferBytesAllocated)));
+        historyDecompressionActivity.Set("last_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.lastDecompressionBufferBytes)));
+        historyDecompressionActivity.Set("peak_buffer_bytes", Napi::Number::New(info.Env(), static_cast<double>(history.peakDecompressionBufferBytes)));
+        liveHistory.Set("decompression_activity", historyDecompressionActivity);
+        liveHistory.Set("range_jobs", Napi::Number::New(info.Env(), static_cast<double>(history.rangeJobs)));
         result.Set("live_history", liveHistory);
+
+        Napi::Object writerStats = Napi::Object::New(info.Env());
+        writerStats.Set("stream_active", Napi::Boolean::New(info.Env(), writer.streamActive));
+        writerStats.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.retainedBytes)));
+        writerStats.Set("estimate_basis", Napi::String::New(info.Env(),
+            "queued event object/payload allocation plus rolling, dedupe, V5 builder, reusable compression scratch, chunk-index, branch, event, and lap-status capacities; transient activity is reported separately; allocator and map/deque node overhead excluded"));
+        writerStats.Set("queued_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedEvents)));
+        writerStats.Set("queued_retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRetainedBytes)));
+        writerStats.Set("queued_record_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedRecordEvents)));
+        writerStats.Set("queued_note_packet_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedNotePacketEvents)));
+        writerStats.Set("queued_control_events", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedControlEvents)));
+        writerStats.Set("queued_json_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedJsonBytes)));
+        writerStats.Set("queued_packet_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.queuedPacketBytes)));
+        writerStats.Set("oldest_queued_event_age_ms", Napi::Number::New(info.Env(), static_cast<double>(writer.oldestQueuedEventAgeMs)));
+
+        Napi::Object rolling = Napi::Object::New(info.Env());
+        rolling.Set("entries", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingEntries)));
+        rolling.Set("payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingPayloadBytes)));
+        rolling.Set("payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingPayloadCapacityBytes)));
+        rolling.Set("container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingContainerCapacityBytes)));
+        Napi::Object rollingActivity = Napi::Object::New(info.Env());
+        rollingActivity.Set("batches", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingFlushBatches)));
+        rollingActivity.Set("entries_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingFlushEntriesProcessed)));
+        rollingActivity.Set("payload_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.rollingFlushPayloadBytesProcessed)));
+        rollingActivity.Set("last_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.lastRollingFlushEntries)));
+        rollingActivity.Set("last_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastRollingFlushPayloadBytes)));
+        rollingActivity.Set("last_copy_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastRollingFlushCopyCapacityBytes)));
+        rollingActivity.Set("peak_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.peakRollingFlushEntries)));
+        rollingActivity.Set("peak_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakRollingFlushPayloadBytes)));
+        rollingActivity.Set("peak_copy_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakRollingFlushCopyCapacityBytes)));
+        rolling.Set("flush_copy_activity", rollingActivity);
+        writerStats.Set("rolling_buffer", rolling);
+
+        Napi::Object appendActivity = Napi::Object::New(info.Env());
+        appendActivity.Set("batches", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendBatches)));
+        appendActivity.Set("rows_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendRowsProcessed)));
+        appendActivity.Set("payload_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5AppendPayloadBytesProcessed)));
+        appendActivity.Set("last_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5AppendRows)));
+        appendActivity.Set("last_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5AppendPayloadBytes)));
+        appendActivity.Set("last_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.lastV5SourceRowCapacityBytes)));
+        appendActivity.Set("peak_rows", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5AppendRows)));
+        appendActivity.Set("peak_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5AppendPayloadBytes)));
+        appendActivity.Set("peak_source_row_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.peakV5SourceRowCapacityBytes)));
+        writerStats.Set("v5_append_activity", appendActivity);
+
+        Napi::Object dedupe = Napi::Object::New(info.Env());
+        dedupe.Set("entries", Napi::Number::New(info.Env(), static_cast<double>(writer.dedupeEntries)));
+        dedupe.Set("payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.dedupePayloadBytes)));
+        dedupe.Set("payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.dedupePayloadCapacityBytes)));
+        writerStats.Set("dedupe_cache", dedupe);
+
+        Napi::Object v5 = Napi::Object::New(info.Env());
+        v5.Set("retained_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5RetainedBytes)));
+        v5.Set("builders", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderCount)));
+        v5.Set("builder_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderPlainBytes)));
+        v5.Set("builder_plain_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderPlainCapacityBytes)));
+        v5.Set("builder_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderRowIndexEntries)));
+        v5.Set("builder_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BuilderRowIndexCapacityBytes)));
+        v5.Set("chunks", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkCount)));
+        v5.Set("chunk_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkContainerCapacityBytes)));
+        v5.Set("chunk_row_index_entries", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkRowIndexEntries)));
+        v5.Set("chunk_row_index_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkRowIndexCapacityBytes)));
+        v5.Set("branches", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BranchCount)));
+        v5.Set("branch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5BranchCapacityBytes)));
+        v5.Set("laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LapCount)));
+        v5.Set("status_laps", Napi::Number::New(info.Env(), static_cast<double>(writer.v5StatusLapCount)));
+        v5.Set("events", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventCount)));
+        v5.Set("event_payload_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventPayloadBytes)));
+        v5.Set("event_payload_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventPayloadCapacityBytes)));
+        v5.Set("event_container_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5EventContainerCapacityBytes)));
+        v5.Set("lap_status_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LapStatusCapacityBytes)));
+        Napi::Object compressionActivity = Napi::Object::New(info.Env());
+        compressionActivity.Set("chunk_writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkWrites)));
+        compressionActivity.Set("plain_bytes_processed", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkPlainBytesProcessed)));
+        compressionActivity.Set("compressed_bytes_written", Napi::Number::New(info.Env(), static_cast<double>(writer.v5ChunkCompressedBytesWritten)));
+        compressionActivity.Set("buffer_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionBufferBytesAllocated)));
+        compressionActivity.Set("retained_scratch_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionScratchCapacityBytes)));
+        compressionActivity.Set("retained_context_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CompressionContextBytes)));
+        compressionActivity.Set("last_plain_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastChunkPlainBytes)));
+        compressionActivity.Set("last_compressed_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastChunkCompressedBytes)));
+        compressionActivity.Set("last_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCompressionBufferCapacityBytes)));
+        compressionActivity.Set("peak_buffer_capacity_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCompressionBufferCapacityBytes)));
+        v5.Set("compression_activity", compressionActivity);
+        Napi::Object checkpointActivity = Napi::Object::New(info.Env());
+        checkpointActivity.Set("writes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CheckpointWrites)));
+        checkpointActivity.Set("scratch_bytes_allocated", Napi::Number::New(info.Env(), static_cast<double>(writer.v5CheckpointScratchBytesAllocated)));
+        checkpointActivity.Set("last_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointScratchBytes)));
+        checkpointActivity.Set("peak_scratch_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointScratchBytes)));
+        checkpointActivity.Set("last_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointDirectoryBytes)));
+        checkpointActivity.Set("peak_directory_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointDirectoryBytes)));
+        checkpointActivity.Set("last_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5LastCheckpointRowIndexBytes)));
+        checkpointActivity.Set("peak_row_index_bytes", Napi::Number::New(info.Env(), static_cast<double>(writer.v5PeakCheckpointRowIndexBytes)));
+        v5.Set("checkpoint_activity", checkpointActivity);
+        writerStats.Set("v5", v5);
+        result.Set("writer", writerStats);
         return result;
     }
 
@@ -1049,6 +1391,12 @@ private:
         if (info.Length() >= 1 && info[0].IsNumber()) {
             engine->playerSetSpeed(info[0].As<Napi::Number>().FloatValue());
         }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value LiveGetFastestLap(const Napi::CallbackInfo& info) {
+        if (engine && info.Length() >= 1 && info[0].IsNumber())
+            engine->liveGetFastestLap(static_cast<uint64_t>(info[0].As<Napi::Number>().Int64Value()));
         return info.Env().Undefined();
     }
 

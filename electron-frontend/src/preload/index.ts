@@ -217,6 +217,7 @@ const playerBridge = {
   },
   seekInstalled: (requestId: number) => ipcRenderer.send('player:seek-installed', requestId),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
+  getLiveFastestLap: (requestId: number) => ipcRenderer.send('live:getFastestLap', requestId),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
     ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),
   getAllLapsData: (rowTypeMask?: number) => ipcRenderer.send('player:getAllLapsData', rowTypeMask),

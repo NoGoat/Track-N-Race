@@ -6,6 +6,19 @@ Widgets. Linux prefers Qt 6 and falls back to Qt 5 when Qt 6 is unavailable.
 All three use libtnrp's raw socket backend and record TNRD V2/Zstandard files
 whenever a valid folder is selected.
 
+## UDP forwarding
+
+Enter destinations in **UDP forwarding** as comma-separated IPv4 addresses and
+ports, for example `127.0.0.1:20778, 192.168.1.20:20777`, then click **Apply network**.
+Up to 15 destinations are supported and saved between launches on all platforms.
+Incoming datagrams are forwarded unchanged while the app records. Leave the field
+empty and apply to disable forwarding. Use a different port for a receiver on the
+same computer, and avoid forwarding chains that send packets back to this app.
+Changing the destination list restarts the recorder and closes the current recording;
+recording resumes in a new file when session telemetry arrives.
+Invalid entries are rejected; if the new listener cannot start, the app attempts
+to restore the previous network settings.
+
 ## Windows
 
 Prerequisites: Windows 10 or newer, Visual Studio with the Desktop development

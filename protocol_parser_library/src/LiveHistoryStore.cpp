@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
@@ -27,6 +28,13 @@ constexpr uint32_t kHistoricalMask =
     (1u << 12);
 
 bool isPacked(uint8_t type) { return type == 1 || type == 11 || type == 12; }
+
+template <typename T>
+void updateAtomicMaximum(std::atomic<T>& target, T value) {
+    T current = target.load(std::memory_order_relaxed);
+    while (current < value && !target.compare_exchange_weak(
+        current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
 
 float scanTime(std::string_view json) {
     constexpr std::string_view key = "\"session_time\":";
@@ -160,6 +168,24 @@ struct LiveHistoryStore::Impl {
     std::deque<Job> jobs;
     bool stopping{};
     std::thread worker;
+    std::atomic<int> activeJobKind{0};
+    std::atomic<uint64_t> compressionJobs{0};
+    std::atomic<uint64_t> compressedFamilies{0};
+    std::atomic<uint64_t> compressionPlainBytesProcessed{0};
+    std::atomic<uint64_t> compressionPlainBufferBytesAllocated{0};
+    std::atomic<uint64_t> compressionBufferBytesAllocated{0};
+    std::atomic<uint64_t> compressedOutputBytesAllocated{0};
+    std::atomic<size_t> lastCompressionPlainBytes{0};
+    std::atomic<size_t> lastCompressionBufferBytes{0};
+    std::atomic<size_t> lastCompressionScratchBytes{0};
+    std::atomic<size_t> peakCompressionPlainBytes{0};
+    std::atomic<size_t> peakCompressionBufferBytes{0};
+    std::atomic<size_t> peakCompressionScratchBytes{0};
+    std::atomic<uint64_t> decompressionJobs{0};
+    std::atomic<uint64_t> decompressionBufferBytesAllocated{0};
+    std::atomic<size_t> lastDecompressionBufferBytes{0};
+    std::atomic<size_t> peakDecompressionBufferBytes{0};
+    std::atomic<uint64_t> rangeJobs{0};
 
     Impl() : worker([this] { run(); }) {}
 
@@ -206,7 +232,8 @@ struct LiveHistoryStore::Impl {
         }
     }
 
-    static void compressLap(const std::shared_ptr<LapSegment>& lap) {
+    void compressLap(const std::shared_ptr<LapSegment>& lap) {
+        compressionJobs.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(lap->mutex);
         for (size_t familyIndex = 1; familyIndex < lap->families.size(); ++familyIndex) {
             const auto type = static_cast<uint8_t>(familyIndex);
@@ -216,6 +243,17 @@ struct LiveHistoryStore::Impl {
             family.compressionQueued = false;
             if (plain.empty()) continue;
             std::vector<uint8_t> compressed(ZSTD_compressBound(plain.size()));
+            compressionPlainBytesProcessed.fetch_add(plain.size(), std::memory_order_relaxed);
+            compressionPlainBufferBytesAllocated.fetch_add(
+                plain.capacity(), std::memory_order_relaxed);
+            compressionBufferBytesAllocated.fetch_add(compressed.capacity(), std::memory_order_relaxed);
+            lastCompressionPlainBytes.store(plain.size(), std::memory_order_relaxed);
+            lastCompressionBufferBytes.store(compressed.capacity(), std::memory_order_relaxed);
+            const size_t scratchBytes = plain.capacity() + compressed.capacity();
+            lastCompressionScratchBytes.store(scratchBytes, std::memory_order_relaxed);
+            updateAtomicMaximum(peakCompressionPlainBytes, plain.size());
+            updateAtomicMaximum(peakCompressionBufferBytes, compressed.capacity());
+            updateAtomicMaximum(peakCompressionScratchBytes, scratchBytes);
             const size_t size = ZSTD_compress(compressed.data(), compressed.size(),
                                               plain.data(), plain.size(), 3);
             if (ZSTD_isError(size)) continue;
@@ -224,6 +262,11 @@ struct LiveHistoryStore::Impl {
             // Copy the much smaller result into an exact-sized allocation so
             // completing a lap actually releases its uncompressed footprint.
             std::vector<uint8_t> stored(size);
+            const size_t fullScratchBytes = scratchBytes + stored.capacity();
+            lastCompressionScratchBytes.store(fullScratchBytes, std::memory_order_relaxed);
+            updateAtomicMaximum(peakCompressionScratchBytes, fullScratchBytes);
+            compressedFamilies.fetch_add(1, std::memory_order_relaxed);
+            compressedOutputBytesAllocated.fetch_add(stored.capacity(), std::memory_order_relaxed);
             std::memcpy(stored.data(), compressed.data(), size);
             if (!isPacked(type)) {
                 family.sequences.reserve(family.json.size());
@@ -246,7 +289,8 @@ struct LiveHistoryStore::Impl {
         for (auto& family : lap->families) family.compressionQueued = false;
     }
 
-    static void decompressLap(const std::shared_ptr<LapSegment>& lap) {
+    void decompressLap(const std::shared_ptr<LapSegment>& lap) {
+        decompressionJobs.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(lap->mutex);
         for (size_t familyIndex = 1; familyIndex < lap->families.size(); ++familyIndex) {
             const auto type = static_cast<uint8_t>(familyIndex);
@@ -254,6 +298,9 @@ struct LiveHistoryStore::Impl {
             family.compressionQueued = false;
             if (family.compressed.empty()) continue;
             std::vector<uint8_t> plain;
+            decompressionBufferBytesAllocated.fetch_add(family.plainSize, std::memory_order_relaxed);
+            lastDecompressionBufferBytes.store(family.plainSize, std::memory_order_relaxed);
+            updateAtomicMaximum(peakDecompressionBufferBytes, family.plainSize);
             if (!decompress(family, plain)) continue;
             if (isPacked(type)) {
                 family.packed = std::move(plain);
@@ -342,6 +389,7 @@ struct LiveHistoryStore::Impl {
                 jobs.pop_front();
             }
             if (job.kind == JobKind::Compress) {
+                activeJobKind.store(1, std::memory_order_relaxed);
                 bool eligible = false;
                 {
                     std::lock_guard<std::mutex> lock(stateMutex);
@@ -351,12 +399,17 @@ struct LiveHistoryStore::Impl {
                 }
                 if (eligible) compressLap(job.lap);
                 else cancelCompression(job.lap);
+                activeJobKind.store(0, std::memory_order_relaxed);
                 continue;
             }
             if (job.kind == JobKind::Decompress) {
+                activeJobKind.store(2, std::memory_order_relaxed);
                 decompressLap(job.lap);
+                activeJobKind.store(0, std::memory_order_relaxed);
                 continue;
             }
+            activeJobKind.store(3, std::memory_order_relaxed);
+            rangeJobs.fetch_add(1, std::memory_order_relaxed);
             auto result = gather(job.laps, job.mask, job.from, job.through);
             bool currentGeneration = false;
             {
@@ -365,6 +418,7 @@ struct LiveHistoryStore::Impl {
             }
             if (currentGeneration && job.callback)
                 job.callback(std::move(result));
+            activeJobKind.store(0, std::memory_order_relaxed);
         }
     }
 };
@@ -573,6 +627,37 @@ LiveHistoryMemoryStats LiveHistoryStore::memoryStats() const {
         std::lock_guard<std::mutex> lock(impl_->workMutex);
         stats.queuedJobs = impl_->jobs.size();
     }
+    stats.activeJobKind = impl_->activeJobKind.load(std::memory_order_relaxed);
+    stats.compressionJobs = impl_->compressionJobs.load(std::memory_order_relaxed);
+    stats.compressedFamilies = impl_->compressedFamilies.load(std::memory_order_relaxed);
+    stats.compressionPlainBytesProcessed =
+        impl_->compressionPlainBytesProcessed.load(std::memory_order_relaxed);
+    stats.compressionPlainBufferBytesAllocated =
+        impl_->compressionPlainBufferBytesAllocated.load(std::memory_order_relaxed);
+    stats.compressionBufferBytesAllocated =
+        impl_->compressionBufferBytesAllocated.load(std::memory_order_relaxed);
+    stats.compressedOutputBytesAllocated =
+        impl_->compressedOutputBytesAllocated.load(std::memory_order_relaxed);
+    stats.lastCompressionPlainBytes =
+        impl_->lastCompressionPlainBytes.load(std::memory_order_relaxed);
+    stats.lastCompressionBufferBytes =
+        impl_->lastCompressionBufferBytes.load(std::memory_order_relaxed);
+    stats.lastCompressionScratchBytes =
+        impl_->lastCompressionScratchBytes.load(std::memory_order_relaxed);
+    stats.peakCompressionPlainBytes =
+        impl_->peakCompressionPlainBytes.load(std::memory_order_relaxed);
+    stats.peakCompressionBufferBytes =
+        impl_->peakCompressionBufferBytes.load(std::memory_order_relaxed);
+    stats.peakCompressionScratchBytes =
+        impl_->peakCompressionScratchBytes.load(std::memory_order_relaxed);
+    stats.decompressionJobs = impl_->decompressionJobs.load(std::memory_order_relaxed);
+    stats.decompressionBufferBytesAllocated =
+        impl_->decompressionBufferBytesAllocated.load(std::memory_order_relaxed);
+    stats.lastDecompressionBufferBytes =
+        impl_->lastDecompressionBufferBytes.load(std::memory_order_relaxed);
+    stats.peakDecompressionBufferBytes =
+        impl_->peakDecompressionBufferBytes.load(std::memory_order_relaxed);
+    stats.rangeJobs = impl_->rangeJobs.load(std::memory_order_relaxed);
     stats.retainedBytes = stats.packedCapacityBytes +
         stats.jsonPayloadCapacityBytes + stats.jsonContainerCapacityBytes +
         stats.sequenceCapacityBytes + stats.compressedCapacityBytes;
@@ -607,38 +692,61 @@ std::string LiveHistoryStore::latestJson(uint8_t type,
     return {};
 }
 
-std::vector<LiveHistoryJsonRow> LiveHistoryStore::strategyRows(
-    float throughSessionTime) const {
+void LiveHistoryStore::forEachStrategyRow(float throughSessionTime,
+    const std::function<void(const LiveHistoryJsonRow&)>& visitor,
+    const std::function<void(size_t, size_t, size_t)>& memory) const {
     std::vector<std::shared_ptr<LapSegment>> laps;
     {
         std::lock_guard<std::mutex> lock(impl_->stateMutex);
         for (const auto& [_, lap] : impl_->laps) laps.push_back(lap);
     }
-    std::vector<LiveHistoryJsonRow> rows;
-    std::string ignored;
-    for (uint8_t type = 2; type <= 10; ++type) {
-        if (!(kStrategyDependencyMask & (1u << type))) continue;
-        for (const auto& lap : laps) {
+    for (const auto& lap : laps) {
+        std::vector<LiveHistoryJsonRow> rows;
+        std::string ignored;
+        size_t jsonBytes = 0, jsonCapacity = 0;
+        const auto report = [&](size_t scratch = 0) {
+            if (memory) memory(rows.size(), jsonBytes,
+                rows.capacity() * sizeof(LiveHistoryJsonRow) + jsonCapacity + scratch);
+        };
+        {
             std::lock_guard<std::mutex> lock(lap->mutex);
-            const auto& family = lap->families[type];
-            if (family.compressed.empty()) {
-                for (const auto& row : family.json)
-                    if (row.sessionTime <= throughSessionTime) rows.push_back(row);
-            } else {
+            for (uint8_t type = 2; type <= 10; ++type) {
+                if (!(kStrategyDependencyMask & (1u << type))) continue;
+                const auto& family = lap->families[type];
+                const size_t first = rows.size();
                 std::vector<uint8_t> plain;
-                if (decompress(family, plain))
-                    appendJsonLines(plain.data(), plain.size(),
-                                    -std::numeric_limits<float>::infinity(),
-                                    throughSessionTime, ignored, &rows,
-                                    &family.sequences);
+                if (family.compressed.empty()) {
+                    for (const auto& row : family.json)
+                        if (row.sessionTime <= throughSessionTime) rows.push_back(row);
+                } else {
+                    impl_->decompressionJobs.fetch_add(1, std::memory_order_relaxed);
+                    impl_->decompressionBufferBytesAllocated.fetch_add(family.plainSize, std::memory_order_relaxed);
+                    impl_->lastDecompressionBufferBytes.store(family.plainSize, std::memory_order_relaxed);
+                    updateAtomicMaximum(impl_->peakDecompressionBufferBytes, family.plainSize);
+                    report(family.plainSize);
+                    if (decompress(family, plain))
+                        appendJsonLines(plain.data(), plain.size(),
+                                        -std::numeric_limits<float>::infinity(),
+                                        throughSessionTime, ignored, &rows,
+                                        &family.sequences);
+                }
+                for (size_t i = first; i < rows.size(); ++i) {
+                    if (!rows[i].json) continue;
+                    jsonBytes += rows[i].json->size();
+                    jsonCapacity += rows[i].json->capacity() + 1;
+                }
+                report(plain.capacity());
             }
         }
+        // Sequences are unique, so sort needs no separate stability buffer.
+        std::sort(rows.begin(), rows.end(), [](const auto& left, const auto& right) {
+            return left.sessionTime < right.sessionTime ||
+                (left.sessionTime == right.sessionTime && left.sequence < right.sequence);
+        });
+        report();
+        for (const auto& row : rows) visitor(row);
     }
-    std::stable_sort(rows.begin(), rows.end(), [](const auto& left, const auto& right) {
-        return left.sessionTime < right.sessionTime ||
-            (left.sessionTime == right.sessionTime && left.sequence < right.sequence);
-    });
-    return rows;
+    if (memory) memory(0, 0, 0);
 }
 
 void LiveHistoryStore::requestRange(uint32_t familyMask, float fromSessionTime,
@@ -654,6 +762,32 @@ void LiveHistoryStore::requestRange(uint32_t familyMask, float fromSessionTime,
         std::lock_guard<std::mutex> lock(impl_->stateMutex);
         job.generation = impl_->generation;
         for (const auto& [_, lap] : impl_->laps) job.laps.push_back(lap);
+    }
+    impl_->enqueue(std::move(job));
+}
+
+void LiveHistoryStore::requestFastestLap(
+    std::function<void(int, int, float, float, LiveHistoryBackfill)> callback) {
+    Impl::Job job;
+    job.kind = Impl::JobKind::Range;
+    job.mask = kHistoricalMask;
+    {
+        std::lock_guard<std::mutex> lock(impl_->stateMutex);
+        std::shared_ptr<LapSegment> best;
+        for (const auto& [num, lap] : impl_->laps) {
+            if (num >= impl_->current || lap->lapTimeMs <= 0) continue;
+            if (!best || lap->lapTimeMs < best->lapTimeMs) best = lap;
+        }
+        if (!best) return;
+        job.generation = impl_->generation;
+        job.laps.push_back(best);
+        job.from = best->start;
+        job.through = best->end;
+        job.callback = [callback = std::move(callback), num = best->lapNum,
+                        ms = best->lapTimeMs, start = best->start, end = best->end]
+                       (LiveHistoryBackfill data) mutable {
+            callback(num, ms, start, end, std::move(data));
+        };
     }
     impl_->enqueue(std::move(job));
 }

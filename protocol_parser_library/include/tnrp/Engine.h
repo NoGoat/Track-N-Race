@@ -84,6 +84,81 @@ public:
         size_t compressedBytes{};
         size_t compressedCapacityBytes{};
         size_t queuedJobs{};
+        int activeJobKind{};
+        uint64_t compressionJobs{};
+        uint64_t compressedFamilies{};
+        uint64_t compressionPlainBytesProcessed{};
+        uint64_t compressionPlainBufferBytesAllocated{};
+        uint64_t compressionBufferBytesAllocated{};
+        uint64_t compressedOutputBytesAllocated{};
+        size_t lastCompressionPlainBytes{};
+        size_t lastCompressionBufferBytes{};
+        size_t lastCompressionScratchBytes{};
+        size_t peakCompressionPlainBytes{};
+        size_t peakCompressionBufferBytes{};
+        size_t peakCompressionScratchBytes{};
+        uint64_t decompressionJobs{};
+        uint64_t decompressionBufferBytesAllocated{};
+        size_t lastDecompressionBufferBytes{};
+        size_t peakDecompressionBufferBytes{};
+        uint64_t rangeJobs{};
+    };
+
+    struct StrategyRollbackMemoryStats {
+        size_t retainedBytes{}, checkpoints{}, rows{};
+        uint64_t rollbacks{}, replayedRows{}, fallbacks{};
+    };
+    struct StrategyMemoryStats {
+        bool subscribed{};
+        size_t retainedBytes{};
+        size_t cacheCapacityBytes{};
+        size_t queuedWorkItems{};
+        size_t queuedRows{};
+        size_t queuedJsonBytes{};
+        size_t queuedRetainedBytes{};
+        uint64_t oldestQueuedWorkAgeMs{};
+        size_t peakQueuedRows{};
+        size_t peakQueuedRetainedBytes{};
+        size_t activeWorkItems{};
+        size_t activeRows{};
+        size_t activeJsonBytes{};
+        size_t activeRetainedBytes{};
+        uint64_t inputRowsEnqueued{};
+        uint64_t inputJsonBytesEnqueued{};
+        uint64_t rowsProcessed{};
+        uint64_t jsonBytesProcessed{};
+        uint64_t snapshotsGenerated{};
+        uint64_t snapshotsEmitted{};
+        uint64_t snapshotJsonBytesGenerated{};
+        size_t lastSnapshotJsonBytes{};
+        size_t lastSnapshotJsonCapacityBytes{};
+        size_t peakSnapshotJsonBytes{};
+        StrategyProcessor::MemoryStats processor;
+        StrategyRollbackMemoryStats rollback;
+    };
+
+    struct RuntimeMemoryStats {
+        size_t retainedBytes{};
+        size_t duplicateCacheUsedBytes{};
+        size_t duplicateCacheCapacityBytes{};
+        size_t latestRowCacheUsedBytes{};
+        size_t latestRowCacheCapacityBytes{};
+        size_t playbackPathCapacityBytes{};
+        uint64_t datagramsProcessed{};
+        uint64_t datagramBytesProcessed{};
+        uint64_t parserRowsProduced{};
+        uint64_t parserControlRowsProduced{};
+        uint64_t parserHotJsonRowsProduced{};
+        uint64_t parserJsonBytesProduced{};
+        uint64_t parserBinaryBytesProduced{};
+        uint64_t parserResultCapacityBytesAllocated{};
+        size_t lastParserResultCapacityBytes{};
+        size_t peakParserResultCapacityBytes{};
+        uint64_t filteredBinaryBatches{};
+        uint64_t filteredBinaryBytesProduced{};
+        uint64_t filteredBinaryCapacityBytesAllocated{};
+        size_t lastFilteredBinaryCapacityBytes{};
+        size_t peakFilteredBinaryCapacityBytes{};
     };
 
     Engine(const Config& config, Sink* sink);
@@ -96,6 +171,9 @@ public:
     void setDiagnosticsEnabled(bool enabled);
     LiveDiagnostics liveDiagnostics() const;
     LiveHistoryMemoryStats liveHistoryMemoryStats() const;
+    StrategyMemoryStats strategyMemoryStats() const;
+    RuntimeMemoryStats runtimeMemoryStats() const;
+    TnrdWriter::MemoryStats writerMemoryStats() const;
 
     // ── Live config ──────────────────────────────────────────────────────
     void setOverride(Override ovr);
@@ -142,6 +220,7 @@ public:
                     uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
     void playerSetSpeed(float mult);
     void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
+    void liveGetFastestLap(uint64_t requestId);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const;
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
@@ -204,7 +283,7 @@ private:
     float             hostConsumerWindowSeconds_ = 0.0f;
     uint32_t          pairConsumerRowMask_ = 0;
 
-    enum class StrategyWorkKind { Update, Rebuild, Reset, Configure, PlaybackRebuild };
+    enum class StrategyWorkKind { Update, Rollback, Reset, Configure, PlaybackRebuild };
     struct StrategyWork {
         StrategyWorkKind kind{StrategyWorkKind::Update};
         uint64_t generation{};
@@ -215,12 +294,32 @@ private:
         float rebuildThrough{};
         uint64_t seekRequestId{};
         std::string playbackPath;
+        uint64_t queuedAtMs{};
     };
-    std::mutex strategyWorkMutex_;
+    mutable std::mutex strategyWorkMutex_;
     std::condition_variable strategyWorkCv_;
     std::deque<StrategyWork> strategyWorkQueue_;
     std::thread strategyThread_;
     bool strategyStop_ = false;
+    mutable std::mutex strategyMemoryStatsMutex_;
+    StrategyProcessor::MemoryStats publishedLiveStrategyMemoryStats_;
+    StrategyRollbackMemoryStats publishedStrategyRollbackMemoryStats_;
+    std::atomic<size_t> strategyPeakQueuedRows_{0};
+    std::atomic<size_t> strategyPeakQueuedRetainedBytes_{0};
+    std::atomic<size_t> strategyActiveWorkItems_{0};
+    std::atomic<size_t> strategyActiveRows_{0};
+    std::atomic<size_t> strategyActiveJsonBytes_{0};
+    std::atomic<size_t> strategyActiveRetainedBytes_{0};
+    std::atomic<uint64_t> strategyInputRowsEnqueued_{0};
+    std::atomic<uint64_t> strategyInputJsonBytesEnqueued_{0};
+    std::atomic<uint64_t> strategyRowsProcessed_{0};
+    std::atomic<uint64_t> strategyJsonBytesProcessed_{0};
+    std::atomic<uint64_t> strategySnapshotsGenerated_{0};
+    std::atomic<uint64_t> strategySnapshotsEmitted_{0};
+    std::atomic<uint64_t> strategySnapshotJsonBytesGenerated_{0};
+    std::atomic<size_t> strategyLastSnapshotJsonBytes_{0};
+    std::atomic<size_t> strategyLastSnapshotJsonCapacityBytes_{0};
+    std::atomic<size_t> strategyPeakSnapshotJsonBytes_{0};
     uint64_t liveStrategyGeneration_ = 1; // guarded by mutex_
     uint16_t liveStrategyFormat_ = 2025;  // guarded by mutex_
     std::atomic<uint64_t> playbackStrategyGeneration_{0};
@@ -228,6 +327,21 @@ private:
     bool playbackStrategyPending_ = false;           // guarded by mutex_
     std::vector<std::string> playbackStrategyPendingRows_; // guarded by mutex_
     std::string playbackPath_;                        // guarded by mutex_
+    uint64_t runtimeDatagramsProcessed_{};             // guarded by mutex_
+    uint64_t runtimeDatagramBytesProcessed_{};         // guarded by mutex_
+    uint64_t runtimeParserRowsProduced_{};             // guarded by mutex_
+    uint64_t runtimeParserControlRowsProduced_{};      // guarded by mutex_
+    uint64_t runtimeParserHotJsonRowsProduced_{};      // guarded by mutex_
+    uint64_t runtimeParserJsonBytesProduced_{};        // guarded by mutex_
+    uint64_t runtimeParserBinaryBytesProduced_{};      // guarded by mutex_
+    uint64_t runtimeParserResultCapacityAllocated_{};  // guarded by mutex_
+    size_t runtimeLastParserResultCapacity_{};         // guarded by mutex_
+    size_t runtimePeakParserResultCapacity_{};         // guarded by mutex_
+    uint64_t runtimeFilteredBinaryBatches_{};          // guarded by mutex_
+    uint64_t runtimeFilteredBinaryBytesProduced_{};    // guarded by mutex_
+    uint64_t runtimeFilteredBinaryCapacityAllocated_{};// guarded by mutex_
+    size_t runtimeLastFilteredBinaryCapacity_{};       // guarded by mutex_
+    size_t runtimePeakFilteredBinaryCapacity_{};       // guarded by mutex_
     bool              liveDiagnosticsEnabled_ = false;
     LiveDiagnostics   liveDiagnostics_{};
 

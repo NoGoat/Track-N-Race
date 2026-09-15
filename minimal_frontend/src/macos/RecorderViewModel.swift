@@ -17,6 +17,7 @@ final class RecorderViewModel: ObservableObject {
 
     @Published var outputFolder: String
     @Published var bindAddress: String
+    @Published var forwardTargets: String
     @Published var portText: String
     @Published var protocolIndex: Int
     @Published var circuit = "Unavailable"
@@ -31,6 +32,7 @@ final class RecorderViewModel: ObservableObject {
     init() {
         let bridge = TNRRecorderBridge(defaults: .standard)
         self.bridge = bridge
+        forwardTargets = bridge.forwardTargets
         outputFolder = bridge.outputFolder
         bindAddress = bridge.bindAddress
         portText = String(bridge.port)
@@ -79,7 +81,7 @@ final class RecorderViewModel: ObservableObject {
             return
         }
 
-        if let error = bridge.applyNetworkAddress(bindAddress, port: port) {
+        if let error = bridge.applyNetworkAddress(bindAddress, port: port, forwardTargets: forwardTargets) {
             alertMessage = error
             bindAddress = bridge.bindAddress
             portText = String(bridge.port)
