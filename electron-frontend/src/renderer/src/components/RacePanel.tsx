@@ -1,6 +1,7 @@
 import { useRef, memo } from 'react'
 import type { LapRow, StatusRow, TimingCar, DriverInfo, CarStatusEntry } from '../types'
 import { useLabels } from '../lib/labels'
+import { tyreCompoundColor } from '../lib/tyreCompounds'
 import type { DensityMode } from '../lib/graphSections'
 
 interface Props {
@@ -34,14 +35,6 @@ function fmtSector(ms: number): string {
   const s     = Math.floor(ms / 1000)
   const mills = ms % 1000
   return `${s}.${String(mills).padStart(3, '0')}`
-}
-
-const VISUAL_COLORS: Record<number, string> = {
-  16: 'var(--compound-soft)',
-  17: 'var(--compound-medium)',
-  18: 'var(--compound-hard)',
-   7: 'var(--compound-inter)',
-   8: 'var(--compound-wet)',
 }
 
 const ERS_COLORS = ['text-[var(--text-secondary)]', 'text-[#5794F2]', 'text-[var(--compound-medium)]', 'text-[#C4162A]']
@@ -145,7 +138,7 @@ const RacePanel = memo(function RacePanel({
     '#C4162A'
 
   const tyreName  = activeStatus ? tn('tyre.actual', activeStatus.tyre_compound) : null
-  const tyreColor = activeStatus ? (VISUAL_COLORS[activeStatus.visual_compound] ?? '#ffffff') : '#ffffff'
+  const tyreColor = activeStatus ? (tyreCompoundColor(activeStatus.tyre_compound, activeStatus.visual_compound) ?? '#ffffff') : '#ffffff'
 
   const showTiming = cards?.timing ?? true
   const showErs = cards?.energyRecovery ?? true

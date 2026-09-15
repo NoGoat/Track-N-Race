@@ -218,14 +218,62 @@ void StrategyProcessor::setTeamColorOverrides(TeamColorOverrides overrides){
 void StrategyProcessor::setMinimumStops(int stops){minimumStops_=std::clamp(stops,0,8);}
 void StrategyProcessor::reset(){
     lap_.reset();session_.reset();status_.reset();damage_.reset();timing_.reset();participants_.reset();tyreSets_.reset();allStatus_.reset();
-    lapTimes_.clear();currentStintStart_=0;rivalAhead_=rivalBehind_=-1;
+    lapTimes_.clear();raceHistory_.reset();completedStops_=0;
+    currentStintStart_=0;rivalAhead_=rivalBehind_=-1;
     rivalExperience_.clear();retiredCars_.clear();usedDryVisualCompounds_.clear();
     wearHistory_.clear();lastWearLap_=-1;
     neutralisationStartLap_=0;neutralisationStartTime_=0;
     frozenNeutralCars_.clear();neutralisationRecommendation_.clear();
     decisionHistory_.clear();
     haveAheadGap_=haveBehindGap_=false;aheadTrend_=behindTrend_=-1;
-    conservativePast_.clear();aggressivePast_.clear();conservativeRequired_.clear();aggressiveRequired_.clear();
+    stints_.clear();
+}
+
+void StrategyProcessor::rememberPaceLap(int lap, int milliseconds) {
+    lapTimes_[lap] = milliseconds;
+    // The estimator uses five accepted samples; retain a small allowance for
+    // its outlier filter without copying a full race into every checkpoint.
+    while (lapTimes_.size() > 12) lapTimes_.erase(lapTimes_.begin());
+}
+
+void StrategyProcessor::completeLap(int nextLap, int milliseconds) {
+    if (!session_ || session_->session_type < 15 || session_->session_type > 17) return;
+    const int completed = nextLap - 1;
+    if (completed <= 0 || completed > session_->total_laps ||
+        completed > StrategyRaceHistory::MAX_LAPS) return;
+    StrategyRaceHistory::Lap result{completed, std::max(0, milliseconds), {}};
+    if (completed > raceHistory_.latestLap() && lap_ && lap_->lap_num == completed) {
+        // Capture the last recommendation from the outgoing lap's inputs.
+        // This runs for live input AND replay, regardless of page visibility.
+        // The internal calculation omits full-race rows and serialization.
+        const auto plan = makeSnapshot(false);
+        const StrategyPlan* plans[] = {&plan.conservative, &plan.aggressive};
+        for (size_t i = 0; i < 2; ++i)
+            for (const auto& stint : plans[i]->stints)
+                for (const auto& row : stint.rows)
+                    if (row.lap_num == completed) result.required_base_ms[i] = row.required_ms;
+    }
+    raceHistory_.complete(result);
+}
+
+void StrategyProcessor::observeStint(bool changed) {
+    if (!lap_ || !status_ || !session_ || lap_->lap_num <= 0 ||
+        status_->tyre_compound <= 0 || session_->session_type < 15 || session_->session_type > 17) return;
+    int currentLap = lap_->lap_num;
+    if (timing_) if (const auto* player = findCar(*timing_, timing_->player_idx))
+        currentLap = std::max(currentLap, player->lap_num);
+    if (currentLap > StrategyRaceHistory::MAX_LAPS) return;
+    if (stints_.empty()) {
+        currentStintStart_ = std::max(1, currentLap - status_->tyre_age_laps);
+        stints_.push_back({currentStintStart_, status_->tyre_compound, status_->visual_compound, {}});
+    } else if (changed) {
+        currentStintStart_ = currentLap;
+        StintProgress stint{currentLap, status_->tyre_compound, status_->visual_compound, {}};
+        if (currentLap > stints_.back().start_lap) stints_.push_back(stint);
+        else stints_.back() = stint;
+        // Stint changes describe tyre use. Only the race's reported stop
+        // counter satisfies required pit stops; a tyre change alone need not.
+    }
 }
 void StrategyProcessor::ingest(const SessionRow& r){
     if(session_ && (session_->track_id!=r.track_id || session_->session_type!=r.session_type) && lap_ && lap_->lap_num>1) reset();
@@ -243,15 +291,19 @@ void StrategyProcessor::ingest(const SessionRow& r){
         frozenNeutralCars_.clear();neutralisationRecommendation_.clear();
     }
     session_=r;
+    observeStint();
 }
 void StrategyProcessor::ingest(const StatusRow&r){
-    if(status_&&lap_&&(r.tyre_compound!=status_->tyre_compound||r.visual_compound!=status_->visual_compound||r.tyre_age_laps+1<status_->tyre_age_laps)){
-        currentStintStart_=std::max(1,lap_->lap_num);
+    const bool changed=status_&&lap_&&(r.tyre_compound!=status_->tyre_compound||
+        r.visual_compound!=status_->visual_compound||r.tyre_age_laps<status_->tyre_age_laps);
+    if(changed){
+        // Freeze the outgoing stint's expected interval before replacing tyres.
+        (void)makeSnapshot(false);
         wearHistory_.clear();lastWearLap_=-1;
     }
     status_=r;
     if(dryVisual(r.visual_compound))usedDryVisualCompounds_.insert(r.visual_compound);
-    if(currentStintStart_<=0&&lap_)currentStintStart_=std::max(1,lap_->lap_num-r.tyre_age_laps);
+    observeStint(changed);
 }
 void StrategyProcessor::ingest(const DamageRow&r){damage_=r;}
 void StrategyProcessor::ingest(const ParticipantsRow&r){
@@ -393,6 +445,10 @@ double StrategyProcessor::rivalThreatScore(int idx,bool ahead) const{
 }
 
 void StrategyProcessor::ingest(const TimingRow&r){
+    if (const auto* player = findCar(r, r.player_idx)) {
+        completeLap(player->lap_num, player->last_lap_ms);
+        completedStops_ = std::max(completedStops_, player->num_pit_stops);
+    }
     timing_=r;
     const bool neutralised=session_&&(session_->safety_car_status==1||session_->safety_car_status==2);
     const TimingCar* player=findCar(r,r.player_idx);
@@ -416,7 +472,7 @@ void StrategyProcessor::ingest(const TimingRow&r){
                     car.position,experience.tyre_age_laps});
                 if(experience.recent_laps.size()>5)experience.recent_laps.erase(experience.recent_laps.begin());
                 if(car.idx==r.player_idx&&car.driver_status!=2&&car.driver_status!=3)
-                    lapTimes_[completedLap]=car.last_lap_ms;
+                    rememberPaceLap(completedLap,car.last_lap_ms);
             }
             experience.observed_lap=car.lap_num;
         }
@@ -429,20 +485,22 @@ void StrategyProcessor::ingest(const TimingRow&r){
     if(b){double g=b->gap_ms-p->gap_ms;if(haveBehindGap_&&std::abs(g-previousBehindGap_)>30)behindTrend_=g<previousBehindGap_?1:0;previousBehindGap_=g;haveBehindGap_=true;}else{haveBehindGap_=false;behindTrend_=-1;}
 }
 void StrategyProcessor::ingest(const LapRow&r){
+    completeLap(r.lap_num,r.last_lap_ms);
+    completedStops_=std::max(completedStops_,r.num_pit_stops);
     const bool neutralised=session_&&(session_->safety_car_status==1||session_->safety_car_status==2);
     const TimingCar* player=timing_?findCar(*timing_,timing_->player_idx):nullptr;
     const bool clean=!timing_||(player&&player->pit_status==0&&!player->lap_invalid&&
         player->driver_status!=2&&player->driver_status!=3);
     const bool settled=!status_||status_->tyre_age_laps>1;
     if(r.lap_num>1&&validRaceLapMs(r.last_lap_ms)&&!neutralised&&clean&&settled)
-        lapTimes_[r.lap_num-1]=r.last_lap_ms;
+        rememberPaceLap(r.lap_num-1,r.last_lap_ms);
     if(r.lap_num>1&&r.lap_num-1>lastWearLap_&&damage_&&status_&&!neutralised){
         wearHistory_.push_back({r.lap_num-1,status_->tyre_compound,damage_->tyre_wear_fl,
             damage_->tyre_wear_fr,damage_->tyre_wear_rl,damage_->tyre_wear_rr});
         if(wearHistory_.size()>6)wearHistory_.erase(wearHistory_.begin());
         lastWearLap_=r.lap_num-1;
     }
-    lap_=r;if(status_&&currentStintStart_<=0)currentStintStart_=std::max(1,r.lap_num-status_->tyre_age_laps);
+    lap_=r;observeStint();
 }
 
 void StrategyProcessor::ingestJson(std::string_view json){
@@ -455,7 +513,9 @@ void StrategyProcessor::ingestJson(std::string_view json){
     },*parsed);
 }
 
-StrategySnapshotRow StrategyProcessor::snapshot(){
+StrategySnapshotRow StrategyProcessor::snapshot(){return makeSnapshot(true);}
+
+StrategySnapshotRow StrategyProcessor::makeSnapshot(bool includeHistory){
     StrategySnapshotRow out;
     out.session_time=std::max({lap_?lap_->session_time:0.0f,status_?status_->session_time:0.0f,
         damage_?damage_->session_time:0.0f,timing_?timing_->session_time:0.0f,
@@ -537,8 +597,9 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
         return it==rivalExperience_.end()?nullptr:&it->second;
     };
     const auto*playerExperience=player?experienceFor(player->idx):nullptr;
-    const bool playerRecentlyStopped=playerExperience&&
-        playerExperience->last_pit_lap>=out.lap_num-1;
+    const bool playerRecentlyStopped=(playerExperience&&
+        playerExperience->last_pit_lap>=out.lap_num-1)||
+        (stints_.size()>1&&currentStintStart_>=out.lap_num-1);
     const bool pitCallActionable=player&&player->pit_status==0&&
         status_->tyre_age_laps>1&&!playerRecentlyStopped;
     auto rivalStartedUnmatchedStop=[&](int idx){
@@ -689,7 +750,7 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
     if(rivalStartedUnmatchedStop(rivalBehind_))
         first=out.lap_num+1;
     if(out.neutralisation&&out.neutralisation->recommendation=="box")first=out.lap_num+1;
-    const int completedStops=player?std::max(0,player->num_pit_stops):0;
+    const int completedStops=completedStops_;
     RawPlan cp=buildPlan(format_,out.lap_num,out.total_laps,first,status_->tyre_compound,status_->visual_compound,cons);
     enforceMinimumStops(format_,cp,futureCons,std::max(0,minimumStops_-completedStops));
     const int aggLeft=std::max(0,(int)std::floor((cliff-out.limiting_wear)/(out.limiting_wear_per_lap*1.2)));
@@ -704,8 +765,10 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
     if(minimumStops_>0)enforceMinimumStops(format_,ap,futureAgg,std::max(0,minimumStops_+1-completedStops));
     if(!wet&&minimumStops_>0){enforceDryCompoundRule(format_,cp,futureCons,usedDryVisualCompounds_);enforceDryCompoundRule(format_,ap,futureAgg,usedDryVisualCompounds_);}
 
-    auto display=[&](const RawPlan& raw,bool aggressive,std::vector<PastStintState>& past,
-                     std::map<int,double>& requiredByLap){
+    const auto completedLaps=includeHistory?raceHistory_.laps():
+        std::array<const StrategyRaceHistory::Lap*,StrategyRaceHistory::MAX_LAPS+1>{};
+    auto display=[&](const RawPlan& raw,bool aggressive){
+        const size_t planIndex=aggressive?1:0;
         StrategyPlan plan;
         plan.stops=raw.stops;
         plan.mode=aggressive?"attacking":"defensive";
@@ -716,12 +779,12 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
         plan.confidence=out.confidence;
         plan.legal=raw.legal;plan.legality_reason=raw.legalityReason;
         plan.requires_compound_change=raw.requiresCompoundChange;
-        if(!validRaceLapMs((int)playerLap))return plan;
         const int opening=currentStintStart_>0?currentStintStart_:std::max(1,out.lap_num-status_->tyre_age_laps);
         const double offset=aggressive?effectivePitLoss/std::max(1,out.total_laps-out.lap_num):0;
         const double rivalTarget=aggressive?attackingPace:defensivePace;
         const auto& availableSets=aggressive?futureAgg:futureCons;
         auto targetFor=[&](const RawStint&s,size_t i){
+            if(!validRaceLapMs((int)playerLap))return 0.0;
             if(i==0)return std::max(60000.0,(rivalTarget>0?rivalTarget:playerLap)-offset);
             for(const auto&set:availableSets)if((s.setIdx>=0&&set.idx==s.setIdx)||
                                       (s.setIdx<0&&set.actual_compound==s.actual)){
@@ -731,76 +794,73 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
             }
             return 0.0;
         };
-        const double firstTarget=raw.stints.empty()?0:targetFor(raw.stints[0],0);
-        if(firstTarget>0&&(past.empty()||opening>past.back().start_lap))
-            past.push_back({opening,firstTarget,raw.stints[0].name,raw.stints[0].actual,
-                            raw.stints[0].visual,!past.empty(),0});
-        if(!past.empty()&&!raw.stints.empty()){
+        if(!stints_.empty()&&!raw.stints.empty()){
             int end=raw.stints[0].last?out.total_laps:raw.stints[0].pitLap;
-            past.back().expected_laps=std::max(1,end-opening+1);
+            stints_.back().expected_laps[planIndex]=std::max(1,end-opening+1);
         }
         double raceCum=0;
         auto rows=[&](int start,int end,double req,bool post,bool pre){
             std::vector<StrategyLapTarget> values;
             double cum=0;
-            for(int n=start;n>0&&n<=end;++n){
+            const int first=includeHistory?start:std::max(start,out.lap_num);
+            const int last=includeHistory?end:std::min(end,out.lap_num);
+            for(int n=first;n>0&&n<=last&&n<=StrategyRaceHistory::MAX_LAPS;++n){
                 double lapBase=req;
-                if(n<out.lap_num){
-                    lapBase=requiredByLap.emplace(n,req).first->second;
-                }else if(n==out.lap_num){
-                    requiredByLap[n]=req;
-                    lapBase=req;
-                }
+                const auto* completed=completedLaps[n];
+                if(n<out.lap_num)lapBase=completed?completed->required_base_ms[planIndex]:0.0;
                 StrategyLapTarget row;
                 row.lap_num=n;
-                row.required_ms=lapBase+(post&&n==start?pit.outlap_ms:0)+(pre&&n==end?pit.inlap_ms:0);
-                auto actual=lapTimes_.find(n);
-                if(n<out.lap_num&&actual!=lapTimes_.end()&&actual->second>0){
+                row.required_ms=lapBase>0?lapBase+(includeHistory&&post&&n==start?pit.outlap_ms:0)+
+                    (includeHistory&&pre&&n==end?pit.inlap_ms:0):0;
+                if(n<out.lap_num&&completed&&completed->actual_ms>0){
                     row.has_actual=true;
-                    row.actual_ms=actual->second;
-                    row.delta_lap_ms=row.actual_ms-row.required_ms;
-                    cum+=row.delta_lap_ms;
+                    row.actual_ms=completed->actual_ms;
+                    if(row.required_ms>0){
+                        row.delta_lap_ms=row.actual_ms-row.required_ms;
+                        cum+=row.delta_lap_ms;
+                        raceCum+=row.delta_lap_ms;
+                    }
                     row.delta_stint_ms=cum;
-                    raceCum+=row.delta_lap_ms;
                     row.delta_total_ms=raceCum;
                 }
                 values.push_back(row);
             }
             return values;
         };
-        for(size_t k=0;k+1<past.size();++k){
-            const auto&ps=past[k];
-            int end=past[k+1].start_lap-1;
+        for(size_t k=0;includeHistory&&k+1<stints_.size();++k){
+            const auto&ps=stints_[k];
+            int end=stints_[k+1].start_lap-1;
             if(end<ps.start_lap)continue;
             StrategyStint stint;
-            stint.compound_name=ps.compound_name;stint.actual_compound=ps.actual_compound;
+            stint.compound_name=tyreName(format_,ps.actual_compound);stint.actual_compound=ps.actual_compound;
             stint.visual_compound=ps.visual_compound;stint.stint_number=(int)plan.stints.size()+1;
             stint.start_lap=ps.start_lap;stint.end_lap=end;
-            stint.expected_laps=ps.expected_laps>0?ps.expected_laps:end-ps.start_lap+1;
+            stint.expected_laps=ps.expected_laps[planIndex]>0?ps.expected_laps[planIndex]:end-ps.start_lap+1;
             stint.actual_laps=end-ps.start_lap+1;
-            stint.rows=rows(stint.start_lap,stint.end_lap,ps.required_base_ms,ps.post_pit,true);
+            stint.rows=rows(stint.start_lap,stint.end_lap,0,k>0,true);
             plan.stints.push_back(std::move(stint));
         }
-        const bool pitted=past.size()>1;
+        const bool pitted=completedStops_>0;
         for(size_t i=0;i<raw.stints.size();++i){
             const auto&rs=raw.stints[i];
             StrategyStint stint;
             stint.compound_name=rs.name;stint.actual_compound=rs.actual;stint.visual_compound=rs.visual;
-            stint.stint_number=(int)plan.stints.size()+1;stint.start_lap=i==0?opening:rs.startLap;
+            stint.stint_number=(int)plan.stints.size()+1;
+            // Adjacent stints must partition the race; the pit lap belongs to
+            // the outgoing stint and must not be displayed/count toward Δ twice.
+            stint.start_lap=i==0?opening:rs.startLap+1;
             stint.end_lap=rs.last?out.total_laps:rs.pitLap;
             stint.expected_laps=i==0?std::max(1,stint.end_lap-stint.start_lap+1):rs.lapCount;
             stint.is_last=rs.last;
             const double target=targetFor(rs,i);
-            if(target>0){
-                stint.rows=rows(stint.start_lap,stint.end_lap,target,i==0?pitted:true,!rs.last);
-                for(const auto&row:stint.rows)if(row.has_actual)++stint.actual_laps;
-            }
+            stint.rows=rows(stint.start_lap,stint.end_lap,target,i==0?pitted:true,!rs.last);
+            for(const auto&row:stint.rows)if(row.has_actual)++stint.actual_laps;
             plan.stints.push_back(std::move(stint));
         }
         return plan;
     };
-    out.conservative=display(cp,false,conservativePast_,conservativeRequired_);
-    out.aggressive=display(ap,true,aggressivePast_,aggressiveRequired_);
+    out.conservative=display(cp,false);
+    out.aggressive=display(ap,true);
     out.explanation.push_back({"recent_degradation","Cliff uses recent completed-lap wear deltas when available",
         out.limiting_wear_per_lap});
     if(rivalBehind_>=0)out.explanation.push_back({"defensive_rival","Defensive plan targets the highest scored car behind",
@@ -886,11 +946,10 @@ StrategySnapshotRow StrategyProcessor::snapshot(){
             if(*record.followed)record.successful=player->position<=record.projected_position;
         }else{
             record.actual_position=player->position;
-            auto actual=lapTimes_.find(record.lap_num);
-            auto required=record.recommendation=="attack"?aggressiveRequired_.find(record.lap_num):conservativeRequired_.find(record.lap_num);
-            const bool hasRequired=required!=(record.recommendation=="attack"?aggressiveRequired_.end():conservativeRequired_.end());
-            if(actual!=lapTimes_.end()&&hasRequired){
-                record.followed=actual->second<=required->second*1.01;
+            const auto* actual=raceHistory_.find(record.lap_num);
+            const double required=actual?actual->required_base_ms[record.recommendation=="attack"?1:0]:0;
+            if(actual&&actual->actual_ms>0&&required>0){
+                record.followed=actual->actual_ms<=required*1.01;
                 record.successful=*record.followed||player->position<=record.start_position;
             }
         }
@@ -989,19 +1048,19 @@ StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
     stats.wearHistoryEntries = wearHistory_.size();
     stats.frozenNeutralCarEntries = frozenNeutralCars_.size();
     stats.decisionHistoryEntries = decisionHistory_.size();
-    stats.conservativePastEntries = conservativePast_.size();
-    stats.aggressivePastEntries = aggressivePast_.size();
-    stats.requiredLapEntries = conservativeRequired_.size() + aggressiveRequired_.size();
+    stats.conservativePastEntries = stints_.size();
+    stats.aggressivePastEntries = stints_.size();
+    stats.requiredLapEntries = raceHistory_.size() * 2;
+    stats.displayLapEntries = raceHistory_.size();
+    stats.displayHistoryBytes = raceHistory_.retainedBytes();
 
     stats.containerCapacityBytes += mapCapacity(lapTimes_) +
         mapCapacity(rivalExperience_) + setCapacity(retiredCars_) +
-        setCapacity(usedDryVisualCompounds_) + mapCapacity(conservativeRequired_) +
-        mapCapacity(aggressiveRequired_) +
+        setCapacity(usedDryVisualCompounds_) +
         wearHistory_.capacity() * sizeof(WearSample) +
         frozenNeutralCars_.capacity() * sizeof(NeutralCarState) +
         decisionHistory_.capacity() * sizeof(StrategyDecisionRecord) +
-        conservativePast_.capacity() * sizeof(PastStintState) +
-        aggressivePast_.capacity() * sizeof(PastStintState);
+        stints_.capacity() * sizeof(StintProgress);
     for (const auto& [_, experience] : rivalExperience_) {
         stats.rivalRecentLapEntries += experience.recent_laps.size();
         stats.containerCapacityBytes +=
@@ -1011,10 +1070,6 @@ StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
         stats.stringCapacityBytes += stringCapacity(record.event) +
             stringCapacity(record.recommendation) + stringCapacity(record.reason) +
             stringCapacity(record.target_name);
-    for (const auto& stint : conservativePast_)
-        stats.stringCapacityBytes += stringCapacity(stint.compound_name);
-    for (const auto& stint : aggressivePast_)
-        stats.stringCapacityBytes += stringCapacity(stint.compound_name);
     stats.stringCapacityBytes += stringCapacity(neutralisationRecommendation_);
     for (const auto& [_, byTeam] : teamColorOverrides_) {
         stats.containerCapacityBytes += mapCapacity(byTeam);
@@ -1026,7 +1081,7 @@ StrategyProcessor::MemoryStats StrategyProcessor::memoryStats() const {
     stats.containerCapacityBytes += mapCapacity(teamColorOverrides_);
 
     stats.retainedBytes = stats.cachedInputCapacityBytes +
-        stats.containerCapacityBytes + stats.stringCapacityBytes;
+        stats.containerCapacityBytes + stats.stringCapacityBytes + stats.displayHistoryBytes;
     return stats;
 }
 

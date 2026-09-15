@@ -1,6 +1,7 @@
 import { useMemo, useRef, useCallback, memo, useLayoutEffect } from 'react'
 import type { TimingMsg, ParticipantsMsg, TimingCar, DriverInfo, AllStatusMsg } from '../types'
 import { useLabels } from '../lib/labels'
+import { tyreCompoundColor } from '../lib/tyreCompounds'
 import type { DensityMode } from '../lib/graphSections'
 
 interface Props {
@@ -15,14 +16,6 @@ interface Props {
   compact?: DensityMode | boolean
 }
 
-
-const VISUAL_COLORS: Record<number, string> = {
-  16: 'var(--compound-soft)',
-  17: 'var(--compound-medium)',
-  18: 'var(--compound-hard)',
-   7: 'var(--compound-inter)',
-   8: 'var(--compound-wet)',
-}
 
 
 const RESULT_LABELS: Record<number, string> = {
@@ -336,7 +329,7 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
           isPlayer: car.idx === timing.player_idx,
           isFastest: car.idx === fastestLapCarIdx,
           tyreLabel: carStatus ? tn('tyre.actual', carStatus.tyre_compound) : null,
-          tyreColor: carStatus ? (VISUAL_COLORS[carStatus.visual_compound] ?? '#ffffff') : '#ffffff',
+          tyreColor: carStatus ? (tyreCompoundColor(carStatus.tyre_compound, carStatus.visual_compound) ?? '#ffffff') : '#ffffff',
           tyreAge: carStatus?.tyre_age_laps ?? null,
         }
       })

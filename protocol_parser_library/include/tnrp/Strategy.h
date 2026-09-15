@@ -14,6 +14,7 @@
 #include "tnrp/rows.h"
 #include "tnrp/control_rows.h"
 #include "tnrp/TeamColors.h"
+#include "tnrp/StrategyRaceHistory.h"
 
 namespace tnrp {
 
@@ -231,6 +232,8 @@ public:
         size_t conservativePastEntries{};
         size_t aggressivePastEntries{};
         size_t requiredLapEntries{};
+        size_t displayLapEntries{};
+        size_t displayHistoryBytes{};
     };
 
     explicit StrategyProcessor(uint16_t format = 2025);
@@ -251,6 +254,7 @@ public:
     StrategySnapshotRow snapshot();
     std::string snapshotJson();
     MemoryStats memoryStats() const;
+    const StrategyRaceHistory& displayHistory() const { return raceHistory_; }
 
 private:
     struct RivalLapSample {
@@ -293,6 +297,10 @@ private:
     double rivalPaceMs(int idx) const;
     double playerPaceMs() const;
     double rivalThreatScore(int idx, bool ahead) const;
+    void rememberPaceLap(int lap, int milliseconds);
+    void completeLap(int nextLap, int milliseconds);
+    void observeStint(bool changed = false);
+    StrategySnapshotRow makeSnapshot(bool includeHistory);
 
     uint16_t format_{2025};
     TeamColorOverrides teamColorOverrides_;
@@ -305,7 +313,11 @@ private:
     std::optional<ParticipantsRow> participants_;
     std::optional<TyreSetsRow> tyreSets_;
     std::optional<AllStatusRow> allStatus_;
+    // Only recent clean samples belong to the pace model. The race table has
+    // its own compact, unfiltered archive and is never used to estimate pace.
     std::map<int, int> lapTimes_;
+    StrategyRaceHistory raceHistory_;
+    int completedStops_{};
     int currentStintStart_{0};
     int rivalAhead_{-1};
     int rivalBehind_{-1};
@@ -325,19 +337,15 @@ private:
     bool haveBehindGap_{false};
     int aheadTrend_{-1};
     int behindTrend_{-1};
-    struct PastStintState {
+    struct StintProgress {
         int start_lap{};
-        double required_base_ms{};
-        std::string compound_name;
         int actual_compound{};
         int visual_compound{};
-        bool post_pit{};
-        int expected_laps{};
+        std::array<int, 2> expected_laps{};
     };
-    std::vector<PastStintState> conservativePast_;
-    std::vector<PastStintState> aggressivePast_;
-    std::map<int, double> conservativeRequired_;
-    std::map<int, double> aggressiveRequired_;
+    // One shared race-progress summary for both plans, updated on input even
+    // with no display subscriber. Checkpoints only copy these small intervals.
+    std::vector<StintProgress> stints_;
 };
 
 } // namespace tnrp

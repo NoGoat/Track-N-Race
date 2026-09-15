@@ -5,6 +5,7 @@ import { useModalPresence } from '../lib/useModalPresence'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { AnalyzeLapData, PlayerPositionPoint } from '../types'
 import TrackMap, { type TrackMapMarker } from './TrackMap'
+import AnalyzeInputComparison from './AnalyzeInputComparison'
 
 interface Props {
   comparison: AnalyzeLapData | null
@@ -155,15 +156,19 @@ export default function AnalyzeMapComparison({
     return () => window.clearInterval(timer)
   }, [fixedMode, publishClock])
 
-  const markerSource = useCallback((): readonly TrackMapMarker[] => {
+  const elapsedSource = useCallback((): number => {
     const globalCursorTime = getPlaybackCursorTime()
-    const elapsed = fixedMode
+    return fixedMode
       ? readClock(clockRef.current)
       : focus
         ? Math.max(0, Math.min(total, focus.elapsedSeconds))
       : current && globalCursorTime !== null
         ? globalCursorTime - current.startSessionTime
         : 0
+  }, [current, fixedMode, focus, total])
+
+  const markerSource = useCallback((): readonly TrackMapMarker[] => {
+    const elapsed = elapsedSource()
     const output = markerBufferRef.current
     output.length = 0
 
@@ -182,7 +187,7 @@ export default function AnalyzeMapComparison({
       if (writeMarkerAt(marker, comparison.playerPositions, target)) output.push(marker)
     }
     return output
-  }, [comparison, comparisonColor, comparisonLabel, current, currentColor, currentLabel, fixedMode, focus, total])
+  }, [comparison, comparisonColor, comparisonLabel, current, currentColor, currentLabel, elapsedSource])
 
   const togglePlay = useCallback(() => {
     const clock = clockRef.current
@@ -216,6 +221,15 @@ export default function AnalyzeMapComparison({
   return <div className="h-full min-h-0 flex flex-col">
     <div className="flex-1 min-h-0 relative">
       {map}
+      <AnalyzeInputComparison
+        current={current}
+        comparison={comparison}
+        currentColor={currentColor}
+        comparisonColor={comparisonColor}
+        currentLabel={currentLabel}
+        comparisonLabel={comparisonLabel}
+        elapsedSource={elapsedSource}
+      />
     </div>
     {playbackBarPresence.mounted && <div
       className={`analyze-map-playback-bar ${playbackBarPresence.visible ? 'analyze-map-playback-bar--visible' : ''}`}

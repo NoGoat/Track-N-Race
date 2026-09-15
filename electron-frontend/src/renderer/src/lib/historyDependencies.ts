@@ -60,7 +60,10 @@ export const DATA_CONSUMERS = {
   gForceHistory: { stream: DATA_ROW.motion, history: DATA_ROW.motion },
   rideHeightHistory: { stream: DATA_ROW.motionEx, history: DATA_ROW.motionEx },
   analyzeLapCoordinates: { stream: DATA_ROW.lap, history: DATA_ROW.lap },
-  analyzeMap: { stream: DATA_ROW.positions | DATA_ROW.lap, history: DATA_ROW.positions | DATA_ROW.lap },
+  analyzeMap: {
+    stream: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry,
+    history: DATA_ROW.positions | DATA_ROW.lap | DATA_ROW.telemetry,
+  },
 } as const satisfies Record<string, Requirement>
 
 function add(target: DataRequirements, requirement: Requirement): void {

@@ -846,6 +846,7 @@ const ZoomSelector = memo(({ zoomLevel, onChange, isDark }: ZoomSelectorProps) =
 ZoomSelector.displayName = 'ZoomSelector'
 
 interface TestMapControlsProps {
+  alignRight: boolean
   trackId: number | null
   aeroOverlay: AeroOverlay
   mapOptions: MapOption[]
@@ -854,13 +855,13 @@ interface TestMapControlsProps {
   isDark: boolean
 }
 
-const TestMapControls = memo(({ trackId, aeroOverlay, mapOptions, onTrackChange, onAeroChange, isDark }: TestMapControlsProps) => {
+const TestMapControls = memo(({ alignRight, trackId, aeroOverlay, mapOptions, onTrackChange, onAeroChange, isDark }: TestMapControlsProps) => {
   const styles = useMemo(() => buildSelectStyles(isDark, { solidBg: true }), [isDark])
   const mapValue = useMemo(() => mapOptions.find(o => o.value === trackId) ?? null, [mapOptions, trackId])
   const aeroValue = useMemo(() => AERO_OPTIONS.find(o => o.value === aeroOverlay) ?? AERO_OPTIONS[2], [aeroOverlay])
 
   return (
-    <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    <div className={`absolute top-2 z-10 flex flex-col gap-1.5 ${alignRight ? 'right-2 items-end' : 'left-2 items-start'}`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <div className="w-56 shrink-0">
         <Select<MapOption>
           aria-label="Test map"
@@ -1226,6 +1227,7 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
       <canvas ref={foregroundCanvasRef} className="absolute inset-0 pointer-events-none" />
       {import.meta.env.MODE === 'debug' && (
         <TestMapControls
+          alignRight={controlledMarkers}
           trackId={previewTrackId}
           aeroOverlay={previewAeroOverlay}
           mapOptions={mapOptions}

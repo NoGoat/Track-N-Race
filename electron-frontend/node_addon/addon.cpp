@@ -1116,6 +1116,8 @@ private:
         strategyProcessor.Set("conservative_past_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.conservativePastEntries)));
         strategyProcessor.Set("aggressive_past_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.aggressivePastEntries)));
         strategyProcessor.Set("required_lap_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.requiredLapEntries)));
+        strategyProcessor.Set("display_lap_entries", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.displayLapEntries)));
+        strategyProcessor.Set("display_history_bytes", Napi::Number::New(info.Env(), static_cast<double>(strategy.processor.displayHistoryBytes)));
         strategyStats.Set("processor", strategyProcessor);
         result.Set("strategy", strategyStats);
 

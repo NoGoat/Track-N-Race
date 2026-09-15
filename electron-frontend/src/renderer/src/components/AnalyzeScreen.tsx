@@ -14,6 +14,7 @@ import { buildSelectStyles } from '../lib/selectStyles'
 import { selectComponents } from '../lib/selectComponents'
 import { BUTTON_CLASS, PRIMARY_BUTTON_CLASS } from '../lib/buttonStyles'
 import { useLabels } from '../lib/labels'
+import { tyreCompoundColor } from '../lib/tyreCompounds'
 import { useModalPresence, useModalPresenceValue } from '../lib/useModalPresence'
 import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
@@ -239,13 +240,14 @@ function escapeTooltipText(value: string): string {
   })[character]!)
 }
 
-function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor }: {
+function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, negativeColor, followPlaybackCursor, showSectors }: {
   deltaData: AnalyzeDeltaData | null
   current: AnalyzeLapData | null
   comparison: AnalyzeLapData | null
   positiveColor: string
   negativeColor: string
   followPlaybackCursor: boolean
+  showSectors: boolean
 }) {
   const selectionRef = useRef({ current, comparison })
   const retainedDeltaDataRef = useRef<AnalyzeDeltaData | null>(null)
@@ -285,7 +287,7 @@ function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, n
     }
   }, [comparison, current, currentProgress, followPlaybackCursor, negativeColor, positiveColor, retainedDeltaData])
 
-  useLayoutEffect(updateValues, [updateValues])
+  useLayoutEffect(updateValues, [updateValues, showSectors])
   useEffect(() => {
     if (!followPlaybackCursor) return
     let animationFrame = 0
@@ -306,6 +308,7 @@ function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, n
 
   return <div className="flex h-full items-center gap-3 font-mono tabular-nums">
     {(['S1', 'S2', 'S3', 'Lap'] as const).map((label, index) => {
+      if (!showSectors && index < 3) return null
       return <span key={label} className="flex h-full items-center gap-1.5">
         <span className="text-[9px] font-bold uppercase leading-none tracking-wider text-[var(--text-secondary)]">{label}</span>
         <span
@@ -315,14 +318,6 @@ function AnalysisDeltaReadout({ deltaData, current, comparison, positiveColor, n
       </span>
     })}
   </div>
-}
-
-const COMPOUND_COLORS: Record<number, string> = {
-  16: 'var(--compound-soft)',
-  17: 'var(--compound-medium)',
-  18: 'var(--compound-hard)',
-  7: 'var(--compound-inter)',
-  8: 'var(--compound-wet)',
 }
 
 function lastTyreStatus(block: LapBlock): LapBlock['statusHistory'][number] | null {
@@ -627,7 +622,11 @@ export default function AnalyzeScreen({
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
-  const primaryView = !playbackFilename && config.view !== 'graph' ? 'graph' : config.view
+  const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)
+  const [secondaryFile, setSecondaryFile] = useState<SecondaryFileData | null>(null)
+  const mismatchedFiles = primaryTrackId !== null && secondaryFile !== null &&
+    secondaryFile.trackId !== null && primaryTrackId !== secondaryFile.trackId
+  const primaryView = !playbackFilename || mismatchedFiles ? 'graph' : config.view
   const splitView = primaryView === 'split'
   const chartsVisible = primaryView !== 'map'
   const mapVisible = primaryView !== 'graph'
@@ -649,7 +648,6 @@ export default function AnalyzeScreen({
   const fastestLapNum = useTelemetryStore(s => s.fastestLapNum)
   const lapTimesByNum = useTelemetryStore(s => s.lapTimesByNum)
   const deltaAvailable = useTelemetryStore(s => s.analyzeDeltaAvailable)
-  const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)
   const primaryTrackName = useTelemetryStore(s => s.playbackTrackName)
   const { tn } = useLabels()
   const effectiveCurrentLapNum = currentLapNum ?? liveLapNum
@@ -660,7 +658,6 @@ export default function AnalyzeScreen({
   const primaryLabel = fixedLapMode.enabled ? resolvedLapALabel : resolvedCurrentLabel
   const comparisonLabel = fixedLapMode.enabled ? resolvedLapBLabel : resolvedCompareLabel
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
-  const [secondaryFile, setSecondaryFile] = useState<SecondaryFileData | null>(null)
   const [secondaryLapNum, setSecondaryLapNum] = useState<number | null>(null)
   const [lapASource, setLapASource] = useState<AnalysisFileSource>('file1')
   const [lapBSource, setLapBSource] = useState<AnalysisFileSource>('file1')
@@ -698,6 +695,10 @@ export default function AnalyzeScreen({
   }), [isDark])
 
   const save = useCallback((next: AnalyzeConfig) => setRawConfig(next), [setRawConfig])
+  useEffect(() => {
+    if (mismatchedFiles && config.view !== 'graph') save({ ...config, view: 'graph' })
+  }, [config, mismatchedFiles, save])
+
   const setAnalysisView = useCallback((nextView: AnalyzeConfig['view']) => {
     if (nextView === primaryView) {
       if (nextView !== config.view) save({ ...config, view: nextView })
@@ -810,7 +811,7 @@ export default function AnalyzeScreen({
       value: block.lapNum,
       label: `${actual} · Lap ${block.lapNum}${lapTime ? ` · ${lapTime}` : ''}${isFastest ? ' · FL' : ''}`,
       compound: actual,
-      compoundColor: COMPOUND_COLORS[status.visual_compound] ?? null,
+      compoundColor: tyreCompoundColor(status.tyre_compound, status.visual_compound) ?? null,
       lapTime,
       isFastest,
     }
@@ -884,8 +885,6 @@ export default function AnalyzeScreen({
   const distinctMapTrackIds = [...new Set(mapTrackIds)]
   const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
   const compatibleMapCircuit = distinctMapTrackIds.length <= 1
-  const mismatchedFiles = primaryTrackId !== null && secondaryFile !== null &&
-    secondaryFile.trackId !== null && primaryTrackId !== secondaryFile.trackId
   const sectorBoundariesEnabled = !mismatchedFiles && config.sectorBoundaries
   const sectorDeltaEnabled = sectorBoundariesEnabled && config.sectorDelta
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
@@ -1433,6 +1432,7 @@ export default function AnalyzeScreen({
               positiveColor={deltaPositiveColor}
               negativeColor={deltaNegativeColor}
               followPlaybackCursor={!!playbackFilename && !fixedLapMode.enabled}
+              showSectors={!mismatchedFiles}
             />
             <button
               type="button"

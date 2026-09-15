@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import type { AlignedTable, TyreSetsMsg, TyreSetEntry, TelemetryRow, DamageRow } from '../types'
 import { useLabels } from '../lib/labels'
+import { tyreCompoundColor, dryTyreCompoundOrder } from '../lib/tyreCompounds'
 import TyreTrendCharts from './TyreTrendCharts'
 import { WheelCard, type TyreCardViews } from './ThermalPanel'
 import { useColorFn } from '../lib/cards'
@@ -63,27 +64,18 @@ function useCornerHistories(telemetry: TelemetryRow[], enabled: Record<Corner, b
   }, [telemetry, enabled, skip])
 }
 
-const WET_COMPOUNDS = new Set([7, 8])
+const WET_COMPOUNDS = new Set([7, 8, 15])
 
-
-const VISUAL_COLORS: Record<number, string> = {
-  16: 'var(--compound-soft)',
-  17: 'var(--compound-medium)',
-  18: 'var(--compound-hard)',
-   7: 'var(--compound-inter)',
-   8: 'var(--compound-wet)',
-}
 
 const SESSION_LABELS: Record<number, string> = {
   0: '—', 1: 'FP1', 2: 'FP2', 3: 'FP3', 4: 'Q1', 5: 'Q2', 6: 'Q3', 7: 'Race',
 }
 
-const DRY_SORT: Record<number, number> = { 16: 0, 17: 1, 18: 2 }
 const WET_SORT: Record<number, number> = { 7: 0, 8: 1 }
 
 function sortDry(a: TyreSetEntry, b: TyreSetEntry) {
-  const ao = DRY_SORT[a.visual_compound] ?? 3
-  const bo = DRY_SORT[b.visual_compound] ?? 3
+  const ao = dryTyreCompoundOrder(a.actual_compound, a.visual_compound)
+  const bo = dryTyreCompoundOrder(b.actual_compound, b.visual_compound)
   return ao !== bo ? ao - bo : a.idx - b.idx
 }
 
@@ -142,7 +134,7 @@ const SetRow = memo(function SetRow({ set, isDark = true, sessionType }: { set: 
   const colorFn    = useColorFn(null, null, isDark)
   const status     = getStatus(set, sessionType)
   const compName   = tn('tyre.actual', set.actual_compound)
-  const compColor  = VISUAL_COLORS[set.visual_compound] ?? '#ffffff'
+  const compColor  = tyreCompoundColor(set.actual_compound, set.visual_compound) ?? '#ffffff'
   const isReturned = status === 'RETURNED'
   const isReserved = status === 'RESERVED'
   const isFitted   = status === 'FITTED'
@@ -334,7 +326,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
               const fitted = tyreSets?.sets.find(s => s.fitted)
               if (!fitted) return null
               const name  = tn('tyre.actual', fitted.actual_compound)
-              const color = VISUAL_COLORS[fitted.visual_compound]  ?? 'var(--text-primary)'
+              const color = tyreCompoundColor(fitted.actual_compound, fitted.visual_compound)  ?? 'var(--text-primary)'
               return <>
                 <span className="text-[11px] font-black tabular-nums" style={{ color }}>{name}</span>
                 <span className="text-[10px] text-[var(--text-secondary)]">·</span>

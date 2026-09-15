@@ -1,22 +1,22 @@
 import { memo, useState } from 'react'
+import { tyreCompoundColor } from '../lib/tyreCompounds'
 import type { StrategyPlan, StrategySnapshotMsg, StrategyStint } from '../types'
 import type { DensityMode } from '../lib/graphSections'
 
 interface Props { strategy: StrategySnapshotMsg | null; isDark: boolean; compact?: DensityMode | boolean }
 
-const COLORS: Record<number, string> = { 16:'var(--compound-soft)',17:'var(--compound-medium)',18:'var(--compound-hard)',7:'var(--compound-inter)',8:'var(--compound-wet)' }
 const wearColor=(v:number)=>v<20?'#73BF69':v<40?'#A8D436':v<60?'#FADE2A':v<80?'#FF9830':'#C4162A'
-const lapTime=(ms:number)=>{if(ms<=0||ms>600000)return '—';const s=ms/1000;return `${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`}
+const lapTime=(ms:number)=>{if(!Number.isFinite(ms)||ms<=0)return '—';const s=ms/1000;return `${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`}
 const delta=(ms:number)=>`${ms>0?'+':ms<0?'−':''}${Math.abs(ms/1000).toFixed(1)}`
 const words=(value:string)=>value.replace(/_/g,' ')
 
-const Chip=memo(({name,visual}:{name:string;visual:number})=>{const c=COLORS[visual]??'var(--text-primary)';return <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0" style={{color:c,borderColor:c,backgroundColor:`color-mix(in srgb, ${c} 10%, transparent)`}}>{name}</span>})
+const Chip=memo(({name,actual,visual}:{name:string;actual:number;visual:number})=>{const c=tyreCompoundColor(actual,visual)??'var(--text-primary)';return <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0" style={{color:c,borderColor:c,backgroundColor:`color-mix(in srgb, ${c} 10%, transparent)`}}>{name}</span>})
 
 const Stint=memo(({stint,separator}:{stint:StrategyStint;separator:boolean})=><div className={separator?'border-t border-[var(--border)]':''}>
-  <div className="flex items-center gap-2 px-4 py-2"><Chip name={stint.compound_name} visual={stint.visual_compound}/><b className="text-sm">{stint.stint_number}</b><span className="flex-1"/><span className="text-[10px] text-[var(--text-secondary)]">{stint.start_lap}–{stint.end_lap}</span><span className="flex-1"/><span className="text-[9px] uppercase text-[var(--text-secondary)]">Expected</span><b>{stint.expected_laps}</b><span className="text-[9px] uppercase text-[var(--text-secondary)]">Actual</span><b>{stint.actual_laps}</b></div>
+  <div className="flex items-center gap-2 px-4 py-2"><Chip name={stint.compound_name} actual={stint.actual_compound} visual={stint.visual_compound}/><b className="text-sm">{stint.stint_number}</b><span className="flex-1"/><span className="text-[10px] text-[var(--text-secondary)]">{stint.start_lap}–{stint.end_lap}</span><span className="flex-1"/><span className="text-[9px] uppercase text-[var(--text-secondary)]">Expected</span><b>{stint.expected_laps}</b><span className="text-[9px] uppercase text-[var(--text-secondary)]">Actual</span><b>{stint.actual_laps}</b></div>
   {stint.rows.length>0&&<table className="w-full border-collapse"><thead><tr className="border-y border-[var(--border)]">{['LAP','REQ','ACTUAL','Δ LAP','Δ STINT','Δ TOTAL'].map(h=><th key={h} className="px-2 py-1 text-[9px] font-normal text-[var(--text-secondary)]">{h}</th>)}</tr></thead><tbody>{stint.rows.map((r,i)=><tr key={r.lap_num} className={!stint.is_last&&r.lap_num===stint.end_lap?'bg-[#73BF69]/15':i%2?'bg-[var(--bg-input)]/30':''}>
     <td className="px-2 py-1 text-center text-[11px]">{r.lap_num}</td><td className="px-2 py-1 text-center text-[11px]">{lapTime(r.required_ms)}</td><td className="px-2 py-1 text-center text-[11px]">{r.has_actual?lapTime(r.actual_ms):'—'}</td>
-    {[r.delta_lap_ms,r.delta_stint_ms,r.delta_total_ms].map((v,j)=><td key={j} className="px-2 py-1 text-center text-[11px]" style={{color:r.has_actual?(v>0?'#C4162A':'#73BF69'):'var(--text-muted)'}}>{r.has_actual?delta(v):'—'}</td>)}
+    {[r.delta_lap_ms,r.delta_stint_ms,r.delta_total_ms].map((v,j)=><td key={j} className="px-2 py-1 text-center text-[11px]" style={{color:r.has_actual&&r.required_ms>0?(v>0?'#C4162A':'#73BF69'):'var(--text-muted)'}}>{r.has_actual&&r.required_ms>0?delta(v):'—'}</td>)}
   </tr>)}</tbody></table>}
 </div>)
 
@@ -24,6 +24,7 @@ const PlanColumn=memo(({plan,label,accent}:{plan:StrategyPlan;label:string;accen
 
 function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boolean}) {
   const ready = s?.state === 'ready'
+  const compoundColor = tyreCompoundColor(s?.current_actual_compound??0, s?.current_visual_compound??0) ?? 'var(--text-primary)'
   const wear = ready ? Math.round(s.average_wear) : 0
   const wearBar = wearColor(wear)
   const cliffColor = ready
@@ -39,7 +40,7 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
       <span className="text-xs font-medium text-[var(--text-secondary)]">/ {s?.total_laps || '—'}</span>
     </div>
     <div className="flex-1 min-w-0 flex items-center gap-3 px-6 py-1.5">
-      <Chip name={ready?s.current_compound_name:'—'} visual={s?.current_visual_compound??0}/>
+      <Chip name={ready?s.current_compound_name:'—'} actual={s?.current_actual_compound??0} visual={s?.current_visual_compound??0}/>
       <span className="text-sm font-black tabular-nums leading-none shrink-0" style={{color:ready?wearBar:'var(--text-secondary)'}}>{ready?`${wear}%`:'—'}</span>
       <div className="flex-1 min-w-0 h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-300" style={{width:`${ready?Math.min(100,wear):0}%`,backgroundColor:wearBar}}/>
@@ -67,7 +68,7 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
       )}
     </div>
     <div className="flex-1 min-w-0 flex items-center gap-6 px-8 py-5">
-      <span className="text-xs font-black px-3 py-1 rounded border shrink-0" style={{color:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',borderColor:COLORS[s?.current_visual_compound??0]??'var(--text-primary)',backgroundColor:`color-mix(in srgb, ${COLORS[s?.current_visual_compound??0]??'var(--text-primary)'} 10%, transparent)`}}>
+      <span className="text-xs font-black px-3 py-1 rounded border shrink-0" style={{color:compoundColor,borderColor:compoundColor,backgroundColor:`color-mix(in srgb, ${compoundColor} 10%, transparent)`}}>
         {ready ? s.current_compound_name : '—'}
       </span>
       <div className="flex-1 min-w-0">
@@ -105,7 +106,7 @@ function Header({s,compact}:{s:StrategySnapshotMsg|null;compact?:DensityMode|boo
       <div className="flex items-baseline gap-1.5"><span className="text-3xl font-black tabular-nums leading-none">{s?.lap_num||'—'}</span><span className="text-base font-medium text-[var(--text-secondary)]">/ {s?.total_laps||'—'}</span></div>
     </div>
     <div className="flex-1 min-w-0 flex items-center gap-4 px-6 py-3">
-      <Chip name={ready?s.current_compound_name:'—'} visual={s?.current_visual_compound??0}/>
+      <Chip name={ready?s.current_compound_name:'—'} actual={s?.current_actual_compound??0} visual={s?.current_visual_compound??0}/>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-3 mb-1.5"><span className="text-lg font-black tabular-nums leading-none" style={{color:ready?wearBar:'var(--text-secondary)'}}>{ready?`${wear}%`:'—'}</span><span className="text-[10px] text-[var(--text-secondary)] tabular-nums shrink-0">{ready?`${s.current_tyre_age_laps}L · ${s.wear_per_lap.toFixed(1)}%/L`:'—'}</span></div>
         <div className="h-1.5 bg-[var(--border)] rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-300" style={{width:`${ready?Math.min(100,wear):0}%`,backgroundColor:wearBar}}/></div>

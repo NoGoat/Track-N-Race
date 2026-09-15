@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import type { TelemetryRow, StatusRow, LapRow, DamageRow, SessionMsg, ColorSpec } from '../types'
 import { evalColorToken, tokenColor } from './cardColors'
+import { tyreCompoundColor } from './tyreCompounds'
 
 // Key-driven card model. A card is a { key, label } pair: the label (format-aware,
 // from the i18n catalog) is the title; the key selects a resolver that extracts +
@@ -104,7 +105,7 @@ export const OVERVIEW_RESOLVERS: Record<string, CardResolver> = {
   pos: c => ({ value: c.lap ? `P${c.lap.position}` : '—', sub: c.lap ? `Lap ${c.lap.lap_num}` : undefined }),
   tyre: c => ({
     value: c.status ? COMPOUND_LABEL(c.tn, c.status.tyre_compound) : '—',
-    color: c.color('tyre'),
+    color: c.status ? tyreCompoundColor(c.status.tyre_compound, c.status.visual_compound) ?? c.color('tyre') : c.color('tyre'),
     sub: c.status ? `${c.status.tyre_age_laps}L · ${FUEL_MIX[c.status.fuel_mix] ?? ''}` : undefined,
   }),
 }

@@ -10,6 +10,8 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react'
 // library remains the single source of truth at runtime.
 const FALLBACK_LABELS: Record<string, string> = {
   'tyre.actual.7': 'INT', 'tyre.actual.8': 'WET',
+  'tyre.actual.11': 'SS', 'tyre.actual.12': 'S',
+  'tyre.actual.13': 'M', 'tyre.actual.14': 'H', 'tyre.actual.15': 'WET',
   'tyre.actual.16': 'C5', 'tyre.actual.17': 'C4', 'tyre.actual.18': 'C3',
   'tyre.actual.19': 'C2', 'tyre.actual.20': 'C1', 'tyre.actual.21': 'C0',
   'tyre.actual.22': 'C6',
