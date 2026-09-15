@@ -275,7 +275,7 @@ export default function AppShell() {
   ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
   const visibleChartWindows = useMemo(() => visibleChartSections.length > 0
     ? visibleChartSections.map(section => chartWindowOverrides[section] ?? chartWindow)
-    : [chartWindow],
+    : [],
   [chartWindow, chartWindowOverrides, visibleChartSections])
   useEffect(() => {
     // Analysis is always scoped to the current lap. Its distance-axis charts
@@ -286,6 +286,7 @@ export default function AppShell() {
     const fullLapHistoryEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'AL' || value === 'SL')
     const stintLapsEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'SL')
     const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL' && value !== 'SL')
+    const sessionEventHistoryEnabled = tab === 'session' && !playback.state?.filename
     const finiteWindows = visibleChartWindows.filter((value): value is number => typeof value === 'number')
     const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
     // Live Previous/Fastest selectors can be changed after a lap completes, so
@@ -295,16 +296,21 @@ export default function AppShell() {
     const streamMask = (stintLapsEnabled
       ? dataRequirements.streamMask | DATA_ROW.status
       : dataRequirements.streamMask) | liveLapMask
-    const historyMask = stintLapsEnabled ? dataRequirements.historyMask | DATA_ROW.status : dataRequirements.historyMask
+    const lapMetadataMask = fullLapHistoryEnabled || hasLapWindow ? DATA_ROW.lap : 0
+    const historyMask = (stintLapsEnabled
+      ? dataRequirements.historyMask | DATA_ROW.status
+      : dataRequirements.historyMask) | lapMetadataMask
     // A mixed lap/time page seeks the current lap first. The renderer then
     // requests the older finite prefix additively only when that prefix starts
     // before the lap, so overlapping V4 blocks are not decoded unnecessarily.
     const mixedLapAndTime = hasLapWindow && finiteWindows.length > 0
     const historyWindowSeconds = analysisLapScope
       ? 0
-      : fullLapHistoryEnabled
+      : sessionEventHistoryEnabled
         ? -1
-        : hasLapWindow ? 0 : maxFiniteWindow
+        : fullLapHistoryEnabled
+          ? -1
+          : hasLapWindow ? 0 : maxFiniteWindow
     setHistoryRowMask(historyMask)
     setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
     window.playerBridge.setDataRequirements(

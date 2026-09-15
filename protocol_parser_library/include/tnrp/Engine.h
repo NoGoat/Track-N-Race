@@ -272,6 +272,9 @@ private:
     uint64_t          liveHistorySequence_ = 0;
     std::array<float, 16> liveHistoryLastSample_{};
     std::array<int, 16> liveHistoryLastLap_{};
+    // Event vehicle indices are uint8. A finite entry means that car already
+    // retired on the surviving live timeline.
+    std::array<float, 256> liveRetirementTimes_{};
     float             liveSessionTime_ = 0.0f;
     float             liveLapStart_ = 0.0f;
     int               liveLapNum_ = 0;

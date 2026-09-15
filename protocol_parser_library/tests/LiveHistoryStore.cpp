@@ -60,6 +60,7 @@ void expectFastest(tnrp::detail::LiveHistoryStore& store, int expectedLap,
         assert(end > start);
         assert(data.binary && !data.binary->empty());
         assert(data.json.find("\"lap\":" + std::to_string(expectedLap)) != std::string::npos);
+        assert(data.json.find("\"type\":\"race_event\"") == std::string::npos);
         size_t count = 0;
         assert(tnrp::bin::forEachPackedRecord(data.binary->data(), data.binary->size(),
             [&](uint8_t, const uint8_t*, size_t) { ++count; }));
@@ -80,14 +81,16 @@ int main() {
     tnrp::detail::LiveHistoryStore store;
     store.setLap(1, 0.0f);
     appendLap(store, 1, 1.0f, 1);
+    store.appendJson(6, {2.0f, 2, std::make_shared<const std::string>(
+        R"({"type":"race_event","session_time":2,"code":"RTMT","car_idx":7})")});
     store.setLap(2, 10.0f, 9000); // lap 1 is fastest
-    appendLap(store, 2, 11.0f, 2);
+    appendLap(store, 2, 11.0f, 3);
     store.setLap(3, 20.0f, 10000);
-    appendLap(store, 3, 21.0f, 3);
+    appendLap(store, 3, 21.0f, 4);
     store.setLap(4, 30.0f, 11000);
-    appendLap(store, 4, 31.0f, 4);
+    appendLap(store, 4, 31.0f, 5);
     store.setLap(5, 40.0f, 12000); // lap 2 becomes compression-eligible
-    appendLap(store, 5, 41.0f, 5);
+    appendLap(store, 5, 41.0f, 6);
 
     // Family-selective reads must not materialize unrelated families. Queue
     // ordering also ensures this runs after the eligible old lap is compressed.
@@ -95,6 +98,9 @@ int main() {
     assert(!statuses.binary);
     assert(statuses.json.find("\"lap\":1") != std::string::npos);
     assert(statuses.json.find("\"lap\":5") != std::string::npos);
+    const auto events = request(store, 1u << 6, 0.0f, 50.0f);
+    assert(!events.binary);
+    assert(events.json.find("\"code\":\"RTMT\"") != std::string::npos);
 
     // Historical families must retain only their compressed payload, not the
     // much larger ZSTD_compressBound workspace capacity.
@@ -125,15 +131,15 @@ int main() {
     }, [&](size_t rows, size_t, size_t) {
         peakStrategyRows = std::max(peakStrategyRows, rows);
     });
-    assert(strategyRows == 5);
-    assert(peakStrategyRows == 1); // Never expand all laps together.
+    assert(strategyRows == 6);
+    assert(peakStrategyRows == 2); // Never expand more than one lap together.
     strategyRows = 0;
     store.forEachStrategyRow(25.0f, [&](const auto& row) {
         ++strategyRows;
         assert(row.sessionTime <= 25.0f);
         assert(row.sequence == strategyRows);
     });
-    assert(strategyRows == 3); // Includes compressed lap 2, excludes the future.
+    assert(strategyRows == 4); // Includes compressed lap 2, excludes the future.
 
     // A one-boundary rewind promotes lap 4 to Current and lap 3 to Previous.
     // Previous-previous is deliberately left empty; no N-3 decode is needed.

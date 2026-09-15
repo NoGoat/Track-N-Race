@@ -108,6 +108,9 @@ export function dataRequirementsForUi(
     add(result, DATA_CONSUMERS.timingTower)
   } else if (tab === 'session') {
     add(result, DATA_CONSUMERS.sessionPage)
+    // Playback already receives its indexed event catalog at load. Live events
+    // need a full-session range only while the Session page consumes them.
+    if (!isPlayback) result.historyMask |= DATA_ROW.raceEvent
   } else if (tab === 'input') {
     if (input.showGear || input.showAccelerator || input.showBrake || input.showSteering) add(result, DATA_CONSUMERS.inputHistory)
   } else if (tab === 'power') {
@@ -135,7 +138,6 @@ export function dataRequirementsForUi(
     result.historyMask |= analyzeMask
   }
 
-  result.historyMask |= DATA_ROW.lap
   result.streamMask |= result.historyMask
   result.streamMask >>>= 0
   result.historyMask >>>= 0

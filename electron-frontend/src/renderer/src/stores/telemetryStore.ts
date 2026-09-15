@@ -150,6 +150,7 @@ export interface TelemetryStoreState {
   fuelUpperLimit: number | null
   seconds: number
   lapBoundaries: Array<{ lapNum: number; sessionTime: number }>
+  allLapsLapBoundaries: Array<{ lapNum: number; sessionTime: number }>
   currentStintStartTime: number
 }
 
@@ -170,6 +171,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   lapTimesByNum: {}, speedRpmBlocks: null, isConnected: true, error: null,
   protocolStatus: null, protocolWarning: null, fuelUpperLimit: null, seconds: 30,
   lapBoundaries: [],
+  allLapsLapBoundaries: [],
   currentStintStartTime: -Infinity,
 }))
 
@@ -267,6 +269,7 @@ let playbackLapCacheOrder: number[] = []
 let analyzeLapRevisionVal = 0
 let pendingAnalyzeLapReset = false
 let liveLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
+let allLapsLapBoundaries: Array<{ lapNum: number; sessionTime: number }> = []
 let currentStintStartTime = -Infinity
 
 let secondsVal = 30
@@ -294,6 +297,7 @@ const HISTORY_ROW_BITS = [
   HISTORY_ROW.status,
   HISTORY_ROW.damage,
   HISTORY_ROW.lap,
+  HISTORY_ROW.raceEvent,
   HISTORY_ROW.motion,
   HISTORY_ROW.motionEx,
 ]
@@ -732,6 +736,7 @@ function resetSession(): void {
   playbackEvents = []; playbackLapTimes = {}; liveLapTimes = {}
   playbackLapCacheOrder = []
   liveLapBoundaries = []
+  allLapsLapBoundaries = []
   currentStintStartTime = -Infinity
   pendingAnalyzeLapReset = false
   waitingForAllLapsHistory = false
@@ -756,6 +761,7 @@ function resetSession(): void {
     livePreviousLapData: null,
     liveFastestLapData: null,
     lapBoundaries: [],
+    allLapsLapBoundaries: [],
     currentStintStartTime: -Infinity,
   })
 }
@@ -781,6 +787,99 @@ function findCurrentStintStart(rows: readonly StatusRow[]): number {
     if (isNewTyreStint(rows[i - 1], rows[i])) start = rows[i].session_time
   }
   return start
+}
+
+type LapBoundary = { lapNum: number; sessionTime: number }
+
+// Rebuild the lightweight All/ Stint Laps axis only from requested lap
+// history. This deliberately mirrors onLap's garage/attempt handling without
+// invoking its snapshot, fastest-lap, or rewind side effects.
+function reconstructLapBoundaries(rows: readonly LapProgressPoint[]): LapBoundary[] {
+  const boundaries: LapBoundary[] = []
+  const sessionType = useTelemetryStore.getState().session?.session_type
+  const timedSession = sessionType != null && sessionType >= 1 && sessionType <= 14
+  let trackedLap: number | null = null
+  let tracking = false
+
+  const removeLap = (lap: number): void => {
+    const index = boundaries.findIndex(boundary => boundary.lapNum === lap)
+    if (index !== -1) boundaries.splice(index, 1)
+  }
+  const addLap = (row: LapRow): void => {
+    const start = row.session_time - Math.max(0, row.current_lap_ms) / 1000
+    if (!Number.isFinite(start)) return
+    removeLap(row.lap_num)
+    boundaries.push({ lapNum: row.lap_num, sessionTime: start })
+  }
+
+  for (const point of rows) {
+    const row = point as LapRow
+    if (!Number.isFinite(row.lap_num) || !Number.isFinite(row.session_time) ||
+        !Number.isFinite(row.current_lap_ms)) continue
+    const hasDriverStatus = row.driver_status != null && row.driver_status >= 0
+    const garageAware = timedSession && hasDriverStatus
+    if (garageAware && row.driver_status !== 1) {
+      if (tracking && trackedLap !== null) removeLap(trackedLap)
+      trackedLap = null
+      tracking = false
+      continue
+    }
+    if (!tracking) {
+      trackedLap = row.lap_num
+      tracking = true
+      addLap(row)
+      continue
+    }
+    if (trackedLap !== null && row.lap_num < trackedLap) continue
+    if (row.lap_num === trackedLap) continue
+    trackedLap = row.lap_num
+    addLap(row)
+  }
+  return boundaries.sort((a, b) => a.sessionTime - b.sessionTime)
+}
+
+function upsertAllLapsBoundary(boundary: LapBoundary): void {
+  if (!allLapsMode) return
+  allLapsLapBoundaries = [
+    ...allLapsLapBoundaries.filter(item => item.lapNum !== boundary.lapNum),
+    boundary,
+  ].sort((a, b) => a.sessionTime - b.sessionTime)
+}
+
+function raceEventIdentity(event: RaceEventMsg): string {
+  return JSON.stringify(Object.entries(event).sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function isRetirementEvent(event: RaceEventMsg): boolean {
+  return event.code === 'RTMT' || (event.code === 'PENA' && event.penalty_type === 16)
+}
+
+function mergeRaceEventHistory(history: RaceEventMsg[], trailing: RaceEventMsg[]): RaceEventMsg[] {
+  const seen = new Set<string>()
+  const retiredCars = new Map<number, number>()
+  const merged: RaceEventMsg[] = []
+  for (const event of [...history, ...trailing]) {
+    if (isRetirementEvent(event) && event.car_idx != null) {
+      const previousIndex = retiredCars.get(event.car_idx)
+      if (previousIndex !== undefined) {
+        // PENA 16 carries the retirement reason. Let it enrich an earlier
+        // plain RTMT without creating a second event for the same car.
+        if (merged[previousIndex].code === 'RTMT' && event.code === 'PENA') {
+          seen.delete(raceEventIdentity(merged[previousIndex]))
+          merged[previousIndex] = event
+          seen.add(raceEventIdentity(event))
+        }
+        continue
+      }
+      retiredCars.set(event.car_idx, merged.length)
+    }
+    const identity = raceEventIdentity(event)
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    merged.push(event)
+  }
+  merged.sort((left, right) => (left.session_time ?? 0) - (right.session_time ?? 0))
+  return merged.length > MAX_RACE_EVENTS ? merged.slice(-MAX_RACE_EVENTS) : merged
 }
 
 function truncateAt<T extends { session_time: number }>(ref: { current: T[] }, target: number): void {
@@ -834,6 +933,10 @@ function trimLiveWorkingSet(): void {
   // starts between sparse packets can reconstruct its initial state.
   trimBefore(stsBufRef, cutoff, true)
   trimBefore(dmgBufRef, cutoff, true)
+  if (liveLapBoundaries.length > 3) {
+    liveLapBoundaries = liveLapBoundaries.slice(-3)
+    set({ lapBoundaries: liveLapBoundaries })
+  }
   invalidateHistoryCoverage(historyRowMask)
 }
 
@@ -883,6 +986,10 @@ function applyLiveRewind(target: number): void {
   truncateAt(lapProgressBufRef, target)
   raceEventsArr = raceEventsArr.filter(e => e.session_time == null || e.session_time <= target)
   liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.sessionTime <= target)
+  allLapsLapBoundaries = allLapsLapBoundaries.filter(boundary => boundary.sessionTime <= target)
+  if (allLapsMode && allLapsLapBoundaries.length > 0) {
+    liveLapBoundaries = allLapsLapBoundaries.slice(-3)
+  }
 
   const currentIndex = liveLapBoundaries.length - 1
   const currentBoundary = liveLapBoundaries[currentIndex]
@@ -921,6 +1028,7 @@ function applyLiveRewind(target: number): void {
     status: stsBufRef.current[stsBufRef.current.length - 1] ?? null,
     damage: dmgBufRef.current[dmgBufRef.current.length - 1] ?? null,
     lapBoundaries: liveLapBoundaries,
+    allLapsLapBoundaries,
     livePreviousLapData: previousData,
     ...(invalidatesFastest ? { liveFastestLapData: null, fastestLapNum: null } : {}),
     lapTimesByNum: liveLapTimes,
@@ -949,6 +1057,9 @@ function onLap(lap: LapRow): void {
   if (garageAware && lap.driver_status !== 1) {
     if (lapTrackingActive) {
       liveLapBoundaries = liveLapBoundaries.filter(boundary => boundary.lapNum !== lapNum)
+      if (allLapsMode && lapNum !== null) {
+        allLapsLapBoundaries = allLapsLapBoundaries.filter(boundary => boundary.lapNum !== lapNum)
+      }
       lapNum = null
       lapStartTime = lap.session_time
       lapTrackingActive = false
@@ -956,6 +1067,7 @@ function onLap(lap: LapRow): void {
       analyzeLapRevisionVal++
       set({
         lapBoundaries: liveLapBoundaries,
+        allLapsLapBoundaries,
         analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
         analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
         analyzeLapStartTime: lapStartTime,
@@ -973,10 +1085,12 @@ function onLap(lap: LapRow): void {
       ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
       { lapNum: lap.lap_num, sessionTime: packetLapStart },
     ].sort((a, b) => a.sessionTime - b.sessionTime)
+    upsertAllLapsBoundary({ lapNum: lap.lap_num, sessionTime: packetLapStart })
     analyzeLapRevisionVal++
     pendingAnalyzeLapReset = true
     set({
       lapBoundaries: liveLapBoundaries,
+      allLapsLapBoundaries,
       analyzeLapTelemetry: [], analyzeLapMotion: [], analyzeLapMotionEx: [],
       analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [],
       analyzeLapStartTime: lapStartTime,
@@ -997,7 +1111,8 @@ function onLap(lap: LapRow): void {
   if (prevLapNum === null) {
     lapStartTime = packetLapStart
     liveLapBoundaries = [{ lapNum: lap.lap_num, sessionTime: packetLapStart }]
-    set({ lapBoundaries: liveLapBoundaries })
+    upsertAllLapsBoundary(liveLapBoundaries[0])
+    set({ lapBoundaries: liveLapBoundaries, allLapsLapBoundaries })
     // Initial lap metadata (including metadata re-emitted after a playback
     // backfill) establishes the lap origin; it is not a chart reset boundary.
     // Recording load/seek/session reset already publish an explicit revision.
@@ -1009,7 +1124,8 @@ function onLap(lap: LapRow): void {
     ...liveLapBoundaries.filter(boundary => boundary.lapNum !== lap.lap_num),
     { lapNum: lap.lap_num, sessionTime: packetLapStart },
   ].sort((a, b) => a.sessionTime - b.sessionTime)
-  set({ lapBoundaries: liveLapBoundaries })
+  upsertAllLapsBoundary({ lapNum: lap.lap_num, sessionTime: packetLapStart })
+  set({ lapBoundaries: liveLapBoundaries, allLapsLapBoundaries })
 
   let completedLapData: AnalyzeLapData | null = null
   if (!isPlaybackFlag) {
@@ -1139,8 +1255,23 @@ function handleMsg(msg: GatewayMsg): void {
         const target = Number((msg as RaceEventMsg).flashback_session_time)
         if (Number.isFinite(target) && target >= 0) applyLiveRewind(target)
       }
-      for (const cb of raceEventListeners) cb(msg as RaceEventMsg)
-      raceEventsArr = [...raceEventsArr, msg as RaceEventMsg]
+      const raceEvent = msg as RaceEventMsg
+      if (isRetirementEvent(raceEvent) && raceEvent.car_idx != null) {
+        const priorRetirement = raceEventsArr.findIndex(event =>
+          isRetirementEvent(event) && event.car_idx === raceEvent.car_idx)
+        if (priorRetirement !== -1) {
+          if (raceEventsArr[priorRetirement].code === 'RTMT' && raceEvent.code === 'PENA') {
+            raceEventsArr = [
+              ...raceEventsArr.slice(0, priorRetirement),
+              ...raceEventsArr.slice(priorRetirement + 1),
+              raceEvent,
+            ]
+          }
+          break
+        }
+      }
+      for (const cb of raceEventListeners) cb(raceEvent)
+      raceEventsArr = [...raceEventsArr, raceEvent]
       if (raceEventsArr.length > MAX_RACE_EVENTS) raceEventsArr = raceEventsArr.slice(-MAX_RACE_EVENTS)
       if ((msg as any).code === 'SEND' && !isPlaybackFlag) {
         resetSession()
@@ -1240,7 +1371,7 @@ function handleMsg(msg: GatewayMsg): void {
       playbackLapCacheOrder = []
       speedRpmBlocksVal = data.blocks
       playbackFastestLapNum = data.fastestLapNum
-      playbackEvents = data.events ?? []
+      playbackEvents = mergeRaceEventHistory(data.events ?? [], [])
       const map: Record<number, number> = {}
       for (const l of (data.laps ?? []) as { lapNum: number; lapTimeMs: number }[]) {
         if (l.lapTimeMs > 0) map[l.lapNum] = l.lapTimeMs
@@ -1438,6 +1569,10 @@ function dirtySliceForHistoryMask(value: unknown): DirtySlice {
 async function processPlaybackSeekFlush(payload: any): Promise<void> {
   const allHistory = payload.allHistory === true
   const authoritative = payload.authoritativeSeek !== false
+  // Live range backfills are decoded cooperatively. Keep the pre-request list
+  // only to identify genuinely newer streamed events when installing the
+  // authoritative historical prefix.
+  const raceEventsAtDecodeStart = raceEventsArr
   const generation = authoritative ? ++seekTimelineGeneration : seekTimelineGeneration
   const cancelled = () => generation !== seekTimelineGeneration
   const seekRetention = {
@@ -1511,6 +1646,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   const sts: StatusRow[] = []
   const dmg: DamageRow[] = []
   const lapProgress: LapProgressPoint[] = []
+  const raceEvents: RaceEventMsg[] = []
   let lastLap: LapRow | null = null
   const coldJson = (payload.coldJson as string) || ''
   let start = 0
@@ -1520,10 +1656,11 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     if (end === -1) end = coldJson.length
     if (end > start) {
       try {
-        const row = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow | LapRow
+        const row = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow | LapRow | RaceEventMsg
         if (row.type === 'status') sts.push(row)
         else if (row.type === 'damage') dmg.push(row)
         else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
+        else if (row.type === 'race_event') raceEvents.push(row)
       } catch (e) {}
     }
     start = end + 1
@@ -1554,6 +1691,20 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   stsBufRef.current = appendNewer(sts, stsBufRef.current)
   dmgBufRef.current = appendNewer(dmg, dmgBufRef.current)
   lapProgressBufRef.current = appendNewer(lapProgress, lapProgressBufRef.current)
+  if (!isPlaybackFlag && (Number(payload.rowTypeMask) & HISTORY_ROW.raceEvent)) {
+    const priorEvents = new Set(raceEventsAtDecodeStart)
+    const streamedDuringDecode = raceEventsArr.filter(event => !priorEvents.has(event))
+    raceEventsArr = mergeRaceEventHistory(raceEvents, streamedDuringDecode)
+  }
+  if (!isPlaybackFlag && allLapsMode && (Number(payload.rowTypeMask) & HISTORY_ROW.lap)) {
+    allLapsLapBoundaries = reconstructLapBoundaries(lapProgressBufRef.current)
+  }
+  if (!isPlaybackFlag && !allLapsMode && (Number(payload.rowTypeMask) & HISTORY_ROW.lap)) {
+    // The user may leave AL while its cooperative decode is in flight. Release
+    // the late full-session payload immediately instead of retaining it until
+    // the next lap transition.
+    trimLiveWorkingSet()
+  }
   currentStintStartTime = findCurrentStintStart(stsBufRef.current)
   if (allHistory) waitingForAllLapsHistory = false
   markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
@@ -1570,12 +1721,14 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     statusRows: sts.length,
     damageRows: dmg.length,
     lapProgressRows: lapProgress.length,
+    raceEventRows: raceEvents.length,
     lastLapNumber: lastLap?.lap_num ?? null,
     lastLapTimeMs: lastLap?.current_lap_ms ?? null,
   })
   set({
     ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
     ...(dmgBufRef.current.length ? { damage: dmgBufRef.current[dmgBufRef.current.length - 1] } : {}),
+    ...(!isPlaybackFlag && allLapsMode ? { allLapsLapBoundaries } : {}),
     currentStintStartTime,
   })
   const latestLap = lapProgressBufRef.current[lapProgressBufRef.current.length - 1] as LapRow | undefined
@@ -1639,6 +1792,10 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
   allLapsMode = nextAllLapsMode
   if (!allLapsMode) {
     waitingForAllLapsHistory = false
+    if (allLapsLapBoundaries.length > 0) {
+      allLapsLapBoundaries = []
+      set({ allLapsLapBoundaries: [] })
+    }
     // Normal playback can evict the old prefix from bounded renderer buffers.
     // A later AL entry must therefore be allowed to request it again.
     requestedHistoryRowMask = 0
@@ -1738,6 +1895,10 @@ export function setHistoryRowMask(mask: number): void {
     motExBufRef.current = []
     cleared.motionEx = []
     cleared.analyzeLapMotionEx = []
+  }
+  if (disabled & HISTORY_ROW.lap) {
+    allLapsLapBoundaries = []
+    cleared.allLapsLapBoundaries = []
   }
   if (Object.keys(cleared).length) set(cleared)
   if (!allLapsMode || speedRpmBlocksVal === null) return

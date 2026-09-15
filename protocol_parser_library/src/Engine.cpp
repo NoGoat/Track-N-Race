@@ -156,6 +156,7 @@ Engine::Engine(const Config& config, Sink* sink)
     liveHistory_ = std::make_unique<detail::LiveHistoryStore>();
     liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
     liveHistoryLastLap_.fill(-1);
+    liveRetirementTimes_.fill(std::numeric_limits<float>::infinity());
     strategy_.setMinimumStops(config_.strategyMinimumStops);
     reader_.setStrategyMinimumStops(config_.strategyMinimumStops);
     strategy_.setTeamColorOverrides(config_.teamColorOverrides);
@@ -279,6 +280,7 @@ bool Engine::restartUdp(uint16_t port, const std::string& bindAddress) {
         liveHistory_->reset();
         liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
         liveHistoryLastLap_.fill(-1);
+        liveRetirementTimes_.fill(std::numeric_limits<float>::infinity());
         liveHistorySequence_ = 0;
         liveSessionTime_ = 0.0f;
         liveLapStart_ = 0.0f;
@@ -319,6 +321,9 @@ void Engine::rewindLiveTimeline(float sessionTime, uint16_t format) {
     liveSessionTime_ = sessionTime;
     liveHistoryLastSample_.fill(sessionTime);
     liveHistoryLastLap_.fill(liveLapNum_);
+    for (float& retirementTime : liveRetirementTimes_)
+        if (retirementTime > sessionTime)
+            retirementTime = std::numeric_limits<float>::infinity();
 }
 
 void Engine::enqueueLiveStrategyWork(StrategyWork work) {
@@ -933,13 +938,6 @@ void Engine::onDatagram(const uint8_t* data, int length) {
     }
 
     const float timelineTime = r.rewindSessionTime.value_or(r.sessionTime);
-    if (recording) {
-        if (r.rewindSessionTime) writer_.rewind(*r.rewindSessionTime);
-        writer_.notePacket(r.format, r.packetId, timelineTime, data, length);
-        for (const auto& row : r.rows)    writer_.record(row, timelineTime);
-        for (const auto& hj  : r.hotJson) writer_.record(hj, timelineTime);
-    }
-
     if (std::isfinite(timelineTime) && timelineTime >= 0.0f) {
         // Prefer FLBK's exact target. If the event is absent/lost, retain the
         // session-time regression detector with a grace window for slightly
@@ -948,6 +946,31 @@ void Engine::onDatagram(const uint8_t* data, int length) {
             rewindLiveTimeline(timelineTime, r.format);
         else
             liveSessionTime_ = std::max(liveSessionTime_, timelineTime);
+    }
+
+    // RTMT is a state transition, not a repeatable notification: a car can
+    // retire only once on a surviving timeline. Filter repeats before they
+    // reach recording, live history, Strategy, paired clients, or the UI.
+    r.rows.erase(std::remove_if(r.rows.begin(), r.rows.end(),
+        [this](const std::string& row) {
+            if (rowTypeOf(row) != 6 ||
+                row.find("\"code\":\"RTMT\"") == std::string::npos) return false;
+            const int carIdx = static_cast<int>(scanJsonNumber(
+                row, "\"car_idx\":", -1.0));
+            const float rowTime = static_cast<float>(scanJsonNumber(
+                row, "\"session_time\":", -1.0));
+            if (carIdx < 0 || carIdx >= static_cast<int>(liveRetirementTimes_.size()) ||
+                !std::isfinite(rowTime) || rowTime < 0.0f) return false;
+            if (std::isfinite(liveRetirementTimes_[carIdx])) return true;
+            liveRetirementTimes_[carIdx] = rowTime;
+            return false;
+        }), r.rows.end());
+
+    if (recording) {
+        if (r.rewindSessionTime) writer_.rewind(*r.rewindSessionTime);
+        writer_.notePacket(r.format, r.packetId, timelineTime, data, length);
+        for (const auto& row : r.rows)    writer_.record(row, timelineTime);
+        for (const auto& hj  : r.hotJson) writer_.record(hj, timelineTime);
     }
 
     // Keep one native latest-state row even while its page is hidden, then only
@@ -1336,6 +1359,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
             liveHistory_->reset();
             liveHistoryLastSample_.fill(-std::numeric_limits<float>::infinity());
             liveHistoryLastLap_.fill(-1);
+            liveRetirementTimes_.fill(std::numeric_limits<float>::infinity());
             liveHistorySequence_ = 0;
             liveSessionTime_ = 0.0f;
             liveLapStart_ = 0.0f;

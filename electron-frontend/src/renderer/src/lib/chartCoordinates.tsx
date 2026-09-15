@@ -84,6 +84,7 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
   const liveFastestLap = useTelemetryStore(state => state.liveFastestLapData)
   const fastestLapNum = useTelemetryStore(state => state.fastestLapNum)
   const liveLapBoundaries = useTelemetryStore(state => state.lapBoundaries)
+  const allLapsLapBoundaries = useTelemetryStore(state => state.allLapsLapBoundaries)
   const currentStintStartTime = useTelemetryStore(state => state.currentStintStartTime)
   const lapBlocks = useTelemetryStore(state => state.speedRpmBlocks) as PlaybackLapBlock[] | null
   const playbackCurrentLap = isPlayback && currentLapNum !== null
@@ -154,7 +155,9 @@ export function ChartCoordinatesProvider({ mode, referenceLapNum, rowTypeMask, s
     ? (lapBlocks ?? [])
       .map(block => ({ lapNum: block.lapNum, sessionTime: block.startSessionTime }))
       .sort((a, b) => a.sessionTime - b.sessionTime)
-    : liveLapBoundaries
+    : allLapsMode && allLapsLapBoundaries.length > 0
+      ? allLapsLapBoundaries
+      : liveLapBoundaries
   const stintStartTime = stintLapsMode ? currentStintStartTime : -Infinity
   const boundaryLabelsRef = useRef(new Map<number, string>())
   boundaryLabelsRef.current = new Map(lapBoundaries.map(boundary => [boundary.sessionTime, String(boundary.lapNum)]))

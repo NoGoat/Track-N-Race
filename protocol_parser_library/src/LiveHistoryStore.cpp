@@ -23,9 +23,11 @@
 namespace tnrp::detail {
 namespace {
 
-constexpr uint32_t kHistoricalMask =
+constexpr uint32_t kChartHistoricalMask =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 11) |
     (1u << 12);
+constexpr uint32_t kRangeHistoricalMask =
+    kChartHistoricalMask | (1u << 6);
 
 bool isPacked(uint8_t type) { return type == 1 || type == 11 || type == 12; }
 
@@ -754,7 +756,7 @@ void LiveHistoryStore::requestRange(uint32_t familyMask, float fromSessionTime,
                                     BackfillCallback callback) {
     Impl::Job job;
     job.kind = Impl::JobKind::Range;
-    job.mask = familyMask & kHistoricalMask;
+    job.mask = familyMask & kRangeHistoricalMask;
     job.from = fromSessionTime;
     job.through = throughSessionTime;
     job.callback = std::move(callback);
@@ -770,7 +772,7 @@ void LiveHistoryStore::requestFastestLap(
     std::function<void(int, int, float, float, LiveHistoryBackfill)> callback) {
     Impl::Job job;
     job.kind = Impl::JobKind::Range;
-    job.mask = kHistoricalMask;
+    job.mask = kChartHistoricalMask;
     {
         std::lock_guard<std::mutex> lock(impl_->stateMutex);
         std::shared_ptr<LapSegment> best;
