@@ -155,6 +155,8 @@ const strategyBridge = {
 }
 
 const fsBridge = {
+  openLaunchDiagnostics: (): Promise<void> =>
+    ipcRenderer.invoke('diagnostics:open-folder'),
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke('dialog:showOpenDialog'),
   selectTNRDFile: (): Promise<string | null> =>

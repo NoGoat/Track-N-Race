@@ -44,6 +44,10 @@ ARTIFACTS=(
     "$ROOT_DIR/electron-frontend/dist/Track-N-Race - Electron.dmg"
     "$ROOT_DIR/minimal_frontend/dist/dmg/Track-N-Race - Minimal.dmg"
 )
+ARTIFACT_NAMES=(
+    "Track-N-Race-Electron-MacOS.dmg"
+    "Track-N-Race-Minimal-MacOS.dmg"
+)
 
 for artifact in "${ARTIFACTS[@]}"; do
     if [[ ! -f "$artifact" ]]; then
@@ -54,8 +58,8 @@ done
 
 mkdir -p "$RELEASE_ROOT"
 mkdir "$RELEASE_DIR"
-for artifact in "${ARTIFACTS[@]}"; do
-    cp "$artifact" "$RELEASE_DIR/"
+for i in "${!ARTIFACTS[@]}"; do
+    cp "${ARTIFACTS[$i]}" "$RELEASE_DIR/${ARTIFACT_NAMES[$i]}"
 done
 
 echo

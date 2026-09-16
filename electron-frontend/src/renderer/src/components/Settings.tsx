@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, Globe, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
+import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, Globe, Folder, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
@@ -1348,6 +1348,15 @@ const Settings = memo(function Settings({
             {link.icon}
           </a>
         ))}
+        <button
+          type="button"
+          title="Launch diagnostics folder"
+          aria-label="Open launch diagnostics folder"
+          onClick={() => { void window.fsBridge.openLaunchDiagnostics() }}
+          className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border border-[var(--border-muted)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--border-focus)]"
+        >
+          <Folder size={14} aria-hidden="true" />
+        </button>
       </nav>
 
       <div className="flex flex-col items-center gap-1.5">

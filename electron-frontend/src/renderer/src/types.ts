@@ -563,6 +563,7 @@ declare global {
       setMinimumStops: (value: number) => void
     }
     fsBridge: {
+      openLaunchDiagnostics: () => Promise<void>
       selectDirectory: () => Promise<string | null>
       selectTNRDFile: () => Promise<string | null>
     }

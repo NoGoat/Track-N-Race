@@ -133,7 +133,7 @@ if ($Components -contains "Electron") {
 
     $artifacts += @{
         Source = Join-Path $rootDir "electron-frontend\dist\Track-N-Race - Electron - Installer.exe"
-        Name = "Track-N-Race - Electron - Installer.exe"
+        Name = "Track-N-Race-Electron-Windows.exe"
     }
 }
 
@@ -169,14 +169,15 @@ if (($Components -contains "Qt") -or ($Components -contains "Minimal")) {
 if ($Components -contains "Qt") {
     $artifacts += @{
         Source = Join-Path $rootDir "qt_frontend\dist\Track-N-Race - Qt - Installer.exe"
-        Name = "Track-N-Race - Qt - Installer.exe"
+        Name = "Track-N-Race-Qt-Windows.exe"
     }
 }
 
 if ($Components -contains "Minimal") {
     $artifacts += @{
         Source = Join-Path $rootDir "minimal_frontend\dist\windows\Track-N-Race - Minimal.exe"
-        Name = "Track-N-Race - Minimal.exe"
+        Name = "Track-N-Race-Minimal-Windows.exe"
+        ZipName = "Track-N-Race-Minimal-Windows.zip"
     }
 }
 
@@ -189,8 +190,13 @@ foreach ($artifact in $artifacts) {
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $releaseDir | Out-Null
 foreach ($artifact in $artifacts) {
-    Copy-Item -LiteralPath $artifact.Source `
-        -Destination (Join-Path $releaseDir $artifact.Name)
+    $destination = Join-Path $releaseDir $artifact.Name
+    Copy-Item -LiteralPath $artifact.Source -Destination $destination
+    if ($artifact.ZipName) {
+        Compress-Archive -LiteralPath $destination `
+            -DestinationPath (Join-Path $releaseDir $artifact.ZipName)
+        Remove-Item -LiteralPath $destination
+    }
 }
 
 Write-Host "`nWindows release complete: $releaseDir" -ForegroundColor Green

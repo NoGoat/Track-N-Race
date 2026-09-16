@@ -40,6 +40,11 @@ ARTIFACTS=(
     "$ROOT_DIR/qt_frontend/Track-N-Race - Qt.AppImage"
     "$ROOT_DIR/minimal_frontend/dist/appimage/Track-N-Race - Minimal.AppImage"
 )
+ARTIFACT_NAMES=(
+    "Track-N-Race-Electron-Linux.AppImage"
+    "Track-N-Race-Qt-Linux.AppImage"
+    "Track-N-Race-Minimal-Linux.AppImage"
+)
 for artifact in "${ARTIFACTS[@]}"; do
     if [[ ! -f "$artifact" ]]; then
         echo "Error: expected build artifact was not produced: $artifact" >&2
@@ -49,8 +54,8 @@ done
 
 mkdir -p "$RELEASE_ROOT"
 mkdir "$RELEASE_DIR"
-for artifact in "${ARTIFACTS[@]}"; do
-    cp "$artifact" "$RELEASE_DIR/"
+for i in "${!ARTIFACTS[@]}"; do
+    cp "${ARTIFACTS[$i]}" "$RELEASE_DIR/${ARTIFACT_NAMES[$i]}"
 done
 
 echo

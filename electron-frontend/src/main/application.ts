@@ -233,6 +233,16 @@ onPairServiceState(state => {
   }
 })
 
+ipcMain.handle('diagnostics:open-folder', async () => {
+  try {
+    // initializeDiagnostics sets Electron's logs path to launch-diagnostics.
+    const error = await shell.openPath(app.getPath('logs'))
+    if (error) throw new Error(error)
+  } catch (error) {
+    dialog.showErrorBox('Unable to Open Launch Diagnostics', String(error))
+  }
+})
+
 ipcMain.handle('dialog:showOpenDialog', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
   const options = {
