@@ -100,6 +100,9 @@ struct Driver {
     int         race_number{};
     bool        ai{};
     std::string livery_color;
+    // Game-provided color, before presets/overrides. Older recordings omit it;
+    // their stored livery_color is retained as the best available source.
+    std::optional<std::string> source_livery_color;
 };
 
 struct ParticipantsRow {

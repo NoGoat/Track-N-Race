@@ -402,7 +402,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     snprintf(hexColor, sizeof(hexColor), "#8e8e8e");
                 }
                 pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai,
-                    resolveTeamColor(2025, teamId, hexColor, teamColorOverrides) });
+                    resolveTeamColor(2025, teamId, hexColor, teamColorOverrides), hexColor });
             }
             buf.clear();
             (void)glz::write_json(pr, buf);

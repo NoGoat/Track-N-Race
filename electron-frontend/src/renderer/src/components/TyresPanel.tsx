@@ -256,7 +256,7 @@ export default function TyresPanel({ tyreSets, latest, damage, damageHistory, te
   const cornerHistory = useCornerHistories(telemetry, tableCorners, fullLapMode)
 
   const drySets = useMemo(() => {
-    return tyreSets?.sets.filter(s => !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
+    return tyreSets?.sets.filter(s => s.actual_compound !== 0 && !WET_COMPOUNDS.has(s.actual_compound)).sort(sortDry) ?? null
   }, [tyreSets])
 
   const wetSets = useMemo(() => {

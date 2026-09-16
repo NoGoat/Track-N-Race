@@ -8,6 +8,8 @@
 
 namespace tnrp {
 
+struct Driver;
+
 // Library-owned F1/F2 constructor colour catalog. Hosts persist only the
 // sparse overrides; team ids, display names, and preset colours stay here so
 // every parser and playback path resolves them identically.
@@ -18,6 +20,7 @@ struct TeamColor {
     std::string group;
 };
 
+// Values are #RRGGBB, or "livery" to use the game's color on F1 25/26.
 using TeamColorOverrides = std::map<uint16_t, std::map<uint16_t, std::string>>;
 
 const std::vector<TeamColor>& teamColorsFor(uint16_t format);
@@ -27,12 +30,16 @@ std::string teamColorCatalogJson();
 // uppercase #RRGGBB before they enter the parser.
 TeamColorOverrides sanitizeTeamColorOverrides(const TeamColorOverrides& overrides);
 
-// Resolution order: user override, library preset, packet livery colour,
+// Resolution order: user override (fixed or livery), library preset, packet livery colour,
 // neutral fallback. Unknown/non-constructor ids therefore retain the game's
 // dynamic livery colour on F1 25/26.
 std::string resolveTeamColor(uint16_t format, uint16_t teamId,
                              std::string_view packetColor,
                              const TeamColorOverrides& overrides);
+
+// Preserve the source color when reapplying settings to cached or recorded rows.
+void applyTeamColorToDriver(Driver& driver, uint16_t format,
+                            const TeamColorOverrides& overrides);
 
 // Rewrites only participants rows. Used by playback so current overrides also
 // apply to recordings created before (or with different) colour settings.

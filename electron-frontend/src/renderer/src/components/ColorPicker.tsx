@@ -7,19 +7,24 @@ import { ArrowDownUp } from 'lucide-react'
 // preserves identical positioning, theme integration, keyboard dismissal, and
 // hex-only behavior everywhere colors are edited.
 export default function ColorPicker({
-  label, color, onChange, triggerClassName, triggerStyle,
+  label, color, onChange, triggerClassName, triggerStyle, disabled = false,
 }: {
   label: string
   color: string
   onChange: (color: string) => void
   triggerClassName?: string
   triggerStyle?: CSSProperties
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 8, top: 8 })
   const [formatIconHost, setFormatIconHost] = useState<HTMLElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -85,6 +90,7 @@ export default function ColorPicker({
     <button
       ref={buttonRef}
       type="button"
+      disabled={disabled}
       draggable={false}
       aria-label={`${label} color`}
       aria-haspopup="dialog"
@@ -93,7 +99,7 @@ export default function ColorPicker({
       className={triggerClassName ?? 'w-5 h-5 rounded border border-[var(--border)] cursor-pointer shrink-0 shadow-inner'}
       style={{ backgroundColor: color, ...triggerStyle }}
     />
-    {open && createPortal(
+    {open && !disabled && createPortal(
       <div ref={pickerRef} role="dialog" aria-label={`${label} color picker`} className="fixed z-[10000]" style={position}>
         <Chrome
           className="analyze-color-picker"
@@ -115,4 +121,3 @@ export default function ColorPicker({
     )}
   </>
 }
-

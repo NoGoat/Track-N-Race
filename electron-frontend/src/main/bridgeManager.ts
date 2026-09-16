@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { chartHistoryRecords, inspectBinaryBatch } from './binaryRows'
 import { configStore as store } from './configStore'
+import { normalizeTeamColorOverrides, type TeamColorOverrides } from './teamColors'
 import { setTelemetryRetentionProvider } from './diagnostics'
 import {
   configurePairService,
@@ -12,24 +13,8 @@ import {
 
 type ProtocolOverride = 'auto' | 'f1_24' | 'f1_25' | 'f1_26'
 interface UdpForwardTarget { address: string; port: number }
-type TeamColorOverrides = Record<string, Record<string, string>>
-
 function storedTeamColorOverrides(): TeamColorOverrides {
-  const value = store.get('teamColorOverrides', {})
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-  const result: TeamColorOverrides = {}
-  for (const format of ['2024', '2025', '2026']) {
-    const teams = (value as Record<string, unknown>)[format]
-    if (!teams || typeof teams !== 'object' || Array.isArray(teams)) continue
-    for (const [id, color] of Object.entries(teams as Record<string, unknown>)) {
-      if (/^\d+$/.test(id) && typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) {
-        const formatOverrides = result[format] ?? {}
-        formatOverrides[id] = color.toUpperCase()
-        result[format] = formatOverrides
-      }
-    }
-  }
-  return result
+  return normalizeTeamColorOverrides(store.get('teamColorOverrides', {}))
 }
 
 function storedForwardTargets(): UdpForwardTarget[] {
@@ -1097,21 +1082,7 @@ export function getTeamColorConfig(): {
 }
 
 export function setTeamColorOverrides(value: unknown): void {
-  const source = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-  const normalized: TeamColorOverrides = {}
-  for (const format of ['2024', '2025', '2026']) {
-    const teams = source[format]
-    if (!teams || typeof teams !== 'object' || Array.isArray(teams)) continue
-    for (const [id, color] of Object.entries(teams as Record<string, unknown>)) {
-      if (/^\d+$/.test(id) && typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) {
-        const formatOverrides = normalized[format] ?? {}
-        formatOverrides[id] = color.toUpperCase()
-        normalized[format] = formatOverrides
-      }
-    }
-  }
+  const normalized = normalizeTeamColorOverrides(value)
   store.set('teamColorOverrides', normalized)
   if (engine) engine.setTeamColorOverrides(normalized)
 }

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, memo } from 'react'
 import { flushSync } from 'react-dom'
-import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
+import { Bug, Clock, Network, Sun, Map, AlertTriangle, Radio, X, Info, HardDrive, ScrollText, ChevronDown, ExternalLink, Globe, LineChart, Shrink, MoveVertical, LayoutGrid, Smartphone, Palette, RotateCcw } from 'lucide-react'
 import QRCode from 'qrcode'
 import type { PairServiceState, ProtocolStatusMsg, ProtocolWarningMsg } from '../types'
 import {
@@ -15,6 +15,9 @@ import type { ChartFrameRate } from '../lib/timechart/frameRate'
 import { BUTTON_CLASS } from '../lib/buttonStyles'
 import type { PageLayouts, Theme, TitlebarUpdateInterval } from '../app/appConfig'
 import { useModalPresence } from '../lib/useModalPresence'
+import Select from '../lib/AnimatedSelect'
+import { buildSelectStyles } from '../lib/selectStyles'
+import { selectComponents } from '../lib/selectComponents'
 import ColorPicker from './ColorPicker'
 
 interface Props {
@@ -177,6 +180,14 @@ type TeamColorFormat = '2024' | '2025' | '2026'
 type TeamColorPreset = { id: number; name: string; color: string; group: string }
 type TeamColorCatalog = Record<string, TeamColorPreset[]>
 type TeamColorOverrides = Record<string, Record<string, string>>
+const TEAM_COLOR_SOURCE_OPTIONS: Option<'fixed' | 'livery'>[] = [
+  { value: 'fixed', label: 'Fixed' },
+  { value: 'livery', label: 'Livery' },
+]
+const TEAM_COLOR_GROUP_SOURCE_OPTIONS: Option<'fixed' | 'livery'>[] = [
+  { value: 'fixed', label: 'Fixed colors' },
+  { value: 'livery', label: 'Livery colors' },
+]
 
 function loadForwardTargets(): UdpForwardTarget[] {
   const value = window.electronStore.get('udp.forwardTargets', [])
@@ -414,6 +425,19 @@ const Settings = memo(function Settings({
     const next = { ...teamColorOverrides }
     const remaining = { ...(next[format] ?? {}) }
     for (const team of teams) delete remaining[String(team.id)]
+    if (Object.keys(remaining).length === 0) delete next[format]
+    else next[format] = remaining
+    commitTeamColorOverrides(next)
+  }
+
+  function setTeamColorSource(format: TeamColorFormat, teams: TeamColorPreset[], source: 'fixed' | 'livery'): void {
+    if (format === '2024') return
+    const next = { ...teamColorOverrides }
+    const remaining = { ...(next[format] ?? {}) }
+    for (const team of teams) {
+      if (source === 'livery') remaining[String(team.id)] = 'livery'
+      else if (remaining[String(team.id)] === 'livery') delete remaining[String(team.id)]
+    }
     if (Object.keys(remaining).length === 0) delete next[format]
     else next[format] = remaining
     commitTeamColorOverrides(next)
@@ -870,6 +894,8 @@ const Settings = memo(function Settings({
   const renderTeamColors = () => {
     const teams = teamColorCatalog[teamColorFormat] ?? []
     const overrides = teamColorOverrides[teamColorFormat] ?? {}
+    const supportsLivery = teamColorFormat !== '2024'
+    const sourceSelectStyles = buildSelectStyles(theme !== 'light', { solidBg: true })
     const groups = teams.reduce<Array<{ heading: string; teams: TeamColorPreset[] }>>((result, team) => {
       const current = result[result.length - 1]
       if (!current || current.heading !== team.group) {
@@ -884,6 +910,9 @@ const Settings = memo(function Settings({
         <div className="flex items-center justify-between gap-4 px-4 pb-4">
           <div>
             <p className="text-sm font-semibold text-[var(--text-primary)]">Team Colors</p>
+            {supportsLivery && <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Choose fixed or game livery colors for a group or an individual team.
+            </p>}
           </div>
           <SegmentedControl<TeamColorFormat>
             options={[
@@ -902,44 +931,86 @@ const Settings = memo(function Settings({
           </p>
         ) : groups.map(group => {
           const hasOverrides = group.teams.some(team => overrides[String(team.id)] !== undefined)
+          const liveryCount = group.teams.filter(team => overrides[String(team.id)] === 'livery').length
+          const groupSource = liveryCount === 0 ? 'fixed' : liveryCount === group.teams.length ? 'livery' : 'mixed'
           return (
             <Fragment key={group.heading}>
               <div className="flex items-center justify-between px-4 pt-4 pb-1">
                 <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
                   {group.heading}
                 </span>
-                <button
-                  type="button"
-                  aria-label={`Reset ${group.heading} colors`}
-                  title={hasOverrides ? 'Reset section to presets' : 'Section is using preset colors'}
-                  disabled={!hasOverrides}
-                  onClick={() => resetTeamColorGroup(teamColorFormat, group.teams)}
-                  className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-20 transition-colors"
-                >
-                  <RotateCcw size={13} />
-                </button>
+                <div className="flex items-center gap-2">
+                  {supportsLivery && <Select
+                    aria-label={`Color source for ${group.heading}`}
+                    className="w-32 shrink-0"
+                    options={TEAM_COLOR_GROUP_SOURCE_OPTIONS}
+                    value={TEAM_COLOR_GROUP_SOURCE_OPTIONS.find(option => option.value === groupSource) ?? null}
+                    placeholder="Mixed sources"
+                    onChange={option => { if (option) setTeamColorSource(teamColorFormat, group.teams, option.value) }}
+                    styles={sourceSelectStyles}
+                    components={selectComponents}
+                    isSearchable={false}
+                    menuPortalTarget={document.body}
+                    menuPosition="fixed"
+                    menuPlacement="auto"
+                  />}
+                  <button
+                    type="button"
+                    aria-label={`Reset ${group.heading} colors`}
+                    title={hasOverrides ? 'Reset section to presets' : 'Section is using preset colors'}
+                    disabled={!hasOverrides}
+                    onClick={() => resetTeamColorGroup(teamColorFormat, group.teams)}
+                    className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-20 transition-colors"
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                </div>
               </div>
               <div className="mx-4 mb-3 overflow-hidden rounded-xl border border-[var(--border-muted)]">
                 {group.teams.map((team, index) => {
                   const override = overrides[String(team.id)]
-                  const color = override ?? team.color
+                  const useLivery = supportsLivery && override === 'livery'
+                  const color = useLivery ? team.color : override ?? team.color
                   return (
                     <div key={team.id} className={`flex items-center gap-4 px-3 py-2.5 ${index > 0 ? 'border-t border-[var(--border-muted)]' : ''}`}>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-xs font-semibold text-[var(--text-primary)]">{team.name}</p>
                         <p className="mt-0.5 text-[10px] font-mono text-[var(--text-muted)]">
-                          Preset {team.color}
+                          {useLivery ? 'Uses each car’s game livery color' : `Preset ${team.color}`}
                         </p>
                       </div>
-                      <ColorPicker
-                        label={team.name}
-                        color={color}
-                        onChange={value => setTeamColor(teamColorFormat, team, value)}
-                        triggerClassName="h-7 w-9 shrink-0 cursor-pointer rounded-md border border-[var(--border-muted)] shadow-inner"
-                      />
-                      <span className="w-[68px] text-[10px] font-mono tabular-nums text-[var(--text-secondary)]">
-                        {color}
-                      </span>
+                      {supportsLivery && <Select
+                        aria-label={`Color source for ${team.name}`}
+                        className="w-24 shrink-0"
+                        options={TEAM_COLOR_SOURCE_OPTIONS}
+                        value={TEAM_COLOR_SOURCE_OPTIONS[useLivery ? 1 : 0]}
+                        onChange={option => { if (option) setTeamColorSource(teamColorFormat, [team], option.value) }}
+                        styles={sourceSelectStyles}
+                        components={selectComponents}
+                        isSearchable={false}
+                        menuPortalTarget={document.body}
+                        menuPosition="fixed"
+                        menuPlacement="auto"
+                      />}
+                      <div
+                        className={`team-color-picker-slot ${useLivery ? '' : 'team-color-picker-slot--visible'}`}
+                        style={reduceAnimations ? { transition: 'none' } : undefined}
+                        aria-hidden={useLivery}
+                        inert={useLivery}
+                      >
+                        <div className="team-color-picker-slot__inner">
+                          <ColorPicker
+                            label={team.name}
+                            color={color}
+                            disabled={useLivery}
+                            onChange={value => setTeamColor(teamColorFormat, team, value)}
+                            triggerClassName="h-7 w-9 shrink-0 cursor-pointer rounded-md border border-[var(--border-muted)] shadow-inner"
+                          />
+                          <span className="w-[68px] shrink-0 text-[10px] font-mono tabular-nums text-[var(--text-secondary)]">
+                            {color}
+                          </span>
+                        </div>
+                      </div>
                       <button
                         type="button"
                         aria-label={`Reset ${team.name} color`}
@@ -1228,40 +1299,68 @@ const Settings = memo(function Settings({
   )
 
   const renderAbout = () => (
-    <div className="flex flex-col items-center justify-center text-center py-12 w-full max-w-[640px] select-none mx-auto my-auto">
+    <div className="flex w-full max-w-[640px] flex-col items-center gap-4 text-center select-none mx-auto">
       {/* Logo */}
       <img
         src={theme === 'light' ? iconTransparentLight : iconTransparent}
         alt="Track N Race Logo"
-        className="h-24 w-auto mb-6 select-none pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
+        className="h-24 w-auto select-none pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
         draggable="false"
       />
       
-      {/* App Name */}
-      <h1 className="text-xl font-bold font-mono tracking-wider text-[var(--text-primary)] uppercase">
-        Track N Race
-      </h1>
-      
-      {/* Version Pill */}
-      <p className="text-[10px] font-mono text-[var(--text-secondary)] mt-2 font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-3 py-1 rounded-full">
-        {/* @ts-ignore */}
-        {import.meta.env.DEV ? 'Version Next' : (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')}
-      </p>
+      <div className="flex flex-col items-center gap-2">
+        <h1 className="text-xl font-bold font-mono tracking-wider text-[var(--text-primary)] uppercase">
+          Track N Race
+        </h1>
+        <p className="text-[10px] font-mono text-[var(--text-secondary)] font-bold uppercase tracking-wider bg-[var(--bg-input)] border border-[var(--border-muted)] px-3 py-1 rounded-full">
+          {/* @ts-ignore */}
+          {import.meta.env.DEV ? 'Version Next' : (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0')}
+        </p>
+      </div>
 
       {/* Description Tagline */}
-      <p className="text-xs text-[var(--text-secondary)] mt-4 font-mono leading-relaxed max-w-[340px]">
+      <p className="text-xs text-[var(--text-secondary)] font-mono leading-relaxed max-w-[340px]">
         A telemetry app for Formula One games.
       </p>
 
-      {/* Creator Credits (Whitespace separated, no harsh lines) */}
-      <div className="mt-16 flex flex-col items-center">
+      <nav aria-label="Track N Race links" className="flex flex-wrap items-center justify-center gap-3">
+        {[
+          { label: 'Official website', href: 'https://track-n-race.com', icon: <Globe size={14} aria-hidden="true" /> },
+          {
+            label: 'Github repo',
+            href: 'https://github.com/NoGoat/Track-N-Race',
+            icon: (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+              </svg>
+            ),
+          },
+        ].map(link => (
+          <a
+            key={link.href}
+            href={link.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={link.label}
+            aria-label={link.label}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-muted)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--border-focus)]"
+          >
+            {link.icon}
+          </a>
+        ))}
+      </nav>
+
+      <div className="flex flex-col items-center gap-1.5">
         <span className="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-[0.25em]">
           CREATED BY
         </span>
-        <span className="text-xs font-semibold font-mono text-[var(--text-primary)] mt-1.5 tracking-wide">
+        <span className="text-xs font-semibold font-mono text-[var(--text-primary)] tracking-wide">
           NoGoat
         </span>
       </div>
+      <p className="max-w-[480px] px-4 text-[10px] font-mono leading-relaxed text-[var(--text-secondary)]">
+        Track N Race is not affiliated with, endorsed by, or associated with EA, Codemasters, Formula One, the FIA, the drivers or the teams participating in Formula One.
+      </p>
     </div>
   )
 
@@ -1481,12 +1580,12 @@ const Settings = memo(function Settings({
           </div>
 
           {/* Content Area */}
-          <div className={`flex-1 overflow-y-auto p-8 bg-[var(--bg-panel)] flex flex-col ${
+          <div className={`flex-1 min-w-0 overflow-y-auto bg-[var(--bg-panel)] flex flex-col ${
             view === 'about'
-              ? 'items-center justify-center'
-              : 'items-start justify-start'
+              ? 'items-center p-6'
+              : 'items-start justify-start p-8'
           }`}>
-            <div ref={settingsContentRef} className="w-full max-w-[858px]">
+            <div ref={settingsContentRef} className={`w-full max-w-[858px] shrink-0 ${view === 'about' ? 'my-auto' : ''}`}>
               {view === 'about'
                 ? renderAbout()
                 : view === 'attributions'

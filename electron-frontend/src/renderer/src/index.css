@@ -479,6 +479,40 @@ body {
   transform: translateX(0);
 }
 
+/* Keep fixed-color controls mounted so both the fade and row spacing can
+   transition when switching to/from game livery colors. */
+.team-color-picker-slot {
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: 0fr;
+  margin-left: -1rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition:
+    grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-left 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.team-color-picker-slot__inner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.team-color-picker-slot--visible {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
 .analyze-lap-mode-switch {
   display: grid;
   perspective: 600px;

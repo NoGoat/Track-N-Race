@@ -94,6 +94,17 @@ const Colors kF126 = {
     {482, "RB '26", "#6692FF"}, {483, "Haas '26", "#DEE1E2"},
     {484, "McLaren '26", "#FF8000"}, {485, "Audi '26", "#FF2D00"},
     {486, "Cadillac '26", "#AAAAAD"},
+    {489, "ART Grand Prix '26", "#B4B3B4"},
+    {490, "Campos Racing '26", "#EFC100"},
+    {491, "Rodin Motorsport '26", "#FFFFFF"},
+    {492, "AIX Racing '26", "#FF6900"},
+    {493, "DAMS '26", "#0ED4FA"},
+    {494, "Hitech '26", "#E8E8E8"},
+    {495, "MP Motorsport '26", "#F7401A"},
+    {496, "Prema Racing '26", "#E80309"},
+    {497, "Trident '26", "#0E1185"},
+    {498, "Van Amersfoort Racing '26", "#F36F21"},
+    {499, "Invicta Racing '26", "#F8E71C"},
 };
 
 bool isHexColor(std::string_view color) {
@@ -130,11 +141,12 @@ std::pair<int, const char*> groupFor(uint16_t format, uint16_t id) {
         if (id >= 185) return {1, "F1 2024 Teams"};
         return {2, "F2 2024 Teams"};
     }
-    if (id >= 476) return {0, "F1 2026 Teams"};
+    if (id >= 476 && id <= 486) return {0, "F1 2026 Teams"};
     if (id <= 9) return {1, "F1 2025 Teams"};
     if (id >= 185 && id <= 194) return {2, "F1 2024 Teams"};
-    if (id >= 465) return {3, "F2 2025 Teams"};
-    return {4, "F2 2024 Teams"};
+    if (id >= 489 && id <= 499) return {3, "F2 2026 Teams"};
+    if (id >= 465) return {4, "F2 2025 Teams"};
+    return {5, "F2 2024 Teams"};
 }
 
 Colors catalogForUi(uint16_t format) {
@@ -181,6 +193,10 @@ TeamColorOverrides sanitizeTeamColorOverrides(const TeamColorOverrides& override
         if (format != 2024 && format != 2025 && format != 2026) continue;
         for (const auto& [teamId, color] : teams) {
             if (!findPreset(format, teamId)) continue;
+            if (color == "livery" && (format == 2025 || format == 2026)) {
+                result[format][teamId] = color;
+                continue;
+            }
             std::string normalized = normalizedHex(color);
             if (!normalized.empty()) result[format][teamId] = std::move(normalized);
         }
@@ -194,11 +210,26 @@ std::string resolveTeamColor(uint16_t format, uint16_t teamId,
     const auto formatIt = overrides.find(format);
     if (formatIt != overrides.end()) {
         const auto teamIt = formatIt->second.find(teamId);
-        if (teamIt != formatIt->second.end()) return teamIt->second;
+        if (teamIt != formatIt->second.end()) {
+            if (teamIt->second == "livery") {
+                if (format == 2025 || format == 2026)
+                    return isHexColor(packetColor) ? normalizedHex(packetColor) : "#8E8E8E";
+            } else if (isHexColor(teamIt->second)) {
+                return normalizedHex(teamIt->second);
+            }
+        }
     }
     if (const TeamColor* preset = findPreset(format, teamId)) return preset->color;
     if (isHexColor(packetColor)) return normalizedHex(packetColor);
     return "#8E8E8E";
+}
+
+void applyTeamColorToDriver(Driver& driver, uint16_t format,
+                            const TeamColorOverrides& overrides) {
+    if ((format == 2025 || format == 2026) && !driver.source_livery_color)
+        driver.source_livery_color = driver.livery_color;
+    driver.livery_color = resolveTeamColor(format, static_cast<uint16_t>(driver.team_id),
+        driver.source_livery_color.value_or(driver.livery_color), overrides);
 }
 
 std::string applyTeamColorsToParticipantsJson(std::string_view json,
@@ -209,8 +240,7 @@ std::string applyTeamColorsToParticipantsJson(std::string_view json,
     ParticipantsRow row;
     if (glz::read<readOptions>(row, json)) return std::string(json);
     for (auto& driver : row.drivers) {
-        driver.livery_color = resolveTeamColor(format,
-            static_cast<uint16_t>(driver.team_id), driver.livery_color, overrides);
+        applyTeamColorToDriver(driver, format, overrides);
     }
     std::string result;
     if (glz::write_json(row, result)) return std::string(json);
