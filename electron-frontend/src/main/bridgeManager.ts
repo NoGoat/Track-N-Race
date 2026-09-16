@@ -857,11 +857,16 @@ export function stopBridge(forceProcessExit = false): void {
   activeFilePath = null
   activeUdpConfig = null
   if (engine) {
-    // With recording disabled, do not enter the native engine at all during
-    // process shutdown. Any active playback/load/history read may own the
-    // engine mutex, so even flushRecording() (a no-op at the writer level)
-    // could wait behind that read indefinitely.
-    if (forceProcessExit) return
+    // Skip the orderly flush/player-close path when the process is about to
+    // exit, but still destroy the addon while its N-API environment is valid.
+    // Leaving the wrapper alive until Node environment teardown lets its
+    // finalizer call a thread-safe JS callback after libuv has started shutting
+    // down, which aborts the process on macOS.
+    if (forceProcessExit) {
+      engine.destroy()
+      engine = null
+      return
+    }
     // Synchronous native barrier: preserve queued rows and the rolling buffer
     // before teardown, even though Engine destruction also finalizes the stream.
     engine.flushRecording()

@@ -517,7 +517,11 @@ public:
         if (!destroyed_) {
             if (engine) {
                 engine->pairStop(false);
-                engine->playerClose();
+                // ObjectWrap finalization can run while Node is dismantling the
+                // N-API environment. playerClose() emits playback_close through
+                // onRow(), so calling it here may touch an already-closing TSFN.
+                // Normal application shutdown invokes Destroy() while N-API is
+                // still live; this fallback must not emit playback rows.
                 engine.reset();
             }
             tsfn.Release();
