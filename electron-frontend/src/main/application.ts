@@ -34,6 +34,7 @@ import {
   playerSeek,
   playerSeekInstalled,
   playerSetSpeed,
+  playerSetDriver,
   playerGetLapData,
   liveGetFastestLap,
   playerGetAllLapsData,
@@ -185,12 +186,14 @@ ipcMain.on('store-set', (_event, key: string, value: unknown) => {
 interface DebugSettings {
   additionalLogging: boolean
   memoryLog: boolean
+  nodeApiExceptions: boolean
 }
 
 function debugSettings(): DebugSettings {
   return {
     additionalLogging: store.get('debug.additionalLogging', false) === true,
     memoryLog: store.get('debug.memoryLog', false) === true,
+    nodeApiExceptions: store.get('debug.nodeApiExceptions', false) === true,
   }
 }
 
@@ -203,10 +206,12 @@ function publishDebugSettings(): void {
 
 store.onDidChange('debug.additionalLogging', publishDebugSettings)
 store.onDidChange('debug.memoryLog', publishDebugSettings)
+store.onDidChange('debug.nodeApiExceptions', publishDebugSettings)
 
 ipcMain.handle('debug-settings-get', debugSettings)
 ipcMain.on('debug-settings-set', (_event, key: keyof DebugSettings, value: unknown) => {
-  if ((key !== 'additionalLogging' && key !== 'memoryLog') || typeof value !== 'boolean') return
+  if ((key !== 'additionalLogging' && key !== 'memoryLog' && key !== 'nodeApiExceptions') ||
+      typeof value !== 'boolean') return
   store.set(`debug.${key}`, value)
 })
 
@@ -292,6 +297,8 @@ ipcMain.on('player:seek', (_event, pct: number, allHistory: boolean, rowTypeMask
 ipcMain.on('player:seek-installed', (_event, requestId: number) =>
   playerSeekInstalled(requestId))
 ipcMain.on('player:setSpeed', (_event, mult: number) => playerSetSpeed(mult))
+ipcMain.on('player:setDriver', (_event, driverIndex: number, useRecordedRows?: boolean) =>
+  playerSetDriver(driverIndex, useRecordedRows === true))
 ipcMain.on('player:getLapData', (_event, lapNum: number, rowTypeMask?: number) => playerGetLapData(lapNum, rowTypeMask))
 ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
   if (Number.isSafeInteger(requestId) && requestId > 0) liveGetFastestLap(requestId)

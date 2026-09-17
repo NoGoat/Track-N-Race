@@ -278,6 +278,10 @@ let analyzeLapEnabled = true
 let finiteWindowBackfillEnabled = true
 let waitingForAllLapsHistory = false
 let historyRowMask = 0xFFFFFFFF
+let fullSessionHistoryRowMask = 0xFFFFFFFF
+let secondaryFiniteHistoryRowMask = 0
+let secondaryLapHistoryRowMask = 0
+let secondaryHistoryWindowSeconds = 0
 let requestedHistoryRowMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
@@ -1391,12 +1395,13 @@ function handleMsg(msg: GatewayMsg): void {
         analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
         playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
       })
-      const missingHistory = historyRowMask & ~requestedHistoryRowMask
+      const missingHistory = fullSessionHistoryRowMask & ~requestedHistoryRowMask
       if (allLapsMode && missingHistory !== 0) {
         waitingForAllLapsHistory = true
         requestedHistoryRowMask |= missingHistory
         window.playerBridge.getAllLapsData(missingHistory)
       }
+      requestVisibleWindowHistory()
       break
     }
   }
@@ -1748,8 +1753,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
 // Set the visible time window (seconds). Infinity selects the full-session
 // publication used by All Laps and Stint Laps. Recomputes slices at once.
 function requestVisibleWindowHistory(): void {
-  if (allLapsMode || speedRpmBlocksVal === null) return
-  if (finiteWindowBackfillEnabled && (!Number.isFinite(secondsVal) || secondsVal <= 0)) return
+  if (speedRpmBlocksVal === null) return
   const fileStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
   const currentTime = Math.max(
     telBufRef.current[telBufRef.current.length - 1]?.session_time ?? 0,
@@ -1760,22 +1764,49 @@ function requestVisibleWindowHistory(): void {
     lapProgressBufRef.current[lapProgressBufRef.current.length - 1]?.session_time ?? 0,
   )
   if (!Number.isFinite(fileStart) || currentTime <= fileStart) return
-  const requiredStart = finiteWindowBackfillEnabled
-    ? Math.max(fileStart, currentTime - secondsVal)
-    : Math.max(fileStart, lapStartTime)
-  let missingMask = 0
-  const missing = (bit: number, firstTime: number | undefined): void => {
-    if ((historyRowMask & bit) && !historyCovers(bit, requiredStart) &&
-        (firstTime ?? Infinity) > requiredStart + 1) missingMask |= bit
+  const firstTimes = new Map<number, number | undefined>([
+    [HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time],
+    [HISTORY_ROW.status, stsBufRef.current[0]?.session_time],
+    [HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time],
+    [HISTORY_ROW.motion, motBufRef.current[0]?.session_time],
+    [HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time],
+    [HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time],
+  ])
+  const requestRange = (requestedMask: number, requiredStart: number, windowSeconds: number): void => {
+    let missingMask = 0
+    for (const bit of HISTORY_ROW_BITS) {
+      if ((requestedMask & bit) && !historyCovers(bit, requiredStart) &&
+          (firstTimes.get(bit) ?? Infinity) > requiredStart + 1) missingMask |= bit
+    }
+    if (missingMask !== 0) window.playerBridge.getWindowData(windowSeconds, missingMask)
   }
-  missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
-  missing(HISTORY_ROW.status, stsBufRef.current[0]?.session_time)
-  missing(HISTORY_ROW.damage, dmgBufRef.current[0]?.session_time)
-  missing(HISTORY_ROW.motion, motBufRef.current[0]?.session_time)
-  missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
-  missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
-  if (missingMask !== 0) window.playerBridge.getWindowData(
-    finiteWindowBackfillEnabled ? secondsVal : 0, missingMask)
+
+  const scopedFiniteMask = secondaryFiniteHistoryRowMask & ~fullSessionHistoryRowMask
+  const scopedLapMask = secondaryLapHistoryRowMask & ~fullSessionHistoryRowMask
+  if (!allLapsMode && scopedFiniteMask === 0 && scopedLapMask === 0) {
+    if (finiteWindowBackfillEnabled) {
+      if (!Number.isFinite(secondsVal) || secondsVal <= 0) return
+      requestRange(historyRowMask, Math.max(fileStart, currentTime - secondsVal), secondsVal)
+    } else {
+      requestRange(historyRowMask, Math.max(fileStart, lapStartTime), 0)
+    }
+    return
+  }
+
+  const finiteStart = secondaryHistoryWindowSeconds > 0
+    ? Math.max(fileStart, currentTime - secondaryHistoryWindowSeconds)
+    : currentTime
+  const lapStart = Math.max(fileStart, lapStartTime)
+  // When one family is used by both kinds of chart, request the wider range
+  // exactly once rather than racing two overlapping native backfills.
+  const overlap = scopedFiniteMask & scopedLapMask
+  const finiteRequestMask = (scopedFiniteMask & ~overlap) |
+    (finiteStart <= lapStart ? overlap : 0)
+  const lapRequestMask = (scopedLapMask & ~overlap) |
+    (lapStart < finiteStart ? overlap : 0)
+  if (finiteRequestMask && secondaryHistoryWindowSeconds > 0)
+    requestRange(finiteRequestMask, finiteStart, secondaryHistoryWindowSeconds)
+  if (lapRequestMask) requestRange(lapRequestMask, lapStart, 0)
 }
 
 export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): void {
@@ -1811,7 +1842,7 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
     const firstBlockStart = Math.min(...speedRpmBlocksVal.map(block => Number(block.startSessionTime)).filter(Number.isFinite))
     if (Number.isFinite(firstBlockStart)) {
       const missing = (bit: number, firstTime: number | undefined): void => {
-        if ((historyRowMask & bit) && !historyCovers(bit, firstBlockStart) &&
+        if ((fullSessionHistoryRowMask & bit) && !historyCovers(bit, firstBlockStart) &&
             (firstTime ?? Infinity) > firstBlockStart + 1) entryMissingMask |= bit
       }
       missing(HISTORY_ROW.telemetry, telBufRef.current[0]?.session_time)
@@ -1821,7 +1852,7 @@ export function setTelemetrySeconds(s: number, backfillFiniteWindow = true): voi
       missing(HISTORY_ROW.motionEx, motExBufRef.current[0]?.session_time)
       missing(HISTORY_ROW.lap, lapProgressBufRef.current[0]?.session_time)
     }
-    requestedHistoryRowMask |= historyRowMask & ~entryMissingMask
+    requestedHistoryRowMask |= fullSessionHistoryRowMask & ~entryMissingMask
     if (entryMissingMask !== 0) {
       waitingForAllLapsHistory = true
       requestHistory = true
@@ -1858,11 +1889,24 @@ export function setAnalyzeLapEnabled(enabled: boolean): void {
 // Sets the single coordinated minimum history requirement. While AL is active,
 // newly-visible row families are requested additively; already-loaded families
 // are not decompressed or delivered again.
-export function setHistoryRowMask(mask: number): void {
+export function setHistoryRowMask(
+  mask: number,
+  fullSessionMask = mask,
+  finiteWindowMask = 0,
+  finiteWindowSeconds = 0,
+  lapWindowMask = 0,
+): void {
   const normalized = mask >>> 0
+  const normalizedFullSession = (fullSessionMask & normalized) >>> 0
   const disabled = historyRowMask & ~normalized
   historyRowMask = normalized
-  requestedHistoryRowMask &= normalized
+  fullSessionHistoryRowMask = normalizedFullSession
+  secondaryFiniteHistoryRowMask = (finiteWindowMask & normalized & ~normalizedFullSession) >>> 0
+  secondaryLapHistoryRowMask = (lapWindowMask & normalized & ~normalizedFullSession) >>> 0
+  secondaryHistoryWindowSeconds = Number.isFinite(finiteWindowSeconds)
+    ? Math.max(0, finiteWindowSeconds)
+    : 0
+  requestedHistoryRowMask &= normalizedFullSession
   // Dropping a hidden tab's source buffer also drops the history represented
   // by that buffer. Keeping its old coverage marker made a later tab activation
   // believe the missing prefix was still installed, so only rows streamed after
@@ -1901,12 +1945,15 @@ export function setHistoryRowMask(mask: number): void {
     cleared.allLapsLapBoundaries = []
   }
   if (Object.keys(cleared).length) set(cleared)
-  if (!allLapsMode || speedRpmBlocksVal === null) return
-  const missing = normalized & ~requestedHistoryRowMask
-  if (missing === 0) return
-  waitingForAllLapsHistory = true
-  requestedHistoryRowMask = (requestedHistoryRowMask | missing) >>> 0
-  window.playerBridge.getAllLapsData(missing)
+  if (allLapsMode && speedRpmBlocksVal !== null) {
+    const missing = normalizedFullSession & ~requestedHistoryRowMask
+    if (missing !== 0) {
+      waitingForAllLapsHistory = true
+      requestedHistoryRowMask = (requestedHistoryRowMask | missing) >>> 0
+      window.playerBridge.getAllLapsData(missing)
+    }
+  }
+  requestVisibleWindowHistory()
 }
 
 // Subscribe to live race events (transient banners). Delivered synchronously as

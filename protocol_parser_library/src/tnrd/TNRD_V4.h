@@ -90,6 +90,19 @@ public:
         std::vector<V4TimedRow>&, std::string*, const IndexedCancelCheck& = {}) = 0;
     virtual bool rowsForRange(float, float, V4RowTypeMask, std::vector<V4TimedRow>&,
         std::string*, const IndexedCancelCheck& = {}) = 0;
+    // Bounded row visitor for large indexed ranges. Generations may override
+    // this to avoid retaining the complete decoded range at once.
+    virtual bool forEachRowInRange(float fromTime, float toTime, V4RowTypeMask mask,
+        const std::function<bool(const V4TimedRow&)>& callback,
+        std::string* errorOut, const IndexedCancelCheck& cancelled = {}) {
+        std::vector<V4TimedRow> rows;
+        if (!rowsForRange(fromTime, toTime, mask, rows, errorOut, cancelled)) return false;
+        for (const auto& row : rows) {
+            if (cancelled && cancelled()) return false;
+            if (!callback(row)) return false;
+        }
+        return true;
+    }
     virtual bool latestRows(float, const std::vector<uint8_t>&, std::vector<V4TimedRow>&,
         std::string*, const IndexedCancelCheck& = {}) = 0;
     virtual bool forEachChunk(V4RowTypeMask,

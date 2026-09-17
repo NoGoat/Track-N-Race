@@ -1539,6 +1539,13 @@ void Engine::playerSetSpeed(float mult) {
     emitPlaybackState();
 }
 
+void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (!inPlayback_.load()) return;
+    reader_.setPlaybackDriver(driverIndex, useRecordedRows, currentTime_);
+    dupCache_ = {};
+}
+
 void Engine::liveGetFastestLap(uint64_t requestId) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (inPlayback_.load()) return;

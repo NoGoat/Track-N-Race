@@ -10,6 +10,7 @@ const storeAPI = {
 interface DebugSettings {
   additionalLogging: boolean
   memoryLog: boolean
+  nodeApiExceptions: boolean
 }
 
 let additionalLoggingEnabled = storeAPI.get('debug.additionalLogging', false) === true
@@ -127,6 +128,8 @@ const debugBridge = {
     ipcRenderer.send('debug-settings-set', 'additionalLogging', enabled),
   setMemoryLog: (enabled: boolean): void =>
     ipcRenderer.send('debug-settings-set', 'memoryLog', enabled),
+  setNodeApiExceptions: (enabled: boolean): void =>
+    ipcRenderer.send('debug-settings-set', 'nodeApiExceptions', enabled),
   onChange: (callback: (settings: DebugSettings) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, settings: DebugSettings) => callback(settings)
     ipcRenderer.on('debug-settings-changed', listener)
@@ -219,6 +222,8 @@ const playerBridge = {
   },
   seekInstalled: (requestId: number) => ipcRenderer.send('player:seek-installed', requestId),
   setSpeed: (mult: number) => ipcRenderer.send('player:setSpeed', mult),
+  setDriver: (driverIndex: number, useRecordedRows = false) =>
+    ipcRenderer.send('player:setDriver', driverIndex, useRecordedRows),
   getLiveFastestLap: (requestId: number) => ipcRenderer.send('live:getFastestLap', requestId),
   getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF) =>
     ipcRenderer.send('player:getLapData', lapNum, rowTypeMask >>> 0),

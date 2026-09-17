@@ -22,6 +22,10 @@ struct TelemetryCar {
     int speed_kph{};
     int rpm{};
     int gear{};
+    int drs{};
+    int slm{};
+    int rev_lights_pct{};
+    int rev_lights_bit_value{};
     std::optional<float> throttle{};
     std::optional<float> brake{};
     std::optional<double> steering{};
@@ -37,6 +41,7 @@ struct TelemetryCar {
     int brake_temp_fr{};
     int brake_temp_rl{};
     int brake_temp_rr{};
+    int engine_temp{};
 };
 
 template <>
@@ -47,6 +52,10 @@ struct glz::meta<TelemetryCar> {
         "speed_kph", &T::speed_kph,
         "rpm", &T::rpm,
         "gear", &T::gear,
+        "drs", &T::drs,
+        "slm", &T::slm,
+        "rev_lights_pct", &T::rev_lights_pct,
+        "rev_lights_bit_value", &T::rev_lights_bit_value,
         "throttle", &T::throttle,
         "brake", &T::brake,
         "steering", &T::steering,
@@ -61,7 +70,8 @@ struct glz::meta<TelemetryCar> {
         "brake_temp_fl", &T::brake_temp_fl,
         "brake_temp_fr", &T::brake_temp_fr,
         "brake_temp_rl", &T::brake_temp_rl,
-        "brake_temp_rr", &T::brake_temp_rr
+        "brake_temp_rr", &T::brake_temp_rr,
+        "engine_temp", &T::engine_temp
     );
 };
 
@@ -447,6 +457,12 @@ struct TyreWearCar {
     std::optional<double> tyre_wear_fr{};
     std::optional<double> tyre_wear_rl{};
     std::optional<double> tyre_wear_rr{};
+    std::optional<int> tyre_dmg_fl{}, tyre_dmg_fr{}, tyre_dmg_rl{}, tyre_dmg_rr{};
+    std::optional<int> brake_dmg_fl{}, brake_dmg_fr{}, brake_dmg_rl{}, brake_dmg_rr{};
+    std::optional<int> blisters_fl{}, blisters_fr{}, blisters_rl{}, blisters_rr{};
+    std::optional<int> wing_fl{}, wing_fr{}, wing_rear{};
+    std::optional<int> floor_damage{}, diffuser_damage{}, sidepod_damage{};
+    std::optional<int> gearbox_damage{}, engine_damage{}, drs_fault{}, ers_fault{};
 };
 
 template <>
@@ -457,7 +473,18 @@ struct glz::meta<TyreWearCar> {
         "tyre_wear_fl", &T::tyre_wear_fl,
         "tyre_wear_fr", &T::tyre_wear_fr,
         "tyre_wear_rl", &T::tyre_wear_rl,
-        "tyre_wear_rr", &T::tyre_wear_rr
+        "tyre_wear_rr", &T::tyre_wear_rr,
+        "tyre_dmg_fl", &T::tyre_dmg_fl, "tyre_dmg_fr", &T::tyre_dmg_fr,
+        "tyre_dmg_rl", &T::tyre_dmg_rl, "tyre_dmg_rr", &T::tyre_dmg_rr,
+        "brake_dmg_fl", &T::brake_dmg_fl, "brake_dmg_fr", &T::brake_dmg_fr,
+        "brake_dmg_rl", &T::brake_dmg_rl, "brake_dmg_rr", &T::brake_dmg_rr,
+        "blisters_fl", &T::blisters_fl, "blisters_fr", &T::blisters_fr,
+        "blisters_rl", &T::blisters_rl, "blisters_rr", &T::blisters_rr,
+        "wing_fl", &T::wing_fl, "wing_fr", &T::wing_fr, "wing_rear", &T::wing_rear,
+        "floor_damage", &T::floor_damage, "diffuser_damage", &T::diffuser_damage,
+        "sidepod_damage", &T::sidepod_damage,
+        "gearbox_damage", &T::gearbox_damage, "engine_damage", &T::engine_damage,
+        "drs_fault", &T::drs_fault, "ers_fault", &T::ers_fault
     );
 };
 

@@ -308,6 +308,9 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                         car.steering = Round4(*steering);
                     car.gear = ReadInt8(data, cBase + 15);
                     car.rpm = ReadUInt16(data, cBase + 16);
+                    car.drs = ReadUInt8(data, cBase + 18);
+                    car.rev_lights_pct = ReadUInt8(data, cBase + 19);
+                    car.rev_lights_bit_value = ReadUInt16(data, cBase + 20);
                     car.brake_temp_rl = ReadUInt16(data, cBase + 22);
                     car.brake_temp_rr = ReadUInt16(data, cBase + 24);
                     car.brake_temp_fl = ReadUInt16(data, cBase + 26);
@@ -320,6 +323,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                     car.tyre_temp_inner_rr = ReadUInt8(data, cBase + 35);
                     car.tyre_temp_inner_fl = ReadUInt8(data, cBase + 36);
                     car.tyre_temp_inner_fr = ReadUInt8(data, cBase + 37);
+                    car.engine_temp = ReadUInt16(data, cBase + 38);
                     t.cars->push_back(std::move(car));
                 }
             }
@@ -401,7 +405,7 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
             dr.brake_dmg_fl   = data[o++]; dr.brake_dmg_fr = data[o++];
             // F1_24 has no blisters — stays zero-initialised
             dr.wing_fl        = data[o++]; dr.wing_fr   = data[o++]; dr.wing_rear = data[o++];
-            dr.floor_damage   = data[o++]; dr.sidepod_damage = data[o++]; dr.diffuser_damage = data[o++];
+            dr.floor_damage   = data[o++]; dr.diffuser_damage = data[o++]; dr.sidepod_damage = data[o++];
             dr.drs_fault      = data[o++]; dr.ers_fault = data[o++];
             dr.gearbox_damage = data[o++]; dr.engine_damage = data[o++];
 
@@ -413,12 +417,22 @@ std::vector<std::string> F1_24::ParsePacket(const uint8_t* data, int length, con
                     if (!hot.hasCar(i, hdr.playerCarIndex)) continue;
                     TyreWearCar car;
                     car.idx = i;
+                    // ERS fault is not listed as restricted in the supplied spec.
+                    car.ers_fault = data[HEADER_SIZE + i * damageSize + 31];
                     if (hot.hasPrivateTelemetry(i, hdr.playerCarIndex)) {
                         const int cBase = HEADER_SIZE + i * damageSize;
                         car.tyre_wear_rl = FiniteFloat(data, cBase);
                         car.tyre_wear_rr = FiniteFloat(data, cBase + 4);
                         car.tyre_wear_fl = FiniteFloat(data, cBase + 8);
                         car.tyre_wear_fr = FiniteFloat(data, cBase + 12);
+                        car.tyre_dmg_rl = data[cBase + 16]; car.tyre_dmg_rr = data[cBase + 17];
+                        car.tyre_dmg_fl = data[cBase + 18]; car.tyre_dmg_fr = data[cBase + 19];
+                        car.brake_dmg_rl = data[cBase + 20]; car.brake_dmg_rr = data[cBase + 21];
+                        car.brake_dmg_fl = data[cBase + 22]; car.brake_dmg_fr = data[cBase + 23];
+                        car.wing_fl = data[cBase + 24]; car.wing_fr = data[cBase + 25]; car.wing_rear = data[cBase + 26];
+                        car.floor_damage = data[cBase + 27]; car.diffuser_damage = data[cBase + 28]; car.sidepod_damage = data[cBase + 29];
+                        car.drs_fault = data[cBase + 30];
+                        car.gearbox_damage = data[cBase + 32]; car.engine_damage = data[cBase + 33];
                     }
                     dr.cars->push_back(std::move(car));
                 }

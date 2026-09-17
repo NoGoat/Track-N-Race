@@ -78,6 +78,10 @@ public:
     // Indexed V4/V5 reload only the current lap's selected chunks at the supplied cursor;
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
+    // V6 only: project driver-scoped rows for exactly the selected driver.
+    // The recorded driver keeps the original private/player rows, but the V6
+    // all-car payload attached to those rows is stripped before emission.
+    void setPlaybackDriver(int driverIndex, bool useRecordedRows, float cursorTime);
     void setCursor(float t);
     // Position the indexed playback lanes and start loading the V5 chunks that
     // contain/follow the target. This is deliberately separate from
@@ -217,6 +221,10 @@ private:
     TimedRaw    v4PlaybackDamageState_;
     bool        v4PlaybackDamageStateReady_ = false;
     uint32_t    playbackRowMask_ = 0xFFFFFFFFu;
+    uint32_t    playbackOutputRowMask_ = 0xFFFFFFFFu;
+    int         playbackDriverIndex_ = -1;
+    int         recordedDriverIndex_ = -1;
+    bool        playbackDriverUsesRecordedRows_ = false;
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
@@ -287,6 +295,9 @@ private:
                         std::vector<uint8_t>& out);
     bool encodeV4HotRowCached(const detail::V4TimedRow& row,
                               std::vector<uint8_t>& out);
+    uint32_t expandedPlaybackMask(uint32_t outputMask) const;
+    void projectV6Row(uint8_t sourceType, float sessionTime, std::string_view json,
+                      std::vector<std::pair<uint8_t, std::string>>& out) const;
 };
 
 } // namespace tnrp

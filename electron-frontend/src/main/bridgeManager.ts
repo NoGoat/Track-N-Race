@@ -789,7 +789,13 @@ export function startBridge(): string | null {
       }
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
-    }, (binary: Buffer, coldJson: string, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number) => {
+    }, (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string) => {
+      if (nativeError) {
+        console.error('[native-callback]', nativeError)
+        broadcast({ type: 'playback_seek_flush_failed', requestId })
+        if (requestId === seekForwardRequestId) resetSeekForwarding()
+        return
+      }
       // Superseded scrubs are discarded before the large payload crosses IPC
       // or is decoded into renderer objects.
       // Authoritative scrubs supersede one another. History-family requests are
@@ -815,6 +821,8 @@ export function startBridge(): string | null {
     }, pairDiagnosticCallback)
 
     engine.setDiagnosticsEnabled?.(additionalLoggingEnabled)
+    engine.setNativeExceptionReporting?.(
+      store.get('debug.nodeApiExceptions', false) === true)
     if (!engine.startUdp()) {
       const error = engine.udpLastError?.() || 'Failed to start the UDP listener.'
       console.error(`[udp] Listener failed on ${String(config.bindAddress || '0.0.0.0')}:${config.port}: ${error}`)
@@ -835,6 +843,8 @@ export function startBridge(): string | null {
       store.onDidChange('logging.enabled', () => pushLogging()),
       store.onDidChange('logging.directory', () => pushLogging()),
       store.onDidChange('debug.additionalLogging', value => configureAdditionalLogging(value === true)),
+      store.onDidChange('debug.nodeApiExceptions', value =>
+        engine?.setNativeExceptionReporting?.(value === true)),
     ]
 
     return null
@@ -947,6 +957,9 @@ export function playerSeekInstalled(requestId: number): void {
   releaseSeekForwarding(requestId)
 }
 export function playerSetSpeed(mult: number): void { engine?.playerSetSpeed(mult) }
+export function playerSetDriver(driverIndex: number, useRecordedRows = false): void {
+  engine?.playerSetDriver(driverIndex, useRecordedRows)
+}
 export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void {
   engine?.playerGetLapData(lapNum, rowTypeMask >>> 0)
 }

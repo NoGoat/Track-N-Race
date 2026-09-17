@@ -104,6 +104,10 @@ public:
     bool rowsForRange(float fromTime, float toTime, V6RowTypeMask mask,
                       std::vector<V6TimedRow>& out, std::string* errorOut,
                       const IndexedCancelCheck& cancelled = {});
+    bool forEachRowInRange(float fromTime, float toTime, V6RowTypeMask mask,
+                           const std::function<bool(const V6TimedRow&)>& callback,
+                           std::string* errorOut,
+                           const IndexedCancelCheck& cancelled = {}) override;
     bool latestRows(float atTime, const std::vector<uint8_t>& types,
                     std::vector<V6TimedRow>& out, std::string* errorOut,
                     const IndexedCancelCheck& cancelled = {});

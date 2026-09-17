@@ -322,6 +322,9 @@ const Settings = memo(function Settings({
   const [memoryLogEnabled, setMemoryLogEnabled] = useState<boolean>(
     () => window.electronStore.get('debug.memoryLog', false) === true,
   )
+  const [nodeApiExceptionsEnabled, setNodeApiExceptionsEnabled] = useState<boolean>(
+    () => window.electronStore.get('debug.nodeApiExceptions', false) === true,
+  )
   const [updateChecksEnabled, setUpdateChecksEnabled] = useState<boolean>(() => window.electronStore.get('updates.enabled', true) as boolean)
   const [loggingDirectory, setLoggingDirectory] = useState<string>(() => window.electronStore.get('logging.directory', '') as string)
   
@@ -469,6 +472,11 @@ const Settings = memo(function Settings({
   function handleMemoryLogToggle(value: boolean) {
     setMemoryLogEnabled(value)
     window.debugBridge.setMemoryLog(value)
+  }
+
+  function handleNodeApiExceptionsToggle(value: boolean) {
+    setNodeApiExceptionsEnabled(value)
+    window.debugBridge.setNodeApiExceptions(value)
   }
 
 
@@ -1294,6 +1302,12 @@ const Settings = memo(function Settings({
         description="Sample Electron process memory and retained telemetry once per second into launch-diagnostics/ram_usage.log."
       >
         <Toggle value={memoryLogEnabled} onChange={handleMemoryLogToggle} />
+      </Row>
+      <Row
+        label="Show Node-API exceptions"
+        description="Log native callback failures with their failing stage and payload sizes."
+      >
+        <Toggle value={nodeApiExceptionsEnabled} onChange={handleNodeApiExceptionsToggle} />
       </Row>
     </div>
   )

@@ -17,6 +17,7 @@ import SyncedTooltipIcon from './SyncedTooltipIcon'
 const selectStyles = buildSelectStyles(true)
 const tabSelectStyles = buildSelectStyles(true, { menuWidth: '120px' })
 const windowSelectStyles = buildSelectStyles(true, { labelStyleGroupHeadings: true, menuWidth: '7rem', scrollableMenu: false })
+const driverSelectStyles = buildSelectStyles(true, { menuWidth: '13rem' })
 
 interface AppHeaderProps {
   actualNativeTitlebar: boolean
@@ -31,6 +32,9 @@ interface AppHeaderProps {
   onClosePlayback: () => void
   onSelectPlaybackFile: () => void
   chartWindow: ChartWindow
+  driverOptions: Array<{ value: number; label: string; isDisabled: boolean }>
+  driverSelectorVisible: boolean
+  selectedDriverIdx: number | null
   clAvailable: boolean
   referenceLapNum: number | null
   referenceLapOptions: Array<{ value: number; label: string }>
@@ -39,6 +43,7 @@ interface AppHeaderProps {
   setInputCursorSyncEnabled: (enabled: boolean) => void
   setSectorBoundariesEnabled: (enabled: boolean) => void
   setChartWindow: (window: ChartWindow) => void
+  setSelectedDriverIdx: (driverIndex: number) => void
   setReferenceLapNum: (lapNum: number | null) => void
   setSettingsOpen: (open: boolean) => void
   setTab: (tab: Tab) => void
@@ -51,8 +56,8 @@ interface AppHeaderProps {
 
 export default memo(function AppHeader({
   actualNativeTitlebar, activeBanner, editOpen, filename, headerVisible, isFullscreen, inputCursorSyncEnabled, sectorBoundariesEnabled,
-  isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, setEditOpen,
-  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
+  isMaximized, onClosePlayback, onSelectPlaybackFile, chartWindow, clAvailable, driverOptions, driverSelectorVisible, selectedDriverIdx, setEditOpen,
+  referenceLapNum, referenceLapOptions, setHeaderVisible, setInputCursorSyncEnabled, setSectorBoundariesEnabled, setChartWindow, setSelectedDriverIdx, setReferenceLapNum, setSettingsOpen, setTab, settingsOpen, tab, theme,
   titlebarUpdateInterval, udpListenerError,
 }: AppHeaderProps) {
   const sessionType = useTelemetryStore(state => state.session?.session_type)
@@ -134,6 +139,24 @@ export default memo(function AppHeader({
             <Select options={referenceLapOptions} value={referenceLapOptions.find(option => option.value === referenceLapNum) ?? null} onChange={option => setReferenceLapNum(option?.value ?? null)} placeholder="1" styles={selectStyles} components={selectComponents} isSearchable={false} menuPortalTarget={document.body} />
           </div>
         </div>
+
+        {driverSelectorVisible && (
+          <div title="Drivers marked Public data only have private status and damage values hidden by the game." style={{ WebkitAppRegion: 'no-drag' }}>
+            <AnimatedAutoWidth measureKey={String(selectedDriverIdx)}>
+              <Select
+                options={driverOptions}
+                value={driverOptions.find(option => option.value === selectedDriverIdx) ?? null}
+                onChange={option => option && setSelectedDriverIdx(option.value)}
+                isOptionDisabled={option => option.isDisabled}
+                placeholder="Driver"
+                styles={driverSelectStyles}
+                components={selectComponents}
+                isSearchable
+                menuPortalTarget={document.body}
+              />
+            </AnimatedAutoWidth>
+          </div>
+        )}
 
         <div style={{ WebkitAppRegion: 'no-drag' }}>
           <AnimatedAutoWidth measureKey={String(displayedWindow)}>

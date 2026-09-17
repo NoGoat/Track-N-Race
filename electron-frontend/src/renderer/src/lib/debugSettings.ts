@@ -1,12 +1,14 @@
 export interface DebugSettings {
   additionalLogging: boolean
   memoryLog: boolean
+  nodeApiExceptions: boolean
 }
 
 function readDebugSettings(): DebugSettings {
   return {
     additionalLogging: window.electronStore.get('debug.additionalLogging', false) === true,
     memoryLog: window.electronStore.get('debug.memoryLog', false) === true,
+    nodeApiExceptions: window.electronStore.get('debug.nodeApiExceptions', false) === true,
   }
 }
 

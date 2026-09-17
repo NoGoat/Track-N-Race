@@ -24,6 +24,7 @@ import { ChartCoordinatesProvider } from '../lib/chartCoordinates'
 import { DATA_ROW, dataRequirementsForUi, visibleChartSectionsForUi } from '../lib/historyDependencies'
 import {
   ChartWindowOverridesProvider,
+  GRAPH_SECTION_ROW_MASK,
   type ChartReferenceLapOverrides,
   type ChartWindowOverrides,
 } from '../lib/chartWindowOverrides'
@@ -53,6 +54,8 @@ export default function AppShell() {
   const [tab, setTab] = useState<Tab>('core')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [playbackDriverIdx, setPlaybackDriverIdx] = useState<number | null>(null)
+  const [recordedPlayerIdx, setRecordedPlayerIdx] = useState<number | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [recordingError, setRecordingError] = useState<RecordingErrorMsg | null>(null)
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null)
@@ -208,6 +211,8 @@ export default function AppShell() {
   const protocolWarning = useTelemetryStore(s => s.protocolWarning)
   const recordingCurrentLapSupported = useTelemetryStore(s => s.analyzeDeltaAvailable)
   const playbackTnrdVersion = useTelemetryStore(s => s.playbackTnrdVersion)
+  const participants = useTelemetryStore(s => s.participants)
+  const timingPlayerIdx = useTelemetryStore(s => s.timing?.player_idx ?? null)
   const clCapability = !playback.state?.filename
     ? 'live'
     : playbackTnrdVersion === null
@@ -217,6 +222,31 @@ export default function AppShell() {
         : 'legacy'
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
+  const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
+  const originalPlayerIdx = recordedPlayerIdx ?? timingPlayerIdx
+  const driverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
+    const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
+    return {
+      value: driver.idx,
+      label: restricted ? `${driver.name} · Public data only` : driver.name,
+      isDisabled: false,
+    }
+  }), [participants, originalPlayerIdx])
+  useEffect(() => {
+    setPlaybackDriverIdx(null)
+    setRecordedPlayerIdx(null)
+  }, [playback.state?.filename])
+  useEffect(() => {
+    if (!driverSelectorVisible) {
+      setPlaybackDriverIdx(null)
+      return
+    }
+    if (recordedPlayerIdx === null && timingPlayerIdx !== null) {
+      setRecordedPlayerIdx(timingPlayerIdx)
+      setPlaybackDriverIdx(timingPlayerIdx)
+      window.playerBridge.setDriver(timingPlayerIdx, true)
+    }
+  }, [driverSelectorVisible, recordedPlayerIdx, timingPlayerIdx])
   const availableChartWindows = useMemo(() => new Set(
     getChartWindowOptionGroups(clAvailable, recordingOpen)
       .flatMap(group => group.options)
@@ -273,9 +303,10 @@ export default function AppShell() {
   const visibleChartSections = useMemo(() => visibleChartSectionsForUi(
     tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView,
   ), [tab, coreLayout, inputLayout, pageLayouts, miscLayout, powerLayout, tyresLayout, tyreView])
-  const visibleChartWindows = useMemo(() => visibleChartSections.length > 0
-    ? visibleChartSections.map(section => chartWindowOverrides[section] ?? chartWindow)
-    : [],
+  const visibleChartScopes = useMemo(() => visibleChartSections.map(section => ({
+    mask: GRAPH_SECTION_ROW_MASK[section],
+    window: chartWindowOverrides[section] ?? chartWindow,
+  })),
   [chartWindow, chartWindowOverrides, visibleChartSections])
   useEffect(() => {
     // Analysis is always scoped to the current lap. Its distance-axis charts
@@ -283,11 +314,18 @@ export default function AppShell() {
     // window must not truncate the native seek preload (15s/30s/etc.) or turn
     // it into an unnecessarily large full-session AL preload.
     const analysisLapScope = tab === 'analyze'
-    const fullLapHistoryEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'AL' || value === 'SL')
-    const stintLapsEnabled = !analysisLapScope && visibleChartWindows.some(value => value === 'SL')
-    const hasLapWindow = visibleChartWindows.some(value => typeof value !== 'number' && value !== 'AL' && value !== 'SL')
+    const fullLapScopes = analysisLapScope
+      ? []
+      : visibleChartScopes.filter(scope => scope.window === 'AL' || scope.window === 'SL')
+    const fullLapHistoryEnabled = fullLapScopes.length > 0
+    const stintLapsEnabled = fullLapScopes.some(scope => scope.window === 'SL')
+    const lapWindowScopes = visibleChartScopes.filter(scope =>
+      typeof scope.window !== 'number' && scope.window !== 'AL' && scope.window !== 'SL')
+    const hasLapWindow = lapWindowScopes.length > 0
     const sessionEventHistoryEnabled = tab === 'session' && !playback.state?.filename
-    const finiteWindows = visibleChartWindows.filter((value): value is number => typeof value === 'number')
+    const finiteScopes = visibleChartScopes.filter(
+      (scope): scope is { mask: number; window: number } => typeof scope.window === 'number')
+    const finiteWindows = finiteScopes.map(scope => scope.window)
     const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
     // Live Previous/Fastest selectors can be changed after a lap completes, so
     // retain every chart family for the small uncompressed lap working set.
@@ -300,6 +338,13 @@ export default function AppShell() {
     const historyMask = (stintLapsEnabled
       ? dataRequirements.historyMask | DATA_ROW.status
       : dataRequirements.historyMask) | lapMetadataMask
+    const fullSessionHistoryMask = fullLapHistoryEnabled
+      ? (fullLapScopes.reduce((mask, scope) => mask | scope.mask, 0) |
+        DATA_ROW.lap | (stintLapsEnabled ? DATA_ROW.status : 0)) >>> 0
+      : 0
+    const finiteHistoryMask = finiteScopes.reduce((mask, scope) => mask | scope.mask, 0) >>> 0
+    const lapWindowHistoryMask = (lapWindowScopes.reduce((mask, scope) => mask | scope.mask, 0) |
+      (hasLapWindow ? DATA_ROW.lap : 0)) >>> 0
     // A mixed lap/time page seeks the current lap first. The renderer then
     // requests the older finite prefix additively only when that prefix starts
     // before the lap, so overlapping V4 blocks are not decoded unnecessarily.
@@ -311,7 +356,13 @@ export default function AppShell() {
         : fullLapHistoryEnabled
           ? -1
           : hasLapWindow ? 0 : maxFiniteWindow
-    setHistoryRowMask(historyMask)
+    setHistoryRowMask(
+      historyMask,
+      fullSessionHistoryMask,
+      finiteHistoryMask,
+      finiteWindows.length > 0 ? maxFiniteWindow : 0,
+      lapWindowHistoryMask,
+    )
     setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
     window.playerBridge.setDataRequirements(
       streamMask,
@@ -320,14 +371,20 @@ export default function AppShell() {
     )
     window.playerBridge.setAllLapsMode(
       fullLapHistoryEnabled,
-      historyMask,
-      analysisLapScope ? 0 : hasLapWindow ? 0 : maxFiniteWindow,
+      analysisLapScope
+        ? historyMask
+        : fullLapHistoryEnabled
+          ? fullSessionHistoryMask
+          : hasLapWindow
+            ? lapWindowHistoryMask
+            : historyMask,
+      analysisLapScope || fullLapHistoryEnabled || hasLapWindow ? 0 : maxFiniteWindow,
     )
     setTelemetrySeconds(
       fullLapHistoryEnabled ? Infinity : maxFiniteWindow,
       !analysisLapScope && (finiteWindows.length > 0 || mixedLapAndTime),
     )
-  }, [dataRequirements, seconds, tab, visibleChartWindows, playback.state?.filename])
+  }, [dataRequirements, seconds, tab, visibleChartScopes, playback.state?.filename])
 
   // A renderer that mounts after the engine already settled on a format never
   // receives the one-shot protocol_status push, so pull the last one when we
@@ -360,6 +417,16 @@ export default function AppShell() {
     setSelectedIdx(prev => prev === idx ? null : idx)
   }, [])
 
+  const handlePlaybackDriverChange = useCallback((idx: number) => {
+    if (!driverSelectorVisible || idx === playbackDriverIdx) return
+    const option = driverOptions.find(candidate => candidate.value === idx)
+    if (!option) return
+    setPlaybackDriverIdx(idx)
+    setSelectedIdx(idx)
+    window.playerBridge.setDriver(idx, idx === originalPlayerIdx)
+    if (playback.state) playback.seekProgress(playback.state.progressPct)
+  }, [driverOptions, driverSelectorVisible, originalPlayerIdx, playback, playbackDriverIdx])
+
   return (
     <div className="h-dvh bg-[var(--bg-base)] text-[var(--text-primary)] flex flex-col relative">
       {window.platform !== 'darwin' && (
@@ -379,6 +446,9 @@ export default function AppShell() {
         onClosePlayback={playback.close}
         onSelectPlaybackFile={playback.selectFile}
         chartWindow={chartWindow}
+        driverOptions={driverOptions}
+        driverSelectorVisible={driverSelectorVisible}
+        selectedDriverIdx={playbackDriverIdx}
         clAvailable={clAvailable}
         referenceLapNum={referenceLapNum}
         referenceLapOptions={referenceLapOptions}
@@ -387,6 +457,7 @@ export default function AppShell() {
         setInputCursorSyncEnabled={setInputCursorSyncEnabled}
         setSectorBoundariesEnabled={setSectorBoundariesEnabled}
         setChartWindow={handleGlobalChartWindowChange}
+        setSelectedDriverIdx={handlePlaybackDriverChange}
         setReferenceLapNum={handleGlobalReferenceLapChange}
         setSettingsOpen={setSettingsOpen}
         setTab={handleTabChange}

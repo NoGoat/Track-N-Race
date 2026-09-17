@@ -655,6 +655,124 @@ bool TnrdV6Archive::rowsForRange(float from,float to,V6RowTypeMask mask,std::vec
     if(results.size()!=selected.size()){fail(errorOut,"indexed read cancelled");return false;}
     std::vector<std::vector<V6TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;
 }
+bool TnrdV6Archive::forEachRowInRange(
+    float from, float to, V6RowTypeMask mask,
+    const std::function<bool(const V6TimedRow&)>& callback,
+    std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    if (std::isnan(from) || std::isnan(to) || to < from) {
+        fail(errorOut, "invalid V6 time range");
+        return false;
+    }
+    if (cancelled && cancelled()) {
+        fail(errorOut, "indexed read cancelled");
+        return false;
+    }
+
+    std::vector<size_t> selected;
+    for (size_t typeIndex = 0; typeIndex < impl_->typeIndex.size(); ++typeIndex) {
+        const auto type = static_cast<uint8_t>(typeIndex);
+        if (mask & v6TypeBit(type))
+            impl_->selectRange(impl_->typeIndex[typeIndex], from, to, selected);
+    }
+    if (selected.empty()) return true;
+
+    // Keep each family chronological so consumers can append directly to its
+    // final output buffer. Cross-family order is deliberately irrelevant.
+    std::sort(selected.begin(), selected.end(), [&](size_t left, size_t right) {
+        const auto& a = impl_->chunks[left];
+        const auto& b = impl_->chunks[right];
+        if (a.rowType != b.rowType) return a.rowType < b.rowType;
+        const auto& am = impl_->chunkMetadata[left];
+        const auto& bm = impl_->chunkMetadata[right];
+        if (am.first != bm.first) return am.first < bm.first;
+        return a.sequence < b.sequence;
+    });
+
+    struct Prepared {
+        bool ok{true};
+        std::string error;
+        std::vector<V6TimedRow> rows;
+    };
+    struct Completed {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::deque<std::pair<size_t, Prepared>> ready;
+    };
+
+    auto completed = std::make_shared<Completed>();
+    std::vector<std::unique_ptr<Prepared>> prepared(selected.size());
+    size_t nextSchedule = 0;
+    size_t nextEmit = 0;
+    size_t active = 0;
+    bool stopped = false;
+    bool callbackStopped = false;
+
+    const auto schedule = [&](size_t ordinal) {
+        const size_t index = selected[ordinal];
+        ++active;
+        (void)impl_->executor.submit(impl_->path,
+            [state = impl_.get(), index, ordinal, from, to, cancelled, completed](std::FILE* file) {
+                Prepared result;
+                try {
+                    if (!state->splitChunk(index, file, result.rows, &result.error, {},
+                                           true, from, to, false, cancelled))
+                        result.ok = false;
+                    else
+                        sortRows(result.rows);
+                } catch (const std::exception& e) {
+                    result.ok = false;
+                    result.error = e.what();
+                } catch (...) {
+                    result.ok = false;
+                    result.error = "indexed range iteration failed";
+                }
+                {
+                    std::lock_guard<std::mutex> lock(completed->mutex);
+                    completed->ready.emplace_back(ordinal, std::move(result));
+                }
+                completed->cv.notify_one();
+            });
+    };
+
+    constexpr size_t LOOKAHEAD = MAX_PARALLEL_CHUNKS * 2;
+    while (nextSchedule < selected.size() && active < MAX_PARALLEL_CHUNKS)
+        schedule(nextSchedule++);
+
+    while (active) {
+        std::unique_lock<std::mutex> lock(completed->mutex);
+        completed->cv.wait(lock, [&] { return !completed->ready.empty(); });
+        while (!completed->ready.empty()) {
+            auto ready = std::move(completed->ready.front());
+            completed->ready.pop_front();
+            prepared[ready.first] = std::make_unique<Prepared>(std::move(ready.second));
+            --active;
+        }
+        lock.unlock();
+
+        while (!stopped && nextEmit < prepared.size() && prepared[nextEmit]) {
+            auto current = std::move(prepared[nextEmit]);
+            if (!current->ok) {
+                fail(errorOut, current->error);
+                stopped = true;
+            } else {
+                for (const auto& row : current->rows) {
+                    if ((cancelled && cancelled()) || !callback(row)) {
+                        stopped = true;
+                        callbackStopped = true;
+                        break;
+                    }
+                }
+            }
+            ++nextEmit;
+        }
+        while (!stopped && nextSchedule < selected.size() &&
+               active < MAX_PARALLEL_CHUNKS && nextSchedule < nextEmit + LOOKAHEAD)
+            schedule(nextSchedule++);
+    }
+
+    if (callbackStopped || stopped) return false;
+    return nextEmit == selected.size();
+}
 bool TnrdV6Archive::latestRows(float at,const std::vector<uint8_t>& types,std::vector<V6TimedRow>& out,std::string* errorOut,const IndexedCancelCheck& cancelled){
     if(cancelled&&cancelled()){fail(errorOut,"indexed read cancelled");return false;}if(std::isnan(at)){fail(errorOut,"invalid V6 latest-row time");return false;}struct Candidate{uint8_t type{};size_t index{};};std::vector<Candidate> candidates;std::array<bool,ROW_TYPE_COUNT> seen{};
     for(uint8_t type:types){if(type>=impl_->typeIndex.size()||seen[type])continue;seen[type]=true;const auto& family=impl_->typeIndex[type];const auto upper=std::upper_bound(family.chunks.begin(),family.chunks.end(),at,[&](float value,size_t index){return value<impl_->chunkMetadata[index].first;});const size_t end=(size_t)(upper-family.chunks.begin());if(!end)continue;

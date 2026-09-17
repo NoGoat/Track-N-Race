@@ -219,6 +219,7 @@ public:
     void playerSeek(float pct, bool allHistory = false, uint64_t requestId = 0,
                     uint32_t rowTypeMask = 0xFFFFFFFFu, float windowSeconds = 0.0f);
     void playerSetSpeed(float mult);
+    void playerSetDriver(int driverIndex, bool useRecordedRows = false);
     void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void liveGetFastestLap(uint64_t requestId);
     bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const;

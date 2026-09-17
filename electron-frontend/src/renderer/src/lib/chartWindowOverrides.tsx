@@ -41,7 +41,7 @@ interface ScopeContextValue {
 
 const ScopeContext = createContext<ScopeContextValue | null>(null)
 
-const SECTION_ROW_MASK: Record<GraphSection, number> = {
+export const GRAPH_SECTION_ROW_MASK: Record<GraphSection, number> = {
   overviewTelemetry: DATA_ROW.telemetry | DATA_ROW.status,
   overviewTyreSurface: DATA_ROW.telemetry,
   overviewTyreInner: DATA_ROW.telemetry,
@@ -120,7 +120,7 @@ export function ChartWindowScope({ section, children }: { section: GraphSection;
       <ChartCoordinatesProvider
         mode={mode}
         referenceLapNum={referenceLapNum}
-        rowTypeMask={SECTION_ROW_MASK[section]}
+        rowTypeMask={GRAPH_SECTION_ROW_MASK[section]}
         sectorBoundaries={context.sectorBoundariesEnabled}
       >
         {children}

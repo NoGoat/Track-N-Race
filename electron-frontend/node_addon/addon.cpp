@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -329,6 +330,7 @@ public:
             InstanceMethod("startUdp", &TNRPAddon::StartUdp),
             InstanceMethod("udpLastError", &TNRPAddon::UdpLastError),
             InstanceMethod("setDiagnosticsEnabled", &TNRPAddon::SetDiagnosticsEnabled),
+            InstanceMethod("setNativeExceptionReporting", &TNRPAddon::SetNativeExceptionReporting),
             InstanceMethod("liveDiagnostics", &TNRPAddon::LiveDiagnostics),
             InstanceMethod("setOverride", &TNRPAddon::SetOverride),
             InstanceMethod("setTeamColorOverrides", &TNRPAddon::SetTeamColorOverrides),
@@ -344,6 +346,7 @@ public:
             InstanceMethod("playerPause", &TNRPAddon::PlayerPause),
             InstanceMethod("playerSeek", &TNRPAddon::PlayerSeek),
             InstanceMethod("playerSetSpeed", &TNRPAddon::PlayerSetSpeed),
+            InstanceMethod("playerSetDriver", &TNRPAddon::PlayerSetDriver),
             InstanceMethod("playerGetLapData", &TNRPAddon::PlayerGetLapData),
             InstanceMethod("liveGetFastestLap", &TNRPAddon::LiveGetFastestLap),
             InstanceMethod("playerGetAllLapsData", &TNRPAddon::PlayerGetAllLapsData),
@@ -664,6 +667,7 @@ public:
             bool authoritativeSeek;
             uint32_t rowTypeMask;
             float historyStart;
+            bool reportExceptions;
         };
         const size_t binaryBytes = binStore && binEnd > binBegin ? binEnd - binBegin : 0;
         const size_t retainedBytes = binaryBytes + coldJson.capacity();
@@ -674,28 +678,90 @@ public:
         auto* d = new SeekData{ std::move(binStore), binBegin, binEnd, std::move(coldJson),
                                 seekFlushBytes_, retainedBytes,
                                 currentLapStart, lapNum, allHistory, requestId,
-                                authoritativeSeek, rowTypeMask, historyStart };
+                                authoritativeSeek, rowTypeMask, historyStart,
+                                nativeExceptionReporting_->load(std::memory_order_relaxed) };
         auto status = tsfnSeek.NonBlockingCall(
             d, [](Napi::Env env, Napi::Function cb, SeekData* d) {
+                std::exception_ptr unreportedException;
                 if (env != nullptr && cb != nullptr) {
                     const size_t len = d->binStore && d->binEnd > d->binBegin
                         ? d->binEnd - d->binBegin : 0;
-                    auto buffer = len == 0
-                        ? Napi::Buffer<uint8_t>::New(env, 0)
-                        : Napi::Buffer<uint8_t>::Copy(
-                            env, d->binStore->data() + d->binBegin, len);
-                    cb.Call({ buffer,
-                              Napi::String::New(env, d->cold),
-                              Napi::Number::New(env, d->lapStart),
-                              Napi::Number::New(env, d->lapNum),
-                              Napi::Boolean::New(env, d->allHistory),
-                              Napi::Number::New(env, static_cast<double>(d->requestId)),
-                              Napi::Boolean::New(env, d->authoritativeSeek),
-                              Napi::Number::New(env, d->rowTypeMask),
-                              Napi::Number::New(env, d->historyStart) });
+                    const char* stage = "creating the binary Buffer";
+                    try {
+                        auto buffer = len == 0
+                            ? Napi::Buffer<uint8_t>::New(env, 0)
+                            : Napi::Buffer<uint8_t>::Copy(
+                                env, d->binStore->data() + d->binBegin, len);
+                        stage = "creating the cold JSON string";
+                        auto cold = Napi::String::New(env, d->cold);
+                        stage = "calling the JavaScript seek callback";
+                        cb.Call({ buffer,
+                                  cold,
+                                  Napi::Number::New(env, d->lapStart),
+                                  Napi::Number::New(env, d->lapNum),
+                                  Napi::Boolean::New(env, d->allHistory),
+                                  Napi::Number::New(env, static_cast<double>(d->requestId)),
+                                  Napi::Boolean::New(env, d->authoritativeSeek),
+                                  Napi::Number::New(env, d->rowTypeMask),
+                                  Napi::Number::New(env, d->historyStart) });
+                    } catch (const Napi::Error& error) {
+                        if (!d->reportExceptions) {
+                            unreportedException = std::current_exception();
+                        } else {
+                            if (env.IsExceptionPending())
+                                (void)env.GetAndClearPendingException();
+                            const std::string message =
+                                std::string("Seek flush failed while ") + stage +
+                                " (requestId=" + std::to_string(d->requestId) +
+                                ", binaryBytes=" + std::to_string(len) +
+                                ", coldJsonBytes=" + std::to_string(d->cold.size()) +
+                                ", rowTypeMask=" + std::to_string(d->rowTypeMask) +
+                                "): " + error.Message();
+                            try {
+                                cb.Call({ env.Null(), env.Null(),
+                                          Napi::Number::New(env, d->lapStart),
+                                          Napi::Number::New(env, d->lapNum),
+                                          Napi::Boolean::New(env, d->allHistory),
+                                          Napi::Number::New(env, static_cast<double>(d->requestId)),
+                                          Napi::Boolean::New(env, d->authoritativeSeek),
+                                          Napi::Number::New(env, d->rowTypeMask),
+                                          Napi::Number::New(env, d->historyStart),
+                                          Napi::String::New(env, message) });
+                            } catch (...) {
+                                std::fprintf(stderr, "[native-callback] %s\n", message.c_str());
+                                std::fflush(stderr);
+                            }
+                        }
+                    } catch (...) {
+                        if (!d->reportExceptions) unreportedException = std::current_exception();
+                        else {
+                            const std::string message =
+                                std::string("Seek flush failed while ") + stage +
+                                " (requestId=" + std::to_string(d->requestId) +
+                                ", binaryBytes=" + std::to_string(len) +
+                                ", coldJsonBytes=" + std::to_string(d->cold.size()) +
+                                ", rowTypeMask=" + std::to_string(d->rowTypeMask) +
+                                "): unknown native exception";
+                            try {
+                                cb.Call({ env.Null(), env.Null(),
+                                          Napi::Number::New(env, d->lapStart),
+                                          Napi::Number::New(env, d->lapNum),
+                                          Napi::Boolean::New(env, d->allHistory),
+                                          Napi::Number::New(env, static_cast<double>(d->requestId)),
+                                          Napi::Boolean::New(env, d->authoritativeSeek),
+                                          Napi::Number::New(env, d->rowTypeMask),
+                                          Napi::Number::New(env, d->historyStart),
+                                          Napi::String::New(env, message) });
+                            } catch (...) {
+                                std::fprintf(stderr, "[native-callback] %s\n", message.c_str());
+                                std::fflush(stderr);
+                            }
+                        }
+                    }
                 }
                 d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
                 delete d;
+                if (unreportedException) std::rethrow_exception(unreportedException);
             });
         if (status != napi_ok) {
             d->retainedCounter->fetch_sub(d->retainedBytes, std::memory_order_relaxed);
@@ -795,6 +861,8 @@ private:
         std::make_shared<std::atomic<uint64_t>>(0);
     std::shared_ptr<std::atomic<uint64_t>> seekFlushPayloadBytes_ =
         std::make_shared<std::atomic<uint64_t>>(0);
+    std::shared_ptr<std::atomic<bool>> nativeExceptionReporting_ =
+        std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> loadBusy_ = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<AnalysisReaderState> analysisReader_ = std::make_shared<AnalysisReaderState>();
 
@@ -847,6 +915,12 @@ private:
     void SetDiagnosticsEnabled(const Napi::CallbackInfo& info) {
         if (engine && info.Length() >= 1)
             engine->setDiagnosticsEnabled(info[0].ToBoolean().Value());
+    }
+
+    void SetNativeExceptionReporting(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 1)
+            nativeExceptionReporting_->store(
+                info[0].ToBoolean().Value(), std::memory_order_relaxed);
     }
 
     Napi::Value LiveDiagnostics(const Napi::CallbackInfo& info) {
@@ -1396,6 +1470,15 @@ private:
     Napi::Value PlayerSetSpeed(const Napi::CallbackInfo& info) {
         if (info.Length() >= 1 && info[0].IsNumber()) {
             engine->playerSetSpeed(info[0].As<Napi::Number>().FloatValue());
+        }
+        return info.Env().Undefined();
+    }
+
+    Napi::Value PlayerSetDriver(const Napi::CallbackInfo& info) {
+        if (info.Length() >= 1 && info[0].IsNumber()) {
+            const bool useRecordedRows = info.Length() >= 2 && info[1].IsBoolean() &&
+                info[1].As<Napi::Boolean>().Value();
+            engine->playerSetDriver(info[0].As<Napi::Number>().Int32Value(), useRecordedRows);
         }
         return info.Env().Undefined();
     }

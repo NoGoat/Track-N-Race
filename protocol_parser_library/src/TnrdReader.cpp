@@ -604,6 +604,25 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
         startTime_ = indexedArchive_->startTime();
         totalTime_ = indexedArchive_->totalTime();
         initialFuelKg_ = indexedArchive_->summary().initialFuelKg;
+        if (detected == TnrdFormat::ChunkedV6) {
+            // Select the recorded player before the first playback batch can
+            // leave the reader. This prevents the renderer from briefly
+            // receiving full-grid Telemetry/Damage rows while it waits for the
+            // Participants/Timing state needed to initialise its selector.
+            std::vector<detail::V4TimedRow> rows;
+            std::string error;
+            if (indexedArchive_->latestRows(totalTime_, {7}, rows, &error)) {
+                for (auto row = rows.rbegin(); row != rows.rend(); ++row) {
+                    TimingRow timing{};
+                    if (!glz::read<kPartialRead>(timing, row->json) && timing.player_idx >= 0) {
+                        recordedDriverIndex_ = timing.player_idx;
+                        playbackDriverIndex_ = timing.player_idx;
+                        playbackDriverUsesRecordedRows_ = true;
+                        break;
+                    }
+                }
+            }
+        }
         scannedEvents_.clear();
         scannedEvents_.reserve(indexedArchive_->summary().events.size());
         for (std::string event : indexedArchive_->summary().events) {
@@ -759,6 +778,10 @@ void TnrdReader::close() {
         tempPath_.clear();
     }
     loadedFormat_ = TnrdFormat::Unknown;
+    playbackDriverIndex_ = -1;
+    recordedDriverIndex_ = -1;
+    playbackDriverUsesRecordedRows_ = false;
+    playbackRowMask_ = playbackOutputRowMask_;
     std::fprintf(stderr, "[close-trace] resetting indexed archive\n");
     std::fflush(stderr);
     indexedArchive_.reset();
@@ -1038,13 +1061,30 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
     std::vector<std::pair<uint8_t, std::string>> out;
     if(cancelled&&cancelled())return out;
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        std::vector<uint8_t> sourceTypes = types;
+        uint32_t requestedMask = 0;
+        for (const auto type : types) requestedMask |= detail::v4TypeBit(type);
+        if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0) {
+            const uint32_t sourceMask = expandedPlaybackMask(requestedMask);
+            sourceTypes.clear();
+            for (uint8_t type = 1; type < 16; ++type)
+                if (sourceMask & detail::v4TypeBit(type)) sourceTypes.push_back(type);
+        }
         std::vector<detail::V4TimedRow> rows;
         std::string error;
-        if (!indexedArchive_->latestRows(t, types, rows, &error, cancelled)) {
+        if (!indexedArchive_->latestRows(t, sourceTypes, rows, &error, cancelled)) {
             if (!cancelled || !cancelled()) lastError_ = error;
             return {};
         }
-        for (auto& row : rows) out.emplace_back(row.rowType, std::move(row.json));
+        if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0) {
+            const uint32_t savedOutputMask = playbackOutputRowMask_;
+            playbackOutputRowMask_ = requestedMask;
+            for (auto& row : rows)
+                projectV6Row(row.rowType, row.sessionTime, row.json, out);
+            playbackOutputRowMask_ = savedOutputMask;
+        } else {
+            for (auto& row : rows) out.emplace_back(row.rowType, std::move(row.json));
+        }
         std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
             return scanSessionTime(a.second.data(), static_cast<int>(a.second.size())) <
                    scanSessionTime(b.second.data(), static_cast<int>(b.second.size()));
@@ -1260,13 +1300,231 @@ bool TnrdReader::forEachStrategyRow(
 }
 
 void TnrdReader::setPlaybackRowMask(uint32_t mask, float cursorTime) {
-    if (playbackRowMask_ == mask) return;
-    playbackRowMask_ = mask;
+    if (playbackOutputRowMask_ == mask) return;
+    playbackOutputRowMask_ = mask;
+    playbackRowMask_ = expandedPlaybackMask(mask);
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) setCursor(cursorTime);
 }
 
+void TnrdReader::setPlaybackDriver(int driverIndex, bool useRecordedRows, float cursorTime) {
+    const int next = loadedFormat_ == TnrdFormat::ChunkedV6
+        ? (driverIndex >= 0 ? driverIndex : recordedDriverIndex_) : -1;
+    const bool nextUsesRecordedRows = loadedFormat_ == TnrdFormat::ChunkedV6 &&
+        next >= 0 && next == recordedDriverIndex_ && (useRecordedRows || driverIndex < 0);
+    if (playbackDriverIndex_ == next &&
+        playbackDriverUsesRecordedRows_ == nextUsesRecordedRows) return;
+    playbackDriverIndex_ = next;
+    playbackDriverUsesRecordedRows_ = nextUsesRecordedRows;
+    playbackRowMask_ = expandedPlaybackMask(playbackOutputRowMask_);
+    v4PlaybackDamageState_ = {};
+    v4PlaybackDamageStateReady_ = false;
+    packedSeekCache_.clear();
+    packedSeekLru_.clear();
+    packedSeekCacheBytes_ = 0;
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) setCursor(cursorTime);
+}
+
+uint32_t TnrdReader::expandedPlaybackMask(uint32_t outputMask) const {
+    if (loadedFormat_ != TnrdFormat::ChunkedV6 || playbackDriverIndex_ < 0 ||
+        playbackDriverUsesRecordedRows_)
+        return outputMask;
+    // Player-shaped Status/Lap/Motion rows are replaced from their V6 all-car
+    // counterparts. Tyre Sets and Motion Ex have no all-car equivalents.
+    uint32_t mask = outputMask & ~(detail::v4TypeBit(2) | detail::v4TypeBit(4) |
+        detail::v4TypeBit(10) | detail::v4TypeBit(11) | detail::v4TypeBit(12));
+    if (outputMask & detail::v4TypeBit(2))  mask |= detail::v4TypeBit(9);
+    if (outputMask & detail::v4TypeBit(4))  mask |= detail::v4TypeBit(7);
+    if (outputMask & detail::v4TypeBit(11)) mask |= detail::v4TypeBit(13);
+    return mask;
+}
+
+void TnrdReader::projectV6Row(
+    uint8_t sourceType, float sessionTime, std::string_view json,
+    std::vector<std::pair<uint8_t, std::string>>& out) const {
+    const auto wants = [&](uint8_t type) {
+        return (playbackOutputRowMask_ & detail::v4TypeBit(type)) != 0;
+    };
+    if (playbackDriverIndex_ < 0 || loadedFormat_ != TnrdFormat::ChunkedV6) {
+        if (wants(sourceType)) out.emplace_back(sourceType, std::string(json));
+        return;
+    }
+
+    if (playbackDriverUsesRecordedRows_) {
+        // V6 persists the recorded player's rich/private row alongside an
+        // all-driver array. The UI only consumes the selected driver here, so
+        // never send that attached grid across the native/renderer boundary.
+        if (sourceType == 1 && wants(1)) {
+            TelemetryRow row{};
+            if (glz::read<kPartialRead>(row, json)) return;
+            row.cars.reset();
+            out.emplace_back(1, writeJson(row));
+            return;
+        }
+        if (sourceType == 3 && wants(3)) {
+            DamageRow row{};
+            if (glz::read<kPartialRead>(row, json)) return;
+            row.cars.reset();
+            out.emplace_back(3, writeJson(row));
+            return;
+        }
+        if (wants(sourceType)) out.emplace_back(sourceType, std::string(json));
+        return;
+    }
+
+    if (sourceType == 1 && wants(1)) {
+        TelemetryRow row{};
+        if (glz::read<kPartialRead>(row, json) || !row.cars) return;
+        const auto car = std::find_if(row.cars->begin(), row.cars->end(), [&](const auto& value) {
+            return value.idx == playbackDriverIndex_;
+        });
+        if (car == row.cars->end() || !car->throttle || !car->brake || !car->steering) return;
+        row.speed_kph = car->speed_kph; row.rpm = car->rpm; row.gear = car->gear;
+        row.drs = car->drs; row.slm = car->slm;
+        row.rev_lights_pct = car->rev_lights_pct;
+        row.rev_lights_bit_value = car->rev_lights_bit_value;
+        row.throttle = *car->throttle; row.brake = *car->brake; row.steering = *car->steering;
+        row.tyre_temp_surface_fl = car->tyre_temp_surface_fl; row.tyre_temp_surface_fr = car->tyre_temp_surface_fr;
+        row.tyre_temp_surface_rl = car->tyre_temp_surface_rl; row.tyre_temp_surface_rr = car->tyre_temp_surface_rr;
+        row.tyre_temp_inner_fl = car->tyre_temp_inner_fl; row.tyre_temp_inner_fr = car->tyre_temp_inner_fr;
+        row.tyre_temp_inner_rl = car->tyre_temp_inner_rl; row.tyre_temp_inner_rr = car->tyre_temp_inner_rr;
+        row.brake_temp_fl = car->brake_temp_fl; row.brake_temp_fr = car->brake_temp_fr;
+        row.brake_temp_rl = car->brake_temp_rl; row.brake_temp_rr = car->brake_temp_rr;
+        row.engine_temp = car->engine_temp; row.cars.reset();
+        out.emplace_back(1, writeJson(row));
+        return;
+    }
+    if (sourceType == 3 && wants(3)) {
+        DamageRow row{};
+        if (glz::read<kPartialRead>(row, json) || !row.cars) return;
+        const auto car = std::find_if(row.cars->begin(), row.cars->end(), [&](const auto& value) {
+            return value.idx == playbackDriverIndex_;
+        });
+        if (car == row.cars->end()) return;
+        // The game zeros restricted private fields. Missing optionals are
+        // therefore projected as zero while public damage fields remain intact.
+        row.tyre_wear_fl = car->tyre_wear_fl.value_or(0.0); row.tyre_wear_fr = car->tyre_wear_fr.value_or(0.0);
+        row.tyre_wear_rl = car->tyre_wear_rl.value_or(0.0); row.tyre_wear_rr = car->tyre_wear_rr.value_or(0.0);
+#define COPY_DAMAGE_FIELD(name) row.name = car->name.value_or(0)
+        COPY_DAMAGE_FIELD(tyre_dmg_fl); COPY_DAMAGE_FIELD(tyre_dmg_fr);
+        COPY_DAMAGE_FIELD(tyre_dmg_rl); COPY_DAMAGE_FIELD(tyre_dmg_rr);
+        COPY_DAMAGE_FIELD(brake_dmg_fl); COPY_DAMAGE_FIELD(brake_dmg_fr);
+        COPY_DAMAGE_FIELD(brake_dmg_rl); COPY_DAMAGE_FIELD(brake_dmg_rr);
+        COPY_DAMAGE_FIELD(blisters_fl); COPY_DAMAGE_FIELD(blisters_fr);
+        COPY_DAMAGE_FIELD(blisters_rl); COPY_DAMAGE_FIELD(blisters_rr);
+        COPY_DAMAGE_FIELD(wing_fl); COPY_DAMAGE_FIELD(wing_fr); COPY_DAMAGE_FIELD(wing_rear);
+        COPY_DAMAGE_FIELD(floor_damage); COPY_DAMAGE_FIELD(diffuser_damage); COPY_DAMAGE_FIELD(sidepod_damage);
+        COPY_DAMAGE_FIELD(gearbox_damage); COPY_DAMAGE_FIELD(engine_damage);
+        COPY_DAMAGE_FIELD(drs_fault); COPY_DAMAGE_FIELD(ers_fault);
+#undef COPY_DAMAGE_FIELD
+        row.cars.reset();
+        out.emplace_back(3, writeJson(row));
+        return;
+    }
+    if (sourceType == 7) {
+        TimingRow row{};
+        if (glz::read<kPartialRead>(row, json)) return;
+        if (wants(7)) {
+            row.player_idx = playbackDriverIndex_;
+            out.emplace_back(7, writeJson(row));
+        }
+        if (!wants(4)) return;
+        const auto car = std::find_if(row.cars.begin(), row.cars.end(), [&](const auto& value) {
+            return value.idx == playbackDriverIndex_;
+        });
+        if (car == row.cars.end()) return;
+        LapRow lap{}; lap.ts = row.ts; lap.session_time = row.session_time;
+        lap.last_lap_ms = car->last_lap_ms; lap.current_lap_ms = car->current_lap_ms;
+        lap.lap_distance_m = car->lap_distance_m.value_or(0.0f);
+        lap.s1_ms = car->s1_ms; lap.s2_ms = car->s2_ms; lap.position = car->position;
+        lap.lap_num = car->lap_num; lap.pit_status = car->pit_status;
+        lap.num_pit_stops = car->num_pit_stops; lap.sector = car->sector;
+        lap.lap_invalid = car->lap_invalid; lap.penalties_s = car->penalties_s;
+        lap.driver_status = car->driver_status;
+        out.emplace_back(4, writeJson(lap));
+        return;
+    }
+    if (sourceType == 9) {
+        AllStatusRow row{};
+        if (glz::read<kPartialRead>(row, json)) return;
+        if (wants(9)) out.emplace_back(9, std::string(json));
+        if (!wants(2)) return;
+        const auto car = std::find_if(row.cars.begin(), row.cars.end(), [&](const auto& value) {
+            return value.idx == playbackDriverIndex_;
+        });
+        if (car == row.cars.end()) return;
+        StatusRow status{}; status.ts = row.ts; status.session_time = row.session_time;
+        status.fuel_mix = car->fuel_mix; status.front_brake_bias = car->front_brake_bias;
+        status.fuel_kg = car->fuel_kg; status.fuel_laps = car->fuel_laps;
+        status.drs_allowed = car->drs_allowed; status.tyre_compound = car->tyre_compound;
+        status.visual_compound = car->visual_compound; status.tyre_age_laps = car->tyre_age_laps;
+        status.ers_j = car->ers_j; status.ers_pct = car->ers_pct; status.ers_mode = car->ers_mode;
+        status.ers_deployed_j = car->ers_deployed_j;
+        status.engine_power_ice_kw = car->engine_power_ice_kw;
+        status.engine_power_mguk_kw = car->engine_power_mguk_kw;
+        status.ers_harvested_mguk_j = car->ers_harvested_mguk_j;
+        status.ers_harvested_mguh_j = car->ers_harvested_mguh_j;
+        out.emplace_back(2, writeJson(status));
+        return;
+    }
+    if (sourceType == 13) {
+        PositionsRow row{};
+        if (glz::read<kPartialRead>(row, json)) return;
+        if (wants(13)) {
+            row.player_idx = playbackDriverIndex_;
+            out.emplace_back(13, writeJson(row));
+        }
+        if (!wants(11)) return;
+        const auto car = std::find_if(row.cars.begin(), row.cars.end(), [&](const auto& value) {
+            return value.idx == playbackDriverIndex_;
+        });
+        if (car == row.cars.end() || !car->g_lat || !car->g_long || !car->g_vert) return;
+        MotionRow motion{}; motion.ts = row.ts; motion.session_time = sessionTime;
+        motion.g_lat = *car->g_lat; motion.g_long = *car->g_long; motion.g_vert = *car->g_vert;
+        out.emplace_back(11, writeJson(motion));
+        return;
+    }
+    if (sourceType != 10 && sourceType != 12 && wants(sourceType))
+        out.emplace_back(sourceType, std::string(json));
+}
+
 bool TnrdReader::currentLapAt(float t, float& startOut, int& numOut) const {
-    if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){numOut=indexedArchive_->lapAt(t);for(const auto&l:indexedArchive_->laps())if((int)l.lapNumber==numOut){startOut=l.startSessionTime;return true;}return false;}
+    if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0 &&
+            !playbackDriverUsesRecordedRows_) {
+            // V6's persisted lap directory follows the recorded player. For a
+            // selected driver, derive their own lap origin from the latest
+            // all-car LapData sample instead: currentLapTimeInMS is measured
+            // from that driver's most recent timing-line crossing.
+            std::vector<detail::V4TimedRow> rows;
+            std::string error;
+            if (const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->latestRows(
+                    t, {7}, rows, &error)) {
+                for (auto row = rows.rbegin(); row != rows.rend(); ++row) {
+                    TimingRow timing{};
+                    if (glz::read<kPartialRead>(timing, row->json)) continue;
+                    const auto car = std::find_if(timing.cars.begin(), timing.cars.end(),
+                        [&](const auto& value) { return value.idx == playbackDriverIndex_; });
+                    if (car == timing.cars.end()) continue;
+                    numOut = car->lap_num;
+                    startOut = std::clamp(
+                        row->sessionTime - std::max(0, car->current_lap_ms) / 1000.0f,
+                        startTime_, t);
+                    return true;
+                }
+            }
+            // A driver may not yet have a valid array entry at the very start
+            // of a recording. Fall back to the recorded-player directory so a
+            // seek still produces a bounded prefix instead of an empty one.
+        }
+        numOut = indexedArchive_->lapAt(t);
+        for (const auto& l : indexedArchive_->laps()) {
+            if (static_cast<int>(l.lapNumber) == numOut) {
+                startOut = l.startSessionTime;
+                return true;
+            }
+        }
+        return false;
+    }
     // lapBlocks_ includes the final lap closed at EOF; scannedLaps_ only gains
     // an entry when the following lap begins, so it can never resolve the last
     // lap in a recording. At a shared boundary, prefer the block with the
@@ -1322,25 +1580,44 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
     msg.endSessionTime   = b.endSessionTime;
     msg.rowTypeMask      = rowTypeMask;
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
-        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=rowTypeMask&(detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13)|detail::v4TypeBit(7)|detail::v4TypeBit(8)|detail::v4TypeBit(9));
-        if(!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error))return {};
+        auto* self = const_cast<TnrdReader*>(this);
+        const uint32_t savedOutputMask = self->playbackOutputRowMask_;
+        self->playbackOutputRowMask_ = rowTypeMask;
+        const uint32_t requestedMask = loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0
+            ? expandedPlaybackMask(rowTypeMask) : rowTypeMask;
+        std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=requestedMask&(detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13)|detail::v4TypeBit(7)|detail::v4TypeBit(8)|detail::v4TypeBit(9));
+        if(!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error)){self->playbackOutputRowMask_=savedOutputMask;return {};}
         for(const auto&r:rows){
             // A timed practice/quali lap number is reused across the in-lap,
             // garage and following out-lap. Those rows can share an indexed chunk
             // key with the next flying attempt, so honour the indexed flying
             // interval when materialising a lap.
             if(r.sessionTime<b.startSessionTime||r.sessionTime>b.endSessionTime)continue;
-            if(r.rowType==1)msg.telemetry.push_back(glz::raw_json{r.json});
-            else if(r.rowType==2)msg.statusHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==11)msg.motionHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==12)msg.motionExHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==7)msg.timingHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==8)msg.participantsHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==9)msg.allStatusHistory.push_back(glz::raw_json{r.json});
-            else if(r.rowType==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,r.json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m,lap.sector,lap.s1_ms,lap.s2_ms});}
-            else if(r.rowType==13){msg.positionsHistory.push_back(glz::raw_json{r.json});PositionsRow pos{};(void)glz::read<kPartialRead>(pos,r.json);if(pos.player_idx>=0&&(size_t)pos.player_idx<pos.cars.size())msg.playerPositions.push_back({r.sessionTime,pos.cars[(size_t)pos.player_idx].x,pos.cars[(size_t)pos.player_idx].z});}
+            std::vector<std::pair<uint8_t, std::string>> projected;
+            projectV6Row(r.rowType, r.sessionTime, r.json, projected);
+            for (auto& [type, json] : projected) {
+                if(type==1)msg.telemetry.push_back(glz::raw_json{json});
+                else if(type==2)msg.statusHistory.push_back(glz::raw_json{json});
+                else if(type==11)msg.motionHistory.push_back(glz::raw_json{json});
+                else if(type==12)msg.motionExHistory.push_back(glz::raw_json{json});
+                else if(type==7)msg.timingHistory.push_back(glz::raw_json{json});
+                else if(type==8)msg.participantsHistory.push_back(glz::raw_json{json});
+                else if(type==9)msg.allStatusHistory.push_back(glz::raw_json{json});
+                else if(type==4){LapScanFields lap{};(void)glz::read<kPartialRead>(lap,json);msg.lapProgress.push_back({r.sessionTime,lap.current_lap_ms,lap.lap_distance_m,lap.sector,lap.s1_ms,lap.s2_ms});}
+                else if(type==13){msg.positionsHistory.push_back(glz::raw_json{json});PositionsRow pos{};(void)glz::read<kPartialRead>(pos,json);const int idx=playbackDriverIndex_>=0?playbackDriverIndex_:pos.player_idx;const auto car=std::find_if(pos.cars.begin(),pos.cars.end(),[&](const auto& value){return value.idx==idx;});if(car!=pos.cars.end())msg.playerPositions.push_back({r.sessionTime,car->x,car->z});}
+            }
         }
-        if(mask&detail::v4TypeBit(3))for(auto&row:damageRowsAtCadence(b.startSessionTime,b.endSessionTime))msg.damageHistory.push_back(glz::raw_json{row});
+        if ((rowTypeMask & detail::v4TypeBit(3)) && loadedFormat_ == TnrdFormat::ChunkedV6) {
+            for (const auto& source : rows) {
+                if (source.rowType != 3 || source.sessionTime < b.startSessionTime ||
+                    source.sessionTime > b.endSessionTime) continue;
+                std::vector<std::pair<uint8_t, std::string>> projected;
+                projectV6Row(3, source.sessionTime, source.json, projected);
+                for (auto& [type, row] : projected)
+                    if (type == 3) msg.damageHistory.push_back(glz::raw_json{std::move(row)});
+            }
+        }
+        self->playbackOutputRowMask_ = savedOutputMask;
         return writeJson(msg);
     }
     auto fill = [](std::vector<glz::raw_json>& dst, const std::vector<TimedRaw>& src) {
@@ -1377,15 +1654,28 @@ bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) co
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         std::vector<detail::V4TimedRow> rows;
         std::string error;
+        const uint8_t sourceType = loadedFormat_ == TnrdFormat::ChunkedV6 &&
+            playbackDriverIndex_ >= 0 && !playbackDriverUsesRecordedRows_ ? 7 : 4;
         if (!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap(
-                static_cast<uint32_t>(lapNum), detail::v4TypeBit(4), rows, &error)) return false;
+                static_cast<uint32_t>(lapNum), detail::v4TypeBit(sourceType), rows, &error)) return false;
         for (const auto& row : rows) {
-            if (row.rowType != 4 || row.sessionTime < block.startSessionTime ||
+            if (row.rowType != sourceType || row.sessionTime < block.startSessionTime ||
                 row.sessionTime > block.endSessionTime) continue;
-            LapScanFields lap{};
-            (void)glz::read<kPartialRead>(lap, row.json);
-            result.points.push_back({row.sessionTime, lap.current_lap_ms,
-                lap.lap_distance_m, lap.sector, lap.s1_ms, lap.s2_ms});
+            if (sourceType == 7) {
+                TimingRow timing{};
+                (void)glz::read<kPartialRead>(timing, row.json);
+                const auto car = std::find_if(timing.cars.begin(), timing.cars.end(), [&](const auto& value) {
+                    return value.idx == playbackDriverIndex_;
+                });
+                if (car == timing.cars.end() || !car->lap_distance_m) continue;
+                result.points.push_back({row.sessionTime, car->current_lap_ms,
+                    *car->lap_distance_m, car->sector, car->s1_ms, car->s2_ms});
+            } else {
+                LapScanFields lap{};
+                (void)glz::read<kPartialRead>(lap, row.json);
+                result.points.push_back({row.sessionTime, lap.current_lap_ms,
+                    lap.lap_distance_m, lap.sector, lap.s1_ms, lap.s2_ms});
+            }
         }
     } else if (loadedFormat_ == TnrdFormat::ZstdV3) {
         result.points = block.lapProgress;
@@ -1587,10 +1877,45 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
                                 std::array<std::string, 16>* lastOfType) {
     const float cadenceEnd = std::isfinite(t) ? t : totalTime_;
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
-        if(!v4PlaybackDamageStateReady_&&lastOfType&&!(*lastOfType)[3].empty()){const float seedTime=scanSessionTime((*lastOfType)[3].data(),(int)(*lastOfType)[3].size());if(seedTime<=damageCadenceCursor_){v4PlaybackDamageState_={seedTime,(*lastOfType)[3]};v4PlaybackDamageStateReady_=true;}}
+        if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0) {
+            auto rows = pullUntil(t);
+            for (auto& source : rows) {
+                const uint8_t sourceType = scanType(source.data(), static_cast<int>(source.size()));
+                std::vector<std::pair<uint8_t, std::string>> projected;
+                projectV6Row(sourceType,
+                    scanSessionTime(source.data(), static_cast<int>(source.size())), source, projected);
+                for (auto& [type, row] : projected) {
+                    seenTypes |= detail::v4TypeBit(type);
+                    // Keep projected hot rows on the same packed channel as
+                    // recorded-player playback. Besides avoiding high-rate
+                    // JSON IPC, this lets the existing hidden-window resume
+                    // cache retain the selected driver's complete chart data.
+                    if (type == 1 || type == 11 || type == 12) {
+                        (void)encodeV4HotRow(type, row, binOut);
+                        continue;
+                    }
+                    if (type == 3) {
+                        // V6 stores the actual 10 Hz UDP packet stream, so emit
+                        // each persisted sample directly. Cadence synthesis is
+                        // retained only for deduplicated V1-V5 recordings.
+                        jsonOut += row;
+                        jsonOut.push_back('\n');
+                        if (lastOfType) (*lastOfType)[3] = row;
+                        continue;
+                    }
+                    jsonOut += row;
+                    jsonOut.push_back('\n');
+                    if (lastOfType && type < lastOfType->size()) (*lastOfType)[type] = row;
+                }
+            }
+            damageCadenceCursor_ = cadenceEnd;
+            return;
+        }
+        const bool reconstructDamage = loadedFormat_ != TnrdFormat::ChunkedV6;
+        if(reconstructDamage&&!v4PlaybackDamageStateReady_&&lastOfType&&!(*lastOfType)[3].empty()){const float seedTime=scanSessionTime((*lastOfType)[3].data(),(int)(*lastOfType)[3].size());if(seedTime<=damageCadenceCursor_){v4PlaybackDamageState_={seedTime,(*lastOfType)[3]};v4PlaybackDamageStateReady_=true;}}
         std::vector<TimedRaw> damageUpdates;auto rows=pullUntil(t);
-        for(auto&row:rows){const uint8_t tid=scanType(row.data(),(int)row.size());if(!(playbackRowMask_&(1u<<tid)))continue;seenTypes|=(1u<<tid);if(tid==1||tid==11||tid==12){(void)encodeV4HotRow(tid,row,binOut);continue;}if(tid==3){if(lastOfType)(*lastOfType)[3]=row;damageUpdates.push_back({scanSessionTime(row.data(),(int)row.size()),std::move(row)});continue;}jsonOut+=row;jsonOut.push_back('\n');if(lastOfType&&tid<lastOfType->size())(*lastOfType)[tid]=row;}
-        if((playbackRowMask_&(1u<<3))&&std::isfinite(damageCadenceCursor_)&&std::isfinite(cadenceEnd)&&cadenceEnd>=damageCadenceCursor_){
+        for(auto&row:rows){const uint8_t tid=scanType(row.data(),(int)row.size());if(!(playbackRowMask_&(1u<<tid)))continue;seenTypes|=(1u<<tid);if(tid==1||tid==11||tid==12){(void)encodeV4HotRow(tid,row,binOut);continue;}if(tid==3&&reconstructDamage){if(lastOfType)(*lastOfType)[3]=row;damageUpdates.push_back({scanSessionTime(row.data(),(int)row.size()),std::move(row)});continue;}jsonOut+=row;jsonOut.push_back('\n');if(lastOfType&&tid<lastOfType->size())(*lastOfType)[tid]=row;}
+        if(reconstructDamage&&(playbackRowMask_&(1u<<3))&&std::isfinite(damageCadenceCursor_)&&std::isfinite(cadenceEnd)&&cadenceEnd>=damageCadenceCursor_){
             constexpr double RATE=10.0,EPS=1e-6;const long long firstTick=(long long)std::floor((double)damageCadenceCursor_*RATE+EPS)+1,lastTick=(long long)std::floor((double)cadenceEnd*RATE+EPS);size_t update=0;
             for(long long tick=firstTick;tick<=lastTick;++tick){const float sampleTime=(float)((double)tick/RATE);while(update<damageUpdates.size()&&damageUpdates[update].t<=sampleTime+(float)EPS){v4PlaybackDamageState_=std::move(damageUpdates[update++]);v4PlaybackDamageStateReady_=true;}if(!v4PlaybackDamageStateReady_)continue;std::string row=v4PlaybackDamageState_.json;setSessionTime(row,sampleTime);jsonOut+=row;jsonOut.push_back('\n');seenTypes|=(1u<<3);if(lastOfType)(*lastOfType)[3]=row;}
             while(update<damageUpdates.size()){v4PlaybackDamageState_=std::move(damageUpdates[update++]);v4PlaybackDamageStateReady_=true;}
@@ -1666,9 +1991,55 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
 
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
         const bool currentLapOnly=!allHistory&&windowSeconds<=0.0f;
-        // Damage is reconstructed at its fixed cadence below. Excluding it from
-        // this query avoids parsing and allocating the same JSON rows twice.
-        const uint32_t directMask=mask&~detail::v4TypeBit(3);
+        if (loadedFormat_ == TnrdFormat::ChunkedV6) {
+            const uint32_t savedOutputMask = playbackOutputRowMask_;
+            playbackOutputRowMask_ = mask;
+            const uint32_t sourceMask = expandedPlaybackMask(mask);
+            auto binary = std::make_shared<std::vector<uint8_t>>();
+            std::string error;
+            // V6 rows contain full-grid arrays. Visit the global time range
+            // chunk-by-chunk for both the recorded and selected driver so All
+            // Laps never retains a race worth of full-grid JSON at once.
+            const bool loaded = indexedArchive_->forEachRowInRange(
+                windowStart, target, sourceMask,
+                [&](const detail::V4TimedRow& source) {
+                    if (cancelled && cancelled()) return false;
+                    std::vector<std::pair<uint8_t, std::string>> projected;
+                    projectV6Row(source.rowType, source.sessionTime, source.json, projected);
+                    for (auto& [type, row] : projected) {
+                        // Seek/backfill installation decodes telemetry and motion
+                        // from the packed payload. Sending these through coldJson
+                        // made the renderer ignore the historical prefix, leaving
+                        // a selected driver's charts to begin at the switch time.
+                        if (type == 1 || type == 11 || type == 12) {
+                            (void)encodeV4HotRow(type, row, *binary);
+                            continue;
+                        }
+                        f.coldJson += row;
+                        f.coldJson.push_back('\n');
+                    }
+                    return true;
+                }, &error, cancelled);
+            if (!loaded) {
+                playbackOutputRowMask_ = savedOutputMask;
+                if (!cancelled || !cancelled()) lastError_ = std::move(error);
+                return f;
+            }
+            playbackOutputRowMask_ = savedOutputMask;
+            if (!f.coldJson.empty()) f.coldJson.pop_back();
+            if (!binary->empty()) {
+                f.binaryStore = std::move(binary);
+                f.binaryBegin = 0;
+                f.binaryEnd = f.binaryStore->size();
+            }
+            return f;
+        }
+        // V1-V5 recordings deduplicated unchanged damage state, so their
+        // readers reconstruct the original 10 Hz stream. V6 persists every
+        // damage packet and reads it directly like every other cold family.
+        const bool reconstructDamage = loadedFormat_ != TnrdFormat::ChunkedV6;
+        const uint32_t directMask = reconstructDamage
+            ? mask & ~detail::v4TypeBit(3) : mask;
         if(cancelled&&cancelled())return f;
         auto binary=std::make_shared<std::vector<uint8_t>>();
         const auto appendRow = [&](const detail::V4TimedRow& row) {
@@ -1721,7 +2092,7 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
         }
         if(!loaded)return f;
         if(cancelled&&cancelled())return {};
-        if(mask&detail::v4TypeBit(3)){auto damage=damageRowsAtCadence(windowStart,target,true,cancelled);if(cancelled&&cancelled())return {};if(!damage.empty()){v4PlaybackDamageState_={scanSessionTime(damage.back().data(),(int)damage.back().size()),damage.back()};v4PlaybackDamageStateReady_=true;}for(auto&row:damage){f.coldJson+=row;f.coldJson.push_back('\n');}}if(!f.coldJson.empty())f.coldJson.pop_back();if(!binary->empty()){f.binaryStore=binary;f.binaryBegin=0;f.binaryEnd=binary->size();}return f;
+        if(reconstructDamage&&(mask&detail::v4TypeBit(3))){auto damage=damageRowsAtCadence(windowStart,target,true,cancelled);if(cancelled&&cancelled())return {};if(!damage.empty()){v4PlaybackDamageState_={scanSessionTime(damage.back().data(),(int)damage.back().size()),damage.back()};v4PlaybackDamageStateReady_=true;}for(auto&row:damage){f.coldJson+=row;f.coldJson.push_back('\n');}}if(!f.coldJson.empty())f.coldJson.pop_back();if(!binary->empty()){f.binaryStore=binary;f.binaryBegin=0;f.binaryEnd=binary->size();}return f;
     }
 
     if (!hotTimes_.empty()) {

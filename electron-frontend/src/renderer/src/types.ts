@@ -6,6 +6,10 @@ export interface TelemetryCar {
   speed_kph: number
   rpm: number
   gear: number
+  drs: number
+  slm: number
+  rev_lights_pct: number
+  rev_lights_bit_value: number
   throttle: number | null
   brake: number | null
   steering: number | null
@@ -15,12 +19,23 @@ export interface TelemetryCar {
   tyre_temp_inner_fl: number; tyre_temp_inner_fr: number
   brake_temp_rl: number; brake_temp_rr: number
   brake_temp_fl: number; brake_temp_fr: number
+  engine_temp: number
 }
 
 export interface TyreWearCar {
   idx: number
   tyre_wear_rl: number | null; tyre_wear_rr: number | null
   tyre_wear_fl: number | null; tyre_wear_fr: number | null
+  tyre_dmg_rl?: number | null; tyre_dmg_rr?: number | null
+  tyre_dmg_fl?: number | null; tyre_dmg_fr?: number | null
+  brake_dmg_rl?: number | null; brake_dmg_rr?: number | null
+  brake_dmg_fl?: number | null; brake_dmg_fr?: number | null
+  blisters_rl?: number | null; blisters_rr?: number | null
+  blisters_fl?: number | null; blisters_fr?: number | null
+  wing_fl?: number | null; wing_fr?: number | null; wing_rear?: number | null
+  floor_damage?: number | null; diffuser_damage?: number | null; sidepod_damage?: number | null
+  gearbox_damage?: number | null; engine_damage?: number | null
+  drs_fault?: number | null; ers_fault?: number | null
 }
 
 export interface TelemetryRow {
@@ -578,10 +593,11 @@ declare global {
       onStatusChange: (cb: (status: { ok: boolean; error?: string }) => void) => () => void
     }
     debugBridge: {
-      get: () => Promise<{ additionalLogging: boolean; memoryLog: boolean }>
+      get: () => Promise<{ additionalLogging: boolean; memoryLog: boolean; nodeApiExceptions: boolean }>
       setAdditionalLogging: (enabled: boolean) => void
       setMemoryLog: (enabled: boolean) => void
-      onChange: (cb: (settings: { additionalLogging: boolean; memoryLog: boolean }) => void) => () => void
+      setNodeApiExceptions: (enabled: boolean) => void
+      onChange: (cb: (settings: { additionalLogging: boolean; memoryLog: boolean; nodeApiExceptions: boolean }) => void) => () => void
     }
     protocolBridge: {
       getConfig:   () => Promise<{ override: string; detected: number | null; lastDetected: number | null; active: number | null }>
@@ -628,6 +644,7 @@ declare global {
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void
+      setDriver: (driverIndex: number, useRecordedRows?: boolean) => void
       getLapData: (lapNum: number, rowTypeMask?: number) => void
       getLiveFastestLap: (requestId: number) => void
       getAllLapsData: (rowTypeMask?: number) => void

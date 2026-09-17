@@ -101,8 +101,9 @@ export function dataRequirementsForUi(
         if (surfaceTemp || innerTemp || brakeTemp) add(result, DATA_CONSUMERS.tyreTemperatureHistory)
         if (tyreLife) add(result, DATA_CONSUMERS.tyreWearHistory)
       } else if (any(core.thermalCards)) {
-        // Wheel-card sparklines consume the same bounded temperature history.
-        add(result, DATA_CONSUMERS.tyreTemperatureHistory)
+        // Cards use current values only. They stay subscribed to the live row
+        // families, but never trigger indexed history/backfill reads.
+        result.streamMask |= DATA_ROW.telemetry
         add(result, DATA_CONSUMERS.damageCards)
       }
     }

@@ -3,6 +3,7 @@
 #include "tnrp/control_rows.h"
 #include "tnrp/BinaryRows.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 
 using namespace tnrp;
@@ -33,9 +34,9 @@ const char* F1_26::RecordingFilenamePrefix() { return "f1_26"; }
 // 2026 moves the player's wing state out of Car Telemetry's m_drs (which stays 0
 // under the new regs) and into Car Telemetry 2's m_activeAeroMode (0 = Corner /
 // high-downforce, 1 = Straight / low-drag = "wing open"). The engine parses on a
-// single thread, so the player's last-seen active-aero mode is cached here and
+// single thread, so each car's last-seen active-aero mode is cached here and
 // surfaced on the telemetry row's dedicated `slm` field (separate from `drs`).
-static uint8_t s_playerActiveAero = 0;
+static std::array<uint8_t, 24> s_activeAero{};
 
 // Car Status grew by one float (m_ersHarvestedLimitPerLap, inserted between
 // m_ersHarvestedThisLapMGUH and m_ersDeployedThisLap) → 55 → 59 bytes per car.
@@ -308,7 +309,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             t.rev_lights_bit_value = ReadUInt16(data, o); o += 2;
             // 2026 wing-open state lives in its own field, sourced from active aero
             // (Car Telemetry 2, PID 16). Kept strictly separate from drs.
-            t.slm           = s_playerActiveAero ? 1 : 0;
+            t.slm           = s_activeAero[hdr.playerCarIndex] ? 1 : 0;
             t.brake_temp_rl = ReadUInt16(data, o); o += 2;
             t.brake_temp_rr = ReadUInt16(data, o); o += 2;
             t.brake_temp_fl = ReadUInt16(data, o); o += 2;
@@ -335,6 +336,10 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
                         car.steering = Round4(*steering);
                     car.gear = ReadInt8(data, cBase + 15);
                     car.rpm = ReadUInt16(data, cBase + 16);
+                    car.drs = ReadUInt8(data, cBase + 18);
+                    car.slm = s_activeAero[i] ? 1 : 0;
+                    car.rev_lights_pct = ReadUInt8(data, cBase + 19);
+                    car.rev_lights_bit_value = ReadUInt16(data, cBase + 20);
                     car.brake_temp_rl = ReadUInt16(data, cBase + 22);
                     car.brake_temp_rr = ReadUInt16(data, cBase + 24);
                     car.brake_temp_fl = ReadUInt16(data, cBase + 26);
@@ -347,6 +352,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
                     car.tyre_temp_inner_rr = ReadUInt8(data, cBase + 35);
                     car.tyre_temp_inner_fl = ReadUInt8(data, cBase + 36);
                     car.tyre_temp_inner_fr = ReadUInt8(data, cBase + 37);
+                    car.engine_temp = ReadUInt8(data, cBase + 38);
                     t.cars->push_back(std::move(car));
                 }
             }
@@ -430,7 +436,7 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
             dr.blisters_rl    = data[o++]; dr.blisters_rr = data[o++];
             dr.blisters_fl    = data[o++]; dr.blisters_fr = data[o++];
             dr.wing_fl        = data[o++]; dr.wing_fr   = data[o++]; dr.wing_rear = data[o++];
-            dr.floor_damage   = data[o++]; dr.sidepod_damage = data[o++]; dr.diffuser_damage = data[o++];
+            dr.floor_damage   = data[o++]; dr.diffuser_damage = data[o++]; dr.sidepod_damage = data[o++];
             dr.drs_fault      = data[o++]; dr.ers_fault = data[o++];
             dr.gearbox_damage = data[o++]; dr.engine_damage = data[o++];
 
@@ -442,12 +448,25 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
                     if (!hot.hasCar(i, hdr.playerCarIndex)) continue;
                     TyreWearCar car;
                     car.idx = i;
+                    // Blisters and ERS fault are not in the restricted-data list.
+                    const int publicBase = HEADER_SIZE + i * damageSize;
+                    car.blisters_rl = data[publicBase + 24]; car.blisters_rr = data[publicBase + 25];
+                    car.blisters_fl = data[publicBase + 26]; car.blisters_fr = data[publicBase + 27];
+                    car.ers_fault = data[publicBase + 35];
                     if (hot.hasPrivateTelemetry(i, hdr.playerCarIndex)) {
                         const int cBase = HEADER_SIZE + i * damageSize;
                         car.tyre_wear_rl = FiniteFloat(data, cBase);
                         car.tyre_wear_rr = FiniteFloat(data, cBase + 4);
                         car.tyre_wear_fl = FiniteFloat(data, cBase + 8);
                         car.tyre_wear_fr = FiniteFloat(data, cBase + 12);
+                        car.tyre_dmg_rl = data[cBase + 16]; car.tyre_dmg_rr = data[cBase + 17];
+                        car.tyre_dmg_fl = data[cBase + 18]; car.tyre_dmg_fr = data[cBase + 19];
+                        car.brake_dmg_rl = data[cBase + 20]; car.brake_dmg_rr = data[cBase + 21];
+                        car.brake_dmg_fl = data[cBase + 22]; car.brake_dmg_fr = data[cBase + 23];
+                        car.wing_fl = data[cBase + 28]; car.wing_fr = data[cBase + 29]; car.wing_rear = data[cBase + 30];
+                        car.floor_damage = data[cBase + 31]; car.diffuser_damage = data[cBase + 32]; car.sidepod_damage = data[cBase + 33];
+                        car.drs_fault = data[cBase + 34];
+                        car.gearbox_damage = data[cBase + 36]; car.engine_damage = data[cBase + 37];
                     }
                     dr.cars->push_back(std::move(car));
                 }
@@ -615,15 +634,16 @@ std::vector<std::string> F1_26::ParsePacket(const uint8_t* data, int length, con
         }
 
         // ── CAR_TEL2 (60 Hz, state only) ───────────────────────────────────
-        // New in 2026. Per car 10 bytes; byte 0 is m_activeAeroMode. We only need
-        // the player's wing state, cached for the telemetry row above. Emits no
+        // New in 2026. Per car 10 bytes; byte 0 is m_activeAeroMode. Cache every
+        // car's wing state for the V6 telemetry array. Emits no
         // row of its own. Every packet reaches us at the game's configured rate.
         case PID_CAR_TEL2: {
             int tel2Size = 10;
-            int base = HEADER_SIZE + hdr.playerCarIndex * tel2Size;
-            if (length < base + tel2Size) return {};
-            uint8_t activeAeroMode = data[base];   // 0 = Corner, 1 = Straight
-            s_playerActiveAero = (activeAeroMode == 1) ? 1 : 0;
+            if (length < HEADER_SIZE + MAX_CARS * tel2Size) return {};
+            for (int i = 0; i < MAX_CARS; ++i) {
+                const uint8_t activeAeroMode = data[HEADER_SIZE + i * tel2Size];
+                s_activeAero[i] = activeAeroMode == 1 ? 1 : 0;
+            }
             break;
         }
     }

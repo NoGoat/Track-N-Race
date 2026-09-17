@@ -418,7 +418,11 @@ void TnrdWriter::writerLoop() {
         } else if (ev.type == EventType::Record) {
             if (!streamActive()) continue;
             std::string type = extractType(ev.json);
-            if (isDuplicate(type, ev.json)) continue;
+            // V6 is an exact packet-history format: retain every parsed row at
+            // the UDP cadence, including unchanged 10 Hz damage packets. The
+            // legacy formats keep their historical state-row deduplication and
+            // their readers reconstruct the omitted cadence during playback.
+            if (writeFormat_ != TnrdFormat::ChunkedV6 && isDuplicate(type, ev.json)) continue;
             const bool sessionEnd = type == "race_event" &&
                 ev.json.find("\"code\":\"SEND\"") != std::string::npos;
             std::string line = std::move(ev.json);
