@@ -3,7 +3,7 @@
 namespace tnrp {
 
 // The on-disk TNRD generations. V1/V2 are retained for playback compatibility;
-// normal recording uses indexed V5. V2 and V3 both use monolithic Zstandard, so their
+// normal recording uses indexed V6. V2 and V3 both use monolithic Zstandard, so their
 // JSON header magic (not the compression-frame signature) distinguishes them.
 enum class TnrdFormat {
     Unknown,
@@ -12,13 +12,17 @@ enum class TnrdFormat {
     ZstdV3,
     ChunkedV4,
     ChunkedV5,
+    ChunkedV6,
 };
 
 inline bool isLegacyZstdStream(TnrdFormat format) {
     return format == TnrdFormat::ZstdV2 || format == TnrdFormat::ZstdV3;
 }
+inline bool hasExactTnrdIndex(TnrdFormat format) {
+    return format == TnrdFormat::ChunkedV5 || format == TnrdFormat::ChunkedV6;
+}
 inline bool isChunkedTnrd(TnrdFormat format) {
-    return format == TnrdFormat::ChunkedV4 || format == TnrdFormat::ChunkedV5;
+    return format == TnrdFormat::ChunkedV4 || hasExactTnrdIndex(format);
 }
 inline bool usesZstdCompression(TnrdFormat format) { return isLegacyZstdStream(format) || isChunkedTnrd(format); }
 inline bool isZstd(TnrdFormat format) { return isLegacyZstdStream(format); }
@@ -30,6 +34,7 @@ inline const char* toString(TnrdFormat format) {
         case TnrdFormat::ZstdV3: return "TNRD_V3/zstd";
         case TnrdFormat::ChunkedV4: return "TNRD_V4/chunked-zstd";
         case TnrdFormat::ChunkedV5: return "TNRD_V5/chunked-zstd";
+        case TnrdFormat::ChunkedV6: return "TNRD_V6/chunked-zstd";
         default:                 return "unknown";
     }
 }

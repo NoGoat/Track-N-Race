@@ -56,6 +56,10 @@ void Parser::reset() {
     lastFrameId_.fill(0);
     haveFrameId_.fill(false);
     formula_.reset();
+    knownCars_.fill(false);
+    telemetryAccess_.fill(std::nullopt);
+    rosterSessionUid_.reset();
+    rosterFormat_ = 0;
 }
 
 void Parser::setOverride(Override ovr) {
@@ -189,6 +193,12 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     r.packetId    = packetId;
     r.sessionUid  = sessionUid;
     r.sessionTime = sessionTime;
+    if (rosterSessionUid_ != sessionUid || rosterFormat_ != eff) {
+        knownCars_.fill(false);
+        telemetryAccess_.fill(std::nullopt);
+        rosterSessionUid_ = sessionUid;
+        rosterFormat_ = eff;
+    }
 
     // Formula is presentation state, not a wire-format selector. A known
     // non-F1-26 formula on the 2026 protocol switches labels/capabilities back
@@ -264,11 +274,14 @@ Parser::Result Parser::feed(const uint8_t* data, int length, const std::string& 
     };
     const uint32_t packetRows = packetId < std::size(PACKET_ROWS)
         ? PACKET_ROWS[packetId] : 0;
-    if (!wantHotJson && (packetRows & outputRowMask) == 0) return r;
+    // Always decode the roster/access state, even when participant rows are masked.
+    if (!wantHotJson && packetId != 4 && (packetRows & outputRowMask) == 0) return r;
 
     HotOut hot;
     hot.wantHotJson = wantHotJson;
     hot.outputRowMask = outputRowMask;
+    hot.knownCars = &knownCars_;
+    hot.telemetryAccess = &telemetryAccess_;
     r.rows = (eff == 2024) ? F1_24::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
            : (eff == 2026) ? F1_26::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_)
                            : F1_25::ParsePacket(data, length, hdr, ts, hot, teamColorOverrides_);

@@ -7,6 +7,9 @@
 
 using namespace tnrp;
 
+// All-driver field layouts: supplied f1-25-v3.md,
+// CarMotionData, LapData, ParticipantData, CarTelemetryData, CarDamageData; privacy follows Restricted data (Your Telemetry).
+
 static const int HEADER_SIZE = 29;
 
 static const int PID_MOTION           = 0;
@@ -142,6 +145,9 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     pr.cars[i].idx = i;
                     pr.cars[i].x   = Round2(ReadFloat(data, cBase));
                     pr.cars[i].z   = Round2(ReadFloat(data, cBase + 8));
+                    pr.cars[i].g_lat = FiniteFloat(data, cBase + 36);
+                    pr.cars[i].g_long = FiniteFloat(data, cBase + 40);
+                    pr.cars[i].g_vert = FiniteFloat(data, cBase + 44);
                 }
                 bin::encodePositions(hot.binary, pr);
                 if (hot.wantHotJson) {
@@ -248,6 +254,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     tc.sector        = csect;
                     tc.result_status = cresultStat;
                     tc.driver_status = cdriverStat;
+                    tc.lap_distance_m = FiniteFloat(data, cBase + 20);
                 }
                 buf.clear();
                 (void)glz::write_json(tr, buf);
@@ -285,6 +292,38 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             t.tyre_temp_inner_rl   = data[o++]; t.tyre_temp_inner_rr   = data[o++];
             t.tyre_temp_inner_fl   = data[o++]; t.tyre_temp_inner_fr   = data[o++];
             t.engine_temp   = ReadUInt16(data, o);
+
+            // CarTelemetryData: wheel order RL/RR/FL/FR. Only JSON recording
+            // needs the all-driver array; the live binary player record is unchanged.
+            if (hot.wantHotJson && length >= HEADER_SIZE + 22 * telSize + 3) {
+                t.cars.emplace();
+                for (int i = 0; i < 22; ++i) {
+                    if (!hot.hasCar(i, hdr.playerCarIndex)) continue;
+                    const int cBase = HEADER_SIZE + i * telSize;
+                    TelemetryCar car;
+                    car.idx = i;
+                    car.speed_kph = ReadUInt16(data, cBase);
+                    car.throttle = FiniteFloat(data, cBase + 2);
+                    car.brake = FiniteFloat(data, cBase + 10);
+                    if (const auto steering = FiniteFloat(data, cBase + 6))
+                        car.steering = Round4(*steering);
+                    car.gear = ReadInt8(data, cBase + 15);
+                    car.rpm = ReadUInt16(data, cBase + 16);
+                    car.brake_temp_rl = ReadUInt16(data, cBase + 22);
+                    car.brake_temp_rr = ReadUInt16(data, cBase + 24);
+                    car.brake_temp_fl = ReadUInt16(data, cBase + 26);
+                    car.brake_temp_fr = ReadUInt16(data, cBase + 28);
+                    car.tyre_temp_surface_rl = ReadUInt8(data, cBase + 30);
+                    car.tyre_temp_surface_rr = ReadUInt8(data, cBase + 31);
+                    car.tyre_temp_surface_fl = ReadUInt8(data, cBase + 32);
+                    car.tyre_temp_surface_fr = ReadUInt8(data, cBase + 33);
+                    car.tyre_temp_inner_rl = ReadUInt8(data, cBase + 34);
+                    car.tyre_temp_inner_rr = ReadUInt8(data, cBase + 35);
+                    car.tyre_temp_inner_fl = ReadUInt8(data, cBase + 36);
+                    car.tyre_temp_inner_fr = ReadUInt8(data, cBase + 37);
+                    t.cars->push_back(std::move(car));
+                }
+            }
 
             bin::encodeTelemetry(hot.binary, t);
             if (hot.wantHotJson) {
@@ -369,6 +408,25 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             dr.drs_fault      = data[o++]; dr.ers_fault = data[o++];
             dr.gearbox_damage = data[o++]; dr.engine_damage = data[o++];
 
+            // Restricted data (Your Telemetry): local car is exempt. Unknown
+            // opponent access leaves wear unavailable instead of inventing zero.
+            if (length >= HEADER_SIZE + 22 * damageSize) {
+                dr.cars.emplace();
+                for (int i = 0; i < 22; ++i) {
+                    if (!hot.hasCar(i, hdr.playerCarIndex)) continue;
+                    TyreWearCar car;
+                    car.idx = i;
+                    if (hot.hasPrivateTelemetry(i, hdr.playerCarIndex)) {
+                        const int cBase = HEADER_SIZE + i * damageSize;
+                        car.tyre_wear_rl = FiniteFloat(data, cBase);
+                        car.tyre_wear_rr = FiniteFloat(data, cBase + 4);
+                        car.tyre_wear_fl = FiniteFloat(data, cBase + 8);
+                        car.tyre_wear_fr = FiniteFloat(data, cBase + 12);
+                    }
+                    dr.cars->push_back(std::move(car));
+                }
+            }
+
             buf.clear();
             (void)glz::write_json(dr, buf);
             rows.push_back(std::move(buf));
@@ -390,6 +448,11 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                 o += 1;
                 int nameStart = o;
                 std::string name = ReadString(data, nameStart, 32);
+                const auto accessValue = data[nameStart + 32];
+                const std::optional<int> access = accessValue <= 1
+                    ? std::optional<int>(accessValue) : std::nullopt;
+                if (hot.knownCars) (*hot.knownCars)[i] = !name.empty();
+                if (hot.telemetryAccess) (*hot.telemetryAccess)[i] = name.empty() ? std::nullopt : access;
                 if (name.empty()) continue;
                 uint8_t numColors = data[nameStart + 37];
                 char hexColor[16];
@@ -403,10 +466,13 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                 }
                 pr.drivers.push_back({ i, std::move(name), teamId, raceNum, ai,
                     resolveTeamColor(2025, teamId, hexColor, teamColorOverrides), hexColor });
+                pr.drivers.back().your_telemetry = access;
             }
-            buf.clear();
-            (void)glz::write_json(pr, buf);
-            rows.push_back(std::move(buf));
+            if (hot.wants(8)) {
+                buf.clear();
+                (void)glz::write_json(pr, buf);
+                rows.push_back(std::move(buf));
+            }
             break;
         }
 

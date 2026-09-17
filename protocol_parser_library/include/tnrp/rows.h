@@ -16,6 +16,55 @@
 
 // ── telemetry (60 Hz) ──────────────────────────────────────────────────────
 
+// V6 extends existing packet families; no combined driver snapshot is stored.
+struct TelemetryCar {
+    int idx{};
+    int speed_kph{};
+    int rpm{};
+    int gear{};
+    std::optional<float> throttle{};
+    std::optional<float> brake{};
+    std::optional<double> steering{};
+    int tyre_temp_surface_fl{};
+    int tyre_temp_surface_fr{};
+    int tyre_temp_surface_rl{};
+    int tyre_temp_surface_rr{};
+    int tyre_temp_inner_fl{};
+    int tyre_temp_inner_fr{};
+    int tyre_temp_inner_rl{};
+    int tyre_temp_inner_rr{};
+    int brake_temp_fl{};
+    int brake_temp_fr{};
+    int brake_temp_rl{};
+    int brake_temp_rr{};
+};
+
+template <>
+struct glz::meta<TelemetryCar> {
+    using T = TelemetryCar;
+    static constexpr auto value = glz::object(
+        "idx", &T::idx,
+        "speed_kph", &T::speed_kph,
+        "rpm", &T::rpm,
+        "gear", &T::gear,
+        "throttle", &T::throttle,
+        "brake", &T::brake,
+        "steering", &T::steering,
+        "tyre_temp_surface_fl", &T::tyre_temp_surface_fl,
+        "tyre_temp_surface_fr", &T::tyre_temp_surface_fr,
+        "tyre_temp_surface_rl", &T::tyre_temp_surface_rl,
+        "tyre_temp_surface_rr", &T::tyre_temp_surface_rr,
+        "tyre_temp_inner_fl", &T::tyre_temp_inner_fl,
+        "tyre_temp_inner_fr", &T::tyre_temp_inner_fr,
+        "tyre_temp_inner_rl", &T::tyre_temp_inner_rl,
+        "tyre_temp_inner_rr", &T::tyre_temp_inner_rr,
+        "brake_temp_fl", &T::brake_temp_fl,
+        "brake_temp_fr", &T::brake_temp_fr,
+        "brake_temp_rl", &T::brake_temp_rl,
+        "brake_temp_rr", &T::brake_temp_rr
+    );
+};
+
 struct TelemetryRow {
     std::string type{"telemetry"};
     std::string ts;
@@ -43,6 +92,7 @@ struct TelemetryRow {
     int         brake_temp_fl{};
     int         brake_temp_fr{};
     int         engine_temp{};
+    std::optional<std::vector<TelemetryCar>> cars; // V6, indexed by each car.idx
 };
 
 template <>
@@ -74,7 +124,8 @@ struct glz::meta<TelemetryRow> {
         "brake_temp_rr",        &T::brake_temp_rr,
         "brake_temp_fl",        &T::brake_temp_fl,
         "brake_temp_fr",        &T::brake_temp_fr,
-        "engine_temp",          &T::engine_temp
+        "engine_temp",          &T::engine_temp,
+        "cars",                 &T::cars
     );
 };
 
@@ -108,6 +159,7 @@ struct PositionCar {
     int    idx{};
     double x{};
     double z{};
+    std::optional<double> g_lat, g_long, g_vert; // V6
 };
 
 template <>
@@ -116,7 +168,8 @@ struct glz::meta<PositionCar> {
     static constexpr auto value = glz::object(
         "idx", &T::idx,
         "x",   &T::x,
-        "z",   &T::z
+        "z",   &T::z,
+        "g_lat", &T::g_lat, "g_long", &T::g_long, "g_vert", &T::g_vert
     );
 };
 
@@ -224,6 +277,7 @@ struct TimingCar {
     int  sector{};
     int  result_status{};
     int  driver_status{};
+    std::optional<float> lap_distance_m; // V6
 };
 
 template <>
@@ -246,7 +300,8 @@ struct glz::meta<TimingCar> {
         "num_sg_pens",    &T::num_sg_pens,
         "sector",         &T::sector,
         "result_status",  &T::result_status,
-        "driver_status",  &T::driver_status
+        "driver_status",  &T::driver_status,
+        "lap_distance_m", &T::lap_distance_m
     );
 };
 
@@ -386,6 +441,26 @@ struct glz::meta<AllStatusRow> {
 
 // ── damage (2 Hz) ──────────────────────────────────────────────────────────
 
+struct TyreWearCar {
+    int idx{};
+    std::optional<double> tyre_wear_fl{};
+    std::optional<double> tyre_wear_fr{};
+    std::optional<double> tyre_wear_rl{};
+    std::optional<double> tyre_wear_rr{};
+};
+
+template <>
+struct glz::meta<TyreWearCar> {
+    using T = TyreWearCar;
+    static constexpr auto value = glz::object(
+        "idx", &T::idx,
+        "tyre_wear_fl", &T::tyre_wear_fl,
+        "tyre_wear_fr", &T::tyre_wear_fr,
+        "tyre_wear_rl", &T::tyre_wear_rl,
+        "tyre_wear_rr", &T::tyre_wear_rr
+    );
+};
+
 struct DamageRow {
     std::string type{"damage"};
     std::string ts;
@@ -416,6 +491,7 @@ struct DamageRow {
     int         engine_damage{};
     int         drs_fault{};
     int         ers_fault{};
+    std::optional<std::vector<TyreWearCar>> cars; // V6
 };
 
 template <>
@@ -450,6 +526,7 @@ struct glz::meta<DamageRow> {
         "gearbox_damage",   &T::gearbox_damage,
         "engine_damage",    &T::engine_damage,
         "drs_fault",        &T::drs_fault,
-        "ers_fault",        &T::ers_fault
+        "ers_fault",        &T::ers_fault,
+        "cars", &T::cars
     );
 };

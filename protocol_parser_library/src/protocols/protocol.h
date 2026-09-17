@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -25,6 +28,16 @@ struct HotOut {
     std::vector<uint8_t>     binary;
     bool                     wantHotJson = false;
     uint32_t                 outputRowMask = 0xFFFFFFFFu;
+    // Owned by Parser; versioned participant parsing updates these in order.
+    std::array<bool, 24>* knownCars = nullptr;
+    std::array<std::optional<int>, 24>* telemetryAccess = nullptr;
+    bool hasCar(std::size_t index, std::size_t player) const {
+        return index == player || (knownCars && index < knownCars->size() && (*knownCars)[index]);
+    }
+    bool hasPrivateTelemetry(std::size_t index, std::size_t player) const {
+        return index == player || (telemetryAccess && index < telemetryAccess->size() &&
+                                   (*telemetryAccess)[index] == 1);
+    }
     bool wants(uint8_t rowType) const {
         return (outputRowMask & (1u << rowType)) != 0;
     }
@@ -54,6 +67,12 @@ inline uint8_t ReadUInt8(const uint8_t* data, int offset) {
 }
 inline int8_t ReadInt8(const uint8_t* data, int offset) {
     return (int8_t)data[offset];
+}
+
+// Preserve unavailable/non-finite measurements as absent optional values.
+inline std::optional<double> FiniteFloat(const uint8_t* data, int offset) {
+    const float value = ReadFloat(data, offset);
+    return std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
 }
 
 // Math rounding utilities matching JavaScript telemetry parser

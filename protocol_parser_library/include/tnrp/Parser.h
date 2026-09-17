@@ -82,6 +82,12 @@ private:
     std::array<uint32_t, 16> lastFrameId_{};
     std::array<bool,     16> haveFrameId_{};
 
+    // Roster/access are parser state, scoped to this session and parser instance.
+    std::array<bool, 24> knownCars_{};
+    std::array<std::optional<int>, 24> telemetryAccess_{};
+    std::optional<uint64_t> rosterSessionUid_;
+    uint16_t rosterFormat_{};
+
     uint16_t effectiveFormat(uint16_t incoming) const;
 };
 
