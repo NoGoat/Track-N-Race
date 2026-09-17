@@ -88,6 +88,7 @@ set(SOURCES
     src/TelemetryChart.h
     src/components/ChartView.cpp
     src/components/ChartView.h
+    src/components/ClearableComboBox.h
     src/components/GraphTable.cpp
     src/components/GraphTable.h
     src/components/PageUiHelpers.h
@@ -179,6 +180,7 @@ qt_add_shaders(native_recorder "tnr_chart_shaders"
     BASE "shaders"
     FILES
         shaders/chart.vert
+        shaders/chartline.vert
         shaders/chart.frag
 )
 

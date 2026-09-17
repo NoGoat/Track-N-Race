@@ -1,4 +1,5 @@
 #include "TrackMapWidget.h"
+#include "ClearableComboBox.h"
 #include "../PresentationScheduler.h"
 
 #include <QPainter>
@@ -220,46 +221,6 @@ QString abbrev(const QString& name) {
     if (parts.isEmpty()) return QString();
     return parts.last().left(3).toUpper();
 }
-
-class ClearableComboBox : public QComboBox {
-public:
-    explicit ClearableComboBox(QWidget* parent = nullptr) : QComboBox(parent) {
-        clearBtn_ = new QToolButton(this);
-        QIcon clearIcon = adaptThemeIcon(
-            QIcon::fromTheme("window-close"),
-            palette().color(QPalette::WindowText),
-            style()->standardIcon(QStyle::SP_DialogCloseButton)
-        );
-        clearBtn_->setIcon(clearIcon);
-        clearBtn_->setCursor(Qt::PointingHandCursor);
-        clearBtn_->setStyleSheet(
-            "QToolButton {"
-            "  border: none; background: transparent; font-weight: bold; font-size: 16px;"
-            "  color: #888; padding: 0px; margin: 0px;"
-            "}"
-            "QToolButton:hover { color: palette(text); }"
-        );
-        connect(clearBtn_, &QToolButton::clicked, this, [this]{
-            setCurrentIndex(0);
-        });
-        clearBtn_->hide();
-    }
-
-    void setClearVisible(bool visible) {
-        clearBtn_->setVisible(visible);
-    }
-
-protected:
-    void resizeEvent(QResizeEvent* e) override {
-        QComboBox::resizeEvent(e);
-        int arrowWidth = 24;
-        int btnSize = 18;
-        clearBtn_->setGeometry(width() - arrowWidth - btnSize, (height() - btnSize) / 2, btnSize, btnSize);
-    }
-
-private:
-    QToolButton* clearBtn_;
-};
 
 } // namespace
 

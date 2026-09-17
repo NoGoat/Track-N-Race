@@ -159,6 +159,7 @@ void MiscChartsWidget::refresh() {
             model_->sectorBoundaries(), model_->chartPrimaryLap(endTime),
             model_->chartReferenceLap(window, selected, endTime));
         chart_->setXRange(xId_[section], domain.lower, domain.upper);
+        chart_->setAxisNativeLines(xId_[section], chartWindowAccumulatesLaps(domain.window));
         chart_->setAxisDistanceMode(xId_[section], domain.distance);
         chart_->syncAxisSessionMap(xId_[section], domain.distance ? domain.primary : nullptr,
                                   domain.currentTime);

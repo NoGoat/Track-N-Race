@@ -40,19 +40,18 @@ TelemetryChart::TelemetryChart(QWidget* parent)
     int axRpm   = addAxis({ Side::Right,  0.0, MAX_RPM,   C_RPM,   true,  'f', 0 });
     int axErs   = addAxis({ Side::Right,  0.0, 100.0,     C_ERS,   true,  'f', 0 });
 
-    setAxisTimeTicker(axXId_, "%m:%s");             // m:ss.t labels, like Electron's fmtTime
+    setAxisTimeTicker(axXId_, "%m:%s");             // m:ss labels, like Electron's fmtTime
     setAxisNumberSuffix(axRpm, 1000.0, "k", 2000);  // 16000 -> "16k", ticks every 2k
     setAxisNumberSuffix(axErs, 1.0, "%");           // 80    -> "80%"
 
     // Reference series first (drawn behind), then the current-lap series on top.
-    // ERS comes from the 2 Hz CAR_STATUS packet — draw it stepped (hold-last-value)
-    // rather than interpolating across the half-second gaps between samples.
-    rErId_ = addSeries({ "",      muted(C_ERS),   2.0, axXId_, axErs,   "",    0, false, false, QColor(), true });
-    rRpId_ = addSeries({ "",      muted(C_RPM),   2.0, axXId_, axRpm   });
-    rSpId_ = addSeries({ "",      muted(C_SPEED), 2.0, axXId_, axSpeed });
-    erId_  = addSeries({ "ERS",   C_ERS,   2.5, axXId_, axErs,   "%",   1, false, false, QColor(), true });
-    rpId_  = addSeries({ "RPM",   C_RPM,   2.5, axXId_, axRpm,   "",    0, true  });
-    spId_  = addSeries({ "Speed", C_SPEED, 2.5, axXId_, axSpeed, "kph", 0, false });
+    // Match SpeedRpmTimeChart: continuous interpolation for Speed, RPM and ERS.
+    rErId_ = addSeries({ "",      muted(C_ERS),   1.0, axXId_, axErs,   "",    0, false, false, QColor(), false });
+    rRpId_ = addSeries({ "",      muted(C_RPM),   1.0, axXId_, axRpm   });
+    rSpId_ = addSeries({ "",      muted(C_SPEED), 1.0, axXId_, axSpeed });
+    erId_  = addSeries({ "ERS",   C_ERS,   1.5, axXId_, axErs,   "%",   1, false, false, QColor(), false });
+    rpId_  = addSeries({ "RPM",   C_RPM,   1.5, axXId_, axRpm,   "",    0, true  });
+    spId_  = addSeries({ "Speed", C_SPEED, 1.5, axXId_, axSpeed, "kph", 0, false });
 
     showReference(false);
     setHoverReadout(true);
@@ -142,6 +141,7 @@ void TelemetryChart::refresh()
         model_->sectorBoundaries(), model_->chartPrimaryLap(now),
         model_->chartReferenceLap(window, selectedLap, now));
     setXRange(axXId_, domain.lower, domain.upper);
+    setAxisNativeLines(axXId_, chartWindowAccumulatesLaps(domain.window));
     setAxisDistanceMode(axXId_, domain.distance);
     syncAxisSessionMap(axXId_, domain.distance ? domain.primary : nullptr, domain.currentTime);
     if (!domain.ticks.isEmpty()) setAxisLabelMap(axXId_, domain.ticks, domain.tickLabels,

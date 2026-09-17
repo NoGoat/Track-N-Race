@@ -24,6 +24,7 @@ class ChartView : public QWidget {
 
 public:
     enum class Side { Bottom, Left, Right };
+    enum class LineType { Line, Step, NativeLine, NativePoint };
 
     // Gap (px) left between panels — also the divider channel width. Exposed so a
     // caller laying tables out alongside the chart (see GraphTable's
@@ -38,7 +39,7 @@ public:
         QColor  labelColor   = QColor();   // invalid → inherit theme text color
         bool    visible      = true;
         char    numberFormat = 'f';        // numeric format: 'f', 'g', or 'e'
-        int     precision    = 0;          // tick label decimal precision
+        int     precision    = 0;          // minimum tick precision; extra digits distinguish fractional ticks
         bool    grid         = false;      // draw this axis's (faint) grid lines
         int     tickSpacePx  = 80;         // minimum horizontal space per X tick
     };
@@ -52,9 +53,13 @@ public:
         QString unit;                    // appended after the value in the hover tooltip
         int     tipPrecision = 0;        // tooltip value decimals (e.g. 1 for "90.3%")
         bool    tipGroupThousands = false; // tooltip thousands separator (e.g. "11,580")
-        bool    fill = false;            // if true, fills under the curve to zero
+        bool    fill = false;
         QColor  fillColor = QColor();    // if invalid, uses semi-transparent series color
-        bool    step = false;            // if true, use lsStepLeft
+        bool    step = false;            // compatibility alias for LineType::Step
+        double  stepLocation = 1.0;      // 0: start, 0.5: midpoint, 1: end of interval
+        double  fillBaseline = 0.0;
+        double  opacity = 1.0;           // multiplies line and fill alpha
+        LineType lineType = LineType::Line;
     };
 
     struct BandSpec {
@@ -82,6 +87,7 @@ public:
     int  addAxis(const AxisSpec& spec, int panelId = 0);
     int  addSeries(const SeriesSpec& spec);
     void addBand(const BandSpec& spec);
+    void addReferenceLine(int yAxisId, double value, bool dashed = true);
 
     // --- Multi-panel: several charts sharing one QRhi render target ---
     // A ChartView is a single panel (id 0) by default, and every existing chart
@@ -108,7 +114,7 @@ public:
     // Data.
     void appendPoint(int seriesId, double x, double y);
     void setSeriesData(int seriesId, const QVector<double>& xs, const QVector<double>& ys);
-    void trimBefore(int seriesId, double x);   // drop samples with key < x
+    void trimBefore(int seriesId, double x);   // retain one predecessor for edge clipping
     void clear(int seriesId);
     void clearAll();
 
@@ -119,13 +125,21 @@ public:
     void setSeriesColor(int seriesId, const QColor& color);
     void setSeriesName(int seriesId, const QString& name);
     void setSeriesWidth(int seriesId, double width);
+    void setSeriesLineType(int seriesId, LineType type);
+    void setSeriesStepLocation(int seriesId, double location);
+    void setSeriesFillBaseline(int seriesId, double baseline);
+    void setSeriesOpacity(int seriesId, double opacity);
+    // Timecharts uses native lines for continuous series in accumulated views.
+    // Step and point series retain their configured geometry.
+    void setAxisNativeLines(int xAxisId, bool enabled);
     void setSeriesOrder(const QVector<int>& bottomToTop);
     void linkSeriesVisibility(int primarySeriesId, int linkedSeriesId);
     void setAxisVisible(int axisId, bool visible);
     void setAxisColor(int axisId, const QColor& color);
     void setAxisGridVisible(int axisId, bool visible);
 
-    // Format an axis's tick labels as time (for example m:ss.t).
+    // Format duration ticks using %h, %m, %s and optional %z (milliseconds).
+    // Subsecond zoom adds fractional seconds when needed to distinguish ticks.
     void setAxisTimeTicker(int axisId, const QString& format);
     void setAxisDistanceMode(int axisId, bool distance);
     void syncAxisSessionMap(int axisId, const LapBlock* lap, float currentTime);
@@ -166,6 +180,7 @@ signals:
     void inspectionRequested(double x, bool distanceCoordinate);
 
 protected:
+    bool event(QEvent* e) override;
     void changeEvent(QEvent* e) override;   // keep label/legend colors in sync with the theme
     void resizeEvent(QResizeEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -180,6 +195,7 @@ private:
                              bool sourceDistanceAxis, double yRatio,
                              ChartView* source, int sourcePanel);
     void clearSyncedCursor();
+    void updateHover(const QPoint& position);
 
     struct Impl;
     std::unique_ptr<Impl> d_;

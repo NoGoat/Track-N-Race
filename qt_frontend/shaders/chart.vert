@@ -5,6 +5,7 @@ layout(location = 0) in vec2 position;
 layout(std140, binding = 0) uniform ChartUniforms {
     mat4 mvp;
     vec4 color;
+    vec4 stroke;
 } u;
 
 layout(location = 0) out vec4 vColor;

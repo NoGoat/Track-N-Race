@@ -1,5 +1,6 @@
 #include "AnalyzePage.h"
 #include "AnalyzeChart.h"
+#include "ClearableComboBox.h"
 #include "AnalyzeMapComparison.h"
 #include "../AnalysisFileReader.h"
 #include "../SessionModel.h"
@@ -83,10 +84,6 @@ AnalyzePage::AnalyzePage(SessionModel* model,QWidget* parent):QWidget(parent),mo
     viewMode_=new QComboBox(viewControl);viewMode_->addItem("Graphs","graph");viewMode_->addItem("Map","map");viewMode_->setCurrentIndex(preferredView_=="map"?1:0);viewMode_->setFrame(false);viewMode_->setToolTip("Analysis view");
     viewLayout->addWidget(viewLabel);viewLayout->addWidget(viewMode_);toolbarLayout->addWidget(viewControl);
 
-    fixedMode_=new QCheckBox("Fixed laps",toolbarControls_);fixedMode_->setToolTip("Compare two selected laps instead of following playback");fixedMode_->setEnabled(false);toolbarLayout->addWidget(fixedMode_);
-    auto lapControl=[&](const QString& label,QComboBox*& box,bool clearable=false){auto*w=new QWidget(toolbarControls_);auto*l=new QHBoxLayout(w);l->setContentsMargins(4,0,0,0);l->setSpacing(3);auto*lab=new QLabel(label,w);box=new QComboBox(w);box->setMinimumContentsLength(10);box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);l->addWidget(lab);l->addWidget(box);if(clearable){compareClear_=tinyButton("Clear comparison",analyzeIcon(w,"edit-clear",QStyle::SP_DialogCloseButton),w);l->addWidget(compareClear_);}toolbarLayout->addWidget(w);};
-    lapControl("Compare",compareLap_,true);lapControl("Lap A",lapA_);lapControl("Lap B",lapB_);
-
     secondaryFileRow_=new QWidget(toolbarControls_);auto*secondaryLayout=new QHBoxLayout(secondaryFileRow_);secondaryLayout->setContentsMargins(4,0,2,0);secondaryLayout->setSpacing(3);secondaryFileLabel_=new QLabel("No secondary file",secondaryFileRow_);secondaryFileLabel_->setMinimumWidth(0);secondaryFileLabel_->setMaximumWidth(110);secondaryFileLabel_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);secondaryOpen_=tinyButton("Open Secondary File",analyzeIcon(secondaryFileRow_,"document-open",QStyle::SP_DialogOpenButton),secondaryFileRow_);secondaryClear_=tinyButton("Clear Secondary File",analyzeIcon(secondaryFileRow_,"edit-clear",QStyle::SP_DialogCloseButton),secondaryFileRow_);secondaryClear_->hide();secondaryLayout->addWidget(secondaryFileLabel_,1);secondaryLayout->addWidget(secondaryOpen_);secondaryLayout->addWidget(secondaryClear_);toolbarLayout->addWidget(secondaryFileRow_);
 
     secondaryErrorLabel_=new QLabel;secondaryErrorLabel_->setContentsMargins(10,4,10,4);secondaryErrorLabel_->setWordWrap(true);QPalette errorPalette=secondaryErrorLabel_->palette();errorPalette.setColor(QPalette::WindowText,QColor("#d44252"));secondaryErrorLabel_->setPalette(errorPalette);secondaryErrorLabel_->hide();root->addWidget(secondaryErrorLabel_);
@@ -109,6 +106,10 @@ AnalyzePage::AnalyzePage(SessionModel* model,QWidget* parent):QWidget(parent),mo
     auto*modeRow=new QWidget(displayGroup);auto*modeLayout=new QHBoxLayout(modeRow);modeLayout->setContentsMargins(0,0,0,0);modeLayout->setSpacing(6);individualGraphs_=new QCheckBox("Individual graphs");individualGraphs_->setChecked(settings_.value("analyze/individualGraphs",false).toBool());syncedTooltip_=new QCheckBox("Sync tooltips");syncedTooltip_->setChecked(settings_.value("analyze/syncedTooltip",false).toBool());modeLayout->addWidget(individualGraphs_);modeLayout->addWidget(syncedTooltip_);displayLayout->addWidget(modeRow);
     auto*sectorRow=new QWidget(displayGroup);auto*sectorLayout=new QHBoxLayout(sectorRow);sectorLayout->setContentsMargins(0,0,0,0);sectorLayout->setSpacing(6);sectorBoundaries_=new QCheckBox("Sector boundaries");sectorBoundaries_->setChecked(settings_.value("analyze/sectorBoundaries",false).toBool());sectorDelta_=new QCheckBox("Sector delta");sectorDelta_->setChecked(sectorBoundaries_->isChecked()&&settings_.value("analyze/sectorDelta",false).toBool());sectorLayout->addWidget(sectorBoundaries_);sectorLayout->addWidget(sectorDelta_);displayLayout->addWidget(sectorRow);
     showYAxis_=new QCheckBox("Show Y-axis values");showYAxis_->setChecked(std::all_of(series_.cbegin(),series_.cend(),[](const auto&s){return s.showYAxis;}));displayLayout->addWidget(showYAxis_);side->addWidget(displayGroup);
+    auto*comparisonGroup=new QGroupBox("Lap comparison",sidebar_);auto*comparisonLayout=new QVBoxLayout(comparisonGroup);comparisonLayout->setContentsMargins(8,8,8,8);comparisonLayout->setSpacing(5);
+    fixedMode_=new QCheckBox("Fixed laps",comparisonGroup);fixedMode_->setToolTip("Compare two selected laps instead of following playback");fixedMode_->setEnabled(false);comparisonLayout->addWidget(fixedMode_);
+    auto lapControl=[&](const QString&label,ClearableComboBox*&box){auto*w=new QWidget(comparisonGroup);auto*l=new QHBoxLayout(w);l->setContentsMargins(0,0,0,0);l->setSpacing(6);auto*lab=new QLabel(label,w);lab->setMinimumWidth(54);box=new ClearableComboBox(w);box->setMinimumContentsLength(10);box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);box->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred);l->addWidget(lab);l->addWidget(box,1);comparisonLayout->addWidget(w);};
+    lapControl("Compare",compareLap_);lapControl("Lap A",lapA_);lapControl("Lap B",lapB_);side->addWidget(comparisonGroup);
     auto*metricLabel=new QLabel("Add metric");side->addWidget(metricLabel);
     addMetric_=new QComboBox;addMetric_->setEditable(true);addMetric_->setInsertPolicy(QComboBox::NoInsert);addMetric_->lineEdit()->setPlaceholderText("Choose a value…");side->addWidget(addMetric_);rebuildMetricPicker();
     auto*mapColors=new QGroupBox("Map colors",sidebar_);auto*mapColorLayout=new QHBoxLayout(mapColors);mapColorLayout->setContentsMargins(8,8,8,8);mapColorLayout->setSpacing(4);mapCurrentColor_=new QPushButton("Current lap");mapComparisonColor_=new QPushButton("Comparison");mapColorLayout->addWidget(mapCurrentColor_);mapColorLayout->addWidget(mapComparisonColor_);side->addWidget(mapColors);mapColors->setObjectName("analyzeMapColors");
@@ -149,7 +150,6 @@ AnalyzePage::AnalyzePage(SessionModel* model,QWidget* parent):QWidget(parent),mo
     auto setInspectorVisible=[this](bool visible){collapsed_=!visible;sidebar_->setVisible(visible);QSignalBlocker guard(inspectorButton_);inspectorButton_->setChecked(visible);saveSettings();};
     connect(inspectorButton_,&QToolButton::toggled,this,setInspectorVisible);
     connect(collapse_,&QPushButton::clicked,this,[setInspectorVisible]{setInspectorVisible(false);});
-    connect(compareClear_,&QPushButton::clicked,this,[this]{compareLap_->setCurrentIndex(0);});
     connect(secondaryOpen_,&QPushButton::clicked,this,&AnalyzePage::loadSecondaryFile);
     connect(secondaryClear_,&QPushButton::clicked,this,[this]{clearSecondaryFile(true);});
     connect(secondaryReader_,&AnalysisFileReader::catalogLoaded,this,[this](const std::shared_ptr<AnalysisFileCatalog>& catalog){
@@ -202,8 +202,9 @@ void AnalyzePage::applyState(){
         if(auto*mapItem=menu->item(viewMode_->findData("map")))mapItem->setEnabled(playback_);
     fixedMode_->setEnabled(playback_&&!model_->data().laps.isEmpty());
     secondaryFileRow_->setVisible(playback_);secondaryErrorLabel_->setVisible(playback_&&!secondaryErrorLabel_->text().isEmpty());
-    compareLap_->parentWidget()->setVisible(!fixed);compareLap_->setEnabled(playback_);compareClear_->setVisible(!fixed);compareClear_->setEnabled(playback_&&selectedLap(compareLap_)>0);
+    compareLap_->parentWidget()->setVisible(!fixed);compareLap_->setEnabled(playback_);
     lapA_->parentWidget()->setVisible(fixed);lapB_->parentWidget()->setVisible(fixed);
+    compareLap_->setClearVisible(selectedLap(compareLap_)>0);lapA_->setClearVisible(selectedLap(lapA_)>0);lapB_->setClearVisible(selectedLap(lapB_)>0);
     individualGraphs_->setEnabled(true);syncedTooltip_->setEnabled(individualGraphs_->isChecked());sectorBoundaries_->setEnabled(true);sectorDelta_->setEnabled(sectorBoundaries_->isChecked());
     if(auto*colors=findChild<QWidget*>("analyzeMapColors"))colors->setVisible(showMap);
     mapCurrentColor_->setStyleSheet("background:"+mapCurrent_.name()+";border:1px solid palette(mid);border-radius:3px;");

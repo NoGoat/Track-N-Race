@@ -196,6 +196,7 @@ void TyreChartsWidget::refresh() {
             model_->sectorBoundaries(), model_->chartPrimaryLap(endTime),
             model_->chartReferenceLap(window, selectedLap, endTime));
         chart_->setXRange(xId_[section], domains[section].lower, domains[section].upper);
+        chart_->setAxisNativeLines(xId_[section], chartWindowAccumulatesLaps(domains[section].window));
         chart_->setAxisDistanceMode(xId_[section], domains[section].distance);
         chart_->syncAxisSessionMap(xId_[section],
             domains[section].distance ? domains[section].primary : nullptr,

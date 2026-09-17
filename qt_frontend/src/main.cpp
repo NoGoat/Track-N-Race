@@ -171,6 +171,9 @@ private:
 };
 
 int main(int argc, char* argv[]) {
+    // Preserve scales such as 1.25 and 1.5 instead of rounding to integer DPRs.
+    // This must be set before constructing QApplication.
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 #ifdef Q_OS_LINUX
     // On Linux the XDG desktop-portal plugin (bundled as platformthemes/libqxdgdesktopportal.so)
     // gives native file dialogs on both X11 and Wayland. Qt reads QT_QPA_PLATFORMTHEME

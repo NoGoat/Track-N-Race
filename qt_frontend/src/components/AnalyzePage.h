@@ -9,6 +9,7 @@
 class AnalysisFileReader;
 class AnalyzeChart;
 class AnalyzeMapComparison;
+class ClearableComboBox;
 class SessionModel;
 class QCheckBox;
 class QComboBox;
@@ -59,15 +60,14 @@ private:
     QCheckBox* syncedTooltip_ = nullptr;
     QCheckBox* sectorBoundaries_ = nullptr;
     QCheckBox* sectorDelta_ = nullptr;
-    QComboBox* compareLap_ = nullptr;
-    QComboBox* lapA_ = nullptr;
-    QComboBox* lapB_ = nullptr;
+    ClearableComboBox* compareLap_ = nullptr;
+    ClearableComboBox* lapA_ = nullptr;
+    ClearableComboBox* lapB_ = nullptr;
     QListWidget* seriesList_ = nullptr;
     QPushButton* collapse_ = nullptr;
     QToolButton* inspectorButton_ = nullptr;
     QSplitter* contentSplitter_ = nullptr;
     QWidget* toolbarControls_ = nullptr;
-    QPushButton* compareClear_ = nullptr;
     QWidget* secondaryFileRow_ = nullptr;
     QLabel* secondaryFileLabel_ = nullptr;
     QLabel* secondaryErrorLabel_ = nullptr;

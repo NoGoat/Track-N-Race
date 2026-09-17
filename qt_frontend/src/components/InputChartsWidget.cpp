@@ -57,13 +57,12 @@ InputChartsWidget::InputChartsWidget(QWidget* parent)
         const bool gear = section == GEAR;
         const bool signedValues = section == COMBINED || section == STEERING;
         const int yAxis = chart_->addAxis(
-            {ChartView::Side::Left, gear ? 0.0 : signedValues ? -1.0 : 0.0,
-             gear ? 9.0 : 1.0, QColor(), true, 'f', gear ? 0 : 2}, section);
+            {ChartView::Side::Left, gear ? 0.5 : signedValues ? -1.0 : 0.0,
+             gear ? 8.5 : 1.0, QColor(), true, 'f', gear ? 0 : 2}, section);
         if (gear) {
-            chart_->addBand({yAxis, 0.0, 2.5, QColor(196, 22, 42, 51)});
-            chart_->addBand({yAxis, 2.5, 4.5, QColor(212, 173, 4, 51)});
-            chart_->addBand({yAxis, 4.5, 6.5, QColor(0, 200, 83, 51)});
-            chart_->addBand({yAxis, 6.5, 9.0, QColor(31, 96, 196, 51)});
+            chart_->setAxisLabelMap(yAxis, {1, 2, 3, 4, 5, 6, 7, 8},
+                                   {"1", "2", "3", "4", "5", "6", "7", "8"});
+            for (double value : {2., 4., 6.}) chart_->addReferenceLine(yAxis, value);
         }
         chart_->setAxisTimeTicker(xId_[section], "%m:%s");
         chart_->setPanelTitle(section, titles[section]);
@@ -79,16 +78,17 @@ InputChartsWidget::InputChartsWidget(QWidget* parent)
                                       : accelerator ? C_ACCELERATOR : C_BRAKE;
             const QString label = gear ? "Gear" : section == STEERING ? "Steering"
                                         : accelerator ? "Accelerator" : "Brake";
-            const bool fill = section == COMBINED || section == ACCELERATOR || section == BRAKE;
-            const bool step = gear;
+            const bool fill = gear || section == COMBINED || section == ACCELERATOR || section == BRAKE;
+            const bool step = gear || accelerator || brake;
             primaryIds_[section][component] = chart_->addSeries(
-                {label, color, section == COMBINED2 ? 2.25 : 2.0, xId_[section], yAxis,
-                 "", gear ? 0 : 2, false, fill, QColor(), step});
+                {label, color, section == COMBINED2 ? 2.25 : gear || section == STEERING ? 2.0 : 1.5, xId_[section], yAxis,
+                 "", gear ? 0 : 2, false, fill, QColor(), step,
+                 gear ? 1.0 : 0.0, gear ? 0.5 : 0.0});
             QColor reference = color;
             reference.setAlpha(105);
             referenceIds_[section][component] = chart_->addSeries(
                 {"", reference, 1.3, xId_[section], yAxis, "", gear ? 0 : 2,
-                 false, false, QColor(), step});
+                 false, false, QColor(), step, gear ? 1.0 : 0.0});
             chart_->setSeriesVisible(referenceIds_[section][component], false);
             chart_->linkSeriesVisibility(primaryIds_[section][component],
                                          referenceIds_[section][component]);
@@ -242,6 +242,7 @@ void InputChartsWidget::refresh() {
             model_->sectorBoundaries(), model_->chartPrimaryLap(endTime),
             model_->chartReferenceLap(window, selected, endTime));
         chart_->setXRange(xId_[section], domain.lower, domain.upper);
+        chart_->setAxisNativeLines(xId_[section], chartWindowAccumulatesLaps(domain.window));
         chart_->setAxisDistanceMode(xId_[section], domain.distance);
         chart_->syncAxisSessionMap(xId_[section], domain.distance ? domain.primary : nullptr,
                                   domain.currentTime);
