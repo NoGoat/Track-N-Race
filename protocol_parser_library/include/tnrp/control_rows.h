@@ -103,6 +103,7 @@ struct Driver {
     // Game-provided color, before presets/overrides. Older recordings omit it;
     // their stored livery_color is retained as the best available source.
     std::optional<std::string> source_livery_color;
+    std::optional<int> your_telemetry; // V6: 0 restricted, 1 public; absent in older files
 };
 
 struct ParticipantsRow {
@@ -344,6 +345,11 @@ struct PlaybackLapDataRow {
     std::vector<glz::raw_json> motionHistory;
     std::vector<glz::raw_json> motionExHistory;
     std::vector<glz::raw_json> damageHistory;
+    // Original all-driver families, requested by their existing row-type bits.
+    std::vector<glz::raw_json> timingHistory;
+    std::vector<glz::raw_json> allStatusHistory;
+    std::vector<glz::raw_json> positionsHistory;
+    std::vector<glz::raw_json> participantsHistory;
     std::vector<LapProgressPoint> lapProgress;
     std::vector<PlayerPositionPoint> playerPositions;
     uint32_t                   rowTypeMask{};

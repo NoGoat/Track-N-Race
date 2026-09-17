@@ -27,6 +27,16 @@ try {
   const diagnostics = initializeDiagnostics(app.isPackaged ? __APP_VERSION__ : 'Next')
   logPath = diagnostics.mainLogPath
   console.log('[bootstrap] single-instance lock acquired')
+  if (process.platform === 'darwin') {
+    // Avoid the macOS CoreAnimation chart-background colour banding.
+    // Preserve any other disabled Chromium features supplied at launch.
+    const disabledFeatures = app.commandLine.getSwitchValue('disable-features')
+      .split(',').map(feature => feature.trim()).filter(Boolean)
+    if (!disabledFeatures.some(feature => feature.split(/[<:]/, 1)[0] === 'CoreAnimationRenderer')) {
+      disabledFeatures.push('CoreAnimationRenderer')
+    }
+    app.commandLine.appendSwitch('disable-features', disabledFeatures.join(','))
+  }
 
   // Deliberately dynamic: diagnostics must be live before application.ts and
   // bridgeManager.ts evaluate, since native-module import failures can happen

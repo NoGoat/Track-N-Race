@@ -1,5 +1,28 @@
 export type AlignedTable = Float64Array[]
 
+// Optional V6 additions preserve compatibility with player-only/older rows.
+export interface TelemetryCar {
+  idx: number
+  speed_kph: number
+  rpm: number
+  gear: number
+  throttle: number | null
+  brake: number | null
+  steering: number | null
+  tyre_temp_surface_rl: number; tyre_temp_surface_rr: number
+  tyre_temp_surface_fl: number; tyre_temp_surface_fr: number
+  tyre_temp_inner_rl: number; tyre_temp_inner_rr: number
+  tyre_temp_inner_fl: number; tyre_temp_inner_fr: number
+  brake_temp_rl: number; brake_temp_rr: number
+  brake_temp_fl: number; brake_temp_fr: number
+}
+
+export interface TyreWearCar {
+  idx: number
+  tyre_wear_rl: number | null; tyre_wear_rr: number | null
+  tyre_wear_fl: number | null; tyre_wear_fr: number | null
+}
+
 export interface TelemetryRow {
   type: 'telemetry'
   ts: string
@@ -21,6 +44,7 @@ export interface TelemetryRow {
   brake_temp_rl: number; brake_temp_rr: number
   brake_temp_fl: number; brake_temp_fr: number
   engine_temp: number
+  cars?: TelemetryCar[]
 }
 
 export interface MotionRow {
@@ -126,12 +150,16 @@ export interface DamageRow {
   ers_fault: number   // 0=OK 1=fault
   gearbox_damage: number
   engine_damage: number
+  cars?: TyreWearCar[]
 }
 
 export interface CarPosition {
   idx: number
   x:   number
   z:   number
+  g_lat?: number | null
+  g_long?: number | null
+  g_vert?: number | null
 }
 
 export interface PositionsMsg {
@@ -142,6 +170,7 @@ export interface PositionsMsg {
 }
 
 export interface TimingCar {
+  lap_distance_m?: number | null
   idx: number
   position: number
   lap_num: number
@@ -168,6 +197,7 @@ export interface TimingMsg {
 }
 
 export interface DriverInfo {
+  your_telemetry?: number | null
   idx: number
   name: string
   team_id: number
@@ -368,6 +398,10 @@ export interface PlaybackLapDataMsg {
   motionHistory: MotionRow[]
   motionExHistory: MotionExRow[]
   damageHistory: DamageRow[]
+  timingHistory?: TimingMsg[]
+  allStatusHistory?: AllStatusMsg[]
+  positionsHistory?: PositionsMsg[]
+  participantsHistory?: ParticipantsMsg[]
   lapProgress: LapProgressPoint[]
   playerPositions: PlayerPositionPoint[]
   rowTypeMask?: number

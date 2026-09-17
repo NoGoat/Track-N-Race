@@ -12,7 +12,7 @@ option(TNRP_BUILD_TESTS "Build libtnrp native regression tests" OFF)
 include(FetchContent)
 
 # All JSON (serialise + parse) goes through glaze. zlib remains for TNRD V1
-# gzip compatibility; chunked Zstandard is the default TNRD V5 codec.
+# gzip compatibility; chunked Zstandard is the default TNRD V6 codec.
 if(NOT TARGET glaze::glaze)
     FetchContent_Declare(glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
@@ -105,6 +105,7 @@ add_library(tnrp STATIC
     src/tnrd/TNRD_V3.cpp
     src/tnrd/TNRD_V4.cpp
     src/tnrd/TNRD_V5.cpp
+    src/tnrd/TNRD_V6.cpp
     src/TnrdWriter.cpp
     src/TnrdReader.cpp
     src/UdpListener.cpp

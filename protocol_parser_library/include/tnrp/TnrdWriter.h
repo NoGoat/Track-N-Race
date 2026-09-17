@@ -21,15 +21,15 @@
 #include "tnrp/TnrdFormat.h"
 #include "tnrp/control_rows.h"
 
-namespace tnrp::detail { class TnrdOutputStream; class TnrdV5Writer; }
+namespace tnrp::detail { class TnrdOutputStream; class TnrdV6Writer; }
 
 namespace tnrp {
 
-// Records parsed rows to .tnrd files. TNRD V5/chunked Zstandard is the default;
+// Records parsed rows to .tnrd files. TNRD V6/chunked Zstandard is the default;
 // TNRD V1/gzip remains available for legacy compatibility. Owns:
 //   - per-session file rotation (new track/session => new file),
 //   - a 30s rolling buffer so common short flashbacks avoid disk-side branching,
-//   - V5 wall-clock branch cuts for append-only rewind/flashback recording,
+//   - V6 wall-clock branch cuts for append-only rewind/flashback recording,
 //   - per-type dedup of state rows.
 //
 // Not thread-safe; the engine serializes all calls.
@@ -66,6 +66,8 @@ public:
         uint64_t v5AppendBatches{};
         uint64_t v5AppendRowsProcessed{};
         uint64_t v5AppendPayloadBytesProcessed{};
+        // Historical diagnostic key names retained for existing frontends;
+        // these counters now describe the default V6 backend.
         size_t lastV5AppendRows{};
         size_t lastV5AppendPayloadBytes{};
         size_t lastV5SourceRowCapacityBytes{};
@@ -117,7 +119,7 @@ public:
     explicit TnrdWriter(ErrorHandler errorHandler = {});
     ~TnrdWriter();
 
-    // Source-compatible default recording entry point: writes TNRD V5.
+    // Source-compatible default recording entry point: writes TNRD V6.
     void setLogging(bool enabled, const std::string& outputDir);
     void setLoggingZstd(bool enabled, const std::string& outputDir);
     [[deprecated("TNRD V1/gzip writing is retained only for compatibility; use setLoggingZstd")]]
@@ -137,7 +139,7 @@ public:
     void notePacket(uint16_t format, uint8_t packetId, float sessionTime,
                     const uint8_t* data, int length);
 
-    // Apply an authoritative FLBK target before recording the event/new V5 branch.
+    // Apply an authoritative FLBK target before recording the event/new V6 branch.
     void rewind(float sessionTime);
 
     // Append one serialised JSON row to the rolling buffer (deduped, flushed lazily).
@@ -159,7 +161,7 @@ private:
         EventType             type;
         bool                  enabled;
         std::string           outputDir;
-        TnrdFormat            tnrdFormat{TnrdFormat::ChunkedV5};
+        TnrdFormat            tnrdFormat{TnrdFormat::ChunkedV6};
         uint16_t              format;
         uint8_t               packetId;
         float                 sessionTime;
@@ -189,10 +191,10 @@ private:
     std::atomic<bool>       recording_{false};  // mirrors "logging enabled" intent
 
     bool        wantRecord_         = false;
-    TnrdFormat  writeFormat_        = TnrdFormat::ChunkedV5;
+    TnrdFormat  writeFormat_        = TnrdFormat::ChunkedV6;
     std::string outputDirectory_;
     std::unique_ptr<detail::TnrdOutputStream> activeStream_;
-    std::unique_ptr<detail::TnrdV5Writer> v5Writer_;
+    std::unique_ptr<detail::TnrdV6Writer> v6Writer_;
     std::string activePath_;
     int         currentTrackId_     = -1;
     int         currentSessionType_ = -1;
@@ -269,7 +271,7 @@ private:
     void clearReportedError();
 
     void setLoggingForFormat(bool enabled, const std::string& outputDir, TnrdFormat format);
-    bool streamActive() const { return activeStream_ != nullptr || v5Writer_ != nullptr; }
+    bool streamActive() const { return activeStream_ != nullptr || v6Writer_ != nullptr; }
 };
 
 } // namespace tnrp

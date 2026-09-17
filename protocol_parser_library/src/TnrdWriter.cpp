@@ -6,7 +6,7 @@
 #include "tnrd/TNRD_V1.h"
 #include "tnrd/TNRD_V2.h"
 #include "tnrd/TNRD_V3.h"
-#include "tnrd/TNRD_V5.h"
+#include "tnrd/TNRD_V6.h"
 
 #include <algorithm>
 #include <chrono>
@@ -178,8 +178,8 @@ void TnrdWriter::publishMemoryStatsOnWriterThread(bool force) {
     stats.v5PeakCheckpointDirectoryBytes = closedV5Activity_.peakCheckpointDirectoryBytes;
     stats.v5LastCheckpointRowIndexBytes = closedV5Activity_.lastCheckpointRowIndexBytes;
     stats.v5PeakCheckpointRowIndexBytes = closedV5Activity_.peakCheckpointRowIndexBytes;
-    if (v5Writer_) {
-        const auto v5 = v5Writer_->memoryStats();
+    if (v6Writer_) {
+        const auto v5 = v6Writer_->memoryStats();
         stats.v5RetainedBytes = v5.retainedBytes;
         stats.v5BuilderCount = v5.builderCount;
         stats.v5BuilderPlainBytes = v5.builderPlainBytes;
@@ -303,7 +303,7 @@ void TnrdWriter::setLogging(bool enabled, const std::string& outputDir) {
 }
 
 void TnrdWriter::setLoggingZstd(bool enabled, const std::string& outputDir) {
-    setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV5);
+    setLoggingForFormat(enabled, outputDir, TnrdFormat::ChunkedV6);
 }
 
 void TnrdWriter::setLoggingGzip(bool enabled, const std::string& outputDir) {
@@ -332,8 +332,8 @@ void TnrdWriter::notePacket(uint16_t format, uint8_t packetId, float sessionTime
     ev.format = format;
     ev.packetId = packetId;
     ev.sessionTime = sessionTime;
-    // Only PID_SESSION's bytes are read on the disk thread (track/session detection);
-    // copying every other packet's ~1.3 KB into the queue is pure waste.
+    // Only session bytes are needed here for recording rotation. The protocol
+    // parsers have already extracted all measurement fields into rows.
     if (packetId == PID_SESSION)
         ev.packetData.assign(data, data + length);
     pushEventLocked(std::move(ev));
@@ -447,10 +447,10 @@ void TnrdWriter::writerLoop() {
 
 void TnrdWriter::flushToDiskOnWriterThread() {
     if (!streamActive()) return;
-    if (v5Writer_) {
+    if (v6Writer_) {
         if (flushBufferToDisk(rollingBuffer_.size(), false)) rollingBuffer_.clear();
         std::string err;
-        if (!v5Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
+        if (!v6Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
         else v4LastCheckpointTime_ = lastSessionTime_;
         rowsSinceFlush_ = 0;
         return;
@@ -462,11 +462,11 @@ void TnrdWriter::flushToDiskOnWriterThread() {
 }
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
-    if (v5Writer_) {
+    if (v6Writer_) {
         (void)flushBufferToDisk(rollingBuffer_.size(), false);
         std::string err;
-        if (!v5Writer_->finish(&err)) reportError("close", err, activePath_);
-        const auto v5 = v5Writer_->memoryStats();
+        if (!v6Writer_->finish(&err)) reportError("close", err, activePath_);
+        const auto v5 = v6Writer_->memoryStats();
         closedV5Activity_.chunkWrites += v5.chunkWrites;
         closedV5Activity_.chunkPlainBytesProcessed += v5.chunkPlainBytesProcessed;
         closedV5Activity_.chunkCompressedBytesWritten += v5.chunkCompressedBytesWritten;
@@ -495,7 +495,7 @@ void TnrdWriter::closeActiveStreamOnWriterThread() {
         closedV5Activity_.peakCheckpointRowIndexBytes = std::max(
             closedV5Activity_.peakCheckpointRowIndexBytes,
             v5.peakCheckpointRowIndexBytes);
-        v5Writer_.reset();
+        v6Writer_.reset();
     }
     if (activeStream_) {
         (void)flushBufferToDisk(rollingBuffer_.size());
@@ -546,7 +546,7 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     hdr.track_id     = trackId;
     hdr.track_name   = resolvedTrackName;
     hdr.track_length_m = trackLengthM;
-    if (writeFormat_ == TnrdFormat::ChunkedV5) hdr.formula = formula;
+    if (writeFormat_ == TnrdFormat::ChunkedV6) hdr.formula = formula;
     hdr.session_type = sessionType;
     hdr.session_name = (itSess != SESSION_NAMES.end()) ? itSess->second : "Unknown";
     hdr.start_time   = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -554,9 +554,9 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
     prepareVersionHeader(writeFormat_, hdr);
 
     std::string openError;
-    if (writeFormat_ == TnrdFormat::ChunkedV5) {
-        v5Writer_ = std::make_unique<detail::TnrdV5Writer>();
-        if (!v5Writer_->open(activePath_, hdr, &openError)) v5Writer_.reset();
+    if (writeFormat_ == TnrdFormat::ChunkedV6) {
+        v6Writer_ = std::make_unique<detail::TnrdV6Writer>();
+        if (!v6Writer_->open(activePath_, hdr, &openError)) v6Writer_.reset();
     } else {
         activeStream_ = openVersionWriter(writeFormat_, activePath_, false, openError);
     }
@@ -584,7 +584,7 @@ void TnrdWriter::startNewStream(int trackId, int trackLengthM, int formula, int 
 
 bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
     entryCount = std::min(entryCount, rollingBuffer_.size());
-    if (v5Writer_) {
+    if (v6Writer_) {
         if (entryCount == 0) return true;
         v5SourceRowViews_.clear();
         v5SourceRowViews_.reserve(entryCount);
@@ -607,7 +607,7 @@ bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
         peakV5SourceRowCapacityBytes_ = std::max(
             peakV5SourceRowCapacityBytes_, lastV5SourceRowCapacityBytes_);
         std::string err;
-        if (!v5Writer_->appendViews(v5SourceRowViews_, &err)) {
+        if (!v6Writer_->appendViews(v5SourceRowViews_, &err)) {
             v5SourceRowViews_.clear();
             reportError("data write", err, activePath_);
             return false;
@@ -616,9 +616,9 @@ bool TnrdWriter::flushBufferToDisk(size_t entryCount, bool allowV4Checkpoint) {
         const float newestTime = rollingBuffer_[entryCount - 1].sessionTime;
         if (allowV4Checkpoint && (v4LastCheckpointTime_ < 0.0f ||
             newestTime - v4LastCheckpointTime_ >= V4_CHECKPOINT_INTERVAL_S)) {
-            if (!v5Writer_->checkpoint(&err)) {
+            if (!v6Writer_->checkpoint(&err)) {
                 reportError("checkpoint", err, activePath_);
-                // appendViews() already copied these rows into V5 builders.
+                // appendViews() already copied these rows into V6 builders.
                 // Keep recording without duplicating them in the rolling
                 // buffer; the next checkpoint retries pending state.
                 return true;
@@ -709,14 +709,14 @@ void TnrdWriter::truncateTimeline(float newSessionTime, uint64_t wallClockMs) {
     float bufStart = rollingBuffer_.empty()
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
-    if (v5Writer_) {
+    if (v6Writer_) {
         rollingBuffer_.erase(
             std::remove_if(rollingBuffer_.begin(),rollingBuffer_.end(),
                 [newSessionTime](const BufferEntry& e){return e.sessionTime>=newSessionTime;}),
             rollingBuffer_.end());
         if (newSessionTime < bufStart) {
             std::string err;
-            if (!v5Writer_->rewind(newSessionTime,wallClockMs,&err))
+            if (!v6Writer_->rewind(newSessionTime,wallClockMs,&err))
                 reportError("flashback",err,activePath_);
         }
         dedupeCache_.clear();lastSessionTime_=newSessionTime;return;
