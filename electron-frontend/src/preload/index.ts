@@ -212,9 +212,9 @@ const playerBridge = {
     playerAllLapsRowMask = rowTypeMask >>> 0
     playerWindowSeconds = Number.isFinite(windowSeconds) ? Math.max(0, windowSeconds) : 0
   },
-  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => {
+  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number, v6Types: number[] = []) => {
     ipcRenderer.send('player:setDataRequirements', streamMask >>> 0, historyMask >>> 0,
-      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0)
+      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0, v6Types)
   },
   onSeekStart: (callback: (allHistory: boolean) => void) => {
     seekStartListeners.add(callback)

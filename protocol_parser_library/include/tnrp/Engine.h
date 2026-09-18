@@ -194,7 +194,8 @@ public:
     // consumer forwarding, playback chunk loading, and history backfill.
     void requestDataRequirements(uint64_t requestId);
     void setDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
-                             float windowSeconds, uint64_t requestId = 0);
+                             float windowSeconds, uint64_t requestId = 0,
+                             const std::vector<uint8_t>& v6Types = {});
 
     // ── Paired displays ──────────────────────────────────────────────────
     // The transport, authentication, discovery, subscriptions and latest-row

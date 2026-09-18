@@ -126,6 +126,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             MotionRow mr;
             mr.ts           = timestamp;
             mr.session_time = hdr.sessionTime;
+            mr.player_idx   = hdr.playerCarIndex;
             mr.g_lat        = Round3(ReadFloat(data, o));
             mr.g_long       = Round3(ReadFloat(data, o + 4));
             mr.g_vert       = Round3(ReadFloat(data, o + 8));
@@ -185,6 +186,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             LapRow lr;
             lr.ts             = timestamp;
             lr.session_time   = hdr.sessionTime;
+            lr.player_idx     = hdr.playerCarIndex;
             lr.last_lap_ms    = (int)lastLap;
             lr.current_lap_ms = (int)curLap;
             lr.lap_distance_m = lapDistance;
@@ -254,7 +256,8 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     tc.sector        = csect;
                     tc.result_status = cresultStat;
                     tc.driver_status = cdriverStat;
-                    tc.lap_distance_m = FiniteFloat(data, cBase + 20);
+                    if (const auto distance = FiniteFloat(data, cBase + 20))
+                        tc.lap_distance_m = static_cast<float>(*distance);
                 }
                 buf.clear();
                 (void)glz::write_json(tr, buf);
@@ -273,6 +276,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             TelemetryRow t;
             t.ts            = timestamp;
             t.session_time  = hdr.sessionTime;
+            t.player_idx    = hdr.playerCarIndex;
             t.speed_kph     = ReadUInt16(data, o); o += 2;
             t.throttle      = ReadFloat(data, o);  o += 4;
             t.steering      = Round4(ReadFloat(data, o)); o += 4;
@@ -303,8 +307,10 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
                     TelemetryCar car;
                     car.idx = i;
                     car.speed_kph = ReadUInt16(data, cBase);
-                    car.throttle = FiniteFloat(data, cBase + 2);
-                    car.brake = FiniteFloat(data, cBase + 10);
+                    if (const auto throttle = FiniteFloat(data, cBase + 2))
+                        car.throttle = static_cast<float>(*throttle);
+                    if (const auto brake = FiniteFloat(data, cBase + 10))
+                        car.brake = static_cast<float>(*brake);
                     if (const auto steering = FiniteFloat(data, cBase + 6))
                         car.steering = Round4(*steering);
                     car.gear = ReadInt8(data, cBase + 15);
@@ -349,6 +355,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             StatusRow sr;
             sr.ts                   = timestamp;
             sr.session_time         = hdr.sessionTime;
+            sr.player_idx           = hdr.playerCarIndex;
             sr.fuel_mix             = sc.fuel_mix;
             sr.front_brake_bias     = sc.front_brake_bias;
             sr.fuel_kg              = sc.fuel_kg;
@@ -397,6 +404,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             DamageRow dr;
             dr.ts             = timestamp;
             dr.session_time   = hdr.sessionTime;
+            dr.player_idx     = hdr.playerCarIndex;
             dr.tyre_wear_rl   = Round1(ReadFloat(data, o)); o += 4;
             dr.tyre_wear_rr   = Round1(ReadFloat(data, o)); o += 4;
             dr.tyre_wear_fl   = Round1(ReadFloat(data, o)); o += 4;
@@ -455,7 +463,9 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             int partSize = 57;
             if (length < HEADER_SIZE + 1 + 22 * partSize) return {};
             ParticipantsRow pr;
-            for (int i = 0; i < 22; ++i) {
+            pr.num_active_cars = data[HEADER_SIZE];
+            pr.player_idx = hdr.playerCarIndex;
+            for (int i = 0; i < std::min(pr.num_active_cars, 22); ++i) {
                 int o = HEADER_SIZE + 1 + i * partSize;
                 bool ai = data[o] != 0; o += 1;
                 o += 2;
@@ -542,26 +552,27 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             if (length < HEADER_SIZE + 7) return {};
             uint8_t carIdx     = data[HEADER_SIZE];
             uint8_t bestLapNum = data[HEADER_SIZE + 3];
-            if (bestLapNum == 0) return {};
-            int lapOff = HEADER_SIZE + 7 + (bestLapNum - 1) * 14;
-            if (length < lapOff + 14) return {};
-            if ((data[lapOff + 13] & 0x01) == 0) return {};
             SessionHistoryFastestRow sh;
             sh.ts = timestamp; sh.car_idx = carIdx;
-            sh.best_lap_time_ms = ReadUInt32(data, lapOff);
-            if (carIdx == hdr.playerCarIndex) {
-                int numLaps = std::min<int>(data[HEADER_SIZE + 1], 100);
-                for (int lap = numLaps; lap >= 1; --lap) {
-                    int historyOff = HEADER_SIZE + 7 + (lap - 1) * 14;
-                    if (length < historyOff + 14) continue;
-                    int lapTimeMs = (int)ReadUInt32(data, historyOff);
-                    if (lapTimeMs > 0) {
-                        sh.latest_lap_num = lap;
-                        sh.latest_lap_time_ms = lapTimeMs;
-                        break;
-                    }
-                }
+            const int numLaps = std::min<int>(data[HEADER_SIZE + 1], 100);
+            const int numStints = std::min<int>(data[HEADER_SIZE + 2], 8);
+            for (int lap = 1; lap <= numLaps; ++lap) {
+                const int o = HEADER_SIZE + 7 + (lap - 1) * 14;
+                if (length < o + 14) break;
+                const int lapMs = (int)ReadUInt32(data, o);
+                const uint8_t valid = data[o + 13];
+                sh.laps.push_back({lap, lapMs,
+                    (int)ReadUInt16(data, o + 4) + (int)data[o + 6] * 60000,
+                    (int)ReadUInt16(data, o + 7) + (int)data[o + 9] * 60000,
+                    (int)ReadUInt16(data, o + 10) + (int)data[o + 12] * 60000,
+                    (valid & 1) != 0, (valid & 2) != 0, (valid & 4) != 0, (valid & 8) != 0});
+                if (lapMs > 0) { sh.latest_lap_num = lap; sh.latest_lap_time_ms = lapMs; }
             }
+            if (bestLapNum > 0 && bestLapNum <= sh.laps.size())
+                sh.best_lap_time_ms = sh.laps[bestLapNum - 1].lap_time_ms;
+            const int stintBase = HEADER_SIZE + 7 + 100 * 14;
+            for (int i = 0; i < numStints && length >= stintBase + (i + 1) * 3; ++i)
+                sh.tyre_stints.push_back({data[stintBase + i * 3], data[stintBase + i * 3 + 1], data[stintBase + i * 3 + 2]});
             buf.clear();
             (void)glz::write_json(sh, buf);
             rows.push_back(std::move(buf));
@@ -572,9 +583,8 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
         case PID_TYRE_SETS: {
             if (length < 231) return {};
             uint8_t carIdx = data[HEADER_SIZE];
-            if (carIdx != hdr.playerCarIndex) return {};
             TyreSetsRow tsr;
-            tsr.ts = timestamp; tsr.session_time = hdr.sessionTime;
+            tsr.ts = timestamp; tsr.session_time = hdr.sessionTime; tsr.car_idx = carIdx;
             for (int i = 0; i < 20; ++i) {
                 int o = HEADER_SIZE + 1 + i * 10;
                 tsr.sets.push_back({
@@ -595,6 +605,7 @@ std::vector<std::string> F1_25::ParsePacket(const uint8_t* data, int length, con
             MotionExRow me;
             me.ts                   = timestamp;
             me.session_time         = hdr.sessionTime;
+            me.player_idx           = hdr.playerCarIndex;
             me.front_aero_height_mm = Round2(ReadFloat(data, 217) * 1000.0);
             me.rear_aero_height_mm  = Round2(ReadFloat(data, 221) * 1000.0);
             bin::encodeMotionEx(hot.binary, me);

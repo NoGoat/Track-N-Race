@@ -5,6 +5,7 @@
 #include "tnrp/control_rows.h"
 #include "TnrdCodec.h"
 #include "tnrd/TNRD_V4.h"
+#include "tnrd/TNRD_V6.h"
 
 #include <xlsxwriter.h>
 #include <glaze/glaze.hpp>
@@ -15,6 +16,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -60,6 +63,20 @@ const char* sheetNameForType(uint8_t type) {
         case 13: return "Positions";
         default: return nullptr;
     }
+}
+
+const char* v6SheetName(uint8_t type) {
+    static constexpr const char* names[] = {nullptr, "Speed", "RPM", "Gear", "Throttle", "Brake",
+        "Steering", "Aero", "TyreSurfaceTemp", "TyreInnerTemp", "BrakeTemp", "EngineTemp",
+        "TyreWear", "TyreState", "Damage", "Fuel", "ERSStore", "ERSHarvest",
+        "ERSDeployment", "EnginePower", "BrakeBias", "GForce", "RideHeight", "Position", "LapTiming"};
+    return type < std::size(names) ? names[type] : nullptr;
+}
+
+const std::vector<const char*>& v6ExportColumns() {
+    static const std::vector<const char*> columns{"row_index", "session_time", "driver_index",
+        "lap_id", "lap_number", "phase", "data_type", "sample_json"};
+    return columns;
 }
 
 // Hand-written column lists (glaze's compile-time reflection isn't
@@ -500,11 +517,13 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
 
     (void)header;  // no longer written to an Info sheet; kept for API stability
 
+    auto* v6Archive = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
     size_t total = index_.size();
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
         total = 0;
         for (const auto& chunk : indexedArchive_->chunks())
-            if (sheetNameForType((uint8_t)chunk.rowType)) total += chunk.rowCount;
+            if (v6Archive ? v6SheetName(static_cast<uint8_t>(chunk.rowType))
+                          : sheetNameForType(static_cast<uint8_t>(chunk.rowType))) total += chunk.rowCount;
     }
     // Throttle progress callbacks to ~500 calls over the whole export rather
     // than once per row (row counts can run into the hundreds of thousands).
@@ -539,10 +558,11 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     std::vector<uint8_t> typeOrder;                       // first-seen order
     std::unordered_map<uint8_t, std::vector<const IndexEntry*>> byType;
     if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
-        for (const auto& chunk : indexedArchive_->chunks())
-            if (sheetNameForType((uint8_t)chunk.rowType) &&
-                std::find(typeOrder.begin(),typeOrder.end(),(uint8_t)chunk.rowType)==typeOrder.end())
-                typeOrder.push_back((uint8_t)chunk.rowType);
+        for (const auto& chunk : indexedArchive_->chunks()) {
+            const uint8_t type = static_cast<uint8_t>(chunk.rowType);
+            if ((v6Archive ? v6SheetName(type) : sheetNameForType(type)) &&
+                std::find(typeOrder.begin(),typeOrder.end(),type)==typeOrder.end()) typeOrder.push_back(type);
+        }
     } else for (const IndexEntry& e : index_) {
         if (!sheetNameForType(e.type)) continue;          // skip unknown/untabled types
         auto it = byType.find(e.type);
@@ -556,7 +576,7 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
     size_t done = 0;
     for (size_t s = 0; s < typeOrder.size(); ++s) {
         const uint8_t type = typeOrder[s];
-        const char* sheetName = sheetNameForType(type);
+        const char* sheetName = v6Archive ? v6SheetName(type) : sheetNameForType(type);
         const auto& entries = byType[type];
 
         std::string stage = "Writing " + std::string(sheetName) + " sheet ("
@@ -564,7 +584,7 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         report(kRowBandTop * static_cast<double>(done) / static_cast<double>(total > 0 ? total : 1), stage);
 
         lxw_worksheet* ws = workbook_add_worksheet(wb, sheetName);
-        writeHeaderRow(ws, bold, columnsForType(type));
+        writeHeaderRow(ws, bold, v6Archive ? v6ExportColumns() : columnsForType(type));
         lxw_row_t nextRow = 1;
 
         // The Participants packet is re-emitted throughout the session (once per
@@ -574,7 +594,38 @@ bool TnrdReader::exportXlsx(const HeaderRow& header, const std::string& outPath,
         const bool firstOnly = (type == 8);
 
         bool wrote = false;
-        if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
+        if (v6Archive) {
+            std::map<uint32_t, detail::V6LapSummary> laps;
+            for (const auto& driver : v6Archive->driverHeaders())
+                for (const auto& lap : v6Archive->driverLapSummaries(driver.vehicleIndex)) laps[lap.lapId] = lap;
+            const auto& chunks = v6Archive->v6Chunks();
+            for (size_t chunkIndex = 0; chunkIndex < chunks.size(); ++chunkIndex) {
+                const auto& chunk = chunks[chunkIndex]; if (chunk.typeId != type) continue;
+                std::shared_ptr<std::string> plain; std::string chunkError;
+                if (!v6Archive->loadChunkPlain(chunkIndex, plain, &chunkError)) {
+                    workbook_close(wb); std::error_code cleanupError; fs::remove(stagingPath,cleanupError);
+                    if (errorOut) *errorOut = chunkError; return false;
+                }
+                const auto lap = laps.find(chunk.lapId); size_t pos = 0;
+                while (pos < plain->size()) {
+                    size_t nl = plain->find('\n', pos); if (nl == std::string::npos) nl = plain->size();
+                    if (nl > pos) {
+                        const std::string line = plain->substr(pos, nl - pos); lxw_col_t column = 0;
+                        worksheet_write_number(ws, nextRow, column++, static_cast<double>(nextRow - 1), nullptr);
+                        worksheet_write_number(ws, nextRow, column++, rowSessionTime(line), nullptr);
+                        worksheet_write_number(ws, nextRow, column++, chunk.driverIndex, nullptr);
+                        worksheet_write_number(ws, nextRow, column++, chunk.lapId, nullptr);
+                        worksheet_write_number(ws, nextRow, column++, lap == laps.end() ? 0 : lap->second.lapNumber, nullptr);
+                        worksheet_write_string(ws, nextRow, column++, chunk.phase == detail::V6Phase::Formation ? "formation" : "race", nullptr);
+                        worksheet_write_string(ws, nextRow, column++, detail::v6TypeName(static_cast<detail::V6DataType>(type)), nullptr);
+                        worksheet_write_string(ws, nextRow, column++, line.c_str(), nullptr);
+                        ++nextRow; ++done;
+                        if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);
+                    }
+                    if (nl == plain->size()) break; pos = nl + 1;
+                }
+            }
+        } else if (isChunkedTnrd(loadedFormat_) && indexedArchive_) {
             std::string chunkError;
             const bool ok=indexedArchive_->forEachChunk(detail::v4TypeBit(type),[&](const detail::V4ChunkInfo&,std::string_view plain){
                 size_t pos=0;while(pos<plain.size()){size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();if(nl>pos){std::string line(plain.substr(pos,nl-pos));if(!firstOnly||!wrote){const float t=rowSessionTime(line);writeDataRow(ws,nextRow,t,type,line);wrote=true;}++done;if(total>0&&(done%reportEvery==0||done==total))report(kRowBandTop*static_cast<double>(done)/static_cast<double>(total),stage);}if(nl==plain.size())break;pos=nl+1;}return true;

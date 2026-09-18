@@ -288,6 +288,7 @@ function sendResumeCache(): void {
 let engine: any = null
 let nextDataRequirementsRequestId = 0
 let rendererStreamMask = 0xFFFFFFFF
+let rendererV6Types: number[] = []
 let rendererHistoryMask = 0
 let rendererHistoryWindow = 0
 let unsubLogging: Array<() => void> = []
@@ -972,10 +973,11 @@ export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFF
   engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
 }
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
-                                          windowSeconds = 0): void {
+                                          windowSeconds = 0, v6Types: number[] = []): void {
   rendererStreamMask = streamMask >>> 0
   rendererHistoryMask = historyMask >>> 0
   rendererHistoryWindow = Math.max(-1, windowSeconds)
+  rendererV6Types = [...new Set(v6Types.filter(value => Number.isInteger(value) && value > 0 && value <= 24))]
   applyAggregateDataRequirements()
 }
 
@@ -993,7 +995,7 @@ function applyAggregateDataRequirements(): void {
     })
   }
   engine?.setDataRequirements(rendererStreamMask,
-    rendererHistoryMask, rendererHistoryWindow, requestId)
+    rendererHistoryMask, rendererHistoryWindow, requestId, rendererV6Types)
 }
 
 export function liveGetFastestLap(requestId: number): void {

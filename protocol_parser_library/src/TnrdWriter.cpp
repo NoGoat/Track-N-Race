@@ -401,10 +401,16 @@ void TnrdWriter::writerLoop() {
             if (streamActive() && (lastSessionTime_ < 0.0f || ev.sessionTime < lastSessionTime_))
                 truncateTimeline(ev.sessionTime, ev.wallClockMs);
         } else if (ev.type == EventType::NotePacket) {
-            if (streamActive() && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
+            if (streamActive() && !v6Writer_ && lastSessionTime_ >= 0.0f && ev.sessionTime < lastSessionTime_ - 0.2f)
                 truncateTimeline(ev.sessionTime, wallClockMilliseconds());
             else if (ev.sessionTime > lastSessionTime_)
                 lastSessionTime_ = ev.sessionTime;
+
+            if (v6Writer_) {
+                std::string error;
+                if (!v6Writer_->advanceSessionTime(ev.sessionTime, &error))
+                    reportError("session-time advance", error, activePath_);
+            }
 
             if (ev.packetId == PID_SESSION && ev.packetData.size() >= 708) {
                 uint16_t trackLengthM = ReadUInt16(ev.packetData.data(), 33);
@@ -425,9 +431,21 @@ void TnrdWriter::writerLoop() {
             if (writeFormat_ != TnrdFormat::ChunkedV6 && isDuplicate(type, ev.json)) continue;
             const bool sessionEnd = type == "race_event" &&
                 ev.json.find("\"code\":\"SEND\"") != std::string::npos;
+            const float entryTime = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
+            if (v6Writer_) {
+                std::string error;
+                if (!v6Writer_->appendRow(ev.json, entryTime, &error)) {
+                    reportError("data write", error, activePath_);
+                    continue;
+                }
+                if (sessionEnd) {
+                    closeActiveStreamOnWriterThread();
+                    publishMemoryStatsOnWriterThread(true);
+                }
+                continue;
+            }
             std::string line = std::move(ev.json);
             line.push_back('\n');
-            float entryTime  = (ev.sessionTime >= 0.0f) ? ev.sessionTime : lastSessionTime_;
             rollingBuffer_.push_back({std::move(line), entryTime});
             if (sessionEnd) {
                 closeActiveStreamOnWriterThread();
@@ -452,7 +470,6 @@ void TnrdWriter::writerLoop() {
 void TnrdWriter::flushToDiskOnWriterThread() {
     if (!streamActive()) return;
     if (v6Writer_) {
-        if (flushBufferToDisk(rollingBuffer_.size(), false)) rollingBuffer_.clear();
         std::string err;
         if (!v6Writer_->checkpoint(&err)) reportError("checkpoint", err, activePath_);
         else v4LastCheckpointTime_ = lastSessionTime_;
@@ -467,7 +484,6 @@ void TnrdWriter::flushToDiskOnWriterThread() {
 
 void TnrdWriter::closeActiveStreamOnWriterThread() {
     if (v6Writer_) {
-        (void)flushBufferToDisk(rollingBuffer_.size(), false);
         std::string err;
         if (!v6Writer_->finish(&err)) reportError("close", err, activePath_);
         const auto v5 = v6Writer_->memoryStats();
@@ -714,14 +730,10 @@ void TnrdWriter::truncateTimeline(float newSessionTime, uint64_t wallClockMs) {
         ? std::numeric_limits<float>::infinity() : rollingBuffer_[0].sessionTime;
 
     if (v6Writer_) {
-        rollingBuffer_.erase(
-            std::remove_if(rollingBuffer_.begin(),rollingBuffer_.end(),
-                [newSessionTime](const BufferEntry& e){return e.sessionTime>=newSessionTime;}),
-            rollingBuffer_.end());
-        if (newSessionTime < bufStart) {
-            std::string err;
-            if (!v6Writer_->rewind(newSessionTime,wallClockMs,&err))
-                reportError("flashback",err,activePath_);
+        std::string err;
+        if (!v6Writer_->rewind(newSessionTime,&err)) {
+            reportError("flashback",err,activePath_);
+            v6Writer_->abort(); v6Writer_.reset(); activePath_.clear();
         }
         dedupeCache_.clear();lastSessionTime_=newSessionTime;return;
     }

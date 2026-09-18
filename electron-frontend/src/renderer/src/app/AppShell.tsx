@@ -213,6 +213,7 @@ export default function AppShell() {
   const playbackTnrdVersion = useTelemetryStore(s => s.playbackTnrdVersion)
   const participants = useTelemetryStore(s => s.participants)
   const timingPlayerIdx = useTelemetryStore(s => s.timing?.player_idx ?? null)
+  const rosterPlayerIdx = participants?.player_idx ?? null
   const clCapability = !playback.state?.filename
     ? 'live'
     : playbackTnrdVersion === null
@@ -223,7 +224,7 @@ export default function AppShell() {
   const clAvailable = clCapability !== 'legacy'
   const recordingOpen = !!playback.state?.filename
   const driverSelectorVisible = recordingOpen && playbackTnrdVersion === 'TNRD_V6'
-  const originalPlayerIdx = recordedPlayerIdx ?? timingPlayerIdx
+  const originalPlayerIdx = recordedPlayerIdx ?? timingPlayerIdx ?? rosterPlayerIdx
   const driverOptions = useMemo(() => (participants?.drivers ?? []).map(driver => {
     const restricted = driver.idx !== originalPlayerIdx && driver.your_telemetry !== 1
     return {
@@ -241,12 +242,13 @@ export default function AppShell() {
       setPlaybackDriverIdx(null)
       return
     }
-    if (recordedPlayerIdx === null && timingPlayerIdx !== null) {
-      setRecordedPlayerIdx(timingPlayerIdx)
-      setPlaybackDriverIdx(timingPlayerIdx)
-      window.playerBridge.setDriver(timingPlayerIdx, true)
+    const initialPlayerIdx = timingPlayerIdx ?? rosterPlayerIdx
+    if (recordedPlayerIdx === null && initialPlayerIdx !== null) {
+      setRecordedPlayerIdx(initialPlayerIdx)
+      setPlaybackDriverIdx(initialPlayerIdx)
+      window.playerBridge.setDriver(initialPlayerIdx, true)
     }
-  }, [driverSelectorVisible, recordedPlayerIdx, timingPlayerIdx])
+  }, [driverSelectorVisible, recordedPlayerIdx, rosterPlayerIdx, timingPlayerIdx])
   const availableChartWindows = useMemo(() => new Set(
     getChartWindowOptionGroups(clAvailable, recordingOpen)
       .flatMap(group => group.options)
@@ -322,15 +324,18 @@ export default function AppShell() {
     const lapWindowScopes = visibleChartScopes.filter(scope =>
       typeof scope.window !== 'number' && scope.window !== 'AL' && scope.window !== 'SL')
     const hasLapWindow = lapWindowScopes.length > 0
-    const sessionEventHistoryEnabled = tab === 'session' && !playback.state?.filename
     const finiteScopes = visibleChartScopes.filter(
       (scope): scope is { mask: number; window: number } => typeof scope.window === 'number')
     const finiteWindows = finiteScopes.map(scope => scope.window)
-    const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : seconds
+    // A page with no visible chart has no time range to request. Its stream
+    // subscription is restored from the latest rows at the current cursor.
+    const maxFiniteWindow = finiteWindows.length > 0 ? Math.max(...finiteWindows) : 0
     // Live Previous/Fastest selectors can be changed after a lap completes, so
     // retain every chart family for the small uncompressed lap working set.
     // Historical AL decompression remains restricted to historyMask below.
-    const liveLapMask = playback.state?.filename ? 0 : LIVE_LAP_FAMILY_MASK
+    const liveLapMask = playback.state?.filename || visibleChartScopes.length === 0
+      ? 0
+      : LIVE_LAP_FAMILY_MASK
     const streamMask = (stintLapsEnabled
       ? dataRequirements.streamMask | DATA_ROW.status
       : dataRequirements.streamMask) | liveLapMask
@@ -351,9 +356,7 @@ export default function AppShell() {
     const mixedLapAndTime = hasLapWindow && finiteWindows.length > 0
     const historyWindowSeconds = analysisLapScope
       ? 0
-      : sessionEventHistoryEnabled
-        ? -1
-        : fullLapHistoryEnabled
+      : fullLapHistoryEnabled
           ? -1
           : hasLapWindow ? 0 : maxFiniteWindow
     setHistoryRowMask(
@@ -368,6 +371,11 @@ export default function AppShell() {
       streamMask,
       historyMask,
       historyWindowSeconds,
+      [...new Set([
+        ...dataRequirements.v6Types,
+        ...(stintLapsEnabled ? [13, 15] : []),
+        ...(lapMetadataMask ? [24] : []),
+      ])],
     )
     window.playerBridge.setAllLapsMode(
       fullLapHistoryEnabled,

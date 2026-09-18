@@ -2,65 +2,124 @@
 
 #include "TNRD_V4.h"
 
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace tnrp::detail {
 
-// The aliases keep the indexed archive query interface shared with V4 while
-// V6's branch-aware on-disk tables remain independent.
+enum class V6DataType : uint8_t {
+    Unknown = 0, Speed = 1, RPM = 2, Gear = 3, Throttle = 4, Brake = 5,
+    Steering = 6, Aero = 7, TyreSurfaceTemp = 8, TyreInnerTemp = 9,
+    BrakeTemp = 10, EngineTemp = 11, TyreWear = 12, TyreState = 13,
+    Damage = 14, Fuel = 15, ERSStore = 16, ERSHarvest = 17,
+    ERSDeployment = 18, EnginePower = 19, BrakeBias = 20, GForce = 21,
+    RideHeight = 22, Position = 23, LapTiming = 24, Count = 25
+};
+
+constexpr uint64_t v6DataTypeBit(V6DataType type) {
+    return static_cast<uint8_t>(type) < 64
+        ? (uint64_t{1} << static_cast<uint8_t>(type)) : 0;
+}
+const char* v6TypeName(V6DataType type);
+V6DataType v6TypeFromName(std::string_view name);
+
+enum class TelemetrySetting : uint8_t { Unknown = 0, Restricted = 1, Public = 2 };
+enum class V6Phase : uint8_t { Race = 0, Formation = 1 };
+
+struct V6RestrictionChange {
+    V6Phase phase{V6Phase::Race};
+    float sessionTime{};
+    TelemetrySetting setting{TelemetrySetting::Unknown};
+};
+
+struct V6TyreStintSummary {
+    int endLap{};
+    int actualCompound{};
+    int visualCompound{};
+};
+
+struct V6DriverHeader {
+    uint8_t vehicleIndex{};
+    std::string driverName;
+    int teamId{-1};
+    int raceNumber{-1};
+    bool isPlayer{};
+    TelemetrySetting initialTelemetrySetting{TelemetrySetting::Unknown};
+    std::vector<V6RestrictionChange> restrictionChanges;
+    uint64_t availableTypeMask{};
+    std::vector<uint32_t> lapIds;
+    std::vector<V6TyreStintSummary> tyreStints;
+};
+
+struct V6LapSummary {
+    uint32_t lapId{};
+    uint8_t driverIndex{};
+    uint32_t lapNumber{};
+    V6Phase phase{V6Phase::Race};
+    float startSessionTime{};
+    float endSessionTime{};
+    uint32_t lapTimeMs{};
+    uint32_t s1Ms{};
+    uint32_t s2Ms{};
+    uint32_t s3Ms{};
+    bool isCompleted{};
+    bool isValid{true};
+    bool isPartial{};
+};
+
+struct V6ChunkInfo {
+    uint8_t driverIndex{};
+    uint32_t lapId{};
+    uint8_t typeId{};
+    uint8_t flags{};
+    V6Phase phase{V6Phase::Race};
+    float firstTime{};
+    float lastTime{};
+    uint64_t offset{};
+    uint64_t compressedSize{};
+    uint64_t uncompressedSize{};
+    uint32_t sampleCount{};
+    uint32_t checksum{};
+    uint64_t sequence{};
+};
+
+struct V6SharedRecord {
+    V6Phase phase{V6Phase::Race};
+    float sessionTime{};
+    std::string json;
+};
+
 using V6SourceRow = V4SourceRow;
 using V6LapInfo = V4LapInfo;
-using V6ChunkInfo = V4ChunkInfo;
 using V6LapStatusSummary = V4LapStatusSummary;
 using V6ControlSummary = V4ControlSummary;
 using V6TimedRow = V4TimedRow;
 using V6RowTypeMask = V4RowTypeMask;
-constexpr V6RowTypeMask v6TypeBit(uint8_t type) { return v4TypeBit(type); }
-
-// V6 uses the existing row families, extended in rows.h/control_rows.h.
-// It retains V5 container indexing and branch semantics.
 
 struct TnrdV6WriterMemoryStats {
     bool open{};
-    size_t retainedBytes{};
-    size_t builderCount{};
-    size_t builderPlainBytes{};
-    size_t builderPlainCapacityBytes{};
-    size_t builderRowIndexEntries{};
-    size_t builderRowIndexCapacityBytes{};
-    size_t chunkCount{};
-    size_t chunkContainerCapacityBytes{};
-    size_t chunkRowIndexEntries{};
-    size_t chunkRowIndexCapacityBytes{};
-    size_t branchCount{};
-    size_t branchCapacityBytes{};
-    size_t lapCount{};
-    size_t statusLapCount{};
-    size_t eventCount{};
-    size_t eventPayloadBytes{};
-    size_t eventPayloadCapacityBytes{};
-    size_t eventContainerCapacityBytes{};
-    size_t lapStatusCapacityBytes{};
-    uint64_t chunkWrites{};
-    uint64_t chunkPlainBytesProcessed{};
-    uint64_t chunkCompressedBytesWritten{};
+    size_t retainedBytes{}, builderCount{}, builderPlainBytes{}, builderPlainCapacityBytes{};
+    size_t builderRowIndexEntries{}, builderRowIndexCapacityBytes{};
+    size_t pendingLapCount{}, pendingLapPlainBytes{};
+    size_t chunkCount{}, chunkContainerCapacityBytes{}, chunkRowIndexEntries{};
+    size_t chunkRowIndexCapacityBytes{}, branchCount{}, branchCapacityBytes{};
+    size_t lapCount{}, statusLapCount{}, eventCount{}, eventPayloadBytes{};
+    size_t eventPayloadCapacityBytes{}, eventContainerCapacityBytes{}, lapStatusCapacityBytes{};
+    uint64_t chunkWrites{}, chunkPlainBytesProcessed{}, chunkCompressedBytesWritten{};
     uint64_t compressionBufferBytesAllocated{};
-    size_t compressionScratchCapacityBytes{};
-    size_t compressionContextBytes{};
-    size_t lastChunkPlainBytes{};
-    size_t lastChunkCompressedBytes{};
-    size_t lastCompressionBufferCapacityBytes{};
-    size_t peakCompressionBufferCapacityBytes{};
-    uint64_t checkpointWrites{};
-    uint64_t checkpointScratchBytesAllocated{};
-    size_t lastCheckpointScratchBytes{};
-    size_t peakCheckpointScratchBytes{};
-    size_t lastCheckpointDirectoryBytes{};
-    size_t peakCheckpointDirectoryBytes{};
-    size_t lastCheckpointRowIndexBytes{};
-    size_t peakCheckpointRowIndexBytes{};
+    size_t compressionScratchCapacityBytes{}, compressionContextBytes{};
+    size_t lastChunkPlainBytes{}, lastChunkCompressedBytes{};
+    size_t lastCompressionBufferCapacityBytes{}, peakCompressionBufferCapacityBytes{};
+    uint64_t checkpointWrites{}, checkpointScratchBytesAllocated{};
+    size_t lastCheckpointScratchBytes{}, peakCheckpointScratchBytes{};
+    size_t lastCheckpointDirectoryBytes{}, peakCheckpointDirectoryBytes{};
+    size_t lastCheckpointRowIndexBytes{}, peakCheckpointRowIndexBytes{};
 };
 
 class TnrdV6Archive final : public TnrdIndexedArchive {
@@ -70,55 +129,61 @@ public:
     TnrdV6Archive(const TnrdV6Archive&) = delete;
     TnrdV6Archive& operator=(const TnrdV6Archive&) = delete;
 
-    bool open(const std::string& path, HeaderRow& header, std::string* errorOut);
-    void close();
-    bool isOpen() const;
-    const std::vector<V6LapInfo>& laps() const;
-    const std::vector<V6ChunkInfo>& chunks() const;
-    const V6ControlSummary& summary() const;
-    float startTime() const;
-    float totalTime() const;
-    int lapAt(float sessionTime) const;
+    bool open(const std::string&, HeaderRow&, std::string*) override;
+    void close() override;
+    bool isOpen() const override;
+    const std::vector<V6LapInfo>& laps() const override;
+    const std::vector<V4ChunkInfo>& chunks() const override;
+    const V6ControlSummary& summary() const override;
+    float startTime() const override;
+    float totalTime() const override;
+    int lapAt(float) const override;
+    void chunkIndicesForLap(uint32_t, V6RowTypeMask, std::vector<size_t>&) const override;
+    bool chunkTimeBounds(size_t, float&, float&) const override;
+    void prefetchChunk(size_t) override;
+    void cancelPrefetch() override;
+    bool rowsForChunks(const std::vector<size_t>&, std::vector<std::vector<V6TimedRow>>&,
+                       std::string*) override;
+    bool rowsForLap(uint32_t, V6RowTypeMask, std::vector<V6TimedRow>&, std::string*) override;
+    bool rowsForLapRange(uint32_t, float, float, V6RowTypeMask,
+                         std::vector<V6TimedRow>&, std::string*,
+                         const IndexedCancelCheck& = {}) override;
+    bool rowsForRange(float, float, V6RowTypeMask, std::vector<V6TimedRow>&,
+                      std::string*, const IndexedCancelCheck& = {}) override;
+    bool forEachRowInRange(float, float, V6RowTypeMask,
+                           const std::function<bool(const V6TimedRow&)>&,
+                           std::string*, const IndexedCancelCheck& = {}) override;
+    bool latestRows(float, const std::vector<uint8_t>&, std::vector<V6TimedRow>&,
+                    std::string*, const IndexedCancelCheck& = {}) override;
+    bool forEachChunk(V6RowTypeMask,
+                      const std::function<bool(const V4ChunkInfo&, std::string_view)>&,
+                      std::string*) override;
+    void setCacheLimitBytes(size_t) override;
+    size_t cacheBytes() const override;
+    uint64_t decompressedChunkCount() const override;
+    size_t peakConcurrentChunkLoads() const override;
 
-    void chunkIndicesForLap(uint32_t lap, V6RowTypeMask mask,
-                            std::vector<size_t>& out) const;
-    bool chunkTimeBounds(size_t chunkIndex, float& firstOut, float& lastOut) const;
-    void prefetchChunk(size_t chunkIndex);
-    void cancelPrefetch();
-    bool rowsForChunks(const std::vector<size_t>& chunkIndices,
-                       std::vector<std::vector<V6TimedRow>>& out,
-                       std::string* errorOut);
-    // Playback-frontier variant. The selected chunks are still decompressed as
-    // whole Zstandard frames, but their row indexes avoid materializing rows
-    // outside the requested time window.
-    bool rowsForChunksRange(const std::vector<size_t>& chunkIndices,
-                            float fromTime, float toTime,
-                            std::vector<std::vector<V6TimedRow>>& out,
-                            std::string* errorOut,
-                            const IndexedCancelCheck& cancelled = {});
-    bool rowsForLap(uint32_t lap, V6RowTypeMask mask,
-                    std::vector<V6TimedRow>& out, std::string* errorOut);
-    bool rowsForLapRange(uint32_t lap, float fromTime, float toTime,
-                         V6RowTypeMask mask, std::vector<V6TimedRow>& out,
-                         std::string* errorOut, const IndexedCancelCheck& cancelled = {});
-    bool rowsForRange(float fromTime, float toTime, V6RowTypeMask mask,
-                      std::vector<V6TimedRow>& out, std::string* errorOut,
-                      const IndexedCancelCheck& cancelled = {});
-    bool forEachRowInRange(float fromTime, float toTime, V6RowTypeMask mask,
-                           const std::function<bool(const V6TimedRow&)>& callback,
-                           std::string* errorOut,
-                           const IndexedCancelCheck& cancelled = {}) override;
-    bool latestRows(float atTime, const std::vector<uint8_t>& types,
-                    std::vector<V6TimedRow>& out, std::string* errorOut,
-                    const IndexedCancelCheck& cancelled = {});
-    bool forEachChunk(V6RowTypeMask mask,
-                      const std::function<bool(const V6ChunkInfo&, std::string_view)>& callback,
-                      std::string* errorOut);
-
-    void setCacheLimitBytes(size_t bytes);
-    size_t cacheBytes() const;
-    uint64_t decompressedChunkCount() const;
-    size_t peakConcurrentChunkLoads() const;
+    void setPlaybackDriver(uint8_t);
+    void setRequestedTypes(const std::vector<uint8_t>&);
+    bool requestedType(uint8_t) const;
+    void playbackChunkIndices(V6RowTypeMask, std::vector<size_t>&) const;
+    uint8_t playbackDriver() const;
+    std::optional<uint8_t> playerDriverIndex() const;
+    const std::vector<V6DriverHeader>& driverHeaders() const;
+    const V6DriverHeader* driverHeader(uint8_t) const;
+    std::vector<V6LapSummary> driverLapSummaries(uint8_t) const;
+    const std::vector<V6ChunkInfo>& v6Chunks() const;
+    const std::vector<V6SharedRecord>& sharedRecords() const;
+    float logicalTime(V6Phase, float) const;
+    bool loadChunkPlain(size_t, std::shared_ptr<std::string>&, std::string*);
+    bool readDriverLapTypes(uint8_t, uint32_t, const std::vector<uint8_t>&,
+                            std::vector<V6TimedRow>&, std::string*);
+    bool readDriverRangeTypes(uint8_t, float, float, const std::vector<uint8_t>&,
+                              std::vector<V6TimedRow>&, std::string*,
+                              const IndexedCancelCheck& = {});
+    bool readMultiDriverLatest(float, const std::vector<uint8_t>&,
+                               const std::vector<uint8_t>&,
+                               std::vector<V6TimedRow>&, std::string*);
 
 private:
     struct Impl;
@@ -131,43 +196,25 @@ public:
     ~TnrdV6Writer();
     TnrdV6Writer(const TnrdV6Writer&) = delete;
     TnrdV6Writer& operator=(const TnrdV6Writer&) = delete;
-
-    bool open(const std::string& path, const HeaderRow& header, std::string* errorOut);
-    bool append(const std::vector<V6SourceRow>& rows, std::string* errorOut);
-    // Synchronous borrowed-row path used by the live recorder. The views only
-    // need to remain valid until this call returns.
-    bool appendViews(const std::vector<std::pair<std::string_view, float>>& rows,
-                     std::string* errorOut);
-    bool checkpoint(std::string* errorOut);
-    // Starts a newer wall-clock branch at sessionTime. Existing payload chunks
-    // remain in the file and are clipped logically by the reader.
-    bool rewind(float sessionTime, std::string* errorOut);
-    bool rewind(float sessionTime, uint64_t wallClockMs, std::string* errorOut);
-    bool finish(std::string* errorOut);
+    bool open(const std::string&, const HeaderRow&, std::string*);
+    bool append(const std::vector<V6SourceRow>&, std::string*);
+    bool appendViews(const std::vector<std::pair<std::string_view, float>>&, std::string*);
+    bool appendRow(std::string_view, float, std::string*);
+    bool advanceSessionTime(float, std::string*);
+    bool checkpoint(std::string*);
+    bool rewind(float, std::string*);
+    void abort();
+    bool finish(std::string*);
     bool isOpen() const;
-    // Called by TnrdWriter on the disk thread. Retained bytes include the
-    // reusable compression scratch buffer; allocation activity and transient
-    // checkpoint scratch remain separately reported.
     TnrdV6WriterMemoryStats memoryStats() const;
-
 private:
-    template <typename Rows>
-    bool appendRows(const Rows& rows, std::string* errorOut);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
-bool writeTnrdV6(const std::string& path, const HeaderRow& header,
-                 const std::vector<V6SourceRow>& rows, std::string* errorOut);
-
-struct V6LoadResult {
-    HeaderRow header;
-    std::unique_ptr<TnrdV6Archive> archive;
-};
-
-namespace TNRD_V6 {
-bool load(const std::string& path, V6LoadResult& result, std::string& error);
-}
+bool writeTnrdV6(const std::string&, const HeaderRow&,
+                 const std::vector<V6SourceRow>&, std::string*);
+struct V6LoadResult { HeaderRow header; std::unique_ptr<TnrdV6Archive> archive; };
+namespace TNRD_V6 { bool load(const std::string&, V6LoadResult&, std::string&); }
 
 } // namespace tnrp::detail
-

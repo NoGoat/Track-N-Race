@@ -1153,7 +1153,8 @@ void Engine::requestDataRequirements(uint64_t requestId) {
 void Engine::setDataRequirements(uint32_t streamRowMask,
                                  uint32_t historyRowMask,
                                  float windowSeconds,
-                                 uint64_t requestId) {
+                                 uint64_t requestId,
+                                 const std::vector<uint8_t>& v6Types) {
     std::vector<std::string> restore;
     float liveBackfillLapStart = 0.0f;
     float liveBackfillStart = 0.0f;
@@ -1182,6 +1183,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         const uint32_t playbackMask = consumerRowMask_ |
             ((consumerRowMask_ & kStrategyRowBit) ? kStrategyDependencyMask : 0u);
         reader_.setPlaybackRowMask(playbackMask, currentTime_);
+        reader_.setPlaybackV6Types(v6Types, currentTime_);
 
         // Strategy dependencies are retained while hidden. Materialize one fresh
         // derived row at subscription time so opening the tab never waits for the
@@ -1540,10 +1542,21 @@ void Engine::playerSetSpeed(float mult) {
 }
 
 void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    if (!inPlayback_.load()) return;
-    reader_.setPlaybackDriver(driverIndex, useRecordedRows, currentTime_);
-    dupCache_ = {};
+    std::string lapBlocks;
+    std::vector<std::pair<uint8_t, std::string>> panels;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!inPlayback_.load()) return;
+        reader_.setPlaybackDriver(driverIndex, useRecordedRows, currentTime_);
+        lapBlocks = reader_.lapBlocksMessage();
+        panels = reader_.latestOfTypesTagged(currentTime_,
+            typesInMask(consumerRowMask_ & kRestoreRowMask));
+        dupCache_ = {};
+        for (const auto& [type, row] : panels)
+            if (type < dupCache_.size()) dupCache_[type] = row;
+    }
+    emitRow(lapBlocks);
+    for (const auto& panel : panels) emitRow(panel.second);
 }
 
 void Engine::liveGetFastestLap(uint64_t requestId) {

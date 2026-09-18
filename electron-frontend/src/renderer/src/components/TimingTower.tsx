@@ -320,6 +320,9 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
         const frozen    = frozenRef.current.get(car.idx)
         const useFrozen = !!frozen && now < frozen.exp
         const carStatus = statusMap.get(car.idx)
+        const tyreCompound = carStatus?.tyre_compound
+        const tyreAgeLaps = carStatus?.tyre_age_laps
+        const hasTyre = typeof tyreCompound === 'number' && tyreCompound > 0
         return {
           car,
           s1: useFrozen ? frozen!.s1 : car.s1_ms,
@@ -328,12 +331,12 @@ const TimingTower = memo(function TimingTower({ timing, participants, allStatus,
           driver: driverMap.get(car.idx),
           isPlayer: car.idx === timing.player_idx,
           isFastest: car.idx === fastestLapCarIdx,
-          tyreLabel: carStatus ? tn('tyre.actual', carStatus.tyre_compound) : null,
-          tyreColor: carStatus ? (tyreCompoundColor(carStatus.tyre_compound, carStatus.visual_compound) ?? '#ffffff') : '#ffffff',
-          tyreAge: carStatus?.tyre_age_laps ?? null,
+          tyreLabel: hasTyre ? tn('tyre.actual', tyreCompound) : null,
+          tyreColor: hasTyre ? (tyreCompoundColor(tyreCompound, carStatus?.visual_compound ?? 0) ?? '#ffffff') : '#ffffff',
+          tyreAge: hasTyre && typeof tyreAgeLaps === 'number' && Number.isFinite(tyreAgeLaps) ? tyreAgeLaps : null,
         }
       })
-  }, [timing, participants, fastestLapCarIdx, tn])
+  }, [timing, participants, allStatus, fastestLapCarIdx, tn])
 
   useLayoutEffect(() => {
     const tbody = tbodyRef.current

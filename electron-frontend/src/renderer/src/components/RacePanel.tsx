@@ -137,8 +137,15 @@ const RacePanel = memo(function RacePanel({
     ersPct > 30 ? (isDark ? '#d4ad04' : '#765900') :
     '#C4162A'
 
-  const tyreName  = activeStatus ? tn('tyre.actual', activeStatus.tyre_compound) : null
-  const tyreColor = activeStatus ? (tyreCompoundColor(activeStatus.tyre_compound, activeStatus.visual_compound) ?? '#ffffff') : '#ffffff'
+  const tyreCompound = activeStatus?.tyre_compound
+  const tyreAgeLaps = activeStatus?.tyre_age_laps
+  const hasTyre = typeof tyreCompound === 'number' && tyreCompound > 0
+  const tyreName = hasTyre ? tn('tyre.actual', tyreCompound) : null
+  const tyreColor = hasTyre ? (tyreCompoundColor(tyreCompound, activeStatus?.visual_compound ?? 0) ?? '#ffffff') : '#ffffff'
+  const tyreAge = hasTyre && typeof tyreAgeLaps === 'number' && Number.isFinite(tyreAgeLaps) ? tyreAgeLaps : null
+  const frontBrakeBias = typeof activeStatus?.front_brake_bias === 'number' && Number.isFinite(activeStatus.front_brake_bias)
+    ? activeStatus.front_brake_bias
+    : null
 
   const showTiming = cards?.timing ?? true
   const showErs = cards?.energyRecovery ?? true
@@ -884,17 +891,19 @@ const RacePanel = memo(function RacePanel({
               <div className="space-y-0.5">
                 <div className="text-[8px] text-[var(--text-secondary)] uppercase tracking-wider">Tyre</div>
                 <div className="flex items-baseline gap-1.5">
-                  {tyreName && (
+                  {tyreName ? (
                     <span className="text-xl font-black" style={{ color: tyreColor }}>
                       {tyreName}
                     </span>
+                  ) : (
+                    <span className="text-xl font-black text-[var(--text-muted)]">—</span>
                   )}
                   <span className="text-[11px] font-semibold text-[var(--text-secondary)] tabular-nums">
-                    {activeStatus.tyre_age_laps}L
+                    {tyreAge === null ? '—' : `${tyreAge}L`}
                   </span>
                 </div>
                 <div className="text-[10px] text-[var(--text-secondary)]">
-                  BB: {activeStatus.front_brake_bias}% F
+                  BB: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% F`}
                 </div>
               </div>
             </div>
@@ -943,16 +952,22 @@ const RacePanel = memo(function RacePanel({
               <div className="pt-4 -mx-6 px-6 border-t border-[var(--border)]">
                 <div className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5">Tyre</div>
                 <div className="flex items-center gap-3">
-                  {tyreName && (
+                  {tyreName ? (
                     <span className="text-3xl font-black" style={{ color: tyreColor }}>
                       {tyreName}
                     </span>
+                  ) : (
+                    <span className="text-3xl font-black text-[var(--text-muted)]">—</span>
                   )}
                   <div className="text-base font-semibold text-[var(--text-secondary)]">
-                    Age: {activeStatus.tyre_age_laps} laps
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
                   </div>
                 </div>
-                <div className="text-sm text-[var(--text-secondary)] mt-1">Brake bias: {activeStatus.front_brake_bias}% front · {(100 - activeStatus.front_brake_bias).toFixed(0)}% rear</div>
+                <div className="text-sm text-[var(--text-secondary)] mt-1">
+                  {frontBrakeBias === null
+                    ? 'Brake bias: —'
+                    : `Brake bias: ${frontBrakeBias}% front · ${(100 - frontBrakeBias).toFixed(0)}% rear`}
+                </div>
               </div>
             </div>
           ) : (
@@ -1006,16 +1021,20 @@ const RacePanel = memo(function RacePanel({
               <div className="pt-3 -mx-4 px-4 border-t border-[var(--border)]">
                 <div className="text-[9px] text-[var(--text-secondary)] uppercase tracking-wider mb-1">Tyre</div>
                 <div className="flex items-center gap-2">
-                  {tyreName && (
+                  {tyreName ? (
                     <span className="text-2xl font-black" style={{ color: tyreColor }}>
                       {tyreName}
                     </span>
+                  ) : (
+                    <span className="text-2xl font-black text-[var(--text-muted)]">—</span>
                   )}
                   <div className="text-sm text-[var(--text-secondary)]">
-                    Age: {activeStatus.tyre_age_laps} laps
+                    Age: {tyreAge === null ? '—' : `${tyreAge} laps`}
                   </div>
                 </div>
-                <div className="text-xs text-[var(--text-secondary)] mt-0.5">Brake bias: {activeStatus.front_brake_bias}% front</div>
+                <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                  Brake bias: {frontBrakeBias === null ? '—' : `${frontBrakeBias}% front`}
+                </div>
               </div>
             </div>
           ) : (

@@ -178,7 +178,7 @@ export default memo(function AppHeader({
                 placeholder="Driver"
                 styles={driverSelectStyles}
                 components={selectComponents}
-                isSearchable
+                isSearchable={false}
                 menuPortalTarget={document.body}
               />
             </AnimatedAutoWidth>

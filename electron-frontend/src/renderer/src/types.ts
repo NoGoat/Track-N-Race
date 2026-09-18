@@ -640,7 +640,7 @@ declare global {
       pause: () => void
       seek: (pct: number) => void
       setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
-      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number) => void
+      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number, v6Types?: number[]) => void
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void

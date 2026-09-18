@@ -1,799 +1,1687 @@
 #include "TNRD_V6.h"
 #include "TnrdCodec.h"
+#include "tnrp/rows.h"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
-#include <exception>
-#include <future>
+#include <filesystem>
 #include <limits>
 #include <list>
 #include <map>
-#include <memory>
 #include <mutex>
-#include <queue>
 #include <set>
-#include <string_view>
-#include <thread>
 #include <tuple>
-#include <type_traits>
 #include <unordered_map>
-#include <utility>
 
+#include <glaze/glaze.hpp>
 #include <zlib.h>
 #include <zstd.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace tnrp::detail {
+
+// External linkage is required by Glaze's compile-time aggregate reflection
+// on MSVC (internal-linkage aggregate types trigger C7631).
+struct V6Metadata {
+    HeaderRow session;
+    std::vector<V6DriverHeader> drivers;
+    std::vector<V6LapSummary> laps;
+    struct StoredShared {
+        V6Phase phase{V6Phase::Race};
+        float sessionTime{};
+        uint64_t offset{};
+        uint64_t compressedSize{};
+        uint64_t uncompressedSize{};
+        uint32_t checksum{};
+    };
+    std::vector<StoredShared> shared;
+};
+
 namespace {
 
 constexpr size_t HEADER_SIZE = 128;
-constexpr size_t ROW_TYPE_COUNT = 15;
-constexpr size_t LAP_ENTRY_SIZE = 24;
-constexpr size_t CHUNK_ENTRY_SIZE = 96;
-constexpr size_t BRANCH_ENTRY_SIZE = 16;
-constexpr size_t ROW_INDEX_ENTRY_SIZE = 24;
-constexpr uint16_t HOT_ROW_INDEX_STRIDE = 64;
 constexpr size_t FOOTER_SIZE = 48;
-constexpr size_t METADATA_PREFIX_SIZE = 16;
 constexpr size_t CHUNK_PREFIX_SIZE = 32;
-constexpr uint32_t CHUNK_MAGIC = 0x344B4843u;
-constexpr uint32_t FOOTER_MAGIC = 0x34444E45u;
-constexpr uint32_t METADATA_MAGIC = 0x3454454Du;
-constexpr uint32_t MAX_LAPS = 100'000;
-constexpr uint32_t MAX_CHUNKS = 1'000'000;
-constexpr uint32_t MAX_BRANCHES = 1'000'000;
+constexpr size_t CHUNK_ENTRY_SIZE = 56;
+constexpr uint32_t CHUNK_MAGIC = 0x364b4843u;  // CHK6
+constexpr uint32_t SHARED_MAGIC = 0x36524853u; // SHR6
+constexpr uint32_t FOOTER_MAGIC = 0x36444e45u; // END6
+constexpr uint32_t MAX_CHUNKS = 5'000'000;
 constexpr uint64_t MAX_CHUNK_PLAIN = 512ull * 1024ull * 1024ull;
-constexpr uint64_t MAX_METADATA_BYTES = 16ull * 1024ull * 1024ull;
-constexpr uint64_t MAX_SUMMARY_BYTES = 64ull * 1024ull * 1024ull;
+constexpr uint64_t MAX_METADATA_BYTES = 128ull * 1024ull * 1024ull;
 constexpr size_t DEFAULT_CACHE_BYTES = 64ull * 1024ull * 1024ull;
-constexpr size_t MAX_PARALLEL_CHUNKS = 8;
+constexpr float WRITE_DELAY = 30.0f;
+constexpr glz::opts kPartialRead{.null_terminated = false, .error_on_unknown_keys = false};
 const std::array<uint8_t, 8> MAGIC{{'T','N','R','D','_','V','6','\0'}};
 
-struct DecompressionContext {
-    ZSTD_DCtx* value{ZSTD_createDCtx()};
-    ~DecompressionContext() { if (value) ZSTD_freeDCtx(value); }
-};
+void fail(std::string* out, std::string value) { if (out) *out = std::move(value); }
+bool writeAll(std::FILE* f, const void* p, size_t n) {
+    return n == 0 || (f && std::fwrite(p, 1, n, f) == n);
+}
+bool seekFile(std::FILE* f, uint64_t offset) {
+#ifdef _WIN32
+    return f && offset <= static_cast<uint64_t>(std::numeric_limits<__int64>::max()) &&
+        _fseeki64(f, static_cast<__int64>(offset), SEEK_SET) == 0;
+#else
+    return f && offset <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()) &&
+        fseeko(f, static_cast<off_t>(offset), SEEK_SET) == 0;
+#endif
+}
+bool seekEnd(std::FILE* f) {
+#ifdef _WIN32
+    return f && _fseeki64(f, 0, SEEK_END) == 0;
+#else
+    return f && fseeko(f, 0, SEEK_END) == 0;
+#endif
+}
+uint64_t tellFile(std::FILE* f) {
+#ifdef _WIN32
+    const auto value = f ? _ftelli64(f) : -1;
+#else
+    const auto value = f ? ftello(f) : -1;
+#endif
+    return value < 0 ? UINT64_MAX : static_cast<uint64_t>(value);
+}
+bool readAt(std::FILE* f, uint64_t offset, void* p, size_t n) {
+    return seekFile(f, offset) && (n == 0 || std::fread(p, 1, n, f) == n);
+}
+bool rangeOk(uint64_t size, uint64_t offset, uint64_t bytes) {
+    return offset <= size && bytes <= size - offset;
+}
+void put16(std::vector<uint8_t>& out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value)); out.push_back(static_cast<uint8_t>(value >> 8));
+}
+void put32(std::vector<uint8_t>& out, uint32_t value) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+void put64(std::vector<uint8_t>& out, uint64_t value) {
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+void putFloat(std::vector<uint8_t>& out, float value) {
+    uint32_t bits{}; std::memcpy(&bits, &value, sizeof(bits)); put32(out, bits);
+}
+uint16_t get16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | uint16_t(p[1]) << 8); }
+uint32_t get32(const uint8_t* p) {
+    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+}
+uint64_t get64(const uint8_t* p) {
+    uint64_t value{}; for (int i = 0; i < 8; ++i) value |= uint64_t(p[i]) << (i * 8); return value;
+}
+float getFloat(const uint8_t* p) {
+    const uint32_t bits = get32(p); float value{}; std::memcpy(&value, &bits, sizeof(value)); return value;
+}
 
-void put16(std::vector<uint8_t>& b, uint16_t v) { b.push_back((uint8_t)v); b.push_back((uint8_t)(v >> 8)); }
-void put32(std::vector<uint8_t>& b, uint32_t v) { for (int i=0;i<4;++i) b.push_back((uint8_t)(v >> (8*i))); }
-void put64(std::vector<uint8_t>& b, uint64_t v) { for (int i=0;i<8;++i) b.push_back((uint8_t)(v >> (8*i))); }
-void putFloat(std::vector<uint8_t>& b, float v) { uint32_t u{}; std::memcpy(&u,&v,4); put32(b,u); }
-uint16_t get16(const uint8_t* p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
-uint32_t get32(const uint8_t* p) { return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; }
-uint64_t get64(const uint8_t* p) { uint64_t v=0; for(int i=0;i<8;++i)v|=(uint64_t)p[i]<<(8*i); return v; }
-float getFloat(const uint8_t* p) { uint32_t u=get32(p); float v{}; std::memcpy(&v,&u,4); return v; }
+template <class T> std::string jsonOf(const T& value) {
+    std::string out;
+    if (glz::write_json(value, out)) return {};
+    return out;
+}
+float scanTime(std::string_view json) {
+    const auto key = json.find("\"session_time\":");
+    return key == json.npos ? -1.0f : std::strtof(json.data() + key + 15, nullptr);
+}
+std::string rowType(std::string_view json) {
+    auto at = json.find("\"type\":\"");
+    if (at == json.npos) return {};
+    at += 8; const auto end = json.find('"', at);
+    return end == json.npos ? std::string{} : std::string(json.substr(at, end - at));
+}
+std::string number(double value) {
+    char buffer[64]; std::snprintf(buffer, sizeof(buffer), "%.9g", value); return buffer;
+}
+std::string integer(int64_t value) { return std::to_string(value); }
+std::string boolean(bool value) { return value ? "true" : "false"; }
+std::string sample(float time, std::initializer_list<std::pair<std::string_view, std::string>> fields) {
+    std::string out = "{\"session_time\":" + number(time);
+    for (const auto& [key, value] : fields) {
+        out += ",\""; out.append(key); out += "\":"; out += value;
+    }
+    out.push_back('}');
+    return out;
+}
+std::string sample(float time, const std::vector<std::pair<std::string, std::string>>& fields) {
+    std::string out = "{\"session_time\":" + number(time);
+    for (const auto& [key, value] : fields) out += ",\"" + key + "\":" + value;
+    out.push_back('}'); return out;
+}
+std::string retime(std::string_view json, float time) {
+    const auto at = json.find("\"session_time\":");
+    if (at == json.npos) return std::string(json);
+    const auto start = at + 15;
+    auto end = start;
+    while (end < json.size() && json[end] != ',' && json[end] != '}') ++end;
+    std::string out(json); out.replace(start, end - start, number(time)); return out;
+}
+bool stateType(V6DataType type) {
+    switch (type) {
+        case V6DataType::Aero: case V6DataType::TyreState: case V6DataType::BrakeBias:
+            return true;
+        default: return false;
+    }
+}
+int phaseRank(V6Phase phase) { return phase == V6Phase::Formation ? 0 : 1; }
+bool before(V6Phase aPhase, float a, V6Phase bPhase, float b) {
+    return phaseRank(aPhase) < phaseRank(bPhase) || (aPhase == bPhase && a < b);
+}
 
-void fail(std::string* out, std::string message) { if(out)*out=std::move(message); }
-bool writeAll(std::FILE* f,const void* p,size_t n){return n==0||std::fwrite(p,1,n,f)==n;}
-bool seek(std::FILE* f,uint64_t off){
-#ifdef _WIN32
-    return off<=(uint64_t)std::numeric_limits<__int64>::max()&&_fseeki64(f,(__int64)off,SEEK_SET)==0;
-#else
-    return off<=(uint64_t)std::numeric_limits<off_t>::max()&&fseeko(f,(off_t)off,SEEK_SET)==0;
-#endif
+std::vector<uint8_t> makeHeader(uint64_t metadataOffset, uint64_t metadataSize,
+                                uint64_t directoryOffset, uint32_t chunkCount,
+                                uint64_t footerOffset) {
+    std::vector<uint8_t> out;
+    out.insert(out.end(), MAGIC.begin(), MAGIC.end()); put16(out, 6); put16(out, HEADER_SIZE);
+    put32(out, 3); put64(out, metadataOffset); put64(out, metadataSize);
+    put64(out, directoryOffset); put32(out, chunkCount); put32(out, CHUNK_ENTRY_SIZE);
+    put64(out, footerOffset);
+    while (out.size() < 120) out.push_back(0);
+    put32(out, static_cast<uint32_t>(::crc32(0, out.data(), 120)));
+    while (out.size() < HEADER_SIZE) out.push_back(0);
+    return out;
 }
-uint64_t tell(std::FILE* f){
-#ifdef _WIN32
-    const auto p=_ftelli64(f); return p<0?UINT64_MAX:(uint64_t)p;
-#else
-    const auto p=ftello(f); return p<0?UINT64_MAX:(uint64_t)p;
-#endif
+
+uint32_t controlCrc(std::string_view metadata, const std::vector<uint8_t>& directory) {
+    uint32_t crc = static_cast<uint32_t>(::crc32(0,
+        reinterpret_cast<const Bytef*>(metadata.data()), static_cast<uInt>(metadata.size())));
+    return static_cast<uint32_t>(::crc32(crc, directory.data(), static_cast<uInt>(directory.size())));
 }
-bool seekEnd(std::FILE* f){
-#ifdef _WIN32
-    return _fseeki64(f,0,SEEK_END)==0;
-#else
-    return fseeko(f,0,SEEK_END)==0;
-#endif
+
+uint32_t oldFamilyMask(V6DataType type) {
+    switch (type) {
+        case V6DataType::Speed: case V6DataType::RPM: case V6DataType::Gear:
+        case V6DataType::Throttle: case V6DataType::Brake: case V6DataType::Steering:
+        case V6DataType::TyreSurfaceTemp:
+        case V6DataType::TyreInnerTemp: case V6DataType::BrakeTemp:
+        case V6DataType::EngineTemp: return v4TypeBit(1);
+        case V6DataType::Aero: return v4TypeBit(1) | v4TypeBit(2);
+        case V6DataType::TyreState: return v4TypeBit(2) | v4TypeBit(10);
+        case V6DataType::Fuel: case V6DataType::ERSStore:
+        case V6DataType::ERSHarvest: case V6DataType::ERSDeployment:
+        case V6DataType::EnginePower: case V6DataType::BrakeBias: return v4TypeBit(2);
+        case V6DataType::TyreWear: case V6DataType::Damage: return v4TypeBit(3);
+        case V6DataType::LapTiming: return v4TypeBit(4) | v4TypeBit(7);
+        case V6DataType::GForce: return v4TypeBit(11);
+        case V6DataType::RideHeight: return v4TypeBit(12);
+        case V6DataType::Position: return v4TypeBit(13);
+        default: return 0;
+    }
 }
-bool readAt(std::FILE* f,uint64_t off,void* p,size_t n){return seek(f,off)&&(n==0||std::fread(p,1,n,f)==n);}
-bool rangeOk(uint64_t size,uint64_t off,uint64_t bytes){return off<=size&&bytes<=size-off;}
-uint8_t rowType(std::string_view s){
-    auto p=s.find("\"type\":\"");if(p==s.npos)return 0;p+=8;
-    auto is=[&](std::string_view x){return s.substr(p,x.size())==x;};
-    if(is("telemetry"))return 1;if(is("status"))return 2;if(is("damage"))return 3;if(is("lap\""))return 4;
-    if(is("session\""))return 5;if(is("race_event"))return 6;if(is("timing"))return 7;if(is("participants"))return 8;
-    if(is("all_status"))return 9;if(is("tyre_sets"))return 10;if(is("motion\""))return 11;if(is("motion_ex"))return 12;
-    if(is("positions"))return 13;if(is("session_history_fastest"))return 14;
+bool requestedByOldMask(V6DataType type, uint32_t mask) {
+    return mask == UINT32_MAX || (oldFamilyMask(type) & mask) != 0;
+}
+bool requestedForAllDrivers(V6DataType type, uint32_t mask) {
+    switch (type) {
+        case V6DataType::LapTiming: return (mask & v4TypeBit(7)) != 0;
+        case V6DataType::Position: return (mask & v4TypeBit(13)) != 0;
+        case V6DataType::Aero: case V6DataType::TyreState:
+        case V6DataType::Fuel: case V6DataType::ERSStore:
+        case V6DataType::ERSHarvest: case V6DataType::ERSDeployment:
+        case V6DataType::EnginePower: case V6DataType::BrakeBias:
+            return (mask & v4TypeBit(9)) != 0;
+        default: return false;
+    }
+}
+uint8_t sharedRowType(std::string_view json) {
+    const auto type = rowType(json);
+    if (type == "session") return 5;
+    if (type == "race_event") return 6;
+    if (type == "participants") return 8;
     return 0;
 }
-float scanTime(std::string_view s){auto p=s.find("\"session_time\":");if(p==s.npos)return -1;p+=15;return std::strtof(s.data()+p,nullptr);}
-int scanInt(std::string_view s,std::string_view key,int fallback=0){auto p=s.find(key);if(p==s.npos)return fallback;p+=key.size();return (int)std::strtol(s.data()+p,nullptr,10);}
-double scanDouble(std::string_view s,std::string_view key,double fallback=0){auto p=s.find(key);if(p==s.npos)return fallback;p+=key.size();return std::strtod(s.data()+p,nullptr);}
-std::string withSessionTime(std::string_view source,float time){std::string stored(source);if(time<0||scanTime(stored)>=0)return stored;const size_t objectStart=stored.find('{');if(objectStart==std::string::npos)return stored;char number[32];std::snprintf(number,sizeof(number),"%.9g",(double)time);stored.insert(objectStart+1,std::string("\"session_time\":")+number+",");return stored;}
-std::string_view sourceLine(const V6SourceRow& row){return row.line;}
-float sourceSessionTime(const V6SourceRow& row){return row.sessionTime;}
-std::string_view sourceLine(const std::pair<std::string_view,float>& row){return row.first;}
-float sourceSessionTime(const std::pair<std::string_view,float>& row){return row.second;}
 
-struct Lap { uint32_t num{};float start{},end{};uint32_t timeMs{},flags{}; };
-struct RowSeek { float firstTime{},lastTime{};uint32_t offset{},length{},ordinal{};uint16_t count{},reserved{}; };
-struct BranchCut { uint64_t wallClockMs{};float rewindSessionTime{}; };
-struct Chunk {
-    uint32_t lap{};uint16_t type{},flags{};uint64_t offset{},compressed{},plain{};uint32_t rows{},crc{};uint64_t sequence{};
-    float firstTime{},lastTime{},prefixMaxLastTime{},minDistance{std::numeric_limits<float>::quiet_NaN()},maxDistance{std::numeric_limits<float>::quiet_NaN()};
-    uint64_t rowIndexOffset{};uint32_t rowIndexCount{};uint16_t rowIndexStride{1},rowIndexEntrySize{ROW_INDEX_ENTRY_SIZE};
-    uint64_t branchWallClockMs{};
-    std::vector<RowSeek> rowIndex;
-};
+} // namespace
 
-std::vector<uint8_t> makeHeader(uint64_t metaOff,uint64_t metaSize,uint64_t lapOff,uint32_t lapCount,
-                                uint64_t chunkOff,uint32_t chunkCount,uint64_t footerOff,
-                                uint64_t summaryOff,uint64_t summarySize,uint64_t rowIndexOff,uint64_t rowIndexSize,
-                                uint64_t branchOff,uint32_t branchCount){
-    std::vector<uint8_t>b;b.insert(b.end(),MAGIC.begin(),MAGIC.end());put16(b,6);put16(b,(uint16_t)HEADER_SIZE);put32(b,3);
-    put64(b,metaOff);put64(b,metaSize);put64(b,lapOff);put32(b,lapCount);put32(b,(uint32_t)LAP_ENTRY_SIZE);
-    put64(b,chunkOff);put32(b,chunkCount);put32(b,(uint32_t)CHUNK_ENTRY_SIZE);put64(b,footerOff);
-    put64(b,summaryOff);put64(b,summarySize);put64(b,rowIndexOff);put64(b,rowIndexSize);
-    put64(b,branchOff);put32(b,branchCount);put32(b,(uint32_t)BRANCH_ENTRY_SIZE);put32(b,0);put32(b,0);
-    const uint32_t crc=(uint32_t)::crc32(0,b.data(),120);b[120]=(uint8_t)crc;b[121]=(uint8_t)(crc>>8);b[122]=(uint8_t)(crc>>16);b[123]=(uint8_t)(crc>>24);return b;
+const char* v6TypeName(V6DataType type) {
+    static constexpr const char* names[] = {"unknown","speed","rpm","gear","throttle","brake",
+        "steering","aero","tyre_surface_temp","tyre_inner_temp","brake_temp","engine_temp",
+        "tyre_wear","tyre_state","damage","fuel","ers_store","ers_harvest","ers_deployment",
+        "engine_power","brake_bias","g_force","ride_height","position","lap_timing"};
+    const auto value = static_cast<uint8_t>(type);
+    return value < std::size(names) ? names[value] : names[0];
 }
-
-uint32_t controlCrc(std::string_view summary,const std::vector<uint8_t>& branches,const std::vector<uint8_t>& laps,const std::vector<uint8_t>& chunks,const std::vector<uint8_t>& rowIndex){
-    uint32_t crc=(uint32_t)::crc32(0,(const Bytef*)summary.data(),(uInt)summary.size());crc=(uint32_t)::crc32(crc,branches.data(),(uInt)branches.size());crc=(uint32_t)::crc32(crc,laps.data(),(uInt)laps.size());crc=(uint32_t)::crc32(crc,chunks.data(),(uInt)chunks.size());return (uint32_t)::crc32(crc,rowIndex.data(),(uInt)rowIndex.size());
-}
-
-bool splitRows(std::string_view plain,uint8_t expectedType,uint64_t sequence,std::vector<V6TimedRow>& out,uint32_t expectedCount,std::string* errorOut,const std::vector<float>* inferredTimes=nullptr,bool filter=false,float from=0,float to=0,bool latestOnly=false,float* firstOut=nullptr,float* lastOut=nullptr){
-    size_t pos=0;uint32_t count=0;float first=std::numeric_limits<float>::infinity(),last=-std::numeric_limits<float>::infinity(),bestTime=-std::numeric_limits<float>::infinity();std::string_view bestLine;uint32_t bestOffset{};bool haveBest=false;
-    while(pos<plain.size()){
-        size_t nl=plain.find('\n',pos);if(nl==std::string_view::npos)nl=plain.size();
-        if(nl>pos){auto line=plain.substr(pos,nl-pos);const uint8_t actual=rowType(line);if(actual!=expectedType){fail(errorOut,"V6 chunk contains the wrong row type");return false;}float time=scanTime(line);if(time<0&&inferredTimes&&count<inferredTimes->size())time=(*inferredTimes)[count];if(std::isfinite(time)){first=std::min(first,time);last=std::max(last,time);}if(!filter||(time>=from&&time<=to)){if(latestOnly){if(!haveBest||time>bestTime){bestTime=time;bestLine=line;bestOffset=(uint32_t)pos;haveBest=true;}}else out.push_back({time,actual,sequence,std::string(line),(uint32_t)pos});}++count;}
-        if(nl==plain.size())break;pos=nl+1;
-    }
-    if(count!=expectedCount){fail(errorOut,"V6 chunk row count mismatch");return false;}if(latestOnly&&haveBest)out.push_back({bestTime,expectedType,sequence,std::string(bestLine),bestOffset});if(firstOut)*firstOut=first;if(lastOut)*lastOut=last;return true;
-}
-
-void sortRows(std::vector<V6TimedRow>& rows){std::stable_sort(rows.begin(),rows.end(),[](const auto&a,const auto&b){if(a.sessionTime!=b.sessionTime)return a.sessionTime<b.sessionTime;return a.sequence<b.sequence;});}
-void mergeRowGroups(std::vector<std::vector<V6TimedRow>>& groups,std::vector<V6TimedRow>& out){
-    struct Cursor{size_t group{},row{};};auto later=[&](const Cursor&a,const Cursor&b){const auto&x=groups[a.group][a.row];const auto&y=groups[b.group][b.row];if(x.sessionTime!=y.sessionTime)return x.sessionTime>y.sessionTime;if(x.sequence!=y.sequence)return x.sequence>y.sequence;if(a.group!=b.group)return a.group>b.group;return a.row>b.row;};
-    size_t total=0;std::priority_queue<Cursor,std::vector<Cursor>,decltype(later)> heap(later);for(size_t i=0;i<groups.size();++i){sortRows(groups[i]);total+=groups[i].size();if(!groups[i].empty())heap.push({i,0});}out.clear();out.reserve(total);while(!heap.empty()){auto cursor=heap.top();heap.pop();auto& group=groups[cursor.group];out.push_back(std::move(group[cursor.row]));if(++cursor.row<group.size())heap.push(cursor);}
-}
+V6DataType v6TypeFromName(std::string_view name) {
+    for (uint8_t value = 1; value < static_cast<uint8_t>(V6DataType::Count); ++value)
+        if (name == v6TypeName(static_cast<V6DataType>(value))) return static_cast<V6DataType>(value);
+    return V6DataType::Unknown;
 }
 
 struct TnrdV6Writer::Impl {
-    struct Builder{std::string plain;std::vector<RowSeek> rowIndex;float firstTime{std::numeric_limits<float>::infinity()},lastTime{-std::numeric_limits<float>::infinity()},minDistance{std::numeric_limits<float>::infinity()},maxDistance{-std::numeric_limits<float>::infinity()};uint32_t rows{};uint16_t stride{1};bool dirty{};};
-    static constexpr size_t MAX_REUSABLE_BUILDER_BYTES=64u*1024u*1024u;
-    static constexpr size_t MAX_REUSABLE_BUILDER_POOL_BYTES=64u*1024u*1024u;
-    static constexpr size_t MAX_REUSABLE_COMPRESSION_BYTES=64u*1024u*1024u;
-    std::FILE* file{};uint64_t metadataOffset{HEADER_SIZE+METADATA_PREFIX_SIZE},metadataSize{};uint32_t currentLap{},highestLap{};float lastTime{};bool haveTime{},timedSession{},timedLapActive{};
-    std::map<uint32_t,Lap> laps;std::map<std::pair<uint32_t,uint16_t>,Builder> builders;std::vector<Chunk> chunks;std::vector<BranchCut> branches;
-    std::array<Builder,ROW_TYPE_COUNT> builderPool;
-    V6ControlSummary summary;std::map<uint32_t,V6LapStatusSummary> statusByLap;uint64_t nextSequence{1},currentBranchWallClockMs{},lastBranchWallClockMs{};
-    ZSTD_CCtx* compressionContext{};std::vector<uint8_t> compressionScratch;
-    uint64_t chunkWrites{},chunkPlainBytesProcessed{},chunkCompressedBytesWritten{},compressionBufferBytesAllocated{};
-    size_t lastChunkPlainBytes{},lastChunkCompressedBytes{},lastCompressionBufferCapacityBytes{},peakCompressionBufferCapacityBytes{};
-    uint64_t checkpointWrites{},checkpointScratchBytesAllocated{};
-    size_t lastCheckpointScratchBytes{},peakCheckpointScratchBytes{},lastCheckpointDirectoryBytes{},peakCheckpointDirectoryBytes{},lastCheckpointRowIndexBytes{},peakCheckpointRowIndexBytes{};
+    struct Builder {
+        std::string plain;
+        float first{std::numeric_limits<float>::infinity()};
+        float last{-std::numeric_limits<float>::infinity()};
+        uint32_t count{};
+    };
+    struct PendingLap {
+        V6LapSummary summary;
+        std::map<V6DataType, Builder> chunks;
+        V6Phase deadlinePhase{V6Phase::Race};
+        float deadline{};
+    };
+    struct DriverState {
+        bool known{};
+        bool open{};
+        bool seenActive{};
+        bool terminal{};
+        V6Phase terminalPhase{V6Phase::Race};
+        float terminalTime{-1.0f};
+        V6LapSummary current;
+        std::map<V6DataType, Builder> chunks;
+        std::vector<PendingLap> pending;
+        std::map<V6DataType, std::map<std::string, std::string>> committedState;
+        std::map<V6DataType, std::map<std::string, std::string>> lastState;
+        std::set<V6DataType> committedUnavailable;
+        std::set<V6DataType> unavailable;
+        bool currentInvalid{};
+    };
+    struct PendingRestriction { uint8_t driver{}; V6RestrictionChange change; };
+    struct PendingTyreHistory { uint8_t driver{}; V6Phase phase{}; float time{}; std::vector<V6TyreStintSummary> stints; };
 
-    ~Impl(){if(compressionContext)ZSTD_freeCCtx(compressionContext);}
+    std::FILE* file{};
+    std::string path;
+    HeaderRow session;
+    std::array<DriverState, 24> drivers;
+    std::map<uint8_t, V6DriverHeader> liveHeaders;
+    std::map<uint8_t, V6DriverHeader> committedHeaders;
+    std::vector<V6LapSummary> committedLaps;
+    std::vector<V6ChunkInfo> chunks;
+    std::vector<V6Metadata::StoredShared> committedShared;
+    std::vector<V6SharedRecord> pendingShared;
+    std::vector<PendingRestriction> pendingRestrictions;
+    std::vector<PendingTyreHistory> pendingTyreHistory;
+    std::optional<uint8_t> player;
+    uint32_t nextLapId{1};
+    uint64_t nextSequence{1};
+    V6Phase phase{V6Phase::Race};
+    std::array<float, 2> phaseTime{{-1.0f, -1.0f}};
+    std::array<float, 2> committedThrough{{-1.0f, -1.0f}};
+    ZSTD_CCtx* compressor{};
+    std::vector<uint8_t> scratch;
+    uint64_t chunkWrites{}, plainBytes{}, compressedBytes{}, compressionAllocated{}, checkpoints{};
+    size_t lastPlain{}, lastCompressed{}, peakScratch{};
 
-    static bool hotType(uint16_t type){return type==1||type==11||type==12||type==13;}
-    Builder& builderFor(const std::pair<uint32_t,uint16_t>& key){
-        auto [it,inserted]=builders.try_emplace(key);
-        if(inserted&&key.second<builderPool.size()){
-            it->second.plain.swap(builderPool[key.second].plain);
-            it->second.rowIndex.swap(builderPool[key.second].rowIndex);
-        }
-        return it->second;
+    ~Impl() { if (compressor) ZSTD_freeCCtx(compressor); }
+    size_t phaseIndex(V6Phase value) const { return value == V6Phase::Formation ? 1 : 0; }
+    float now() const { return phaseTime[phaseIndex(phase)]; }
+
+    DriverState& ensure(uint8_t index, float time) {
+        auto& state = drivers[index];
+        state.known = true;
+        auto [it, inserted] = liveHeaders.try_emplace(index);
+        if (inserted) it->second.vehicleIndex = index;
+        if (!state.open && !state.terminal) startLap(index, 0, time);
+        return state;
     }
-    size_t builderPoolCapacityBytes()const{
-        size_t bytes=0;
-        for(const auto&builder:builderPool)
-            bytes+=builder.plain.capacity()+1+builder.rowIndex.capacity()*sizeof(RowSeek);
-        return bytes;
+    void startLap(uint8_t index, uint32_t number, float time) {
+        auto& state = drivers[index];
+        state.open = true; state.terminal = false; state.terminalTime = -1.0f; state.current = {};
+        state.current.lapId = nextLapId++; state.current.driverIndex = index;
+        state.current.lapNumber = number; state.current.phase = phase;
+        state.current.startSessionTime = time; state.current.endSessionTime = time;
+        state.current.isPartial = true; state.current.isValid = true;
+        state.chunks.clear();
+        for (const auto& [type, values] : state.lastState)
+            for (const auto& [_, value] : values) add(index, type, time, retime(value, time), false);
+        for (V6DataType type : state.unavailable)
+            add(index, type, time, sample(time, {{"available", "false"}}), false);
     }
-    void recycleBuilder(uint16_t type,Builder& builder){
-        if(type>=builderPool.size())return;
-        auto& pooled=builderPool[type];
-        builder.plain.clear();builder.rowIndex.clear();
-        size_t poolBytes=builderPoolCapacityBytes();
-        const size_t oldPlainBytes=pooled.plain.capacity()+1;
-        const size_t newPlainBytes=builder.plain.capacity()+1;
-        if(builder.plain.capacity()<=MAX_REUSABLE_BUILDER_BYTES&&
-           builder.plain.capacity()>pooled.plain.capacity()&&
-           poolBytes-oldPlainBytes+newPlainBytes<=MAX_REUSABLE_BUILDER_POOL_BYTES){
-            builder.plain.swap(pooled.plain);
-            poolBytes=poolBytes-oldPlainBytes+newPlainBytes;
-        }
-        const size_t oldIndexBytes=pooled.rowIndex.capacity()*sizeof(RowSeek);
-        const size_t newIndexBytes=builder.rowIndex.capacity()*sizeof(RowSeek);
-        if(builder.rowIndex.capacity()*sizeof(RowSeek)<=MAX_REUSABLE_BUILDER_BYTES&&
-           builder.rowIndex.capacity()>pooled.rowIndex.capacity()&&
-           poolBytes-oldIndexBytes+newIndexBytes<=MAX_REUSABLE_BUILDER_POOL_BYTES)
-            builder.rowIndex.swap(pooled.rowIndex);
-    }
-    static std::vector<uint8_t> serializeRowIndex(const Chunk& chunk){
-        std::vector<RowSeek> sortedRows;
-        if(chunk.rowIndexStride==1){sortedRows=chunk.rowIndex;std::stable_sort(sortedRows.begin(),sortedRows.end(),[](const RowSeek& a,const RowSeek& b){return a.firstTime<b.firstTime||(a.firstTime==b.firstTime&&a.offset<b.offset);});}
-        const auto& storedRows=sortedRows.empty()?chunk.rowIndex:sortedRows;std::vector<uint8_t> bytes;bytes.reserve(storedRows.size()*ROW_INDEX_ENTRY_SIZE);
-        for(const auto& row:storedRows){putFloat(bytes,row.firstTime);putFloat(bytes,row.lastTime);put32(bytes,row.offset);put32(bytes,row.length);put32(bytes,row.ordinal);put16(bytes,row.count);put16(bytes,row.reserved);}
-        return bytes;
-    }
-    bool writeChunk(const std::pair<uint32_t,uint16_t>& key,Builder& builder,std::string* errorOut){
-        const std::string& plain=builder.plain;
-        if(plain.empty())return true;if(plain.size()>MAX_CHUNK_PLAIN){fail(errorOut,"V6 chunk exceeds safety limit");return false;}if(chunks.size()>=MAX_CHUNKS){fail(errorOut,"V6 chunk count exceeds safety limit");return false;}
-        const size_t compressionBound=ZSTD_compressBound(plain.size());
-        std::vector<uint8_t> oversizedScratch;
-        std::unique_ptr<ZSTD_CCtx,decltype(&ZSTD_freeCCtx)> oversizedContext(nullptr,&ZSTD_freeCCtx);
-        uint8_t* compressedData=nullptr;size_t compressedCapacity=0;ZSTD_CCtx* context=nullptr;
-        if(compressionBound<=MAX_REUSABLE_COMPRESSION_BYTES){
-            if(compressionScratch.size()<compressionBound){const size_t previousCapacity=compressionScratch.capacity();compressionScratch.resize(compressionBound);if(compressionScratch.capacity()!=previousCapacity)compressionBufferBytesAllocated+=compressionScratch.capacity();}
-            if(!compressionContext)compressionContext=ZSTD_createCCtx();
-            compressedData=compressionScratch.data();compressedCapacity=compressionScratch.size();context=compressionContext;
-        }else{
-            oversizedScratch.resize(compressionBound);compressionBufferBytesAllocated+=oversizedScratch.capacity();
-            oversizedContext.reset(ZSTD_createCCtx());
-            compressedData=oversizedScratch.data();compressedCapacity=oversizedScratch.size();context=oversizedContext.get();
-        }
-        lastChunkPlainBytes=plain.size();lastCompressionBufferCapacityBytes=compressedCapacity;peakCompressionBufferCapacityBytes=std::max(peakCompressionBufferCapacityBytes,lastCompressionBufferCapacityBytes);
-        if(!context){fail(errorOut,"could not allocate V6 compression context");return false;}
-        const size_t resetResult=ZSTD_CCtx_reset(context,ZSTD_reset_session_only);
-        if(ZSTD_isError(resetResult)){fail(errorOut,ZSTD_getErrorName(resetResult));return false;}
-        const size_t levelResult=ZSTD_CCtx_setParameter(context,ZSTD_c_compressionLevel,3);
-        if(ZSTD_isError(levelResult)){fail(errorOut,ZSTD_getErrorName(levelResult));return false;}
-        const size_t checksumResult=ZSTD_CCtx_setParameter(context,ZSTD_c_checksumFlag,1);
-        if(ZSTD_isError(checksumResult)){fail(errorOut,ZSTD_getErrorName(checksumResult));return false;}
-        const size_t n=ZSTD_compress2(context,compressedData,compressedCapacity,plain.data(),plain.size());
-        lastChunkCompressedBytes=ZSTD_isError(n)?0:n;
-        if(ZSTD_isError(n)){fail(errorOut,ZSTD_getErrorName(n));return false;}++chunkWrites;chunkPlainBytesProcessed+=plain.size();chunkCompressedBytesWritten+=lastChunkCompressedBytes;if(!seekEnd(file)){fail(errorOut,"could not seek to append V6 chunk");return false;}
-        Chunk c;c.lap=key.first;c.type=key.second;c.offset=tell(file)+CHUNK_PREFIX_SIZE;c.compressed=n;c.plain=plain.size();c.rows=builder.rows;c.crc=(uint32_t)::crc32(0,(const Bytef*)plain.data(),(uInt)plain.size());c.sequence=nextSequence++;c.firstTime=builder.firstTime;c.lastTime=builder.lastTime;c.minDistance=std::isfinite(builder.minDistance)?builder.minDistance:std::numeric_limits<float>::quiet_NaN();c.maxDistance=std::isfinite(builder.maxDistance)?builder.maxDistance:std::numeric_limits<float>::quiet_NaN();c.rowIndexStride=builder.stride;c.branchWallClockMs=currentBranchWallClockMs;
-        std::vector<uint8_t> prefix;put32(prefix,CHUNK_MAGIC);put32(prefix,c.lap);put16(prefix,c.type);put16(prefix,0);put64(prefix,c.compressed);put64(prefix,c.plain);put32(prefix,c.rows);
-        if(!writeAll(file,prefix.data(),prefix.size())||!writeAll(file,compressedData,n)){fail(errorOut,"failed while appending V6 chunk");return false;}c.rowIndex=std::move(builder.rowIndex);chunks.push_back(std::move(c));return true;
-    }
-
-    bool writeSnapshot(bool includeRowIndex,std::string* errorOut){
-        if(!seekEnd(file)){fail(errorOut,"could not seek to append V6 checkpoint");return false;}
-        if(laps.size()>MAX_LAPS||chunks.size()>MAX_CHUNKS||branches.size()>MAX_BRANCHES){fail(errorOut,"V6 control table exceeds its format limit");return false;}
-        summary.lapStatus.clear();
-        for(const auto& [lap,status]:statusByLap)summary.lapStatus.push_back(status);
-        const std::string summaryJson=writeJson(summary);
-        const uint64_t summaryOffset=tell(file);
-        if(summaryJson.size()>MAX_SUMMARY_BYTES||summaryJson.size()>UINT32_MAX){fail(errorOut,"V6 control summary exceeds its format limit");return false;}
-        if(!writeAll(file,summaryJson.data(),summaryJson.size())){fail(errorOut,"failed to append V6 control summary");return false;}
-
-        const uint64_t branchOffset=tell(file);
-        std::vector<uint8_t> branchBytes;
-        branchBytes.reserve(branches.size()*BRANCH_ENTRY_SIZE);
-        for(const auto& branch:branches){put64(branchBytes,branch.wallClockMs);putFloat(branchBytes,branch.rewindSessionTime);put32(branchBytes,0);}
-        if(!writeAll(file,branchBytes.data(),branchBytes.size())){fail(errorOut,"failed to append V6 branch table");return false;}
-
-        const uint64_t lapOffset=tell(file);
-        std::vector<uint8_t> lapBytes;
-        for(const auto& [n,l]:laps){put32(lapBytes,n);putFloat(lapBytes,l.start);putFloat(lapBytes,l.end);put32(lapBytes,l.timeMs);put32(lapBytes,l.flags);put32(lapBytes,0);}
-        if(!writeAll(file,lapBytes.data(),lapBytes.size())){fail(errorOut,"failed to append V6 lap table");return false;}
-
-        const uint64_t chunkOffset=tell(file);
-        std::vector<uint8_t> dir;
-        std::vector<uint8_t> rowIndexBytes;
-        std::array<float,ROW_TYPE_COUNT> prefixMax;
-        prefixMax.fill(-std::numeric_limits<float>::infinity());
-        std::vector<size_t> order(chunks.size());
-        for(size_t i=0;i<order.size();++i)order[i]=i;
-        std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){
-            const auto& x=chunks[a];const auto& y=chunks[b];
-            if(x.type!=y.type)return x.type<y.type;
-            if(x.firstTime!=y.firstTime)return x.firstTime<y.firstTime;
-            return x.sequence<y.sequence;
-        });
-        const uint64_t rowIndexOffset=chunkOffset+(uint64_t)order.size()*CHUNK_ENTRY_SIZE;
-        for(size_t index:order){
-            auto& c=chunks[index];
-            c.prefixMaxLastTime=prefixMax[c.type]=std::max(prefixMax[c.type],c.lastTime);
-            if(includeRowIndex){
-                c.rowIndexOffset=rowIndexOffset+rowIndexBytes.size();
-                c.rowIndexCount=(uint32_t)c.rowIndex.size();
-                const auto bytes=serializeRowIndex(c);
-                rowIndexBytes.insert(rowIndexBytes.end(),bytes.begin(),bytes.end());
-            }else{
-                c.rowIndexOffset=0;
-                c.rowIndexCount=0;
+    void add(uint8_t index, V6DataType type, float time, std::string value, bool updateState = true) {
+        if (index >= drivers.size() || type == V6DataType::Unknown || !std::isfinite(time)) return;
+        if (drivers[index].terminal || ((!player || index != *player) && !drivers[index].known)) return;
+        auto& state = ensure(index, time);
+        if (!state.open) return;
+        const bool missing = value.find("\"available\":false") != std::string::npos;
+        if (missing) state.unavailable.insert(type); else state.unavailable.erase(type);
+        if (updateState && stateType(type)) {
+            const auto payload = [](const std::string& json) {
+                const auto comma = json.find(','); return comma == std::string::npos ? std::string_view{} : std::string_view(json).substr(comma);
+            };
+            const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
+            const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
+            const auto typeState = state.lastState.find(type);
+            if (typeState != state.lastState.end()) {
+                const auto previous = typeState->second.find(signature);
+                if (previous != typeState->second.end() && payload(previous->second) == payload(value)) return;
             }
-            put32(dir,c.lap);put16(dir,c.type);put16(dir,c.flags);put64(dir,c.offset);
-            put64(dir,c.compressed);put64(dir,c.plain);put32(dir,c.rows);put32(dir,c.crc);
-            put64(dir,c.sequence);putFloat(dir,c.firstTime);putFloat(dir,c.lastTime);
-            putFloat(dir,c.prefixMaxLastTime);putFloat(dir,c.minDistance);putFloat(dir,c.maxDistance);
-            put64(dir,c.rowIndexOffset);put32(dir,c.rowIndexCount);put16(dir,c.rowIndexStride);
-            put16(dir,c.rowIndexEntrySize);put32(dir,0);put64(dir,c.branchWallClockMs);
+            state.lastState[type][signature] = value;
         }
-        if(!writeAll(file,dir.data(),dir.size())){fail(errorOut,"failed to append V6 chunk directory");return false;}
-        if(!writeAll(file,rowIndexBytes.data(),rowIndexBytes.size())){fail(errorOut,"failed to append V6 row index");return false;}
-        const uint64_t footerOffset=tell(file);
-        std::vector<uint8_t> footer;
-        put32(footer,FOOTER_MAGIC);put16(footer,6);put16(footer,FOOTER_SIZE);
-        put64(footer,branchOffset);put64(footer,lapOffset);put64(footer,chunkOffset);put64(footer,rowIndexOffset);
-        put32(footer,controlCrc(summaryJson,branchBytes,lapBytes,dir,rowIndexBytes));
-        put32(footer,(uint32_t)summaryJson.size());
-        if(!writeAll(file,footer.data(),footer.size())||std::fflush(file)!=0){fail(errorOut,"failed to commit V6 checkpoint footer");return false;}
-        const auto header=makeHeader(metadataOffset,metadataSize,lapOffset,(uint32_t)laps.size(),chunkOffset,(uint32_t)chunks.size(),footerOffset,summaryOffset,summaryJson.size(),rowIndexOffset,rowIndexBytes.size(),branchOffset,(uint32_t)branches.size());
-        lastCheckpointDirectoryBytes=dir.size();peakCheckpointDirectoryBytes=std::max(peakCheckpointDirectoryBytes,lastCheckpointDirectoryBytes);lastCheckpointRowIndexBytes=rowIndexBytes.size();peakCheckpointRowIndexBytes=std::max(peakCheckpointRowIndexBytes,lastCheckpointRowIndexBytes);lastCheckpointScratchBytes=summaryJson.capacity()+1+branchBytes.capacity()+lapBytes.capacity()+dir.capacity()+rowIndexBytes.capacity()+order.capacity()*sizeof(size_t)+footer.capacity()+header.capacity();peakCheckpointScratchBytes=std::max(peakCheckpointScratchBytes,lastCheckpointScratchBytes);checkpointScratchBytesAllocated+=lastCheckpointScratchBytes;++checkpointWrites;
-        if(!seek(file,0)||!writeAll(file,header.data(),header.size())||std::fflush(file)!=0){fail(errorOut,"failed to commit V6 checkpoint header");return false;}
-        return seekEnd(file);
+        auto& builder = state.chunks[type];
+        builder.plain += value; builder.plain.push_back('\n');
+        builder.first = std::min(builder.first, time); builder.last = std::max(builder.last, time); ++builder.count;
+        state.current.endSessionTime = std::max(state.current.endSessionTime, time);
+        liveHeaders[index].availableTypeMask |= v6DataTypeBit(type);
+    }
+    static Builder splitAt(Builder& source, float boundary) {
+        Builder moved, kept; size_t at = 0;
+        while (at < source.plain.size()) {
+            auto end = source.plain.find('\n', at); if (end == std::string::npos) end = source.plain.size();
+            if (end > at) {
+                const std::string_view line(source.plain.data() + at, end - at); const float time = scanTime(line);
+                auto& target = time >= boundary ? moved : kept;
+                target.plain.append(line); target.plain.push_back('\n');
+                target.first = std::min(target.first, time); target.last = std::max(target.last, time); ++target.count;
+            }
+            at = end + 1;
+        }
+        source = std::move(kept); return moved;
+    }
+    void boundary(uint8_t index, uint32_t newNumber, float time, uint32_t lapTime,
+                  uint32_t s1, uint32_t s2, uint32_t s3, bool completed, bool valid) {
+        auto& state = ensure(index, time);
+        if (state.current.lapNumber == newNumber && state.current.phase == phase) return;
+        std::map<V6DataType, Builder> moved;
+        for (auto& [type, builder] : state.chunks) {
+            auto tail = splitAt(builder, time); if (tail.count) moved.emplace(type, std::move(tail));
+        }
+        closeLap(index, time, lapTime, s1, s2, s3, completed, valid, false);
+        startLap(index, newNumber, time);
+        for (auto& [type, builder] : moved) state.chunks[type] = std::move(builder);
+    }
+    void closeLap(uint8_t index, float time, uint32_t lapTime, uint32_t s1, uint32_t s2,
+                  uint32_t s3, bool completed, bool valid, bool formationTransition) {
+        auto& state = drivers[index]; if (!state.open) return;
+        state.current.endSessionTime = std::max(state.current.startSessionTime, time);
+        state.current.lapTimeMs = lapTime; state.current.s1Ms = s1; state.current.s2Ms = s2;
+        state.current.s3Ms = s3; state.current.isCompleted = completed;
+        state.current.isValid = valid; state.current.isPartial = !completed;
+        if (!state.chunks.empty() || state.current.lapNumber != 0) {
+            PendingLap lap; lap.summary = state.current; lap.chunks = std::move(state.chunks);
+            lap.deadlinePhase = formationTransition ? V6Phase::Race : phase;
+            lap.deadline = formationTransition ? WRITE_DELAY : time + WRITE_DELAY;
+            state.pending.push_back(std::move(lap));
+        }
+        state.open = false; state.chunks.clear();
+    }
+    void terminate(uint8_t index, float time) {
+        auto& state = drivers[index];
+        if (!state.known || state.terminal) return;
+        closeLap(index,time,0,0,0,0,false,!state.currentInvalid,false);
+        state.terminal = true; state.terminalPhase = phase; state.terminalTime = time;
+    }
+    bool eligible(const PendingLap& lap, bool force) const {
+        return force || phaseRank(phase) > phaseRank(lap.deadlinePhase) ||
+            (phase == lap.deadlinePhase && now() >= lap.deadline);
+    }
+    bool writeChunk(uint8_t driver, uint32_t lapId, V6Phase chunkPhase, V6DataType type,
+                    const Builder& builder, V6ChunkInfo& info, std::string* errorOut) {
+        if (!builder.count) return true;
+        if (builder.plain.size() > MAX_CHUNK_PLAIN || chunks.size() >= MAX_CHUNKS) {
+            fail(errorOut, "V6 chunk exceeds its format limit"); return false;
+        }
+        const size_t bound = ZSTD_compressBound(builder.plain.size());
+        if (scratch.size() < bound) { scratch.resize(bound); compressionAllocated += scratch.capacity(); }
+        if (!compressor) compressor = ZSTD_createCCtx();
+        if (!compressor) { fail(errorOut, "could not allocate V6 compression context"); return false; }
+        if (ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, 3)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
+            fail(errorOut, "could not configure V6 compression"); return false;
+        }
+        const size_t size = ZSTD_compress2(compressor, scratch.data(), scratch.size(),
+                                           builder.plain.data(), builder.plain.size());
+        if (ZSTD_isError(size)) { fail(errorOut, ZSTD_getErrorName(size)); return false; }
+        if (!seekEnd(file)) { fail(errorOut, "could not append V6 chunk"); return false; }
+        const uint64_t prefixOffset = tellFile(file);
+        std::vector<uint8_t> prefix; put32(prefix, CHUNK_MAGIC); prefix.push_back(driver);
+        prefix.push_back(static_cast<uint8_t>(type)); prefix.push_back(0);
+        prefix.push_back(static_cast<uint8_t>(chunkPhase)); put32(prefix, lapId);
+        put64(prefix, size); put64(prefix, builder.plain.size()); put32(prefix, builder.count);
+        if (!writeAll(file, prefix.data(), prefix.size()) || !writeAll(file, scratch.data(), size)) {
+            fail(errorOut, "failed while appending V6 chunk"); return false;
+        }
+        info = {driver, lapId, static_cast<uint8_t>(type), 0, chunkPhase,
+                builder.first, builder.last, prefixOffset + CHUNK_PREFIX_SIZE,
+                size, builder.plain.size(), builder.count,
+                static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(builder.plain.data()),
+                                               static_cast<uInt>(builder.plain.size()))), nextSequence++};
+        ++chunkWrites; plainBytes += builder.plain.size(); compressedBytes += size;
+        lastPlain = builder.plain.size(); lastCompressed = size; peakScratch = std::max(peakScratch, scratch.capacity());
+        return true;
     }
 
+    bool writeShared(const V6SharedRecord& record, V6Metadata::StoredShared& info,
+                     std::string* errorOut) {
+        if (record.json.empty() || record.json.size() > MAX_CHUNK_PLAIN) {
+            fail(errorOut, "V6 shared record exceeds its format limit"); return false;
+        }
+        const size_t bound = ZSTD_compressBound(record.json.size());
+        if (scratch.size() < bound) { scratch.resize(bound); compressionAllocated += scratch.capacity(); }
+        if (!compressor) compressor = ZSTD_createCCtx();
+        if (!compressor || ZSTD_isError(ZSTD_CCtx_reset(compressor, ZSTD_reset_session_only)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_compressionLevel, 3)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(compressor, ZSTD_c_checksumFlag, 1))) {
+            fail(errorOut, "could not configure V6 shared-record compression"); return false;
+        }
+        const size_t size = ZSTD_compress2(compressor, scratch.data(), scratch.size(),
+                                           record.json.data(), record.json.size());
+        if (ZSTD_isError(size) || !seekEnd(file)) {
+            fail(errorOut, ZSTD_isError(size) ? ZSTD_getErrorName(size) : "could not append V6 shared record");
+            return false;
+        }
+        const uint32_t checksum = static_cast<uint32_t>(::crc32(0,
+            reinterpret_cast<const Bytef*>(record.json.data()), static_cast<uInt>(record.json.size())));
+        const uint64_t prefixOffset = tellFile(file); std::vector<uint8_t> prefix;
+        put32(prefix, SHARED_MAGIC); prefix.push_back(static_cast<uint8_t>(record.phase));
+        while (prefix.size() < 8) prefix.push_back(0);
+        put64(prefix, size); put64(prefix, record.json.size()); put32(prefix, checksum); put32(prefix, 0);
+        if (!writeAll(file, prefix.data(), prefix.size()) || !writeAll(file, scratch.data(), size)) {
+            fail(errorOut, "failed while appending V6 shared record"); return false;
+        }
+        info = {record.phase, record.sessionTime, prefixOffset + CHUNK_PREFIX_SIZE,
+                size, record.json.size(), checksum};
+        return true;
+    }
+
+    void applyParticipant(const ParticipantsRow& row, bool committed) {
+        auto& target = committed ? committedHeaders : liveHeaders;
+        for (const auto& driver : row.drivers) {
+            if (driver.idx < 0 || driver.idx >= 24) continue;
+            auto& header = target[static_cast<uint8_t>(driver.idx)]; header.vehicleIndex = driver.idx;
+            if (header.driverName.empty()) { header.driverName = driver.name; header.teamId = driver.team_id; header.raceNumber = driver.race_number; }
+            header.isPlayer = driver.idx == row.player_idx;
+            const auto setting = !driver.your_telemetry ? TelemetrySetting::Unknown
+                : (*driver.your_telemetry == 1 ? TelemetrySetting::Public : TelemetrySetting::Restricted);
+            if (header.initialTelemetrySetting == TelemetrySetting::Unknown)
+                header.initialTelemetrySetting = setting;
+        }
+    }
+    void rebuildLiveMetadata() {
+        liveHeaders = committedHeaders;
+        for (const auto& record : pendingShared) if (rowType(record.json) == "participants") {
+            ParticipantsRow row; if (!glz::read<kPartialRead>(row, record.json)) applyParticipant(row, false);
+        }
+        for (const auto& pending : pendingRestrictions) {
+            auto& header = liveHeaders[pending.driver]; header.vehicleIndex = pending.driver;
+            if (header.initialTelemetrySetting == TelemetrySetting::Unknown)
+                header.initialTelemetrySetting = pending.change.setting;
+            else header.restrictionChanges.push_back(pending.change);
+        }
+        for (const auto& pending : pendingTyreHistory)
+            liveHeaders[pending.driver].tyreStints = pending.stints;
+        for (uint8_t i = 0; i < drivers.size(); ++i) {
+            auto& state = drivers[i]; if (!state.known) continue;
+            auto& header = liveHeaders[i]; header.vehicleIndex = i;
+            for (const auto& [type, _] : state.committedState) header.availableTypeMask |= v6DataTypeBit(type);
+            for (const auto& lap : state.pending) for (const auto& [type, _] : lap.chunks) header.availableTypeMask |= v6DataTypeBit(type);
+            for (const auto& [type, _] : state.chunks) header.availableTypeMask |= v6DataTypeBit(type);
+        }
+    }
+    bool commitControl(bool force, std::string* errorOut) {
+        auto shared = pendingShared.begin();
+        while (shared != pendingShared.end()) {
+            const bool ready = force || phaseRank(phase) > phaseRank(shared->phase) ||
+                (phase == shared->phase && shared->sessionTime < now() - WRITE_DELAY);
+            if (!ready) { ++shared; continue; }
+            if (rowType(shared->json) == "participants") {
+                ParticipantsRow row; if (!glz::read<kPartialRead>(row, shared->json)) applyParticipant(row, true);
+            }
+            V6Metadata::StoredShared stored;
+            if (!writeShared(*shared, stored, errorOut)) return false;
+            committedThrough[phaseIndex(shared->phase)] = std::max(committedThrough[phaseIndex(shared->phase)], shared->sessionTime);
+            committedShared.push_back(stored); shared = pendingShared.erase(shared);
+        }
+        auto restriction = pendingRestrictions.begin();
+        while (restriction != pendingRestrictions.end()) {
+            const auto& change = restriction->change;
+            const bool ready = force || phaseRank(phase) > phaseRank(change.phase) ||
+                (phase == change.phase && change.sessionTime < now() - WRITE_DELAY);
+            if (!ready) { ++restriction; continue; }
+            auto& header = committedHeaders[restriction->driver]; header.vehicleIndex = restriction->driver;
+            if (header.initialTelemetrySetting == TelemetrySetting::Unknown)
+                header.initialTelemetrySetting = change.setting;
+            else if (header.restrictionChanges.empty() || header.restrictionChanges.back().setting != change.setting)
+                header.restrictionChanges.push_back(change);
+            committedThrough[phaseIndex(change.phase)] = std::max(
+                committedThrough[phaseIndex(change.phase)], change.sessionTime);
+            restriction = pendingRestrictions.erase(restriction);
+        }
+        auto history = pendingTyreHistory.begin();
+        while (history != pendingTyreHistory.end()) {
+            const bool ready = force || phaseRank(phase) > phaseRank(history->phase) ||
+                (phase == history->phase && history->time < now() - WRITE_DELAY);
+            if (!ready) { ++history; continue; }
+            auto& header = committedHeaders[history->driver]; header.vehicleIndex = history->driver;
+            header.tyreStints = history->stints;
+            committedThrough[phaseIndex(history->phase)] = std::max(
+                committedThrough[phaseIndex(history->phase)], history->time);
+            history = pendingTyreHistory.erase(history);
+        }
+        return true;
+    }
+    bool commit(bool force, std::string* errorOut) {
+        const size_t chunksBefore = chunks.size();
+        for (uint8_t index = 0; index < drivers.size(); ++index) {
+            auto& state = drivers[index]; auto lap = state.pending.begin();
+            while (lap != state.pending.end()) {
+                if (!eligible(*lap, force)) { ++lap; continue; }
+                std::vector<V6ChunkInfo> written; written.reserve(lap->chunks.size());
+                for (const auto& [type, builder] : lap->chunks) {
+                    V6ChunkInfo info; if (!writeChunk(index, lap->summary.lapId, lap->summary.phase,
+                                                       type, builder, info, errorOut)) return false;
+                    if (builder.count) written.push_back(info);
+                }
+                chunks.insert(chunks.end(), written.begin(), written.end());
+                committedLaps.push_back(lap->summary);
+                auto& header = committedHeaders[index]; header.vehicleIndex = index;
+                header.lapIds.push_back(lap->summary.lapId);
+                for (const auto& [type, builder] : lap->chunks) {
+                    if (builder.count) header.availableTypeMask |= v6DataTypeBit(type);
+                    if (stateType(type) && builder.count) {
+                        size_t start = 0;
+                        while (start < builder.plain.size()) {
+                            size_t end = builder.plain.find('\n', start); if (end == std::string::npos) end = builder.plain.size();
+                            if (end > start) {
+                                const std::string value = builder.plain.substr(start, end - start);
+                                const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
+                                const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
+                                state.committedState[type][signature] = value;
+                                if (value.find("\"available\":false") != std::string::npos)
+                                    state.committedUnavailable.insert(type);
+                                else state.committedUnavailable.erase(type);
+                            }
+                            start = end + 1;
+                        }
+                    }
+                }
+                committedThrough[phaseIndex(lap->summary.phase)] = std::max(
+                    committedThrough[phaseIndex(lap->summary.phase)], lap->summary.endSessionTime);
+                lap = state.pending.erase(lap);
+            }
+        }
+        if (!commitControl(force, errorOut)) return false;
+        rebuildLiveMetadata();
+        if (!force && chunks.size() != chunksBefore)
+            return snapshot(errorOut);
+        return true;
+    }
+
+    bool snapshotTo(std::FILE* output, const std::vector<V6ChunkInfo>& directoryChunks,
+                    const std::vector<V6Metadata::StoredShared>& sharedRecords,
+                    bool countCheckpoint, std::string* errorOut) {
+        V6Metadata metadata; metadata.session = session;
+        for (const auto& [_, header] : committedHeaders) metadata.drivers.push_back(header);
+        metadata.laps = committedLaps; metadata.shared = sharedRecords;
+        const std::string metadataJson = jsonOf(metadata);
+        if (metadataJson.empty() || metadataJson.size() > MAX_METADATA_BYTES) {
+            fail(errorOut, "V6 metadata exceeds its format limit"); return false;
+        }
+        if (!seekEnd(output)) { fail(errorOut, "could not append V6 checkpoint"); return false; }
+        const uint64_t metadataOffset = tellFile(output);
+        if (!writeAll(output, metadataJson.data(), metadataJson.size())) { fail(errorOut, "could not write V6 metadata"); return false; }
+        const uint64_t directoryOffset = tellFile(output);
+        std::vector<uint8_t> directory; directory.reserve(directoryChunks.size() * CHUNK_ENTRY_SIZE);
+        for (const auto& chunk : directoryChunks) {
+            directory.push_back(chunk.driverIndex); directory.push_back(chunk.typeId);
+            directory.push_back(chunk.flags); directory.push_back(static_cast<uint8_t>(chunk.phase));
+            put32(directory, chunk.lapId); putFloat(directory, chunk.firstTime); putFloat(directory, chunk.lastTime);
+            put64(directory, chunk.offset); put64(directory, chunk.compressedSize);
+            put64(directory, chunk.uncompressedSize); put32(directory, chunk.sampleCount);
+            put32(directory, chunk.checksum); put64(directory, chunk.sequence);
+        }
+        if (!writeAll(output, directory.data(), directory.size())) { fail(errorOut, "could not write V6 directory"); return false; }
+        const uint64_t footerOffset = tellFile(output); std::vector<uint8_t> footer;
+        put32(footer, FOOTER_MAGIC); put16(footer, 6); put16(footer, FOOTER_SIZE);
+        put64(footer, metadataOffset); put64(footer, directoryOffset);
+        put32(footer, static_cast<uint32_t>(directoryChunks.size())); put32(footer, static_cast<uint32_t>(metadataJson.size()));
+        put32(footer, controlCrc(metadataJson, directory)); while (footer.size() < FOOTER_SIZE) footer.push_back(0);
+        if (!writeAll(output, footer.data(), footer.size()) || std::fflush(output) != 0) {
+            fail(errorOut, "could not commit V6 footer"); return false;
+        }
+        const auto header = makeHeader(metadataOffset, metadataJson.size(), directoryOffset,
+                                       static_cast<uint32_t>(directoryChunks.size()), footerOffset);
+        if (!seekFile(output, 0) || !writeAll(output, header.data(), header.size()) || std::fflush(output) != 0) {
+            fail(errorOut, "could not commit V6 header"); return false;
+        }
+        if (countCheckpoint) ++checkpoints;
+        return seekEnd(output);
+    }
+
+    bool snapshot(std::string* errorOut) {
+        return snapshotTo(file, chunks, committedShared, true, errorOut);
+    }
+
+    bool compactAndReplace(std::string* errorOut) {
+        const std::string stagingPath = path + ".compact.tmp";
+        std::FILE* compacted = openTnrdFile(stagingPath, "w+b");
+        if (!compacted) {
+            fail(errorOut, "could not create compacted V6 file");
+            return false;
+        }
+
+        const auto discardStaging = [&] {
+            std::fclose(compacted);
+            std::error_code ignored;
+            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
+        };
+        std::vector<uint8_t> blank(HEADER_SIZE);
+        if (!writeAll(compacted, blank.data(), blank.size())) {
+            fail(errorOut, "could not initialize compacted V6 file");
+            discardStaging();
+            return false;
+        }
+
+        std::vector<uint8_t> copyBuffer(1024 * 1024);
+        const auto copyBlock = [&](uint64_t payloadOffset, uint64_t compressedSize,
+                                   uint64_t& newPayloadOffset) {
+            if (payloadOffset < CHUNK_PREFIX_SIZE ||
+                compressedSize > UINT64_MAX - CHUNK_PREFIX_SIZE || !seekEnd(compacted))
+                return false;
+            const uint64_t blockOffset = payloadOffset - CHUNK_PREFIX_SIZE;
+            uint64_t remaining = compressedSize + CHUNK_PREFIX_SIZE;
+            uint64_t sourceOffset = blockOffset;
+            const uint64_t destinationOffset = tellFile(compacted);
+            if (destinationOffset == UINT64_MAX) return false;
+            while (remaining) {
+                const size_t amount = static_cast<size_t>(std::min<uint64_t>(remaining, copyBuffer.size()));
+                if (!readAt(file, sourceOffset, copyBuffer.data(), amount) ||
+                    !writeAll(compacted, copyBuffer.data(), amount)) return false;
+                sourceOffset += amount;
+                remaining -= amount;
+            }
+            newPayloadOffset = destinationOffset + CHUNK_PREFIX_SIZE;
+            return true;
+        };
+
+        auto compactedChunks = chunks;
+        for (auto& chunk : compactedChunks) {
+            if (!copyBlock(chunk.offset, chunk.compressedSize, chunk.offset)) {
+                fail(errorOut, "could not copy a V6 chunk while compacting");
+                discardStaging();
+                return false;
+            }
+        }
+        auto compactedShared = committedShared;
+        for (auto& record : compactedShared) {
+            if (!copyBlock(record.offset, record.compressedSize, record.offset)) {
+                fail(errorOut, "could not copy a V6 shared record while compacting");
+                discardStaging();
+                return false;
+            }
+        }
+        if (!snapshotTo(compacted, compactedChunks, compactedShared, false, errorOut)) {
+            discardStaging();
+            return false;
+        }
+        if (std::fclose(compacted) != 0) {
+            compacted = nullptr;
+            std::error_code ignored;
+            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
+            if (errorOut && errorOut->empty()) *errorOut = "could not close compacted V6 file";
+            return false;
+        }
+        compacted = nullptr;
+
+        if (std::fclose(file) != 0) {
+            file = nullptr;
+            fail(errorOut, "could not close V6 file before compaction install");
+            std::error_code ignored;
+            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
+            return false;
+        }
+        file = nullptr;
+
+        bool installed = false;
+#ifdef _WIN32
+        const auto source = windowsExtendedPath(stagingPath);
+        const auto destination = windowsExtendedPath(path);
+        installed = !source.empty() && !destination.empty() &&
+            MoveFileExW(source.c_str(), destination.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+        std::error_code installError;
+        std::filesystem::rename(std::filesystem::u8path(stagingPath),
+                                std::filesystem::u8path(path), installError);
+        installed = !installError;
+#endif
+        if (!installed) {
+            fail(errorOut, "could not install compacted V6 file");
+            std::error_code ignored;
+            std::filesystem::remove(std::filesystem::u8path(stagingPath), ignored);
+            return false;
+        }
+        chunks = std::move(compactedChunks);
+        committedShared = std::move(compactedShared);
+        return true;
+    }
+
+    TelemetrySetting setting(uint8_t index) const {
+        const auto it = liveHeaders.find(index); if (it == liveHeaders.end()) return TelemetrySetting::Unknown;
+        return it->second.restrictionChanges.empty() ? it->second.initialTelemetrySetting
+                                                      : it->second.restrictionChanges.back().setting;
+    }
+    bool privateAvailable(uint8_t index) const { return player == index || setting(index) == TelemetrySetting::Public; }
+    void unavailable(uint8_t index, float time) {
+        const std::string missing = sample(time, {{"available", "false"}});
+        for (auto type : {V6DataType::Fuel,V6DataType::ERSStore,V6DataType::ERSHarvest,
+                          V6DataType::ERSDeployment,V6DataType::EnginePower,V6DataType::BrakeBias,
+                          V6DataType::TyreWear,V6DataType::Damage,V6DataType::TyreState}) {
+            drivers[index].lastState[type].clear();
+            add(index, type, time, missing);
+        }
+    }
+
+    // Implemented after the row-specific helpers below.
+    bool appendRow(std::string_view, float, std::string*);
+    bool rewind(float, std::string*);
 };
 
-TnrdV6Writer::TnrdV6Writer():impl_(std::make_unique<Impl>()){}
-TnrdV6Writer::~TnrdV6Writer(){if(impl_&&impl_->file){std::string ignored;(void)finish(&ignored);}}
-bool TnrdV6Writer::isOpen()const{return impl_&&impl_->file;}
+bool TnrdV6Writer::Impl::appendRow(std::string_view json, float suppliedTime, std::string* errorOut) {
+    if (json.empty()) return true;
+    const std::string kind = rowType(json);
+    float time = suppliedTime >= 0.0f ? suppliedTime : scanTime(json);
+    if (!std::isfinite(time) || time < 0.0f) time = std::max(0.0f, now());
+    phaseTime[phaseIndex(phase)] = std::max(phaseTime[phaseIndex(phase)], time);
 
-TnrdV6WriterMemoryStats TnrdV6Writer::memoryStats()const{
-    TnrdV6WriterMemoryStats stats;stats.open=isOpen();if(!impl_)return stats;
-    stats.builderCount=impl_->builders.size();
-    for(const auto&[_,builder]:impl_->builders){
-        stats.builderPlainBytes+=builder.plain.size();
-        stats.builderPlainCapacityBytes+=builder.plain.capacity()+1;
-        stats.builderRowIndexEntries+=builder.rowIndex.size();
-        stats.builderRowIndexCapacityBytes+=builder.rowIndex.capacity()*sizeof(RowSeek);
+    auto telemetry = [&](uint8_t index, const auto& car) {
+        add(index, V6DataType::Speed, time, sample(time, {{"speed_kph",integer(car.speed_kph)}}));
+        std::vector<std::pair<std::string,std::string>> rpm{{"rpm",integer(car.rpm)}};
+        if constexpr (requires { car.rev_lights_pct.has_value(); }) {
+            if (car.rev_lights_pct) rpm.emplace_back("rev_lights_pct", integer(*car.rev_lights_pct));
+            if (car.rev_lights_bit_value) rpm.emplace_back("rev_lights_bit_value", integer(*car.rev_lights_bit_value));
+        } else {
+            rpm.emplace_back("rev_lights_pct", integer(car.rev_lights_pct));
+            rpm.emplace_back("rev_lights_bit_value", integer(car.rev_lights_bit_value));
+        }
+        add(index, V6DataType::RPM, time, sample(time, rpm));
+        add(index, V6DataType::Gear, time, sample(time, {{"gear",integer(car.gear)}}));
+        if constexpr (requires { car.throttle.has_value(); }) {
+            if (car.throttle) add(index,V6DataType::Throttle,time,sample(time,{{"throttle",number(*car.throttle)}}));
+            if (car.brake) add(index,V6DataType::Brake,time,sample(time,{{"brake",number(*car.brake)}}));
+            if (car.steering) add(index,V6DataType::Steering,time,sample(time,{{"steering",number(*car.steering)}}));
+        } else {
+            add(index,V6DataType::Throttle,time,sample(time,{{"throttle",number(car.throttle)}}));
+            add(index,V6DataType::Brake,time,sample(time,{{"brake",number(car.brake)}}));
+            add(index,V6DataType::Steering,time,sample(time,{{"steering",number(car.steering)}}));
+        }
+        add(index,V6DataType::Aero,time,sample(time,{{"drs",integer(car.drs)},{"slm",integer(car.slm)}}));
+        add(index,V6DataType::TyreSurfaceTemp,time,sample(time,{
+            {"tyre_temp_surface_fl",integer(car.tyre_temp_surface_fl)},
+            {"tyre_temp_surface_fr",integer(car.tyre_temp_surface_fr)},
+            {"tyre_temp_surface_rl",integer(car.tyre_temp_surface_rl)},
+            {"tyre_temp_surface_rr",integer(car.tyre_temp_surface_rr)}}));
+        add(index,V6DataType::TyreInnerTemp,time,sample(time,{
+            {"tyre_temp_inner_fl",integer(car.tyre_temp_inner_fl)},
+            {"tyre_temp_inner_fr",integer(car.tyre_temp_inner_fr)},
+            {"tyre_temp_inner_rl",integer(car.tyre_temp_inner_rl)},
+            {"tyre_temp_inner_rr",integer(car.tyre_temp_inner_rr)}}));
+        add(index,V6DataType::BrakeTemp,time,sample(time,{
+            {"brake_temp_fl",integer(car.brake_temp_fl)},{"brake_temp_fr",integer(car.brake_temp_fr)},
+            {"brake_temp_rl",integer(car.brake_temp_rl)},{"brake_temp_rr",integer(car.brake_temp_rr)}}));
+        add(index,V6DataType::EngineTemp,time,sample(time,{{"engine_temp",integer(car.engine_temp)}}));
+    };
+
+    if (kind == "telemetry") {
+        TelemetryRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        if (row.player_idx >= 0 && row.player_idx < 24) {
+            player = static_cast<uint8_t>(row.player_idx); telemetry(*player, row);
+        }
+        if (row.cars) for (const auto& car : *row.cars)
+            if (car.idx >= 0 && car.idx < 24 && (!player || car.idx != *player)) telemetry(static_cast<uint8_t>(car.idx), car);
+    } else if (kind == "positions") {
+        PositionsRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
+        for (const auto& car : row.cars) if (car.idx >= 0 && car.idx < 24) {
+            const auto index = static_cast<uint8_t>(car.idx);
+            add(index,V6DataType::Position,time,sample(time,{{"x",number(car.x)},{"z",number(car.z)}}));
+            if (car.g_lat && car.g_long && car.g_vert)
+                add(index,V6DataType::GForce,time,sample(time,{{"g_lat",number(*car.g_lat)},
+                    {"g_long",number(*car.g_long)},{"g_vert",number(*car.g_vert)}}));
+        }
+    } else if (kind == "motion") {
+        MotionRow row; if (!glz::read<kPartialRead>(row, json) && row.player_idx >= 0 && row.player_idx < 24) {
+            player = static_cast<uint8_t>(row.player_idx);
+            add(*player,V6DataType::GForce,time,sample(time,{{"g_lat",number(row.g_lat)},
+                {"g_long",number(row.g_long)},{"g_vert",number(row.g_vert)}}));
+        }
+    } else if (kind == "motion_ex") {
+        MotionExRow row; if (!glz::read<kPartialRead>(row, json) && row.player_idx >= 0 && row.player_idx < 24) {
+            player = static_cast<uint8_t>(row.player_idx);
+            add(*player,V6DataType::RideHeight,time,sample(time,{
+                {"front_aero_height_mm",number(row.front_aero_height_mm)},
+                {"rear_aero_height_mm",number(row.rear_aero_height_mm)}}));
+        }
+    } else if (kind == "timing") {
+        TimingRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
+        for (const auto& car : row.cars) if (car.idx >= 0 && car.idx < 24) {
+            const uint8_t index = static_cast<uint8_t>(car.idx);
+            auto& existing = drivers[index];
+            const bool active = car.result_status == 2;
+            const bool ended = (car.result_status >= 3 && car.result_status <= 7) ||
+                (car.result_status == 1 && existing.seenActive);
+            if ((!active && !ended) || existing.terminal) continue;
+            auto& state = ensure(index, time);
+            if (!state.open) continue;
+            if (active) state.seenActive = true;
+            const uint32_t lapNumber = car.lap_num > 0 ? static_cast<uint32_t>(car.lap_num) : 0;
+            if (state.current.lapNumber != lapNumber || state.current.phase != phase) {
+                const uint32_t s1 = car.s1_ms > 0 ? static_cast<uint32_t>(car.s1_ms) : 0;
+                const uint32_t s2 = car.s2_ms > 0 ? static_cast<uint32_t>(car.s2_ms) : 0;
+                const uint32_t total = car.last_lap_ms > 0 ? static_cast<uint32_t>(car.last_lap_ms) : 0;
+                const uint32_t s3 = total > s1 + s2 ? total - s1 - s2 : 0;
+                boundary(index, lapNumber, time, total, s1, s2, s3,
+                         lapNumber > state.current.lapNumber && total > 0,
+                         !state.currentInvalid);
+            }
+            state.currentInvalid = car.lap_invalid;
+            std::vector<std::pair<std::string,std::string>> values{
+                {"position",integer(car.position)},{"lap_num",integer(car.lap_num)},
+                {"current_lap_ms",integer(car.current_lap_ms)},{"last_lap_ms",integer(car.last_lap_ms)},
+                {"s1_ms",integer(car.s1_ms)},{"s2_ms",integer(car.s2_ms)},{"gap_ms",integer(car.gap_ms)},
+                {"pit_status",integer(car.pit_status)},{"num_pit_stops",integer(car.num_pit_stops)},
+                {"lap_invalid",boolean(car.lap_invalid)},{"penalties_s",integer(car.penalties_s)},
+                {"num_dt_pens",integer(car.num_dt_pens)},{"num_sg_pens",integer(car.num_sg_pens)},
+                {"sector",integer(car.sector)},{"result_status",integer(car.result_status)},
+                {"driver_status",integer(car.driver_status)}};
+            if (car.lap_distance_m) values.emplace_back("lap_distance_m", number(*car.lap_distance_m));
+            add(index,V6DataType::LapTiming,time,sample(time,values));
+            if (ended) terminate(index,time);
+        }
+    } else if (kind == "all_status") {
+        AllStatusRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        for (const auto& car : row.cars) if (car.idx >= 0 && car.idx < 24) {
+            const uint8_t index = static_cast<uint8_t>(car.idx);
+            add(index,V6DataType::Aero,time,sample(time,{{"drs_allowed",boolean(car.drs_allowed)}}));
+            add(index,V6DataType::TyreState,time,sample(time,{{"tyre_compound",integer(car.tyre_compound)},
+                {"visual_compound",integer(car.visual_compound)},{"tyre_age_laps",integer(car.tyre_age_laps)}}));
+            if (!privateAvailable(index)) continue;
+            add(index,V6DataType::Fuel,time,sample(time,{{"fuel_kg",number(car.fuel_kg)},
+                {"fuel_laps",number(car.fuel_laps)},{"fuel_mix",integer(car.fuel_mix)}}));
+            add(index,V6DataType::BrakeBias,time,sample(time,{{"front_brake_bias",integer(car.front_brake_bias)}}));
+            add(index,V6DataType::ERSStore,time,sample(time,{{"ers_j",integer(car.ers_j)},
+                {"ers_pct",number(car.ers_pct)},{"ers_mode",integer(car.ers_mode)}}));
+            add(index,V6DataType::ERSHarvest,time,sample(time,{{"ers_harvested_mguk_j",integer(car.ers_harvested_mguk_j)},
+                {"ers_harvested_mguh_j",integer(car.ers_harvested_mguh_j)}}));
+            add(index,V6DataType::ERSDeployment,time,sample(time,{{"ers_deployed_j",integer(car.ers_deployed_j)}}));
+            add(index,V6DataType::EnginePower,time,sample(time,{{"engine_power_ice_kw",number(car.engine_power_ice_kw)},
+                {"engine_power_mguk_kw",number(car.engine_power_mguk_kw)}}));
+        }
+    } else if (kind == "damage") {
+        DamageRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
+        auto damage = [&](uint8_t index, const auto& car, bool full) {
+            std::vector<std::pair<std::string,std::string>> wear, values;
+#define ADD_OPT(target, field) if constexpr (requires { car.field.has_value(); }) { if (car.field) target.emplace_back(#field, number(*car.field)); } else if (full) target.emplace_back(#field, number(car.field))
+            ADD_OPT(wear,tyre_wear_fl); ADD_OPT(wear,tyre_wear_fr); ADD_OPT(wear,tyre_wear_rl); ADD_OPT(wear,tyre_wear_rr);
+            ADD_OPT(values,tyre_dmg_fl); ADD_OPT(values,tyre_dmg_fr); ADD_OPT(values,tyre_dmg_rl); ADD_OPT(values,tyre_dmg_rr);
+            ADD_OPT(values,brake_dmg_fl); ADD_OPT(values,brake_dmg_fr); ADD_OPT(values,brake_dmg_rl); ADD_OPT(values,brake_dmg_rr);
+            ADD_OPT(values,blisters_fl); ADD_OPT(values,blisters_fr); ADD_OPT(values,blisters_rl); ADD_OPT(values,blisters_rr);
+            ADD_OPT(values,wing_fl); ADD_OPT(values,wing_fr); ADD_OPT(values,wing_rear); ADD_OPT(values,floor_damage);
+            ADD_OPT(values,diffuser_damage); ADD_OPT(values,sidepod_damage); ADD_OPT(values,gearbox_damage);
+            ADD_OPT(values,engine_damage); ADD_OPT(values,drs_fault); ADD_OPT(values,ers_fault);
+#undef ADD_OPT
+            if (!wear.empty()) add(index,V6DataType::TyreWear,time,sample(time,wear));
+            if (!values.empty()) add(index,V6DataType::Damage,time,sample(time,values));
+        };
+        if (player) damage(*player,row,true);
+        if (row.cars) for (const auto& car : *row.cars)
+            if (car.idx >= 0 && car.idx < 24 && (!player || car.idx != *player))
+                damage(static_cast<uint8_t>(car.idx),car,false);
+    } else if (kind == "tyre_sets") {
+        TyreSetsRow row; if (!glz::read<kPartialRead>(row, json) && row.car_idx >= 0 && row.car_idx < 24) {
+            const uint8_t index = static_cast<uint8_t>(row.car_idx);
+            if (privateAvailable(index)) add(index,V6DataType::TyreState,time,sample(time,
+                {{"sets",jsonOf(row.sets)},{"fitted_idx",integer(row.fitted_idx)}}));
+        }
+    } else if (kind == "participants") {
+        ParticipantsRow row; if (glz::read<kPartialRead>(row, json)) return true;
+        if (row.player_idx >= 0 && row.player_idx < 24) player = static_cast<uint8_t>(row.player_idx);
+        for (const auto& driver : row.drivers) if (driver.idx >= 0 && driver.idx < 24) {
+            const uint8_t index = static_cast<uint8_t>(driver.idx); ensure(index,time);
+            auto& header = liveHeaders[index]; header.vehicleIndex = index;
+            header.driverName = driver.name; header.teamId = driver.team_id; header.raceNumber = driver.race_number;
+            header.isPlayer = player == index;
+            const auto next = !driver.your_telemetry ? TelemetrySetting::Unknown
+                : (*driver.your_telemetry == 1 ? TelemetrySetting::Public : TelemetrySetting::Restricted);
+            const auto previous = setting(index);
+            if (next != TelemetrySetting::Unknown && next != previous) {
+                const V6RestrictionChange change{phase,time,next};
+                pendingRestrictions.push_back({index,change});
+                if (header.initialTelemetrySetting == TelemetrySetting::Unknown) header.initialTelemetrySetting = next;
+                else header.restrictionChanges.push_back(change);
+                if (previous == TelemetrySetting::Public && next == TelemetrySetting::Restricted && player != index)
+                    unavailable(index,time);
+            }
+        }
+        pendingShared.push_back({phase,time,std::string(json)});
+    } else if (kind == "session") {
+        SessionRow row; if (!glz::read<kPartialRead>(row,json)) {
+            if (row.safety_car_status == 3 && phase != V6Phase::Formation && phaseTime[1] < 0.0f) {
+                phase = V6Phase::Formation; phaseTime[1] = time;
+                // Participants and the first timing samples commonly precede
+                // the first Session packet. They are still formation data; all
+                // of it is uncommitted at this point, so move that provisional
+                // prefix into the formation phase before the game resets its
+                // session clock for race lap 1.
+                for (auto& record : pendingShared) record.phase = phase;
+                for (auto& restriction : pendingRestrictions) restriction.change.phase = phase;
+                for (auto& history : pendingTyreHistory) history.phase = phase;
+                for (auto& state : drivers) {
+                    if (state.open) state.current.phase = phase;
+                    for (auto& lap : state.pending) lap.summary.phase = phase;
+                }
+            }
+            pendingShared.push_back({phase,time,std::string(json)});
+        }
+    } else if (kind == "race_event") {
+        RaceEventRow row; if (glz::read<kPartialRead>(row,json)) return true;
+        if (row.code == "SCAR" && row.safety_car_type == 3 && row.event_type == 3 && phase == V6Phase::Formation) {
+            const float formationEnd = std::max(0.0f, phaseTime[1]);
+            for (uint8_t index = 0; index < drivers.size(); ++index)
+                if (drivers[index].open) closeLap(index,formationEnd,0,0,0,0,false,!drivers[index].currentInvalid,true);
+            phase = V6Phase::Race; phaseTime[0] = time;
+            for (uint8_t index = 0; index < drivers.size(); ++index)
+                if (drivers[index].known) startLap(index,1,time);
+        }
+        if (row.code == "RTMT" && row.car_idx && *row.car_idx >= 0 && *row.car_idx < 24)
+            terminate(static_cast<uint8_t>(*row.car_idx),time);
+        pendingShared.push_back({phase,time,std::string(json)});
+    } else if (kind == "session_history_fastest") {
+        SessionHistoryFastestRow row; if (!glz::read<kPartialRead>(row,json) && row.car_idx >= 0 && row.car_idx < 24) {
+            auto& state = drivers[row.car_idx];
+            for (const auto& history : row.laps) for (auto& lap : state.pending)
+                if (lap.summary.lapNumber == static_cast<uint32_t>(history.lap_num)) {
+                    lap.summary.lapTimeMs = history.lap_time_ms; lap.summary.s1Ms = history.s1_ms;
+                    lap.summary.s2Ms = history.s2_ms; lap.summary.s3Ms = history.s3_ms;
+                    lap.summary.isCompleted = history.lap_time_ms > 0; lap.summary.isPartial = !lap.summary.isCompleted;
+                    lap.summary.isValid = history.lap_valid; break;
+                }
+            std::vector<V6TyreStintSummary> stints; stints.reserve(row.tyre_stints.size());
+            for (const auto& stint : row.tyre_stints)
+                stints.push_back({stint.end_lap, stint.actual_compound, stint.visual_compound});
+            pendingTyreHistory.erase(std::remove_if(pendingTyreHistory.begin(), pendingTyreHistory.end(),
+                [&](const auto& value) { return value.driver == row.car_idx && value.phase == phase; }), pendingTyreHistory.end());
+            pendingTyreHistory.push_back({static_cast<uint8_t>(row.car_idx), phase, time, std::move(stints)});
+        }
     }
-    // Checkpointed builders donate bounded storage to a per-row-family pool.
-    // It is retained by the writer and must remain visible in memory reports.
-    for(const auto&builder:impl_->builderPool){
-        stats.builderPlainCapacityBytes+=builder.plain.capacity()+1;
-        stats.builderRowIndexCapacityBytes+=builder.rowIndex.capacity()*sizeof(RowSeek);
+    return commit(false,errorOut);
+}
+
+bool TnrdV6Writer::Impl::rewind(float time, std::string* errorOut) {
+    if (!std::isfinite(time) || time < 0.0f) { fail(errorOut,"invalid V6 rewind target"); return false; }
+    if (time <= committedThrough[phaseIndex(phase)]) {
+        fail(errorOut,"unsupported rewind overlaps committed V6 data"); return false;
     }
-    stats.chunkCount=impl_->chunks.size();
-    stats.chunkContainerCapacityBytes=impl_->chunks.capacity()*sizeof(Chunk);
-    for(const auto&chunk:impl_->chunks){
-        stats.chunkRowIndexEntries+=chunk.rowIndex.size();
-        stats.chunkRowIndexCapacityBytes+=chunk.rowIndex.capacity()*sizeof(RowSeek);
+    phaseTime[phaseIndex(phase)] = time;
+    for (auto& state : drivers) {
+        if (!state.known) continue;
+        if (state.terminal && state.terminalPhase == phase && state.terminalTime >= time) {
+            state.terminal = false;
+            state.terminalTime = -1.0f;
+        }
+        auto pending = state.pending.begin(); bool reopened = false;
+        while (pending != state.pending.end()) {
+            if (pending->summary.phase != phase) { ++pending; continue; }
+            if (pending->summary.startSessionTime >= time) { pending = state.pending.erase(pending); continue; }
+            if (time <= pending->summary.endSessionTime) {
+                state.current = pending->summary; state.current.endSessionTime = time;
+                state.current.isCompleted = false; state.current.isPartial = true;
+                state.chunks = std::move(pending->chunks); state.open = true; reopened = true;
+                pending = state.pending.erase(pending);
+                for (auto& [_, builder] : state.chunks) (void)splitAt(builder,time);
+                continue;
+            }
+            ++pending;
+        }
+        if (!reopened && state.open && state.current.phase == phase) {
+            if (state.current.startSessionTime >= time) { state.chunks.clear(); state.current.startSessionTime = time; }
+            for (auto& [_, builder] : state.chunks) (void)splitAt(builder,time);
+            state.current.endSessionTime = time;
+        }
+        state.lastState = state.committedState;
+        state.unavailable = state.committedUnavailable;
+        auto consider = [&](const std::map<V6DataType,Builder>& chunks) {
+            for (const auto& [type,builder] : chunks) if (stateType(type) && builder.count) {
+                size_t start = 0;
+                while (start < builder.plain.size()) {
+                    size_t end = builder.plain.find('\n', start); if (end == std::string::npos) end = builder.plain.size();
+                    if (end > start) {
+                        const std::string value = builder.plain.substr(start,end-start);
+                        const auto comma = value.find(','); const auto colon = value.find(':', comma + 1);
+                        const std::string signature = colon == std::string::npos ? value : value.substr(comma + 1, colon - comma - 1);
+                        state.lastState[type][signature] = value;
+                        if (value.find("\"available\":false") != std::string::npos)
+                            state.unavailable.insert(type);
+                        else state.unavailable.erase(type);
+                    }
+                    start = end + 1;
+                }
+            }
+        };
+        for (const auto& lap : state.pending) consider(lap.chunks); consider(state.chunks);
     }
-    stats.branchCount=impl_->branches.size();
-    stats.branchCapacityBytes=impl_->branches.capacity()*sizeof(BranchCut);
-    stats.lapCount=impl_->laps.size();stats.statusLapCount=impl_->statusByLap.size();
-    stats.eventCount=impl_->summary.events.size();
-    stats.eventContainerCapacityBytes=impl_->summary.events.capacity()*sizeof(std::string);
-    for(const auto&event:impl_->summary.events){
-        stats.eventPayloadBytes+=event.size();
-        stats.eventPayloadCapacityBytes+=event.capacity()+1;
+    pendingShared.erase(std::remove_if(pendingShared.begin(),pendingShared.end(),[&](const auto& row) {
+        return row.phase == phase && row.sessionTime >= time;
+    }),pendingShared.end());
+    pendingRestrictions.erase(std::remove_if(pendingRestrictions.begin(),pendingRestrictions.end(),[&](const auto& row) {
+        return row.change.phase == phase && row.change.sessionTime >= time;
+    }),pendingRestrictions.end());
+    pendingTyreHistory.erase(std::remove_if(pendingTyreHistory.begin(),pendingTyreHistory.end(),[&](const auto& row) {
+        return row.phase == phase && row.time >= time;
+    }),pendingTyreHistory.end());
+    rebuildLiveMetadata(); return true;
+}
+
+TnrdV6Writer::TnrdV6Writer() : impl_(std::make_unique<Impl>()) {}
+TnrdV6Writer::~TnrdV6Writer() { if (isOpen()) { std::string ignored; (void)finish(&ignored); } }
+bool TnrdV6Writer::isOpen() const { return impl_ && impl_->file; }
+bool TnrdV6Writer::open(const std::string& path, const HeaderRow& header, std::string* errorOut) {
+    if (isOpen()) { fail(errorOut,"V6 writer is already open"); return false; }
+    impl_ = std::make_unique<Impl>(); impl_->path = path; impl_->file = openTnrdFile(path,"w+b");
+    if (!impl_->file) { fail(errorOut,"could not create V6 file: " + std::string(std::strerror(errno))); return false; }
+    impl_->session = header; impl_->session.magic = "TNRD_V6"; impl_->session.compression = "zstd";
+    std::vector<uint8_t> blank(HEADER_SIZE); if (!writeAll(impl_->file,blank.data(),blank.size())) {
+        fail(errorOut,"could not initialize V6 file"); std::fclose(impl_->file); impl_->file=nullptr; return false;
     }
-    stats.lapStatusCapacityBytes=impl_->summary.lapStatus.capacity()*sizeof(V6LapStatusSummary);
-    stats.chunkWrites=impl_->chunkWrites;stats.chunkPlainBytesProcessed=impl_->chunkPlainBytesProcessed;stats.chunkCompressedBytesWritten=impl_->chunkCompressedBytesWritten;stats.compressionBufferBytesAllocated=impl_->compressionBufferBytesAllocated;stats.compressionScratchCapacityBytes=impl_->compressionScratch.capacity();stats.compressionContextBytes=impl_->compressionContext?ZSTD_sizeof_CCtx(impl_->compressionContext):0;stats.lastChunkPlainBytes=impl_->lastChunkPlainBytes;stats.lastChunkCompressedBytes=impl_->lastChunkCompressedBytes;stats.lastCompressionBufferCapacityBytes=impl_->lastCompressionBufferCapacityBytes;stats.peakCompressionBufferCapacityBytes=impl_->peakCompressionBufferCapacityBytes;
-    stats.checkpointWrites=impl_->checkpointWrites;stats.checkpointScratchBytesAllocated=impl_->checkpointScratchBytesAllocated;stats.lastCheckpointScratchBytes=impl_->lastCheckpointScratchBytes;stats.peakCheckpointScratchBytes=impl_->peakCheckpointScratchBytes;stats.lastCheckpointDirectoryBytes=impl_->lastCheckpointDirectoryBytes;stats.peakCheckpointDirectoryBytes=impl_->peakCheckpointDirectoryBytes;stats.lastCheckpointRowIndexBytes=impl_->lastCheckpointRowIndexBytes;stats.peakCheckpointRowIndexBytes=impl_->peakCheckpointRowIndexBytes;
-    stats.retainedBytes=stats.builderPlainCapacityBytes+stats.builderRowIndexCapacityBytes+
-        stats.chunkContainerCapacityBytes+stats.chunkRowIndexCapacityBytes+
-        stats.branchCapacityBytes+stats.eventPayloadCapacityBytes+
-        stats.eventContainerCapacityBytes+stats.lapStatusCapacityBytes+
-        stats.compressionScratchCapacityBytes+stats.compressionContextBytes;
-    return stats;
+    return true;
 }
-
-bool TnrdV6Writer::open(const std::string& path,const HeaderRow& sourceHeader,std::string* errorOut){
-    if(isOpen()){fail(errorOut,"V6 writer is already open");return false;}
-    // A writer object may be reused after finish(). Do not carry directory,
-    // lap-summary, or segment-sequence state into the next recording.
-    impl_=std::make_unique<Impl>();impl_->file=openTnrdFile(path,"w+b");if(!impl_->file){const int openError=errno;fail(errorOut,std::string("could not create V6 file")+(openError?": "+std::string(std::strerror(openError)):std::string{}));return false;}
-    HeaderRow header=sourceHeader;header.magic="TNRD_V6";header.compression="zstd";impl_->timedSession=header.session_type>=1&&header.session_type<=14;impl_->currentBranchWallClockMs=impl_->lastBranchWallClockMs=(uint64_t)std::max<int64_t>(header.start_time,0);const std::string metadata=writeJson(header);if(metadata.size()>MAX_METADATA_BYTES){fail(errorOut,"V6 session metadata exceeds its format limit");std::fclose(impl_->file);impl_->file=nullptr;return false;}impl_->metadataSize=metadata.size();std::vector<uint8_t> zero(HEADER_SIZE),prefix;put32(prefix,METADATA_MAGIC);put32(prefix,(uint32_t)::crc32(0,(const Bytef*)metadata.data(),(uInt)metadata.size()));put64(prefix,metadata.size());
-    if(!writeAll(impl_->file,zero.data(),zero.size())||!writeAll(impl_->file,prefix.data(),prefix.size())||!writeAll(impl_->file,metadata.data(),metadata.size())||!impl_->writeSnapshot(false,errorOut)){std::fclose(impl_->file);impl_->file=nullptr;return false;}return true;
+bool TnrdV6Writer::appendRow(std::string_view row,float time,std::string* errorOut) {
+    if (!isOpen()) { fail(errorOut,"V6 writer is not open"); return false; }
+    return impl_->appendRow(row,time,errorOut);
 }
-
-template <typename Rows>
-bool TnrdV6Writer::appendRows(const Rows& rows,std::string* errorOut){
-    if(!isOpen()){fail(errorOut,"V6 writer is not open");return false;}
-    for(const auto&r:rows){std::string_view source=sourceLine(r);while(!source.empty()&&(source.back()=='\n'||source.back()=='\r'))source.remove_suffix(1);if(source.empty())continue;const float suppliedTime=sourceSessionTime(r);const float t=suppliedTime>=0?suppliedTime:scanTime(source);std::string normalized;std::string_view line=source;if(t>=0&&scanTime(line)<0){normalized=withSessionTime(line,t);line=normalized;}const uint8_t type=rowType(line);if(t>=0){impl_->lastTime=std::max(impl_->lastTime,t);if(!impl_->haveTime){impl_->summary.startSessionTime=t;impl_->haveTime=true;}impl_->summary.totalSessionTime=std::max(impl_->summary.totalSessionTime,t);}
-        if(type==4){const int n=scanInt(line,"\"lap_num\":",(int)impl_->currentLap),driver=scanInt(line,"\"driver_status\":",-1);const bool garageAware=impl_->timedSession&&driver>=0;if(garageAware&&driver!=1){if(impl_->currentLap)impl_->laps[impl_->currentLap].end=std::max(impl_->laps[impl_->currentLap].end,t);impl_->currentLap=0;impl_->timedLapActive=false;}else if(n>0){const uint32_t next=(uint32_t)n;const bool mayAdvance=next>impl_->highestLap;const bool mayStartTimed=garageAware&&!impl_->timedLapActive&&next>=impl_->highestLap;if((mayAdvance||mayStartTimed)&&(next!=impl_->currentLap||!impl_->timedLapActive)){float start=t;const int curMs=scanInt(line,"\"current_lap_ms\":",0);if(curMs>0)start=t-curMs/1000.0f;if(impl_->currentLap&&next>impl_->currentLap)impl_->laps[impl_->currentLap].end=start;impl_->currentLap=next;impl_->highestLap=std::max(impl_->highestLap,next);impl_->timedLapActive=garageAware;auto& lap=impl_->laps[next];lap.num=next;lap.start=start;lap.end=t;lap.timeMs=0;lap.flags=0;const int lastMs=scanInt(line,"\"last_lap_ms\":",0);auto prev=impl_->laps.find(next-1);if(prev!=impl_->laps.end()&&lastMs>0){prev->second.timeMs=(uint32_t)lastMs;prev->second.flags|=1;}}}}
-        if(type==2){auto& s=impl_->statusByLap[impl_->currentLap];s.lapNumber=impl_->currentLap;s.sessionTime=t;s.ersPct=scanDouble(line,"\"ers_pct\":",s.ersPct);s.tyreCompound=scanInt(line,"\"tyre_compound\":",s.tyreCompound);s.visualCompound=scanInt(line,"\"visual_compound\":",s.visualCompound);if(impl_->summary.initialFuelKg<0)impl_->summary.initialFuelKg=scanDouble(line,"\"fuel_kg\":",-1);}
-        if(type==14){const int lapNum=scanInt(line,"\"latest_lap_num\":",0),lapMs=scanInt(line,"\"latest_lap_time_ms\":",0);auto lap=impl_->laps.find((uint32_t)std::max(lapNum,0));if(lap!=impl_->laps.end()&&lapMs>0){lap->second.timeMs=(uint32_t)lapMs;lap->second.flags|=1;}}
-        if(type==6)impl_->summary.events.emplace_back(line);
-        auto& b=impl_->builderFor({impl_->currentLap,(uint16_t)type});
-        if(!b.rows)b.stride=Impl::hotType(type)?HOT_ROW_INDEX_STRIDE:1;const float storedTime=scanTime(line);const uint32_t rowOffset=(uint32_t)b.plain.size();if(b.rows%b.stride==0)b.rowIndex.push_back({storedTime,storedTime,rowOffset,0,b.rows,0,0});b.plain.append(line);const uint32_t rowLength=(uint32_t)b.plain.size()-rowOffset;if(b.plain.empty()||b.plain.back()!='\n')b.plain.push_back('\n');auto& indexEntry=b.rowIndex.back();indexEntry.firstTime=std::min(indexEntry.firstTime,storedTime);indexEntry.lastTime=std::max(indexEntry.lastTime,storedTime);indexEntry.length=b.stride==1?rowLength:(uint32_t)b.plain.size()-indexEntry.offset;++indexEntry.count;++b.rows;if(std::isfinite(storedTime)){b.firstTime=std::min(b.firstTime,storedTime);b.lastTime=std::max(b.lastTime,storedTime);}const float distance=type==7?std::numeric_limits<float>::quiet_NaN():(float)scanDouble(line,"\"lap_distance_m\":",std::numeric_limits<double>::quiet_NaN());if(std::isfinite(distance)){b.minDistance=std::min(b.minDistance,distance);b.maxDistance=std::max(b.maxDistance,distance);}b.dirty=true;if(impl_->currentLap)impl_->laps[impl_->currentLap].end=std::max(impl_->laps[impl_->currentLap].end,t);
-    }return true;
+bool TnrdV6Writer::append(const std::vector<V6SourceRow>& rows,std::string* errorOut) {
+    for (const auto& row : rows) if (!appendRow(row.line,row.sessionTime,errorOut)) return false; return true;
 }
-
-bool TnrdV6Writer::append(const std::vector<V6SourceRow>& rows,std::string* errorOut){
-    return appendRows(rows,errorOut);
+bool TnrdV6Writer::appendViews(const std::vector<std::pair<std::string_view,float>>& rows,std::string* errorOut) {
+    for (const auto& [row,time] : rows) if (!appendRow(row,time,errorOut)) return false; return true;
 }
-
-bool TnrdV6Writer::appendViews(
-        const std::vector<std::pair<std::string_view,float>>& rows,
-        std::string* errorOut){
-    return appendRows(rows,errorOut);
+bool TnrdV6Writer::advanceSessionTime(float time,std::string* errorOut) {
+    if (!isOpen()) { fail(errorOut,"V6 writer is not open"); return false; }
+    if (std::isfinite(time)) impl_->phaseTime[impl_->phaseIndex(impl_->phase)] = std::max(impl_->now(),time);
+    return impl_->commit(false,errorOut);
 }
-
-bool TnrdV6Writer::checkpoint(std::string* errorOut){
-    if(!isOpen()){fail(errorOut,"V6 writer is not open");return false;}
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}return impl_->writeSnapshot(false,errorOut);
+bool TnrdV6Writer::checkpoint(std::string* errorOut) {
+    if (!isOpen()) return false;
+    const uint64_t snapshotsBefore = impl_->checkpoints;
+    if (!impl_->commit(false,errorOut)) return false;
+    return impl_->checkpoints != snapshotsBefore || impl_->snapshot(errorOut);
 }
-
-bool TnrdV6Writer::rewind(float sessionTime,std::string* errorOut){
-    const uint64_t wallClockMs=(uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();return rewind(sessionTime,wallClockMs,errorOut);
+bool TnrdV6Writer::rewind(float time,std::string* errorOut) {
+    if (!isOpen()) { fail(errorOut,"V6 writer is not open"); return false; } return impl_->rewind(time,errorOut);
 }
-
-bool TnrdV6Writer::rewind(float sessionTime,uint64_t wallClockMs,std::string* errorOut){
-    if(!isOpen()){fail(errorOut,"V6 writer is not open");return false;}uint32_t targetLap=0;for(const auto&[n,l]:impl_->laps)if(l.start<=sessionTime)targetLap=n;
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut))return false;impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}
-    impl_->currentBranchWallClockMs=std::max(wallClockMs,impl_->lastBranchWallClockMs+1);impl_->lastBranchWallClockMs=impl_->currentBranchWallClockMs;impl_->branches.push_back({impl_->currentBranchWallClockMs,sessionTime});
-    for(auto it=impl_->laps.upper_bound(targetLap);it!=impl_->laps.end();)it=impl_->laps.erase(it);for(auto it=impl_->statusByLap.upper_bound(targetLap);it!=impl_->statusByLap.end();)it=impl_->statusByLap.erase(it);
-    impl_->statusByLap.erase(targetLap);
-    impl_->summary.events.erase(std::remove_if(impl_->summary.events.begin(),impl_->summary.events.end(),[&](const std::string&e){return scanTime(e)>=sessionTime;}),impl_->summary.events.end());impl_->summary.totalSessionTime=sessionTime;if(targetLap)impl_->laps[targetLap].end=sessionTime;impl_->currentLap=targetLap;impl_->highestLap=targetLap;impl_->timedLapActive=false;impl_->lastTime=sessionTime;return checkpoint(errorOut);
+void TnrdV6Writer::abort() {
+    if (isOpen()) { std::fclose(impl_->file); impl_->file = nullptr; }
 }
-
-bool TnrdV6Writer::finish(std::string* errorOut){
-    if(!isOpen())return true;
-    bool ok=true;
-    for(auto it=impl_->builders.begin();it!=impl_->builders.end();){if(it->second.dirty&&!impl_->writeChunk(it->first,it->second,errorOut)){ok=false;break;}impl_->recycleBuilder(it->first.second,it->second);it=impl_->builders.erase(it);}
-    if(ok)ok=impl_->writeSnapshot(true,errorOut);
-    if(impl_->file){const bool closeOk=std::fclose(impl_->file)==0;impl_->file=nullptr;if(!closeOk&&ok){fail(errorOut,"failed to close V6 file");ok=false;}}
-    return ok;
+bool TnrdV6Writer::finish(std::string* errorOut) {
+    if (!isOpen()) return true;
+    const float time = std::max(0.0f,impl_->now());
+    for (uint8_t index=0;index<impl_->drivers.size();++index) if (impl_->drivers[index].open)
+        impl_->closeLap(index,time,0,0,0,0,false,!impl_->drivers[index].currentInvalid,false);
+    if (!impl_->commit(true,errorOut) || !impl_->snapshot(errorOut)) return false;
+    if (impl_->compactAndReplace(errorOut)) return true;
+    if (impl_->file) {
+        const bool closed = std::fclose(impl_->file) == 0;
+        impl_->file = nullptr;
+        if (!closed && errorOut && errorOut->empty()) *errorOut = "could not close V6 file";
+    }
+    return false;
+}
+TnrdV6WriterMemoryStats TnrdV6Writer::memoryStats() const {
+    TnrdV6WriterMemoryStats out; out.open=isOpen(); if(!impl_) return out;
+    for(const auto& state:impl_->drivers){out.builderCount+=state.chunks.size();for(const auto&[_,b]:state.chunks){out.builderPlainBytes+=b.plain.size();out.builderPlainCapacityBytes+=b.plain.capacity();}out.pendingLapCount+=state.pending.size();for(const auto&lap:state.pending)for(const auto&[_,b]:lap.chunks)out.pendingLapPlainBytes+=b.plain.size();}
+    out.chunkCount=impl_->chunks.size();out.lapCount=impl_->committedLaps.size();out.eventCount=impl_->committedShared.size();
+    out.chunkWrites=impl_->chunkWrites;out.chunkPlainBytesProcessed=impl_->plainBytes;out.chunkCompressedBytesWritten=impl_->compressedBytes;out.compressionBufferBytesAllocated=impl_->compressionAllocated;out.compressionScratchCapacityBytes=impl_->scratch.capacity();out.compressionContextBytes=impl_->compressor?ZSTD_sizeof_CCtx(impl_->compressor):0;out.lastChunkPlainBytes=impl_->lastPlain;out.lastChunkCompressedBytes=impl_->lastCompressed;out.peakCompressionBufferCapacityBytes=impl_->peakScratch;out.checkpointWrites=impl_->checkpoints;out.retainedBytes=out.builderPlainCapacityBytes+out.pendingLapPlainBytes+out.compressionScratchCapacityBytes;return out;
 }
 bool writeTnrdV6(const std::string& path,const HeaderRow& header,const std::vector<V6SourceRow>& rows,std::string* errorOut){TnrdV6Writer writer;return writer.open(path,header,errorOut)&&writer.append(rows,errorOut)&&writer.finish(errorOut);}
 
-bool TNRD_V6::load(const std::string& path,V6LoadResult& result,std::string& error){result=V6LoadResult{};result.archive=std::make_unique<TnrdV6Archive>();if(result.archive->open(path,result.header,&error))return true;result.archive.reset();if(error.empty())error="The V6 recording could not be read.";return false;}
+// ARCHIVE_IMPLEMENTATION
 
 struct TnrdV6Archive::Impl {
-    struct RowSpan{uint32_t offset{};uint32_t length{};float firstTime{},lastTime{};uint32_t ordinal{};uint16_t count{};};
-    struct ChunkMeta{float first{},last{},physicalLast{},prefixMax{},minDistance{},maxDistance{};uint64_t rowIndexOffset{},branchWallClockMs{};uint32_t rowIndexCount{};uint16_t rowIndexStride{},rowIndexEntrySize{};size_t rowBegin{};};
-    struct FamilyIndex{std::vector<size_t> chunks;std::vector<float> prefixMax;};
-    struct CacheEntry{std::shared_ptr<std::string> plain;std::list<size_t>::iterator lru;size_t bytes{};};
-    struct ChunkResult{bool ok{};bool permanentError{};std::shared_ptr<std::string> plain;std::string error;};
-    struct RowsResult{bool ok{true};std::string error;std::vector<V6TimedRow> rows;};
-    class Executor {
-    public:
-        ~Executor(){stop();}
-        template<class Fn> auto submit(const std::string& path,Fn&& fn,bool foreground=true){
-            using R=std::invoke_result_t<Fn,std::FILE*>;
-            auto task=std::make_shared<std::packaged_task<R(std::FILE*)>>(std::forward<Fn>(fn));
-            auto future=task->get_future();ensureStarted(path);
-            {std::lock_guard<std::mutex> lock(mutex_);if(foreground)foregroundJobs_.push([task](std::FILE* file){(*task)(file);});else if(prefetchJobs_.size()<MAX_PARALLEL_CHUNKS)prefetchJobs_.push([task](std::FILE* file){(*task)(file);});}
-            cv_.notify_one();return future;
-        }
-        void cancelPrefetch(){std::lock_guard<std::mutex> lock(mutex_);while(!prefetchJobs_.empty())prefetchJobs_.pop();}
-        void stop(){
-            {std::lock_guard<std::mutex> lock(mutex_);if(workers_.empty())return;stopping_=true;while(!prefetchJobs_.empty())prefetchJobs_.pop();}
-            cv_.notify_all();for(auto& worker:workers_)if(worker.joinable())worker.join();
-            std::lock_guard<std::mutex> lock(mutex_);workers_.clear();while(!foregroundJobs_.empty())foregroundJobs_.pop();while(!prefetchJobs_.empty())prefetchJobs_.pop();stopping_=false;
-        }
-    private:
-        void ensureStarted(const std::string& path){
-            std::lock_guard<std::mutex> lock(mutex_);if(!workers_.empty())return;workers_.reserve(MAX_PARALLEL_CHUNKS);
-            for(size_t i=0;i<MAX_PARALLEL_CHUNKS;++i)workers_.emplace_back([this,path]{
-                std::FILE* file=openTnrdFile(path,"rb");
-                for(;;){std::function<void(std::FILE*)> job;{std::unique_lock<std::mutex> lock(mutex_);cv_.wait(lock,[this]{return stopping_||!foregroundJobs_.empty()||!prefetchJobs_.empty();});if(stopping_&&foregroundJobs_.empty()&&prefetchJobs_.empty())break;if(!foregroundJobs_.empty()){job=std::move(foregroundJobs_.front());foregroundJobs_.pop();}else{job=std::move(prefetchJobs_.front());prefetchJobs_.pop();}}job(file);}
-                if(file)std::fclose(file);
-            });
-        }
-        std::mutex mutex_;std::condition_variable cv_;bool stopping_{};
-        std::queue<std::function<void(std::FILE*)>> foregroundJobs_,prefetchJobs_;std::vector<std::thread> workers_;
+    struct Cached {
+        std::shared_ptr<std::string> plain;
+        std::list<size_t>::iterator lru;
     };
-    std::FILE* file{};uint64_t fileSize{};HeaderRow header;std::vector<V6LapInfo> laps;std::vector<V6ChunkInfo> chunks;std::vector<BranchCut> branches;V6ControlSummary summary;
-    std::map<std::pair<uint32_t,uint16_t>,FamilyIndex> chunkIndex;std::array<FamilyIndex,ROW_TYPE_COUNT> typeIndex;std::vector<ChunkMeta> chunkMetadata;std::vector<RowSpan> rowSpans;
-    std::string path;Executor executor;mutable std::mutex stateMutex;
-    size_t cacheLimit{DEFAULT_CACHE_BYTES},cacheBytes{},activeLoads{},peakActiveLoads{};uint64_t decompressions{};std::list<size_t> lru;std::unordered_map<size_t,CacheEntry> cache;
-    std::unordered_map<size_t,std::shared_future<ChunkResult>> inFlight;std::unordered_map<size_t,std::string> failedChunks;
 
-    void clear(){
-        executor.stop();if(file)std::fclose(file);file=nullptr;fileSize=0;path.clear();laps.clear();chunks.clear();branches.clear();summary={};chunkIndex.clear();for(auto& family:typeIndex)family={};chunkMetadata.clear();rowSpans.clear();
-        std::lock_guard<std::mutex> lock(stateMutex);cache.clear();lru.clear();inFlight.clear();failedChunks.clear();cacheBytes=0;activeLoads=0;peakActiveLoads=0;decompressions=0;
+    std::FILE* file{};
+    uint64_t fileSize{};
+    HeaderRow session;
+    std::vector<V6DriverHeader> drivers;
+    std::vector<V6LapSummary> lapSummaries;
+    std::vector<V6ChunkInfo> v6Chunks;
+    std::vector<V6SharedRecord> shared;
+    std::vector<V4LapInfo> compatibleLaps;
+    std::vector<V4ChunkInfo> compatibleChunks;
+    V6ControlSummary control;
+    std::map<uint32_t, size_t> lapById;
+    std::map<uint8_t, size_t> driverByIndex;
+    std::optional<uint8_t> player;
+    uint8_t playback{};
+    std::set<uint8_t> requestedTypes;
+    float formationEnd{};
+    float first{};
+    float last{};
+
+    mutable std::mutex cacheMutex;
+    std::unordered_map<size_t, Cached> cache;
+    std::list<size_t> lru;
+    size_t cacheLimit{DEFAULT_CACHE_BYTES};
+    size_t cacheUsed{};
+    uint64_t decompressions{};
+
+    float logical(V6Phase rowPhase, float time) const {
+        return rowPhase == V6Phase::Race && formationEnd > 0.0f ? formationEnd + time : time;
     }
-    bool loadChunk(size_t index,std::FILE* reader,std::shared_ptr<std::string>& result,std::string* errorOut){
-        std::shared_future<ChunkResult> shared;std::shared_ptr<std::promise<ChunkResult>> promise;bool producer=false;
-        {
-            std::lock_guard<std::mutex> lock(stateMutex);
-            auto hit=cache.find(index);if(hit!=cache.end()){lru.splice(lru.begin(),lru,hit->second.lru);hit->second.lru=lru.begin();result=hit->second.plain;return true;}
-            auto failed=failedChunks.find(index);if(failed!=failedChunks.end()){fail(errorOut,failed->second);return false;}
-            auto active=inFlight.find(index);if(active!=inFlight.end())shared=active->second;
-            else{promise=std::make_shared<std::promise<ChunkResult>>();shared=promise->get_future().share();inFlight.emplace(index,shared);producer=true;}
+    void clearCache() {
+        std::lock_guard lock(cacheMutex);
+        cache.clear(); lru.clear(); cacheUsed = 0;
+    }
+    void rebuildCompatibility() {
+        compatibleLaps.clear(); compatibleChunks.clear(); lapById.clear();
+        formationEnd = 0.0f;
+        std::set<uint32_t> lapsWithChunks;
+        for (const auto& chunk : v6Chunks) lapsWithChunks.insert(chunk.lapId);
+        for (size_t i = 0; i < lapSummaries.size(); ++i) {
+            lapById[lapSummaries[i].lapId] = i;
+            if (lapSummaries[i].phase == V6Phase::Formation)
+                formationEnd = std::max(formationEnd, lapSummaries[i].endSessionTime);
         }
-        if(!producer){const auto loaded=shared.get();if(!loaded.ok){fail(errorOut,loaded.error);return false;}result=loaded.plain;return true;}
-        {std::lock_guard<std::mutex> lock(stateMutex);++activeLoads;peakActiveLoads=std::max(peakActiveLoads,activeLoads);}
-        ChunkResult loaded;
-        if(!reader)loaded.error="could not open a parallel V6 reader handle";
-        else if(index>=chunks.size()){loaded.error="V6 chunk index is out of bounds";loaded.permanentError=true;}
-        else{
-            const auto& c=chunks[index];thread_local std::vector<uint8_t> input;input.resize(CHUNK_PREFIX_SIZE+(size_t)c.compressedSize);const uint8_t* prefix=input.data();
-            if(!readAt(reader,c.offset-CHUNK_PREFIX_SIZE,input.data(),input.size())){loaded.error="truncated V6 chunk at lap "+std::to_string(c.lapNumber);loaded.permanentError=true;}
-            else if(get32(prefix)!=CHUNK_MAGIC||get32(prefix+4)!=c.lapNumber||get16(prefix+8)!=c.rowType||get16(prefix+10)!=c.flags||get64(prefix+12)!=c.compressedSize||get64(prefix+20)!=c.uncompressedSize||get32(prefix+28)!=c.rowCount){loaded.error="V6 chunk prefix does not match its directory entry";loaded.permanentError=true;}
-            else{
-                thread_local DecompressionContext decompressor;auto plain=std::make_shared<std::string>((size_t)c.uncompressedSize,'\0');
-                {std::lock_guard<std::mutex> lock(stateMutex);++decompressions;}
-                const size_t got=decompressor.value?ZSTD_decompressDCtx(decompressor.value,plain->data(),plain->size(),input.data()+CHUNK_PREFIX_SIZE,(size_t)c.compressedSize):ZSTD_CONTENTSIZE_ERROR;
-                if(!decompressor.value||ZSTD_isError(got)||got!=c.uncompressedSize||(uint32_t)::crc32(0,(const Bytef*)plain->data(),(uInt)plain->size())!=c.checksum){loaded.error="V6 chunk integrity check failed for lap "+std::to_string(c.lapNumber)+" type "+std::to_string(c.rowType);loaded.permanentError=true;}
-                else{loaded.ok=true;loaded.plain=std::move(plain);}
-            }
-            if(input.capacity()>16ull*1024ull*1024ull){std::vector<uint8_t> release;input.swap(release);}
+        for (const auto& lap : lapSummaries) if (lap.driverIndex == playback) {
+            if (!lapsWithChunks.contains(lap.lapId) && lap.startSessionTime == lap.endSessionTime)
+                continue;
+            V4LapInfo info;
+            // The legacy playback surface keys laps by display number. Formation
+            // lap 1 and race lap 1 must therefore not collide: expose formation
+            // as the existing pre-race lap 0 compatibility interval.
+            info.lapNumber = lap.phase == V6Phase::Formation ? 0u : lap.lapNumber;
+            info.startSessionTime = logical(lap.phase, lap.startSessionTime);
+            info.endSessionTime = logical(lap.phase, lap.endSessionTime);
+            info.lapTimeMs = lap.lapTimeMs;
+            info.flags = (lap.isCompleted ? 1u : 0u) | (lap.isValid ? 2u : 0u) |
+                         (lap.isPartial ? 4u : 0u) |
+                         (lap.phase == V6Phase::Formation ? 8u : 0u);
+            compatibleLaps.push_back(info);
         }
-        {
-            std::lock_guard<std::mutex> lock(stateMutex);
-            --activeLoads;
-            const size_t loadedBytes=loaded.ok?loaded.plain->size():0;
-            if(loaded.ok&&loadedBytes<=cacheLimit){while(cacheBytes+loadedBytes>cacheLimit&&!lru.empty()){const size_t old=lru.back();lru.pop_back();auto it=cache.find(old);cacheBytes-=it->second.bytes;cache.erase(it);}lru.push_front(index);cache[index]={loaded.plain,lru.begin(),loadedBytes};cacheBytes+=loadedBytes;}
-            else if(!loaded.ok&&loaded.permanentError)failedChunks[index]=loaded.error;
+        std::sort(compatibleLaps.begin(), compatibleLaps.end(), [](const auto& a, const auto& b) {
+            return std::tie(a.startSessionTime, a.lapNumber) < std::tie(b.startSessionTime, b.lapNumber);
+        });
+        for (const auto& chunk : v6Chunks) {
+            const auto lap = lapById.find(chunk.lapId);
+            compatibleChunks.push_back({lap == lapById.end() ? 0u :
+                (lapSummaries[lap->second].phase == V6Phase::Formation ? 0u :
+                 lapSummaries[lap->second].lapNumber),
+                chunk.typeId, chunk.flags, chunk.offset, chunk.compressedSize,
+                chunk.uncompressedSize, chunk.sampleCount, chunk.checksum, chunk.sequence});
         }
-        promise->set_value(loaded);{std::lock_guard<std::mutex> lock(stateMutex);inFlight.erase(index);}
-        if(!loaded.ok){fail(errorOut,loaded.error);return false;}result=std::move(loaded.plain);return true;
-    }
-    bool splitChunk(size_t index,std::FILE* reader,std::vector<V6TimedRow>& out,std::string* errorOut,std::shared_ptr<std::string> plain={},bool filter=false,float from=0,float to=0,bool latestOnly=false,const IndexedCancelCheck& cancelled={}){
-        if(cancelled&&cancelled()){fail(errorOut,"indexed read cancelled");return false;}if(index>=chunks.size()||index>=chunkMetadata.size()){fail(errorOut,"V6 chunk index is out of bounds");return false;}const auto& c=chunks[index];const auto& metadata=chunkMetadata[index];if(!plain&&!loadChunk(index,reader,plain,errorOut))return false;
-        const bool branchClipped=metadata.last<metadata.physicalLast;const bool effectiveFilter=filter||branchClipped;const float effectiveFrom=filter?from:-std::numeric_limits<float>::infinity();const float effectiveTo=std::min(filter?to:std::numeric_limits<float>::infinity(),metadata.last);
-        if(metadata.rowIndexCount==0)return splitRows(*plain,(uint8_t)c.rowType,c.sequence,out,c.rowCount,errorOut,nullptr,effectiveFilter,effectiveFrom,effectiveTo,latestOnly);
-        auto spanBegin=rowSpans.begin()+(ptrdiff_t)metadata.rowBegin,spanEnd=spanBegin+(ptrdiff_t)metadata.rowIndexCount;
-        if(metadata.rowIndexStride==1&&effectiveFilter){spanBegin=std::lower_bound(spanBegin,spanEnd,effectiveFrom,[](const RowSpan& row,float value){return row.firstTime<value;});spanEnd=std::upper_bound(spanBegin,spanEnd,effectiveTo,[](float value,const RowSpan& row){return value<row.firstTime;});if(latestOnly&&spanBegin!=spanEnd)spanBegin=std::prev(spanEnd);}
-        if(!latestOnly){if(!effectiveFilter)out.reserve(c.rowCount);else{size_t estimate=0;for(auto it=spanBegin;it!=spanEnd;++it)if(!(it->lastTime<effectiveFrom||it->firstTime>effectiveTo))estimate+=it->count;out.reserve(estimate);}}
-        float bestTime=-std::numeric_limits<float>::infinity();uint32_t bestOffset{},bestLength{};bool haveBest=false;size_t spanOrdinal=0;for(auto spanIt=spanBegin;spanIt!=spanEnd;++spanIt,++spanOrdinal){if((spanOrdinal&63u)==0&&cancelled&&cancelled()){fail(errorOut,"indexed read cancelled");return false;}const auto& span=*spanIt;if(span.offset>plain->size()||span.length>plain->size()-span.offset){fail(errorOut,"V6 row index points outside its chunk");return false;}if(effectiveFilter&&(span.lastTime<effectiveFrom||span.firstTime>effectiveTo))continue;if(metadata.rowIndexStride==1){const std::string_view line(plain->data()+span.offset,span.length);const float time=scanTime(line);if(rowType(line)!=(uint8_t)c.rowType||time!=span.firstTime||time!=span.lastTime){fail(errorOut,"V6 row index does not match its chunk payload");return false;}if(effectiveFilter&&(time<effectiveFrom||time>effectiveTo))continue;if(latestOnly){if(!haveBest||time>=bestTime){haveBest=true;bestTime=time;bestOffset=span.offset;bestLength=span.length;}}else out.push_back({time,(uint8_t)c.rowType,c.sequence,std::string(line),span.offset});continue;}
-            const size_t end=span.offset+span.length;size_t pos=span.offset;uint16_t count=0;float blockFirst=std::numeric_limits<float>::infinity(),blockLast=-std::numeric_limits<float>::infinity();while(pos<end){if((count&63u)==0&&cancelled&&cancelled()){fail(errorOut,"indexed read cancelled");return false;}size_t nl=plain->find('\n',pos);if(nl==std::string::npos||nl>end)nl=end;if(nl>pos){const std::string_view line(plain->data()+pos,nl-pos);const float time=scanTime(line);if(rowType(line)!=(uint8_t)c.rowType||!std::isfinite(time)){fail(errorOut,"V6 hot-row block does not match its chunk payload");return false;}blockFirst=std::min(blockFirst,time);blockLast=std::max(blockLast,time);if(!effectiveFilter||(time>=effectiveFrom&&time<=effectiveTo)){if(latestOnly){if(!haveBest||time>=bestTime){haveBest=true;bestTime=time;bestOffset=(uint32_t)pos;bestLength=(uint32_t)(nl-pos);}}else out.push_back({time,(uint8_t)c.rowType,c.sequence,std::string(line),(uint32_t)pos});}++count;}if(nl==end)break;pos=nl+1;}if(count!=span.count||blockFirst!=span.firstTime||blockLast!=span.lastTime){fail(errorOut,"V6 hot-row block metadata mismatch");return false;}}
-        if(latestOnly&&haveBest)out.push_back({bestTime,(uint8_t)c.rowType,c.sequence,plain->substr(bestOffset,bestLength),bestOffset});return true;
-    }
-    void appendFamily(FamilyIndex& family,size_t index){
-        family.chunks.push_back(index);family.prefixMax.push_back(std::max(family.prefixMax.empty()?-std::numeric_limits<float>::infinity():family.prefixMax.back(),chunkMetadata[index].last));
-    }
-    void selectRange(const FamilyIndex& family,float from,float to,std::vector<size_t>& out)const{
-        auto first=std::lower_bound(family.prefixMax.begin(),family.prefixMax.end(),from);size_t pos=(size_t)(first-family.prefixMax.begin());for(;pos<family.chunks.size();++pos){const size_t index=family.chunks[pos];const auto& meta=chunkMetadata[index];if(meta.first>to)break;if(meta.last>=from)out.push_back(index);}
-    }
-    template<class Fn>std::vector<RowsResult> runChunkJobs(const std::vector<size_t>& indices,Fn fn,const IndexedCancelCheck& cancelled={}){
-        struct Completed{std::mutex mutex;std::condition_variable cv;std::deque<std::pair<size_t,RowsResult>> ready;};
-        if(indices.empty())return {};auto completed=std::make_shared<Completed>();std::vector<RowsResult> results(indices.size());std::vector<size_t> order(indices.size());for(size_t i=0;i<order.size();++i)order[i]=i;std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return chunks[indices[a]].offset<chunks[indices[b]].offset;});
-        size_t next=0,active=0,done=0;bool wasCancelled=false;
-        auto schedule=[&](size_t ordinal){const size_t index=indices[ordinal];++active;(void)executor.submit(path,[fn,index,ordinal,cancelled,completed](std::FILE* file){RowsResult result;try{if(cancelled&&cancelled()){result.ok=false;result.error="indexed read cancelled";}else result=fn(file,index);}catch(const std::exception& e){result.ok=false;result.error=e.what();}catch(...){result.ok=false;result.error="indexed read failed";}{std::lock_guard<std::mutex> lock(completed->mutex);completed->ready.emplace_back(ordinal,std::move(result));}completed->cv.notify_one();});};
-        while(next<order.size()&&active<MAX_PARALLEL_CHUNKS&&(!cancelled||!cancelled()))schedule(order[next++]);
-        while(active){std::unique_lock<std::mutex> lock(completed->mutex);completed->cv.wait(lock,[&]{return !completed->ready.empty();});while(!completed->ready.empty()){auto ready=std::move(completed->ready.front());completed->ready.pop_front();results[ready.first]=std::move(ready.second);--active;++done;}lock.unlock();if(cancelled&&cancelled())wasCancelled=true;while(!wasCancelled&&next<order.size()&&active<MAX_PARALLEL_CHUNKS)schedule(order[next++]);}
-        if(wasCancelled||done!=indices.size())return {};return results;
+        first = std::numeric_limits<float>::infinity(); last = 0.0f;
+        for (const auto& lap : lapSummaries) if (lap.driverIndex == playback) {
+            first = std::min(first, logical(lap.phase, lap.startSessionTime));
+            last = std::max(last, logical(lap.phase, lap.endSessionTime));
+        }
+        if (!std::isfinite(first)) first = 0.0f;
+        control.startSessionTime = first; control.totalSessionTime = std::max(first, last);
+        control.events.clear();
+        for (const auto& record : shared)
+            if (sharedRowType(record.json) == 6) control.events.push_back(record.json);
     }
 };
 
-TnrdV6Archive::TnrdV6Archive():impl_(std::make_unique<Impl>()){}
-TnrdV6Archive::~TnrdV6Archive(){close();}
-void TnrdV6Archive::close(){impl_->clear();}
-bool TnrdV6Archive::isOpen()const{return impl_->file!=nullptr;}
-const std::vector<V6LapInfo>& TnrdV6Archive::laps()const{return impl_->laps;}
-const std::vector<V6ChunkInfo>& TnrdV6Archive::chunks()const{return impl_->chunks;}
-const V6ControlSummary& TnrdV6Archive::summary()const{return impl_->summary;}
-float TnrdV6Archive::startTime()const{return impl_->summary.startSessionTime;}
-float TnrdV6Archive::totalTime()const{return std::max(impl_->summary.totalSessionTime,impl_->laps.empty()?0.0f:impl_->laps.back().endSessionTime);}
-int TnrdV6Archive::lapAt(float time)const{const auto it=std::upper_bound(impl_->laps.begin(),impl_->laps.end(),time,[](float value,const V6LapInfo& lap){return value<lap.startSessionTime;});return it==impl_->laps.begin()?0:(int)std::prev(it)->lapNumber;}
+namespace {
 
-void TnrdV6Archive::chunkIndicesForLap(uint32_t lap,V6RowTypeMask mask,std::vector<size_t>& out)const{
-    out.clear();auto it=impl_->chunkIndex.lower_bound({lap,0});for(;it!=impl_->chunkIndex.end()&&it->first.first==lap;++it)if(mask&v6TypeBit((uint8_t)it->first.second))out.insert(out.end(),it->second.chunks.begin(),it->second.chunks.end());
-}
-bool TnrdV6Archive::chunkTimeBounds(size_t index,float& firstOut,float& lastOut)const{
-    if(index>=impl_->chunkMetadata.size())return false;firstOut=impl_->chunkMetadata[index].first;lastOut=impl_->chunkMetadata[index].last;return true;
-}
-void TnrdV6Archive::prefetchChunk(size_t index){
-    if(index>=impl_->chunks.size())return;(void)impl_->executor.submit(impl_->path,[state=impl_.get(),index](std::FILE* file){std::shared_ptr<std::string> plain;std::string error;return state->loadChunk(index,file,plain,&error);},false);
-}
-void TnrdV6Archive::cancelPrefetch(){impl_->executor.cancelPrefetch();}
+std::string withDriver(std::string_view json, uint8_t driver);
 
-bool TnrdV6Archive::open(const std::string& path,HeaderRow& header,std::string* errorOut){
-    close();impl_->file=openTnrdFile(path,"rb");if(!impl_->file){fail(errorOut,"could not open V6 file");return false;}impl_->path=path;if(!seekEnd(impl_->file)){fail(errorOut,"could not size V6 file");close();return false;}impl_->fileSize=tell(impl_->file);
-    std::array<uint8_t,HEADER_SIZE> h{};if(!readAt(impl_->file,0,h.data(),h.size())||!std::equal(MAGIC.begin(),MAGIC.end(),h.begin())||get16(h.data()+8)!=6||get16(h.data()+10)!=HEADER_SIZE){fail(errorOut,"invalid V6 header");close();return false;}
-    const uint32_t stored=get32(h.data()+120);auto copy=h;std::fill(copy.begin()+120,copy.begin()+124,0);const bool headerCrcOk=stored==(uint32_t)::crc32(0,copy.data(),120);
-    if(headerCrcOk&&(get32(h.data()+12)!=3||get32(h.data()+124)!=0)){fail(errorOut,"V6 file uses unsupported feature flags");close();return false;}
-    uint64_t mo=get64(h.data()+16),ms=get64(h.data()+24);const uint64_t so=get64(h.data()+72),ss=get64(h.data()+80);uint64_t ro=get64(h.data()+88),rs=get64(h.data()+96),bo=get64(h.data()+104);uint64_t lo=get64(h.data()+32),co=get64(h.data()+48),fo=get64(h.data()+64);uint32_t lc=get32(h.data()+40),cc=get32(h.data()+56),bc=get32(h.data()+112);
-    if(headerCrcOk&&(get32(h.data()+44)!=LAP_ENTRY_SIZE||get32(h.data()+60)!=CHUNK_ENTRY_SIZE||get32(h.data()+116)!=BRANCH_ENTRY_SIZE)){fail(errorOut,"V6 header table sizes are invalid");close();return false;}
-    uint64_t validatedFooter=UINT64_MAX;std::string validatedSummary;std::vector<uint8_t> validatedBranches,validatedLaps,validatedChunks,validatedRows;
-    auto validateFooter=[&](uint64_t offset,uint64_t& branchOff,uint32_t& branchCount,uint64_t& lapOff,uint32_t& lapCount,uint64_t& chunkOff,uint32_t& chunkCount,uint64_t& rowOff,uint64_t& rowSize,uint64_t& summaryOff,uint64_t& summarySize,uint64_t& recoveredMetadataSize,uint32_t& expectedCrc,bool checkTables)->bool{
-        std::array<uint8_t,FOOTER_SIZE> f{};if(!rangeOk(impl_->fileSize,offset,FOOTER_SIZE)||!readAt(impl_->file,offset,f.data(),f.size())||get32(f.data())!=FOOTER_MAGIC||get16(f.data()+4)!=6||get16(f.data()+6)!=FOOTER_SIZE)return false;
-        branchOff=get64(f.data()+8);lapOff=get64(f.data()+16);chunkOff=get64(f.data()+24);rowOff=get64(f.data()+32);if(lapOff<branchOff||chunkOff<lapOff||rowOff<chunkOff||offset<rowOff||(lapOff-branchOff)%BRANCH_ENTRY_SIZE||(chunkOff-lapOff)%LAP_ENTRY_SIZE||(rowOff-chunkOff)%CHUNK_ENTRY_SIZE||(offset-rowOff)%ROW_INDEX_ENTRY_SIZE)return false;
-        const uint64_t derivedBranches=(lapOff-branchOff)/BRANCH_ENTRY_SIZE,derivedLaps=(chunkOff-lapOff)/LAP_ENTRY_SIZE,derivedChunks=(rowOff-chunkOff)/CHUNK_ENTRY_SIZE;if(derivedBranches>MAX_BRANCHES||derivedLaps>MAX_LAPS||derivedChunks>MAX_CHUNKS)return false;branchCount=(uint32_t)derivedBranches;lapCount=(uint32_t)derivedLaps;chunkCount=(uint32_t)derivedChunks;rowSize=offset-rowOff;
-        summarySize=get32(f.data()+44);if(summarySize>MAX_SUMMARY_BYTES||summarySize>branchOff)return false;summaryOff=branchOff-summarySize;
-        std::array<uint8_t,METADATA_PREFIX_SIZE> prefix{};if(!readAt(impl_->file,HEADER_SIZE,prefix.data(),prefix.size())||get32(prefix.data())!=METADATA_MAGIC)return false;recoveredMetadataSize=get64(prefix.data()+8);if(recoveredMetadataSize>MAX_METADATA_BYTES||!rangeOk(impl_->fileSize,HEADER_SIZE+METADATA_PREFIX_SIZE,recoveredMetadataSize)||summaryOff<HEADER_SIZE+METADATA_PREFIX_SIZE+recoveredMetadataSize)return false;
-        expectedCrc=get32(f.data()+40);if(!checkTables)return true;std::string summary((size_t)summarySize,'\0');std::vector<uint8_t> b((size_t)(lapOff-branchOff)),l((size_t)(chunkOff-lapOff)),c((size_t)(rowOff-chunkOff)),r((size_t)rowSize);if(!readAt(impl_->file,summaryOff,summary.data(),summary.size())||!readAt(impl_->file,branchOff,b.data(),b.size())||!readAt(impl_->file,lapOff,l.data(),l.size())||!readAt(impl_->file,chunkOff,c.data(),c.size())||!readAt(impl_->file,rowOff,r.data(),r.size())||expectedCrc!=controlCrc(summary,b,l,c,r))return false;validatedFooter=offset;validatedSummary=std::move(summary);validatedBranches=std::move(b);validatedLaps=std::move(l);validatedChunks=std::move(c);validatedRows=std::move(r);return true;
-    };
-    uint64_t vbo{},vlo{},vco{},vro{},vrs{},vso{},vss{},vms{};uint32_t vbc{},vlc{},vcc{},expectedTablesCrc{};bool footerOk=headerCrcOk&&ms<=MAX_METADATA_BYTES&&rangeOk(impl_->fileSize,mo,ms)&&validateFooter(fo,vbo,vbc,vlo,vlc,vco,vcc,vro,vrs,vso,vss,vms,expectedTablesCrc,true)&&vbo==bo&&vbc==bc&&vlo==lo&&vlc==lc&&vco==co&&vcc==cc&&vro==ro&&vrs==rs&&vso==so&&vss==ss&&vms==ms;
-    if(!footerOk){
-        bool recovered=false;constexpr uint64_t BLOCK=1024ull*1024ull;uint64_t end=impl_->fileSize;
-        while(end>HEADER_SIZE&&!recovered){const uint64_t begin=end>BLOCK?std::max<uint64_t>(HEADER_SIZE,end-BLOCK):HEADER_SIZE;std::vector<uint8_t> scan((size_t)(end-begin));if(!readAt(impl_->file,begin,scan.data(),scan.size()))break;for(size_t i=scan.size();i-- >0;){if(i+4>scan.size()||get32(scan.data()+i)!=FOOTER_MAGIC)continue;const uint64_t pos=begin+i;if(validateFooter(pos,vbo,vbc,vlo,vlc,vco,vcc,vro,vrs,vso,vss,vms,expectedTablesCrc,true)){bo=vbo;bc=vbc;lo=vlo;lc=vlc;co=vco;cc=vcc;ro=vro;rs=vrs;fo=pos;mo=HEADER_SIZE+METADATA_PREFIX_SIZE;ms=vms;recovered=true;break;}}if(begin==HEADER_SIZE)break;end=begin+3;}
-        if(!recovered){fail(errorOut,headerCrcOk?"V6 commit footer is invalid":"V6 header checksum mismatch and no recoverable checkpoint exists");close();return false;}
-    }
-    // A crash can occur after a checkpoint footer is flushed but before the
-    // fixed header is patched. If bytes follow the header's valid snapshot,
-    // inspect only that tail and prefer its newest fully checksummed footer.
-    if(footerOk&&impl_->fileSize>fo+FOOTER_SIZE){bool newer=false;constexpr uint64_t BLOCK=1024ull*1024ull;uint64_t end=impl_->fileSize;while(end>fo+FOOTER_SIZE&&!newer){const uint64_t begin=end>BLOCK?std::max<uint64_t>(fo+FOOTER_SIZE,end-BLOCK):fo+FOOTER_SIZE;std::vector<uint8_t> scan((size_t)(end-begin));if(!readAt(impl_->file,begin,scan.data(),scan.size()))break;for(size_t i=scan.size();i-- >0;){if(i+4>scan.size()||get32(scan.data()+i)!=FOOTER_MAGIC)continue;const uint64_t pos=begin+i;if(pos<=fo)continue;if(validateFooter(pos,vbo,vbc,vlo,vlc,vco,vcc,vro,vrs,vso,vss,vms,expectedTablesCrc,true)){bo=vbo;bc=vbc;lo=vlo;lc=vlc;co=vco;cc=vcc;ro=vro;rs=vrs;fo=pos;mo=HEADER_SIZE+METADATA_PREFIX_SIZE;ms=vms;newer=true;footerOk=false;break;}}if(begin==fo+FOOTER_SIZE)break;end=begin+3;}}
-    std::array<uint8_t,METADATA_PREFIX_SIZE> metadataPrefix{};if(!readAt(impl_->file,HEADER_SIZE,metadataPrefix.data(),metadataPrefix.size())||get32(metadataPrefix.data())!=METADATA_MAGIC||get64(metadataPrefix.data()+8)!=ms||mo!=HEADER_SIZE+METADATA_PREFIX_SIZE){fail(errorOut,"invalid V6 metadata prefix");close();return false;}
-    std::string metadata((size_t)ms,'\0');if(!readAt(impl_->file,mo,metadata.data(),metadata.size())||get32(metadataPrefix.data()+4)!=(uint32_t)::crc32(0,(const Bytef*)metadata.data(),(uInt)metadata.size())||glz::read_json(impl_->header,metadata)||impl_->header.magic!="TNRD_V6"||!impl_->header.compression||*impl_->header.compression!="zstd"){fail(errorOut,"invalid V6 session metadata");close();return false;}header=impl_->header;
-    const uint64_t activeSummaryOffset=footerOk?so:vso,activeSummarySize=footerOk?ss:vss;
-    if(validatedFooter!=fo||validatedSummary.size()!=activeSummarySize||validatedBranches.size()!=(size_t)bc*BRANCH_ENTRY_SIZE||validatedLaps.size()!=(size_t)lc*LAP_ENTRY_SIZE||validatedChunks.size()!=(size_t)cc*CHUNK_ENTRY_SIZE||validatedRows.size()!=rs){fail(errorOut,"could not retain V6 control tables");close();return false;}
-    std::string summaryJson=std::move(validatedSummary);if((activeSummaryOffset||activeSummarySize)&&glz::read_json(impl_->summary,summaryJson)){fail(errorOut,"invalid V6 control summary");close();return false;}
-    std::vector<uint8_t> branchBytes=std::move(validatedBranches),lapBytes=std::move(validatedLaps),dir=std::move(validatedChunks),rowIndexBytes=std::move(validatedRows);impl_->branches.reserve(bc);impl_->laps.reserve(lc);impl_->chunks.reserve(cc);impl_->chunkMetadata.reserve(cc);impl_->rowSpans.reserve(rowIndexBytes.size()/ROW_INDEX_ENTRY_SIZE);
-    const uint64_t initialBranchWallClock=(uint64_t)std::max<int64_t>(impl_->header.start_time,0);uint64_t previousBranchWallClock=initialBranchWallClock;for(uint32_t i=0;i<bc;++i){const uint8_t*p=branchBytes.data()+i*BRANCH_ENTRY_SIZE;BranchCut branch{get64(p),getFloat(p+8)};if(branch.wallClockMs<=previousBranchWallClock||!std::isfinite(branch.rewindSessionTime)||branch.rewindSessionTime<0||get32(p+12)!=0){fail(errorOut,"invalid V6 wall-clock branch table");close();return false;}previousBranchWallClock=branch.wallClockMs;impl_->branches.push_back(branch);}
-    // Process wall-clock branches newest to oldest. Each rewind owns its target
-    // and everything after it, even when that newer branch ends early.
-    std::map<uint64_t,float> branchCutoffs;float laterCutoff=std::numeric_limits<float>::infinity();for(size_t i=impl_->branches.size();i-- >0;){branchCutoffs[impl_->branches[i].wallClockMs]=laterCutoff;laterCutoff=std::min(laterCutoff,std::nextafter(impl_->branches[i].rewindSessionTime,-std::numeric_limits<float>::infinity()));}branchCutoffs[initialBranchWallClock]=laterCutoff;
-    std::set<uint32_t> lapKeys;float previousStart=-std::numeric_limits<float>::infinity(),previousEnd=-std::numeric_limits<float>::infinity();uint32_t previousNumber=0;for(uint32_t i=0;i<lc;++i){const uint8_t*p=lapBytes.data()+i*LAP_ENTRY_SIZE;V6LapInfo lap{get32(p),getFloat(p+4),getFloat(p+8),get32(p+12),get32(p+16)};const bool lapTimeInvalid=((lap.flags&1u)!=0)!=(lap.lapTimeMs>0);if(!lap.lapNumber||lap.lapNumber<=previousNumber||(lap.flags&~1u)||get32(p+20)!=0||lapTimeInvalid||!std::isfinite(lap.startSessionTime)||!std::isfinite(lap.endSessionTime)||lap.endSessionTime<lap.startSessionTime||lap.startSessionTime<previousStart||lap.startSessionTime<previousEnd||!lapKeys.insert(lap.lapNumber).second){fail(errorOut,"invalid V6 lap table");close();return false;}previousNumber=lap.lapNumber;previousStart=lap.startSessionTime;previousEnd=lap.endSessionTime;impl_->laps.push_back(lap);}
-    if(!std::isfinite(impl_->summary.initialFuelKg)||!std::isfinite(impl_->summary.startSessionTime)||!std::isfinite(impl_->summary.totalSessionTime)||impl_->summary.totalSessionTime<impl_->summary.startSessionTime){fail(errorOut,"invalid V6 control summary values");close();return false;}std::set<uint32_t> summaryLaps;for(const auto&s:impl_->summary.lapStatus)if((s.lapNumber&&!lapKeys.count(s.lapNumber))||!std::isfinite(s.sessionTime)||!std::isfinite(s.ersPct)||!summaryLaps.insert(s.lapNumber).second){fail(errorOut,"invalid V6 lap-status summary");close();return false;}
-    auto overlaps=[](uint64_t a,uint64_t an,uint64_t b,uint64_t bn){return an<=UINT64_MAX-a&&bn<=UINT64_MAX-b&&a<b+bn&&b<a+an;};
-    const uint64_t maxCompressed=ZSTD_compressBound((size_t)MAX_CHUNK_PLAIN);std::vector<std::pair<uint64_t,uint64_t>> payloadRanges;payloadRanges.reserve(cc);std::vector<Impl::RowSpan> parsedRows;std::set<std::tuple<uint32_t,uint16_t,uint64_t>> keys;std::array<float,ROW_TYPE_COUNT> familyPrefix;familyPrefix.fill(-std::numeric_limits<float>::infinity());bool havePreviousChunk=false;uint16_t previousChunkType{};float previousChunkFirst{};uint64_t previousChunkSequence{};
-    for(uint32_t i=0;i<cc;++i){
-        const uint8_t*p=dir.data()+i*CHUNK_ENTRY_SIZE;V6ChunkInfo c{get32(p),get16(p+4),get16(p+6),get64(p+8),get64(p+16),get64(p+24),get32(p+32),get32(p+36),get64(p+40)};Impl::ChunkMeta meta;meta.first=getFloat(p+48);meta.last=getFloat(p+52);meta.physicalLast=meta.last;meta.prefixMax=getFloat(p+56);meta.minDistance=getFloat(p+60);meta.maxDistance=getFloat(p+64);meta.rowIndexOffset=get64(p+68);meta.rowIndexCount=get32(p+76);meta.rowIndexStride=get16(p+80);meta.rowIndexEntrySize=get16(p+82);meta.branchWallClockMs=get64(p+88);
-        const auto branchCutoffIt=branchCutoffs.find(meta.branchWallClockMs);const float branchCutoff=branchCutoffIt==branchCutoffs.end()?-std::numeric_limits<float>::infinity():branchCutoffIt->second;const bool logicallyVisible=branchCutoff>=meta.first;
-        const bool payloadOverflow=c.compressedSize>UINT64_MAX-CHUNK_PREFIX_SIZE;const uint64_t payloadStart=c.offset>=CHUNK_PREFIX_SIZE?c.offset-CHUNK_PREFIX_SIZE:0,payloadSize=payloadOverflow?0:c.compressedSize+CHUNK_PREFIX_SIZE;const bool controlOverlap=!payloadOverflow&&(overlaps(payloadStart,payloadSize,0,HEADER_SIZE)||overlaps(payloadStart,payloadSize,HEADER_SIZE,METADATA_PREFIX_SIZE)||overlaps(payloadStart,payloadSize,mo,ms)||(activeSummarySize&&overlaps(payloadStart,payloadSize,activeSummaryOffset,activeSummarySize))||overlaps(payloadStart,payloadSize,bo,(uint64_t)bc*BRANCH_ENTRY_SIZE)||overlaps(payloadStart,payloadSize,lo,(uint64_t)lc*LAP_ENTRY_SIZE)||overlaps(payloadStart,payloadSize,co,(uint64_t)cc*CHUNK_ENTRY_SIZE)||overlaps(payloadStart,payloadSize,ro,rs)||overlaps(payloadStart,payloadSize,fo,FOOTER_SIZE));
-        const bool distancesValid=(std::isnan(meta.minDistance)&&std::isnan(meta.maxDistance))||(std::isfinite(meta.minDistance)&&std::isfinite(meta.maxDistance)&&meta.minDistance<=meta.maxDistance);const bool hasRowIndex=meta.rowIndexCount!=0;const bool indexOverflow=meta.rowIndexCount>UINT64_MAX/ROW_INDEX_ENTRY_SIZE;const uint64_t indexBytes=indexOverflow?0:(uint64_t)meta.rowIndexCount*ROW_INDEX_ENTRY_SIZE;const float expectedPrefix=c.rowType<ROW_TYPE_COUNT?std::max(familyPrefix[c.rowType],meta.last):meta.last;
-        const uint16_t expectedStride=(c.rowType==1||c.rowType==11||c.rowType==12||c.rowType==13)?HOT_ROW_INDEX_STRIDE:1;
-        const bool directoryOrdered=!havePreviousChunk||c.rowType>previousChunkType||(c.rowType==previousChunkType&&(meta.first>previousChunkFirst||(meta.first==previousChunkFirst&&c.sequence>=previousChunkSequence)));
-        const bool indexLocationValid=hasRowIndex
-            ? meta.rowIndexOffset>=ro&&rangeOk(ro+rs,meta.rowIndexOffset,indexBytes)
-            : meta.rowIndexOffset==0;
-        if((logicallyVisible&&c.lapNumber&&!lapKeys.count(c.lapNumber))||c.rowType>=ROW_TYPE_COUNT||c.flags||!c.sequence||!c.compressedSize||!c.uncompressedSize||!c.rowCount||c.uncompressedSize>MAX_CHUNK_PLAIN||c.compressedSize>maxCompressed||c.compressedSize>SIZE_MAX||payloadOverflow||!rangeOk(impl_->fileSize,c.offset,c.compressedSize)||c.offset<CHUNK_PREFIX_SIZE||controlOverlap||!keys.emplace(c.lapNumber,c.rowType,c.sequence).second||!std::isfinite(meta.first)||!std::isfinite(meta.last)||meta.last<meta.first||!std::isfinite(meta.prefixMax)||meta.prefixMax!=expectedPrefix||!distancesValid||meta.rowIndexStride!=expectedStride||meta.rowIndexEntrySize!=ROW_INDEX_ENTRY_SIZE||get32(p+84)!=0||branchCutoffIt==branchCutoffs.end()||indexOverflow||!indexLocationValid||!directoryOrdered){
-            fail(errorOut,"invalid or duplicate V6 chunk entry");close();return false;
+bool parseChunkRows(std::string_view plain, const V6ChunkInfo& chunk, float logicalOffset,
+                    std::vector<V6TimedRow>& out, float from, float to,
+                    const IndexedCancelCheck& cancelled = {}) {
+    size_t start = 0; uint32_t source = 0;
+    while (start < plain.size()) {
+        if (cancelled && cancelled()) return false;
+        const size_t end = plain.find('\n', start);
+        const size_t length = (end == std::string_view::npos ? plain.size() : end) - start;
+        if (length) {
+            const auto line = plain.substr(start, length);
+            const float raw = scanTime(line); const float time = raw + logicalOffset;
+            if (time >= from && time <= to)
+                out.push_back({time, chunk.typeId, chunk.sequence,
+                               withDriver(line, chunk.driverIndex), source});
+            ++source;
         }
-        havePreviousChunk=true;previousChunkType=c.rowType;previousChunkFirst=meta.first;previousChunkSequence=c.sequence;familyPrefix[c.rowType]=expectedPrefix;meta.rowBegin=impl_->rowSpans.size();
-        if(hasRowIndex){const size_t relative=(size_t)(meta.rowIndexOffset-ro);const bool exact=meta.rowIndexStride==1;uint32_t previousEnd=0,totalIndexedRows=0;float indexedFirst=std::numeric_limits<float>::infinity(),indexedLast=-std::numeric_limits<float>::infinity();parsedRows.clear();parsedRows.reserve(meta.rowIndexCount);
-            for(uint32_t row=0;row<meta.rowIndexCount;++row){const uint8_t*q=rowIndexBytes.data()+relative+(size_t)row*ROW_INDEX_ENTRY_SIZE;const float firstTime=getFloat(q),lastTime=getFloat(q+4);const uint32_t rowOffset=get32(q+8),rowLength=get32(q+12),ordinal=get32(q+16);const uint16_t count=get16(q+20),reserved=get16(q+22);const bool physicalBlockValid=exact||(ordinal==totalIndexedRows&&(!row||rowOffset>previousEnd));if(!std::isfinite(firstTime)||!std::isfinite(lastTime)||lastTime<firstTime||!rowLength||rowOffset>c.uncompressedSize||rowLength>c.uncompressedSize-rowOffset||!count||count>meta.rowIndexStride||reserved||!physicalBlockValid||(exact&&(count!=1||ordinal>=c.rowCount))){fail(errorOut,"invalid V6 row index");close();return false;}previousEnd=rowOffset+rowLength-1;totalIndexedRows+=count;indexedFirst=std::min(indexedFirst,firstTime);indexedLast=std::max(indexedLast,lastTime);parsedRows.push_back({rowOffset,rowLength,firstTime,lastTime,ordinal,count});}
-            if(totalIndexedRows!=c.rowCount||indexedFirst!=meta.first||indexedLast!=meta.last){fail(errorOut,"V6 row index time bounds mismatch");close();return false;}if(exact){std::sort(parsedRows.begin(),parsedRows.end(),[](const auto& a,const auto& b){return a.ordinal<b.ordinal;});previousEnd=0;for(size_t row=0;row<parsedRows.size();++row){const auto& span=parsedRows[row];if(span.ordinal!=row||(row&&span.offset<=previousEnd)){fail(errorOut,"invalid V6 exact row index coverage");close();return false;}previousEnd=span.offset+span.length-1;}std::stable_sort(parsedRows.begin(),parsedRows.end(),[](const auto& a,const auto& b){return a.firstTime<b.firstTime||(a.firstTime==b.firstTime&&a.offset<b.offset);});}impl_->rowSpans.insert(impl_->rowSpans.end(),parsedRows.begin(),parsedRows.end());}
-        payloadRanges.emplace_back(payloadStart,payloadStart+payloadSize);if(logicallyVisible){meta.last=std::min(meta.last,branchCutoff);impl_->chunks.push_back(c);impl_->chunkMetadata.push_back(std::move(meta));}
+        if (end == std::string_view::npos) break;
+        start = end + 1;
     }
-    std::sort(payloadRanges.begin(),payloadRanges.end());for(size_t i=1;i<payloadRanges.size();++i)if(payloadRanges[i].first<payloadRanges[i-1].second){fail(errorOut,"V6 chunk payload ranges overlap");close();return false;}for(size_t i=0;i<impl_->chunks.size();++i){const auto& chunk=impl_->chunks[i];impl_->appendFamily(impl_->typeIndex[chunk.rowType],i);impl_->appendFamily(impl_->chunkIndex[{chunk.lapNumber,chunk.rowType}],i);}
     return true;
 }
 
-bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices,
-                                  std::vector<std::vector<V6TimedRow>>& out,
-                                  std::string* errorOut){
-    out.clear();for(size_t index:indices)if(index>=impl_->chunks.size()){fail(errorOut,"V6 chunk index is out of bounds");return false;}
-    auto results=impl_->runChunkJobs(indices,[state=impl_.get()](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error))result.ok=false;return result;});
-    for(const auto& result:results)if(!result.ok){fail(errorOut,result.error);return false;}
-    out.reserve(results.size());for(auto& result:results){for(auto& row:result.rows)if(scanTime(row.json)<0)row.json=withSessionTime(row.json,row.sessionTime);sortRows(result.rows);out.push_back(std::move(result.rows));}return true;
-}
-bool TnrdV6Archive::rowsForChunksRange(const std::vector<size_t>& indices,float from,float to,
-                                       std::vector<std::vector<V6TimedRow>>& out,
-                                       std::string* errorOut,const IndexedCancelCheck& cancelled){
-    out.clear();if(std::isnan(from)||std::isnan(to)||to<from){fail(errorOut,"invalid V6 time range");return false;}for(size_t index:indices)if(index>=impl_->chunks.size()){fail(errorOut,"V6 chunk index is out of bounds");return false;}
-    auto results=impl_->runChunkJobs(indices,[state=impl_.get(),from,to,cancelled](std::FILE* file,size_t index){Impl::RowsResult result;const auto& meta=state->chunkMetadata[index];if(meta.last<from||meta.first>to)return result;if(!state->splitChunk(index,file,result.rows,&result.error,{},true,from,to,false,cancelled))result.ok=false;return result;},cancelled);
-    if(results.size()!=indices.size()){fail(errorOut,"indexed read cancelled");return false;}for(const auto& result:results)if(!result.ok){fail(errorOut,result.error);return false;}
-    out.reserve(results.size());for(auto& result:results){for(auto& row:result.rows)if(scanTime(row.json)<0)row.json=withSessionTime(row.json,row.sessionTime);sortRows(result.rows);out.push_back(std::move(result.rows));}return true;
+std::string withDriver(std::string_view json, uint8_t driver) {
+    if (json.empty() || json.front() != '{') return std::string(json);
+    std::string out; out.reserve(json.size() + 20);
+    out += "{\"driver_idx\":" + std::to_string(driver);
+    if (json.size() > 1) { out.push_back(','); out.append(json.substr(1)); }
+    else out.push_back('}');
+    return out;
 }
 
-bool TnrdV6Archive::rowsForLap(uint32_t lap,V6RowTypeMask mask,std::vector<V6TimedRow>& out,std::string* errorOut){
-    std::vector<size_t> selected;auto it=impl_->chunkIndex.lower_bound({lap,0});for(;it!=impl_->chunkIndex.end()&&it->first.first==lap;++it)if(mask&v6TypeBit((uint8_t)it->first.second))selected.insert(selected.end(),it->second.chunks.begin(),it->second.chunks.end());
-    auto results=impl_->runChunkJobs(selected,[state=impl_.get()](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error))result.ok=false;return result;});
-    std::vector<std::vector<V6TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;
-}
-bool TnrdV6Archive::rowsForLapRange(uint32_t lap,float from,float to,V6RowTypeMask mask,std::vector<V6TimedRow>& out,std::string* errorOut,const IndexedCancelCheck& cancelled){
-    if(std::isnan(from)||std::isnan(to)||to<from){fail(errorOut,"invalid V6 time range");return false;}std::vector<size_t> selected;auto it=impl_->chunkIndex.lower_bound({lap,0});for(;it!=impl_->chunkIndex.end()&&it->first.first==lap;++it)if(mask&v6TypeBit((uint8_t)it->first.second))impl_->selectRange(it->second,from,to,selected);
-    auto results=impl_->runChunkJobs(selected,[state=impl_.get(),from,to,cancelled](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error,{},true,from,to,false,cancelled))result.ok=false;return result;},cancelled);
-    if(results.size()!=selected.size()){fail(errorOut,"indexed read cancelled");return false;}
-    std::vector<std::vector<V6TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;
-}
-bool TnrdV6Archive::rowsForRange(float from,float to,V6RowTypeMask mask,std::vector<V6TimedRow>& out,std::string* errorOut,const IndexedCancelCheck& cancelled){
-    if(std::isnan(from)||std::isnan(to)||to<from){fail(errorOut,"invalid V6 time range");return false;}std::vector<size_t> selected;for(size_t typeIndex=0;typeIndex<impl_->typeIndex.size();++typeIndex){const auto type=static_cast<uint8_t>(typeIndex);if(mask&v6TypeBit(type))impl_->selectRange(impl_->typeIndex[typeIndex],from,to,selected);}
-    auto results=impl_->runChunkJobs(selected,[state=impl_.get(),from,to,cancelled](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error,{},true,from,to,false,cancelled))result.ok=false;return result;},cancelled);
-    if(results.size()!=selected.size()){fail(errorOut,"indexed read cancelled");return false;}
-    std::vector<std::vector<V6TimedRow>> groups;groups.reserve(results.size());for(auto& result:results){if(!result.ok){fail(errorOut,result.error);return false;}groups.push_back(std::move(result.rows));}mergeRowGroups(groups,out);return true;
-}
-bool TnrdV6Archive::forEachRowInRange(
-    float from, float to, V6RowTypeMask mask,
-    const std::function<bool(const V6TimedRow&)>& callback,
-    std::string* errorOut, const IndexedCancelCheck& cancelled) {
-    if (std::isnan(from) || std::isnan(to) || to < from) {
-        fail(errorOut, "invalid V6 time range");
-        return false;
+} // namespace
+
+TnrdV6Archive::TnrdV6Archive() : impl_(std::make_unique<Impl>()) {}
+TnrdV6Archive::~TnrdV6Archive() { close(); }
+
+bool TnrdV6Archive::open(const std::string& path, HeaderRow& headerOut, std::string* errorOut) {
+    close(); impl_ = std::make_unique<Impl>();
+    impl_->file = openTnrdFile(path, "rb");
+    if (!impl_->file) { fail(errorOut, "could not open V6 file"); return false; }
+    if (!seekEnd(impl_->file) || (impl_->fileSize = tellFile(impl_->file)) < HEADER_SIZE + FOOTER_SIZE) {
+        fail(errorOut, "truncated V6 file"); close(); return false;
     }
-    if (cancelled && cancelled()) {
-        fail(errorOut, "indexed read cancelled");
-        return false;
+    std::array<uint8_t, HEADER_SIZE> header{};
+    if (!readAt(impl_->file, 0, header.data(), header.size()) ||
+        !std::equal(MAGIC.begin(), MAGIC.end(), header.begin()) || get16(header.data() + 8) != 6 ||
+        get16(header.data() + 10) != HEADER_SIZE || get32(header.data() + 12) != 3 ||
+        get32(header.data() + 44) != CHUNK_ENTRY_SIZE ||
+        get32(header.data() + 120) != static_cast<uint32_t>(::crc32(0, header.data(), 120))) {
+        fail(errorOut, "invalid V6 header"); close(); return false;
     }
-
-    std::vector<size_t> selected;
-    for (size_t typeIndex = 0; typeIndex < impl_->typeIndex.size(); ++typeIndex) {
-        const auto type = static_cast<uint8_t>(typeIndex);
-        if (mask & v6TypeBit(type))
-            impl_->selectRange(impl_->typeIndex[typeIndex], from, to, selected);
+    const uint64_t metadataOffset = get64(header.data() + 16);
+    const uint64_t metadataSize = get64(header.data() + 24);
+    const uint64_t directoryOffset = get64(header.data() + 32);
+    const uint32_t chunkCount = get32(header.data() + 40);
+    const uint64_t footerOffset = get64(header.data() + 48);
+    if (!metadataSize || metadataSize > MAX_METADATA_BYTES || chunkCount > MAX_CHUNKS ||
+        !rangeOk(impl_->fileSize, metadataOffset, metadataSize) ||
+        !rangeOk(impl_->fileSize, directoryOffset, uint64_t(chunkCount) * CHUNK_ENTRY_SIZE) ||
+        !rangeOk(impl_->fileSize, footerOffset, FOOTER_SIZE) ||
+        metadataOffset + metadataSize != directoryOffset ||
+        directoryOffset + uint64_t(chunkCount) * CHUNK_ENTRY_SIZE != footerOffset) {
+        fail(errorOut, "invalid V6 control-plane ranges"); close(); return false;
     }
-    if (selected.empty()) return true;
-
-    // Keep each family chronological so consumers can append directly to its
-    // final output buffer. Cross-family order is deliberately irrelevant.
-    std::sort(selected.begin(), selected.end(), [&](size_t left, size_t right) {
-        const auto& a = impl_->chunks[left];
-        const auto& b = impl_->chunks[right];
-        if (a.rowType != b.rowType) return a.rowType < b.rowType;
-        const auto& am = impl_->chunkMetadata[left];
-        const auto& bm = impl_->chunkMetadata[right];
-        if (am.first != bm.first) return am.first < bm.first;
-        return a.sequence < b.sequence;
-    });
-
-    struct Prepared {
-        bool ok{true};
-        std::string error;
-        std::vector<V6TimedRow> rows;
-    };
-    struct Completed {
-        std::mutex mutex;
-        std::condition_variable cv;
-        std::deque<std::pair<size_t, Prepared>> ready;
-    };
-
-    auto completed = std::make_shared<Completed>();
-    std::vector<std::unique_ptr<Prepared>> prepared(selected.size());
-    size_t nextSchedule = 0;
-    size_t nextEmit = 0;
-    size_t active = 0;
-    bool stopped = false;
-    bool callbackStopped = false;
-
-    const auto schedule = [&](size_t ordinal) {
-        const size_t index = selected[ordinal];
-        ++active;
-        (void)impl_->executor.submit(impl_->path,
-            [state = impl_.get(), index, ordinal, from, to, cancelled, completed](std::FILE* file) {
-                Prepared result;
-                try {
-                    if (!state->splitChunk(index, file, result.rows, &result.error, {},
-                                           true, from, to, false, cancelled))
-                        result.ok = false;
-                    else
-                        sortRows(result.rows);
-                } catch (const std::exception& e) {
-                    result.ok = false;
-                    result.error = e.what();
-                } catch (...) {
-                    result.ok = false;
-                    result.error = "indexed range iteration failed";
-                }
-                {
-                    std::lock_guard<std::mutex> lock(completed->mutex);
-                    completed->ready.emplace_back(ordinal, std::move(result));
-                }
-                completed->cv.notify_one();
-            });
-    };
-
-    constexpr size_t LOOKAHEAD = MAX_PARALLEL_CHUNKS * 2;
-    while (nextSchedule < selected.size() && active < MAX_PARALLEL_CHUNKS)
-        schedule(nextSchedule++);
-
-    while (active) {
-        std::unique_lock<std::mutex> lock(completed->mutex);
-        completed->cv.wait(lock, [&] { return !completed->ready.empty(); });
-        while (!completed->ready.empty()) {
-            auto ready = std::move(completed->ready.front());
-            completed->ready.pop_front();
-            prepared[ready.first] = std::make_unique<Prepared>(std::move(ready.second));
-            --active;
+    std::array<uint8_t, FOOTER_SIZE> footer{};
+    if (!readAt(impl_->file, footerOffset, footer.data(), footer.size()) ||
+        get32(footer.data()) != FOOTER_MAGIC || get16(footer.data() + 4) != 6 ||
+        get16(footer.data() + 6) != FOOTER_SIZE || get64(footer.data() + 8) != metadataOffset ||
+        get64(footer.data() + 16) != directoryOffset || get32(footer.data() + 24) != chunkCount ||
+        get32(footer.data() + 28) != metadataSize) {
+        fail(errorOut, "invalid V6 footer"); close(); return false;
+    }
+    std::string metadata(metadataSize, '\0');
+    std::vector<uint8_t> directory(uint64_t(chunkCount) * CHUNK_ENTRY_SIZE);
+    if (!readAt(impl_->file, metadataOffset, metadata.data(), metadata.size()) ||
+        !readAt(impl_->file, directoryOffset, directory.data(), directory.size()) ||
+        get32(footer.data() + 32) != controlCrc(metadata, directory)) {
+        fail(errorOut, "invalid V6 control-plane checksum"); close(); return false;
+    }
+    V6Metadata decoded;
+    if (const auto ec = glz::read_json(decoded, metadata); ec) {
+        fail(errorOut, "invalid V6 metadata JSON"); close(); return false;
+    }
+    impl_->session = std::move(decoded.session); impl_->drivers = std::move(decoded.drivers);
+    impl_->lapSummaries = std::move(decoded.laps);
+    std::set<uint8_t> driverIds; std::set<uint32_t> lapIds;
+    std::map<uint32_t, std::pair<uint8_t, V6Phase>> lapOwners;
+    for (size_t i = 0; i < impl_->drivers.size(); ++i) {
+        const auto id = impl_->drivers[i].vehicleIndex;
+        if (id >= 24 || !driverIds.insert(id).second) { fail(errorOut, "invalid V6 driver table"); close(); return false; }
+        impl_->driverByIndex[id] = i;
+        if (impl_->drivers[i].isPlayer) impl_->player = id;
+    }
+    for (const auto& lap : impl_->lapSummaries) {
+        if (lap.driverIndex >= 24 || lap.lapId == 0 || !lapIds.insert(lap.lapId).second ||
+            !std::isfinite(lap.startSessionTime) || !std::isfinite(lap.endSessionTime) ||
+            lap.endSessionTime < lap.startSessionTime) {
+            fail(errorOut, "invalid V6 lap table"); close(); return false;
         }
-        lock.unlock();
+        lapOwners[lap.lapId] = {lap.driverIndex, lap.phase};
+    }
+    impl_->v6Chunks.reserve(chunkCount);
+    uint64_t priorPayloadEnd = HEADER_SIZE;
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        const uint8_t* p = directory.data() + uint64_t(i) * CHUNK_ENTRY_SIZE;
+        V6ChunkInfo chunk{p[0], get32(p + 4), p[1], p[2], static_cast<V6Phase>(p[3]),
+            getFloat(p + 8), getFloat(p + 12), get64(p + 16), get64(p + 24), get64(p + 32),
+            get32(p + 40), get32(p + 44), get64(p + 48)};
+        const auto owner = lapOwners.find(chunk.lapId);
+        if (chunk.driverIndex >= 24 || chunk.typeId == 0 || chunk.typeId >= static_cast<uint8_t>(V6DataType::Count) ||
+            chunk.phase > V6Phase::Formation || !lapIds.contains(chunk.lapId) ||
+            owner == lapOwners.end() || owner->second.first != chunk.driverIndex || owner->second.second != chunk.phase ||
+            !std::isfinite(chunk.firstTime) || !std::isfinite(chunk.lastTime) || chunk.lastTime < chunk.firstTime ||
+            !chunk.compressedSize || !chunk.uncompressedSize || chunk.uncompressedSize > MAX_CHUNK_PLAIN ||
+            chunk.offset < CHUNK_PREFIX_SIZE || !rangeOk(impl_->fileSize, chunk.offset, chunk.compressedSize) ||
+            chunk.offset + chunk.compressedSize > metadataOffset || chunk.offset - CHUNK_PREFIX_SIZE < priorPayloadEnd) {
+            fail(errorOut, "invalid V6 chunk directory"); close(); return false;
+        }
+        std::array<uint8_t, CHUNK_PREFIX_SIZE> prefix{};
+        if (!readAt(impl_->file, chunk.offset - CHUNK_PREFIX_SIZE, prefix.data(), prefix.size()) ||
+            get32(prefix.data()) != CHUNK_MAGIC || prefix[4] != chunk.driverIndex || prefix[5] != chunk.typeId ||
+            prefix[7] != static_cast<uint8_t>(chunk.phase) || get32(prefix.data() + 8) != chunk.lapId ||
+            get64(prefix.data() + 12) != chunk.compressedSize || get64(prefix.data() + 20) != chunk.uncompressedSize ||
+            get32(prefix.data() + 28) != chunk.sampleCount) {
+            fail(errorOut, "invalid V6 chunk prefix"); close(); return false;
+        }
+        priorPayloadEnd = chunk.offset + chunk.compressedSize;
+        impl_->v6Chunks.push_back(chunk);
+    }
+    impl_->shared.reserve(decoded.shared.size());
+    for (const auto& stored : decoded.shared) {
+        if (stored.phase > V6Phase::Formation || !std::isfinite(stored.sessionTime) ||
+            !stored.compressedSize || !stored.uncompressedSize || stored.uncompressedSize > MAX_CHUNK_PLAIN ||
+            stored.offset < CHUNK_PREFIX_SIZE || !rangeOk(impl_->fileSize, stored.offset, stored.compressedSize) ||
+            stored.offset + stored.compressedSize > metadataOffset) {
+            fail(errorOut, "invalid V6 shared-record index"); close(); return false;
+        }
+        std::array<uint8_t, CHUNK_PREFIX_SIZE> prefix{};
+        if (!readAt(impl_->file, stored.offset - CHUNK_PREFIX_SIZE, prefix.data(), prefix.size()) ||
+            get32(prefix.data()) != SHARED_MAGIC || prefix[4] != static_cast<uint8_t>(stored.phase) ||
+            get64(prefix.data() + 8) != stored.compressedSize ||
+            get64(prefix.data() + 16) != stored.uncompressedSize || get32(prefix.data() + 24) != stored.checksum) {
+            fail(errorOut, "invalid V6 shared-record prefix"); close(); return false;
+        }
+        std::vector<uint8_t> compressed(stored.compressedSize);
+        std::string plain(stored.uncompressedSize, '\0');
+        if (!readAt(impl_->file, stored.offset, compressed.data(), compressed.size())) {
+            fail(errorOut, "could not read V6 shared record"); close(); return false;
+        }
+        const size_t size = ZSTD_decompress(plain.data(), plain.size(), compressed.data(), compressed.size());
+        if (ZSTD_isError(size) || size != stored.uncompressedSize ||
+            static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain.data()),
+                                          static_cast<uInt>(plain.size()))) != stored.checksum) {
+            fail(errorOut, "invalid V6 shared-record payload"); close(); return false;
+        }
+        impl_->shared.push_back({stored.phase, stored.sessionTime, std::move(plain)});
+    }
+    impl_->playback = impl_->player.value_or(impl_->drivers.empty() ? 0 : impl_->drivers.front().vehicleIndex);
+    impl_->rebuildCompatibility(); headerOut = impl_->session; return true;
+}
 
-        while (!stopped && nextEmit < prepared.size() && prepared[nextEmit]) {
-            auto current = std::move(prepared[nextEmit]);
-            if (!current->ok) {
-                fail(errorOut, current->error);
-                stopped = true;
-            } else {
-                for (const auto& row : current->rows) {
-                    if ((cancelled && cancelled()) || !callback(row)) {
-                        stopped = true;
-                        callbackStopped = true;
-                        break;
-                    }
+void TnrdV6Archive::close() {
+    if (impl_ && impl_->file) std::fclose(impl_->file);
+    if (impl_) { impl_->file = nullptr; impl_->clearCache(); }
+}
+bool TnrdV6Archive::isOpen() const { return impl_ && impl_->file; }
+const std::vector<V6LapInfo>& TnrdV6Archive::laps() const { return impl_->compatibleLaps; }
+const std::vector<V4ChunkInfo>& TnrdV6Archive::chunks() const { return impl_->compatibleChunks; }
+const V6ControlSummary& TnrdV6Archive::summary() const { return impl_->control; }
+float TnrdV6Archive::startTime() const { return impl_->first; }
+float TnrdV6Archive::totalTime() const { return std::max(impl_->first, impl_->last); }
+int TnrdV6Archive::lapAt(float time) const {
+    int result = -1; for (const auto& lap : impl_->compatibleLaps)
+        if (time >= lap.startSessionTime && time <= lap.endSessionTime) result = static_cast<int>(lap.lapNumber);
+    return result;
+}
+void TnrdV6Archive::chunkIndicesForLap(uint32_t lap, V6RowTypeMask mask, std::vector<size_t>& out) const {
+    out.clear();
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i]; const auto found = impl_->lapById.find(chunk.lapId);
+        if (chunk.driverIndex == impl_->playback && found != impl_->lapById.end() &&
+            ((lap == 0 && impl_->lapSummaries[found->second].phase == V6Phase::Formation) ||
+             (lap != 0 && impl_->lapSummaries[found->second].phase == V6Phase::Race &&
+              impl_->lapSummaries[found->second].lapNumber == lap)) &&
+            requestedByOldMask(static_cast<V6DataType>(chunk.typeId), mask)) out.push_back(i);
+    }
+}
+bool TnrdV6Archive::chunkTimeBounds(size_t index, float& firstOut, float& lastOut) const {
+    if (index >= impl_->v6Chunks.size()) return false; const auto& chunk = impl_->v6Chunks[index];
+    const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+    firstOut = chunk.firstTime + offset; lastOut = chunk.lastTime + offset; return true;
+}
+void TnrdV6Archive::prefetchChunk(size_t index) { std::shared_ptr<std::string> ignored; (void)loadChunkPlain(index, ignored, nullptr); }
+void TnrdV6Archive::cancelPrefetch() {}
+
+bool TnrdV6Archive::loadChunkPlain(size_t index, std::shared_ptr<std::string>& out, std::string* errorOut) {
+    if (!isOpen() || index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
+    {
+        std::lock_guard lock(impl_->cacheMutex); const auto found = impl_->cache.find(index);
+        if (found != impl_->cache.end()) {
+            impl_->lru.splice(impl_->lru.begin(), impl_->lru, found->second.lru);
+            out = found->second.plain; return true;
+        }
+    }
+    const auto& chunk = impl_->v6Chunks[index]; std::vector<uint8_t> compressed(chunk.compressedSize);
+    if (!readAt(impl_->file, chunk.offset, compressed.data(), compressed.size())) { fail(errorOut, "could not read V6 chunk"); return false; }
+    auto plain = std::make_shared<std::string>(chunk.uncompressedSize, '\0');
+    const size_t size = ZSTD_decompress(plain->data(), plain->size(), compressed.data(), compressed.size());
+    if (ZSTD_isError(size) || size != chunk.uncompressedSize ||
+        static_cast<uint32_t>(::crc32(0, reinterpret_cast<const Bytef*>(plain->data()), static_cast<uInt>(plain->size()))) != chunk.checksum) {
+        fail(errorOut, "invalid V6 chunk payload"); return false;
+    }
+    {
+        std::lock_guard lock(impl_->cacheMutex); ++impl_->decompressions;
+        if (plain->size() <= impl_->cacheLimit) {
+            while (!impl_->lru.empty() && impl_->cacheUsed + plain->size() > impl_->cacheLimit) {
+                const size_t victim = impl_->lru.back(); impl_->lru.pop_back();
+                impl_->cacheUsed -= impl_->cache[victim].plain->size(); impl_->cache.erase(victim);
+            }
+            impl_->lru.push_front(index); impl_->cache[index] = {plain, impl_->lru.begin()}; impl_->cacheUsed += plain->size();
+        }
+    }
+    out = std::move(plain); return true;
+}
+
+bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vector<std::vector<V6TimedRow>>& out,
+                                  std::string* errorOut) {
+    out.clear(); out.reserve(indices.size());
+    for (size_t index : indices) {
+        if (index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        out.emplace_back(); const auto& chunk = impl_->v6Chunks[index];
+        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f,
+                            out.back(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
+    }
+    return true;
+}
+bool TnrdV6Archive::rowsForLap(uint32_t lap, V6RowTypeMask mask, std::vector<V6TimedRow>& out, std::string* errorOut) {
+    return rowsForLapRange(lap, -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), mask, out, errorOut);
+}
+bool TnrdV6Archive::rowsForLapRange(uint32_t lap, float from, float to, V6RowTypeMask mask,
+                                    std::vector<V6TimedRow>& out, std::string* errorOut,
+                                    const IndexedCancelCheck& cancelled) {
+    out.clear(); std::vector<size_t> indices; chunkIndicesForLap(lap, mask, indices);
+    for (size_t index : indices) {
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        const auto& chunk = impl_->v6Chunks[index];
+        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f,
+                            out, from, to, cancelled)) return false;
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.sessionTime, a.sequence, a.sourceOffset) < std::tie(b.sessionTime, b.sequence, b.sourceOffset);
+    }); return true;
+}
+bool TnrdV6Archive::rowsForRange(float from, float to, V6RowTypeMask mask, std::vector<V6TimedRow>& out,
+                                 std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    out.clear();
+    for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
+        const auto& chunk = impl_->v6Chunks[index];
+        const auto type = static_cast<V6DataType>(chunk.typeId);
+        if ((!requestedByOldMask(type, mask) || chunk.driverIndex != impl_->playback) &&
+            !requestedForAllDrivers(type, mask)) continue;
+        // Explicit history reads are selected by their row-family mask. They must
+        // not depend on the mutable live-stream type subscription, which may still
+        // be in flight when a seek or backfill request arrives.
+        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
+        if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
+    }
+    for (size_t i = 0; i < impl_->shared.size(); ++i) {
+        const auto& record = impl_->shared[i]; const uint8_t type = sharedRowType(record.json);
+        if (!type || !(mask & v4TypeBit(type))) continue;
+        const float time = impl_->logical(record.phase, record.sessionTime);
+        if (time >= from && time <= to) out.push_back({time, type, i, record.json, 0});
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.sessionTime, a.sequence, a.sourceOffset) < std::tie(b.sessionTime, b.sequence, b.sourceOffset);
+    }); return true;
+}
+bool TnrdV6Archive::forEachRowInRange(float from, float to, V6RowTypeMask mask,
+                                      const std::function<bool(const V6TimedRow&)>& callback,
+                                      std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    std::vector<V6TimedRow> rows; if (!rowsForRange(from, to, mask, rows, errorOut, cancelled)) return false;
+    for (const auto& row : rows) if ((cancelled && cancelled()) || !callback(row)) return false; return true;
+}
+bool TnrdV6Archive::latestRows(float at, const std::vector<uint8_t>& types, std::vector<V6TimedRow>& out,
+                               std::string* errorOut, const IndexedCancelCheck& cancelled) {
+    return readMultiDriverLatest(at, {impl_->playback}, types, out, errorOut);
+}
+bool TnrdV6Archive::forEachChunk(V6RowTypeMask mask,
+                                 const std::function<bool(const V4ChunkInfo&, std::string_view)>& callback,
+                                 std::string* errorOut) {
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i];
+        if (chunk.driverIndex != impl_->playback || !requestedByOldMask(static_cast<V6DataType>(chunk.typeId), mask)) continue;
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
+        const auto lap = impl_->lapById.find(chunk.lapId);
+        V4ChunkInfo info{lap == impl_->lapById.end() ? 0u : impl_->lapSummaries[lap->second].lapNumber,
+            chunk.typeId, chunk.flags, chunk.offset, chunk.compressedSize, chunk.uncompressedSize,
+            chunk.sampleCount, chunk.checksum, chunk.sequence};
+        if (!callback(info, *plain)) return false;
+    }
+    return true;
+}
+void TnrdV6Archive::setCacheLimitBytes(size_t bytes) { impl_->cacheLimit = bytes; impl_->clearCache(); }
+size_t TnrdV6Archive::cacheBytes() const { std::lock_guard lock(impl_->cacheMutex); return impl_->cacheUsed; }
+uint64_t TnrdV6Archive::decompressedChunkCount() const { std::lock_guard lock(impl_->cacheMutex); return impl_->decompressions; }
+size_t TnrdV6Archive::peakConcurrentChunkLoads() const { return isOpen() ? 1 : 0; }
+
+void TnrdV6Archive::setPlaybackDriver(uint8_t index) {
+    if (impl_->driverByIndex.contains(index)) { impl_->playback = index; impl_->rebuildCompatibility(); }
+}
+void TnrdV6Archive::setRequestedTypes(const std::vector<uint8_t>& types) {
+    impl_->requestedTypes.clear();
+    for (uint8_t type : types) if (type > 0 && type < static_cast<uint8_t>(V6DataType::Count))
+        impl_->requestedTypes.insert(type);
+}
+bool TnrdV6Archive::requestedType(uint8_t type) const {
+    return impl_->requestedTypes.empty() || impl_->requestedTypes.contains(type);
+}
+void TnrdV6Archive::playbackChunkIndices(V6RowTypeMask mask, std::vector<size_t>& out) const {
+    out.clear();
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i];
+        const auto type = static_cast<V6DataType>(chunk.typeId);
+        if (!impl_->requestedTypes.empty() && !impl_->requestedTypes.contains(chunk.typeId)) continue;
+        if ((chunk.driverIndex == impl_->playback && requestedByOldMask(type, mask)) ||
+            requestedForAllDrivers(type, mask)) out.push_back(i);
+    }
+    std::stable_sort(out.begin(), out.end(), [&](size_t left, size_t right) {
+        const auto& a = impl_->v6Chunks[left]; const auto& b = impl_->v6Chunks[right];
+        return std::tuple{impl_->logical(a.phase, a.firstTime), a.sequence} <
+               std::tuple{impl_->logical(b.phase, b.firstTime), b.sequence};
+    });
+}
+uint8_t TnrdV6Archive::playbackDriver() const { return impl_->playback; }
+std::optional<uint8_t> TnrdV6Archive::playerDriverIndex() const { return impl_->player; }
+const std::vector<V6DriverHeader>& TnrdV6Archive::driverHeaders() const { return impl_->drivers; }
+const V6DriverHeader* TnrdV6Archive::driverHeader(uint8_t index) const {
+    const auto found = impl_->driverByIndex.find(index); return found == impl_->driverByIndex.end() ? nullptr : &impl_->drivers[found->second];
+}
+std::vector<V6LapSummary> TnrdV6Archive::driverLapSummaries(uint8_t index) const {
+    std::vector<V6LapSummary> out; for (const auto& lap : impl_->lapSummaries) if (lap.driverIndex == index) out.push_back(lap);
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.phase, a.startSessionTime, a.lapId) < std::tie(b.phase, b.startSessionTime, b.lapId);
+    }); return out;
+}
+const std::vector<V6ChunkInfo>& TnrdV6Archive::v6Chunks() const { return impl_->v6Chunks; }
+const std::vector<V6SharedRecord>& TnrdV6Archive::sharedRecords() const { return impl_->shared; }
+float TnrdV6Archive::logicalTime(V6Phase phase, float time) const { return impl_->logical(phase, time); }
+bool TnrdV6Archive::readDriverLapTypes(uint8_t driver, uint32_t lapId, const std::vector<uint8_t>& types,
+                                       std::vector<V6TimedRow>& out, std::string* errorOut) {
+    out.clear(); std::set<uint8_t> wanted(types.begin(), types.end());
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i];
+        if (chunk.driverIndex != driver || chunk.lapId != lapId || (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
+        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f, out,
+                            -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.sessionTime, a.sequence, a.sourceOffset) < std::tie(b.sessionTime, b.sequence, b.sourceOffset);
+    }); return true;
+}
+bool TnrdV6Archive::readDriverRangeTypes(uint8_t driver, float from, float to, const std::vector<uint8_t>& types,
+                                         std::vector<V6TimedRow>& out, std::string* errorOut,
+                                         const IndexedCancelCheck& cancelled) {
+    out.clear(); std::set<uint8_t> wanted(types.begin(), types.end());
+    for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
+        const auto& chunk = impl_->v6Chunks[i];
+        if (chunk.driverIndex != driver || (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
+        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
+        std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
+        if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.sessionTime, a.sequence, a.sourceOffset) < std::tie(b.sessionTime, b.sequence, b.sourceOffset);
+    }); return true;
+}
+bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& drivers,
+                                           const std::vector<uint8_t>& types, std::vector<V6TimedRow>& out,
+                                           std::string* errorOut) {
+    out.clear();
+    for (uint8_t driver : drivers) for (uint8_t type : types) {
+        size_t latestChunk = impl_->v6Chunks.size();
+        std::tuple<float, uint64_t> latestKey{-std::numeric_limits<float>::infinity(), 0};
+        for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
+            const auto& chunk = impl_->v6Chunks[index];
+            if (chunk.driverIndex != driver || chunk.typeId != type) continue;
+            const float first = impl_->logical(chunk.phase, chunk.firstTime);
+            if (first > at) continue;
+            const auto key = std::tuple{first, chunk.sequence};
+            if (latestChunk == impl_->v6Chunks.size() || key > latestKey) {
+                latestChunk = index;
+                latestKey = key;
+            }
+        }
+        if (latestChunk == impl_->v6Chunks.size()) continue;
+
+        std::vector<V6TimedRow> rows;
+        std::shared_ptr<std::string> plain;
+        if (!loadChunkPlain(latestChunk, plain, errorOut)) return false;
+        const auto& chunk = impl_->v6Chunks[latestChunk];
+        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        if (!parseChunkRows(*plain, chunk, offset, rows,
+                            -std::numeric_limits<float>::infinity(), at)) return false;
+        if (rows.empty()) continue;
+        if (!stateType(static_cast<V6DataType>(type))) {
+            out.push_back(std::move(rows.back()));
+            continue;
+        }
+
+        // A state type can contain independently updated field groups. Tyre
+        // state, for example, carries both compound/age and tyre-set allocation.
+        // Restore the latest value of every group, not merely the final line in
+        // the chunk, while still respecting an explicit unavailable transition.
+        std::map<std::string, V6TimedRow> latest;
+        for (auto& row : rows) {
+            const bool unavailable = row.json.find("\"available\":false") != std::string::npos;
+            if (unavailable) {
+                latest.clear();
+                latest.emplace("available", std::move(row));
+                continue;
+            }
+            latest.erase("available");
+            size_t cursor = 0;
+            std::string signature;
+            while ((cursor = row.json.find('"', cursor)) != std::string::npos) {
+                const size_t end = row.json.find('"', cursor + 1);
+                if (end == std::string::npos) break;
+                const std::string_view key(row.json.data() + cursor + 1, end - cursor - 1);
+                cursor = end + 1;
+                if (key != "driver_idx" && key != "session_time" && key != "_v6_type") {
+                    signature.assign(key);
+                    break;
                 }
             }
-            ++nextEmit;
+            if (!signature.empty()) latest.insert_or_assign(std::move(signature), std::move(row));
         }
-        while (!stopped && nextSchedule < selected.size() &&
-               active < MAX_PARALLEL_CHUNKS && nextSchedule < nextEmit + LOOKAHEAD)
-            schedule(nextSchedule++);
+        for (auto& [_, row] : latest) out.push_back(std::move(row));
     }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.sessionTime, a.rowType, a.sequence) < std::tie(b.sessionTime, b.rowType, b.sequence);
+    }); return true;
+}
 
-    if (callbackStopped || stopped) return false;
-    return nextEmit == selected.size();
+namespace TNRD_V6 {
+bool load(const std::string& path, V6LoadResult& result, std::string& error) {
+    auto archive = std::make_unique<TnrdV6Archive>(); HeaderRow header;
+    if (!archive->open(path, header, &error)) return false;
+    result.header = std::move(header); result.archive = std::move(archive); return true;
 }
-bool TnrdV6Archive::latestRows(float at,const std::vector<uint8_t>& types,std::vector<V6TimedRow>& out,std::string* errorOut,const IndexedCancelCheck& cancelled){
-    if(cancelled&&cancelled()){fail(errorOut,"indexed read cancelled");return false;}if(std::isnan(at)){fail(errorOut,"invalid V6 latest-row time");return false;}struct Candidate{uint8_t type{};size_t index{};};std::vector<Candidate> candidates;std::array<bool,ROW_TYPE_COUNT> seen{};
-    for(uint8_t type:types){if(type>=impl_->typeIndex.size()||seen[type])continue;seen[type]=true;const auto& family=impl_->typeIndex[type];const auto upper=std::upper_bound(family.chunks.begin(),family.chunks.end(),at,[&](float value,size_t index){return value<impl_->chunkMetadata[index].first;});const size_t end=(size_t)(upper-family.chunks.begin());if(!end)continue;
-        const bool exact=impl_->chunkMetadata[family.chunks.front()].rowIndexCount!=0&&impl_->chunkMetadata[family.chunks.front()].rowIndexStride==1;if(exact){size_t bestChunk=SIZE_MAX;float bestTime=-std::numeric_limits<float>::infinity();uint64_t bestSequence=0;for(size_t pos=end;pos-- >0;){if(bestChunk!=SIZE_MAX&&family.prefixMax[pos]<bestTime)break;const size_t index=family.chunks[pos];const auto& meta=impl_->chunkMetadata[index];auto begin=impl_->rowSpans.begin()+(ptrdiff_t)meta.rowBegin,finish=begin+(ptrdiff_t)meta.rowIndexCount;const float searchAt=std::min(at,meta.last);const auto row=std::upper_bound(begin,finish,searchAt,[](float value,const Impl::RowSpan& span){return value<span.firstTime;});if(row==begin)continue;const float time=std::prev(row)->firstTime;const uint64_t sequence=impl_->chunks[index].sequence;if(bestChunk==SIZE_MAX||time>bestTime||(time==bestTime&&sequence>bestSequence)){bestChunk=index;bestTime=time;bestSequence=sequence;}}if(bestChunk!=SIZE_MAX)candidates.push_back({type,bestChunk});continue;}
-        const float bestUpper=std::min(at,family.prefixMax[end-1]);if(bestUpper==at){const auto first=std::lower_bound(family.prefixMax.begin(),family.prefixMax.begin()+(ptrdiff_t)end,at);for(size_t pos=(size_t)(first-family.prefixMax.begin());pos<end;++pos){const size_t index=family.chunks[pos];if(impl_->chunkMetadata[index].last>=at)candidates.push_back({type,index});}}else{for(size_t pos=end;pos-- >0;){if(family.prefixMax[pos]<bestUpper)break;const size_t index=family.chunks[pos];if(impl_->chunkMetadata[index].last==bestUpper)candidates.push_back({type,index});}}
-    }
-    std::vector<size_t> selected;selected.reserve(candidates.size());for(const auto& candidate:candidates)selected.push_back(candidate.index);auto results=impl_->runChunkJobs(selected,[state=impl_.get(),at,cancelled](std::FILE* file,size_t index){Impl::RowsResult result;if(!state->splitChunk(index,file,result.rows,&result.error,{},true,-std::numeric_limits<float>::infinity(),at,true,cancelled))result.ok=false;return result;},cancelled);if(results.size()!=selected.size()){fail(errorOut,"indexed read cancelled");return false;}std::array<V6TimedRow,ROW_TYPE_COUNT> best{};std::array<bool,ROW_TYPE_COUNT> have{};for(size_t i=0;i<results.size();++i){auto& result=results[i];if(!result.ok){fail(errorOut,result.error);return false;}for(auto& row:result.rows){const uint8_t type=candidates[i].type;if(!have[type]||row.sessionTime>best[type].sessionTime||(row.sessionTime==best[type].sessionTime&&row.sequence>best[type].sequence)){best[type]=std::move(row);have[type]=true;}}}out.clear();for(uint8_t type=0;type<have.size();++type)if(have[type])out.push_back(std::move(best[type]));sortRows(out);return true;
-}
-bool TnrdV6Archive::forEachChunk(V6RowTypeMask mask,const std::function<bool(const V6ChunkInfo&,std::string_view)>& callback,std::string* errorOut){
-    struct Prepared{bool ok{};std::string error;std::shared_ptr<std::string> plain;};
-    std::vector<size_t> selected;for(size_t i=0;i<impl_->chunks.size();++i)if(mask&v6TypeBit((uint8_t)impl_->chunks[i].rowType))selected.push_back(i);std::sort(selected.begin(),selected.end(),[&](size_t a,size_t b){const auto&x=impl_->chunks[a];const auto&y=impl_->chunks[b];if(x.rowType!=y.rowType)return x.rowType<y.rowType;if(x.lapNumber!=y.lapNumber)return x.lapNumber<y.lapNumber;return x.sequence<y.sequence;});
-    struct Completed{std::mutex mutex;std::condition_variable cv;std::deque<std::pair<size_t,Prepared>> ready;};if(selected.empty())return true;auto completed=std::make_shared<Completed>();std::vector<std::unique_ptr<Prepared>> prepared(selected.size());size_t nextSchedule=0,nextEmit=0,active=0;bool stopped=false,callbackStopped=false;
-    auto schedule=[&](size_t ordinal){const size_t index=selected[ordinal];++active;(void)impl_->executor.submit(impl_->path,[state=impl_.get(),index,ordinal,completed](std::FILE* file){Prepared result;try{std::shared_ptr<std::string> plain;if(state->loadChunk(index,file,plain,&result.error)){const std::string_view view(*plain);const size_t firstEnd=view.find('\n');const auto& meta=state->chunkMetadata[index];if(scanTime(view.substr(0,firstEnd))>=0&&meta.last>=meta.physicalLast){result.ok=true;result.plain=std::move(plain);}else{std::vector<V6TimedRow> rows;if(state->splitChunk(index,file,rows,&result.error,plain)){auto normalized=std::make_shared<std::string>();normalized->reserve(plain->size()+rows.size()*24);for(const auto& row:rows){*normalized+=withSessionTime(row.json,row.sessionTime);normalized->push_back('\n');}result.ok=true;result.plain=std::move(normalized);}}}}catch(const std::exception& e){result.error=e.what();}catch(...){result.error="indexed chunk iteration failed";}{std::lock_guard<std::mutex> lock(completed->mutex);completed->ready.emplace_back(ordinal,std::move(result));}completed->cv.notify_one();});};
-    constexpr size_t LOOKAHEAD=MAX_PARALLEL_CHUNKS*2;while(nextSchedule<selected.size()&&active<MAX_PARALLEL_CHUNKS)schedule(nextSchedule++);
-    while(active){std::unique_lock<std::mutex> lock(completed->mutex);completed->cv.wait(lock,[&]{return !completed->ready.empty();});while(!completed->ready.empty()){auto ready=std::move(completed->ready.front());completed->ready.pop_front();prepared[ready.first]=std::make_unique<Prepared>(std::move(ready.second));--active;}lock.unlock();while(!stopped&&nextEmit<prepared.size()&&prepared[nextEmit]){auto current=std::move(prepared[nextEmit]);if(!current->ok){fail(errorOut,current->error);stopped=true;}else if(!callback(impl_->chunks[selected[nextEmit]],*current->plain)){stopped=true;callbackStopped=true;}++nextEmit;}while(!stopped&&nextSchedule<selected.size()&&active<MAX_PARALLEL_CHUNKS&&nextSchedule<nextEmit+LOOKAHEAD)schedule(nextSchedule++);}
-    if(callbackStopped)return false;if(stopped)return false;return nextEmit==selected.size();
-}
-void TnrdV6Archive::setCacheLimitBytes(size_t bytes){std::lock_guard<std::mutex> lock(impl_->stateMutex);impl_->cacheLimit=bytes;while(impl_->cacheBytes>bytes&&!impl_->lru.empty()){const size_t old=impl_->lru.back();impl_->lru.pop_back();auto it=impl_->cache.find(old);impl_->cacheBytes-=it->second.bytes;impl_->cache.erase(it);}}
-size_t TnrdV6Archive::cacheBytes()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->cacheBytes;}
-uint64_t TnrdV6Archive::decompressedChunkCount()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->decompressions;}
-size_t TnrdV6Archive::peakConcurrentChunkLoads()const{std::lock_guard<std::mutex> lock(impl_->stateMutex);return impl_->peakActiveLoads;}
-
+} // namespace TNRD_V6
 
 } // namespace tnrp::detail

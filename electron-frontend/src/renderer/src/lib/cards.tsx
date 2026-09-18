@@ -77,7 +77,10 @@ const FUEL_MIX = ['Lean', 'Std', 'Rich', 'Max']
 // ── Overview resolvers (LiveStats) ───────────────────────────────────────────
 export const OVERVIEW_RESOLVERS: Record<string, CardResolver> = {
   speed: c => ({ value: c.latest ? String(c.latest.speed_kph) : '—', unit: 'kph', color: c.color('speed') }),
-  rpm:   c => ({ value: c.latest ? c.latest.rpm.toLocaleString() : '—', color: c.color('rpm') }),
+  rpm:   c => {
+    const rpm = c.latest?.rpm
+    return { value: typeof rpm === 'number' && Number.isFinite(rpm) ? rpm.toLocaleString() : '—', color: c.color('rpm') }
+  },
   gear:  c => {
     const g = c.latest?.gear ?? 0
     return { value: g === 0 ? 'N' : g < 0 ? 'R' : String(g), color: c.color('gear', g) }

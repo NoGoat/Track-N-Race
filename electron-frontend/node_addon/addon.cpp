@@ -189,13 +189,14 @@ class DataRequirementsWorker : public Napi::AsyncWorker {
 public:
     DataRequirementsWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
                            uint32_t streamMask, uint32_t historyMask,
-                           float windowSeconds, uint64_t requestId)
+                           float windowSeconds, uint64_t requestId,
+                           std::vector<uint8_t> v6Types)
         : Napi::AsyncWorker(env), engine_(std::move(engine)),
           streamMask_(streamMask), historyMask_(historyMask),
-          windowSeconds_(windowSeconds), requestId_(requestId) {}
+          windowSeconds_(windowSeconds), requestId_(requestId), v6Types_(std::move(v6Types)) {}
     void Execute() override {
         engine_->setDataRequirements(streamMask_, historyMask_, windowSeconds_,
-                                     requestId_);
+                                     requestId_, v6Types_);
     }
 private:
     std::shared_ptr<tnrp::Engine> engine_;
@@ -203,6 +204,7 @@ private:
     uint32_t historyMask_;
     float windowSeconds_;
     uint64_t requestId_;
+    std::vector<uint8_t> v6Types_;
 };
 
 struct AnalysisReaderState {
@@ -1439,9 +1441,16 @@ private:
                 ? std::max(-1.0f, info[2].As<Napi::Number>().FloatValue()) : 0.0f;
             const uint64_t requestId = info.Length() >= 4 && info[3].IsNumber()
                 ? static_cast<uint64_t>(info[3].As<Napi::Number>().Int64Value()) : 0;
+            std::vector<uint8_t> v6Types;
+            if (info.Length() >= 5 && info[4].IsArray()) {
+                const auto values = info[4].As<Napi::Array>();
+                for (uint32_t i = 0; i < values.Length(); ++i)
+                    if (values.Get(i).IsNumber()) v6Types.push_back(
+                        static_cast<uint8_t>(values.Get(i).As<Napi::Number>().Uint32Value()));
+            }
             engine->requestDataRequirements(requestId);
             (new DataRequirementsWorker(info.Env(), engine, streamMask,
-                historyMask, windowSeconds, requestId))->Queue();
+                historyMask, windowSeconds, requestId, std::move(v6Types)))->Queue();
         }
         return info.Env().Undefined();
     }

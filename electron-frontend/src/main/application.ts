@@ -305,8 +305,8 @@ ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
 })
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
-ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number) =>
-  playerSetDataRequirements(streamMask, historyMask, windowSeconds))
+ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number, v6Types?: number[]) =>
+  playerSetDataRequirements(streamMask, historyMask, windowSeconds, v6Types))
 ipcMain.on('player:close', () => {
   console.log(`[close-trace] ${new Date().toISOString()} main received player:close`)
   playerClose()

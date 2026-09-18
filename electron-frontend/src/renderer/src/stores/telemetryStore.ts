@@ -1187,6 +1187,7 @@ function handleMsg(msg: GatewayMsg): void {
     case 'telemetry': {
       const buf = telBufRef.current
       const last = buf[buf.length - 1]
+      const merged = isPlaybackFlag && last && (msg as any).available !== false ? { ...last, ...msg } as typeof msg : msg
       if (last && msg.session_time < last.session_time && !isPlaybackFlag) {
         // Playback can deliver a slightly older hot row around a seek/backfill
         // boundary. appendRow reconciles the renderer history below, but this
@@ -1194,24 +1195,29 @@ function handleMsg(msg: GatewayMsg): void {
         // the revision that identifies a real timeline reset.
         applyLiveRewind(msg.session_time)
       }
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendRow(telBufRef, msg, MAX_ROWS)
-      else telBufRef.current = [msg]
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendRow(telBufRef, merged, MAX_ROWS)
+      else telBufRef.current = [merged]
       break
     }
-    case 'motion':
-      appendRow(motBufRef, msg, MAX_ROWS)
+    case 'motion': {
+      const previous = motBufRef.current[motBufRef.current.length - 1]
+      appendRow(motBufRef, isPlaybackFlag && previous ? { ...previous, ...msg } : msg, MAX_ROWS)
       break
-    case 'motion_ex':
-      appendRow(motExBufRef, msg, MAX_ROWS)
+    }
+    case 'motion_ex': {
+      const previous = motExBufRef.current[motExBufRef.current.length - 1]
+      appendRow(motExBufRef, isPlaybackFlag && previous ? { ...previous, ...msg } : msg, MAX_ROWS)
       break
+    }
     case 'status': {
-      const next: Partial<TelemetryStoreState> = { status: msg }
       const previous = stsBufRef.current[stsBufRef.current.length - 1]
+      const merged = isPlaybackFlag && previous && (msg as any).available !== false ? { ...previous, ...msg } as typeof msg : msg
+      const next: Partial<TelemetryStoreState> = { status: merged }
       const previousStintStartTime = currentStintStartTime
-      if (!previous || msg.session_time < previous.session_time) {
-        currentStintStartTime = msg.session_time
-      } else if (isNewTyreStint(previous, msg)) {
-        currentStintStartTime = msg.session_time
+      if (!previous || merged.session_time < previous.session_time) {
+        currentStintStartTime = merged.session_time
+      } else if (isNewTyreStint(previous, merged)) {
+        currentStintStartTime = merged.session_time
       }
       if (previousStintStartTime !== currentStintStartTime) next.currentStintStartTime = currentStintStartTime
       if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
@@ -1221,20 +1227,43 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendRow(stsBufRef, msg, MAX_ROWS)
-      else stsBufRef.current = [msg]
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendRow(stsBufRef, merged, MAX_ROWS)
+      else stsBufRef.current = [merged]
       break
     }
-    case 'damage':
-      set({ damage: msg })
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendRow(dmgBufRef, msg, MAX_ROWS)
-      else dmgBufRef.current = [msg]
+    case 'damage': {
+      const previous = dmgBufRef.current[dmgBufRef.current.length - 1]
+      const merged = isPlaybackFlag && previous && (msg as any).available !== false ? { ...previous, ...msg } as typeof msg : msg
+      set({ damage: merged })
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendRow(dmgBufRef, merged, MAX_ROWS)
+      else dmgBufRef.current = [merged]
       break
-    case 'lap':
-      onLap(msg as unknown as LapRow)
+    }
+    case 'lap': {
+      const previous = useTelemetryStore.getState().lap
+      onLap((isPlaybackFlag && previous ? { ...previous, ...msg } : msg) as unknown as LapRow)
       break
+    }
     case 'timing':       set({ timing: msg }); break
-    case 'participants': set({ participants: msg }); break
+    case 'participants': {
+      const incoming = msg as ParticipantsMsg
+      const previous = useTelemetryStore.getState().participants
+      if (!previous) {
+        set({ participants: incoming })
+        break
+      }
+      // Participant packets can briefly report fewer active slots while timing
+      // still references the established grid. Retain known identities by car
+      // index and apply incoming changes instead of replacing the whole roster.
+      const drivers = new Map(previous.drivers.map(driver => [driver.idx, driver]))
+      for (const driver of incoming.drivers) drivers.set(driver.idx, driver)
+      set({ participants: {
+        ...previous,
+        ...incoming,
+        drivers: [...drivers.values()].sort((left, right) => left.idx - right.idx),
+      } })
+      break
+    }
     case 'all_status':   set({ allStatus: msg }); break
     case 'fastest_lap':
       set({ fastestLapCarIdx: (msg as any).car_idx })
@@ -1373,6 +1402,16 @@ function handleMsg(msg: GatewayMsg): void {
       const data = msg as any
       fuelMaxReceived = -Infinity
       playbackLapCacheOrder = []
+      historyCoverageStart.clear()
+      requestedHistoryRowMask = 0
+      waitingForAllLapsHistory = false
+      telBufRef.current = []
+      motBufRef.current = []
+      motExBufRef.current = []
+      stsBufRef.current = []
+      dmgBufRef.current = []
+      lapProgressBufRef.current = []
+      allLapsLapBoundaries = []
       speedRpmBlocksVal = data.blocks
       playbackFastestLapNum = data.fastestLapNum
       playbackEvents = mergeRaceEventHistory(data.events ?? [], [])
@@ -1387,6 +1426,7 @@ function handleMsg(msg: GatewayMsg): void {
         speedRpmBlocks: speedRpmBlocksVal,
         fastestLapNum: playbackFastestLapNum || null,
         playbackLapDataCache: {},
+        allLapsLapBoundaries: [],
         liveFastestLapData: null,
         fuelUpperLimit: Number.isFinite(initialFuelKg) && initialFuelKg >= 0
           ? initialFuelKg + 1

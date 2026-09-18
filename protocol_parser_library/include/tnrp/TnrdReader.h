@@ -78,6 +78,7 @@ public:
     // Indexed V4/V5 reload only the current lap's selected chunks at the supplied cursor;
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
+    void setPlaybackV6Types(const std::vector<uint8_t>& types, float cursorTime);
     // V6 only: project driver-scoped rows for exactly the selected driver.
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.
@@ -213,7 +214,7 @@ private:
     std::unordered_map<uint64_t, PackedSeekCacheEntry> packedSeekCache_;
     size_t packedSeekCacheBytes_ = 0;
     static constexpr size_t PACKED_SEEK_CACHE_LIMIT = 32ull * 1024ull * 1024ull;
-    std::array<V4PlaybackLane, 16> v4PlaybackLanes_;
+    std::array<V4PlaybackLane, 25> v4PlaybackLanes_;
     int         v4PlaybackLap_ = 0;
     float       v4PlaybackCursor_ = 0.0f;
     bool        v4PlaybackPrepared_ = false;
@@ -225,6 +226,9 @@ private:
     int         playbackDriverIndex_ = -1;
     int         recordedDriverIndex_ = -1;
     bool        playbackDriverUsesRecordedRows_ = false;
+    std::vector<size_t> v6SharedOrder_;
+    size_t      v6SharedPos_ = 0;
+    std::array<std::string, 16> v6ProjectionState_{};
     FileOffset  tempFileSize_ = 0;
     float       startTime_   = 0.0f;
     float       totalTime_   = 0.0f;
@@ -270,6 +274,7 @@ private:
 
     bool loadWithFormat(const std::string& path, HeaderRow& outHeader, TnrdFormat format);
     bool buildSectorDistanceMetadata();
+    bool rebuildV6LapCatalog();
     bool buildIndex(const std::string& filePath, const std::string* memoryFile = nullptr);
     std::string readLine(FileOffset offset);   // reads raw JSONL line (no parse)
     bool forEachIndexedRange(

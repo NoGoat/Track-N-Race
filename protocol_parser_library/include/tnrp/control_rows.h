@@ -108,6 +108,8 @@ struct Driver {
 
 struct ParticipantsRow {
     std::string         type{"participants"};
+    int                 num_active_cars{};
+    int                 player_idx{-1};
     std::vector<Driver> drivers;
 };
 
@@ -130,11 +132,30 @@ struct TyreSetsRow {
     std::string          type{"tyre_sets"};
     std::string          ts;
     float                session_time{};
+    int                  car_idx{-1};
     std::vector<TyreSet> sets;
     int                  fitted_idx{};
 };
 
 // ── session_history / fastest_lap (rare) ───────────────────────────────────
+
+struct SessionHistoryLap {
+    int lap_num{};
+    int lap_time_ms{};
+    int s1_ms{};
+    int s2_ms{};
+    int s3_ms{};
+    bool lap_valid{};
+    bool s1_valid{};
+    bool s2_valid{};
+    bool s3_valid{};
+};
+
+struct SessionHistoryTyreStint {
+    int end_lap{};
+    int actual_compound{};
+    int visual_compound{};
+};
 
 struct SessionHistoryFastestRow {
     std::string type{"session_history_fastest"};
@@ -143,6 +164,8 @@ struct SessionHistoryFastestRow {
     int64_t     best_lap_time_ms{};
     std::optional<int> latest_lap_num;
     std::optional<int> latest_lap_time_ms;
+    std::vector<SessionHistoryLap> laps;
+    std::vector<SessionHistoryTyreStint> tyre_stints;
 };
 
 struct FastestLapRow {

@@ -79,6 +79,7 @@ struct TelemetryRow {
     std::string type{"telemetry"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     int         speed_kph{};
     int         rpm{};
     int         gear{};
@@ -112,6 +113,7 @@ struct glz::meta<TelemetryRow> {
         "type",                 &T::type,
         "ts",                   &T::ts,
         "session_time",         &T::session_time,
+        "player_idx",           &T::player_idx,
         "speed_kph",            &T::speed_kph,
         "rpm",                  &T::rpm,
         "gear",                 &T::gear,
@@ -145,6 +147,7 @@ struct MotionRow {
     std::string type{"motion"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     double      g_lat{};
     double      g_long{};
     double      g_vert{};
@@ -157,6 +160,7 @@ struct glz::meta<MotionRow> {
         "type",         &T::type,
         "ts",           &T::ts,
         "session_time", &T::session_time,
+        "player_idx",   &T::player_idx,
         "g_lat",        &T::g_lat,
         "g_long",       &T::g_long,
         "g_vert",       &T::g_vert
@@ -207,6 +211,7 @@ struct MotionExRow {
     std::string type{"motion_ex"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     double      front_aero_height_mm{};
     double      rear_aero_height_mm{};
 };
@@ -218,6 +223,7 @@ struct glz::meta<MotionExRow> {
         "type",                 &T::type,
         "ts",                   &T::ts,
         "session_time",         &T::session_time,
+        "player_idx",           &T::player_idx,
         "front_aero_height_mm", &T::front_aero_height_mm,
         "rear_aero_height_mm",  &T::rear_aero_height_mm
     );
@@ -229,6 +235,7 @@ struct LapRow {
     std::string type{"lap"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     int         last_lap_ms{};
     int         current_lap_ms{};
     float       lap_distance_m{};
@@ -251,6 +258,7 @@ struct glz::meta<LapRow> {
         "type",           &T::type,
         "ts",             &T::ts,
         "session_time",   &T::session_time,
+        "player_idx",     &T::player_idx,
         "last_lap_ms",    &T::last_lap_ms,
         "current_lap_ms", &T::current_lap_ms,
         "lap_distance_m", &T::lap_distance_m,
@@ -343,6 +351,7 @@ struct StatusRow {
     std::string type{"status"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     int         fuel_mix{};
     int         front_brake_bias{};
     double      fuel_kg{};
@@ -368,6 +377,7 @@ struct glz::meta<StatusRow> {
         "type",                   &T::type,
         "ts",                     &T::ts,
         "session_time",           &T::session_time,
+        "player_idx",             &T::player_idx,
         "fuel_mix",               &T::fuel_mix,
         "front_brake_bias",       &T::front_brake_bias,
         "fuel_kg",                &T::fuel_kg,
@@ -492,6 +502,7 @@ struct DamageRow {
     std::string type{"damage"};
     std::string ts;
     float       session_time{};
+    int         player_idx{-1};
     double      tyre_wear_rl{};
     double      tyre_wear_rr{};
     double      tyre_wear_fl{};
@@ -528,6 +539,7 @@ struct glz::meta<DamageRow> {
         "type",             &T::type,
         "ts",               &T::ts,
         "session_time",     &T::session_time,
+        "player_idx",       &T::player_idx,
         "tyre_wear_rl",     &T::tyre_wear_rl,
         "tyre_wear_rr",     &T::tyre_wear_rr,
         "tyre_wear_fl",     &T::tyre_wear_fl,
