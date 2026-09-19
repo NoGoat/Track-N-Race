@@ -20,8 +20,8 @@ import { DATA_ROW, dataMaskForAnalyze } from '../lib/historyDependencies'
 import { mergeAnalyzeLapData } from '../lib/analyzeLapData'
 import { buildLapProgressMap, findSectorSplits, type LapProgressMap } from '../lib/lapDelta'
 import { getPlaybackCursorTime, subscribePlaybackCursor } from '../lib/playbackCursor'
-import { useTelemetryStore } from '../stores/telemetryStore'
-import type { AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../types'
+import { coalescePlaybackRows, useTelemetryStore } from '../stores/telemetryStore'
+import type { AnalysisDriverLapCatalog, AnalyzeDeltaData, AnalyzeDeltaSample, AnalyzeLapData } from '../types'
 import AnalyzeTimeChart, { type AnalyzeChartControls } from './charts/AnalyzeTimeChart'
 import AnalyzeStackedTimeCharts from './charts/AnalyzeStackedTimeCharts'
 import AnalyzeMapComparison, { type AnalyzeMapFocus } from './AnalyzeMapComparison'
@@ -34,6 +34,10 @@ interface Props {
   currentLapNum: number | null
   compareLapNum: number | null
   onCompareLapChange: (lapNum: number | null) => void
+  compareDriver: AnalysisDriverSelection | null
+  onCompareDriverChange: (driver: AnalysisDriverSelection | null) => void
+  secondaryFile: SecondaryFileData | null
+  onSecondaryFileChange: (file: SecondaryFileData | null) => void
   fixedLapMode: AnalyzeFixedLapMode
   onFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
   mapDimmed: boolean
@@ -46,9 +50,17 @@ export interface AnalyzeFixedLapMode {
   enabled: boolean
   lapA: number | null
   lapB: number | null
+  lapADriver: AnalysisDriverSelection | null
+  lapBDriver: AnalysisDriverSelection | null
 }
 
-interface LapBlock {
+export type AnalysisFileSource = 'file1' | 'file2'
+export interface AnalysisDriverSelection {
+  source: AnalysisFileSource
+  driverIndex: number
+}
+
+export interface LapBlock {
   lapNum: number
   startSessionTime: number
   endSessionTime: number
@@ -67,16 +79,25 @@ interface ComparisonLapOption extends Omit<LapOption, 'value'> {
   value: string
   lapNum: number
 }
-interface SecondaryFileData {
+export interface SecondaryFileData {
   filename: string
   trackId: number | null
   blocks: LapBlock[]
   fastestLapNum: number | null
   lapTimesByNum: Record<number, number>
   deltaAvailable: boolean
+  analysisDrivers: AnalysisDriverLapCatalog[]
 }
-type AnalysisFileSource = 'file1' | 'file2'
+interface AnalysisDriverOption extends AnalysisDriverSelection {
+  value: string
+  label: string
+}
+const analysisDriverKey = (selection: AnalysisDriverSelection) =>
+  `${selection.source}:${selection.driverIndex}`
+const analysisLapKey = (selection: AnalysisDriverSelection, lapNum: number) =>
+  `${analysisDriverKey(selection)}:${lapNum}`
 const ANALYZE_TOGGLE_BUTTON_CLASS = 'analyze-toggle-button flex h-8 min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none disabled:pointer-events-none disabled:opacity-35'
+const ANALYZE_COMPARISON_COLOR_CLASS = 'h-5 w-5 shrink-0 cursor-pointer rounded border border-[var(--border)] shadow-inner'
 const ANALYSIS_MOTION_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
 const ANALYSIS_MOTION_DURATION = 260
 const ANALYSIS_PRESENCE_DURATION = ANALYSIS_MOTION_DURATION + 20
@@ -360,8 +381,7 @@ function formatComparisonLapOption(option: ComparisonLapOption) {
 }
 
 function AnalyzeComparisonSelector({
-  id, label, placeholder, value, options, onChange, styles, isDisabled = false,
-  colorPicker, showColorPicker = false, displayOnly = false,
+  id, label, placeholder, value, options, onChange, styles, isDisabled = false, displayOnly = false,
 }: {
   id: string
   label: string
@@ -371,15 +391,10 @@ function AnalyzeComparisonSelector({
   onChange: (option: SingleValue<ComparisonLapOption>) => void
   styles: ReturnType<typeof buildSelectStyles>
   isDisabled?: boolean
-  colorPicker?: ReactNode
-  showColorPicker?: boolean
   displayOnly?: boolean
 }) {
   return <div className="flex items-center">
-    <label htmlFor={id} title={label} className="mr-2 max-w-[100px] shrink-0 truncate text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
-    <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
-      <div className="analyze-map-color-slot__inner">{colorPicker}</div>
-    </div>
+    <label htmlFor={id} title={label} className="mr-2 w-11 shrink-0 truncate text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
     <div className="flex-1 min-w-0">
       <Select<ComparisonLapOption, false, GroupBase<ComparisonLapOption>>
         inputId={id} value={value} options={options} placeholder={placeholder} onChange={onChange}
@@ -392,14 +407,15 @@ function AnalyzeComparisonSelector({
   </div>
 }
 
-function AnalyzeLabelInput({ id, label, value, onChange }: {
+function AnalyzeLabelInput({ id, label, placeholder = label, value, onChange }: {
   id: string
   label: string
+  placeholder?: string
   value: string
   onChange: (value: string) => void
 }) {
   return <div className="flex items-center">
-    <label htmlFor={id} className="mr-2 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
+    <label htmlFor={id} className="mr-2 w-11 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{label}</label>
     <div className="relative min-w-0 flex-1">
       <input
         id={id}
@@ -409,7 +425,7 @@ function AnalyzeLabelInput({ id, label, value, onChange }: {
         autoComplete="off"
         spellCheck={false}
         aria-label={`${label} label`}
-        placeholder={label}
+        placeholder={placeholder}
         onChange={event => onChange(event.target.value)}
         className="h-8 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2.5 pr-8 text-[11px] text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] placeholder:opacity-80 focus:border-[var(--border-focus)]"
       />
@@ -425,17 +441,78 @@ function AnalyzeLabelInput({ id, label, value, onChange }: {
   </div>
 }
 
+function AnalyzeDriverField({
+  id, value, options, onChange, styles, displayOnly = false, isDisabled = false,
+}: {
+  id: string
+  value: AnalysisDriverOption | null
+  options: GroupBase<AnalysisDriverOption>[]
+  onChange: (option: SingleValue<AnalysisDriverOption>) => void
+  styles: ReturnType<typeof buildSelectStyles>
+  displayOnly?: boolean
+  isDisabled?: boolean
+}) {
+  return <div className="flex items-center">
+    <label htmlFor={id} className="mr-2 w-11 shrink-0 text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">Driver</label>
+    <div className="min-w-0 flex-1">
+      <Select<AnalysisDriverOption, false, GroupBase<AnalysisDriverOption>>
+        inputId={id} value={value} options={options} placeholder="Select driver…"
+        onChange={onChange} styles={styles}
+        components={displayOnly ? { DropdownIndicator: () => null, ClearIndicator: () => null } : selectComponents}
+        isSearchable={false} isClearable={false} isDisabled={isDisabled || displayOnly}
+        menuPortalTarget={document.body}
+      />
+    </div>
+  </div>
+}
+
+function AnalyzeComparisonGroup({
+  title, colorPicker, showColorPicker, driverValue, driverOptions,
+  onDriverChange, driverStyles, driverDisplayOnly = false, driverDisabled = false, children,
+}: {
+  title: string
+  colorPicker: ReactNode
+  showColorPicker: boolean
+  driverValue: AnalysisDriverOption | null
+  driverOptions: GroupBase<AnalysisDriverOption>[]
+  onDriverChange: (option: SingleValue<AnalysisDriverOption>) => void
+  driverStyles: ReturnType<typeof buildSelectStyles>
+  driverDisplayOnly?: boolean
+  driverDisabled?: boolean
+  children: ReactNode
+}) {
+  const idBase = title.toLowerCase().replace(/\s+/g, '-')
+  return <section className="overflow-hidden border-t border-[var(--border)] last:border-b">
+    <div className="flex h-9 items-center border-b border-[var(--border)] pl-2 pr-0">
+      <span className="text-[9px] uppercase tracking-widest text-[var(--text-secondary)]">{title}</span>
+      <div className="ml-auto flex items-center">
+        <div className={`analyze-map-color-slot ${showColorPicker ? 'analyze-map-color-slot--visible' : ''}`}>
+          <div className="analyze-map-color-slot__inner">{colorPicker}</div>
+        </div>
+      </div>
+    </div>
+    <div className="space-y-1.5 p-2">
+      <AnalyzeDriverField
+        id={`analyze-${idBase}-driver`} value={driverValue} options={driverOptions}
+        onChange={onDriverChange} styles={driverStyles}
+        displayOnly={driverDisplayOnly} isDisabled={driverDisabled}
+      />
+      {children}
+    </div>
+  </section>
+}
+
 function parseAnalyzeLapData(payload: any): AnalyzeLapData | null {
   if (!payload || payload.type !== 'playback_lap_data' || !Number.isFinite(payload.lapNum)) return null
   return {
     lapNum: payload.lapNum,
     startSessionTime: payload.startSessionTime,
     endSessionTime: payload.endSessionTime,
-    telemetry: payload.telemetry ?? [],
-    motion: payload.motionHistory ?? [],
-    motionEx: payload.motionExHistory ?? [],
-    statusHistory: payload.statusHistory ?? [],
-    damageHistory: payload.damageHistory ?? [],
+    telemetry: coalescePlaybackRows(payload.telemetry ?? []),
+    motion: coalescePlaybackRows(payload.motionHistory ?? []),
+    motionEx: coalescePlaybackRows(payload.motionExHistory ?? []),
+    statusHistory: coalescePlaybackRows(payload.statusHistory ?? []),
+    damageHistory: coalescePlaybackRows(payload.damageHistory ?? []),
     lapProgress: payload.lapProgress ?? [],
     playerPositions: payload.playerPositions ?? [],
     rowTypeMask: Number.isFinite(payload.rowTypeMask) ? payload.rowTypeMask >>> 0 : 0xFFFFFFFF,
@@ -617,13 +694,14 @@ const EMPTY_ANALYZE_LAP: AnalyzeLapData = {
 
 export default function AnalyzeScreen({
   isDark, playbackFilename, currentLapNum, compareLapNum, onCompareLapChange,
+  compareDriver, onCompareDriverChange,
+  secondaryFile, onSecondaryFileChange,
   fixedLapMode, onFixedLapModeChange, mapDimmed, reduceAnimations, sectorColors,
   onDataMaskChange,
 }: Props) {
   const [rawConfig, setRawConfig] = useAppConfig<AnalyzeConfig>('analyze', DEFAULT_ANALYZE_CONFIG)
   const config = useMemo(() => sanitizeAnalyzeConfig(rawConfig), [rawConfig])
   const primaryTrackId = useTelemetryStore(s => s.playbackTrackId)
-  const [secondaryFile, setSecondaryFile] = useState<SecondaryFileData | null>(null)
   const mismatchedFiles = primaryTrackId !== null && secondaryFile !== null &&
     secondaryFile.trackId !== null && primaryTrackId !== secondaryFile.trackId
   const primaryView = !playbackFilename || mismatchedFiles ? 'graph' : config.view
@@ -643,6 +721,9 @@ export default function AnalyzeScreen({
   const allAxesEnabled = config.series.every(item => item.showYAxis)
   const blocks = useTelemetryStore(s => s.speedRpmBlocks) as LapBlock[] | null
   const lapCache = useTelemetryStore(s => s.playbackLapDataCache)
+  const primaryAnalysisDrivers = useTelemetryStore(s => s.playbackAnalysisDrivers)
+  const playbackDriverIndex = useTelemetryStore(s => s.playbackDriverIndex)
+  const participants = useTelemetryStore(s => s.participants)
   const liveLap = useTelemetryStore(s => s.lap)
   const liveLapNum = liveLap?.lap_num ?? null
   const fastestLapNum = useTelemetryStore(s => s.fastestLapNum)
@@ -658,10 +739,9 @@ export default function AnalyzeScreen({
   const primaryLabel = fixedLapMode.enabled ? resolvedLapALabel : resolvedCurrentLabel
   const comparisonLabel = fixedLapMode.enabled ? resolvedLapBLabel : resolvedCompareLabel
   const [draggedMetric, setDraggedMetric] = useState<string | null>(null)
-  const [secondaryLapNum, setSecondaryLapNum] = useState<number | null>(null)
-  const [lapASource, setLapASource] = useState<AnalysisFileSource>('file1')
-  const [lapBSource, setLapBSource] = useState<AnalysisFileSource>('file1')
-  const [secondaryLapCache, setSecondaryLapCache] = useState<Record<number, AnalyzeLapData>>({})
+  const lapADriver = fixedLapMode.lapADriver
+  const lapBDriver = fixedLapMode.lapBDriver
+  const [analysisLapCache, setAnalysisLapCache] = useState<Record<string, AnalyzeLapData>>({})
   const [deltaData, setDeltaData] = useState<AnalyzeDeltaData | null>(null)
   const [secondaryLoading, setSecondaryLoading] = useState(false)
   const [secondaryError, setSecondaryError] = useState<string | null>(null)
@@ -674,7 +754,7 @@ export default function AnalyzeScreen({
   const mapFocusIdRef = useRef(0)
   const activeAnalysisViewTransitionRef = useRef<AnalysisViewTransition | null>(null)
   const requestedRef = useRef(new Map<number, number>())
-  const secondaryRequestedRef = useRef(new Map<number, number>())
+  const analysisRequestedRef = useRef(new Map<string, number>())
   const graphControlsRef = useRef<AnalyzeChartControls | null>(null)
   const stackedControlsRef = useRef<AnalyzeChartControls | null>(null)
   const seriesRowRefs = useRef(new Map<string, HTMLDivElement>())
@@ -817,29 +897,126 @@ export default function AnalyzeScreen({
     }
   }, [tn])
 
-  const lapOption = useCallback(
-    (block: LapBlock): LapOption => makeLapOption(block, fastestLapNum, lapTimesByNum),
-    [fastestLapNum, lapTimesByNum, makeLapOption],
+  const effectivePlaybackDriverIndex = playbackDriverIndex ??
+    primaryAnalysisDrivers.find(driver => driver.isPlayer)?.driverIndex ?? -1
+  const primaryDriverCatalogs = useMemo<AnalysisDriverLapCatalog[]>(() => {
+    if (primaryAnalysisDrivers.length > 0) return primaryAnalysisDrivers
+    if (!blocks) return []
+    const driverName = participants?.drivers.find(driver => driver.idx === effectivePlaybackDriverIndex)?.name
+      ?? 'Recorded driver'
+    return [{
+      driverIndex: effectivePlaybackDriverIndex,
+      driverName,
+      isPlayer: true,
+      blocks,
+      laps: Object.entries(lapTimesByNum).map(([lapNum, lapTimeMs]) => ({
+        lapNum: Number(lapNum), lapTimeMs,
+      })),
+      fastestLapNum: fastestLapNum ?? 0,
+    }]
+  }, [blocks, effectivePlaybackDriverIndex, fastestLapNum, lapTimesByNum, participants?.drivers, primaryAnalysisDrivers])
+  const secondaryDriverCatalogs = useMemo<AnalysisDriverLapCatalog[]>(() => {
+    if (!secondaryFile) return []
+    if (secondaryFile.analysisDrivers.length > 0) return secondaryFile.analysisDrivers
+    return [{
+      driverIndex: -1,
+      driverName: 'Recorded driver',
+      isPlayer: true,
+      blocks: secondaryFile.blocks,
+      laps: Object.entries(secondaryFile.lapTimesByNum).map(([lapNum, lapTimeMs]) => ({
+        lapNum: Number(lapNum), lapTimeMs,
+      })),
+      fastestLapNum: secondaryFile.fastestLapNum ?? 0,
+    }]
+  }, [secondaryFile])
+  const driverOptionGroups = useMemo<GroupBase<AnalysisDriverOption>[]>(() => [
+    {
+      label: 'Primary File',
+      options: primaryDriverCatalogs.map(driver => ({
+        value: `file1:${driver.driverIndex}`,
+        label: driver.driverName || `Car ${driver.driverIndex}`,
+        source: 'file1' as const,
+        driverIndex: driver.driverIndex,
+      })),
+    },
+    ...(secondaryFile ? [{
+      label: 'Secondary File',
+      options: secondaryDriverCatalogs.map(driver => ({
+        value: `file2:${driver.driverIndex}`,
+        label: driver.driverName || `Car ${driver.driverIndex}`,
+        source: 'file2' as const,
+        driverIndex: driver.driverIndex,
+      })),
+    }] : []),
+  ], [primaryDriverCatalogs, secondaryDriverCatalogs, secondaryFile])
+  const flatDriverOptions = useMemo(
+    () => driverOptionGroups.flatMap(group => group.options),
+    [driverOptionGroups],
   )
+  const currentDriverSelection = useMemo<AnalysisDriverSelection>(() => ({
+    source: 'file1', driverIndex: effectivePlaybackDriverIndex,
+  }), [effectivePlaybackDriverIndex])
+  const currentDriverValue = flatDriverOptions.find(
+    option => option.value === analysisDriverKey(currentDriverSelection)) ?? null
+  const optionForDriver = useCallback((selection: AnalysisDriverSelection | null) =>
+    selection ? flatDriverOptions.find(option => option.value === analysisDriverKey(selection)) ?? null : null,
+  [flatDriverOptions])
 
-  const file1CompareOptions = useMemo<ComparisonLapOption[]>(() => (blocks ?? []).map(block => {
-    const option = lapOption(block)
-    return { ...option, value: `file1:${block.lapNum}`, lapNum: block.lapNum }
-  }), [blocks, lapOption])
-  const file2CompareOptions = useMemo<ComparisonLapOption[]>(() => (secondaryFile?.blocks ?? []).map(block => {
-    const option = makeLapOption(block, secondaryFile?.fastestLapNum ?? null, secondaryFile?.lapTimesByNum ?? {})
-    return { ...option, value: `file2:${block.lapNum}`, lapNum: block.lapNum }
-  }), [makeLapOption, secondaryFile])
-  const compareOptions = useMemo<GroupBase<ComparisonLapOption>[]>(() => [
-    { label: 'Primary File', options: file1CompareOptions },
-    ...(secondaryFile ? [{ label: 'Secondary File', options: file2CompareOptions }] : []),
-  ], [file1CompareOptions, file2CompareOptions, secondaryFile])
-  const compareValue = secondaryLapNum !== null
-    ? file2CompareOptions.find(option => option.lapNum === secondaryLapNum) ?? null
-    : file1CompareOptions.find(option => option.lapNum === compareLapNum) ?? null
+  useEffect(() => {
+    if (!currentDriverValue) return
+    const valid = (selection: AnalysisDriverSelection | null) =>
+      selection !== null && flatDriverOptions.some(option => option.value === analysisDriverKey(selection))
+    if (!valid(compareDriver)) onCompareDriverChange(currentDriverSelection)
+    if (!valid(lapADriver) || !valid(lapBDriver)) {
+      onFixedLapModeChange({
+        ...fixedLapMode,
+        lapADriver: valid(lapADriver) ? lapADriver : currentDriverSelection,
+        lapBDriver: valid(lapBDriver) ? lapBDriver : currentDriverSelection,
+      })
+    }
+  }, [compareDriver, currentDriverSelection, currentDriverValue, fixedLapMode, flatDriverOptions, lapADriver, lapBDriver, onCompareDriverChange, onFixedLapModeChange])
+
+  const lapOptionsForDriver = useCallback((selection: AnalysisDriverSelection | null) => {
+    if (!selection) return []
+    const catalogs = selection.source === 'file2' ? secondaryDriverCatalogs : primaryDriverCatalogs
+    const catalog = catalogs.find(driver => driver.driverIndex === selection.driverIndex)
+    if (!catalog) return []
+    const times = Object.fromEntries(catalog.laps.map(lap => [lap.lapNum, lap.lapTimeMs]))
+    return catalog.blocks.map(block => {
+      const option = makeLapOption(block as LapBlock, catalog.fastestLapNum || null, times)
+      return {
+        ...option,
+        value: `${analysisDriverKey(selection)}:${block.lapNum}`,
+        lapNum: block.lapNum,
+      }
+    })
+  }, [makeLapOption, primaryDriverCatalogs, secondaryDriverCatalogs])
+  const groupedLapOptions = useCallback((
+    selection: AnalysisDriverSelection | null,
+    options: ComparisonLapOption[],
+  ): GroupBase<ComparisonLapOption>[] => {
+    const driver = optionForDriver(selection)
+    return driver ? [{
+      label: selection?.source === 'file1' ? `Primary File · ${driver.label}` : driver.label,
+      options,
+    }] : []
+  }, [optionForDriver])
+  const currentLapOptions = useMemo(
+    () => lapOptionsForDriver(currentDriverSelection),
+    [currentDriverSelection, lapOptionsForDriver],
+  )
+  const compareLapOptions = useMemo(() => lapOptionsForDriver(compareDriver), [compareDriver, lapOptionsForDriver])
+  const lapAOptions = useMemo(() => lapOptionsForDriver(lapADriver), [lapADriver, lapOptionsForDriver])
+  const lapBOptions = useMemo(() => lapOptionsForDriver(lapBDriver), [lapBDriver, lapOptionsForDriver])
+  const compareOptions = groupedLapOptions(compareDriver, compareLapOptions)
+  const lapASelectOptions = groupedLapOptions(lapADriver, lapAOptions)
+  const lapBSelectOptions = groupedLapOptions(lapBDriver, lapBOptions)
+  const selectedCompareLapNum = compareLapNum
+  const compareValue = selectedCompareLapNum === null ? null
+    : compareLapOptions.find(option => option.lapNum === selectedCompareLapNum) ?? null
   const currentLapValue = useMemo<ComparisonLapOption | null>(() => {
     if (effectiveCurrentLapNum === null) return null
-    const existing = file1CompareOptions.find(option => option.lapNum === effectiveCurrentLapNum)
+    const existing = currentLapOptions.find(option => option.lapNum === effectiveCurrentLapNum)
     const elapsedMs = liveLap?.lap_num === effectiveCurrentLapNum ? liveLap.current_lap_ms : undefined
     const lapTime = existing?.lapTime ?? formatLapTimeMs(elapsedMs)
     return {
@@ -851,26 +1028,23 @@ export default function AnalyzeScreen({
       lapTime,
       isFastest: existing?.isFastest ?? false,
     }
-  }, [effectiveCurrentLapNum, file1CompareOptions, liveLap?.current_lap_ms, liveLap?.lap_num])
+  }, [currentLapOptions, effectiveCurrentLapNum, liveLap?.current_lap_ms, liveLap?.lap_num])
   const lapAValue = fixedLapMode.lapA === null ? null
-    : (lapASource === 'file2' ? file2CompareOptions : file1CompareOptions)
-      .find(option => option.lapNum === fixedLapMode.lapA) ?? null
+    : lapAOptions.find(option => option.lapNum === fixedLapMode.lapA) ?? null
   const lapBValue = fixedLapMode.lapB === null ? null
-    : (lapBSource === 'file2' ? file2CompareOptions : file1CompareOptions)
-      .find(option => option.lapNum === fixedLapMode.lapB) ?? null
-  const fixedPrimary = fixedLapMode.lapA === null ? null
-    : lapASource === 'file2'
-      ? secondaryLapCache[fixedLapMode.lapA] ?? null
-      : lapCache[fixedLapMode.lapA] ?? null
-  const fixedComparison = fixedLapMode.lapB === null ? null
-    : lapBSource === 'file2'
-      ? secondaryLapCache[fixedLapMode.lapB] ?? null
-      : lapCache[fixedLapMode.lapB] ?? null
+    : lapBOptions.find(option => option.lapNum === fixedLapMode.lapB) ?? null
+  const lapASource: AnalysisFileSource = lapADriver?.source ?? 'file1'
+  const lapBSource: AnalysisFileSource = lapBDriver?.source ?? 'file1'
+  const comparisonSource: AnalysisFileSource = compareDriver?.source ?? 'file1'
+  const fixedPrimary = fixedLapMode.lapA === null || !lapADriver ? null
+    : analysisLapCache[analysisLapKey(lapADriver, fixedLapMode.lapA)] ?? null
+  const fixedComparison = fixedLapMode.lapB === null || !lapBDriver ? null
+    : analysisLapCache[analysisLapKey(lapBDriver, fixedLapMode.lapB)] ?? null
   const comparison = fixedLapMode.enabled
     ? fixedComparison
-    : secondaryLapNum !== null
-      ? secondaryLapCache[secondaryLapNum] ?? null
-      : compareLapNum !== null ? lapCache[compareLapNum] ?? null : null
+    : selectedCompareLapNum !== null && compareDriver
+      ? analysisLapCache[analysisLapKey(compareDriver, selectedCompareLapNum)] ?? null
+      : null
   const current = fixedLapMode.enabled
     ? fixedPrimary
     : effectiveCurrentLapNum !== null ? lapCache[effectiveCurrentLapNum] ?? null : null
@@ -880,7 +1054,7 @@ export default function AnalyzeScreen({
       : current ? primaryTrackId : null,
     fixedLapMode.enabled
       ? fixedLapMode.lapB !== null ? (lapBSource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null
-      : comparison ? (secondaryLapNum !== null ? secondaryFile?.trackId ?? null : primaryTrackId) : null,
+      : comparison ? (comparisonSource === 'file2' ? secondaryFile?.trackId ?? null : primaryTrackId) : null,
   ].filter((trackId): trackId is number => trackId !== null)
   const distinctMapTrackIds = [...new Set(mapTrackIds)]
   const mapTrackId = distinctMapTrackIds[0] ?? primaryTrackId
@@ -890,18 +1064,22 @@ export default function AnalyzeScreen({
   const selectedDistanceMode = deltaAvailable && (fixedLapMode.enabled
     ? (lapASource === 'file1' || secondaryFile?.deltaAvailable === true) &&
       (lapBSource === 'file1' || secondaryFile?.deltaAvailable === true)
-    : secondaryLapNum === null || secondaryFile?.deltaAvailable === true)
+    : comparisonSource === 'file1' || secondaryFile?.deltaAvailable === true)
   const comparisonSelected = fixedLapMode.enabled
     ? fixedLapMode.lapA !== null && fixedLapMode.lapB !== null
-    : compareLapNum !== null || secondaryLapNum !== null
+    : compareLapNum !== null
   const deltaCurrentLapNum = fixedLapMode.enabled ? fixedLapMode.lapA : effectiveCurrentLapNum
   const deltaComparisonLapNum = fixedLapMode.enabled
     ? fixedLapMode.lapB
-    : secondaryLapNum ?? compareLapNum
+    : compareLapNum
   const deltaCurrentSource: AnalysisFileSource = fixedLapMode.enabled ? lapASource : 'file1'
   const deltaComparisonSource: AnalysisFileSource = fixedLapMode.enabled
     ? lapBSource
-    : secondaryLapNum !== null ? 'file2' : 'file1'
+    : comparisonSource
+  const deltaCurrentDriverIndex = fixedLapMode.enabled
+    ? lapADriver?.driverIndex ?? -1 : effectivePlaybackDriverIndex
+  const deltaComparisonDriverIndex = fixedLapMode.enabled
+    ? lapBDriver?.driverIndex ?? -1 : compareDriver?.driverIndex ?? -1
 
   useEffect(() => {
     let cancelled = false
@@ -914,8 +1092,10 @@ export default function AnalyzeScreen({
     void window.analysisBridge.compareLaps(
       deltaCurrentLapNum,
       deltaCurrentSource,
+      deltaCurrentDriverIndex,
       deltaComparisonLapNum,
       deltaComparisonSource,
+      deltaComparisonDriverIndex,
       sectorDeltaEnabled,
     ).then(payload => {
       if (!cancelled) setDeltaData(parseAnalyzeDeltaData(payload))
@@ -924,8 +1104,8 @@ export default function AnalyzeScreen({
     })
     return () => { cancelled = true }
   }, [
-    deltaComparisonLapNum, deltaComparisonSource, deltaCurrentLapNum,
-    deltaCurrentSource, playbackFilename, secondaryFile,
+    deltaComparisonDriverIndex, deltaComparisonLapNum, deltaComparisonSource,
+    deltaCurrentDriverIndex, deltaCurrentLapNum, deltaCurrentSource, playbackFilename, secondaryFile,
     sectorDeltaEnabled, selectedDistanceMode,
   ])
 
@@ -934,6 +1114,11 @@ export default function AnalyzeScreen({
   const deltaPositiveColor = deltaSeries?.color ?? DEFAULT_DELTA_POSITIVE_COLOR
   const deltaNegativeColor = deltaSeries?.negativeColor ?? DEFAULT_DELTA_NEGATIVE_COLOR
 
+  const resetAnalysisDrivers = useCallback(() => {
+    onCompareDriverChange(null)
+    onFixedLapModeChange({ ...fixedLapMode, lapADriver: null, lapBDriver: null })
+  }, [fixedLapMode, onCompareDriverChange, onFixedLapModeChange])
+
   const applySecondaryFile = useCallback((filePath: string, data: any, trackId: number | null) => {
     const times: Record<number, number> = {}
     for (const lap of data?.laps ?? []) {
@@ -941,20 +1126,20 @@ export default function AnalyzeScreen({
         times[lap.lapNum] = lap.lapTimeMs
       }
     }
-    setSecondaryFile({
+    onSecondaryFileChange({
       filename: filePath.split(/[\\/]/).pop() ?? filePath,
       trackId,
       blocks: Array.isArray(data?.blocks) ? data.blocks : [],
       fastestLapNum: Number.isFinite(data?.fastestLapNum) ? data.fastestLapNum : null,
       lapTimesByNum: times,
       deltaAvailable: data?.lapDistanceAvailable === true || data?.deltaAvailable === true,
+      analysisDrivers: Array.isArray(data?.analysisDrivers) ? data.analysisDrivers : [],
     })
-    setSecondaryLapCache({})
-    secondaryRequestedRef.current.clear()
-    setSecondaryLapNum(null)
-    setLapASource('file1')
-    setLapBSource('file1')
-  }, [])
+    setAnalysisLapCache({})
+    analysisRequestedRef.current.clear()
+    onCompareLapChange(null)
+    resetAnalysisDrivers()
+  }, [onCompareLapChange, onSecondaryFileChange, resetAnalysisDrivers])
 
   const loadSecondaryFile = useCallback(async () => {
     const filePath = await window.fsBridge.selectTNRDFile()
@@ -964,12 +1149,11 @@ export default function AnalyzeScreen({
     const result = await window.analysisBridge.loadFile(filePath)
     setSecondaryLoading(false)
     if (!result.ok) {
-      setSecondaryFile(null)
-      setSecondaryLapCache({})
-      secondaryRequestedRef.current.clear()
-      setSecondaryLapNum(null)
-      setLapASource('file1')
-      setLapBSource('file1')
+      onSecondaryFileChange(null)
+      setAnalysisLapCache({})
+      analysisRequestedRef.current.clear()
+      onCompareLapChange(null)
+      resetAnalysisDrivers()
       setSecondaryError(result.error ?? 'The recording could not be opened.')
       return
     }
@@ -984,29 +1168,32 @@ export default function AnalyzeScreen({
       return
     }
     applySecondaryFile(filePath, data, Number.isFinite(result.trackId) ? result.trackId! : null)
-  }, [applySecondaryFile, primaryTrackId])
+  }, [applySecondaryFile, onCompareLapChange, onSecondaryFileChange, primaryTrackId, resetAnalysisDrivers])
 
   const clearSecondaryFile = useCallback(() => {
     window.analysisBridge.closeFile()
-    setSecondaryFile(null)
-    setSecondaryLapCache({})
-    secondaryRequestedRef.current.clear()
-    setSecondaryLapNum(null)
+    onSecondaryFileChange(null)
+    setAnalysisLapCache({})
+    analysisRequestedRef.current.clear()
+    onCompareLapChange(null)
     setSecondaryError(null)
     setPendingCircuitMismatch(null)
+    if (compareDriver?.source === 'file2') onCompareDriverChange(null)
     if (lapASource === 'file2' || lapBSource === 'file2') {
       onFixedLapModeChange({
         ...fixedLapMode,
         lapA: lapASource === 'file2' ? null : fixedLapMode.lapA,
         lapB: lapBSource === 'file2' ? null : fixedLapMode.lapB,
+        lapADriver: lapASource === 'file2' ? null : lapADriver,
+        lapBDriver: lapBSource === 'file2' ? null : lapBDriver,
       })
     }
-    setLapASource('file1')
-    setLapBSource('file1')
-  }, [fixedLapMode, lapASource, lapBSource, onFixedLapModeChange])
+  }, [compareDriver?.source, fixedLapMode, lapADriver, lapASource, lapBDriver, lapBSource, onCompareDriverChange, onCompareLapChange, onFixedLapModeChange, onSecondaryFileChange])
 
   useEffect(() => {
     requestedRef.current.clear()
+    analysisRequestedRef.current.clear()
+    setAnalysisLapCache({})
   }, [playbackFilename])
 
   useLayoutEffect(() => {
@@ -1040,44 +1227,43 @@ export default function AnalyzeScreen({
   }, [config.collapsed, reduceAnimations])
 
   useEffect(() => {
-    if (!playbackFilename) return
-    const targets = fixedLapMode.enabled
-      ? [lapASource === 'file1' ? fixedLapMode.lapA : null, lapBSource === 'file1' ? fixedLapMode.lapB : null]
-      : [compareLapNum, effectiveCurrentLapNum]
-    for (const lapNum of targets) {
-      if (lapNum === null) continue
-      const loadedMask = lapCache[lapNum]?.rowTypeMask ?? 0
-      if ((loadedMask & dataMask) === dataMask) {
-        requestedRef.current.delete(lapNum)
-        continue
-      }
-      if (((requestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask) continue
-      requestedRef.current.set(lapNum, dataMask)
-      window.playerBridge.getLapData(lapNum, dataMask)
+    if (!playbackFilename || fixedLapMode.enabled || effectiveCurrentLapNum === null) return
+    const loadedMask = lapCache[effectiveCurrentLapNum]?.rowTypeMask ?? 0
+    if ((loadedMask & dataMask) === dataMask) {
+      requestedRef.current.delete(effectiveCurrentLapNum)
+      return
     }
-  }, [compareLapNum, dataMask, effectiveCurrentLapNum, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, lapCache, playbackFilename])
+    if (((requestedRef.current.get(effectiveCurrentLapNum) ?? 0) & dataMask) === dataMask) return
+    requestedRef.current.set(effectiveCurrentLapNum, dataMask)
+    window.playerBridge.getLapData(effectiveCurrentLapNum, dataMask)
+  }, [dataMask, effectiveCurrentLapNum, fixedLapMode.enabled, lapCache, playbackFilename])
 
   useEffect(() => {
-    const targets = [
-      secondaryLapNum,
-      fixedLapMode.enabled && lapASource === 'file2' ? fixedLapMode.lapA : null,
-      fixedLapMode.enabled && lapBSource === 'file2' ? fixedLapMode.lapB : null,
-    ]
-    for (const lapNum of new Set(targets)) {
-      const loadedMask = lapNum === null ? 0 : secondaryLapCache[lapNum]?.rowTypeMask ?? 0
-      if (lapNum === null || (loadedMask & dataMask) === dataMask ||
-          (((secondaryRequestedRef.current.get(lapNum) ?? 0) & dataMask) === dataMask)) continue
-      secondaryRequestedRef.current.set(lapNum, dataMask)
-      window.analysisBridge.getLapData(lapNum, dataMask).then(payload => {
+    const targets: Array<{ selection: AnalysisDriverSelection | null; lapNum: number | null }> = fixedLapMode.enabled
+      ? [
+          { selection: lapADriver, lapNum: fixedLapMode.lapA },
+          { selection: lapBDriver, lapNum: fixedLapMode.lapB },
+        ]
+      : [{ selection: compareDriver, lapNum: selectedCompareLapNum }]
+    for (const { selection, lapNum } of targets) {
+      if (!selection || lapNum === null) continue
+      const key = analysisLapKey(selection, lapNum)
+      const loadedMask = analysisLapCache[key]?.rowTypeMask ?? 0
+      if ((loadedMask & dataMask) === dataMask ||
+          (((analysisRequestedRef.current.get(key) ?? 0) & dataMask) === dataMask)) continue
+      analysisRequestedRef.current.set(key, dataMask)
+      window.analysisBridge.getLapData(
+        lapNum, dataMask, selection.source, selection.driverIndex,
+      ).then(payload => {
         const lapData = parseAnalyzeLapData(payload)
-        if (lapData) setSecondaryLapCache(cache => {
-          const prior = cache[lapData.lapNum]
-          return { ...cache, [lapData.lapNum]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData }
+        if (lapData) setAnalysisLapCache(cache => {
+          const prior = cache[key]
+          return { ...cache, [key]: prior ? mergeAnalyzeLapData(prior, lapData) : lapData }
         })
-        else secondaryRequestedRef.current.delete(lapNum)
+        else analysisRequestedRef.current.delete(key)
       })
     }
-  }, [dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapASource, lapBSource, secondaryLapCache, secondaryLapNum])
+  }, [analysisLapCache, compareDriver, dataMask, fixedLapMode.enabled, fixedLapMode.lapA, fixedLapMode.lapB, lapADriver, lapBDriver, selectedCompareLapNum])
 
   const addMetric = useCallback((option: SingleValue<SelectOption>) => {
     if (!option) return
@@ -1211,109 +1397,123 @@ export default function AnalyzeScreen({
                 </div>
                 {secondaryError && <div className="px-1 text-[9px] text-[#d44252]">{secondaryError}</div>}
               </div>}
-              <div className="analyze-lap-mode-switch">
+              <div className="analyze-lap-mode-switch -mx-3">
                 <div
                   className={`analyze-lap-mode-panel ${fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-left'}`}
                   aria-hidden={!fixedLapMode.enabled}
                   inert={!fixedLapMode.enabled}
                 >
-                  <AnalyzeComparisonSelector
-                    id="analyze-lap-a" label="Lap A" value={lapAValue} options={compareOptions} placeholder="Select Lap A…"
-                    onChange={option => {
-                      setLapASource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
-                      onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })
+                  <AnalyzeComparisonGroup
+                    title="Lap A" showColorPicker={mapVisible}
+                    driverValue={optionForDriver(lapADriver)} driverOptions={driverOptionGroups}
+                    onDriverChange={option => {
+                      if (!option) return
+                      onFixedLapModeChange({
+                        ...fixedLapMode,
+                        lapA: null,
+                        lapADriver: { source: option.source, driverIndex: option.driverIndex },
+                      })
                     }}
-                    styles={lapSelectStyles}
-                    showColorPicker={mapVisible}
+                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={<ColorPicker
                       label="Lap A"
                       color={config.mapCurrentColor}
                       onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
+                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
                     />}
-                  />
-                  <AnalyzeComparisonSelector
-                    id="analyze-lap-b" label="Lap B" value={lapBValue} options={compareOptions} placeholder="Select Lap B…"
-                    onChange={option => {
-                      setLapBSource(option?.value.startsWith('file2:') ? 'file2' : 'file1')
-                      onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })
+                  >
+                    <AnalyzeComparisonSelector
+                      id="analyze-lap-a" label="Lap" value={lapAValue} options={lapASelectOptions} placeholder="Select lap…"
+                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapA: option?.lapNum ?? null })}
+                      styles={lapSelectStyles}
+                    />
+                    <AnalyzeLabelInput
+                      id="analyze-lap-a-label" label="Name" placeholder="Lap A" value={config.lapALabel}
+                      onChange={lapALabel => save({ ...config, lapALabel })}
+                    />
+                  </AnalyzeComparisonGroup>
+                  <AnalyzeComparisonGroup
+                    title="Lap B" showColorPicker={mapVisible}
+                    driverValue={optionForDriver(lapBDriver)} driverOptions={driverOptionGroups}
+                    onDriverChange={option => {
+                      if (!option) return
+                      onFixedLapModeChange({
+                        ...fixedLapMode,
+                        lapB: null,
+                        lapBDriver: { source: option.source, driverIndex: option.driverIndex },
+                      })
                     }}
-                    styles={lapSelectStyles}
-                    showColorPicker={mapVisible}
+                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={<ColorPicker
                       label="Lap B"
                       color={config.mapComparisonColor}
                       onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
+                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
                     />}
-                  />
+                  >
+                    <AnalyzeComparisonSelector
+                      id="analyze-lap-b" label="Lap" value={lapBValue} options={lapBSelectOptions} placeholder="Select lap…"
+                      onChange={option => onFixedLapModeChange({ ...fixedLapMode, lapB: option?.lapNum ?? null })}
+                      styles={lapSelectStyles}
+                    />
+                    <AnalyzeLabelInput
+                      id="analyze-lap-b-label" label="Name" placeholder="Lap B" value={config.lapBLabel}
+                      onChange={lapBLabel => save({ ...config, lapBLabel })}
+                    />
+                  </AnalyzeComparisonGroup>
                 </div>
                 <div
                   className={`analyze-lap-mode-panel ${!fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-right'}`}
                   aria-hidden={fixedLapMode.enabled}
                   inert={fixedLapMode.enabled}
                 >
-                  <AnalyzeComparisonSelector
-                    id="analyze-current-lap" label="Current" placeholder="No current lap"
-                    value={currentLapValue} options={[]} onChange={() => {}} styles={lapSelectStyles} displayOnly
-                    showColorPicker={mapVisible}
+                  <AnalyzeComparisonGroup
+                    title="Current" showColorPicker={mapVisible} driverDisplayOnly
+                    driverValue={currentDriverValue} driverOptions={driverOptionGroups}
+                    onDriverChange={() => {}} driverStyles={lapSelectStyles}
                     colorPicker={<ColorPicker
                       label="Current"
                       color={config.mapCurrentColor}
                       onChange={mapCurrentColor => save({ ...config, mapCurrentColor })}
+                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
                     />}
-                  />
-                  <AnalyzeComparisonSelector
-                    id="analyze-compare-lap" label="Compare" placeholder="Select lap…"
-                    value={compareValue} options={compareOptions}
-                    onChange={option => {
-                      if (!option) {
-                        setSecondaryLapNum(null)
-                        onCompareLapChange(null)
-                      } else if (option.value.startsWith('file2:')) {
-                        setSecondaryLapNum(option.lapNum)
-                        onCompareLapChange(null)
-                      } else {
-                        setSecondaryLapNum(null)
-                        onCompareLapChange(option.lapNum)
-                      }
+                  >
+                    <AnalyzeComparisonSelector
+                      id="analyze-current-lap" label="Lap" placeholder="No current lap"
+                      value={currentLapValue} options={[]} onChange={() => {}} styles={lapSelectStyles} displayOnly
+                    />
+                    <AnalyzeLabelInput
+                      id="analyze-current-label" label="Name" placeholder="Current" value={config.currentLabel}
+                      onChange={currentLabel => save({ ...config, currentLabel })}
+                    />
+                  </AnalyzeComparisonGroup>
+                  <AnalyzeComparisonGroup
+                    title="Compare" showColorPicker={mapVisible}
+                    driverValue={optionForDriver(compareDriver)} driverOptions={driverOptionGroups}
+                    onDriverChange={option => {
+                      if (!option) return
+                      onCompareDriverChange({ source: option.source, driverIndex: option.driverIndex })
+                      onCompareLapChange(null)
                     }}
-                    styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
-                    showColorPicker={mapVisible}
+                    driverStyles={lapSelectStyles} driverDisabled={flatDriverOptions.length <= 1}
                     colorPicker={<ColorPicker
                       label="Compare"
                       color={config.mapComparisonColor}
                       onChange={mapComparisonColor => save({ ...config, mapComparisonColor })}
+                      triggerClassName={ANALYZE_COMPARISON_COLOR_CLASS}
                     />}
-                  />
-                </div>
-              </div>
-              <div className="analyze-lap-mode-switch">
-                <div
-                  className={`analyze-lap-mode-panel ${fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-left'}`}
-                  aria-hidden={!fixedLapMode.enabled}
-                  inert={!fixedLapMode.enabled}
-                >
-                  <AnalyzeLabelInput
-                    id="analyze-lap-a-label" label="Lap A" value={config.lapALabel}
-                    onChange={lapALabel => save({ ...config, lapALabel })}
-                  />
-                  <AnalyzeLabelInput
-                    id="analyze-lap-b-label" label="Lap B" value={config.lapBLabel}
-                    onChange={lapBLabel => save({ ...config, lapBLabel })}
-                  />
-                </div>
-                <div
-                  className={`analyze-lap-mode-panel ${!fixedLapMode.enabled ? 'analyze-lap-mode-panel--visible' : 'analyze-lap-mode-panel--hidden-right'}`}
-                  aria-hidden={fixedLapMode.enabled}
-                  inert={fixedLapMode.enabled}
-                >
-                  <AnalyzeLabelInput
-                    id="analyze-current-label" label="Current" value={config.currentLabel}
-                    onChange={currentLabel => save({ ...config, currentLabel })}
-                  />
-                  <AnalyzeLabelInput
-                    id="analyze-compare-label" label="Compare" value={config.compareLabel}
-                    onChange={compareLabel => save({ ...config, compareLabel })}
-                  />
+                  >
+                    <AnalyzeComparisonSelector
+                      id="analyze-compare-lap" label="Lap" placeholder="Select lap…"
+                      value={compareValue} options={compareOptions}
+                      onChange={option => onCompareLapChange(option?.lapNum ?? null)}
+                      styles={lapSelectStyles} isDisabled={!playbackFilename || !blocks}
+                    />
+                    <AnalyzeLabelInput
+                      id="analyze-compare-label" label="Name" placeholder="Compare" value={config.compareLabel}
+                      onChange={compareLabel => save({ ...config, compareLabel })}
+                    />
+                  </AnalyzeComparisonGroup>
                 </div>
               </div>
               <button

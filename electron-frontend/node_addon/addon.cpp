@@ -190,13 +190,15 @@ public:
     DataRequirementsWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
                            uint32_t streamMask, uint32_t historyMask,
                            float windowSeconds, uint64_t requestId,
-                           std::vector<uint8_t> v6Types)
+                           std::vector<uint8_t> v6Types,
+                           std::vector<uint8_t> v6HistoryTypes)
         : Napi::AsyncWorker(env), engine_(std::move(engine)),
           streamMask_(streamMask), historyMask_(historyMask),
-          windowSeconds_(windowSeconds), requestId_(requestId), v6Types_(std::move(v6Types)) {}
+          windowSeconds_(windowSeconds), requestId_(requestId), v6Types_(std::move(v6Types)),
+          v6HistoryTypes_(std::move(v6HistoryTypes)) {}
     void Execute() override {
         engine_->setDataRequirements(streamMask_, historyMask_, windowSeconds_,
-                                     requestId_, v6Types_);
+                                     requestId_, v6Types_, v6HistoryTypes_);
     }
 private:
     std::shared_ptr<tnrp::Engine> engine_;
@@ -205,6 +207,7 @@ private:
     float windowSeconds_;
     uint64_t requestId_;
     std::vector<uint8_t> v6Types_;
+    std::vector<uint8_t> v6HistoryTypes_;
 };
 
 struct AnalysisReaderState {
@@ -270,13 +273,14 @@ class AnalysisDeltaWorker : public Napi::AsyncWorker {
 public:
     AnalysisDeltaWorker(Napi::Env env, std::shared_ptr<tnrp::Engine> engine,
                         std::shared_ptr<AnalysisReaderState> secondary,
-                        int currentLap, bool currentSecondary,
-                        int comparisonLap, bool comparisonSecondary,
+                        int currentLap, bool currentSecondary, int currentDriver,
+                        int comparisonLap, bool comparisonSecondary, int comparisonDriver,
                         bool sectorDelta)
         : Napi::AsyncWorker(env), engine_(std::move(engine)),
           secondary_(std::move(secondary)), currentLap_(currentLap),
-          currentSecondary_(currentSecondary), comparisonLap_(comparisonLap),
-          comparisonSecondary_(comparisonSecondary), sectorDelta_(sectorDelta),
+          currentSecondary_(currentSecondary), currentDriver_(currentDriver),
+          comparisonLap_(comparisonLap), comparisonSecondary_(comparisonSecondary),
+          comparisonDriver_(comparisonDriver), sectorDelta_(sectorDelta),
           deferred_(Napi::Promise::Deferred::New(env)) {}
 
     void Execute() override {
@@ -287,20 +291,26 @@ public:
 
         if (currentSecondary_ && comparisonSecondary_) {
             std::lock_guard<std::mutex> lock(secondary_->mutex);
-            haveCurrent = secondary_->reader.getAnalysisLapProgress(currentLap_, current);
-            haveComparison = secondary_->reader.getAnalysisLapProgress(comparisonLap_, comparison);
+            haveCurrent = secondary_->reader.getAnalysisLapProgress(
+                currentLap_, current, currentDriver_);
+            haveComparison = secondary_->reader.getAnalysisLapProgress(
+                comparisonLap_, comparison, comparisonDriver_);
         } else {
             if (currentSecondary_) {
                 std::lock_guard<std::mutex> lock(secondary_->mutex);
-                haveCurrent = secondary_->reader.getAnalysisLapProgress(currentLap_, current);
+                haveCurrent = secondary_->reader.getAnalysisLapProgress(
+                    currentLap_, current, currentDriver_);
             } else if (engine_) {
-                haveCurrent = engine_->playerGetAnalysisLapProgress(currentLap_, current);
+                haveCurrent = engine_->playerGetAnalysisLapProgress(
+                    currentLap_, current, currentDriver_);
             }
             if (comparisonSecondary_) {
                 std::lock_guard<std::mutex> lock(secondary_->mutex);
-                haveComparison = secondary_->reader.getAnalysisLapProgress(comparisonLap_, comparison);
+                haveComparison = secondary_->reader.getAnalysisLapProgress(
+                    comparisonLap_, comparison, comparisonDriver_);
             } else if (engine_) {
-                haveComparison = engine_->playerGetAnalysisLapProgress(comparisonLap_, comparison);
+                haveComparison = engine_->playerGetAnalysisLapProgress(
+                    comparisonLap_, comparison, comparisonDriver_);
             }
         }
 
@@ -317,8 +327,10 @@ private:
     std::shared_ptr<AnalysisReaderState> secondary_;
     int currentLap_;
     bool currentSecondary_;
+    int currentDriver_;
     int comparisonLap_;
     bool comparisonSecondary_;
+    int comparisonDriver_;
     bool sectorDelta_;
     std::string json_;
     Napi::Promise::Deferred deferred_;
@@ -430,6 +442,9 @@ public:
         }
         if (configObj.Has("binaryPlayback") && configObj.Get("binaryPlayback").IsBoolean()) {
             config.binaryPlayback = configObj.Get("binaryPlayback").As<Napi::Boolean>().Value();
+        }
+        if (configObj.Has("sparseV6Playback") && configObj.Get("sparseV6Playback").IsBoolean()) {
+            config.sparseV6Playback = configObj.Get("sparseV6Playback").As<Napi::Boolean>().Value();
         }
         if (configObj.Has("strategyMinimumStops") && configObj.Get("strategyMinimumStops").IsNumber()) {
             config.strategyMinimumStops = configObj.Get("strategyMinimumStops").As<Napi::Number>().Int32Value();
@@ -544,49 +559,11 @@ public:
     // drains the whole buffer in one call. This naturally coalesces under load
     // (≤1 in-flight TSFN entry) while staying ~1:1 when the main thread keeps up.
     void onRow(const std::string& json) override {
-        auto fs = flush_;  // keep state alive independent of this object's lifetime
-        bool schedule = false;
-        {
-            std::lock_guard<std::mutex> lk(fs->mutex);
-            fs->pending += json;
-            fs->pending += '\n';
-            ++fs->rowsEnqueued;
-            fs->payloadBytesEnqueued += json.size() + 1;
-            fs->peakPendingUsedBytes = std::max(fs->peakPendingUsedBytes, fs->pending.size());
-            fs->peakPendingCapacityBytes = std::max(
-                fs->peakPendingCapacityBytes, fs->pending.capacity());
-            if (!fs->scheduled) {
-                fs->scheduled = true;
-                ++fs->scheduleAttempts;
-                schedule = true;
-            }
-        }
-        if (!schedule) return;
+        enqueueRows(&json, 1);
+    }
 
-        auto status = tsfn.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
-            {
-                std::lock_guard<std::mutex> lk(fs->mutex);
-                fs->draining.swap(fs->pending);  // grab the batch; pending keeps reusable storage
-                fs->scheduled = false;
-                fs->peakDrainingUsedBytes = std::max(
-                    fs->peakDrainingUsedBytes, fs->draining.size());
-                fs->peakDrainingCapacityBytes = std::max(
-                    fs->peakDrainingCapacityBytes, fs->draining.capacity());
-            }
-            if (env != nullptr && cb != nullptr) {
-                cb.Call({ Napi::String::New(env, fs->draining) });
-            }
-            std::lock_guard<std::mutex> lk(fs->mutex);
-            ++fs->deliveredBatches;
-            fs->deliveredPayloadBytes += fs->draining.size();
-            fs->draining.clear();                // retain capacity for the next swap
-        });
-
-        if (status != napi_ok) {
-            // Couldn't schedule; clear the flag so a later row retries the flush.
-            std::lock_guard<std::mutex> lk(fs->mutex);
-            fs->scheduled = false;
-        }
+    void onRows(const std::vector<std::string>& rows) override {
+        enqueueRows(rows.data(), rows.size());
     }
 
     // Hot-row binary batch. Same coalescing strategy as onRow(), but accumulates
@@ -821,6 +798,55 @@ private:
         size_t      peakDrainingUsedBytes{};
         size_t      peakDrainingCapacityBytes{};
     };
+
+    void enqueueRows(const std::string* rows, size_t count) {
+        if (!rows || count == 0) return;
+        auto fs = flush_;  // keep state alive independent of this object's lifetime
+        bool schedule = false;
+        {
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            for (size_t index = 0; index < count; ++index) {
+                fs->pending += rows[index];
+                fs->pending += '\n';
+                ++fs->rowsEnqueued;
+                fs->payloadBytesEnqueued += rows[index].size() + 1;
+            }
+            fs->peakPendingUsedBytes = std::max(fs->peakPendingUsedBytes, fs->pending.size());
+            fs->peakPendingCapacityBytes = std::max(
+                fs->peakPendingCapacityBytes, fs->pending.capacity());
+            if (!fs->scheduled) {
+                fs->scheduled = true;
+                ++fs->scheduleAttempts;
+                schedule = true;
+            }
+        }
+        if (!schedule) return;
+
+        const auto status = tsfn.NonBlockingCall([fs](Napi::Env env, Napi::Function cb) {
+            {
+                std::lock_guard<std::mutex> lk(fs->mutex);
+                fs->draining.swap(fs->pending);  // grab the batch; pending keeps reusable storage
+                fs->scheduled = false;
+                fs->peakDrainingUsedBytes = std::max(
+                    fs->peakDrainingUsedBytes, fs->draining.size());
+                fs->peakDrainingCapacityBytes = std::max(
+                    fs->peakDrainingCapacityBytes, fs->draining.capacity());
+            }
+            if (env != nullptr && cb != nullptr) {
+                cb.Call({ Napi::String::New(env, fs->draining) });
+            }
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            ++fs->deliveredBatches;
+            fs->deliveredPayloadBytes += fs->draining.size();
+            fs->draining.clear();                // retain capacity for the next swap
+        });
+
+        if (status != napi_ok) {
+            // Couldn't schedule; clear the flag so a later row retries the flush.
+            std::lock_guard<std::mutex> lk(fs->mutex);
+            fs->scheduled = false;
+        }
+    }
 
     // Shared so queued binary flush callbacks remain valid past teardown.
     struct BinFlushState {
@@ -1448,9 +1474,17 @@ private:
                     if (values.Get(i).IsNumber()) v6Types.push_back(
                         static_cast<uint8_t>(values.Get(i).As<Napi::Number>().Uint32Value()));
             }
+            std::vector<uint8_t> v6HistoryTypes;
+            if (info.Length() >= 6 && info[5].IsArray()) {
+                const auto values = info[5].As<Napi::Array>();
+                for (uint32_t i = 0; i < values.Length(); ++i)
+                    if (values.Get(i).IsNumber()) v6HistoryTypes.push_back(
+                        static_cast<uint8_t>(values.Get(i).As<Napi::Number>().Uint32Value()));
+            }
             engine->requestDataRequirements(requestId);
             (new DataRequirementsWorker(info.Env(), engine, streamMask,
-                historyMask, windowSeconds, requestId, std::move(v6Types)))->Queue();
+                historyMask, windowSeconds, requestId, std::move(v6Types),
+                std::move(v6HistoryTypes)))->Queue();
         }
         return info.Env().Undefined();
     }
@@ -1554,14 +1588,22 @@ private:
     }
 
     Napi::Value AnalysisGetLapData(const Napi::CallbackInfo& info) {
-        if (info.Length() < 1 || !info[0].IsNumber() || analysisReader_->busy.load())
+        if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber() ||
+            !info[2].IsBoolean() || !info[3].IsNumber() || analysisReader_->busy.load())
             return Napi::String::New(info.Env(), "");
-        std::lock_guard<std::mutex> lock(analysisReader_->mutex);
-        return Napi::String::New(
-            info.Env(), analysisReader_->reader.getLapDataMessage(
-                info[0].As<Napi::Number>().Int32Value(),
-                info.Length() >= 2 && info[1].IsNumber()
-                    ? info[1].As<Napi::Number>().Uint32Value() : 0xFFFFFFFFu));
+        const int lapNum = info[0].As<Napi::Number>().Int32Value();
+        const uint32_t rowTypeMask = info[1].As<Napi::Number>().Uint32Value();
+        const bool secondary = info[2].As<Napi::Boolean>().Value();
+        const int driverIndex = info[3].As<Napi::Number>().Int32Value();
+        std::string json;
+        if (secondary) {
+            std::lock_guard<std::mutex> lock(analysisReader_->mutex);
+            json = analysisReader_->reader.getLapDataMessage(
+                lapNum, rowTypeMask, driverIndex);
+        } else if (engine) {
+            json = engine->playerGetAnalysisLapData(lapNum, rowTypeMask, driverIndex);
+        }
+        return Napi::String::New(info.Env(), json);
     }
 
     Napi::Value AnalysisCompareLaps(const Napi::CallbackInfo& info) {
@@ -1570,15 +1612,17 @@ private:
             deferred.Resolve(Napi::String::New(info.Env(), ""));
             return deferred.Promise();
         };
-        if (info.Length() < 5 || !info[0].IsNumber() || !info[1].IsBoolean() ||
-            !info[2].IsNumber() || !info[3].IsBoolean() || !info[4].IsBoolean() ||
+        if (info.Length() < 7 || !info[0].IsNumber() || !info[1].IsBoolean() ||
+            !info[2].IsNumber() || !info[3].IsNumber() || !info[4].IsBoolean() ||
+            !info[5].IsNumber() || !info[6].IsBoolean() ||
             !engine || analysisReader_->busy.load()) return resolveEmpty();
 
         auto* worker = new AnalysisDeltaWorker(
             info.Env(), engine, analysisReader_,
             info[0].As<Napi::Number>().Int32Value(), info[1].As<Napi::Boolean>().Value(),
-            info[2].As<Napi::Number>().Int32Value(), info[3].As<Napi::Boolean>().Value(),
-            info[4].As<Napi::Boolean>().Value());
+            info[2].As<Napi::Number>().Int32Value(), info[3].As<Napi::Number>().Int32Value(),
+            info[4].As<Napi::Boolean>().Value(), info[5].As<Napi::Number>().Int32Value(),
+            info[6].As<Napi::Boolean>().Value());
         Napi::Promise promise = worker->GetPromise();
         worker->Queue();
         return promise;

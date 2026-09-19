@@ -212,9 +212,10 @@ const playerBridge = {
     playerAllLapsRowMask = rowTypeMask >>> 0
     playerWindowSeconds = Number.isFinite(windowSeconds) ? Math.max(0, windowSeconds) : 0
   },
-  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number, v6Types: number[] = []) => {
+  setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number,
+                        v6Types: number[] = [], v6HistoryTypes: number[] = []) => {
     ipcRenderer.send('player:setDataRequirements', streamMask >>> 0, historyMask >>> 0,
-      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0, v6Types)
+      Number.isFinite(windowSeconds) ? Math.max(-1, windowSeconds) : 0, v6Types, v6HistoryTypes)
   },
   onSeekStart: (callback: (allHistory: boolean) => void) => {
     seekStartListeners.add(callback)
@@ -256,17 +257,22 @@ const playerBridge = {
 const analysisBridge = {
   loadFile: (filePath: string): Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }> =>
     ipcRenderer.invoke('analysis:load-file', filePath),
-  getLapData: (lapNum: number, rowTypeMask = 0xFFFFFFFF): Promise<unknown | null> =>
-    ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0),
+  getLapData: (
+    lapNum: number, rowTypeMask = 0xFFFFFFFF,
+    source: 'file1' | 'file2' = 'file2', driverIndex = -1,
+  ): Promise<unknown | null> =>
+    ipcRenderer.invoke('analysis:get-lap-data', lapNum, rowTypeMask >>> 0, source, driverIndex),
   compareLaps: (
     currentLapNum: number,
     currentSource: 'file1' | 'file2',
+    currentDriverIndex: number,
     comparisonLapNum: number,
     comparisonSource: 'file1' | 'file2',
+    comparisonDriverIndex: number,
     sectorDelta: boolean,
   ): Promise<unknown | null> => ipcRenderer.invoke(
-    'analysis:compare-laps', currentLapNum, currentSource,
-    comparisonLapNum, comparisonSource, sectorDelta,
+    'analysis:compare-laps', currentLapNum, currentSource, currentDriverIndex,
+    comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta,
   ),
   closeFile: (): void => ipcRenderer.send('analysis:close-file'),
 }

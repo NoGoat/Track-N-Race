@@ -1156,7 +1156,6 @@ struct TnrdV6Archive::Impl {
     std::optional<uint8_t> player;
     uint8_t playback{};
     std::set<uint8_t> requestedTypes;
-    float formationEnd{};
     float first{};
     float last{};
 
@@ -1167,52 +1166,47 @@ struct TnrdV6Archive::Impl {
     size_t cacheUsed{};
     uint64_t decompressions{};
 
-    float logical(V6Phase rowPhase, float time) const {
-        return rowPhase == V6Phase::Race && formationEnd > 0.0f ? formationEnd + time : time;
-    }
+    float logical(V6Phase, float time) const { return time; }
     void clearCache() {
         std::lock_guard lock(cacheMutex);
         cache.clear(); lru.clear(); cacheUsed = 0;
     }
     void rebuildCompatibility() {
+        // Match V5's active race branch: formation remains in the archive but
+        // is not exposed through the application playback timeline.
         compatibleLaps.clear(); compatibleChunks.clear(); lapById.clear();
-        formationEnd = 0.0f;
         std::set<uint32_t> lapsWithChunks;
         for (const auto& chunk : v6Chunks) lapsWithChunks.insert(chunk.lapId);
         for (size_t i = 0; i < lapSummaries.size(); ++i) {
             lapById[lapSummaries[i].lapId] = i;
-            if (lapSummaries[i].phase == V6Phase::Formation)
-                formationEnd = std::max(formationEnd, lapSummaries[i].endSessionTime);
         }
-        for (const auto& lap : lapSummaries) if (lap.driverIndex == playback) {
+        for (const auto& lap : lapSummaries)
+        if (lap.driverIndex == playback && lap.phase == V6Phase::Race) {
             if (!lapsWithChunks.contains(lap.lapId) && lap.startSessionTime == lap.endSessionTime)
                 continue;
             V4LapInfo info;
-            // The legacy playback surface keys laps by display number. Formation
-            // lap 1 and race lap 1 must therefore not collide: expose formation
-            // as the existing pre-race lap 0 compatibility interval.
-            info.lapNumber = lap.phase == V6Phase::Formation ? 0u : lap.lapNumber;
+            info.lapNumber = lap.lapNumber;
             info.startSessionTime = logical(lap.phase, lap.startSessionTime);
             info.endSessionTime = logical(lap.phase, lap.endSessionTime);
             info.lapTimeMs = lap.lapTimeMs;
             info.flags = (lap.isCompleted ? 1u : 0u) | (lap.isValid ? 2u : 0u) |
-                         (lap.isPartial ? 4u : 0u) |
-                         (lap.phase == V6Phase::Formation ? 8u : 0u);
+                         (lap.isPartial ? 4u : 0u);
             compatibleLaps.push_back(info);
         }
         std::sort(compatibleLaps.begin(), compatibleLaps.end(), [](const auto& a, const auto& b) {
             return std::tie(a.startSessionTime, a.lapNumber) < std::tie(b.startSessionTime, b.lapNumber);
         });
         for (const auto& chunk : v6Chunks) {
+            if (chunk.phase != V6Phase::Race) continue;
             const auto lap = lapById.find(chunk.lapId);
             compatibleChunks.push_back({lap == lapById.end() ? 0u :
-                (lapSummaries[lap->second].phase == V6Phase::Formation ? 0u :
-                 lapSummaries[lap->second].lapNumber),
+                lapSummaries[lap->second].lapNumber,
                 chunk.typeId, chunk.flags, chunk.offset, chunk.compressedSize,
                 chunk.uncompressedSize, chunk.sampleCount, chunk.checksum, chunk.sequence});
         }
         first = std::numeric_limits<float>::infinity(); last = 0.0f;
-        for (const auto& lap : lapSummaries) if (lap.driverIndex == playback) {
+        for (const auto& lap : lapSummaries)
+        if (lap.driverIndex == playback && lap.phase == V6Phase::Race) {
             first = std::min(first, logical(lap.phase, lap.startSessionTime));
             last = std::max(last, logical(lap.phase, lap.endSessionTime));
         }
@@ -1220,7 +1214,8 @@ struct TnrdV6Archive::Impl {
         control.startSessionTime = first; control.totalSessionTime = std::max(first, last);
         control.events.clear();
         for (const auto& record : shared)
-            if (sharedRowType(record.json) == 6) control.events.push_back(record.json);
+            if (record.phase == V6Phase::Race && sharedRowType(record.json) == 6)
+                control.events.push_back(record.json);
     }
 };
 
@@ -1408,17 +1403,16 @@ void TnrdV6Archive::chunkIndicesForLap(uint32_t lap, V6RowTypeMask mask, std::ve
     out.clear();
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i]; const auto found = impl_->lapById.find(chunk.lapId);
-        if (chunk.driverIndex == impl_->playback && found != impl_->lapById.end() &&
-            ((lap == 0 && impl_->lapSummaries[found->second].phase == V6Phase::Formation) ||
-             (lap != 0 && impl_->lapSummaries[found->second].phase == V6Phase::Race &&
-              impl_->lapSummaries[found->second].lapNumber == lap)) &&
+        if ((impl_->requestedTypes.empty() || impl_->requestedTypes.contains(chunk.typeId)) &&
+            chunk.driverIndex == impl_->playback && found != impl_->lapById.end() &&
+            impl_->lapSummaries[found->second].phase == V6Phase::Race &&
+            impl_->lapSummaries[found->second].lapNumber == lap &&
             requestedByOldMask(static_cast<V6DataType>(chunk.typeId), mask)) out.push_back(i);
     }
 }
 bool TnrdV6Archive::chunkTimeBounds(size_t index, float& firstOut, float& lastOut) const {
     if (index >= impl_->v6Chunks.size()) return false; const auto& chunk = impl_->v6Chunks[index];
-    const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
-    firstOut = chunk.firstTime + offset; lastOut = chunk.lastTime + offset; return true;
+    firstOut = chunk.firstTime; lastOut = chunk.lastTime; return true;
 }
 void TnrdV6Archive::prefetchChunk(size_t index) { std::shared_ptr<std::string> ignored; (void)loadChunkPlain(index, ignored, nullptr); }
 void TnrdV6Archive::cancelPrefetch() {}
@@ -1460,7 +1454,7 @@ bool TnrdV6Archive::rowsForChunks(const std::vector<size_t>& indices, std::vecto
         if (index >= impl_->v6Chunks.size()) { fail(errorOut, "invalid V6 chunk index"); return false; }
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
         out.emplace_back(); const auto& chunk = impl_->v6Chunks[index];
-        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f,
+        if (!parseChunkRows(*plain, chunk, 0.0f,
                             out.back(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
     }
     return true;
@@ -1475,7 +1469,7 @@ bool TnrdV6Archive::rowsForLapRange(uint32_t lap, float from, float to, V6RowTyp
     for (size_t index : indices) {
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
         const auto& chunk = impl_->v6Chunks[index];
-        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f,
+        if (!parseChunkRows(*plain, chunk, 0.0f,
                             out, from, to, cancelled)) return false;
     }
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
@@ -1487,20 +1481,22 @@ bool TnrdV6Archive::rowsForRange(float from, float to, V6RowTypeMask mask, std::
     out.clear();
     for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
         const auto& chunk = impl_->v6Chunks[index];
+        if (chunk.phase != V6Phase::Race) continue;
         const auto type = static_cast<V6DataType>(chunk.typeId);
+        if (!impl_->requestedTypes.empty() && !impl_->requestedTypes.contains(chunk.typeId)) continue;
         if ((!requestedByOldMask(type, mask) || chunk.driverIndex != impl_->playback) &&
             !requestedForAllDrivers(type, mask)) continue;
-        // Explicit history reads are selected by their row-family mask. They must
-        // not depend on the mutable live-stream type subscription, which may still
-        // be in flight when a seek or backfill request arrives.
-        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        // V6's explicit type subscription is authoritative inside the legacy
+        // family envelope: a telemetry history request for speed must not also
+        // decompress RPM, controls, temperatures, and engine state.
+        constexpr float offset = 0.0f;
         if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(index, plain, errorOut)) return false;
         if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
     }
     for (size_t i = 0; i < impl_->shared.size(); ++i) {
         const auto& record = impl_->shared[i]; const uint8_t type = sharedRowType(record.json);
-        if (!type || !(mask & v4TypeBit(type))) continue;
+        if (record.phase != V6Phase::Race || !type || !(mask & v4TypeBit(type))) continue;
         const float time = impl_->logical(record.phase, record.sessionTime);
         if (time >= from && time <= to) out.push_back({time, type, i, record.json, 0});
     }
@@ -1523,7 +1519,8 @@ bool TnrdV6Archive::forEachChunk(V6RowTypeMask mask,
                                  std::string* errorOut) {
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i];
-        if (chunk.driverIndex != impl_->playback || !requestedByOldMask(static_cast<V6DataType>(chunk.typeId), mask)) continue;
+        if (chunk.phase != V6Phase::Race || chunk.driverIndex != impl_->playback ||
+            !requestedByOldMask(static_cast<V6DataType>(chunk.typeId), mask)) continue;
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
         const auto lap = impl_->lapById.find(chunk.lapId);
         V4ChunkInfo info{lap == impl_->lapById.end() ? 0u : impl_->lapSummaries[lap->second].lapNumber,
@@ -1553,6 +1550,7 @@ void TnrdV6Archive::playbackChunkIndices(V6RowTypeMask mask, std::vector<size_t>
     out.clear();
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i];
+        if (chunk.phase != V6Phase::Race) continue;
         const auto type = static_cast<V6DataType>(chunk.typeId);
         if (!impl_->requestedTypes.empty() && !impl_->requestedTypes.contains(chunk.typeId)) continue;
         if ((chunk.driverIndex == impl_->playback && requestedByOldMask(type, mask)) ||
@@ -1586,7 +1584,7 @@ bool TnrdV6Archive::readDriverLapTypes(uint8_t driver, uint32_t lapId, const std
         const auto& chunk = impl_->v6Chunks[i];
         if (chunk.driverIndex != driver || chunk.lapId != lapId || (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
-        if (!parseChunkRows(*plain, chunk, chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f, out,
+        if (!parseChunkRows(*plain, chunk, 0.0f, out,
                             -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())) return false;
     }
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
@@ -1599,8 +1597,9 @@ bool TnrdV6Archive::readDriverRangeTypes(uint8_t driver, float from, float to, c
     out.clear(); std::set<uint8_t> wanted(types.begin(), types.end());
     for (size_t i = 0; i < impl_->v6Chunks.size(); ++i) {
         const auto& chunk = impl_->v6Chunks[i];
-        if (chunk.driverIndex != driver || (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
-        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        if (chunk.phase != V6Phase::Race || chunk.driverIndex != driver ||
+            (!wanted.empty() && !wanted.contains(chunk.typeId))) continue;
+        constexpr float offset = 0.0f;
         if (chunk.lastTime + offset < from || chunk.firstTime + offset > to) continue;
         std::shared_ptr<std::string> plain; if (!loadChunkPlain(i, plain, errorOut)) return false;
         if (!parseChunkRows(*plain, chunk, offset, out, from, to, cancelled)) return false;
@@ -1618,7 +1617,7 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
         std::tuple<float, uint64_t> latestKey{-std::numeric_limits<float>::infinity(), 0};
         for (size_t index = 0; index < impl_->v6Chunks.size(); ++index) {
             const auto& chunk = impl_->v6Chunks[index];
-            if (chunk.driverIndex != driver || chunk.typeId != type) continue;
+            if (chunk.phase != V6Phase::Race || chunk.driverIndex != driver || chunk.typeId != type) continue;
             const float first = impl_->logical(chunk.phase, chunk.firstTime);
             if (first > at) continue;
             const auto key = std::tuple{first, chunk.sequence};
@@ -1633,7 +1632,7 @@ bool TnrdV6Archive::readMultiDriverLatest(float at, const std::vector<uint8_t>& 
         std::shared_ptr<std::string> plain;
         if (!loadChunkPlain(latestChunk, plain, errorOut)) return false;
         const auto& chunk = impl_->v6Chunks[latestChunk];
-        const float offset = chunk.phase == V6Phase::Race ? impl_->formationEnd : 0.0f;
+        constexpr float offset = 0.0f;
         if (!parseChunkRows(*plain, chunk, offset, rows,
                             -std::numeric_limits<float>::infinity(), at)) return false;
         if (rows.empty()) continue;

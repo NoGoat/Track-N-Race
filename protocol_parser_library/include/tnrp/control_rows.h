@@ -345,6 +345,15 @@ struct LapMeta {
     int lapTimeMs{};
 };
 
+struct AnalysisDriverLapCatalog {
+    int                       driverIndex{-1};
+    std::string               driverName;
+    bool                      isPlayer{};
+    std::vector<LapBlockMeta> blocks;
+    std::vector<LapMeta>      laps;
+    int                       fastestLapNum{};
+};
+
 struct PlaybackLapBlocksRow {
     std::string                type{"playback_lap_blocks"};
     std::vector<LapBlockMeta>  blocks;
@@ -356,6 +365,8 @@ struct PlaybackLapBlocksRow {
     bool                       deltaAvailable{};
     bool                       lapDistanceAvailable{};
     int                        trackLengthM{};
+    int                        playbackDriverIndex{-1};
+    std::vector<AnalysisDriverLapCatalog> analysisDrivers;
 };
 
 struct PlaybackLapDataRow {

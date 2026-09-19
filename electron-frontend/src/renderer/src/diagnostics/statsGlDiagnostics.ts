@@ -38,7 +38,8 @@ export function installStatsGlDiagnostics(): void {
       precision: 2,
     })
     stats.dom.style.top = '40px'
-    stats.dom.style.left = '8px'
+    stats.dom.style.left = 'auto'
+    stats.dom.style.right = '8px'
     stats.dom.style.zIndex = '2147483647'
     document.body.appendChild(stats.dom)
 

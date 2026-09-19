@@ -305,23 +305,32 @@ ipcMain.on('live:getFastestLap', (_event, requestId: number) => {
 })
 ipcMain.on('player:getAllLapsData', (_event, rowTypeMask?: number) => playerGetAllLapsData(rowTypeMask))
 ipcMain.on('player:getWindowData', (_event, windowSeconds: number, rowTypeMask?: number) => playerGetWindowData(windowSeconds, rowTypeMask))
-ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number, windowSeconds: number, v6Types?: number[]) =>
-  playerSetDataRequirements(streamMask, historyMask, windowSeconds, v6Types))
+ipcMain.on('player:setDataRequirements', (_event, streamMask: number, historyMask: number,
+                                          windowSeconds: number, v6Types?: number[],
+                                          v6HistoryTypes?: number[]) =>
+  playerSetDataRequirements(streamMask, historyMask, windowSeconds, v6Types, v6HistoryTypes))
 ipcMain.on('player:close', () => {
   console.log(`[close-trace] ${new Date().toISOString()} main received player:close`)
   playerClose()
   console.log(`[close-trace] ${new Date().toISOString()} main playerClose returned`)
 })
 ipcMain.handle('analysis:load-file', (_event, filePath: string) => analysisLoadFile(filePath))
-ipcMain.handle('analysis:get-lap-data', (_event, lapNum: number, rowTypeMask?: number) => analysisGetLapData(lapNum, rowTypeMask))
+ipcMain.handle('analysis:get-lap-data', (
+  _event, lapNum: number, rowTypeMask: number | undefined,
+  source: 'file1' | 'file2', driverIndex: number,
+) => analysisGetLapData(lapNum, rowTypeMask, source, driverIndex))
 ipcMain.handle('analysis:compare-laps', (
   _event,
   currentLapNum: number,
   currentSource: 'file1' | 'file2',
+  currentDriverIndex: number,
   comparisonLapNum: number,
   comparisonSource: 'file1' | 'file2',
+  comparisonDriverIndex: number,
   sectorDelta: boolean,
-) => analysisCompareLaps(currentLapNum, currentSource, comparisonLapNum, comparisonSource, sectorDelta))
+) => analysisCompareLaps(
+  currentLapNum, currentSource, currentDriverIndex,
+  comparisonLapNum, comparisonSource, comparisonDriverIndex, sectorDelta))
 ipcMain.on('analysis:close-file', () => analysisCloseFile())
 
 ipcMain.handle('player:export-xlsx', async (event) => {

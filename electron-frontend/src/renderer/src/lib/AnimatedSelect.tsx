@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Select, { type ClassNamesConfig, type GroupBase, type Props, type StylesConfig } from 'react-select'
+import Select, { type ClassNamesConfig, type GroupBase, type Props, type SelectInstance, type StylesConfig } from 'react-select'
 import { SELECT_MENU_ANIMATION_MS } from './selectStyles'
 
 type MenuPhase = 'closed' | 'open' | 'closing'
@@ -28,6 +28,7 @@ export default function AnimatedSelect<
     defaultMenuIsOpen || controlledMenuIsOpen ? 'open' : 'closed',
   )
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectRef = useRef<SelectInstance<Option, IsMulti, Group> | null>(null)
 
   const cancelClose = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -44,6 +45,9 @@ export default function AnimatedSelect<
 
   const closeMenu = useCallback(() => {
     if (phase !== 'open') return
+    // The menu remains mounted for its exit animation, so a pending focus scroll
+    // would otherwise snap the list back to the selected option before it closes.
+    if (selectRef.current) selectRef.current.scrollToFocusedOptionOnUpdate = false
     onMenuClose?.()
     if (shouldReduceAnimations()) {
       setPhase('closed')
@@ -84,6 +88,7 @@ export default function AnimatedSelect<
 
   return (
     <Select<Option, IsMulti, Group>
+      ref={selectRef}
       {...selectProps}
       className={[className, 'react-select-no-drag'].filter(Boolean).join(' ')}
       classNames={noDragClassNames}

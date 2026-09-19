@@ -60,6 +60,11 @@ struct Config {
     // the stdio pipe) keep the legacy all-JSON playback stream.
     bool        binaryPlayback = false;
 
+    // Electron understands TNRD V6's independently updated compatibility
+    // patches and merges them at the renderer boundary. Other hosts keep the
+    // legacy aggregate projection unless they opt in explicitly.
+    bool        sparseV6Playback = false;
+
     // When true, the live UDP path emits the hot 60 Hz rows as JSON via
     // Sink::onRow() and skips the packed binary Sink::onBinary() channel. Off by
     // default: the Electron/node addon clients want the binary fast-path across

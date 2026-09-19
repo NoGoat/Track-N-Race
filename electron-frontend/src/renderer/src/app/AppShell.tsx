@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { flushSync } from 'react-dom'
 import { setAnalyzeLapEnabled, setHistoryRowMask, setTelemetrySeconds, useTelemetryStore } from '../stores/telemetryStore'
 import Settings from '../components/Settings'
-import type { AnalyzeFixedLapMode } from '../components/AnalyzeScreen'
+import type { AnalysisDriverSelection, AnalyzeFixedLapMode, SecondaryFileData } from '../components/AnalyzeScreen'
 import { getChartWindowOptionGroups, TAB_OPTIONS, type ChartWindow, type Tab } from './appConfig'
 import { useAppConfiguration } from './hooks/useAppConfiguration'
 import { useWindowState } from './hooks/useWindowState'
@@ -62,8 +62,12 @@ export default function AppShell() {
   const [udpListenerError, setUdpListenerError] = useState<string | null>(null)
   const { headerVisible, isFullscreen, isMaximized, setHeaderVisible } = useWindowState()
   const [analyzeCompareLapNum, setAnalyzeCompareLapNum] = useState<number | null>(null)
+  const [analyzeCompareDriver, setAnalyzeCompareDriver] = useState<AnalysisDriverSelection | null>(null)
+  const [analyzeSecondaryFile, setAnalyzeSecondaryFile] = useState<SecondaryFileData | null>(null)
   const [referenceLapNum, setReferenceLapNum] = useState<number | null>(1)
-  const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({ enabled: false, lapA: null, lapB: null })
+  const [analyzeFixedLapMode, setAnalyzeFixedLapMode] = useState<AnalyzeFixedLapMode>({
+    enabled: false, lapA: null, lapB: null, lapADriver: null, lapBDriver: null,
+  })
   const [analyzeDataMask, setAnalyzeDataMask] = useState(0)
   const [chartWindowOverrides, setChartWindowOverrides] = useState<ChartWindowOverrides>({})
   const [chartReferenceLapOverrides, setChartReferenceLapOverrides] = useState<ChartReferenceLapOverrides>({})
@@ -196,7 +200,11 @@ export default function AppShell() {
 
   useEffect(() => {
     setAnalyzeCompareLapNum(null)
-    setAnalyzeFixedLapMode({ enabled: false, lapA: null, lapB: null })
+    setAnalyzeCompareDriver(null)
+    setAnalyzeSecondaryFile(null)
+    setAnalyzeFixedLapMode({
+      enabled: false, lapA: null, lapB: null, lapADriver: null, lapBDriver: null,
+    })
     setReferenceLapNum(null)
   }, [playback.state?.filename])
 
@@ -359,14 +367,11 @@ export default function AppShell() {
       : fullLapHistoryEnabled
           ? -1
           : hasLapWindow ? 0 : maxFiniteWindow
-    setHistoryRowMask(
-      historyMask,
-      fullSessionHistoryMask,
-      finiteHistoryMask,
-      finiteWindows.length > 0 ? maxFiniteWindow : 0,
-      lapWindowHistoryMask,
-    )
-    setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
+    const v6HistoryTypes = [...new Set([
+      ...dataRequirements.v6HistoryTypes,
+      ...(stintLapsEnabled ? [13, 15] : []),
+      ...(lapMetadataMask ? [24] : []),
+    ])]
     window.playerBridge.setDataRequirements(
       streamMask,
       historyMask,
@@ -376,7 +381,17 @@ export default function AppShell() {
         ...(stintLapsEnabled ? [13, 15] : []),
         ...(lapMetadataMask ? [24] : []),
       ])],
+      v6HistoryTypes,
     )
+    setHistoryRowMask(
+      historyMask,
+      fullSessionHistoryMask,
+      finiteHistoryMask,
+      finiteWindows.length > 0 ? maxFiniteWindow : 0,
+      lapWindowHistoryMask,
+      v6HistoryTypes,
+    )
+    setAnalyzeLapEnabled(analysisLapScope || hasLapWindow)
     window.playerBridge.setAllLapsMode(
       fullLapHistoryEnabled,
       analysisLapScope
@@ -600,6 +615,10 @@ export default function AppShell() {
           playbackFilename={playback.state?.filename ?? null}
           analyzeCompareLapNum={analyzeCompareLapNum}
           onAnalyzeCompareLapChange={setAnalyzeCompareLapNum}
+          analyzeCompareDriver={analyzeCompareDriver}
+          onAnalyzeCompareDriverChange={setAnalyzeCompareDriver}
+          analyzeSecondaryFile={analyzeSecondaryFile}
+          onAnalyzeSecondaryFileChange={setAnalyzeSecondaryFile}
           analyzeFixedLapMode={analyzeFixedLapMode}
           onAnalyzeFixedLapModeChange={setAnalyzeFixedLapMode}
           onAnalyzeDataMaskChange={setAnalyzeDataMask}

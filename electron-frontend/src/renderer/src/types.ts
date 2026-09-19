@@ -422,6 +422,23 @@ export interface PlaybackLapDataMsg {
   rowTypeMask?: number
 }
 
+export interface AnalysisDriverLapCatalog {
+  driverIndex: number
+  driverName: string
+  isPlayer: boolean
+  blocks: Array<{
+    lapNum: number
+    startSessionTime: number
+    endSessionTime: number
+    telemetry: Array<{ type: 'telemetry'; session_time: number; speed_kph: number; rpm: number }>
+    statusHistory: Array<{ type: 'status'; session_time: number; ers_pct: number; tyre_compound: number; visual_compound: number }>
+    sector1EndDistanceM?: number
+    sector2EndDistanceM?: number
+  }>
+  laps: Array<{ lapNum: number; lapTimeMs: number }>
+  fastestLapNum: number
+}
+
 export interface LiveFastestLapDataMsg {
   type: 'live_fastest_lap_data'
   requestId: number
@@ -640,7 +657,8 @@ declare global {
       pause: () => void
       seek: (pct: number) => void
       setAllLapsMode: (enabled: boolean, rowTypeMask?: number, windowSeconds?: number) => void
-      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number, v6Types?: number[]) => void
+      setDataRequirements: (streamMask: number, historyMask: number, windowSeconds: number,
+                            v6Types?: number[], v6HistoryTypes?: number[]) => void
       onSeekStart: (callback: (allHistory: boolean) => void) => () => void
       seekInstalled: (requestId: number) => void
       setSpeed: (mult: number) => void
@@ -658,12 +676,17 @@ declare global {
     }
     analysisBridge: {
       loadFile: (filePath: string) => Promise<{ ok: boolean; error?: string; data?: unknown; trackId?: number; trackName?: string }>
-      getLapData: (lapNum: number, rowTypeMask?: number) => Promise<unknown | null>
+      getLapData: (
+        lapNum: number, rowTypeMask?: number,
+        source?: 'file1' | 'file2', driverIndex?: number,
+      ) => Promise<unknown | null>
       compareLaps: (
         currentLapNum: number,
         currentSource: 'file1' | 'file2',
+        currentDriverIndex: number,
         comparisonLapNum: number,
         comparisonSource: 'file1' | 'file2',
+        comparisonDriverIndex: number,
         sectorDelta: boolean,
       ) => Promise<unknown | null>
       closeFile: () => void

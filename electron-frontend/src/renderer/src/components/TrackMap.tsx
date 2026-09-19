@@ -980,31 +980,35 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
         const timeoutMs = mapTimeoutRef.current * 1000
         const playerIdx = msg.player_idx ?? 0
 
-        const filteredCars = msg.cars.map((car: any) => {
+        const patchedCars = new Map((_cachedCars ?? []).map((car: any) => [car.idx, car]))
+        for (const car of msg.cars) {
           if (car.idx === playerIdx) {
-            return car
+            patchedCars.set(car.idx, car)
+            continue
           }
 
           const prev = lastPosRef.current[car.idx]
           if (!prev) {
             lastPosRef.current[car.idx] = { x: car.x, z: car.z, lastMovedTime: now }
-            return car
+            patchedCars.set(car.idx, car)
+            continue
           }
 
           const hasMoved = car.x !== prev.x || car.z !== prev.z
           if (hasMoved) {
             lastPosRef.current[car.idx] = { x: car.x, z: car.z, lastMovedTime: now }
-            return car
+            patchedCars.set(car.idx, car)
           } else {
             const duration = now - prev.lastMovedTime
             if (mapTimeoutRef.current > 0 && duration > timeoutMs) {
-              return { ...car, x: 0, z: 0 }
+              patchedCars.set(car.idx, { ...car, x: 0, z: 0 })
+            } else {
+              patchedCars.set(car.idx, car)
             }
-            return car
           }
-        })
+        }
 
-        _cachedCars      = filteredCars
+        _cachedCars      = [...patchedCars.values()]
         _cachedPlayerIdx = playerIdx
         carsRef.current      = _cachedCars
         playerIdxRef.current = _cachedPlayerIdx
@@ -1012,18 +1016,16 @@ export default function TrackMap({ trackId, participants, isDark, sectorColors =
     }
 
     const unsubBatch = window.telemetryBridge.onBatch((batchStr: string) => {
-      let lastPositions: any = null
       let start = 0
       while (start < batchStr.length) {
         let end = batchStr.indexOf('\n', start)
         if (end === -1) end = batchStr.length
         if (end > start) {
           const raw = JSON.parse(batchStr.slice(start, end))
-          if (raw.type === 'positions') lastPositions = raw
+          if (raw.type === 'positions') handleMsg(raw)
         }
         start = end + 1
       }
-      if (lastPositions) handleMsg(lastPositions)
     })
 
     const unsubOn = window.telemetryBridge.on((raw) => {

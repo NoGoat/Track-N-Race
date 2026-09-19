@@ -472,8 +472,7 @@ body {
 
 .analyze-map-color-slot--visible {
   grid-template-columns: 1fr;
-  margin-right: 0.25rem;
-  margin-left: 0.25rem;
+  margin-right: 0.5rem;
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
@@ -523,7 +522,7 @@ body {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0;
   backface-visibility: hidden;
   transform-origin: center;
   transition:

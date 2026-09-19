@@ -19,6 +19,9 @@ class Sink {
 public:
     virtual ~Sink() = default;
     virtual void onRow(const std::string& json) = 0;
+    virtual void onRows(const std::vector<std::string>& rows) {
+        for (const auto& row : rows) onRow(row);
+    }
 
     // Packed binary batch for the hot 60 Hz rows (see tnrp/BinaryRows.h). The
     // live UDP path emits these; playback does too when the engine runs with

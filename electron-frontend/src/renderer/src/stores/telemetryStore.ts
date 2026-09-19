@@ -3,7 +3,7 @@ import type {
   TelemetryRow, MotionRow, MotionExRow, LapRow, StatusRow, DamageRow, TimingMsg,
   ParticipantsMsg, AllStatusMsg, RaceEventMsg, SessionMsg, TyreSetsMsg, GatewayMsg,
   LapProgressPoint, SessionHistoryFastestMsg, ProtocolStatusMsg, ProtocolWarningMsg,
-  AnalyzeLapData, PlaybackLapDataMsg,
+  AnalyzeLapData, AnalysisDriverLapCatalog, PlaybackLapDataMsg,
   StrategySnapshotMsg,
 } from '../types'
 import { decodeBinaryBatchRange, forEachDecodedBinaryRow } from '../lib/decodeBinaryBatch'
@@ -78,6 +78,98 @@ function appendRow<T extends { session_time: number }>(ref: { current: T[] }, ms
   }
 }
 
+const V6_PATCH_FIELDS: Record<number, readonly string[]> = {
+  1: ['speed_kph'],
+  2: ['rpm', 'rev_lights_pct', 'rev_lights_bit_value'],
+  3: ['gear'],
+  4: ['throttle'],
+  5: ['brake'],
+  6: ['steering'],
+  7: ['drs', 'slm', 'drs_allowed'],
+  8: ['tyre_temp_surface_fl', 'tyre_temp_surface_fr', 'tyre_temp_surface_rl', 'tyre_temp_surface_rr'],
+  9: ['tyre_temp_inner_fl', 'tyre_temp_inner_fr', 'tyre_temp_inner_rl', 'tyre_temp_inner_rr'],
+  10: ['brake_temp_fl', 'brake_temp_fr', 'brake_temp_rl', 'brake_temp_rr'],
+  11: ['engine_temp'],
+  12: ['tyre_wear_fl', 'tyre_wear_fr', 'tyre_wear_rl', 'tyre_wear_rr'],
+  13: ['tyre_compound', 'visual_compound', 'tyre_age_laps', 'sets', 'fitted_idx'],
+  14: ['tyre_dmg_fl', 'tyre_dmg_fr', 'tyre_dmg_rl', 'tyre_dmg_rr',
+    'brake_dmg_fl', 'brake_dmg_fr', 'brake_dmg_rl', 'brake_dmg_rr', 'wing_fl', 'wing_fr', 'wing_rear',
+    'floor_damage', 'diffuser_damage', 'sidepod_damage', 'gearbox_damage', 'engine_damage',
+    'drs_fault', 'ers_fault', 'blisters_fl', 'blisters_fr', 'blisters_rl', 'blisters_rr'],
+  15: ['fuel_kg', 'fuel_laps', 'fuel_mix'],
+  16: ['ers_j', 'ers_pct', 'ers_mode'],
+  17: ['ers_harvested_mguk_j', 'ers_harvested_mguh_j'],
+  18: ['ers_deployed_j'],
+  19: ['engine_power_ice_kw', 'engine_power_mguk_kw'],
+  20: ['front_brake_bias'],
+  21: ['g_lat', 'g_long', 'g_vert'],
+  22: ['front_aero_height_mm', 'rear_aero_height_mm'],
+  23: ['x', 'z'],
+  24: ['lap_distance_m', 'position', 'lap_num', 'current_lap_ms', 'last_lap_ms', 's1_ms',
+    's2_ms', 'gap_ms', 'pit_status', 'num_pit_stops', 'lap_invalid', 'penalties_s', 'num_dt_pens',
+    'num_sg_pens', 'sector', 'result_status', 'driver_status'],
+}
+
+function mergePlaybackPatch<T extends Record<string, any>>(previous: T | undefined, patch: T): T {
+  const v6Type = Number(patch._v6_type)
+  if (!isPlaybackFlag || !Number.isInteger(v6Type)) return patch
+  const merged: Record<string, any> = { ...previous, ...patch }
+  if (patch.available === false) {
+    for (const field of V6_PATCH_FIELDS[v6Type] ?? []) {
+      delete merged[field]
+    }
+  }
+  delete merged.available
+  return merged as T
+}
+
+function appendPlaybackPatch<T extends { session_time: number } & Record<string, any>>(
+  ref: { current: T[] }, patch: T, maxRows: number,
+): T {
+  const previous = ref.current[ref.current.length - 1]
+  const merged = mergePlaybackPatch(previous, patch)
+  if (previous && previous.session_time === merged.session_time && Number.isInteger(Number(patch._v6_type))) {
+    ref.current[ref.current.length - 1] = merged
+  } else {
+    appendRow(ref, merged, maxRows)
+  }
+  return merged
+}
+
+export function coalescePlaybackRows<T extends { session_time: number } & Record<string, any>>(rows: T[]): T[] {
+  const ref = { current: [] as T[] }
+  for (const row of rows) {
+    const previous = ref.current[ref.current.length - 1]
+    const merged = Number.isInteger(Number(row._v6_type))
+      ? mergePlaybackPatch(previous, row)
+      : row
+    if (previous && previous.session_time === merged.session_time && Number.isInteger(Number(row._v6_type)))
+      ref.current[ref.current.length - 1] = merged
+    else
+      ref.current.push(merged)
+  }
+  return ref.current
+}
+
+function mergeCarPatches<T extends { cars: Array<Record<string, any>> }>(previous: T | null, patch: T): T {
+  if (!previous || !Number.isInteger(Number((patch as any)._v6_type))) return patch
+  const v6Type = Number((patch as any)._v6_type)
+  const cars = new Map(previous.cars.map(car => [Number(car.idx), car]))
+  for (const carPatch of patch.cars) {
+    const prior = cars.get(Number(carPatch.idx))
+    const merged = { ...prior, ...carPatch }
+    if (carPatch.available === false)
+      for (const field of V6_PATCH_FIELDS[v6Type] ?? []) delete merged[field]
+    delete merged.available
+    cars.set(Number(carPatch.idx), merged)
+  }
+  return {
+    ...previous,
+    ...patch,
+    cars: [...cars.values()].sort((left, right) => Number(left.idx) - Number(right.idx)),
+  }
+}
+
 // Double-buffered window views: refill one of two persistent arrays each frame
 // (two, so consumers' identity-based memo deps still see a change and the
 // previous frame's array is never mutated under a holder mid-comparison).
@@ -136,6 +228,8 @@ export interface TelemetryStoreState {
   analyzeDeltaAvailable: boolean
   analyzeTrackLengthM: number
   playbackTnrdVersion: string | null
+  playbackAnalysisDrivers: AnalysisDriverLapCatalog[]
+  playbackDriverIndex: number | null
   playbackTrackId: number | null
   playbackTrackName: string | null
   playbackLapDataCache: Record<number, AnalyzeLapData>
@@ -164,6 +258,7 @@ export const useTelemetryStore = create<TelemetryStoreState>()(() => ({
   analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
   analyzeLapRevision: 0,
   analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
+  playbackAnalysisDrivers: [], playbackDriverIndex: null,
   playbackTrackId: null, playbackTrackName: null,
   playbackLapDataCache: {},
   livePreviousLapData: null,
@@ -283,8 +378,12 @@ let secondaryFiniteHistoryRowMask = 0
 let secondaryLapHistoryRowMask = 0
 let secondaryHistoryWindowSeconds = 0
 let requestedHistoryRowMask = 0
+const historyV6Types = new Set<number>()
+let pendingV6HistoryBackfillMask = 0
 let seekTimelineGeneration = 0
 let seekRendererPending = false
+let authoritativeLapStatusStart = -Infinity
+let authoritativeLapStatusPrefix: StatusRow[] = []
 let activeSeekDecodeRetention: {
   binaryBytes: number
   coldJsonChars: number
@@ -510,6 +609,16 @@ function markHistoryCoverage(maskValue: unknown, startValue: unknown): void {
   }
 }
 
+function historyRowMaskForV6Type(type: number): number {
+  if (type >= 1 && type <= 11) return HISTORY_ROW.telemetry
+  if (type === 12 || type === 14) return HISTORY_ROW.damage
+  if (type >= 13 && type <= 20) return HISTORY_ROW.status
+  if (type === 21) return HISTORY_ROW.motion
+  if (type === 22) return HISTORY_ROW.motionEx
+  if (type === 24) return HISTORY_ROW.lap
+  return 0
+}
+
 function historyCovers(bit: number, requiredStart: number): boolean {
   return (historyCoverageStart.get(bit) ?? Infinity) <= requiredStart + 1
 }
@@ -715,7 +824,11 @@ function resetSession(): void {
   // Invalidate a seek payload that is still being cooperatively decoded.
   seekTimelineGeneration++
   historyCoverageStart.clear()
+  historyV6Types.clear()
+  pendingV6HistoryBackfillMask = 0
   seekRendererPending = false
+  authoritativeLapStatusStart = -Infinity
+  authoritativeLapStatusPrefix = []
   analyzeLapRevisionVal++
   telBufRef.current = []
   motBufRef.current = []
@@ -760,6 +873,7 @@ function resetSession(): void {
     analyzeLapStatusHistory: [], analyzeLapDamageHistory: [], analyzeLapProgress: [], analyzeLapStartTime: 0,
     analyzeLapRevision: analyzeLapRevisionVal,
     analyzeDeltaAvailable: false, analyzeTrackLengthM: 0, playbackTnrdVersion: null,
+    playbackAnalysisDrivers: [], playbackDriverIndex: null,
     playbackTrackId: null, playbackTrackName: null,
     playbackLapDataCache: {},
     livePreviousLapData: null,
@@ -1185,9 +1299,8 @@ function handleMsg(msg: GatewayMsg): void {
       break
     }
     case 'telemetry': {
-      const buf = telBufRef.current
-      const last = buf[buf.length - 1]
-      const merged = isPlaybackFlag && last && (msg as any).available !== false ? { ...last, ...msg } as typeof msg : msg
+      const last = telBufRef.current[telBufRef.current.length - 1]
+      const merged = mergePlaybackPatch(last, msg as TelemetryRow)
       if (last && msg.session_time < last.session_time && !isPlaybackFlag) {
         // Playback can deliver a slightly older hot row around a seek/backfill
         // boundary. appendRow reconciles the renderer history below, but this
@@ -1195,23 +1308,21 @@ function handleMsg(msg: GatewayMsg): void {
         // the revision that identifies a real timeline reset.
         applyLiveRewind(msg.session_time)
       }
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendRow(telBufRef, merged, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.telemetry)) appendPlaybackPatch(telBufRef, msg as TelemetryRow, MAX_ROWS)
       else telBufRef.current = [merged]
       break
     }
     case 'motion': {
-      const previous = motBufRef.current[motBufRef.current.length - 1]
-      appendRow(motBufRef, isPlaybackFlag && previous ? { ...previous, ...msg } : msg, MAX_ROWS)
+      appendPlaybackPatch(motBufRef, msg as MotionRow, MAX_ROWS)
       break
     }
     case 'motion_ex': {
-      const previous = motExBufRef.current[motExBufRef.current.length - 1]
-      appendRow(motExBufRef, isPlaybackFlag && previous ? { ...previous, ...msg } : msg, MAX_ROWS)
+      appendPlaybackPatch(motExBufRef, msg as MotionExRow, MAX_ROWS)
       break
     }
     case 'status': {
       const previous = stsBufRef.current[stsBufRef.current.length - 1]
-      const merged = isPlaybackFlag && previous && (msg as any).available !== false ? { ...previous, ...msg } as typeof msg : msg
+      const merged = mergePlaybackPatch(previous, msg as StatusRow)
       const next: Partial<TelemetryStoreState> = { status: merged }
       const previousStintStartTime = currentStintStartTime
       if (!previous || merged.session_time < previous.session_time) {
@@ -1227,15 +1338,15 @@ function handleMsg(msg: GatewayMsg): void {
         next.fuelUpperLimit = fuelMaxReceived + 1
       }
       set(next)
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendRow(stsBufRef, merged, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.status)) appendPlaybackPatch(stsBufRef, msg as StatusRow, MAX_ROWS)
       else stsBufRef.current = [merged]
       break
     }
     case 'damage': {
       const previous = dmgBufRef.current[dmgBufRef.current.length - 1]
-      const merged = isPlaybackFlag && previous && (msg as any).available !== false ? { ...previous, ...msg } as typeof msg : msg
+      const merged = mergePlaybackPatch(previous, msg as DamageRow)
       set({ damage: merged })
-      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendRow(dmgBufRef, merged, MAX_ROWS)
+      if (!isPlaybackFlag || (historyRowMask & HISTORY_ROW.damage)) appendPlaybackPatch(dmgBufRef, msg as DamageRow, MAX_ROWS)
       else dmgBufRef.current = [merged]
       break
     }
@@ -1244,7 +1355,7 @@ function handleMsg(msg: GatewayMsg): void {
       onLap((isPlaybackFlag && previous ? { ...previous, ...msg } : msg) as unknown as LapRow)
       break
     }
-    case 'timing':       set({ timing: msg }); break
+    case 'timing':       set(state => ({ timing: mergeCarPatches(state.timing, msg as TimingMsg) as TimingMsg })); break
     case 'participants': {
       const incoming = msg as ParticipantsMsg
       const previous = useTelemetryStore.getState().participants
@@ -1264,7 +1375,7 @@ function handleMsg(msg: GatewayMsg): void {
       } })
       break
     }
-    case 'all_status':   set({ allStatus: msg }); break
+    case 'all_status':   set(state => ({ allStatus: mergeCarPatches(state.allStatus, msg as AllStatusMsg) as AllStatusMsg })); break
     case 'fastest_lap':
       set({ fastestLapCarIdx: (msg as any).car_idx })
       fastestLapSet = true
@@ -1354,11 +1465,11 @@ function handleMsg(msg: GatewayMsg): void {
         lapNum: payload.lapNum,
         startSessionTime: payload.startSessionTime,
         endSessionTime: payload.endSessionTime,
-        telemetry: payload.telemetry ?? [],
-        motion: payload.motionHistory ?? [],
-        motionEx: payload.motionExHistory ?? [],
-        statusHistory: payload.statusHistory ?? [],
-        damageHistory: payload.damageHistory ?? [],
+        telemetry: coalescePlaybackRows(payload.telemetry ?? []),
+        motion: coalescePlaybackRows(payload.motionHistory ?? []),
+        motionEx: coalescePlaybackRows(payload.motionExHistory ?? []),
+        statusHistory: coalescePlaybackRows(payload.statusHistory ?? []),
+        damageHistory: coalescePlaybackRows(payload.damageHistory ?? []),
         lapProgress: payload.lapProgress ?? [],
         playerPositions: payload.playerPositions ?? [],
         rowTypeMask: payload.rowTypeMask ?? 0xFFFFFFFF,
@@ -1403,8 +1514,12 @@ function handleMsg(msg: GatewayMsg): void {
       fuelMaxReceived = -Infinity
       playbackLapCacheOrder = []
       historyCoverageStart.clear()
+      historyV6Types.clear()
+      pendingV6HistoryBackfillMask = 0
       requestedHistoryRowMask = 0
       waitingForAllLapsHistory = false
+      authoritativeLapStatusStart = -Infinity
+      authoritativeLapStatusPrefix = []
       telBufRef.current = []
       motBufRef.current = []
       motExBufRef.current = []
@@ -1434,6 +1549,9 @@ function handleMsg(msg: GatewayMsg): void {
         analyzeDeltaAvailable: data.lapDistanceAvailable === true || data.deltaAvailable === true,
         analyzeTrackLengthM: Number.isFinite(trackLengthM) && trackLengthM > 0 ? trackLengthM : 0,
         playbackTnrdVersion: typeof data.tnrdVersion === 'string' ? data.tnrdVersion : null,
+        playbackAnalysisDrivers: Array.isArray(data.analysisDrivers) ? data.analysisDrivers : [],
+        playbackDriverIndex: Number.isFinite(data.playbackDriverIndex)
+          ? data.playbackDriverIndex : null,
       })
       const missingHistory = fullSessionHistoryRowMask & ~requestedHistoryRowMask
       if (allLapsMode && missingHistory !== 0) {
@@ -1546,7 +1664,26 @@ function recompute(dirty: DirtySlice): void {
     if (historyRowMask & HISTORY_ROW.status) {
       const buf = stsBuf
       next.statusHistory = allLapsMode ? buf : fillRange(pools.sts, buf, lowerBound(buf, cutoff, false), buf.length)
-      const current = stsBufRef.current
+      let current = stsBufRef.current
+      if (publishAnalyze && isPlayback &&
+          Math.abs(authoritativeLapStatusStart - lapStartSessionTime) < 0.05 &&
+          authoritativeLapStatusPrefix.length > 0) {
+        const prefix = authoritativeLapStatusPrefix
+        const prefixFirst = prefix[0].session_time
+        const prefixLast = prefix[prefix.length - 1].session_time
+        const currentFirst = current[0]?.session_time ?? Infinity
+        const currentLast = current[current.length - 1]?.session_time ?? -Infinity
+        const stillContainsPrefix = current.length >= prefix.length &&
+          currentFirst <= prefixFirst && currentLast >= prefixLast
+        if (!stillContainsPrefix) {
+          // A late state-only/secondary response must not replace the complete
+          // status history installed by the authoritative seek. Keep that
+          // immutable prefix and add only genuinely newer streamed samples.
+          const merged = prefix.slice()
+          for (const row of current) if (row.session_time > prefixLast) merged.push(row)
+          current = merged
+        }
+      }
       if (publishAnalyze) next.analyzeLapStatusHistory = fillRange(pools.analyzeSts, current, Math.max(0, lowerBound(current, lapStartSessionTime, true) - 1), current.length)
     }
   }
@@ -1564,6 +1701,10 @@ function recompute(dirty: DirtySlice): void {
       pools.analyzeLapProgress, buf, lowerBound(buf, lapStartSessionTime, true), buf.length)
   }
   if (dirty & DirtySlice.Derived) {
+    // This revision also identifies authoritative playback timeline installs.
+    // Publish it even when no distance/analyze consumer is active so time-axis
+    // charts can invalidate joins made against the pre-seek history.
+    next.analyzeLapRevision = analyzeLapRevisionVal
     next.lapTimesByNum = lapTimesByNum
     if (isPlayback) {
       // Playback events are sorted once at load. Resolve the visible prefix by
@@ -1583,7 +1724,6 @@ function recompute(dirty: DirtySlice): void {
     }
     if (publishAnalyze) {
       next.analyzeLapStartTime = lapStartSessionTime
-      next.analyzeLapRevision = analyzeLapRevisionVal
     }
   }
   set(next)
@@ -1633,6 +1773,18 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   activeSeekDecodeRetention = seekRetention
 
   try {
+    playbackDebug('history-flush-state-before-decode', {
+      requestId: payload.requestId,
+      authoritative,
+      allHistory,
+      rowTypeMask: `0x${(Number(payload.rowTypeMask) >>> 0).toString(16)}`,
+      historyStart: payload.historyStart,
+      seekRendererPending,
+      historyV6Types: [...historyV6Types].sort((a, b) => a - b),
+      pendingV6HistoryBackfillMask: `0x${pendingV6HistoryBackfillMask.toString(16)}`,
+      telemetry: { rows: telBufRef.current.length, first: telBufRef.current[0]?.session_time ?? null, last: telBufRef.current[telBufRef.current.length - 1]?.session_time ?? null },
+      status: { rows: stsBufRef.current.length, first: stsBufRef.current[0]?.session_time ?? null, last: stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? null },
+    })
     playbackDebug('seek-flush-received', {
     lapNum: payload.lapNum,
     currentLapStart: payload.currentLapStart,
@@ -1692,6 +1844,7 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   const dmg: DamageRow[] = []
   const lapProgress: LapProgressPoint[] = []
   const raceEvents: RaceEventMsg[] = []
+  const decodedV6Types: Record<string, number> = {}
   let lastLap: LapRow | null = null
   const coldJson = (payload.coldJson as string) || ''
   let start = 0
@@ -1701,8 +1854,16 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     if (end === -1) end = coldJson.length
     if (end > start) {
       try {
-        const row = JSON.parse(coldJson.slice(start, end)) as StatusRow | DamageRow | LapRow | RaceEventMsg
-        if (row.type === 'status') sts.push(row)
+        const row = JSON.parse(coldJson.slice(start, end)) as GatewayMsg
+        const v6Type = Number((row as any)._v6_type)
+        if (Number.isInteger(v6Type)) {
+          const key = String(v6Type)
+          decodedV6Types[key] = (decodedV6Types[key] ?? 0) + 1
+        }
+        if (row.type === 'telemetry') tel.push(row)
+        else if (row.type === 'motion') mot.push(row)
+        else if (row.type === 'motion_ex') motEx.push(row)
+        else if (row.type === 'status') sts.push(row)
         else if (row.type === 'damage') dmg.push(row)
         else if (row.type === 'lap') { lastLap = row; lapProgress.push(row) }
         else if (row.type === 'race_event') raceEvents.push(row)
@@ -1723,19 +1884,72 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   seekRetention.decodedLapRows = lapProgress.length
   if (cancelled()) return
 
-  // Rows streamed after the native seek committed accumulated while decoding.
-  // Append only that newer tail to the authoritative or additive backfill.
-  const appendNewer = <T extends { session_time: number }>(base: T[], trailing: T[]): T[] => {
-    const lastTime = base[base.length - 1]?.session_time ?? -Infinity
-    for (const row of trailing) if (row.session_time > lastTime) base.push(row)
-    return base.length > MAX_ROWS ? base.slice(-MAX_ROWS) : base
+  const mergedTel = coalescePlaybackRows(tel)
+  const mergedMot = coalescePlaybackRows(mot)
+  const mergedMotEx = coalescePlaybackRows(motEx)
+  const mergedSts = coalescePlaybackRows(sts)
+  const mergedDmg = coalescePlaybackRows(dmg)
+
+  // An authoritative seek owns the decoded prefix; retain only rows streamed
+  // after its endpoint. Additive window/AL responses are different: they may
+  // finish after a newer authoritative flush and are allowed only to fill the
+  // missing prefix. Replacing their overlapping suffix used to discard the
+  // correct V6 ERS history and leave one boundary seed plus the live tail.
+  const installRows = <T extends { session_time: number }>(incoming: T[], existing: T[]): T[] => {
+    if (authoritative) {
+      const lastTime = incoming[incoming.length - 1]?.session_time ?? -Infinity
+      for (const row of existing) if (row.session_time > lastTime) incoming.push(row)
+      return incoming.length > MAX_ROWS ? incoming.slice(-MAX_ROWS) : incoming
+    }
+    if (existing.length === 0)
+      return incoming.length > MAX_ROWS ? incoming.slice(-MAX_ROWS) : incoming
+    if (isPlaybackFlag && incoming.some(row => Number.isInteger(Number((row as any)._v6_type)))) {
+      const merged = existing.slice()
+      const indices = new Map<number, number>()
+      for (let i = 0; i < merged.length; i++) indices.set(merged[i].session_time, i)
+      for (const row of incoming) {
+        const index = indices.get(row.session_time)
+        if (index !== undefined) {
+          merged[index] = mergePlaybackPatch(
+            merged[index] as T & Record<string, any>, row as T & Record<string, any>) as T
+        } else {
+          const insertAt = lowerBound(merged, row.session_time, true)
+          merged.splice(insertAt, 0, row)
+          for (let i = insertAt; i < merged.length; i++) indices.set(merged[i].session_time, i)
+        }
+      }
+      return merged.length > MAX_ROWS ? merged.slice(-MAX_ROWS) : merged
+    }
+    const firstExistingTime = existing[0].session_time
+    let lo = 0, hi = incoming.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (incoming[mid].session_time < firstExistingTime) lo = mid + 1
+      else hi = mid
+    }
+    if (lo === 0) return existing
+    const merged = incoming.slice(0, lo)
+    merged.push(...existing)
+    return merged.length > MAX_ROWS ? merged.slice(-MAX_ROWS) : merged
   }
-  telBufRef.current = appendNewer(tel, telBufRef.current)
-  motBufRef.current = appendNewer(mot, motBufRef.current)
-  motExBufRef.current = appendNewer(motEx, motExBufRef.current)
-  stsBufRef.current = appendNewer(sts, stsBufRef.current)
-  dmgBufRef.current = appendNewer(dmg, dmgBufRef.current)
-  lapProgressBufRef.current = appendNewer(lapProgress, lapProgressBufRef.current)
+  telBufRef.current = installRows(mergedTel, telBufRef.current)
+  motBufRef.current = installRows(mergedMot, motBufRef.current)
+  motExBufRef.current = installRows(mergedMotEx, motExBufRef.current)
+  stsBufRef.current = installRows(mergedSts, stsBufRef.current)
+  dmgBufRef.current = installRows(mergedDmg, dmgBufRef.current)
+  lapProgressBufRef.current = installRows(lapProgress, lapProgressBufRef.current)
+  if (!authoritative && Object.keys(decodedV6Types).length > 0) {
+    // Sparse V6 page backfills fill fields into timestamps the chart bridges
+    // have already consumed. Advance the revision so they rebuild those rows
+    // instead of syncing only samples appended after the page change.
+    analyzeLapRevisionVal++
+  }
+  if (authoritative) {
+    authoritativeLapStatusStart = Number(payload.currentLapStart)
+    const prefixStart = Math.max(0,
+      lowerBound(stsBufRef.current, authoritativeLapStatusStart, true) - 1)
+    authoritativeLapStatusPrefix = stsBufRef.current.slice(prefixStart)
+  }
   if (!isPlaybackFlag && (Number(payload.rowTypeMask) & HISTORY_ROW.raceEvent)) {
     const priorEvents = new Set(raceEventsAtDecodeStart)
     const streamedDuringDecode = raceEventsArr.filter(event => !priorEvents.has(event))
@@ -1755,6 +1969,11 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
   markHistoryCoverage(payload.rowTypeMask, payload.historyStart)
 
   playbackDebug('seek-flush-decoded', {
+    requestId: payload.requestId,
+    authoritative,
+    rowTypeMask: `0x${(Number(payload.rowTypeMask) >>> 0).toString(16)}`,
+    historyStart: payload.historyStart,
+    decodedV6Types,
     lapNum,
     lapStartTime,
     revision: analyzeLapRevisionVal,
@@ -1769,6 +1988,16 @@ async function processPlaybackSeekFlush(payload: any): Promise<void> {
     raceEventRows: raceEvents.length,
     lastLapNumber: lastLap?.lap_num ?? null,
     lastLapTimeMs: lastLap?.current_lap_ms ?? null,
+    installedTelemetry: {
+      rows: telBufRef.current.length,
+      first: telBufRef.current[0]?.session_time ?? null,
+      last: telBufRef.current[telBufRef.current.length - 1]?.session_time ?? null,
+    },
+    installedStatus: {
+      rows: stsBufRef.current.length,
+      first: stsBufRef.current[0]?.session_time ?? null,
+      last: stsBufRef.current[stsBufRef.current.length - 1]?.session_time ?? null,
+    },
   })
   set({
     ...(stsBufRef.current.length ? { status: stsBufRef.current[stsBufRef.current.length - 1] } : {}),
@@ -1814,11 +2043,37 @@ function requestVisibleWindowHistory(): void {
   ])
   const requestRange = (requestedMask: number, requiredStart: number, windowSeconds: number): void => {
     let missingMask = 0
+    const families: Array<Record<string, unknown>> = []
     for (const bit of HISTORY_ROW_BITS) {
-      if ((requestedMask & bit) && !historyCovers(bit, requiredStart) &&
-          (firstTimes.get(bit) ?? Infinity) > requiredStart + 1) missingMask |= bit
+      if (!(requestedMask & bit)) continue
+      const pendingV6Type = Boolean(pendingV6HistoryBackfillMask & bit)
+      const covered = historyCovers(bit, requiredStart)
+      const firstTime = firstTimes.get(bit)
+      const missingPrefix = !covered && (firstTime ?? Infinity) > requiredStart + 1
+      families.push({ bit: `0x${bit.toString(16)}`, pendingV6Type, covered, firstTime: firstTime ?? null, missingPrefix })
+      if (pendingV6Type || missingPrefix)
+        missingMask |= bit
     }
-    if (missingMask !== 0) window.playerBridge.getWindowData(windowSeconds, missingMask)
+    playbackDebug('history-backfill-evaluation', {
+      requestedMask: `0x${(requestedMask >>> 0).toString(16)}`,
+      missingMask: `0x${(missingMask >>> 0).toString(16)}`,
+      requiredStart,
+      windowSeconds,
+      currentTime,
+      seekRendererPending,
+      pendingV6HistoryBackfillMask: `0x${pendingV6HistoryBackfillMask.toString(16)}`,
+      historyV6Types: [...historyV6Types].sort((a, b) => a - b),
+      families,
+    })
+    if (missingMask !== 0) {
+      playbackDebug('history-backfill-requested', {
+        missingMask: `0x${(missingMask >>> 0).toString(16)}`,
+        requiredStart,
+        windowSeconds,
+      })
+      window.playerBridge.getWindowData(windowSeconds, missingMask)
+      pendingV6HistoryBackfillMask &= ~missingMask
+    }
   }
 
   const scopedFiniteMask = secondaryFiniteHistoryRowMask & ~fullSessionHistoryRowMask
@@ -1935,6 +2190,7 @@ export function setHistoryRowMask(
   finiteWindowMask = 0,
   finiteWindowSeconds = 0,
   lapWindowMask = 0,
+  v6HistoryTypes: readonly number[] = [],
 ): void {
   const normalized = mask >>> 0
   const normalizedFullSession = (fullSessionMask & normalized) >>> 0
@@ -1946,6 +2202,23 @@ export function setHistoryRowMask(
   secondaryHistoryWindowSeconds = Number.isFinite(finiteWindowSeconds)
     ? Math.max(0, finiteWindowSeconds)
     : 0
+  const nextV6Types = new Set(v6HistoryTypes)
+  playbackDebug('history-requirements-changing', {
+    previousMask: `0x${historyRowMask.toString(16)}`,
+    nextMask: `0x${normalized.toString(16)}`,
+    disabledMask: `0x${disabled.toString(16)}`,
+    fullSessionMask: `0x${normalizedFullSession.toString(16)}`,
+    finiteWindowMask: `0x${(finiteWindowMask >>> 0).toString(16)}`,
+    finiteWindowSeconds,
+    lapWindowMask: `0x${(lapWindowMask >>> 0).toString(16)}`,
+    previousV6Types: [...historyV6Types].sort((a, b) => a - b),
+    nextV6Types: [...nextV6Types].sort((a, b) => a - b),
+    seekRendererPending,
+  })
+  for (const type of nextV6Types)
+    if (!historyV6Types.has(type)) pendingV6HistoryBackfillMask |= historyRowMaskForV6Type(type)
+  historyV6Types.clear()
+  for (const type of nextV6Types) historyV6Types.add(type)
   requestedHistoryRowMask &= normalizedFullSession
   // Dropping a hidden tab's source buffer also drops the history represented
   // by that buffer. Keeping its old coverage marker made a later tab activation
@@ -1986,11 +2259,13 @@ export function setHistoryRowMask(
   }
   if (Object.keys(cleared).length) set(cleared)
   if (allLapsMode && speedRpmBlocksVal !== null) {
-    const missing = normalizedFullSession & ~requestedHistoryRowMask
+    const missing = (normalizedFullSession & ~requestedHistoryRowMask) |
+      (pendingV6HistoryBackfillMask & normalizedFullSession)
     if (missing !== 0) {
       waitingForAllLapsHistory = true
       requestedHistoryRowMask = (requestedHistoryRowMask | missing) >>> 0
       window.playerBridge.getAllLapsData(missing)
+      pendingV6HistoryBackfillMask &= ~missing
     }
   }
   requestVisibleWindowHistory()
@@ -2031,6 +2306,13 @@ export function startTelemetryBridge(): void {
     // with already-queued playback batches. Electron main holds all rows from
     // the new cursor until processPlaybackSeekFlush acknowledges installation.
     seekRendererPending = true
+    playbackDebug('seek-started-in-renderer', {
+      allHistory,
+      historyRowMask: `0x${historyRowMask.toString(16)}`,
+      fullSessionHistoryRowMask: `0x${fullSessionHistoryRowMask.toString(16)}`,
+      historyV6Types: [...historyV6Types].sort((a, b) => a - b),
+      pendingV6HistoryBackfillMask: `0x${pendingV6HistoryBackfillMask.toString(16)}`,
+    })
     if (!allHistory) return
     // Keep the currently published arrays intact while the worker extracts the
     // new prefix. Fresh post-seek rows accumulate separately and are merged by
@@ -2177,15 +2459,13 @@ export function startTelemetryBridge(): void {
             observeRendererRow(msg as GatewayMsg, 'telemetry-resume-json')
           }
           if (msg.type === 'status') {
-            latestStatus = msg
-            if (!isPlaybackFlag && Number.isFinite(msg.fuel_kg) && msg.fuel_kg >= 0 && msg.fuel_kg > fuelMaxReceived) {
-              fuelMaxReceived = msg.fuel_kg
+            latestStatus = appendPlaybackPatch(stsBufRef, msg, MAX_ROWS)
+            if (!isPlaybackFlag && Number.isFinite(latestStatus.fuel_kg) && latestStatus.fuel_kg >= 0 && latestStatus.fuel_kg > fuelMaxReceived) {
+              fuelMaxReceived = latestStatus.fuel_kg
             }
-            appendRow(stsBufRef, msg, MAX_ROWS)
             dirty |= DirtySlice.Status | DirtySlice.Derived
           } else if (msg.type === 'damage') {
-            latestDamage = msg
-            appendRow(dmgBufRef, msg, MAX_ROWS)
+            latestDamage = appendPlaybackPatch(dmgBufRef, msg, MAX_ROWS)
             dirty |= DirtySlice.Damage
           }
         }

@@ -68,7 +68,7 @@ function SpeedRpmChartContent(props: Props) {
       if (statusHistory[mid].session_time <= row.session_time) lo = mid + 1
       else hi = mid
     }
-    return [row.speed_kph, row.rpm, statusHistory[Math.max(0, lo - 1)]?.ers_pct ?? 0]
+    return [row.speed_kph, row.rpm, lo > 0 ? statusHistory[lo - 1].ers_pct : NaN]
   }, [statusHistory])
   const tooltipFormat = useCallback((x: number, current: number[], comparison?: number[]) => {
     const formatValues = (source: number[]) => {
@@ -91,13 +91,13 @@ function SpeedRpmChartContent(props: Props) {
     const speed = new Float64Array(data.length)
     const rpm = new Float64Array(data.length)
     const ers = new Float64Array(data.length)
-    let si = 0
+    let si = -1
     data.forEach((row, i) => {
       while (si + 1 < statusHistory.length && statusHistory[si + 1].session_time <= row.session_time) si++
       ts[i] = row.session_time
       speed[i] = row.speed_kph
       rpm[i] = row.rpm
-      ers[i] = statusHistory[si]?.ers_pct ?? 0
+      ers[i] = si >= 0 ? statusHistory[si].ers_pct : NaN
     })
     return [ts, speed, rpm, ers]
   }, [coordinates, data, statusHistory, view])

@@ -120,7 +120,8 @@ function nearestTelemetryIndexBySessionTime(rows: readonly TelemetryRow[], value
 }
 
 function statusAtTime(rows: readonly StatusRow[], sessionTime: number): StatusRow | undefined {
-  return rows[Math.max(0, lowerBoundTime(rows, sessionTime) - 1)]
+  const index = lowerBoundTime(rows, sessionTime) - 1
+  return index >= 0 ? rows[index] : undefined
 }
 
 function lowerBoundTime(rows: readonly { session_time: number }[], value: number): number {
@@ -194,13 +195,13 @@ function syncTelemetry(
   }
 
   const appendStart = Math.max(sourceStart, lowerBoundTime(telemetry, cursor.lastSessionTime))
-  let statusIndex = Math.max(0, lowerBoundTime(statuses, telemetry[appendStart]?.session_time ?? 0) - 1)
+  let statusIndex = lowerBoundTime(statuses, telemetry[appendStart]?.session_time ?? 0) - 1
   for (let i = appendStart; i < telemetry.length; i++) {
     const row = telemetry[i]
     while (statusIndex + 1 < statuses.length && statuses[statusIndex + 1].session_time <= row.session_time) statusIndex++
     values[0] = row.speed_kph / SPEED_MAX
     values[1] = row.rpm / RPM_MAX
-    values[2] = (statuses[statusIndex]?.ers_pct ?? 0) / ERS_MAX
+    values[2] = statusIndex >= 0 ? statuses[statusIndex].ers_pct / ERS_MAX : NaN
     const x = getX(row)
     if (!Number.isFinite(x)) break
     if (buffer.length && x === buffer.lastX) buffer.replaceLast(values)
@@ -660,7 +661,14 @@ export default function SpeedRpmTimeChart({ isDark, telemetry, statuses, compari
   syncRowsRef.current = () => {
     const buffer = bufferRef.current
     if (!buffer) return
-    const rebuild = (coordinates.distanceMode && syncRef.current.lapRevision !== coordinates.lapRevision) ||
+    // An authoritative playback seek replaces both source histories, including
+    // when the time axis remains in the same lap or moves forward.  Reusing the
+    // existing aligned buffer in that case leaves its already-rendered ERS
+    // values joined to the pre-seek status rows while only the new tail is
+    // appended.  lapRevision is advanced when the seek flush is installed, so
+    // treat it as a timeline replacement for the time chart as well as for the
+    // distance chart.
+    const rebuild = syncRef.current.lapRevision !== coordinates.lapRevision ||
       syncRef.current.historyRevision !== coordinates.historyRevision
     if (rebuild) {
       playbackDebug('speed-chart-lap-revision', {

@@ -41,6 +41,7 @@ export interface DataRequirements {
   // Families that require a time range rather than only their latest value.
   historyMask: number
   v6Types: number[]
+  v6HistoryTypes: number[]
 }
 
 type Requirement = Readonly<{ stream: number; history?: number; types?: readonly number[] }>
@@ -83,7 +84,10 @@ export const DATA_CONSUMERS = {
 function add(target: DataRequirements, requirement: Requirement): void {
   target.streamMask |= requirement.stream
   target.historyMask |= requirement.history ?? 0
-  if (requirement.types) target.v6Types.push(...requirement.types)
+  if (requirement.types) {
+    target.v6Types.push(...requirement.types)
+    if (requirement.history) target.v6HistoryTypes.push(...requirement.types)
+  }
 }
 
 function any(values: object): boolean {
@@ -102,7 +106,7 @@ export function dataRequirementsForUi(
   analyzeMask = 0,
   pageLayouts?: PageLayouts,
 ): DataRequirements {
-  const result: DataRequirements = { streamMask: 0, historyMask: 0, v6Types: [] }
+  const result: DataRequirements = { streamMask: 0, historyMask: 0, v6Types: [], v6HistoryTypes: [] }
   add(result, DATA_CONSUMERS.globalClock)
   add(result, DATA_CONSUMERS.globalBanners)
   if (!isPlayback) add(result, DATA_CONSUMERS.liveLeaderWatcher)
@@ -154,12 +158,14 @@ export function dataRequirementsForUi(
     result.streamMask |= analyzeMask
     result.historyMask |= analyzeMask
     result.v6Types.push(...v6TypesForRowMask(analyzeMask))
+    result.v6HistoryTypes.push(...v6TypesForRowMask(analyzeMask))
   }
 
   result.streamMask |= result.historyMask
   result.streamMask >>>= 0
   result.historyMask >>>= 0
   result.v6Types = [...new Set(result.v6Types)].sort((a, b) => a - b)
+  result.v6HistoryTypes = [...new Set(result.v6HistoryTypes)].sort((a, b) => a - b)
   return result
 }
 

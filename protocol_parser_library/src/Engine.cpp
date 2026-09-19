@@ -86,6 +86,16 @@ static std::vector<uint8_t> typesInMask(uint32_t mask) {
     return out;
 }
 
+static std::string byteList(const std::vector<uint8_t>& values) {
+    std::string out{"["};
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) out.push_back(',');
+        out += std::to_string(values[i]);
+    }
+    out.push_back(']');
+    return out;
+}
+
 static double scanJsonNumber(std::string_view json, std::string_view key,
                              double fallback = 0.0) {
     const size_t at = json.find(key);
@@ -114,19 +124,6 @@ static void setSessionTime(std::string& line, float t) {
         if (brace == std::string::npos) return;
         std::string ins = std::string(KEY) + num + ",";
         line.insert(brace + 1, ins);
-    }
-}
-
-// Emits a newline-terminated multi-row batch through the per-row Sink::onRow
-// contract.
-static void emitLines(Sink* sink, const std::string& batch) {
-    if (!sink) return;
-    size_t start = 0;
-    while (start < batch.size()) {
-        size_t nl = batch.find('\n', start);
-        if (nl == std::string::npos) nl = batch.size();
-        if (nl > start) sink->onRow(batch.substr(start, nl - start));
-        start = nl + 1;
     }
 }
 
@@ -224,6 +221,25 @@ void Engine::emitRow(const std::string& json) {
     }
     pairServer_.publishRow(json);
     if (sink_) sink_->onRow(json);
+}
+
+void Engine::emitRows(const std::vector<std::string>& rows) {
+    if (rows.empty()) return;
+    std::vector<std::string> resolvedRows;
+    resolvedRows.reserve(rows.size());
+    const uint16_t format = emittedFormat_.load(std::memory_order_acquire);
+    const auto overrides = std::atomic_load_explicit(
+        &teamColorOverrides_, std::memory_order_acquire);
+    for (const auto& row : rows) {
+        if (format != 0 && rowTypeOf(row) == 8) {
+            resolvedRows.push_back(applyTeamColorsToParticipantsJson(
+                row, format, overrides ? *overrides : TeamColorOverrides{}));
+        } else {
+            resolvedRows.push_back(row);
+        }
+        pairServer_.publishRow(resolvedRows.back());
+    }
+    if (sink_) sink_->onRows(resolvedRows);
 }
 
 void Engine::emitBinary(const uint8_t* data, size_t length) {
@@ -1154,7 +1170,8 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
                                  uint32_t historyRowMask,
                                  float windowSeconds,
                                  uint64_t requestId,
-                                 const std::vector<uint8_t>& v6Types) {
+                                 const std::vector<uint8_t>& v6Types,
+                                 const std::vector<uint8_t>& v6HistoryTypes) {
     std::vector<std::string> restore;
     float liveBackfillLapStart = 0.0f;
     float liveBackfillStart = 0.0f;
@@ -1168,6 +1185,8 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         hostConsumerRowMask_ = streamRowMask;
         hostConsumerHistoryMask_ = historyRowMask & streamRowMask;
         hostConsumerWindowSeconds_ = std::max(-1.0f, windowSeconds);
+        hostConsumerV6Types_ = v6Types;
+        hostConsumerV6HistoryTypes_ = v6HistoryTypes;
         const uint32_t aggregateStreamMask =
             hostConsumerRowMask_ | pairConsumerRowMask_;
         const uint32_t newlyEnabled = aggregateStreamMask & ~consumerRowMask_;
@@ -1183,7 +1202,7 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
         const uint32_t playbackMask = consumerRowMask_ |
             ((consumerRowMask_ & kStrategyRowBit) ? kStrategyDependencyMask : 0u);
         reader_.setPlaybackRowMask(playbackMask, currentTime_);
-        reader_.setPlaybackV6Types(v6Types, currentTime_);
+        reader_.setPlaybackV6Types(v6Types, v6HistoryTypes, currentTime_);
 
         // Strategy dependencies are retained while hidden. Materialize one fresh
         // derived row at subscription time so opening the tab never waits for the
@@ -1233,8 +1252,21 @@ void Engine::setDataRequirements(uint32_t streamRowMask,
             liveBackfillLapNum = liveLapNum_;
             liveBackfillMask = backfillMask;
         }
+        appliedRequirementsRequestId_ = std::max(appliedRequirementsRequestId_, requestId);
+        if (liveDiagnosticsEnabled_) {
+            const std::string streamTypes = byteList(hostConsumerV6Types_);
+            const std::string historyTypes = byteList(hostConsumerV6HistoryTypes_);
+            std::fprintf(stderr,
+                "[playback-debug] requirements-applied request=%llu latest=%llu streamMask=0x%08x historyMask=0x%08x window=%.3f v6Stream=%s v6History=%s\n",
+                static_cast<unsigned long long>(requestId),
+                static_cast<unsigned long long>(latestRequirementsRequestId_.load(std::memory_order_acquire)),
+                hostConsumerRowMask_, hostConsumerHistoryMask_, hostConsumerWindowSeconds_,
+                streamTypes.c_str(), historyTypes.c_str());
+            std::fflush(stderr);
+        }
     }
-    for (const auto& row : restore) emitRow(row);
+    requirementsCv_.notify_all();
+    emitRows(restore);
     if (sink_ && liveBackfillMask != 0) {
         Sink* const sink = sink_;
         const uint64_t expectedRequestId = requestId;
@@ -1300,15 +1332,19 @@ void Engine::setPairDataRequirements(uint32_t streamRowMask) {
     uint32_t hostStreamMask = 0;
     uint32_t hostHistoryMask = 0;
     float hostWindowSeconds = 0.0f;
+    std::vector<uint8_t> hostV6Types;
+    std::vector<uint8_t> hostV6HistoryTypes;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         pairConsumerRowMask_ = streamRowMask;
         hostStreamMask = hostConsumerRowMask_;
         hostHistoryMask = hostConsumerHistoryMask_;
         hostWindowSeconds = hostConsumerWindowSeconds_;
+        hostV6Types = hostConsumerV6Types_;
+        hostV6HistoryTypes = hostConsumerV6HistoryTypes_;
     }
     setDataRequirements(hostStreamMask, hostHistoryMask,
-                        hostWindowSeconds, 0);
+                        hostWindowSeconds, 0, hostV6Types, hostV6HistoryTypes);
 }
 
 // ── Playback ─────────────────────────────────────────────────────────────────
@@ -1332,6 +1368,7 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         // the reader snapshots/decompresses it.
         writer_.flushToDisk();
         reader_.setBinaryPlayback(config_.binaryPlayback);
+        reader_.setSparseV6Playback(config_.sparseV6Playback);
         ok = reader_.load(path, header);
         if (!ok && errorOut) *errorOut = reader_.lastError();
         if (ok) {
@@ -1398,7 +1435,10 @@ bool Engine::playerLoad(const std::string& path, std::string* errorOut) {
         if (!statusMsg.empty()) emitRow(statusMsg);
         emitRow(lapBlocksMsg);
         for (const auto& row : initState) emitRow(row);
-        for (const auto& [tid, line] : initPanels) emitRow(line);
+        std::vector<std::string> panelRows;
+        panelRows.reserve(initPanels.size());
+        for (const auto& [tid, line] : initPanels) panelRows.push_back(line);
+        emitRows(panelRows);
         if (queueStrategyWork) enqueueLiveStrategyWork(std::move(strategyWork));
         playRun_.store(true);
         playThread_ = std::thread(&Engine::playbackLoop, this);
@@ -1518,7 +1558,10 @@ void Engine::playerSeek(float pct, bool allHistory, uint64_t requestId,
                                       binFlush.binaryEnd, std::move(binFlush.coldJson),
                                       lapStart, lapNum, allHistory, requestId, true,
                                       rowTypeMask, historyStart);
-        for (const auto& [tid, line] : panels) emitRow(line);
+        std::vector<std::string> panelRows;
+        panelRows.reserve(panels.size());
+        for (const auto& [tid, line] : panels) panelRows.push_back(line);
+        emitRows(panelRows);
     } else {
         PlaybackSeekFlushRow flush;
         flush.currentLapStart = lapStart;
@@ -1556,7 +1599,10 @@ void Engine::playerSetDriver(int driverIndex, bool useRecordedRows) {
             if (type < dupCache_.size()) dupCache_[type] = row;
     }
     emitRow(lapBlocks);
-    for (const auto& panel : panels) emitRow(panel.second);
+    std::vector<std::string> panelRows;
+    panelRows.reserve(panels.size());
+    for (const auto& panel : panels) panelRows.push_back(panel.second);
+    emitRows(panelRows);
 }
 
 void Engine::liveGetFastestLap(uint64_t requestId) {
@@ -1595,9 +1641,18 @@ void Engine::playerGetLapData(int lapNum, uint32_t rowTypeMask) {
     if (!msg.empty()) emitRow(msg);
 }
 
-bool Engine::playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const {
+std::string Engine::playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
+                                             int driverIndex) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return inPlayback_.load() && reader_.getAnalysisLapProgress(lapNum, out);
+    return inPlayback_.load()
+        ? reader_.getLapDataMessage(lapNum, rowTypeMask, driverIndex)
+        : std::string{};
+}
+
+bool Engine::playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
+                                          int driverIndex) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return inPlayback_.load() && reader_.getAnalysisLapProgress(lapNum, out, driverIndex);
 }
 
 void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
@@ -1606,13 +1661,35 @@ void Engine::playerGetAllLapsData(uint64_t requestId, uint32_t rowTypeMask) {
     TnrdReader::SeekFlush flush;
     float historyStart = 0.0f;
     {
-        std::lock_guard<std::mutex> lk(mutex_);
+        std::unique_lock<std::mutex> lk(mutex_);
+        requirementsCv_.wait(lk, [this] {
+            return !inPlayback_.load() ||
+                appliedRequirementsRequestId_ >= latestRequirementsRequestId_.load(std::memory_order_acquire);
+        });
         if (!inPlayback_.load() || !config_.binaryPlayback) return;
         const float target = currentTime_;
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
+        if (liveDiagnosticsEnabled_) {
+            const std::string historyTypes = byteList(hostConsumerV6HistoryTypes_);
+            std::fprintf(stderr,
+                "[playback-debug] history-read-start mode=all request=%llu requirements=%llu target=%.3f lapStart=%.3f rowMask=0x%08x v6History=%s\n",
+                static_cast<unsigned long long>(requestId),
+                static_cast<unsigned long long>(appliedRequirementsRequestId_),
+                target, lapStart, rowTypeMask, historyTypes.c_str());
+            std::fflush(stderr);
+        }
         flush = reader_.seekFlush(target, lapStart, true, rowTypeMask);
         historyStart = reader_.startTime();
+        if (liveDiagnosticsEnabled_) {
+            const size_t binaryBytes = flush.binaryStore && flush.binaryEnd > flush.binaryBegin
+                ? flush.binaryEnd - flush.binaryBegin : 0;
+            std::fprintf(stderr,
+                "[playback-debug] history-read-finish mode=all request=%llu binary=%zu json=%zu historyStart=%.3f\n",
+                static_cast<unsigned long long>(requestId), binaryBytes,
+                flush.coldJson.size(), historyStart);
+            std::fflush(stderr);
+        }
     }
     if (sink_) sink_->onSeekFlush(std::move(flush.binaryStore), flush.binaryBegin,
                                   flush.binaryEnd, std::move(flush.coldJson),
@@ -1627,14 +1704,38 @@ void Engine::playerGetWindowData(float windowSeconds, uint64_t requestId,
     TnrdReader::SeekFlush flush;
     float historyStart = 0.0f;
     {
-        std::lock_guard<std::mutex> lk(mutex_);
+        std::unique_lock<std::mutex> lk(mutex_);
+        requirementsCv_.wait(lk, [this] {
+            return !inPlayback_.load() ||
+                appliedRequirementsRequestId_ >= latestRequirementsRequestId_.load(std::memory_order_acquire);
+        });
         if (!inPlayback_.load() || !config_.binaryPlayback || windowSeconds < 0.0f) return;
         const float target = currentTime_;
         lapStart = target;
         reader_.currentLapAt(target, lapStart, lapNum);
+        if (liveDiagnosticsEnabled_) {
+            const std::string historyTypes = byteList(hostConsumerV6HistoryTypes_);
+            std::fprintf(stderr,
+                "[playback-debug] history-read-start mode=window request=%llu requirements=%llu target=%.3f lapStart=%.3f window=%.3f rowMask=0x%08x v6History=%s\n",
+                static_cast<unsigned long long>(requestId),
+                static_cast<unsigned long long>(appliedRequirementsRequestId_),
+                target, lapStart, windowSeconds, rowTypeMask, historyTypes.c_str());
+            std::fflush(stderr);
+        }
         flush = reader_.seekFlush(target, lapStart, false, rowTypeMask, windowSeconds,
                                   false);
-        historyStart = std::max(reader_.startTime(), target - windowSeconds);
+        historyStart = windowSeconds > 0.0f
+            ? std::max(reader_.startTime(), target - windowSeconds)
+            : lapStart;
+        if (liveDiagnosticsEnabled_) {
+            const size_t binaryBytes = flush.binaryStore && flush.binaryEnd > flush.binaryBegin
+                ? flush.binaryEnd - flush.binaryBegin : 0;
+            std::fprintf(stderr,
+                "[playback-debug] history-read-finish mode=window request=%llu binary=%zu json=%zu historyStart=%.3f\n",
+                static_cast<unsigned long long>(requestId), binaryBytes,
+                flush.coldJson.size(), historyStart);
+            std::fflush(stderr);
+        }
     }
     // Finite-window backfill is additive at the renderer just like an AL family
     // request; it does not move the playhead or replace newer buffered rows.
@@ -1683,6 +1784,7 @@ void Engine::playerClose() {
                                  config_.strategyMinimumStops, false, {}});
         lastStrategyJson_.clear();
     }
+    requirementsCv_.notify_all();
     emitRow(writeJson(TypeOnlyRow{"playback_close"}));
     if (!liveStatus.empty()) emitRow(liveStatus);
     std::fprintf(stderr, "[close-trace] Engine::playerClose complete\n");
@@ -1826,9 +1928,11 @@ void Engine::playbackLoop() {
         // from here on. Drop the old batch and let its seek flush replace it.
         if (latestSeekRequestId_.load(std::memory_order_acquire) != tickSeekRequestId)
             continue;
+        std::vector<std::string> outputRows;
+        outputRows.reserve(batch.size());
         for (const auto& row : batch) {
             const uint8_t type = rowTypeOf(row);
-            if (type == 0 || (emitMask & (1u << type))) emitRow(row);
+            if (type == 0 || (emitMask & (1u << type))) outputRows.push_back(row);
         }
         if (!jsonBatch.empty()) {
             size_t start = 0;
@@ -1838,11 +1942,13 @@ void Engine::playbackLoop() {
                 if (nl > start) {
                     std::string row = jsonBatch.substr(start, nl - start);
                     const uint8_t type = rowTypeOf(row);
-                    if (type == 0 || (emitMask & (1u << type))) emitRow(row);
+                    if (type == 0 || (emitMask & (1u << type)))
+                        outputRows.push_back(std::move(row));
                 }
                 start = nl + 1;
             }
         }
+        emitRows(outputRows);
         if (!strategyMsg.empty()) emitRow(strategyMsg);
         if (!binBatch.empty()) emitBinary(binBatch.data(), binBatch.size());
         emitPlaybackState();

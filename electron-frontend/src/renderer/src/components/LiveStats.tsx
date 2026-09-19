@@ -145,7 +145,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   if (!isConnected || !latest) {
     return (
       <div className="flex divide-x divide-[var(--border)]">
-        {shown.map(d => <Card key={d.vis} label={d.label} value="—" compact={compact} />)}
+        {shown.map(d => <Card key={d.vis} label={d.label} value="-" compact={compact} />)}
       </div>
     )
   }
@@ -154,7 +154,7 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
   return (
     <div className="flex divide-x divide-[var(--border)]">
       {shown.map(d => {
-        const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '—' }
+        const v = OVERVIEW_RESOLVERS[d.key]?.(ctx) ?? { value: '-' }
         let sub = v.sub
         const isSpacious = compact === 'spacious'
         const isCompact = compact === true || compact === 'compact'
@@ -162,17 +162,19 @@ const LiveStats = memo(function LiveStats({ latest, status, lap, damage, isConne
           if (d.key === 'ers') sub = sub.replace('Overtake', 'OT')
           else if (d.key === 'fuel') sub = sub.replace(' vs fin', '')
         } else if (isSpacious) {
-          if (d.key === 'ers' && status) {
+          if (d.key === 'ers' && status && Number.isFinite(status.ers_mode) && Number.isFinite(status.ers_j)) {
             sub = damage?.ers_fault === 1 ? 'FAULT' : `${tn('ers.mode', status.ers_mode)} · ${(status.ers_j / 1_000_000).toFixed(2)} MJ`
-          } else if (d.key === 'fuel' && status) {
+          } else if (d.key === 'fuel' && status && Number.isFinite(status.fuel_laps)) {
             sub = `${status.fuel_laps >= 0 ? '+' : ''}${status.fuel_laps.toFixed(1)} laps vs finish`
-          } else if (d.key === 'tyre' && status) {
+          } else if (d.key === 'tyre' && status && Number.isFinite(status.tyre_age_laps)) {
             const mix = ['Lean', 'Std', 'Rich', 'Max'][status.fuel_mix] ?? ''
             sub = `${status.tyre_age_laps}L age${mix ? ` · ${mix} mix` : ''}`
           } else if (d.key === 'pos' && lap) {
             sub = `Lap ${lap.lap_num}`
-          } else if ((d.key === 'drs' || d.key === 'slm') && latest) {
+          } else if (d.key === 'drs' && Number.isFinite(latest.drs)) {
             sub = latest.drs ? 'Active (Open)' : (status?.drs_allowed ? 'Available' : 'Closed')
+          } else if (d.key === 'slm' && Number.isFinite(latest.slm)) {
+            sub = latest.slm ? 'Active (Open)' : 'Closed'
           }
         }
         return (

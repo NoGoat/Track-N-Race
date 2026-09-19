@@ -195,7 +195,8 @@ public:
     void requestDataRequirements(uint64_t requestId);
     void setDataRequirements(uint32_t streamRowMask, uint32_t historyRowMask,
                              float windowSeconds, uint64_t requestId = 0,
-                             const std::vector<uint8_t>& v6Types = {});
+                             const std::vector<uint8_t>& v6Types = {},
+                             const std::vector<uint8_t>& v6HistoryTypes = {});
 
     // ── Paired displays ──────────────────────────────────────────────────
     // The transport, authentication, discovery, subscriptions and latest-row
@@ -222,14 +223,19 @@ public:
     void playerSetSpeed(float mult);
     void playerSetDriver(int driverIndex, bool useRecordedRows = false);
     void playerGetLapData(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu);
+    std::string playerGetAnalysisLapData(int lapNum, uint32_t rowTypeMask,
+                                         int driverIndex) const;
     void liveGetFastestLap(uint64_t requestId);
-    bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const;
+    bool playerGetAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
+                                      int driverIndex = -1) const;
     void playerGetAllLapsData(uint64_t requestId = 0, uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerGetWindowData(float windowSeconds, uint64_t requestId = 0,
                              uint32_t rowTypeMask = 0xFFFFFFFFu);
     void playerClose();                    // back to live mode
 
 private:
+    void emitRows(const std::vector<std::string>& rows);
+
     Config        config_;
     Sink*         sink_;
     Parser        parser_;
@@ -255,6 +261,8 @@ private:
     std::atomic<uint64_t> latestSeekRequestId_{0};
     std::atomic<uint64_t> latestRequirementsRequestId_{0};
     uint64_t          appliedSeekRequestId_ = 0; // guarded by mutex_
+    uint64_t          appliedRequirementsRequestId_ = 0; // guarded by mutex_
+    std::condition_variable requirementsCv_;
     std::thread       playThread_;
     std::atomic<bool> playRun_{false};
 
@@ -286,6 +294,8 @@ private:
     uint32_t          hostConsumerRowMask_ = 0xFFFFFFFFu;
     uint32_t          hostConsumerHistoryMask_ = 0;
     float             hostConsumerWindowSeconds_ = 0.0f;
+    std::vector<uint8_t> hostConsumerV6Types_;
+    std::vector<uint8_t> hostConsumerV6HistoryTypes_;
     uint32_t          pairConsumerRowMask_ = 0;
 
     enum class StrategyWorkKind { Update, Rollback, Reset, Configure, PlaybackRebuild };

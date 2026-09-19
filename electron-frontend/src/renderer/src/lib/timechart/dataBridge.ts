@@ -91,7 +91,8 @@ export class TimeChartDataBridge<T> {
 
   private appendRow(row: T) {
     for (let channel = 0; channel < this.getYs.length; channel++) {
-      this.yScratch[channel] = this.getYs[channel](row)
+      const value = this.getYs[channel](row)
+      this.yScratch[channel] = Number.isFinite(value) ? value : NaN
     }
     this.data.append(this.getX(row), this.yScratch)
   }

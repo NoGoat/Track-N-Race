@@ -122,6 +122,22 @@ function observeJsonBatch(batch: string): { rows: number; types: Record<string, 
   return { rows, types }
 }
 
+function summarizeV6StoredTypes(batch: string | null): Record<string, number> {
+  const types: Record<string, number> = {}
+  if (!batch) return types
+  const marker = '"_v6_type":'
+  let offset = 0
+  while ((offset = batch.indexOf(marker, offset)) !== -1) {
+    offset += marker.length
+    let end = offset
+    while (end < batch.length && batch.charCodeAt(end) >= 48 && batch.charCodeAt(end) <= 57) end++
+    const type = batch.slice(offset, end)
+    if (type) increment(types, type)
+    offset = Math.max(end, offset + 1)
+  }
+  return types
+}
+
 function windowDiagnostics(): Array<Record<string, unknown>> {
   return BrowserWindow.getAllWindows().map(win => ({
     id: win.id,
@@ -289,6 +305,7 @@ let engine: any = null
 let nextDataRequirementsRequestId = 0
 let rendererStreamMask = 0xFFFFFFFF
 let rendererV6Types: number[] = []
+let rendererV6HistoryTypes: number[] = []
 let rendererHistoryMask = 0
 let rendererHistoryWindow = 0
 let unsubLogging: Array<() => void> = []
@@ -707,6 +724,7 @@ export function startBridge(): string | null {
       // Playback fast path: hot playback rows arrive on the binary channel
       // unchanged, with seeks delivered via the dedicated flush callback.
       binaryPlayback: true,
+      sparseV6Playback: true,
       ...pairEngineConfig(),
     }
 
@@ -739,12 +757,15 @@ export function startBridge(): string | null {
         batch.includes('"type":"live_fastest_lap_data"') ||
         batch.includes('"type":"playback_loaded"') ||
         batch.includes('"type":"playback_close"')
+      const forwardDriverLapCatalogDuringSeek =
+        batch.includes('"type":"playback_lap_blocks"')
       if (seekForwardPhase === 'waiting-flush') {
         forwardIndexedLapDataDuringSeek(batch)
       }
       if (seekForwardPhase === 'waiting-renderer' && !forwardWhileHidden) {
         bufferSeekJson(batch)
-      } else if (seekForwardPhase !== 'waiting-flush' && (rendererVisible || forwardWhileHidden)) {
+      } else if ((seekForwardPhase !== 'waiting-flush' || forwardDriverLapCatalogDuringSeek) &&
+                 (rendererVisible || forwardWhileHidden)) {
         let targets = 0
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) {
@@ -791,6 +812,23 @@ export function startBridge(): string | null {
     }, (binBatch: Uint8Array) => {
       forwardBinary(binBatch)
     }, (binary: Buffer | null, coldJson: string | null, currentLapStart: number, lapNum: number, allHistory: boolean, requestId: number, authoritativeSeek: boolean, rowTypeMask: number, historyStart: number, nativeError?: string) => {
+      if (additionalLoggingEnabled) {
+        console.info('[playback-debug] native-history-flush-callback', {
+          requestId,
+          authoritativeSeek,
+          allHistory,
+          rowTypeMask: `0x${(rowTypeMask >>> 0).toString(16)}`,
+          historyStart,
+          currentLapStart,
+          lapNum,
+          binaryBytes: binary?.byteLength ?? 0,
+          coldJsonBytes: coldJson ? Buffer.byteLength(coldJson) : 0,
+          v6Types: summarizeV6StoredTypes(coldJson),
+          latestSeekRequestId,
+          seekForwardRequestId,
+          seekForwardPhase,
+        })
+      }
       if (nativeError) {
         console.error('[native-callback]', nativeError)
         broadcast({ type: 'playback_seek_flush_failed', requestId })
@@ -950,7 +988,16 @@ export function playerSeek(pct: number, allHistory = false, rowTypeMask = 0xFFFF
   seekBufferedJson = []
   seekBufferedBytes = 0
   if (additionalLoggingEnabled) {
-    console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({ progress: pct, allHistory, windowSeconds, requestId, engineReady: Boolean(engine) })}`)
+    console.info(`[playback-debug] ${new Date().toISOString()} main-player-seek ${JSON.stringify({
+      progress: pct,
+      allHistory,
+      windowSeconds,
+      requestId,
+      rowTypeMask: `0x${(rowTypeMask >>> 0).toString(16)}`,
+      rendererV6HistoryTypes,
+      latestDataRequirementsRequestId: nextDataRequirementsRequestId,
+      engineReady: Boolean(engine),
+    })}`)
   }
   engine.playerSeek(pct, allHistory, requestId, rowTypeMask >>> 0, Math.max(0, windowSeconds))
 }
@@ -966,18 +1013,37 @@ export function playerGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): void
 }
 export function playerGetAllLapsData(rowTypeMask = 0xFFFFFFFF): void {
   const requestId = ++nextPlaybackRequestId
+  if (additionalLoggingEnabled) {
+    console.info('[playback-debug] main-history-request', {
+      mode: 'all-laps', requestId,
+      rowTypeMask: `0x${(rowTypeMask >>> 0).toString(16)}`,
+      latestDataRequirementsRequestId: nextDataRequirementsRequestId,
+      rendererV6HistoryTypes,
+    })
+  }
   engine?.playerGetAllLapsData(requestId, rowTypeMask >>> 0)
 }
 export function playerGetWindowData(windowSeconds: number, rowTypeMask = 0xFFFFFFFF): void {
   const requestId = ++nextPlaybackRequestId
+  if (additionalLoggingEnabled) {
+    console.info('[playback-debug] main-history-request', {
+      mode: windowSeconds > 0 ? 'finite-window' : 'current-lap', requestId,
+      windowSeconds: Math.max(0, windowSeconds),
+      rowTypeMask: `0x${(rowTypeMask >>> 0).toString(16)}`,
+      latestDataRequirementsRequestId: nextDataRequirementsRequestId,
+      rendererV6HistoryTypes,
+    })
+  }
   engine?.playerGetWindowData(Math.max(0, windowSeconds), requestId, rowTypeMask >>> 0)
 }
 export function playerSetDataRequirements(streamMask = 0xFFFFFFFF, historyMask = 0,
-                                          windowSeconds = 0, v6Types: number[] = []): void {
+                                          windowSeconds = 0, v6Types: number[] = [],
+                                          v6HistoryTypes: number[] = []): void {
   rendererStreamMask = streamMask >>> 0
   rendererHistoryMask = historyMask >>> 0
   rendererHistoryWindow = Math.max(-1, windowSeconds)
   rendererV6Types = [...new Set(v6Types.filter(value => Number.isInteger(value) && value > 0 && value <= 24))]
+  rendererV6HistoryTypes = [...new Set(v6HistoryTypes.filter(value => Number.isInteger(value) && value > 0 && value <= 24))]
   applyAggregateDataRequirements()
 }
 
@@ -991,11 +1057,13 @@ function applyAggregateDataRequirements(): void {
       historyMask: rendererHistoryMask,
       historyMaskHex: `0x${rendererHistoryMask.toString(16).padStart(8, '0')}`,
       windowSeconds: rendererHistoryWindow,
+      v6Types: rendererV6Types,
+      v6HistoryTypes: rendererV6HistoryTypes,
       engineReady: Boolean(engine),
     })
   }
   engine?.setDataRequirements(rendererStreamMask,
-    rendererHistoryMask, rendererHistoryWindow, requestId, rendererV6Types)
+    rendererHistoryMask, rendererHistoryWindow, requestId, rendererV6Types, rendererV6HistoryTypes)
 }
 
 export function liveGetFastestLap(requestId: number): void {
@@ -1021,9 +1089,15 @@ export async function analysisLoadFile(filePath: string): Promise<{ ok: boolean;
   }
 }
 
-export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): unknown | null {
+export function analysisGetLapData(
+  lapNum: number,
+  rowTypeMask = 0xFFFFFFFF,
+  source: 'file1' | 'file2' = 'file2',
+  driverIndex = -1,
+): unknown | null {
   if (!engine) return null
-  const json = engine.analysisGetLapData(lapNum, rowTypeMask >>> 0)
+  const json = engine.analysisGetLapData(
+    lapNum, rowTypeMask >>> 0, source === 'file2', driverIndex)
   if (!json) return null
   try {
     return JSON.parse(json)
@@ -1035,16 +1109,20 @@ export function analysisGetLapData(lapNum: number, rowTypeMask = 0xFFFFFFFF): un
 export async function analysisCompareLaps(
   currentLapNum: number,
   currentSource: 'file1' | 'file2',
+  currentDriverIndex: number,
   comparisonLapNum: number,
   comparisonSource: 'file1' | 'file2',
+  comparisonDriverIndex: number,
   sectorDelta: boolean,
 ): Promise<unknown | null> {
   if (!engine) return null
   const json = await engine.analysisCompareLaps(
     currentLapNum,
     currentSource === 'file2',
+    currentDriverIndex,
     comparisonLapNum,
     comparisonSource === 'file2',
+    comparisonDriverIndex,
     sectorDelta,
   )
   if (!json) return null

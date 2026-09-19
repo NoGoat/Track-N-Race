@@ -55,6 +55,7 @@ public:
     // its existing lazy-load behavior; V4 also avoids a full-session hot-row
     // mirror and retains only its load-time strategy checkpoints.
     void setBinaryPlayback(bool on) { binaryPlayback_ = on; }
+    void setSparseV6Playback(bool on) { sparseV6Playback_ = on; }
 
     // Include the small per-lap status summaries used for tyre labels without
     // building the binary playback stores.
@@ -78,7 +79,9 @@ public:
     // Indexed V4/V5 reload only the current lap's selected chunks at the supplied cursor;
     // legacy formats retain their index and filter the packed output.
     void setPlaybackRowMask(uint32_t mask, float cursorTime);
-    void setPlaybackV6Types(const std::vector<uint8_t>& types, float cursorTime);
+    void setPlaybackV6Types(const std::vector<uint8_t>& streamTypes,
+                            const std::vector<uint8_t>& historyTypes,
+                            float cursorTime);
     // V6 only: project driver-scoped rows for exactly the selected driver.
     // The recorded driver keeps the original private/player rows, but the V6
     // all-car payload attached to those rows is stripped before emission.
@@ -155,8 +158,10 @@ public:
 
     // ── Load-time payload (built once on load, returned as serialised JSON) ──
     std::string lapBlocksMessage() const;             // full "playback_lap_blocks" row
-    std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu) const;
-    bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const;
+    std::string getLapDataMessage(int lapNum, uint32_t rowTypeMask = 0xFFFFFFFFu,
+                                  int driverIndex = -1) const;
+    bool getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
+                                int driverIndex = -1) const;
 
     // ── XLSX export (raw data dump, implemented in XlsxExport.cpp) ──────────
     // Walks the whole index in file order and writes one XLSX sheet per row
@@ -226,6 +231,8 @@ private:
     int         playbackDriverIndex_ = -1;
     int         recordedDriverIndex_ = -1;
     bool        playbackDriverUsesRecordedRows_ = false;
+    std::vector<uint8_t> playbackV6Types_;
+    std::vector<uint8_t> playbackV6HistoryTypes_;
     std::vector<size_t> v6SharedOrder_;
     size_t      v6SharedPos_ = 0;
     std::array<std::string, 16> v6ProjectionState_{};
@@ -235,6 +242,7 @@ private:
     size_t      playPos_     = 0;
     float       damageCadenceCursor_ = 0.0f;
     bool        binaryPlayback_ = false;
+    bool        sparseV6Playback_ = false;
     bool        lapStatusSummaries_ = false;
     TnrdFormat  loadedFormat_ = TnrdFormat::Unknown;
     std::string lastError_;
@@ -302,7 +310,9 @@ private:
                               std::vector<uint8_t>& out);
     uint32_t expandedPlaybackMask(uint32_t outputMask) const;
     void projectV6Row(uint8_t sourceType, float sessionTime, std::string_view json,
-                      std::vector<std::pair<uint8_t, std::string>>& out) const;
+                      std::vector<std::pair<uint8_t, std::string>>& out,
+                      int selectedDriverOverride = -1,
+                      uint32_t outputMaskOverride = 0) const;
 };
 
 } // namespace tnrp

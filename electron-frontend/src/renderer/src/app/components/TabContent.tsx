@@ -16,7 +16,7 @@ import PowerStatsBar from '../../components/PowerStatsBar'
 import TyresPanel from '../../components/TyresPanel'
 import SessionPanel from '../../components/SessionPanel'
 import StrategyPanel from '../../components/StrategyPanel'
-import AnalyzeScreen, { type AnalyzeFixedLapMode } from '../../components/AnalyzeScreen'
+import AnalyzeScreen, { type AnalysisDriverSelection, type AnalyzeFixedLapMode, type SecondaryFileData } from '../../components/AnalyzeScreen'
 import type { GraphViewState, CompactState, ChartYAxisState } from '../../lib/graphSections'
 import type { CoreLayout, InputLayout, MiscLayout, PageLayouts, PowerLayout, SessionLayout, StandingsLayout, Tab, TyresLayout } from '../appConfig'
 import { useChartCoordinates } from '../../lib/chartCoordinates'
@@ -62,6 +62,10 @@ interface TabContentProps {
   playbackFilename: string | null
   analyzeCompareLapNum: number | null
   onAnalyzeCompareLapChange: (lapNum: number | null) => void
+  analyzeCompareDriver: AnalysisDriverSelection | null
+  onAnalyzeCompareDriverChange: (driver: AnalysisDriverSelection | null) => void
+  analyzeSecondaryFile: SecondaryFileData | null
+  onAnalyzeSecondaryFileChange: (file: SecondaryFileData | null) => void
   analyzeFixedLapMode: AnalyzeFixedLapMode
   onAnalyzeFixedLapModeChange: (mode: AnalyzeFixedLapMode) => void
   onAnalyzeDataMaskChange: (mask: number) => void
@@ -445,6 +449,10 @@ const TabContent = memo(function TabContent(props: TabContentProps) {
       currentLapNum={props.currentPlaybackLapNum}
       compareLapNum={props.analyzeCompareLapNum}
       onCompareLapChange={props.onAnalyzeCompareLapChange}
+      compareDriver={props.analyzeCompareDriver}
+      onCompareDriverChange={props.onAnalyzeCompareDriverChange}
+      secondaryFile={props.analyzeSecondaryFile}
+      onSecondaryFileChange={props.onAnalyzeSecondaryFileChange}
       fixedLapMode={props.analyzeFixedLapMode}
       onFixedLapModeChange={props.onAnalyzeFixedLapModeChange}
       mapDimmed={props.mapDimmed}

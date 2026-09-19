@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <limits>
 #include <iterator>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
@@ -99,6 +100,8 @@ struct V6ProjectedRecord {
     std::string json;
 };
 
+// Compatibility-only assembler for hosts that have not opted into Electron's
+// sparse V6 patch contract. The V6 fast path bypasses this class completely.
 class V6ProjectionAssembler {
 public:
     void seed(uint8_t type, std::string_view json) {
@@ -172,7 +175,6 @@ public:
         glz::generic patch;
         if (glz::read_json(patch, json) || !patch.is_object()) return;
         begin(type, sessionTime);
-
         const bool unavailable = json.find("\"available\":false") != std::string::npos;
         if (!ready_[type] || unavailable) {
             states_[type] = std::move(patch);
@@ -183,7 +185,6 @@ public:
             for (auto& [key, value] : patch.get_object())
                 target.insert_or_assign(key, std::move(value));
         }
-
     }
 
     std::vector<V6ProjectedRecord> take() {
@@ -797,8 +798,10 @@ bool TnrdReader::loadWithFormat(const std::string& path, HeaderRow& outHeader,
                     playbackDriverUsesRecordedRows_ = true;
                     v6->setPlaybackDriver(*player);
                 }
-                v6SharedOrder_.resize(v6->sharedRecords().size());
-                for (size_t i = 0; i < v6SharedOrder_.size(); ++i) v6SharedOrder_[i] = i;
+                v6SharedOrder_.clear();
+                for (size_t i = 0; i < v6->sharedRecords().size(); ++i)
+                    if (v6->sharedRecords()[i].phase == detail::V6Phase::Race)
+                        v6SharedOrder_.push_back(i);
                 std::stable_sort(v6SharedOrder_.begin(), v6SharedOrder_.end(),
                     [&](size_t left, size_t right) {
                         const auto& a = v6->sharedRecords()[left];
@@ -961,6 +964,8 @@ void TnrdReader::close() {
     playbackDriverIndex_ = -1;
     recordedDriverIndex_ = -1;
     playbackDriverUsesRecordedRows_ = false;
+    playbackV6Types_.clear();
+    playbackV6HistoryTypes_.clear();
     v6SharedOrder_.clear();
     v6SharedPos_ = 0;
     v6ProjectionState_ = {};
@@ -1187,6 +1192,28 @@ bool TnrdReader::rebuildV6LapCatalog() {
             fastestLapNum_ = static_cast<int>(lap.lapNumber);
         }
     }
+    if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0) {
+        const auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        const auto* driver = v6 ? v6->driverHeader(static_cast<uint8_t>(playbackDriverIndex_)) : nullptr;
+        if (driver) {
+            int stintStartLap = 1;
+            for (const auto& stint : driver->tyreStints) {
+                const int stintEndLap = stint.endLap == 255
+                    ? std::numeric_limits<int>::max()
+                    : stint.endLap;
+                for (auto& [lapNum, block] : lapBlocks_) {
+                    if (lapNum < stintStartLap || lapNum > stintEndLap ||
+                        stint.actualCompound <= 0) continue;
+                    block.slimStatus.push_back({
+                        "status", block.endSessionTime, 0.0,
+                        stint.actualCompound, stint.visualCompound,
+                    });
+                }
+                if (stintEndLap == std::numeric_limits<int>::max()) break;
+                stintStartLap = stintEndLap + 1;
+            }
+        }
+    }
     return true;
 }
 
@@ -1207,12 +1234,15 @@ bool TnrdReader::buildSectorDistanceMetadata() {
     }
 
     if (loadedFormat_ == TnrdFormat::ChunkedV6) {
+        auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (v6) v6->setRequestedTypes({24});
         for (auto& [lapNum, block] : lapBlocks_) {
             if (lapNum == 0) continue;
             std::vector<detail::V4TimedRow> rows;
             std::string error;
             if (!indexedArchive_->rowsForLap(static_cast<uint32_t>(lapNum),
                                              detail::v4TypeBit(4), rows, &error)) {
+                if (v6) v6->setRequestedTypes(playbackV6Types_);
                 lastError_ = std::move(error);
                 return false;
             }
@@ -1229,6 +1259,7 @@ bool TnrdReader::buildSectorDistanceMetadata() {
             block.sector1EndDistanceM = sector1;
             block.sector2EndDistanceM = sector2;
         }
+        if (v6) v6->setRequestedTypes(playbackV6Types_);
         return true;
     }
 
@@ -1354,33 +1385,161 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
 
             const uint32_t savedOutputMask = playbackOutputRowMask_;
             playbackOutputRowMask_ = requestedMask;
-            V6ProjectionAssembler assembler;
+            std::vector<V6ProjectedRecord> projectedSnapshot;
+            uint64_t projectedOrder = 0;
             for (auto& row : rows) {
                 std::vector<std::pair<uint8_t, std::string>> projected;
                 projectV6Row(row.rowType, row.sessionTime, row.json, projected);
                 for (auto& [type, json] : projected)
-                    assembler.add(type, row.sessionTime, std::move(json));
+                    projectedSnapshot.push_back({
+                        type, row.sessionTime, projectedOrder++, std::move(json),
+                    });
             }
-            auto projectedSnapshot = assembler.take();
-            std::array<size_t, 16> latestProjected{};
-            latestProjected.fill(projectedSnapshot.size());
-            for (size_t index = 0; index < projectedSnapshot.size(); ++index) {
-                const uint8_t type = projectedSnapshot[index].type;
-                if (type < latestProjected.size()) latestProjected[type] = index;
+            std::stable_sort(projectedSnapshot.begin(), projectedSnapshot.end(),
+                [](const auto& left, const auto& right) {
+                    return std::tie(left.sessionTime, left.order) <
+                           std::tie(right.sessionTime, right.order);
+                });
+            if (requestedMask & detail::v4TypeBit(2)) {
+                bool hasSelectedTyreState = false;
+                int selectedLap = std::max(1, v6->lapAt(t));
+                float selectedTime = t;
+                for (const auto& projected : projectedSnapshot) {
+                    if (projected.type == 2 && scanV6StoredType(projected.json) == 13) {
+                        StatusRow status{};
+                        if (!glz::read<kPartialRead>(status, projected.json) &&
+                            status.tyre_compound > 0) hasSelectedTyreState = true;
+                    }
+                }
+                const auto* driver = v6->driverHeader(
+                    static_cast<uint8_t>(playbackDriverIndex_));
+                if (!hasSelectedTyreState && driver) {
+                    int stintStartLap = 1;
+                    const detail::V6TyreStintSummary* currentStint = nullptr;
+                    for (const auto& stint : driver->tyreStints) {
+                        const int stintEndLap = stint.endLap == 255
+                            ? std::numeric_limits<int>::max()
+                            : stint.endLap;
+                        if (selectedLap >= stintStartLap && selectedLap <= stintEndLap) {
+                            currentStint = &stint;
+                            break;
+                        }
+                        if (stintEndLap == std::numeric_limits<int>::max()) break;
+                        stintStartLap = stintEndLap + 1;
+                    }
+                    if (currentStint && currentStint->actualCompound > 0) {
+                        std::string status =
+                            "{\"type\":\"status\",\"_v6_type\":13,\"player_idx\":" +
+                            std::to_string(playbackDriverIndex_) +
+                            ",\"session_time\":" + std::to_string(selectedTime) +
+                            ",\"tyre_compound\":" + std::to_string(currentStint->actualCompound) +
+                            ",\"visual_compound\":" + std::to_string(currentStint->visualCompound) +
+                            ",\"tyre_age_laps\":" +
+                            std::to_string(std::max(0, selectedLap - stintStartLap)) + "}";
+                        projectedSnapshot.push_back({
+                            2, selectedTime, projectedOrder++, std::move(status),
+                        });
+                    }
+                }
+                std::stable_sort(projectedSnapshot.begin(), projectedSnapshot.end(),
+                    [](const auto& left, const auto& right) {
+                        return std::tie(left.sessionTime, left.order) <
+                               std::tie(right.sessionTime, right.order);
+                    });
             }
-            for (size_t index = 0; index < projectedSnapshot.size(); ++index) {
-                auto& row = projectedSnapshot[index];
-                if (row.type >= latestProjected.size() || latestProjected[row.type] != index) continue;
-                if (row.type == 7 || row.type == 9 || row.type == 13)
-                    v6ProjectionState_[row.type] = row.json;
+            if (requestedMask & detail::v4TypeBit(9)) {
+                std::unordered_set<int> driversWithTyreState;
+                for (const auto& projected : projectedSnapshot) {
+                    if (projected.type != 9 || scanV6StoredType(projected.json) != 13) continue;
+                    AllStatusRow status{};
+                    if (glz::read<kPartialRead>(status, projected.json)) continue;
+                    for (const auto& car : status.cars)
+                        if (car.tyre_compound > 0) driversWithTyreState.insert(car.idx);
+                }
+                std::vector<V6ProjectedRecord> summaryPatches;
+                for (const auto& projected : projectedSnapshot) {
+                    if (projected.type != 7) continue;
+                    TimingRow timing{};
+                    if (glz::read<kPartialRead>(timing, projected.json)) continue;
+                    for (const auto& timingCar : timing.cars) {
+                        if (driversWithTyreState.contains(timingCar.idx)) continue;
+                        const auto* driver = timingCar.idx >= 0
+                            ? v6->driverHeader(static_cast<uint8_t>(timingCar.idx))
+                            : nullptr;
+                        if (!driver) continue;
+                        int stintStartLap = 1;
+                        const detail::V6TyreStintSummary* currentStint = nullptr;
+                        for (const auto& stint : driver->tyreStints) {
+                            const int stintEndLap = stint.endLap == 255
+                                ? std::numeric_limits<int>::max()
+                                : stint.endLap;
+                            if (timingCar.lap_num >= stintStartLap && timingCar.lap_num <= stintEndLap) {
+                                currentStint = &stint;
+                                break;
+                            }
+                            if (stintEndLap == std::numeric_limits<int>::max()) break;
+                            stintStartLap = stintEndLap + 1;
+                        }
+                        if (!currentStint || currentStint->actualCompound <= 0) continue;
+                        AllStatusRow status{};
+                        status.session_time = projected.sessionTime;
+                        status.cars.push_back({});
+                        auto& statusCar = status.cars.back();
+                        statusCar.idx = timingCar.idx;
+                        statusCar.tyre_compound = currentStint->actualCompound;
+                        statusCar.visual_compound = currentStint->visualCompound;
+                        statusCar.tyre_age_laps = std::max(0, timingCar.lap_num - stintStartLap);
+                        std::string json;
+                        if (!glz::write_json(status, json)) {
+                            tagV6StoredType(json, 13);
+                            summaryPatches.push_back({
+                                9, status.session_time, projectedOrder++, std::move(json),
+                            });
+                            driversWithTyreState.insert(timingCar.idx);
+                        }
+                    }
+                }
+                projectedSnapshot.insert(projectedSnapshot.end(),
+                    std::make_move_iterator(summaryPatches.begin()),
+                    std::make_move_iterator(summaryPatches.end()));
+                std::stable_sort(projectedSnapshot.begin(), projectedSnapshot.end(),
+                    [](const auto& left, const auto& right) {
+                        return std::tie(left.sessionTime, left.order) <
+                               std::tie(right.sessionTime, right.order);
+                    });
+            }
+            if (!sparseV6Playback_) {
+                V6ProjectionAssembler assembler;
+                for (auto& row : projectedSnapshot)
+                    assembler.add(row.type, row.sessionTime, std::move(row.json));
+                projectedSnapshot = assembler.take();
+                std::array<size_t, 16> latestProjected{};
+                latestProjected.fill(projectedSnapshot.size());
+                for (size_t index = 0; index < projectedSnapshot.size(); ++index) {
+                    const uint8_t type = projectedSnapshot[index].type;
+                    if (type < latestProjected.size()) latestProjected[type] = index;
+                }
+                std::vector<V6ProjectedRecord> latestRows;
+                latestRows.reserve(projectedSnapshot.size());
+                for (size_t index = 0; index < projectedSnapshot.size(); ++index) {
+                    auto& row = projectedSnapshot[index];
+                    if (row.type < latestProjected.size() && latestProjected[row.type] == index)
+                        latestRows.push_back(std::move(row));
+                }
+                projectedSnapshot = std::move(latestRows);
+                for (const auto& row : projectedSnapshot)
+                    if (row.type == 7 || row.type == 9 || row.type == 13)
+                        v6ProjectionState_[row.type] = row.json;
+            }
+            for (auto& row : projectedSnapshot)
                 out.emplace_back(row.type, std::move(row.json));
-            }
             playbackOutputRowMask_ = savedOutputMask;
 
             std::array<const detail::V6SharedRecord*, 16> latestShared{};
             std::array<float, 16> latestSharedTime{};
             latestSharedTime.fill(-std::numeric_limits<float>::infinity());
             for (const auto& record : v6->sharedRecords()) {
+                if (record.phase != detail::V6Phase::Race) continue;
                 const uint8_t type = scanType(record.json.data(), static_cast<int>(record.json.size()));
                 if (!(requestedMask & detail::v4TypeBit(type))) continue;
                 const float time = v6->logicalTime(record.phase, record.sessionTime);
@@ -1397,6 +1556,7 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
                     continue;
                 float earliest = std::numeric_limits<float>::infinity();
                 for (const auto& record : v6->sharedRecords()) {
+                    if (record.phase != detail::V6Phase::Race) continue;
                     if (scanType(record.json.data(), static_cast<int>(record.json.size())) != fallbackType)
                         continue;
                     const float time = v6->logicalTime(record.phase, record.sessionTime);
@@ -1433,11 +1593,14 @@ std::vector<std::pair<uint8_t, std::string>> TnrdReader::latestOfTypesTagged(
             for (auto& row : rows) {
                 std::vector<std::pair<uint8_t, std::string>> projected;
                 projectV6Row(row.rowType, row.sessionTime, row.json, projected);
-                for (auto& [type, json] : projected)
-                    assembler.add(type, row.sessionTime, std::move(json));
+                for (auto& [type, json] : projected) {
+                    if (sparseV6Playback_) out.emplace_back(type, std::move(json));
+                    else assembler.add(type, row.sessionTime, std::move(json));
+                }
             }
-            for (auto& row : assembler.take())
-                out.emplace_back(row.type, std::move(row.json));
+            if (!sparseV6Playback_)
+                for (auto& row : assembler.take())
+                    out.emplace_back(row.type, std::move(row.json));
             playbackOutputRowMask_ = savedOutputMask;
         } else {
             for (auto& row : rows) out.emplace_back(row.rowType, std::move(row.json));
@@ -1695,17 +1858,24 @@ uint32_t TnrdReader::expandedPlaybackMask(uint32_t outputMask) const {
     return outputMask;
 }
 
-void TnrdReader::setPlaybackV6Types(const std::vector<uint8_t>& types, float cursorTime) {
+void TnrdReader::setPlaybackV6Types(const std::vector<uint8_t>& streamTypes,
+                                    const std::vector<uint8_t>& historyTypes,
+                                    float cursorTime) {
+    playbackV6Types_ = streamTypes;
+    playbackV6HistoryTypes_ = historyTypes;
     if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get())) {
-        v6->setRequestedTypes(types); setCursor(cursorTime);
+        v6->setRequestedTypes(streamTypes); setCursor(cursorTime);
     }
 }
 
 void TnrdReader::projectV6Row(
     uint8_t sourceType, float sessionTime, std::string_view json,
-    std::vector<std::pair<uint8_t, std::string>>& out) const {
+    std::vector<std::pair<uint8_t, std::string>>& out,
+    int selectedDriverOverride, uint32_t outputMaskOverride) const {
+    const uint32_t outputMask = outputMaskOverride != 0
+        ? outputMaskOverride : playbackOutputRowMask_;
     const auto wants = [&](uint8_t type) {
-        return (playbackOutputRowMask_ & detail::v4TypeBit(type)) != 0;
+        return (outputMask & detail::v4TypeBit(type)) != 0;
     };
     if (loadedFormat_ != TnrdFormat::ChunkedV6 || sourceType == 0 || sourceType > 24) return;
     const auto wrap = [&](std::string_view type, int driver, bool asCar) {
@@ -1724,16 +1894,21 @@ void TnrdReader::projectV6Row(
             char buffer[32]; std::snprintf(buffer, sizeof(buffer), "%.9g", sessionTime);
             payload.replace(begin, end - begin, buffer);
         }
+        const int selectedDriver = selectedDriverOverride >= 0
+            ? selectedDriverOverride
+            : (playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_);
         std::string value = "{\"type\":\"" + std::string(type) + "\",\"_v6_type\":" +
             std::to_string(sourceType) + ",\"player_idx\":" +
-            std::to_string(playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_) + ',';
+            std::to_string(selectedDriver) + ',';
         if (asCar) value += "\"session_time\":" + std::to_string(sessionTime) + ',';
         if (asCar) value += "\"cars\":[{\"idx\":" + std::to_string(driver) + ',';
         value.append(std::string_view(payload).substr(1, payload.size() - 2));
         if (asCar) value += "}]";
         value += '}'; return value;
     };
-    const int selectedDriver = playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_;
+    const int selectedDriver = selectedDriverOverride >= 0
+        ? selectedDriverOverride
+        : (playbackDriverIndex_ >= 0 ? playbackDriverIndex_ : recordedDriverIndex_);
     const int driver = scanV6Driver(json, selectedDriver);
     const bool selected = driver == selectedDriver;
     if (sourceType == 7 && json.find("\"drs_allowed\"") != std::string_view::npos) {
@@ -1845,13 +2020,123 @@ std::string TnrdReader::lapBlocksMessage() const {
     msg.deltaAvailable = loadedFormat_ == TnrdFormat::ZstdV3 || isChunkedTnrd(loadedFormat_);
     msg.lapDistanceAvailable = msg.deltaAvailable;
     msg.trackLengthM = msg.deltaAvailable ? trackLengthM_ : 0;
+    msg.playbackDriverIndex = playbackDriverIndex_;
+    if (loadedFormat_ == TnrdFormat::ChunkedV6) {
+        const auto* v6 = dynamic_cast<const detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (v6) {
+            msg.analysisDrivers.reserve(v6->driverHeaders().size());
+            for (const auto& driver : v6->driverHeaders()) {
+                AnalysisDriverLapCatalog catalog;
+                catalog.driverIndex = driver.vehicleIndex;
+                catalog.driverName = driver.driverName;
+                catalog.isPlayer = driver.isPlayer;
+                std::map<int, detail::V6LapSummary> lapsByNumber;
+                for (const auto& lap : v6->driverLapSummaries(driver.vehicleIndex)) {
+                    if (lap.phase != detail::V6Phase::Race || lap.lapNumber == 0) continue;
+                    lapsByNumber.insert_or_assign(static_cast<int>(lap.lapNumber), lap);
+                }
+                int fastestMs = 0;
+                for (const auto& [lapNumber, lap] : lapsByNumber) {
+                    LapBlockMeta block;
+                    block.lapNum = lapNumber;
+                    block.startSessionTime = lap.startSessionTime;
+                    block.endSessionTime = lap.endSessionTime;
+                    catalog.blocks.push_back(std::move(block));
+                    catalog.laps.push_back({lapNumber, static_cast<int>(lap.lapTimeMs)});
+                    if (lap.lapTimeMs > 0 && (!fastestMs || static_cast<int>(lap.lapTimeMs) < fastestMs)) {
+                        fastestMs = static_cast<int>(lap.lapTimeMs);
+                        catalog.fastestLapNum = lapNumber;
+                    }
+                }
+                int stintStartLap = 1;
+                for (const auto& stint : driver.tyreStints) {
+                    const int stintEndLap = stint.endLap == 255
+                        ? std::numeric_limits<int>::max() : stint.endLap;
+                    for (auto& block : catalog.blocks) {
+                        if (block.lapNum < stintStartLap || block.lapNum > stintEndLap ||
+                            stint.actualCompound <= 0) continue;
+                        block.statusHistory.push_back({
+                            "status", block.endSessionTime, 0.0,
+                            stint.actualCompound, stint.visualCompound,
+                        });
+                    }
+                    if (stintEndLap == std::numeric_limits<int>::max()) break;
+                    stintStartLap = stintEndLap + 1;
+                }
+                msg.analysisDrivers.push_back(std::move(catalog));
+            }
+        }
+    }
     msg.events.reserve(scannedEvents_.size());
     for (const auto& s : scannedEvents_) msg.events.push_back(glz::raw_json{ s });
     for (const auto& l : scannedLaps_)   msg.laps.push_back({ l.lapNum, l.lapTimeMs });
     return writeJson(msg);
 }
 
-std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) const {
+std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask,
+                                          int driverIndex) const {
+    if (loadedFormat_ == TnrdFormat::ChunkedV6 && driverIndex >= 0 &&
+        driverIndex != playbackDriverIndex_) {
+        auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (!v6 || !v6->driverHeader(static_cast<uint8_t>(driverIndex))) return {};
+        std::optional<detail::V6LapSummary> selectedLap;
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driverIndex))) {
+            if (lap.phase == detail::V6Phase::Race &&
+                static_cast<int>(lap.lapNumber) == lapNum) selectedLap = lap;
+        }
+        if (!selectedLap) return {};
+
+        PlaybackLapDataRow msg;
+        msg.lapNum = lapNum;
+        msg.startSessionTime = selectedLap->startSessionTime;
+        msg.endSessionTime = selectedLap->endSessionTime;
+        msg.rowTypeMask = rowTypeMask;
+        const auto selectedTypes = v6TypesForRowMask(rowTypeMask);
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!v6->readDriverLapTypes(static_cast<uint8_t>(driverIndex), selectedLap->lapId,
+                                    selectedTypes, rows, &error)) return {};
+        std::vector<V6ProjectedRecord> outputRows;
+        uint64_t outputOrder = 0;
+        for (const auto& row : rows) {
+            if (row.sessionTime < msg.startSessionTime || row.sessionTime > msg.endSessionTime) continue;
+            std::vector<std::pair<uint8_t, std::string>> projected;
+            projectV6Row(row.rowType, row.sessionTime, row.json, projected,
+                         driverIndex, rowTypeMask);
+            for (auto& [type, json] : projected)
+                outputRows.push_back({type, row.sessionTime, outputOrder++, std::move(json)});
+        }
+        if (!sparseV6Playback_) {
+            V6ProjectionAssembler assembler;
+            for (auto& row : outputRows)
+                assembler.add(row.type, row.sessionTime, std::move(row.json));
+            outputRows = assembler.take();
+        }
+        for (auto& projected : outputRows) {
+            const auto type = projected.type;
+            auto& json = projected.json;
+            if (type == 1) msg.telemetry.push_back(glz::raw_json{json});
+            else if (type == 2) msg.statusHistory.push_back(glz::raw_json{json});
+            else if (type == 3) msg.damageHistory.push_back(glz::raw_json{json});
+            else if (type == 11) msg.motionHistory.push_back(glz::raw_json{json});
+            else if (type == 12) msg.motionExHistory.push_back(glz::raw_json{json});
+            else if (type == 4) {
+                LapScanFields lap{};
+                (void)glz::read<kPartialRead>(lap, json);
+                msg.lapProgress.push_back({projected.sessionTime, lap.current_lap_ms,
+                    lap.lap_distance_m, lap.sector, lap.s1_ms, lap.s2_ms});
+            } else if (type == 13) {
+                msg.positionsHistory.push_back(glz::raw_json{json});
+                PositionsRow positions{};
+                (void)glz::read<kPartialRead>(positions, json);
+                const auto car = std::find_if(positions.cars.begin(), positions.cars.end(),
+                    [&](const auto& value) { return value.idx == driverIndex; });
+                if (car != positions.cars.end())
+                    msg.playerPositions.push_back({projected.sessionTime, car->x, car->z});
+            }
+        }
+        return writeJson(msg);
+    }
     auto it = lapBlocks_.find(lapNum);
     if (it == lapBlocks_.end()) return {};
     const LapBlock& b = it->second;
@@ -1866,21 +2151,44 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
         self->playbackOutputRowMask_ = rowTypeMask;
         const uint32_t requestedMask = loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0
             ? expandedPlaybackMask(rowTypeMask) : rowTypeMask;
+        // An indexed lap request is self-contained. Analysis can issue it in
+        // the same render commit that publishes new page requirements, so
+        // consulting the previous page's V6 history subscription can return a
+        // partial lap while claiming the full row-family mask.
+        const std::vector<uint8_t> selectedV6Types = v6TypesForRowMask(rowTypeMask);
+        auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (v6) v6->setRequestedTypes(selectedV6Types);
         std::vector<detail::V4TimedRow> rows;std::string error;const uint32_t mask=requestedMask&(detail::v4TypeBit(1)|detail::v4TypeBit(2)|detail::v4TypeBit(3)|detail::v4TypeBit(4)|detail::v4TypeBit(11)|detail::v4TypeBit(12)|detail::v4TypeBit(13)|detail::v4TypeBit(7)|detail::v4TypeBit(8)|detail::v4TypeBit(9));
-        if(!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error)){self->playbackOutputRowMask_=savedOutputMask;return {};}
-        V6ProjectionAssembler assembler;
+        if(!const_cast<detail::TnrdIndexedArchive*>(indexedArchive_.get())->rowsForLap((uint32_t)lapNum,mask,rows,&error)){if(v6)v6->setRequestedTypes(playbackV6Types_);self->playbackOutputRowMask_=savedOutputMask;return {};}
+        if (v6) v6->setRequestedTypes(playbackV6Types_);
+        std::vector<V6ProjectedRecord> outputRows;
+        uint64_t outputOrder = 0;
         for(const auto&r:rows){
+            if (loadedFormat_ == TnrdFormat::ChunkedV6 &&
+                !selectedV6Types.empty() &&
+                std::find(selectedV6Types.begin(), selectedV6Types.end(), r.rowType) == selectedV6Types.end())
+                continue;
             // A timed practice/quali lap number is reused across the in-lap,
             // garage and following out-lap. Those rows can share an indexed chunk
             // key with the next flying attempt, so honour the indexed flying
             // interval when materialising a lap.
             if(r.sessionTime<b.startSessionTime||r.sessionTime>b.endSessionTime)continue;
-            std::vector<std::pair<uint8_t, std::string>> projected;
-            projectV6Row(r.rowType, r.sessionTime, r.json, projected);
-            for (auto& [type, json] : projected)
-                assembler.add(type, r.sessionTime, std::move(json));
+            if (loadedFormat_ == TnrdFormat::ChunkedV6) {
+                std::vector<std::pair<uint8_t, std::string>> projected;
+                projectV6Row(r.rowType, r.sessionTime, r.json, projected);
+                for (auto& [type, json] : projected)
+                    outputRows.push_back({type, r.sessionTime, outputOrder++, std::move(json)});
+            } else {
+                outputRows.push_back({r.rowType, r.sessionTime, outputOrder++, r.json});
+            }
         }
-        for (auto& projected : assembler.take()) {
+        if (loadedFormat_ == TnrdFormat::ChunkedV6 && !sparseV6Playback_) {
+            V6ProjectionAssembler assembler;
+            for (auto& row : outputRows)
+                assembler.add(row.type, row.sessionTime, std::move(row.json));
+            outputRows = assembler.take();
+        }
+        for (auto& projected : outputRows) {
             const auto type = projected.type;
             auto& json = projected.json;
             if(type==1)msg.telemetry.push_back(glz::raw_json{json});
@@ -1912,7 +2220,47 @@ std::string TnrdReader::getLapDataMessage(int lapNum, uint32_t rowTypeMask) cons
     return writeJson(msg);
 }
 
-bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out) const {
+bool TnrdReader::getAnalysisLapProgress(int lapNum, AnalysisLapProgress& out,
+                                        int driverIndex) const {
+    if (loadedFormat_ == TnrdFormat::ChunkedV6 && driverIndex >= 0 &&
+        driverIndex != playbackDriverIndex_) {
+        auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+        if (!v6 || !v6->driverHeader(static_cast<uint8_t>(driverIndex))) return false;
+        std::optional<detail::V6LapSummary> selectedLap;
+        for (const auto& lap : v6->driverLapSummaries(static_cast<uint8_t>(driverIndex))) {
+            if (lap.phase == detail::V6Phase::Race &&
+                static_cast<int>(lap.lapNumber) == lapNum) selectedLap = lap;
+        }
+        if (!selectedLap) return false;
+
+        AnalysisLapProgress result;
+        result.lapNum = lapNum;
+        result.startSessionTime = selectedLap->startSessionTime;
+        result.endSessionTime = selectedLap->endSessionTime;
+        result.lapTimeMs = static_cast<int>(selectedLap->lapTimeMs);
+        result.trackLengthM = static_cast<float>(trackLengthM_);
+        std::vector<detail::V4TimedRow> rows;
+        std::string error;
+        if (!v6->readDriverLapTypes(static_cast<uint8_t>(driverIndex), selectedLap->lapId,
+                                    {24}, rows, &error)) return false;
+        for (const auto& row : rows) {
+            if (row.sessionTime < result.startSessionTime || row.sessionTime > result.endSessionTime) continue;
+            LapScanFields lap{};
+            if (glz::read<kPartialRead>(lap, row.json)) continue;
+            result.points.push_back({row.sessionTime, lap.current_lap_ms,
+                lap.lap_distance_m, lap.sector, lap.s1_ms, lap.s2_ms});
+        }
+        if (result.points.empty()) return false;
+        const auto [sector1, sector2] = sectorEndDistances(result.points);
+        result.sector1EndDistanceM = sector1;
+        result.sector2EndDistanceM = sector2;
+        for (const auto& point : result.points) {
+            if (point.s1_ms > 0) result.sector1TimeMs = point.s1_ms;
+            if (point.s2_ms > 0) result.sector2TimeMs = point.s2_ms;
+        }
+        out = std::move(result);
+        return true;
+    }
     const auto it = lapBlocks_.find(lapNum);
     if (it == lapBlocks_.end()) return false;
     const LapBlock& block = it->second;
@@ -2152,21 +2500,34 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
         if (loadedFormat_ == TnrdFormat::ChunkedV6 && playbackDriverIndex_ >= 0) {
             auto rows = pullUntil(t);
-            V6ProjectionAssembler assembler;
-            for (const uint8_t type : {uint8_t{7}, uint8_t{9}, uint8_t{13}})
-                assembler.seed(type, v6ProjectionState_[type]);
+            std::vector<V6ProjectedRecord> projectedRows;
+            uint64_t projectedOrder = 0;
             for (auto& source : rows) {
                 const uint8_t sourceType = scanV6StoredType(source);
                 const float sourceTime = scanSessionTime(source.data(), static_cast<int>(source.size()));
                 std::vector<std::pair<uint8_t, std::string>> projected;
                 projectV6Row(sourceType, sourceTime, source, projected);
                 for (auto& [type, row] : projected)
-                    assembler.add(type, sourceTime, std::move(row));
+                    projectedRows.push_back({
+                        type, sourceTime, projectedOrder++, std::move(row),
+                    });
             }
-            auto projectedRows = assembler.take();
-            for (const auto& projected : projectedRows)
-                if (projected.type == 7 || projected.type == 9 || projected.type == 13)
-                    v6ProjectionState_[projected.type] = projected.json;
+            // The in-engine strategy reducer still consumes complete legacy
+            // dependency rows. Keep that one opt-in page on the compatibility
+            // projection until the reducer itself accepts V6 field patches.
+            const bool sparseOutput = sparseV6Playback_ &&
+                !(playbackOutputRowMask_ & detail::v4TypeBit(15));
+            if (!sparseOutput) {
+                V6ProjectionAssembler assembler;
+                for (const uint8_t type : {uint8_t{7}, uint8_t{9}, uint8_t{13}})
+                    assembler.seed(type, v6ProjectionState_[type]);
+                for (auto& row : projectedRows)
+                    assembler.add(row.type, row.sessionTime, std::move(row.json));
+                projectedRows = assembler.take();
+                for (const auto& row : projectedRows)
+                    if (row.type == 7 || row.type == 9 || row.type == 13)
+                        v6ProjectionState_[row.type] = row.json;
+            }
             if (auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get())) {
                 const auto& shared = v6->sharedRecords();
                 const float through = std::isfinite(t) ? t : totalTime_;
@@ -2179,7 +2540,7 @@ void TnrdReader::pullUntilSplit(float t, std::string& jsonOut, std::vector<uint8
                     if (!(playbackRowMask_ & detail::v4TypeBit(type))) continue;
                     std::string json = record.json;
                     setSessionTime(json, time);
-                    projectedRows.push_back({type, time, static_cast<uint64_t>(v6SharedPos_), std::move(json)});
+                    projectedRows.push_back({type, time, projectedOrder++, std::move(json)});
                 }
                 std::stable_sort(projectedRows.begin(), projectedRows.end(),
                     [](const auto& left, const auto& right) {
@@ -2288,48 +2649,96 @@ TnrdReader::SeekFlush TnrdReader::seekFlush(float target, float currentLapStart,
     if(isChunkedTnrd(loadedFormat_)&&indexedArchive_){
         const bool currentLapOnly=!allHistory&&windowSeconds<=0.0f;
         if (loadedFormat_ == TnrdFormat::ChunkedV6) {
+            auto* v6 = dynamic_cast<detail::TnrdV6Archive*>(indexedArchive_.get());
+            const auto& historyTypes = playbackV6HistoryTypes_.empty()
+                ? playbackV6Types_ : playbackV6HistoryTypes_;
+            if (v6) v6->setRequestedTypes(historyTypes);
             const uint32_t savedOutputMask = playbackOutputRowMask_;
             playbackOutputRowMask_ = mask;
             const uint32_t sourceMask = expandedPlaybackMask(mask);
-            auto binary = std::make_shared<std::vector<uint8_t>>();
             std::string error;
-            V6ProjectionAssembler assembler;
-            // Visit the selected driver's requested type chunks without retaining
-            // the stored per-type JSON after it has been assembled for consumers.
+            V6ProjectionAssembler compatibilityAssembler;
+            const auto appendProjected = [&](const detail::V4TimedRow& source,
+                                             float outputTime) {
+                std::vector<std::pair<uint8_t, std::string>> projected;
+                projectV6Row(source.rowType, outputTime, source.json, projected);
+                for (auto& [type, row] : projected) {
+                    if (sparseV6Playback_) {
+                        f.coldJson += row;
+                        f.coldJson.push_back('\n');
+                    } else {
+                        compatibilityAssembler.add(type, outputTime, std::move(row));
+                    }
+                }
+            };
+
+            // V6 stores independent fields, so a range beginning at a lap or
+            // finite-window boundary also needs the last value immediately
+            // before that boundary. Without this seed, ERS/fuel/wear charts
+            // retain a default or stale value until their first later update.
+            if (v6 && !historyTypes.empty()) {
+                std::vector<uint8_t> seedTypes;
+                seedTypes.reserve(historyTypes.size());
+                for (const uint8_t type : historyTypes)
+                    if (type > 0 && type <= 22) seedTypes.push_back(type);
+                if (!seedTypes.empty()) {
+                    std::vector<detail::V4TimedRow> seeds;
+                    if (!v6->latestRows(windowStart, seedTypes, seeds, &error, cancelled)) {
+                        playbackOutputRowMask_ = savedOutputMask;
+                        v6->setRequestedTypes(playbackV6Types_);
+                        if (!cancelled || !cancelled()) lastError_ = std::move(error);
+                        return f;
+                    }
+                    for (const auto& seed : seeds) {
+                        if (cancelled && cancelled()) {
+                            playbackOutputRowMask_ = savedOutputMask;
+                            v6->setRequestedTypes(playbackV6Types_);
+                            return f;
+                        }
+                        appendProjected(seed, windowStart);
+                    }
+                }
+            }
+            // V6 rows are already split by consumer data type. Forward each
+            // sparse patch independently so a narrow history request never
+            // rebuilds and serializes a complete legacy row first.
             const bool loaded = indexedArchive_->forEachRowInRange(
                 windowStart, target, sourceMask,
                 [&](const detail::V4TimedRow& source) {
                     if (cancelled && cancelled()) return false;
-                    std::vector<std::pair<uint8_t, std::string>> projected;
-                    projectV6Row(source.rowType, source.sessionTime, source.json, projected);
-                    for (auto& [type, row] : projected)
-                        assembler.add(type, source.sessionTime, std::move(row));
+                    appendProjected(source, source.sessionTime);
                     return true;
                 }, &error, cancelled);
             if (!loaded) {
                 playbackOutputRowMask_ = savedOutputMask;
+                if (v6) v6->setRequestedTypes(playbackV6Types_);
                 if (!cancelled || !cancelled()) lastError_ = std::move(error);
                 return f;
             }
-            for (auto& projected : assembler.take()) {
-                if (projected.type == 1 || projected.type == 11 || projected.type == 12) {
-                    if (!encodeV4HotRow(projected.type, projected.json, *binary)) {
-                        playbackOutputRowMask_ = savedOutputMask;
-                        lastError_ = "could not encode assembled V6 seek row";
-                        return f;
+            if (!sparseV6Playback_) {
+                auto binary = std::make_shared<std::vector<uint8_t>>();
+                for (auto& projected : compatibilityAssembler.take()) {
+                    if (projected.type == 1 || projected.type == 11 || projected.type == 12) {
+                        if (!encodeV4HotRow(projected.type, projected.json, *binary)) {
+                            playbackOutputRowMask_ = savedOutputMask;
+                            if (v6) v6->setRequestedTypes(playbackV6Types_);
+                            lastError_ = "could not encode assembled V6 seek row";
+                            return f;
+                        }
+                    } else {
+                        f.coldJson += projected.json;
+                        f.coldJson.push_back('\n');
                     }
-                } else {
-                    f.coldJson += projected.json;
-                    f.coldJson.push_back('\n');
+                }
+                if (!binary->empty()) {
+                    f.binaryStore = std::move(binary);
+                    f.binaryBegin = 0;
+                    f.binaryEnd = f.binaryStore->size();
                 }
             }
             playbackOutputRowMask_ = savedOutputMask;
+            if (v6) v6->setRequestedTypes(playbackV6Types_);
             if (!f.coldJson.empty()) f.coldJson.pop_back();
-            if (!binary->empty()) {
-                f.binaryStore = std::move(binary);
-                f.binaryBegin = 0;
-                f.binaryEnd = f.binaryStore->size();
-            }
             return f;
         }
         // V1-V5 recordings deduplicated unchanged damage state, so their
